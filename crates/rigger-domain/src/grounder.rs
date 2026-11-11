@@ -52,6 +52,14 @@ pub struct BlastRadius {
     pub safe: Vec<String>,
 }
 
+/// A blast radius with the provenance stamp of the read that grounded it
+/// ([`Grounder::blast_radius_stamped`]); an empty stamp marks a grounder with no structural index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StampedRadius {
+    pub radius: BlastRadius,
+    pub stamp: String,
+}
+
 /// Grounder returns up to k locations relevant to a query.
 /// A grounder's answer: the rows, the honesty label they travel with, and how many test hits the
 /// `tests` filter left out of them, all from one read of the code store so they describe one tree.
@@ -90,17 +98,21 @@ pub trait Grounder: Send + Sync {
         }
     }
 
-    /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
-    /// architecture 5.5.9): the tree id + grammar / tag-query version that
-    /// produced this grounder's radii, so a recorded radius reconstructs which tree
-    /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
-    /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
-    /// nop - no structural cross-reference index) returns an EMPTY stamp, so the
-    /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
-    /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
+    /// [`Self::blast_radius`] with the provenance stamp of the read that grounded it, for the
+    /// `BlastRadiusComputed` audit event (spec 16 unit 3, architecture 5.5.9): the tree id +
+    /// grammar / tag-query version that produced THIS radius, so a recorded radius reconstructs
+    /// which tree grounded it and staleness is answerable ("why the full panel?"). The stamp comes
+    /// from the same read as the radius, never a second one, so a store advanced between two reads
+    /// cannot stamp a radius with a tree it was not grounded on. A non-empty stamp is ALSO the
+    /// structural-active signal the conductor keys the audit off: the DEFAULT (grep / nop - no
+    /// structural cross-reference index) stamps EMPTY, so the conductor emits NO audit event and
+    /// drives NO retention metric on that path. Only the `symbols` grounder overrides this to a
     /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
-    fn index_stamp(&self) -> String {
-        String::new()
+    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+        StampedRadius {
+            radius: self.blast_radius(query, k),
+            stamp: String::new(),
+        }
     }
 
     /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the
@@ -149,7 +161,7 @@ pub trait Grounder: Send + Sync {
     /// location plus its degree. The DEFAULT (grep / nop, and any grounder with no
     /// entity/reference concept) is simply `ground`'s own top-`k` rows, each wrapped with
     /// degree 0 (unknown) and NO dedup - never a silent behavior change for a non-structural
-    /// grounder (mirroring the [`Self::blast_radius`] / [`Self::index_stamp`] default
+    /// grounder (mirroring the [`Self::blast_radius`] / [`Self::blast_radius_stamped`] default
     /// pattern). Only the `symbols` grounder overrides this with real ranking, entity dedup,
     /// and a real degree.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {

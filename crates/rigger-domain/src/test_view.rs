@@ -3,6 +3,7 @@
 //! the plurality of the product definitions it proves: as that cluster's "tests" group, with its
 //! count, and never as a member.
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_view::{Cluster, Tests};
@@ -24,7 +25,7 @@ pub const TESTS_ATTR: &str = "tests";
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TestAttachment {
     cluster_of: BTreeMap<String, String>,
-    counts: BTreeMap<String, usize>,
+    counts: FxHashMap<String, usize>,
 }
 
 impl TestAttachment {
@@ -102,7 +103,7 @@ pub fn join_tests(graph: &mut Graph, attachment: &TestAttachment, tests: Tests) 
     if tests == Tests::Exclude {
         return;
     }
-    let held: BTreeSet<String> = graph.nodes.iter().map(|n| n.id.clone()).collect();
+    let held: FxHashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
     for (test, cluster) in attachment.attached() {
         if held.contains(test) {
             graph.edges.push(Edge {
@@ -363,29 +364,38 @@ mod tests {
     }
 
     /// The tests a filter hides are the graph's to report: `exclude` holds them back as
-    /// `hidden_tests`, and `include` and `only` show them, so nothing is hidden.
+    /// `hidden_tests`, and `include` and `only` show them, so nothing is hidden. A hidden test
+    /// whose file the caller's worktree changed is withheld and counted as a shown one is.
     #[test]
     fn the_graph_reports_the_tests_it_hides() {
         let view = view();
-        let hidden = |tests: Tests| -> Vec<String> {
+        let hidden = |tests: Tests, changed: &[&str]| -> (Vec<String>, usize) {
             let records = Indexed::default();
+            let diff = crate::code_view::WorktreeDiff {
+                changed: changed.iter().map(|f| f.to_string()).collect(),
+                untracked: Vec::new(),
+            };
             let honesty = Honesty {
                 worktree: "W".into(),
-                diff: Ok(Default::default()),
+                diff: Ok(diff),
                 behind: None,
             };
-            Composed::new(&records, &view, ViewFilter { tests }, honesty)
-                .unwrap()
-                .hidden_tests()
-                .unwrap()
-                .into_iter()
-                .map(|n| n.id)
-                .collect()
+            let graph = Composed::new(&records, &view, ViewFilter { tests }, honesty).unwrap();
+            let ids = graph.hidden_tests().unwrap().into_iter().map(|n| n.id);
+            (ids.collect(), graph.stamp_label().withheld)
         };
         let all = ["t1", "t2", "t3", "t4", "t5"].map(|t| format!("tests/t.rs::{t}"));
-        assert_eq!(hidden(Tests::Exclude), all);
-        assert!(hidden(Tests::Include).is_empty());
-        assert!(hidden(Tests::Only).is_empty());
+        let cases: [(Tests, &[&str], &[String], usize); 5] = [
+            (Tests::Exclude, &[], &all, 0),
+            (Tests::Exclude, &["src/p.rs"], &all, 0),
+            (Tests::Exclude, &["tests/t.rs"], &[], 5),
+            (Tests::Include, &[], &[], 0),
+            (Tests::Only, &[], &[], 0),
+        ];
+        for (tests, changed, ids, withheld) in cases {
+            let want = (ids.to_vec(), withheld);
+            assert_eq!(hidden(tests, changed), want, "{tests:?} {changed:?}");
+        }
     }
 
     /// Every test mention is walked once per open: the proofs and the attachment both read the

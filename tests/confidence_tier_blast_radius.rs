@@ -13,7 +13,7 @@
 //! radius survives into the recorded safe view - the tier-filter arm UNIONS it in, so a file only
 //! the grounder reaches is never dropped (addendum 2.4 states the safe view's contract).
 //!
-//! These tests inject a STRUCTURAL grounder double (a non-empty `index_stamp`, so the audit is
+//! These tests inject a STRUCTURAL grounder double (a non-empty radius stamp, so the audit is
 //! emitted at all), populate the unified graph through the public `contextgraph` event API (the
 //! same serialized events a real run folds), drive the public `conductor::run` entry, and assert
 //! on the recorded `BlastRadiusComputed` event. They exercise the new cross-module seam end-to-end:
@@ -30,7 +30,7 @@ use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
-use rigger::grounder::{BlastRadius, Grounder, Ref};
+use rigger::grounder::{BlastRadius, Grounder, Ref, StampedRadius};
 use serde_json::{json, Value};
 
 use crate::common;
@@ -45,7 +45,7 @@ use common::fixtures::NoopDriver;
 ///     neighborhood populated below);
 ///   - its `blast_radius` is the GREP FLOOR the tier-filter arm must union into `safe`: it carries a
 ///     `grep_only.rs` file the graph does not;
-///   - its `index_stamp` is NON-EMPTY: that is the structural-active signal `record_blast_radius`
+///   - its radius stamp is NON-EMPTY: that is the structural-active signal `record_blast_radius`
 ///     keys the `BlastRadiusComputed` audit off, so the radius is actually serialized to an event.
 struct StampedGrounder;
 
@@ -69,9 +69,12 @@ impl Grounder for StampedGrounder {
         }
     }
 
-    fn index_stamp(&self) -> String {
+    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
         // Non-empty: the structural-active signal that makes the conductor emit the audit at all.
-        "test-index-stamp/v1".into()
+        StampedRadius {
+            radius: self.blast_radius(query, k),
+            stamp: "test-index-stamp/v1".into(),
+        }
     }
 }
 

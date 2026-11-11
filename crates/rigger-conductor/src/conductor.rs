@@ -21,7 +21,7 @@ use crate::eventstore::Direction;
 use crate::eventstore::{Appended, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
-use crate::grounder::{BlastRadius, Grounder};
+use crate::grounder::{BlastRadius, Grounder, StampedRadius};
 use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
@@ -5108,9 +5108,9 @@ impl RunCtx<'_> {
             let safe = match (recorded.remove(name), stages.get(name)) {
                 (Some(safe), _) => safe,
                 (None, Some(st)) => {
-                    let radius = self.grounded_blast_radius(st);
-                    self.record_blast_radius(st, 0, &self.grounded_seed(st), &radius)?;
-                    radius.safe
+                    let stamped = self.grounded_blast_radius_stamped(st);
+                    self.record_blast_radius(st, 0, &self.grounded_seed(st), &stamped)?;
+                    stamped.radius.safe
                 }
                 (None, None) => Vec::new(),
             };
@@ -6641,8 +6641,9 @@ impl RunCtx<'_> {
             // whole radius is recorded as a `BlastRadiusComputed` audit (structural grounder only,
             // incl. the empty-radius fail-safe). On the non-symbols default `.safe` equals the seed,
             // so routing is unchanged and no audit is emitted.
-            let radius = self.grounded_blast_radius(st);
-            self.record_blast_radius(st, attempts, &blast_radius, &radius)?;
+            let stamped = self.grounded_blast_radius_stamped(st);
+            self.record_blast_radius(st, attempts, &blast_radius, &stamped)?;
+            let radius = stamped.radius;
             let mut spawn_err: Option<String> = None;
             // The crash of a spawn after the implementer's (the sdet seam's or a review tier's,
             // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
@@ -7392,8 +7393,9 @@ impl RunCtx<'_> {
         // event is recorded once for the unit (keyed at attempt 0); on the non-symbols default
         // `.safe` equals the seed and no audit is emitted.
         let blast_radius = self.grounded_seed(st);
-        let radius = self.grounded_blast_radius(st);
-        self.record_blast_radius(st, 0, &blast_radius, &radius)?;
+        let stamped = self.grounded_blast_radius_stamped(st);
+        self.record_blast_radius(st, 0, &blast_radius, &stamped)?;
+        let radius = stamped.radius;
         let agent_def = self
             .cfg
             .agents
@@ -11975,17 +11977,36 @@ impl RunCtx<'_> {
     /// naming no code keeps the empty radius. With no graph the grounder radius is returned
     /// verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
+        self.grounded_blast_radius_stamped(st).radius
+    }
+
+    /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the provenance stamp of the
+    /// grounder read that grounded it ([`Grounder::blast_radius_stamped`]), which
+    /// [`record_blast_radius`](Self::record_blast_radius) records.
+    fn grounded_blast_radius_stamped(&self, st: &Stage) -> StampedRadius {
         self.grounded_blast_radius_at(st, BLAST_RADIUS_GRAPH_DEPTH)
     }
 
     /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the graph arm expanding the seed
     /// `depth` hops; production passes [`BLAST_RADIUS_GRAPH_DEPTH`] alone. Depth 0 expands nothing:
     /// the radius is the seed, the named code's files.
-    fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> BlastRadius {
-        let base = match self.deps.grounder {
-            Some(g) => g.blast_radius(&self.ground_query(st), GROUNDED_SEED_K),
-            None => BlastRadius::default(),
+    fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> StampedRadius {
+        let StampedRadius {
+            radius: base,
+            stamp,
+        } = match self.deps.grounder {
+            Some(g) => g.blast_radius_stamped(&self.ground_query(st), GROUNDED_SEED_K),
+            None => StampedRadius::default(),
         };
+        StampedRadius {
+            radius: self.graph_tiered(base, depth),
+            stamp,
+        }
+    }
+
+    /// The grounder's radius `base` re-derived through the unified graph's confidence tiers,
+    /// expanding its structural seed `depth` hops.
+    fn graph_tiered(&self, base: BlastRadius, depth: i64) -> BlastRadius {
         // Spec 29c criterion 2: when the unified graph is present, the two-view radius is TWO
         // confidence-tier filters over the ONE subgraph (addendum 6.2) - [`confidence_tier_radius`].
         // The subgraph is seeded from the grounder's own STRUCTURAL view - the files the code a
@@ -12042,8 +12063,9 @@ impl RunCtx<'_> {
 
     /// Record a unit's computed blast radius as a `BlastRadiusComputed` audit event (spec 16 unit
     /// 3, architecture 5.5.9), keyed per unit + `attempt` so a resumed run appends it exactly
-    /// once. It rides ONLY when a STRUCTURAL grounder is active - detected by a non-empty
-    /// [`Grounder::index_stamp`], the same signal that provides the provenance - so a grep /
+    /// once. It rides ONLY when a STRUCTURAL grounder is active - detected by a non-empty stamp
+    /// on the radius ([`Grounder::blast_radius_stamped`], from the same read that grounded it),
+    /// the same signal that provides the provenance - so a grep /
     /// nop / no-grounder path emits nothing new and stays byte-for-byte unchanged. When
     /// structural, it is emitted on EVERY path INCLUDING the empty-radius fail-safe (the index, and
     /// so the stamp, is present even when a query grounds to nothing), so "why the full panel?" is
@@ -12067,13 +12089,9 @@ impl RunCtx<'_> {
         st: &Stage,
         attempt: u32,
         seed: &[String],
-        radius: &BlastRadius,
+        radius: &StampedRadius,
     ) -> Result<(), Error> {
-        let stamp = self
-            .deps
-            .grounder
-            .map(|g| g.index_stamp())
-            .unwrap_or_default();
+        let StampedRadius { radius, stamp } = radius;
         if stamp.is_empty() {
             // Non-structural grounder (or none): no audit, no retention metric - the shipped
             // default path is byte-for-byte unchanged.
@@ -40857,7 +40875,7 @@ mod tests {
     }
 
     /// A grounder that returns a CANNED two-view blast radius per query and a configurable
-    /// `index_stamp`, so a unit-3 wiring test controls the precise SEED view, the uncapped SAFE
+    /// radius stamp, so a unit-3 wiring test controls the precise SEED view, the uncapped SAFE
     /// view, AND the structural-active audit signal independently of any real tree. `ground`
     /// returns the PRECISE view as refs (what `build_prompt` seeds from).
     struct StructuralStubGrounder {
@@ -40884,8 +40902,11 @@ mod tests {
         fn blast_radius(&self, query: &str, _k: usize) -> BlastRadius {
             self.by_query.get(query).cloned().unwrap_or_default()
         }
-        fn index_stamp(&self) -> String {
-            self.stamp.clone()
+        fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+            StampedRadius {
+                radius: self.blast_radius(query, k),
+                stamp: self.stamp.clone(),
+            }
         }
     }
 
@@ -41012,7 +41033,7 @@ mod tests {
     }
 
     /// spec 16 unit 3, the symbols-ACTIVE pins: with a STRUCTURAL grounder (a non-empty
-    /// `index_stamp`) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
+    /// radius stamp) the conductor (1) records each unit's radius on a `BlastRadiusComputed`
     /// audit event carrying the SAFE view (so the partition is reconstructable from
     /// the log), (2) routes the review tier over the UNCAPPED SAFE view - so a high-risk file
     /// present ONLY in the safe view (BEYOND the precise k-cap) still forces the FULL panel, which
@@ -41090,7 +41111,7 @@ mod tests {
     }
 
     /// spec 16 unit 3, the symbols-INACTIVE control: a NON-structural grounder (an empty
-    /// `index_stamp`, the grep / nop grounders) records NO `BlastRadiusComputed` event
+    /// radius stamp, the grep / nop grounders) records NO `BlastRadiusComputed` event
     /// and drives no retention metric - the shipped default is byte-for-byte unchanged on the
     /// audit dimension. `StubGrounder` inherits the empty default stamp, exactly like the shipped
     /// non-symbols grounders.
@@ -41126,7 +41147,7 @@ mod tests {
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
             blast_radius_audits(&events).is_empty(),
-            "a non-structural grounder (empty index_stamp) emits no BlastRadiusComputed audit"
+            "a non-structural grounder (empty radius stamp) emits no BlastRadiusComputed audit"
         );
         assert!(
             crate::metrics::project(&events)
@@ -41547,7 +41568,10 @@ mod tests {
                         coverage: criterion.clone(),
                         ..Default::default()
                     };
-                    (id.clone(), ctx.grounded_blast_radius_at(&st, depth).safe)
+                    (
+                        id.clone(),
+                        ctx.grounded_blast_radius_at(&st, depth).radius.safe,
+                    )
                 })
                 .collect()
         };
@@ -41765,7 +41789,7 @@ mod tests {
     /// the real structural `symbols` grounder (the default since turbovec's retirement).
     ///
     /// (4a) A `BlastRadiusComputed` event IS emitted under a structural grounder. `Symbols` carries a
-    /// non-empty `index_stamp` (its index content-hash + tag-query version) - the structural-active
+    /// non-empty radius stamp (its tree id + tag-query version) - the structural-active
     /// signal `record_blast_radius` keys the audit off - so the audit is NOT skipped by the
     /// empty-stamp early return that keeps the non-structural grep / nop default silent.
     ///
@@ -41836,8 +41860,9 @@ mod tests {
         // The EXACT production call sequence (`run_single_stage` / `run_speculation`): the prompt
         // SEED, the two-view radius, then the audit keyed at the attempt.
         let seed = ctx.grounded_seed(&st);
-        let radius = ctx.grounded_blast_radius(&st);
-        ctx.record_blast_radius(&st, 0, &seed, &radius).unwrap();
+        let stamped = ctx.grounded_blast_radius_stamped(&st);
+        ctx.record_blast_radius(&st, 0, &seed, &stamped).unwrap();
+        let radius = &stamped.radius;
 
         // The seed is the small distinct-FILE set; the structural precise diverges past the cap.
         assert_eq!(
@@ -41852,11 +41877,11 @@ mod tests {
             radius.precise
         );
 
-        // (4a) `Symbols::index_stamp` is non-empty (the structural-active signal), so the audit is
+        // (4a) The radius's stamp is non-empty (the structural-active signal), so the audit is
         // NOT skipped by the empty-stamp early return.
         assert!(
-            !symbols.index_stamp().is_empty(),
-            "Symbols::index_stamp must be a non-empty structural stamp (index hash + tag version)"
+            !stamped.stamp.is_empty(),
+            "the symbols radius carries a non-empty structural stamp (tree id + tag version)"
         );
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let audit = events
@@ -41880,6 +41905,10 @@ mod tests {
             !recorded_precise.contains(&"x0.rs".to_string()),
             "the recorded precise must NOT carry a beyond-cap structural file the prompt never \
              seeded on: {recorded_precise:?}"
+        );
+        assert_eq!(
+            v["index_stamp"], stamped.stamp,
+            "the audit records the stamp of the read that grounded the radius"
         );
     }
 

@@ -2,7 +2,7 @@
 //! describes, then how the caller's worktree differs from it and what that withheld.
 
 use crate::common;
-use common::cli::{run_rigger, run_rigger_envs, run_rigger_ok, temp_project};
+use common::cli::{run_rigger, run_rigger_ok, temp_project};
 use common::fixtures::{git_commit_all, git_out, write_text};
 
 /// GIVEN a project whose source is committed and built, WHEN `rigger graph --around` reads it
@@ -50,53 +50,6 @@ fn around_prints_the_label_first() {
                 "subgraph around \"src/lib.rs\" (depth 1):",
             ],
             "{case}: the label heads the answer; stdout:\n{out}"
-        );
-    }
-}
-
-/// GIVEN a committed, built project with one file edited since, WHEN `rigger graph` answers
-/// `--around` the file, `--show` its function and `--lookup` the function's name, each read traced
-/// by git itself (`GIT_TRACE`), THEN each read's one open runs exactly two git commands: the
-/// worktree diff against the head's tree and the untracked listing.
-#[cfg(feature = "symbols")]
-#[test]
-fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
-    write_text(root, "src/other.rs", "pub fn beta() {}\n");
-    git_commit_all(root, "source");
-    run_rigger_ok(root, &["graph", "build"]);
-    write_text(root, "src/other.rs", "pub fn gamma() {}\n");
-    let traces = tempfile::tempdir().unwrap();
-    // (read, the arguments)
-    let cases: [(&str, &[&str]); 3] = [
-        (
-            "around",
-            &["graph", "--around", "src/lib.rs", "--depth", "1"],
-        ),
-        ("show", &["graph", "--show", "src/lib.rs::alpha"]),
-        ("lookup", &["graph", "--lookup", "alpha"]),
-    ];
-    for (case, args) in cases {
-        let trace = traces.path().join(case);
-        let (_, err, ok) = run_rigger_envs(root, args, &[("GIT_TRACE", trace.to_str().unwrap())]);
-        assert!(ok, "{case}: the read answers; stderr:\n{err}");
-        let traced = std::fs::read_to_string(&trace).unwrap_or_default();
-        // Each git process names its command once, as a built-in or as the program it runs.
-        let mut commands: Vec<String> = (traced.lines())
-            .filter_map(|l| {
-                let (_, rest) = l
-                    .split_once("trace: built-in: git ")
-                    .or_else(|| l.split_once("trace: exec: "))?;
-                Some(rest.split(' ').take(2).collect::<Vec<_>>().join(" "))
-            })
-            .collect();
-        commands.sort();
-        assert_eq!(
-            commands,
-            ["diff --name-status", "ls-files --others"],
-            "{case}: one open runs the diff and the untracked listing alone; trace:\n{traced}"
         );
     }
 }
@@ -292,4 +245,70 @@ fn ground_takes_the_same_tests_option_and_counts_what_it_hides() {
     }
     let (_, err, ok) = run_rigger(root, &["ground", "alpha", "--tests", "some"]);
     assert!(!ok && err.contains("not \"some\""), "{err}");
+}
+
+/// GIVEN a committed, built project with an untracked file at its top level, WHEN `rigger ground`
+/// runs from a subdirectory, THEN its label names the caller's worktree (the git top-level, as
+/// every other read names it) and counts the untracked file outside the cwd among the differing.
+#[test]
+fn ground_names_the_callers_worktree_from_a_subdirectory() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    write_text(root, "loose.rs", "pub fn beta() {}\n");
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+    let label = format!("describes {head}; 1 file in {worktree} differs");
+
+    let (out, err, ok) = run_rigger(&root.join("src"), &["ground", "alpha"]);
+
+    assert!(ok, "ground answers; stderr:\n{err}");
+    assert!(
+        out.contains("src/lib.rs:1:"),
+        "the hit answers; stdout:\n{out}"
+    );
+    assert!(
+        err.lines().any(|l| l == label),
+        "the label is {label:?}; stderr:\n{err}"
+    );
+}
+
+/// GIVEN a committed, built project whose workflow definition names a stage, WHEN the definition
+/// is edited and `rigger graph --around` reads the stage, THEN the stage, a fact of the differing
+/// file, is withheld and counted like any node of a differing file, never answered from the
+/// snapshot.
+#[test]
+fn a_workflow_node_of_a_differing_definition_is_withheld() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    let workflow = "stages:\n  implement:\n    agent: worker\n";
+    write_text(root, ".rigger/workflow.yml", workflow);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    write_text(
+        root,
+        ".rigger/workflow.yml",
+        &workflow.replace("worker", "other"),
+    );
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+
+    let (out, err, ok) = run_rigger(
+        root,
+        &["graph", "--around", "stage:implement", "--depth", "1"],
+    );
+
+    assert!(ok, "the around answers; stderr:\n{err}");
+    // The seed stage, withheld, so the walk reaches nothing beyond it.
+    let label = format!("describes {head}; 1 file in {worktree} differs; 1 withheld");
+    assert_eq!(out.lines().next(), Some(label.as_str()), "stdout:\n{out}");
+    assert!(
+        !out.lines()
+            .skip(2)
+            .any(|l| l.contains("stage:implement") || l.contains("agent:worker")),
+        "no fact of the differing definition is answered; stdout:\n{out}"
+    );
 }

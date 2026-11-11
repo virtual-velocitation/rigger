@@ -295,6 +295,10 @@
     font-size: 12px; color: var(--muted); margin: 0 0 8px; overflow-wrap: anywhere; }
   .kghead b { color: var(--ink); }
   .kgsubjectlens[hidden] { display: none; }
+  /* What the graph on show describes (spec 6.1): the label of the read that answered it, or why no
+     graph could be read, which reads as an error rather than an empty graph. */
+  .kglabel[hidden] { display: none; }
+  .kglabel.kglabel-error { color: var(--warn); }
   .kgtoggle { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: auto;
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
@@ -395,6 +399,7 @@
          always present. -->
     <div class="kghead" id="kghead">
       <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
+      <span class="kglabel" id="kglabel" hidden></span>
       <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
       <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
     </div>
@@ -523,6 +528,22 @@ let kgTests = "exclude";
 // Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
 // /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
 // registry projection and is NEVER threaded - it lists every instance regardless of the selection.
+// Every graph read goes through here, so the graph header states what the graph on show describes:
+// the label of the read that answered it, or why no graph could be read (spec 6.1). The server sends
+// both beside the body, percent-encoded; a reply carrying neither leaves the header as it was.
+async function graphFetch(path) {
+  const resp = await fetch(apiUrl(path), { cache: "no-store" });
+  const label = resp.headers.get("X-Rigger-Graph-Label");
+  const error = resp.headers.get("X-Rigger-Graph-Error");
+  if (label !== null || error !== null) {
+    const box = el("kglabel");
+    box.textContent = decodeURIComponent(error !== null ? error : label);
+    box.classList.toggle("kglabel-error", error !== null);
+    box.hidden = false;
+  }
+  return resp;
+}
+
 function apiUrl(path) {
   // The explorer's tests filter rides every graph read, so no view reads past it; `exclude` is the
   // server's default and is never sent, which keeps every default request unchanged.
@@ -936,7 +957,7 @@ function renderCard(card) {
 async function loadCard(id) {
   if (!LIVE || !id) { renderCard(null); return; }
   try {
-    const body = await (await fetch(apiUrl("/api/graph?card=" + encodeURIComponent(id)), { cache: "no-store" })).json();
+    const body = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
     renderCard(body.card || null);
   } catch (e) {
     renderCard(null);
@@ -968,8 +989,8 @@ async function reprojectSubject(subject) {
     return;
   }
   try {
-    const rp = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(subject)
-      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)), { cache: "no-store" })).json();
+    const rp = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
+      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution))).json();
     await overlayFor(rp.nodes);
     renderReprojection(rp);
   } catch (e) {
@@ -1058,8 +1079,8 @@ async function loadRationale(nodes) {
   const ids = (nodes || []).map(n => n.id).filter(Boolean);
   if (!LIVE || !ids.length) return;
   try {
-    const body = await (await fetch(apiUrl("/api/graph?explain="
-      + ids.map(encodeURIComponent).join(",")), { cache: "no-store" })).json();
+    const body = await (await graphFetch("/api/graph?explain="
+      + ids.map(encodeURIComponent).join(","))).json();
     (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
   } catch (e) { /* the overlay is best-effort; no badges on failure */ }
 }
@@ -1245,8 +1266,7 @@ async function seedGraph(seed) {
     return;
   }
   try {
-    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2"),
-      { cache: "no-store" })).json();
+    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2")).json();
     await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
@@ -1263,9 +1283,8 @@ async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
   try {
-    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target)),
-      { cache: "no-store" })).json();
+    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target))).json();
     await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
@@ -2020,7 +2039,7 @@ async function loadKgOverview() {
     const q = (kgLens === "code" || kgLens === "concepts")
       ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
-    const ov = await (await fetch(apiUrl("/api/graph" + q), { cache: "no-store" })).json();
+    const ov = await (await graphFetch("/api/graph" + q)).json();
     renderKgOverview(ov);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
@@ -2047,7 +2066,7 @@ async function drillCluster(key) {
     const q = (kgLens === "code" || kgLens === "concepts")
       ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
-    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
+    const nb = await (await graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q)).json();
     await overlayFor(nb.nodes);
     renderKgDrill(nb);
   } catch (e) {
@@ -2085,8 +2104,8 @@ async function seedCalls(seed, dir) {
     return;
   }
   try {
-    const cg = await (await fetch(apiUrl("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
-      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6"), { cache: "no-store" })).json();
+    const cg = await (await graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6")).json();
     await overlayFor(cg.nodes);
     renderKgCalls(cg);
   } catch (e) {

@@ -67,6 +67,7 @@ use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, run, spawn};
 use rigger_domain::code_view::Tests;
+use rigger_domain::composed::Label;
 /// The supervised child-process guard, re-exported from `rigger-driver` under its historical path.
 pub use rigger_driver::reaped_child::ReapedChild;
 
@@ -2022,9 +2023,10 @@ fn calls_view(
 /// neighborhood seed (a code-entity id carries `::` and `/`); an empty or missing seed degrades to
 /// an empty view (the traversal seeds on real nodes only), never an error. `instance` is the
 /// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
-fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
+fn calls_route<G, C>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
 where
-    G: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
+    G: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
     if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
         return None;
@@ -2046,21 +2048,26 @@ where
     // The caller refuses a malformed `tests=` before this runs.
     let tests = tests_param(target).unwrap_or_default();
 
-    let down = matches!(dir, CallDir::Down | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor, tests));
-    let up = matches!(dir, CallDir::Up | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor, tests));
+    let walk = |direction| -> CallsRead {
+        calls_provider(instance, &seeds, direction, depth, &floor, tests).into()
+    };
+    let down = matches!(dir, CallDir::Down | CallDir::Both).then(|| walk(Direction::Down));
+    let up = matches!(dir, CallDir::Up | CallDir::Both).then(|| walk(Direction::Up));
 
-    let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
+    let view = calls_view(
+        down.as_ref().map(|r| &r.calls),
+        up.as_ref().map(|r| &r.calls),
+        &seed,
+        depth,
+    );
+    let labels = [down, up].into_iter().flatten().filter_map(|r| r.label);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
     // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
-    match serde_json::to_string(&view) {
-        Ok(body) => Some(Response::rendered(200, JSON_CONTENT_TYPE, body)),
-        Err(e) => Some(Response::text(
-            500,
-            &format!("dash: calls projection failed: {e}"),
-        )),
-    }
+    let response = match serde_json::to_string(&view) {
+        Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
+        Err(e) => Response::text(500, &format!("dash: calls projection failed: {e}")),
+    };
+    Some(response.labelled(labels))
 }
 
 // ---------------------------------------------------------------------------
@@ -2933,6 +2940,9 @@ pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// What the graph reads behind a graph view describe, one per open, which the response states
+    /// in its [`GRAPH_LABEL_HEADER`] and [`GRAPH_ERROR_HEADER`] for the page's header to show.
+    pub graph_labels: Vec<GraphLabel>,
 }
 
 impl Response {
@@ -2942,6 +2952,7 @@ impl Response {
             status,
             content_type,
             body,
+            graph_labels: Vec::new(),
         }
     }
     /// A rendered text body of `content_type` ([`HTML_CONTENT_TYPE`] for a page,
@@ -2965,6 +2976,36 @@ impl Response {
         Self::new(status, content_type, body.to_vec())
     }
 
+    /// This response, stating what the graph reads behind it describe.
+    fn labelled(mut self, labels: impl IntoIterator<Item = GraphLabel>) -> Self {
+        self.graph_labels.extend(labels);
+        self
+    }
+
+    /// The graph-label header lines: the distinct labels of the reads that described the graph,
+    /// and the reasons of those that could not read one, each percent-encoded as one line.
+    fn graph_label_lines(&self) -> String {
+        let mut described: Vec<String> = Vec::new();
+        let mut unread: Vec<String> = Vec::new();
+        for label in &self.graph_labels {
+            let (lines, text) = match label {
+                GraphLabel::Read(l) => (&mut described, l.to_string()),
+                GraphLabel::Unread(reason) => (&mut unread, reason.clone()),
+            };
+            if !lines.contains(&text) {
+                lines.push(text);
+            }
+        }
+        [
+            (GRAPH_LABEL_HEADER, described),
+            (GRAPH_ERROR_HEADER, unread),
+        ]
+        .into_iter()
+        .filter(|(_, texts)| !texts.is_empty())
+        .map(|(name, texts)| format!("{name}: {}\r\n", header_encode(&texts.join(" | "))))
+        .collect()
+    }
+
     fn reason(&self) -> &'static str {
         match self.status {
             200 => "OK",
@@ -2984,13 +3025,14 @@ impl Response {
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
             DASH_HEADER,
             env!("CARGO_PKG_VERSION"),
+            self.graph_label_lines(),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -3031,21 +3073,69 @@ pub fn route(
     )
 }
 
-/// What a whole-graph provider reads: the graph a read drew and how many test entities its
-/// `tests` filter removed from it, which the graph itself does not hold.
+/// The response header stating what a graph view describes: the label of each open that read it
+/// (spec 6.1), percent-encoded.
+pub const GRAPH_LABEL_HEADER: &str = "X-Rigger-Graph-Label";
+
+/// The response header stating why a graph view holds no graph: the reason its store could not be
+/// opened or read, percent-encoded.
+pub const GRAPH_ERROR_HEADER: &str = "X-Rigger-Graph-Error";
+
+/// `text` as one header value: every byte outside printable ASCII, and `%` itself, as `%XX`, which
+/// the page reads back with `decodeURIComponent`.
+fn header_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'%' => "%25".to_string(),
+            0x20..=0x7e => char::from(b).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// What a graph read describes (spec 6.1): the label of the open that read it, or why no graph
+/// could be read, so an unopenable store is a stated error and never an empty graph alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphLabel {
+    /// The label of the open the graph was read from.
+    Read(Label),
+    /// Why no graph could be read: none was built, or its store could not be opened or read.
+    Unread(String),
+}
+
+/// What a whole-graph provider reads: the graph a read drew, how many test entities its `tests`
+/// filter removed from it, which the graph itself does not hold, and what that read describes.
 #[derive(Debug, Default)]
 pub struct GraphRead {
     pub graph: Graph,
     pub tests_hidden: usize,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<GraphLabel>,
 }
 
-/// A provider that reads no hidden tests answers a plain [`Graph`].
+/// A provider that reads no hidden tests and opens no store answers a plain [`Graph`].
 impl From<Graph> for GraphRead {
     fn from(graph: Graph) -> Self {
         GraphRead {
             graph,
             tests_hidden: 0,
+            label: None,
         }
+    }
+}
+
+/// What a directed-call provider reads: the walk and what the read it came from describes.
+#[derive(Debug, Default)]
+pub struct CallsRead {
+    pub calls: CallGraph,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<GraphLabel>,
+}
+
+/// A provider that opens no store answers a plain [`CallGraph`].
+impl From<CallGraph> for CallsRead {
+    fn from(calls: CallGraph) -> Self {
+        CallsRead { calls, label: None }
     }
 }
 
@@ -3319,7 +3409,7 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, R, H, I>(
+pub fn serve_on<F, G, R, H, I, C>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
@@ -3334,7 +3424,8 @@ where
     G: Fn(Option<&str>, Tests) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
@@ -3378,7 +3469,7 @@ where
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, R, H, I>(
+fn handle_conn<F, G, R, H, I, C>(
     stream: TcpStream,
     provider: &Arc<F>,
     graph_provider: &G,
@@ -3393,7 +3484,8 @@ where
     G: Fn(Option<&str>, Tests) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -3542,6 +3634,7 @@ where
                                 base,
                                 &[],
                             )
+                            .labelled(read.label)
                         }
                         Err(e) => {
                             Response::text(500, &format!("dash: reading the store failed: {e}"))
@@ -4741,8 +4834,10 @@ mod tests {
         assert!(
             page.contains("apiUrl(\"/api/state\")")
                 && page.contains("apiUrl(\"/api/events")
-                && page.contains("apiUrl(\"/api/graph"),
-            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded)"
+                && page.contains("graphFetch(\"/api/graph")
+                && page.contains("await fetch(apiUrl(path), { cache: \"no-store\" })"),
+            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded), \
+             a graph read through graphFetch, which builds its URL with apiUrl"
         );
 
         // The registry landing itself is NEVER threaded - it lists every instance regardless of the
@@ -8258,7 +8353,7 @@ mod tests {
 
     /// The explorer offers a "Show tests" toggle in its static header, cycling the filter
     /// exclude -> include -> only, and every `/api/graph` fetch carries the choice through the one
-    /// URL builder, `apiUrl`, so no view reads past it.
+    /// graph fetch, `graphFetch`, which builds its URL with `apiUrl`, so no view reads past it.
     #[test]
     fn explorer_offers_a_show_tests_toggle() {
         let page = live_page();
@@ -8272,12 +8367,34 @@ mod tests {
         ] {
             assert!(page.contains(needle), "the page lacks {needle}");
         }
+        for bypass in [r#"fetch("/api/graph"#, r#"fetch(apiUrl("/api/graph"#] {
+            assert!(
+                !page.contains(bypass),
+                "every graph fetch goes through graphFetch, not {bypass}"
+            );
+        }
         assert!(
-            !page.contains(r#"fetch("/api/graph"#),
-            "every graph fetch goes through apiUrl"
+            page.contains(r#"const resp = await fetch(apiUrl(path), { cache: "no-store" });"#),
+            "graphFetch builds its URL with apiUrl"
         );
-        let fetches = page.matches(r#"fetch(apiUrl("/api/graph"#).count();
-        assert!(fetches >= 8, "{fetches} graph fetches ride apiUrl");
+        let fetches = page.matches(r#"graphFetch("/api/graph"#).count();
+        assert!(fetches >= 8, "{fetches} graph fetches ride graphFetch");
+    }
+
+    /// The explorer's static header states what the graph on show describes: the one graph fetch
+    /// reads the label and the error header off every graph reply into it, an error marked so.
+    #[test]
+    fn the_graph_header_states_what_its_reads_describe() {
+        let page = live_page();
+        for needle in [
+            r#"id="kglabel""#,
+            &format!(r#"resp.headers.get("{GRAPH_LABEL_HEADER}")"#),
+            &format!(r#"resp.headers.get("{GRAPH_ERROR_HEADER}")"#),
+            "decodeURIComponent(error !== null ? error : label)",
+            r#"box.classList.toggle("kglabel-error", error !== null)"#,
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
     }
 
     /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
@@ -8302,6 +8419,7 @@ mod tests {
                 GraphRead {
                     graph: Graph::default(),
                     tests_hidden: 4,
+                    label: None,
                 }
             };
             let calls_provider = move |_: Option<&str>,
@@ -8385,6 +8503,93 @@ mod tests {
         // The count the provider read rides the overview body, from the same read as the graph.
         let (_, body, _, _) = ask("/api/graph?tests=exclude");
         assert!(body.contains(r#""tests_hidden":4"#), "{body}");
+    }
+
+    /// Every graph view states what the reads behind it describe: the label of each open (spec
+    /// 6.1) in one header, the reason a store could not be read in another, so a graph that could
+    /// not be read is never an empty graph alone. Each row: the request, what the whole-graph and
+    /// directed-call providers read, and the label and error header lines the response carries.
+    #[test]
+    fn a_graph_view_states_what_its_reads_describe() {
+        use rigger_domain::composed::Compared;
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let ask = |target: &str, read: Option<GraphLabel>| -> String {
+            let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            });
+            let whole = read.clone();
+            let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
+                label: whole.clone(),
+                ..GraphRead::default()
+            };
+            let calls_provider = move |_: Option<&str>,
+                                       _: &[String],
+                                       _: crate::contextgraph::Direction,
+                                       _: i64,
+                                       _: &str,
+                                       _: Tests| CallsRead {
+                label: read.clone(),
+                ..CallsRead::default()
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            resp
+        };
+        let described = GraphLabel::Read(Label {
+            describes: "c1".to_string(),
+            worktree: "/w/\u{fc}".to_string(),
+            compared: Compared::Differ(1),
+            behind: None,
+            withheld: 3,
+        });
+        let label = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 3 withheld";
+        let unread = GraphLabel::Unread("the code store cannot be opened: 100%".to_string());
+        let error = "X-Rigger-Graph-Error: the code store cannot be opened: 100%25";
+        let cases: [(&str, Option<GraphLabel>, Vec<&str>); 6] = [
+            ("/api/graph", Some(described.clone()), vec![label]),
+            ("/api/graph?seed=x", Some(described.clone()), vec![label]),
+            ("/api/graph", Some(unread.clone()), vec![error]),
+            (
+                "/api/graph?view=calls&seed=x&dir=both",
+                Some(described),
+                vec![label],
+            ),
+            ("/api/graph?view=calls&seed=x", Some(unread), vec![error]),
+            ("/api/graph", None, vec![]),
+        ];
+        for (target, read, lines) in cases {
+            let resp = ask(target, read);
+            let (head, _) = resp.split_once("\r\n\r\n").expect("a head");
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{target}: {head}");
+            let stated: Vec<&str> = head
+                .lines()
+                .filter(|l| l.starts_with("X-Rigger-Graph-"))
+                .collect();
+            assert_eq!(stated, lines, "{target}");
+        }
     }
 
     /// The read-only guard also holds over a real socket: a POST is refused 405 and the

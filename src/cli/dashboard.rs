@@ -1,5 +1,6 @@
 use super::*;
 use rigger_domain::code_view::{Tests, ViewFilter};
+use rigger_domain::composed::Label;
 
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
@@ -163,7 +164,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
                 DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests),
                 DashAttach::Instance(inst) => dash_attach_graph(&inst, tests),
-                DashAttach::Empty => dash::GraphRead::default(),
+                DashAttach::Empty => dash::GraphRead {
+                    label: Some(unattached(instance)),
+                    ..dash::GraphRead::default()
+                },
             }
         }
     };
@@ -185,7 +189,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
               depth: i64,
               tier_floor: &str,
               tests: Tests|
-              -> contextgraph::CallGraph {
+              -> dash::CallsRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
                 DashAttach::Local => dash_read_calls(
                     &graph_db, &identity, seed, direction, depth, tier_floor, tests,
@@ -193,7 +197,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 DashAttach::Instance(inst) => {
                     dash_attach_calls(&inst, seed, direction, depth, tier_floor, tests)
                 }
-                DashAttach::Empty => contextgraph::CallGraph::default(),
+                DashAttach::Empty => dash::CallsRead {
+                    label: Some(unattached(instance)),
+                    ..dash::CallsRead::default()
+                },
             }
         }
     };
@@ -534,27 +541,52 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
     dash_read(graph_db, identity, Tests::default(), |g| {
         g.subgraph(&seeds, 2)
     })
+    .map(|(graph, _)| graph)
     .unwrap_or_default()
 }
 
 /// What `read` answers of the context graph (7.3) over the record graph at `graph_db`, compared
-/// with the checkout whose `.rigger/` holds it; `None` when no such file stands or the graph cannot
-/// be opened or read, so the dash still serves.
+/// with the worktree of the checkout whose `.rigger/` holds it, with the label of that same open
+/// (spec 6.1), taken once `read` has withheld what it withholds; the reason, when no graph was
+/// built there or it cannot be opened or read, so the dash states it in place of a graph.
 fn dash_read<T>(
     graph_db: &str,
     identity: &str,
     tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
-) -> Option<T> {
+) -> Result<(T, Label), String> {
     let path = Path::new(graph_db);
     if !path.exists() {
-        return None;
+        return Err(format!("no graph has been built at {graph_db}"));
     }
-    let records = Projector::open(graph_db, identity).ok()?;
-    let checkout = path.parent()?.parent()?.to_path_buf();
-    let read_graph = ReadGraph::new(&records, checkout);
-    let graph = read_graph.open(ViewFilter { tests }).ok()?;
-    read(graph.as_ref()).ok()
+    let records = Projector::open(graph_db, identity)
+        .map_err(|e| format!("the graph at {graph_db} cannot be opened: {e}"))?;
+    let checkout = path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new(""));
+    let worktree =
+        tree_of(checkout).map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
+    let read_graph = ReadGraph::new(&records, worktree);
+    let graph = read_graph
+        .open(ViewFilter { tests })
+        .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+    let answer = read(graph.as_ref()).map_err(|e| format!("the graph cannot be read: {}", e.0))?;
+    Ok((answer, graph.stamp_label()))
+}
+
+/// What a dash graph read describes: the label of its open, or why it read no graph.
+fn described<T: Default>(read: Result<(T, Label), String>) -> (T, dash::GraphLabel) {
+    match read {
+        Ok((answer, label)) => (answer, dash::GraphLabel::Read(label)),
+        Err(reason) => (T::default(), dash::GraphLabel::Unread(reason)),
+    }
+}
+
+/// Why a request naming `instance` reads no graph: no registered instance has that id.
+fn unattached(instance: Option<&str>) -> dash::GraphLabel {
+    let id = instance.unwrap_or_default();
+    dash::GraphLabel::Unread(format!("no registered instance is named {id:?}"))
 }
 
 /// The WHOLE projection for the `/api/graph` provider (spec 45, criterion 2): the direct-projection
@@ -567,13 +599,14 @@ fn dash_read<T>(
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
 fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
-    dash_read(graph_db, identity, tests, |g| {
-        Ok(dash::GraphRead {
-            graph: g.whole()?,
-            tests_hidden: g.hidden_tests()?.len(),
-        })
-    })
-    .unwrap_or_default()
+    let ((graph, tests_hidden), label) = described(dash_read(graph_db, identity, tests, |g| {
+        Ok((g.whole()?, g.hidden_tests()?.len()))
+    }));
+    dash::GraphRead {
+        graph,
+        tests_hidden,
+        label: Some(label),
+    }
 }
 
 /// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
@@ -591,11 +624,14 @@ fn dash_read_calls(
     depth: i64,
     tier_floor: &str,
     tests: Tests,
-) -> contextgraph::CallGraph {
-    dash_read(graph_db, identity, tests, |g| {
+) -> dash::CallsRead {
+    let (calls, label) = described(dash_read(graph_db, identity, tests, |g| {
         g.calls(seed, direction, depth, tier_floor)
-    })
-    .unwrap_or_default()
+    }));
+    dash::CallsRead {
+        calls,
+        label: Some(label),
+    }
 }
 
 /// The directed-call walk over an ATTACHED instance's graph store (spec 52 c4 + spec 50 c3): the
@@ -609,7 +645,7 @@ fn dash_attach_calls(
     depth: i64,
     tier_floor: &str,
     tests: Tests,
-) -> contextgraph::CallGraph {
+) -> dash::CallsRead {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()

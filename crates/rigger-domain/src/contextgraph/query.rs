@@ -22,6 +22,7 @@
 //! are `pub(crate)` here and `dash.rs` calls them by their new path, so there remains exactly ONE
 //! bucket-fold authority, never two reconciled after the fact.
 
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -786,40 +787,42 @@ pub fn fold_buckets<'g>(
     key_of: impl Fn(&Node) -> Option<String>,
     bucket_label: &BTreeMap<&str, &str>,
 ) -> (Vec<Cluster>, Vec<ClusterEdge>) {
-    let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut kind_hist: BTreeMap<String, BTreeMap<&'g str, usize>> = BTreeMap::new();
-    for n in nodes {
-        let Some(key) = key_of(n) else {
-            continue; // excluded from the member fold (a super-node / an unresolvable member)
-        };
-        node_cluster.insert(n.id.as_str(), key.clone());
-        *counts.entry(key.clone()).or_default() += 1;
-        *kind_hist
-            .entry(key)
-            .or_default()
-            .entry(n.kind.as_str())
-            .or_default() += 1;
+    // Each folded node with its bucket key, then each distinct key once in order: a bucket is
+    // named by its key's RANK, so ranks order as the keys do and the fold below allocates nothing
+    // per node or edge.
+    let keyed: Vec<(&'g Node, String)> = nodes
+        .filter_map(|n| key_of(n).map(|key| (n, key))) // `None` excluded: a super-node / an unresolvable member
+        .collect();
+    let mut keys: Vec<&str> = keyed.iter().map(|(_, key)| key.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let rank = |key: &str| keys.binary_search(&key).unwrap_or_default();
+    let mut node_cluster: FxHashMap<&str, usize> = FxHashMap::default();
+    let mut counts = vec![0usize; keys.len()];
+    let mut kind_hist: Vec<BTreeMap<&'g str, usize>> = vec![BTreeMap::new(); keys.len()];
+    for (n, key) in &keyed {
+        let at = rank(key);
+        node_cluster.insert(n.id.as_str(), at);
+        counts[at] += 1;
+        *kind_hist[at].entry(n.kind.as_str()).or_default() += 1;
     }
 
     // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the highest-count kind,
     // ties broken by the lexicographically-smallest kind (the histogram iterates in sorted kind
     // order, so replacing only on a STRICTLY-greater count keeps the first/smallest kind on a tie).
-    let clusters: Vec<Cluster> = counts
-        .into_iter()
-        .map(|(key, count)| {
-            let hist = kind_hist.remove(&key).unwrap_or_default();
+    let clusters: Vec<Cluster> = (keys.iter().zip(counts).zip(&kind_hist))
+        .map(|((key, count), hist)| {
             let mut dominant = "";
             let mut best = 0usize;
-            for (kind, c) in &hist {
+            for (kind, c) in hist {
                 if *c > best {
                     best = *c;
                     dominant = kind;
                 }
             }
-            let label = bucket_label.get(key.as_str()).map(|l| l.to_string());
+            let label = bucket_label.get(key).map(|l| l.to_string());
             Cluster {
-                key,
+                key: key.to_string(),
                 count,
                 kind: dominant.to_string(),
                 label,
@@ -831,30 +834,30 @@ pub fn fold_buckets<'g>(
     // Every currently-valid edge whose two endpoints are known FOLDED nodes in DIFFERENT clusters
     // weights a symmetric cluster edge; an endpoint outside the folded set (e.g. a member-set fold's
     // edge to a non-member) has no cluster to weight, and an intra-cluster edge adds none.
-    let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut weights: FxHashMap<(usize, usize), usize> = FxHashMap::default();
     for e in edges {
         if e.valid_to.is_some() {
             continue;
         }
-        let (Some(a), Some(b)) = (
+        let (Some(&a), Some(&b)) = (
             node_cluster.get(e.from.as_str()),
             node_cluster.get(e.to.as_str()),
         ) else {
             continue;
         };
-        if a == b {
-            continue;
+        if a != b {
+            *weights.entry((a.min(b), a.max(b))).or_default() += 1;
         }
-        let pair = if a <= b {
-            (a.clone(), b.clone())
-        } else {
-            (b.clone(), a.clone())
-        };
-        *weights.entry(pair).or_default() += 1;
     }
+    let mut weights: Vec<((usize, usize), usize)> = weights.into_iter().collect();
+    weights.sort_unstable();
     let cluster_edges: Vec<ClusterEdge> = weights
         .into_iter()
-        .map(|((from, to), weight)| ClusterEdge { from, to, weight })
+        .map(|((from, to), weight)| ClusterEdge {
+            from: keys[from].to_string(),
+            to: keys[to].to_string(),
+            weight,
+        })
         .collect();
 
     (clusters, cluster_edges)

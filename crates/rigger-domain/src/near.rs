@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Tests, ViewFilter};
-use crate::composed::{binds_leaf, id_binds_leaf, joined, ordered, CodeHalf, Indexed};
+use crate::composed::{
+    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, CodeHalf, Indexed,
+};
 use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
 use crate::contextgraph::{
     holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
@@ -319,7 +321,12 @@ impl<'v> Near<'v> {
             let groupings = state.view.groupings();
             let proofs = state.graph.resolver().proof_calls();
             Indexed::new(
-                joined(resolved.graph, groupings, proofs, state.tests),
+                joined(
+                    resolved.graph,
+                    groupings,
+                    &attachments(proofs, groupings),
+                    state.tests,
+                ),
                 Vec::new(),
             )
         })
@@ -1013,6 +1020,31 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests(&self) -> Vec<Node> {
         self.state().graph.hidden_tests()
     }
+    /// The view's definition leaves: every entity is named by its definition's leaf.
+    fn entity_names(&self) -> Vec<String> {
+        self.state().view.def_leaves()
+    }
+    fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        self.state().graph.hidden_tests_named(name)
+    }
+    fn summarised_files(&self, id: &str) -> Vec<String> {
+        let (members, tests) = {
+            let mut state = self.state();
+            let clusters = state.clusters();
+            let held = clusters.with_id(id).to_vec();
+            let members: Vec<String> = (held.iter())
+                .flat_map(|&c| clusters.cluster(c).members.clone())
+                .collect();
+            let mut tests = Vec::new();
+            for (arm, _) in held {
+                tests.extend(state.attached_to(arm, id).iter().cloned());
+            }
+            (members, tests)
+        };
+        cluster_files(members.iter(), tests.iter().map(String::as_str), |m| {
+            Neighbors::node(self, m).ok().flatten()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1053,7 @@ mod tests {
     use crate::code_facts::{FileFacts, ModuleDecl};
     use crate::code_view::{DefRef, FactsView, Groupings, MentionRef};
     use crate::composed::{Composed, Honesty, Whole};
+    use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
     use crate::resolve::tests::{fixture, stamp};
     use std::borrow::Cow;
@@ -1248,6 +1281,38 @@ mod tests {
             }
             let (got, want) = (near.hidden_tests(), whole.hidden_tests());
             same!(got.unwrap(), want.unwrap());
+            // Every name an entity carries is listed, and each name reads the entities, shown
+            // and hidden, the whole graph's named so.
+            let (listed, named) = (near.entity_names().unwrap(), whole.entity_names().unwrap());
+            let shown = whole.nodes_of_kind(KIND_CODE_ENTITY).unwrap();
+            let hidden = whole.hidden_tests().unwrap();
+            let carried = |n: &Node| node_name(n).map(str::to_string);
+            for name in shown.iter().chain(&hidden).filter_map(carried) {
+                assert!(
+                    listed.contains(&name) && named.contains(&name),
+                    "{tests:?} {name}"
+                );
+            }
+            for name in listed
+                .iter()
+                .chain(&named)
+                .map(String::as_str)
+                .chain(["nothing"])
+            {
+                let want = |nodes: &[Node]| -> Vec<Node> {
+                    let named = nodes.iter().filter(|n| node_name(n) == Some(name));
+                    named.cloned().collect()
+                };
+                for graph in [&near as &dyn ContextGraph, &whole] {
+                    let at = format!("{tests:?} named {name}");
+                    same!(graph.entities_named(name).unwrap(), want(&shown), "{at}");
+                    same!(
+                        graph.hidden_tests_named(name).unwrap(),
+                        want(&hidden),
+                        "{at}"
+                    );
+                }
+            }
             same!(near.stamp_label(), whole.stamp_label());
         }
     }
@@ -1289,14 +1354,20 @@ mod tests {
     }
 
     /// Each row: an id, and every file, definition and mention a read of its node and edges
-    /// makes once the view is open. A definition reads its own file, the design and workflow
-    /// files, the files holding a tagged reference to its leaf, and the mentions of that leaf;
-    /// it resolves only the mentions it encloses and those of its leaf, so the definitions read
-    /// are those of the leaves it names and its own. A file reads itself, the design files and
-    /// the files declaring modules, and resolves the mentions it holds alone.
+    /// makes, counted from before the resolver is built: building it reads the files declaring a
+    /// module held elsewhere. A definition reads its own file, the design and workflow files, the
+    /// files holding a tagged reference to its leaf, and the mentions of that leaf; it resolves
+    /// only the mentions it encloses and those of its leaf, so the definitions read are those of
+    /// the leaves it names and its own. A file reads itself, the design files and the files
+    /// declaring modules, and resolves the mentions it holds alone.
     #[test]
     fn a_neighbourhood_reads_one_ids_file_and_its_leaf_only() {
-        let intent = [
+        let opened = [
+            // The files declaring a module held elsewhere, which the resolver reads.
+            "file src/a.rs",
+            "file src/a_tests.rs",
+            "file src/b.rs",
+            // The design and workflow files every read reads.
             "file .rigger/workflow.yml",
             "file docs/d.md",
             "file tests/it.rs",
@@ -1340,7 +1411,6 @@ mod tests {
                 reads: Mutex::new(Vec::new()),
             };
             let near = Near::new(&view, ViewFilter::default());
-            view.taken();
             near.node(id).unwrap();
             near.out(id).unwrap();
             near.incoming(id).unwrap();
@@ -1348,8 +1418,9 @@ mod tests {
             got.sort();
             got.dedup();
             let mut want: Vec<String> = want.iter().map(|r| r.to_string()).collect();
-            want.extend(intent.map(String::from));
+            want.extend(opened.map(String::from));
             want.sort();
+            want.dedup();
             assert_eq!(got, want, "{id}");
         }
     }

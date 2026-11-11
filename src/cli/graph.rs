@@ -73,8 +73,21 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree()?);
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
-        print_around(graph, &around, depth)
+        exit_once_printed(print_around(graph, &around, depth))
     })
+}
+
+/// End a one-shot read command once `printed` is out and flushed: the reader it opened is freed by
+/// the process exit rather than dropped piece by piece first, which cost a read a tenth of its
+/// time. A failed answer returns its error as before; a reader that closed the pipe early still
+/// exits 0, as `println!`'s broken-pipe report does.
+fn exit_once_printed(printed: Res) -> Res {
+    printed?;
+    match std::io::Write::flush(&mut std::io::stdout()) {
+        Ok(()) => std::process::exit(0),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// `rigger graph --around`'s answer from `graph`: the label, then the subgraph within `depth`
@@ -255,27 +268,34 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     use rigger::lookup::Lookup as _;
     let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
-    let reply = match owning_graph_to_read() {
+    match owning_graph_to_read() {
         Ok(records) => {
             let read = ReadGraph::new(&records, caller_tree()?);
             contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
-                lookup.lookup(terms, graph.map_err(|e| e.0))
-            })?
+                exit_once_printed(
+                    lookup
+                        .lookup(terms, graph.map_err(|e| e.0))
+                        .map(|reply| print!("{reply}"))
+                        .map_err(Into::into),
+                )
+            })
         }
-        Err(e) => lookup.lookup(
-            terms,
-            Err(format!("the context graph could not be opened: {e}")),
-        )?,
-    };
-    print!("{reply}");
-    Ok(())
+        Err(e) => {
+            let reply = lookup.lookup(
+                terms,
+                Err(format!("the context graph could not be opened: {e}")),
+            )?;
+            print!("{reply}");
+            Ok(())
+        }
+    }
 }
 
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree()?);
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
-        print_show(graph, entity)
+        exit_once_printed(print_show(graph, entity))
     })
 }
 

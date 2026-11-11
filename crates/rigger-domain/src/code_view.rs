@@ -177,6 +177,18 @@ pub trait CodeView: Send + Sync {
     /// Every mention whose leaf is `leaf`, in path then source order.
     fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_>;
     fn groupings(&self) -> &Groupings;
+    /// Every distinct leaf a definition carries, in order: the names a reader resolves a term
+    /// against before it reads the definitions of each through [`Self::defs_named`]. By default
+    /// read off every file's facts; a view that indexes its definitions by leaf lists its index.
+    fn def_leaves(&self) -> Vec<String> {
+        let mut leaves = std::collections::BTreeSet::new();
+        for f in self.files() {
+            if let Some(facts) = self.file(f.path) {
+                leaves.extend(facts.defs.iter().map(|d| d.leaf.clone()));
+            }
+        }
+        leaves.into_iter().collect()
+    }
 }
 
 /// Where a tree is read from: a git repository, or a directory with no git.
@@ -380,6 +392,12 @@ impl CodeView for FactsView {
 
     fn groupings(&self) -> &Groupings {
         &self.groupings
+    }
+
+    fn def_leaves(&self) -> Vec<String> {
+        let mut leaves: Vec<String> = self.defs.keys().cloned().collect();
+        leaves.sort_unstable();
+        leaves
     }
 }
 

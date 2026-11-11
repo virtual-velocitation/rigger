@@ -2359,11 +2359,13 @@ fn ground_states_what_the_worktree_puts_in_doubt() {
         (
             "one uncommitted file",
             Some("extra.rs"),
-            "; 1 file in . differs",
+            "; 1 file in {w} differs",
         ),
     ] {
         let dir = temp_project();
         let root = dir.path();
+        let after_commit =
+            after_commit.replace("{w}", &root.canonicalize().unwrap().display().to_string());
         write_grounder_workflow(root, "symbols");
         std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
         common::fixtures::commit_tree(root);
@@ -17302,6 +17304,250 @@ fn serving_dash(root: &Path, port: u16) -> rigger::dash::ReapedChild {
         panic!("the serving `rigger dash` never came up at {url}");
     }
     dash
+}
+
+/// GIVEN a committed project whose code store is built, WHEN `rigger dash` serves it from the
+/// project's own directory, so it reads `graph.db` by its relative path `.rigger/graph.db`, THEN
+/// the graph route's overview holds the committed file's cluster: the checkout a relative path
+/// names is the directory the dash runs in, never an empty path no repository is read from.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    common::fixtures::git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let port = free_loopback_port();
+    let dash = serving_dash(root, port);
+    let graph = http_get_path(port, "/api/graph");
+    drop(dash);
+
+    let graph = graph.expect("the dash never served /api/graph");
+    assert!(
+        graph.contains(r#"{"key":"src/lib.rs","count":"#),
+        "the overview holds the committed file's cluster; got: {graph}"
+    );
+}
+
+/// GIVEN a committed project, WHEN `rigger dash` serves its graph route from the project's own
+/// directory over a graph built and read from a clean worktree, an edited file, an unreadable git
+/// index, a code store that cannot be opened, and no graph built at all, THEN the reply states
+/// what it describes in one graph header: the label of the read that answered (spec 6.1),
+/// naming the worktree by its top-level and counting what the overview withheld, or why no graph
+/// could be read, never an empty graph with no reason.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_graph_reply_states_what_it_describes() {
+    // (case, whether the graph is built, what is done to the project after, the header line with
+    // `{head}` and `{w}` for the commit and the worktree; one ending `: ` is followed by a reason)
+    type Spoil = fn(&Path);
+    let cases: [(&str, bool, Spoil, &str); 5] = [
+        (
+            "a clean worktree",
+            true,
+            |_| {},
+            "X-Rigger-Graph-Label: describes {head}",
+        ),
+        (
+            // The file's node, its fn's and the community the two alone make up.
+            "an edited file the overview holds",
+            true,
+            |root| std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap(),
+            "X-Rigger-Graph-Label: describes {head}; 1 file in {w} differs; 3 withheld",
+        ),
+        (
+            "an unreadable git index",
+            true,
+            |root| std::fs::write(root.join(".git").join("index"), "unreadable").unwrap(),
+            "X-Rigger-Graph-Label: describes {head}; {w} cannot be compared; 3 withheld",
+        ),
+        (
+            "a code store that cannot be opened",
+            true,
+            |root| {
+                let store = root.join(".rigger").join("store").join("code");
+                std::fs::remove_dir_all(&store).unwrap();
+                std::fs::write(&store, "not a store").unwrap();
+            },
+            "X-Rigger-Graph-Error: the graph cannot be opened: ",
+        ),
+        (
+            "no graph built",
+            false,
+            |_| {},
+            "X-Rigger-Graph-Error: no graph has been built at .rigger/graph.db",
+        ),
+    ];
+    for (case, built, spoil, expected) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+        common::fixtures::git_commit_all(root, "source");
+        if built {
+            run_rigger_ok(root, &["graph", "build"]);
+        }
+        spoil(root);
+        let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
+        let worktree = root.canonicalize().unwrap().display().to_string();
+        let expected = expected.replace("{head}", &head).replace("{w}", &worktree);
+        let port = free_loopback_port();
+        let dash = serving_dash(root, port);
+        let reply = http_get_path(port, "/api/graph");
+        drop(dash);
+
+        let reply = reply.unwrap_or_else(|| panic!("{case}: the dash never served /api/graph"));
+        let head_end = reply.find("\r\n\r\n").unwrap_or(reply.len());
+        let stated: Vec<String> = reply[..head_end]
+            .lines()
+            .filter(|l| l.starts_with("X-Rigger-Graph-"))
+            .map(percent_decoded)
+            .collect();
+        assert!(
+            matches!(stated.as_slice(), [line] if line.starts_with(&expected)),
+            "{case}: the reply states {expected:?}; got {stated:?} in:\n{reply}"
+        );
+        if expected.ends_with(": ") {
+            assert!(
+                stated[0].len() > expected.len(),
+                "{case}: the error names its reason; got {stated:?}"
+            );
+        } else {
+            assert_eq!(
+                stated[0], expected,
+                "{case}: the header is exactly the label"
+            );
+        }
+    }
+}
+
+/// GIVEN a committed, built project of two files, one of them edited after the build, WHEN every
+/// surface reads it - `rigger graph --around / --show / --lookup`, `rigger ground`, the MCP graph
+/// and ground tools, the dash's overview - THEN each label counts as withheld exactly the hits of
+/// its own answer that the differing file withheld (spec 6.1): the nodes a graph read would have
+/// answered, the locations a grounding would have shown, never the differing file's whole count.
+#[cfg(feature = "symbols")]
+#[test]
+fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    std::fs::write(root.join("src/other.rs"), "pub fn beta() {}\n").unwrap();
+    common::fixtures::git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap();
+    let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+    let label = |withheld: usize| {
+        format!("describes {head}; 1 file in {worktree} differs; {withheld} withheld")
+    };
+    let first_label = |text: &str| {
+        (text.lines())
+            .find(|l| l.starts_with("describes "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cli = |args: &[&str], on_stderr: bool| {
+        let (out, err, ok) = run_rigger(root, args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        first_label(if on_stderr { &err } else { &out })
+    };
+
+    let mut mcp = common::mcp::McpSession::start(root);
+    let mut tool = |name: &str, arguments: serde_json::Value| {
+        // A structured answer carries its label as a field; a text answer (the lookup) heads its
+        // graph section with it.
+        let result = mcp.tool_call(name, arguments)["result"].clone();
+        match result["structuredContent"]["label"].as_str() {
+            Some(label) => label.to_string(),
+            None => first_label(result["content"][0]["text"].as_str().unwrap_or_default()),
+        }
+    };
+    // (surface, its label)
+    let mut labels: Vec<(&str, String)> = vec![
+        (
+            "--around the file",
+            cli(&["graph", "--around", "src/lib.rs", "--depth", "1"], false),
+        ),
+        ("--show alpha", cli(&["graph", "--show", "alpha"], false)),
+        (
+            "--lookup alpha",
+            cli(&["graph", "--lookup", "alpha"], false),
+        ),
+        ("ground alpha", cli(&["ground", "alpha"], true)),
+        (
+            "MCP around the file",
+            tool(
+                "rigger_graph",
+                serde_json::json!({"around": "src/lib.rs", "depth": 1}),
+            ),
+        ),
+        (
+            "MCP show alpha",
+            tool("rigger_graph", serde_json::json!({"show": "alpha"})),
+        ),
+        (
+            "MCP lookup alpha",
+            tool("rigger_graph", serde_json::json!({"lookup": "alpha"})),
+        ),
+        (
+            "MCP ground alpha",
+            tool("rigger_ground", serde_json::json!({"query": "alpha"})),
+        ),
+    ];
+    mcp.finish_cleanly();
+    let port = free_loopback_port();
+    let dash = serving_dash(root, port);
+    let reply = http_get_path(port, "/api/graph");
+    drop(dash);
+    let reply = reply.expect("the dash never served /api/graph");
+    let overview = (reply.lines())
+        .find_map(|l| l.strip_prefix("X-Rigger-Graph-Label: "))
+        .map(percent_decoded)
+        .unwrap_or_default();
+    labels.push(("the dash's overview", overview));
+
+    // The file's node and its fn's; the fn alone; its one definition line; and for the overview
+    // the community the two alone make up besides.
+    let expected = [
+        ("--around the file", label(2)),
+        ("--show alpha", label(1)),
+        ("--lookup alpha", label(1)),
+        ("ground alpha", label(1)),
+        ("MCP around the file", label(2)),
+        ("MCP show alpha", label(1)),
+        ("MCP lookup alpha", label(1)),
+        ("MCP ground alpha", label(1)),
+        ("the dash's overview", label(3)),
+    ];
+    assert_eq!(labels, expected.to_vec());
+}
+
+/// `line` with each `%XX` escape the dash's graph headers carry read back as its byte.
+#[cfg(feature = "symbols")]
+fn percent_decoded(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes.get(i + 1..i + 3))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], escaped) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Record the dash breadcrumbs a dash-starting path leaves under `root`'s `.rigger/`: the

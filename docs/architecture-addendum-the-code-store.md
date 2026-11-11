@@ -551,15 +551,31 @@ open(caller worktree W, filter)
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
                      K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
                      own state never differs; every node in a differing file, and every edge
-                     with such an endpoint, is withheld, and K counts the nodes withheld so far
+                     with such an endpoint, is withheld, and K counts the withheld hits
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
   diff fails (the stamp commit is not in W's object store, or W's index cannot be copied)
                   -> label "describes <commit>; W cannot be compared; K withheld"; it fails
                      closed: every node of the code half, and every edge with such an
-                     endpoint, is withheld, and K counts the nodes withheld so far; the
+                     endpoint, is withheld, and K counts the withheld hits; the
                      record half still answers
 ```
+
+A node is in the file its facts came from, by one rule both arms read: a design or workflow
+node's document (its `doc`; `stage:implement` is in `.rigger/workflow.yml`), any other code-half
+node the file its id names, and a community or concept every file its attributes summarise (its
+members', which give its label and hash, and its attached tests', which give its test count). A
+differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
+doubt. Only code-half nodes are withheld: a record is never stale.
+
+K is the number of hits of this answer that were withheld, counted in the read that answered: the
+nodes it would have answered or reported hidden (`--around`, `--show`, `--lookup`, the MCP graph
+tool, the dash) and the locations `rigger ground` would have shown or reported hidden.
+
+W is the caller's worktree: the git top-level of the cwd, else, outside any repository, the cwd;
+a git failure inside a repository is an error. Every reader names it by that one rule (graph,
+ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing
+files and its label names the top-level.
 
 The check never writes W's index. Every git the source starts itself passes
 `--no-optional-locks` (discovery's `rev-parse`, which finds W's git dir, reads no index), and
@@ -583,7 +599,9 @@ and the label travels with every answer:
 
 - the CLI prints it;
 - the MCP tools return it as a field;
-- the dash shows it in the header.
+- the dash sends it beside every graph reply (`X-Rigger-Graph-Label`, from the same open as the
+  body) and shows it in the explorer's header; a graph it cannot read (none built, a store that
+  cannot be opened) is a stated error (`X-Rigger-Graph-Error`) shown there, never an empty graph.
 
 The symbols grounder carries the label too (`Grounder::ground_labelled`, one open of the store for the rows and the label; the CLI prints it on stderr, beside
 the rows). It applies the same withholding rule (`Withheld`, shared with the composed view). A store
@@ -672,6 +690,12 @@ edge has no log position, and readers only ever skip closed edges. The history o
 
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
+
+A lookup term resolves the same way. The distinct leaves the definitions carry are its name
+index; each name a tier reaches (exact, prefix, fuzzy, or the nearest names of a miss) reads
+only the definitions of that leaf, and a name is a match only when one of those is shown. The
+lookup never resolves the whole graph, and the hits it withholds are only those of the names it
+reached.
 
 ### 6.4 Read cost
 
@@ -803,7 +827,7 @@ It splits by role:
 | `rigger graph build / communities / concepts` | fold, then write groupings as events | `open_current`; read-only reports |
 | MCP `rigger_graph`, `rigger_ground` (`mcpserver.rs`, 7 sites) | `dyn Projection` | `&dyn ContextGraph` + a `tests` argument + the label field |
 | combined lookup (`lookup/graph.rs`, `names.rs`, `prose.rs`, `text.rs`) | `Result<&dyn Projection, String>` and the per-hit freshness check | `Result<&dyn ContextGraph, String>`; freshness removed; withheld hits counted |
-| dash `/api/graph`, explorer, lenses (`dash.rs`) | `whole()` on graph.db | `whole()` on `Composed` with `tests=exclude\|include\|only` |
+| dash `/api/graph`, explorer, lenses (`dash.rs`) | `whole()` on graph.db | `whole()` on `Composed` with `tests=exclude\|include\|only`; the label of the same open in the header, a graph it cannot read a stated error |
 | symbols grounding (`SymbolGrounder`, registry, `staleness`) | `.rigger/symbols/index.json` | `CodeView::defs_named` / `file` |
 | console map (`console/map.rs`) | CommunityAssigned folded | GROUPINGS through `ContextGraph` |
 | record fold (`sqlite.rs`) | `impl Projection` | `impl RecordFold + Neighbors` (records only) |

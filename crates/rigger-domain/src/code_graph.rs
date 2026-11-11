@@ -11,13 +11,16 @@
 //! Product edges are the same under every filter.
 
 use rustc_hash::FxHashMap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 use crate::resolve::{Entity, Resolver};
+
+/// The attribute naming the file a design or workflow node's facts came from.
+pub(crate) const DOC_ATTR: &str = "doc";
 
 /// A view resolved into a graph under one filter.
 pub struct CodeGraph<'v> {
@@ -95,7 +98,7 @@ impl Builder {
                 self.index.insert(id.to_string(), self.nodes.len());
                 self.nodes.push(Node {
                     id: id.to_string(),
-                    kind: KIND_ARTIFACT.to_string(),
+                    kind: kind.to_string(),
                     attrs: BTreeMap::new(),
                 });
                 self.product.push(false);
@@ -351,7 +354,12 @@ impl<'v> CodeGraph<'v> {
     pub(crate) fn intent(&self, facts: &FileFacts, b: &mut impl Asserts) {
         let (nodes, links) = self.resolver.intent(facts);
         for n in nodes {
-            b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
+            b.node(
+                &n.id,
+                n.kind,
+                [("title", n.title), (DOC_ATTR, n.doc)],
+                n.test,
+            );
         }
         for l in links {
             b.link(&l.from, l.rel, &l.to, l.tier, l.test);
@@ -369,6 +377,30 @@ impl<'v> CodeGraph<'v> {
             if let Some(facts) = self.view.file(f.path) {
                 for e in self.resolver.entities(&facts, true) {
                     if e.test {
+                        hidden.push(hidden_node(&facts, e));
+                    }
+                }
+            }
+        }
+        hidden.sort_by(|a, b| a.id.cmp(&b.id));
+        hidden
+    }
+
+    /// The test entities named `name` a filter that excludes tests hides, in id order: those of
+    /// [`Self::hidden_tests`] named `name`, read from the code files defining a leaf `name` alone.
+    pub(crate) fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        if self.filter.tests != Tests::Exclude {
+            return Vec::new();
+        }
+        let files: BTreeSet<&str> = (self.view.defs_named(name))
+            .filter(|d| d.file.half == Half::Code)
+            .map(|d| d.file.path)
+            .collect();
+        let mut hidden = Vec::new();
+        for path in files {
+            if let Some(facts) = self.view.file(path) {
+                for e in self.resolver.entities(&facts, true) {
+                    if e.test && e.name == name {
                         hidden.push(hidden_node(&facts, e));
                     }
                 }

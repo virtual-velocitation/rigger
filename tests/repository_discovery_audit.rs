@@ -43,6 +43,7 @@ const DISCOVERY_CALLS: &[&str] = &[
     "git_repo",
     "git_repo_at",
     "caller_tree",
+    "tree_of",
     "worktree_prefix",
     "project_root",
     "main_repo_root",
