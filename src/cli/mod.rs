@@ -5178,16 +5178,19 @@ impl TreeRoot {
     }
 }
 
-/// The graph-first lookup hook's stated bounce message: first the graph call that answers the
-/// name lookup the held search was making (who calls a name, where a name is defined), with a
+/// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a
+/// name, path or word from the graph, the caller's tree and the project's prose in one call, then
+/// the graph calls that answer the narrower name lookups (who calls a name, where a name is
+/// defined), with a
 /// `<name>` placeholder so it names no language, then the guard's rule and its escape hatch. The
 /// hatch is named in the one spelling that survives a sibling PreToolUse hook's rewrite:
 /// `--literal` inside a trailing shell comment, which the shell discards before the command runs
 /// (lesson-u101c2r3-grep-guard-literal-not-stripped).
-const GREP_GUARD_MESSAGE: &str = "A name lookup is a graph call: who calls <name> is rigger_graph \
-     `around` <name>, and where <name> is defined is rigger_graph `show` <name>. A grep, or a sed \
-     or awk pattern search, is for literal text - end the command with a `# --literal` comment to \
-     proceed";
+const GREP_GUARD_MESSAGE: &str = "A name lookup is a graph call: rigger_graph `lookup` <term>... \
+     answers a name, path or word from the graph, your working tree and the project's prose in one \
+     call; who calls <name> is rigger_graph `around` <name>, and where <name> is defined is \
+     rigger_graph `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end \
+     the command with a `# --literal` comment to proceed";
 
 #[cfg(test)]
 mod tests {

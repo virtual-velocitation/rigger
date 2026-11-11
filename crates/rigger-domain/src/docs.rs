@@ -177,7 +177,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "The knowledge graph is the lookup surface - reach for it before grepping the project's \
-         sources. Three verbs answer the three questions you have about the code: `rigger graph \
+         sources. One call answers most lookups: `rigger graph --lookup <term>...` (the \
+         `rigger_graph` tool's `lookup`) answers each term at once from the graph (definition \
+         site, callers, callees), a live scan of your working tree and the project's ranked prose \
+         (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
+         source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
          `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \

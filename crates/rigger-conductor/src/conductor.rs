@@ -14863,8 +14863,10 @@ fn write_peers_pointer(b: &mut String) {
     write_lookup_pointer(b);
 }
 
-/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph
-/// naming the knowledge graph's three verbs with their one-line jobs. `rigger graph --around`
+/// The LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph naming the
+/// knowledge graph's four verbs with their one-line jobs. `rigger graph --lookup` answers each
+/// term at once from the graph, a live scan of the spawn's own working tree and the project's
+/// ranked prose, and leads as the one call most lookups need; `rigger graph --around`
 /// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
 /// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
 /// prior decisions, findings, and lessons about the files). It names the tools and one worked
@@ -14877,8 +14879,10 @@ fn write_peers_pointer(b: &mut String) {
 /// gate rejects U+2014), and it names only first-party tools.
 fn write_lookup_pointer(b: &mut String) {
     b.push_str(
-        "\nThe knowledge graph answers lookups through three verbs: `rigger graph --around \
-         <file|entity>` (structure: callers, callees, neighbors), `rigger graph --show <entity>` \
+        "\nThe knowledge graph answers lookups through four verbs: `rigger graph --lookup \
+         <term>...` (each term at once from the graph, a live scan of your working tree and the \
+         project's ranked prose), `rigger graph --around <file|entity>` (structure: callers, \
+         callees, neighbors), `rigger graph --show <entity>` \
          (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
          lessons). Who calls <name>: `rigger graph --around <name>`. Where is <name> defined: \
          `rigger graph --show <name>`.\n",
