@@ -5731,8 +5731,8 @@ mod tests {
     /// built FROM THIS TREE over whatever happens to be first on PATH, so a worktree whose
     /// code legitimately changes a rendered fact renders with a binary that actually reflects
     /// it (rather than deadlocking against a stale PATH install). Proves, at the
-    /// `compose_precommit_bytes` seam, that the block tries every candidate in the spec's
-    /// exact order - env target dir (release then debug), local target (release then debug),
+    /// `compose_precommit_bytes` seam, that the block lists every candidate in the spec's
+    /// order, which breaks a tie between equally recent builds - env target dir (release then debug), local target (release then debug),
     /// this worktree's own unit-derived scratch cargo-target (release then debug), the shared
     /// build-cache target (debug only), PATH last - and that BOTH the render call and the
     /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
@@ -5798,12 +5798,12 @@ mod tests {
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);
 
-        // The actual TRY order is the order of the `for candidate in ...` list (shell
+        // The candidate order is the order of the `for candidate in ...` list (shell
         // variables like `$unit_release` are computed once, above the loop, for POSIX
         // correctness - their VALUES, not their computation site, are what matters), bounded
         // between "for candidate in" and its closing "; do". Slicing to exactly that region
         // means a candidate's VALUE text appearing earlier (in its own assignment) can never
-        // be mistaken for its position in the try order.
+        // be mistaken for its position in the candidate order.
         let loop_start = hook
             .find("for candidate in")
             .expect("a for-loop iterates the candidates in order");
@@ -5847,9 +5847,9 @@ mod tests {
                 && idx_unit_release < idx_unit_debug
                 && idx_unit_debug < idx_shared_debug
                 && idx_shared_debug < idx_path_fallback,
-            "candidates must be TRIED in the spec's exact order (env dir release/debug, local \
-             target release/debug, unit-derived cargo-target release/debug, shared build-cache \
-             debug, PATH last); got:\n{hook}"
+            "candidates must be LISTED in the spec's order, the tie-break between equally \
+             recent builds (env dir release/debug, local target release/debug, unit-derived \
+             cargo-target release/debug, shared build-cache debug, PATH last); got:\n{hook}"
         );
 
         // The unit-derived candidates ($unit_release/$unit_debug) are POINTED at paths keyed
