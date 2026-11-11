@@ -368,6 +368,7 @@ fn graph_show_light_lane_degrades_to_extent_unavailable_note() {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
     }
+    common::fixtures::commit_tree(root);
 
     let (out, _err, ok) = run_rigger(root, &["graph", "--show", "present"]);
     // The recorded site header survives (resolution is always compiled)...
