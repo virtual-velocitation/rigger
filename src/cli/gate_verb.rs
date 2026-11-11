@@ -8,9 +8,6 @@ use super::*;
 
 use rigger::gate_channel::{GateReply, GateRequest};
 
-/// The file name of the run's gate request socket inside the project's store directory.
-pub(crate) const GATE_SOCKET: &str = "gate.sock";
-
 /// `rigger gate <id>`: ask the driver serving the project to run gate `<id>` on the committed
 /// tree of the unit worktree the process stands in. Prints the result, the commit and the digest
 /// the driver reuses, then the gate's output tail; exits non-zero on a red gate. A refusal (a
@@ -31,8 +28,12 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
             dir: dir.clone(),
             gate: gate_id.clone(),
         };
-        let socket = loc.dir.join(GATE_SOCKET);
-        let asked = rigger::gate_socket::ask(&socket, &request);
+        let repo = loc.repo_root();
+        let socket = rigger::gate_socket::socket_path(Path::new(&repo));
+        let asked = socket
+            .as_ref()
+            .map_err(|e| std::io::Error::new(e.kind(), e.to_string()))
+            .and_then(|path| rigger::gate_socket::ask(path, &request));
         let unserved = match asked {
             Ok(Some(GateReply::Ran {
                 gate,
@@ -52,13 +53,19 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
                 .into())
             }
             // A socket path longer than the OS allows: the driver could not bind it either.
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => format!(
-                "the gate socket path {} is too long for this OS ({e})",
-                socket.display()
-            ),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                let path = socket
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                format!(
+                    "the gate socket path {path} is longer than this OS allows a socket, because \
+                     the runtime directory ($XDG_RUNTIME_DIR, or the temp directory when it is \
+                     unset) is too long ({e})"
+                )
+            }
             Err(e) => return Err(format!("gate: asking the driver failed: {e}").into()),
         };
-        let repo = loc.repo_root();
         let cfg = load_run_config(&repo)?;
         let run =
             conductor::run_gate_for_information(&cfg, store, &ExecRunner, &repo, &dir, gate_id)?;

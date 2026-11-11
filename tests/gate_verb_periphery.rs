@@ -41,9 +41,15 @@ fn committed_project() -> (tempfile::TempDir, tempfile::TempDir) {
     (root, tempfile::tempdir().expect("a scratch dir"))
 }
 
-/// `rigger <args>` in `root` with its scratch under `scratch`: (stdout, stderr, success).
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
 fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
-    run_rigger_envs(root, args, &[("RIGGER_TMPDIR", scratch.to_str().unwrap())])
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
 }
 
 /// Every GateVerdict in `root`'s store.
@@ -65,13 +71,18 @@ fn gate_verdicts(root: &Path) -> Vec<Event> {
 fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
     for stale in [false, true] {
         let (root, scratch) = committed_project();
+        #[cfg(unix)]
         if stale {
-            // A listener dropped without unlinking leaves a socket file nothing answers.
-            #[cfg(unix)]
-            drop(
-                std::os::unix::net::UnixListener::bind(root.path().join(".rigger/gate.sock"))
-                    .unwrap(),
-            );
+            // A listener dropped without unlinking leaves a socket file nothing answers, at the
+            // path the verb asks by.
+            use std::os::unix::fs::DirBuilderExt;
+            let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(path.parent().unwrap())
+                .unwrap();
+            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+            assert!(path.exists(), "the stale socket file is in place");
         }
         let (out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
         assert!(

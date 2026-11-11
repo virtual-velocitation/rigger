@@ -1813,19 +1813,20 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             stderr_line(&format!("rigger run: the hold probe: {e}"));
         }
     };
-    // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the gate
-    // request socket under the store directory carries each `rigger gate <id>` to it for as long
-    // as the run drives. A socket that cannot be bound leaves the verb information-only.
+    // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the
+    // project's gate request socket ([`rigger::gate_socket::socket_path`]) carries each
+    // `rigger gate <id>` to it for as long as the run drives. A socket that cannot be bound
+    // leaves the verb information-only.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-    let socket_path = Path::new(&root)
-        .join(RIGGER_DIR)
-        .join(super::gate_verb::GATE_SOCKET);
-    let socket = rigger::gate_socket::GateSocket::bind(&socket_path)
+    let socket = rigger::gate_socket::socket_path(Path::new(&root))
+        .and_then(|path| {
+            rigger::gate_socket::GateSocket::bind(&path)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+        })
         .inspect_err(|e| {
             stderr_line(&format!(
-                "rigger run: gate requests are not served ({}: {e}); `rigger gate <id>` runs \
-                 for information only and records nothing",
-                socket_path.display()
+                "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs for \
+                 information only and records nothing"
             ))
         })
         .ok();

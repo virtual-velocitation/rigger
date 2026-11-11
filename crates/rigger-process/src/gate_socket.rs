@@ -1,18 +1,98 @@
 //! The gate request channel's adapters (signed verdicts): the driver serves
-//! [`GateChannel`] on a Unix domain socket under the project's `.rigger` directory, readable and
-//! writable by its owner only, and `rigger gate` asks over it with [`ask`]. One request and one
-//! reply per connection, each one JSON line. Windows has no adapter yet: there both ends answer an
-//! `Unsupported` error naming the named pipe it would take, which the verb reports as its error.
+//! [`GateChannel`] on a Unix domain socket readable and writable by its owner only, and
+//! `rigger gate` asks over it with [`ask`]. One request and one reply per connection, each one
+//! JSON line. Both ends find the socket with [`socket_path`]: one path per repo in a private
+//! per-user directory under the runtime directory, named by a digest of the canonical repo root
+//! so its length never grows with the repo's path. Windows has no adapter yet: there both ends
+//! answer an `Unsupported` error naming the named pipe it would take, which the verb reports as
+//! its error.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
 
-/// The gate socket path for the project rooted at `repo_root`, under the runtime directory
-/// `runtime_dir`.
+/// How many hex digits of the canonical repo root's SHA-256 name its socket.
+#[cfg(unix)]
+const DIGEST_HEX: usize = 16;
+
+/// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
+/// and `rigger gate` asks by: [`socket_path_under`] the runtime directory, `$XDG_RUNTIME_DIR`
+/// when it is set to an absolute path and the OS temp directory otherwise.
+pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(std::env::temp_dir);
+    socket_path_under(&runtime, repo_root)
+}
+
+/// The gate socket path for the project rooted at `repo_root` under the runtime directory
+/// `runtime_dir`: `<runtime_dir>/rigger-<uid>/<first 16 hex of SHA-256 of the canonical repo
+/// root>.sock`, the per-host control-path convention. Every path to one repo names one socket,
+/// and the path is as long as the runtime directory plus a fixed tail. Errors when the repo root
+/// does not resolve.
+#[cfg(unix)]
+pub fn socket_path_under(runtime_dir: &Path, repo_root: &Path) -> io::Result<PathBuf> {
+    use std::fmt::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let root = repo_root.canonicalize()?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, root.as_os_str().as_bytes());
+    let name = digest.as_ref()[..DIGEST_HEX / 2]
+        .iter()
+        .fold(String::new(), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+    Ok(owner_dir(runtime_dir).join(format!("{name}.sock")))
+}
+
+/// No adapter on this OS: always the `Unsupported` error.
+#[cfg(not(unix))]
 pub fn socket_path_under(_runtime_dir: &Path, _repo_root: &Path) -> io::Result<PathBuf> {
-    Err(io::Error::other("no socket path rule yet"))
+    Err(unsupported())
+}
+
+/// The calling user's own directory under `runtime_dir`, `rigger-<uid>`.
+#[cfg(unix)]
+fn owner_dir(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join(format!("rigger-{}", rustix::process::getuid().as_raw()))
+}
+
+/// Refuse a socket whose directory is not this user's alone: one another user owns, or can
+/// enter, could hold a socket that user placed. A directory not there yet is no refusal.
+#[cfg(unix)]
+fn check_private(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = match dir.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let ours = meta.is_dir() && meta.uid() == rustix::process::getuid().as_raw();
+    if ours && meta.mode() & 0o077 == 0 {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "the gate socket directory {} is not this user's alone (a directory owned by this \
+             user with mode 0700 is)",
+            dir.display()
+        ),
+    ))
+}
+
+/// Make `dir` this user's private directory: created with mode 0700 when absent, refused by
+/// [`check_private`] when it is there but not private.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => check_private(dir),
+        Err(e) => Err(e),
+    }
 }
 
 /// A bound gate request socket, its file removed when it drops.
@@ -35,13 +115,18 @@ const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 #[cfg(unix)]
 impl GateSocket {
-    /// Bind the socket at `path`, readable and writable by its owner only. A file there that no
-    /// process answers (a socket a dead driver left) is reclaimed; one a live driver answers is
-    /// refused with `AddrInUse`. The socket is bound under a temporary name, restricted, then
-    /// moved into place, so no other user can connect while it is still open to them.
+    /// Bind the socket at `path`, readable and writable by its owner only, in a directory that is
+    /// the owner's alone ([`private_dir`]). A file there that no process answers (a socket a dead
+    /// driver left) is reclaimed; one a live driver answers is refused with `AddrInUse`. The
+    /// socket is bound under a temporary name no longer than its own, restricted, then moved into
+    /// place, so no other user can connect while it is still open to them. A path longer than
+    /// the OS allows a socket is `InvalidInput`.
     pub fn bind(path: &Path) -> io::Result<GateSocket> {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::{UnixListener, UnixStream};
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            private_dir(dir)?;
+        }
         if path.symlink_metadata().is_ok() {
             if UnixStream::connect(path).is_ok() {
                 return Err(io::Error::new(
@@ -71,14 +156,14 @@ impl GateSocket {
     }
 }
 
-/// The temporary name a socket is bound under before it is moved to `path`.
+/// The temporary name a socket is bound under before it is moved to `path`: this process's and
+/// this bind's numbers, shorter than any socket name [`socket_path_under`] gives, so a path that
+/// fits the OS limit never fails at its staging name.
 #[cfg(unix)]
 fn staging_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    path.with_file_name(format!(".{name}.{}", std::process::id()))
+    static BINDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let bind = BINDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_file_name(format!(".{:x}.{bind:x}", std::process::id()))
 }
 
 #[cfg(unix)]
@@ -138,10 +223,15 @@ impl Drop for GateSocket {
 }
 
 /// Ask the driver serving the socket at `path` to answer `request`: its reply, or `None` when no
-/// driver serves there (no socket file, or one nothing listens on).
+/// driver serves there (no socket file, or one nothing listens on). A socket in a directory that
+/// is not this user's alone is refused with `PermissionDenied` ([`check_private`]), and a path
+/// longer than the OS allows a socket is `InvalidInput`.
 #[cfg(unix)]
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
     use std::io::{BufRead, Write};
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        check_private(dir)?;
+    }
     let mut stream = match std::os::unix::net::UnixStream::connect(path) {
         Ok(stream) => stream,
         Err(e)
@@ -216,8 +306,8 @@ mod tests {
     /// the serving loop, and dropping the socket removes its file.
     #[test]
     fn a_bound_socket_is_owner_only_answers_a_request_and_closing_and_dropping_end_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gate.sock");
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
         let socket = GateSocket::bind(&path).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "only the owner may open the socket");
@@ -247,9 +337,10 @@ mod tests {
     #[test]
     fn asking_with_no_listener_answers_none_and_a_stale_socket_is_reclaimed_but_a_live_one_is_not()
     {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gate.sock");
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
         assert_eq!(ask(&path, &request()).unwrap(), None, "no socket file");
+        private_dir(path.parent().unwrap()).unwrap();
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
         assert!(
             path.exists(),
