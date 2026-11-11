@@ -13923,12 +13923,9 @@ const DESIGN_INTENT_RELS: [&str; 4] = [
 ];
 
 /// Spec 29c criterion 3 prompt budget: how many design-intent nodes the section keeps verbatim,
-/// ordered by each node's most-recently-RECORDED binding edge first - the highest event-log
-/// position among its binding edges, id breaking the tie. That is a deterministic total order over
-/// the log, NOT an authored-priority ranking: a file's design-intent edges are folded together by
-/// the ingestion pass, so this orders by WHEN the binding was recorded, not by which intent matters
-/// most; the section carries the whole verbatim slice for the agent to honor, it does not rank them.
-/// Sized like the code-neighborhood / findings counts so a file with a broad design-intent footprint
+/// ordered by id. Design intent is read from the tree, so no binding carries a log position to
+/// date it by; id is a deterministic total order, NOT an authored-priority ranking - the section
+/// carries the whole verbatim slice for the agent to honor, it does not rank them. Sized like the code-neighborhood / findings counts so a file with a broad design-intent footprint
 /// still keeps a bounded, deterministic verbatim slice, with the remainder collapsed into a visible
 /// recover-the-rest note.
 const DESIGN_INTENT_VERBATIM_N: usize = 24;
@@ -14463,15 +14460,11 @@ fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
     let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
     let kind_of = g.kinds();
 
-    // Per design-intent node, the code-binding (relation, seed-file) pairs it holds, plus the max
-    // event-log position of those binding edges - the log-order signal the section orders by (the
-    // most-recently-recorded binding first; NOT authored priority - see DESIGN_INTENT_VERBATIM_N).
-    // A node is bound to the touched files only through a DESIGN_INTENT_RELS edge whose target is a
+    // Per design-intent node, the code-binding (relation, seed-file) pairs it holds. A node is bound to the touched files only through a DESIGN_INTENT_RELS edge whose target is a
     // seed file AND whose source is itself a design-intent node - so a `decision -> file` GOVERNS
     // edge (shared relation, non-design-intent source) and a `references` citation are both excluded
     // structurally.
     let mut binds: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
-    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
     for e in &g.edges {
         if !DESIGN_INTENT_RELS.contains(&e.rel.as_str()) || !seed_set.contains(e.to.as_str()) {
             continue;
@@ -14486,8 +14479,6 @@ fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
             .entry(e.from.as_str())
             .or_default()
             .insert((e.rel.as_str(), e.to.as_str()));
-        let slot = recency.entry(e.from.as_str()).or_insert(0);
-        *slot = (*slot).max(e.source);
     }
 
     let mut nodes: Vec<&contextgraph::Node> = g
@@ -14495,11 +14486,7 @@ fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
         .iter()
         .filter(|n| binds.contains_key(n.id.as_str()))
         .collect();
-    nodes.sort_by(|a, c| {
-        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
-        let rc = recency.get(c.id.as_str()).copied().unwrap_or(0);
-        rc.cmp(&ra).then_with(|| a.id.cmp(&c.id))
-    });
+    nodes.sort_by(|a, c| a.id.cmp(&c.id));
 
     let line = |n: &contextgraph::Node| -> String {
         let title = n.attrs.get("title").map(String::as_str).unwrap_or("");
@@ -23468,78 +23455,57 @@ mod tests {
     }
 
     #[test]
-    fn the_design_intent_section_renders_the_newest_binding_and_elides_the_oldest() {
-        // sdet-u29c-3-recency-ordering-unverified + adv-u29c-3-recency-untested-and-ingestion-artifact
-        // (the gating reject): the design-intent budget cap only asserted the elision note appeared,
-        // never WHICH nodes survived the verbatim slice - so the most-recently-recorded-binding-first
-        // sort in write_design_intent was unpinned. Mutation-proven: reversing the comparator
-        // (rc.cmp(&ra) -> ra.cmp(&rc)) shipped the OLDEST binding verbatim and elided the NEWEST with
-        // every design-intent test green. This pins the pair the sibling c1 cap test set the standard
-        // for: the newest-recorded binding renders and the oldest is elided past the cap. Ordering is
-        // by event-log position (the most-recently-RECORDED binding), a deterministic total order -
-        // NOT authored priority; the doc no longer overclaims a "honor first" ranking.
+    fn the_design_intent_section_renders_the_first_binding_by_id_and_elides_the_last() {
+        // The design-intent budget cap keeps a deterministic verbatim slice: the nodes in id order.
+        // The rules are listed in DESCENDING id order, so a section that kept the graph's own order
+        // (or reversed the comparator) would render rule_040 verbatim and elide rule_001.
         let seed = vec!["core.rs".to_string()];
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut pos = 0u64;
-        let mut apply = |type_: &str, payload: serde_json::Value| {
-            pos += 1;
-            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
-        };
-
-        // Fold MORE handbook rules bound to the one file than the verbatim cap keeps, in ascending
-        // order, so rule_040's binding edge has the HIGHEST log position (newest recorded) and
-        // rule_001's the lowest (oldest). Each GOVERNS `core.rs`, so all are reachable at depth 1.
-        let count = 40u32;
-        for i in 1..=count {
+        let mut g = Graph::default();
+        for i in (1..=40u32).rev() {
             let id = format!("docs/handbook/rule_{i:03}.md");
-            apply(
-                contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-                json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": id, "title": format!("the governing rule {i:03}"), "doc": id }),
-            );
-            apply(
-                contextgraph::TYPE_DOC_LINK_EXTRACTED,
-                json!({ "from": id, "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
-            );
+            g.nodes.push(crate::test_support::node_with_attrs(
+                &id,
+                contextgraph::KIND_HANDBOOK_RULE,
+                &[("title", &format!("the governing rule {i:03}"))],
+            ));
+            g.edges.push(crate::test_support::edge(
+                &id,
+                "core.rs",
+                contextgraph::REL_GOVERNS,
+                contextgraph::TIER_EXTRACTED,
+            ));
         }
 
-        let g = graph.subgraph(&seed, 2).unwrap();
         let mut b = String::new();
         write_design_intent(&mut b, &g, &seed);
 
-        // The newest-recorded binding renders verbatim.
         assert!(
-            b.contains("the governing rule 040"),
-            "the newest-recorded design-intent binding must render verbatim; got:\n{b}"
+            b.contains("the governing rule 001"),
+            "the first design-intent binding by id must render verbatim; got:\n{b}"
         );
-        // The oldest-recorded binding is past the verbatim cap, so it is elided, not rendered.
         assert!(
-            !b.contains("the governing rule 001"),
-            "the oldest-recorded design-intent binding must be elided past the cap, not rendered; \
+            !b.contains("the governing rule 040"),
+            "the last design-intent binding by id must be elided past the cap, not rendered; \
              got:\n{b}"
         );
-        // The over-budget remainder collapses into ONE visible elision note.
         assert!(
             b.contains("more design-intent node(s) elided"),
             "the over-budget remainder must collapse into a visible elision note; got:\n{b}"
         );
     }
 
-    /// A subgraph around `core.rs` that holds only one `type_` fact (`payload`) renders NOTHING
-    /// for the section `write` renders - never a bare `header` over an empty body (`what` names
-    /// the missing content). Returns the subgraph.
+    /// The subgraph `g` around `core.rs`, holding one fact, renders NOTHING for the section
+    /// `write` renders - never a bare `header` over an empty body (`what` names the missing
+    /// content).
     fn assert_renders_no_section(
-        type_: &str,
-        payload: Value,
+        g: &Graph,
         write: fn(&mut String, &Graph, &[String]),
         header: &str,
         what: &str,
-    ) -> Graph {
+    ) {
         let seed = vec!["core.rs".to_string()];
-        let g = fold_subgraph(type_, vec![payload], &seed);
         let mut b = String::new();
-        write(&mut b, &g, &seed);
+        write(&mut b, g, &seed);
         assert!(
             b.is_empty(),
             "a subgraph with no {what} must render an empty section; got:\n{b}"
