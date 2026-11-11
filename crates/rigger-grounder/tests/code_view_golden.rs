@@ -10,11 +10,15 @@
 
 use std::path::{Path, PathBuf};
 
-use rigger_domain::contextgraph::{Graph, Projection};
+use rigger_domain::code_facts::{Stamp, Tip};
+use rigger_domain::code_graph::CodeGraph;
+use rigger_domain::code_view::{Entry, Extract, FactsView, ViewFilter};
+use rigger_domain::contextgraph::{EntryFold, Graph, Projection};
 use rigger_domain::eventstore::Event;
 use rigger_domain::ingest::derived_key_parts;
 use rigger_domain::retention::GenerationIngested;
 use rigger_graph_sqlite::contextgraph::sqlite::Projector;
+use rigger_grounder::facts::FactsExtractor;
 
 /// The fixture tree, one `(path, contents)` per file. Each file's comment names the rows of the
 /// resolver's table it holds.
@@ -223,9 +227,10 @@ fn folded(root: &Path) -> Graph {
             .event(keyed.len());
             entry.position = position;
             let batch: Vec<Event> = keyed.iter().map(|(_, e)| (*e).clone()).collect();
-            graph
+            let fold = graph
                 .apply_generation(&entry, Box::new(move || Ok(Some(batch))))
                 .unwrap();
+            assert_eq!(fold, EntryFold::BatchAsked, "every entry's batch folds");
         },
     );
     graph.whole().unwrap()
@@ -264,4 +269,68 @@ fn the_golden_is_the_retired_folds_graph_of_the_fixture_tree() {
     }
     let golden = std::fs::read_to_string(golden_path()).expect("the golden is captured");
     assert_eq!(fold, golden);
+}
+
+/// The view of the tree at `root`: every file's facts, read by the production extractor.
+fn viewed(root: &Path) -> FactsView {
+    let facts = TREE
+        .iter()
+        .map(|(path, _)| {
+            let bytes = std::fs::read(root.join(path)).unwrap();
+            let entry = Entry {
+                path: path.to_string(),
+                blob: String::new(),
+            };
+            FactsExtractor.extract(&entry, &bytes)
+        })
+        .collect();
+    let stamp = Stamp {
+        tip: Tip {
+            head: "main".into(),
+            commit: None,
+            tree: "fixture".into(),
+        },
+        fingerprint: FactsExtractor.fingerprint(),
+        seq: 1,
+    };
+    FactsView::new(stamp, facts)
+}
+
+/// The departures the code store states from the fold's graph: each row names one, with the
+/// golden lines it drops and the lines it adds.
+const DEPARTURES: &[(&str, &[&str], &[&str])] = &[(
+    "a test call from a file in the test-module closure proves the product definition it calls",
+    &[
+        "node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin",
+        "node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute",
+    ],
+    &[
+        r#"node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin proof_evidence=["src/lib_tests/more.rs:2"] proven_by=1"#,
+        r#"node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute proof_evidence=["src/lib_tests.rs:5"] proven_by=1"#,
+    ],
+)];
+
+/// The golden with every departure applied.
+fn departed(golden: &str) -> String {
+    let mut lines: Vec<String> = golden.lines().map(str::to_string).collect();
+    for (name, dropped, added) in DEPARTURES {
+        for line in *dropped {
+            let at = lines.iter().position(|l| l == line);
+            lines.remove(at.unwrap_or_else(|| panic!("{name}: {line} is not in the golden")));
+        }
+        lines.extend(added.iter().map(|l| l.to_string()));
+    }
+    lines.sort();
+    lines.join("\n") + "\n"
+}
+
+/// The code view, resolved by the default filter, answers the fold's golden, save the stated
+/// departures.
+#[test]
+fn code_view_answers_the_golden_of_the_retired_fold() {
+    let tree = planted();
+    let view = viewed(tree.path());
+    let answer = render(&CodeGraph::new(&view, ViewFilter::default()).whole());
+    let golden = std::fs::read_to_string(golden_path()).expect("the golden is captured");
+    assert_eq!(answer, departed(&golden));
 }
