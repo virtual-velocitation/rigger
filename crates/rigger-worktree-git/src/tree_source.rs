@@ -23,9 +23,10 @@ const INDEX_FILE: &str = "GIT_INDEX_FILE";
 /// The file name of a git index, in a worktree's git dir and in an [`IndexCopy`]'s directory.
 const INDEX: &str = "index";
 
-/// The one git command every git the source runs starts from: git in `dir` ([`git_in`]) with
-/// optional locks off, so a read takes no lock it can do without. A diff refreshes the index it
-/// reads all the same, so the diff reads an [`IndexCopy`].
+/// The one git command every git the source starts itself is built from: git in `dir`
+/// ([`git_in`]) with optional locks off, so a read takes no lock it can do without. A diff
+/// refreshes the index it reads all the same, so the diff reads an [`IndexCopy`]. Discovery's
+/// `rev-parse` ([`rev_parse`]), which finds the index to copy, reads no index.
 fn read_git(dir: &Path) -> Command {
     let mut git = git_in(dir);
     git.arg("--no-optional-locks");
@@ -855,7 +856,8 @@ mod tests {
         }
     }
 
-    /// Every git the source runs starts from [`read_git`], which turns optional locks off.
+    /// Every git the source starts itself is built from [`read_git`], which turns optional locks
+    /// off.
     #[test]
     fn the_sources_git_runs_with_optional_locks_off() {
         let git = read_git(Path::new("/r"));

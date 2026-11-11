@@ -561,7 +561,8 @@ open(caller worktree W, filter)
                      record half still answers
 ```
 
-The check never writes W's index. Every git the source runs passes `--no-optional-locks`, and
+The check never writes W's index. Every git the source starts itself passes
+`--no-optional-locks` (discovery's `rev-parse`, which finds W's git dir, reads no index), and
 since git still rewrites an index whose entries only a stat change has dirtied, the diff reads a
 private copy of W's index instead: the index in W's own git dir (a linked worktree's included),
 copied into a directory of its own in the OS temp directory with the index's mtime kept, so git
@@ -728,7 +729,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
