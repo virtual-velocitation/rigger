@@ -8923,11 +8923,10 @@ mod tests {
     mod calls_route_c4 {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{CallGraph, CallNode, Direction};
+        use crate::contextgraph::{CallGraph, CallNode, ContextGraph, Direction};
         use crate::test_support::calls_edge;
         use crate::test_support::plain;
-        use crate::test_support::RecordsRead;
-        use crate::test_support::{apply_call, apply_def};
+        use crate::test_support::{facts_view, planted_file, view_graph};
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
         /// multi-candidate `frontier`, as the traversal returns it.
@@ -9159,16 +9158,23 @@ mod tests {
         #[test]
         fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-            apply_def(&p, 2, "src/c.rs", "caller", 1, true);
-            apply_call(&p, 3, "src/c.rs", "callee", "caller");
+            let view = facts_view(vec![
+                planted_file("src/a.rs", &[("callee", "function")], &[], &[]),
+                planted_file(
+                    "src/c.rs",
+                    &[("caller", "function")],
+                    &[("caller", "callee")],
+                    &[],
+                ),
+            ]);
             let cp = |_inst: Option<&str>,
                       seed: &[String],
                       dir: Direction,
                       depth: i64,
                       floor: &str|
              -> CallGraph {
-                p.calls(seed, dir, depth, floor).unwrap_or_default()
+                ContextGraph::calls(&view_graph(&p, &view), seed, dir, depth, floor)
+                    .unwrap_or_default()
             };
 
             // No view=calls: the dispatch declines so the neighborhood path runs unchanged.
