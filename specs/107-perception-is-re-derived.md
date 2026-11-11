@@ -306,8 +306,9 @@ key and so sees a keyed derived row with no `META_GROUP`: the identities whose c
 whose path `grounder::tree_bytes` hands bytes that its half's function maps to a batch that is not
 empty (every `gc` input is; not applied in the light lane, where no extraction compiles): each of
 them records an entry at its next default-lane ingest of the file (SINK OUTCOMES row 9, its fold a
-re-recording of row 13 included), and a gone or out-of-scope `gc` path it does not count may record
-one too, by rows 10 and 11, when an integration reindex names it; the number prints in the default
+re-recording of row 13 included), and a path it does not count records one too: a gone path the
+graph holds, under any prefix, at the next whole-project walk (row 10), and an out-of-scope `gc`
+path when an integration reindex names it (row 11); the number prints in the default
 lane with a note saying the counted identities record an entry at their next ingest (criteria 10 and
 12 assert it), and a zero prints without the note. A deleted file's identity, under any prefix,
 holds the batch for no bytes once the walk's retirement batch recorded it, so that ingest retires
