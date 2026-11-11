@@ -7,9 +7,13 @@ use crate::contextgraph::Projection;
 /// The combined lookup over one working tree, the caller's own.
 pub trait Lookup: Send + Sync {
     /// The reply for `terms`: a `graph` section answered from `graph` (a section stating its
-    /// reason when there is no graph, the graph owes its rebuild or a hit's file differs in the
-    /// tree), a `text` section scanned live from the tree and a `prose` section ranked over the
+    /// reason when `graph` is the reason there is none, the graph owes its rebuild or a hit's file
+    /// differs in the tree), a `text` section scanned live from the tree and a `prose` section ranked over the
     /// tree's prose and the graph's records, each labelled by its source and the whole within one
     /// size budget. Fails only when `terms` holds no non-empty term.
-    fn lookup(&self, terms: &[String], graph: Option<&dyn Projection>) -> Result<String, String>;
+    fn lookup(
+        &self,
+        terms: &[String],
+        graph: Result<&dyn Projection, String>,
+    ) -> Result<String, String>;
 }

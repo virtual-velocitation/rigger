@@ -62,10 +62,10 @@ pub(crate) enum TermGraph {
     Missing { nearest: Vec<String> },
 }
 
-/// The graph to answer from, or the reason there is none to answer from: none is wired, it owes
-/// its rebuild, or it cannot say whether it does.
-pub(crate) fn usable(graph: Option<&dyn Projection>) -> Result<&dyn Projection, String> {
-    let graph = graph.ok_or_else(|| "no context graph is wired to this lookup".to_string())?;
+/// The graph to answer from, or the reason there is none to answer from: the caller has none, it
+/// owes its rebuild, or it cannot say whether it does.
+pub(crate) fn usable(graph: Result<&dyn Projection, String>) -> Result<&dyn Projection, String> {
+    let graph = graph?;
     match graph.rebuild_owed() {
         Ok(false) => Ok(graph),
         Ok(true) => Err(REBUILD_OWED.to_string()),

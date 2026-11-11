@@ -392,7 +392,7 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
     ];
     for (term, shown, graph_says, text_says) in cases {
-        let reply = lookup.lookup(&terms(&[term]), Some(&graph)).unwrap();
+        let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
         let graph_part = section(&reply, "graph");
         for line in shown.iter().chain(graph_says) {
             assert!(
@@ -423,7 +423,7 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
     let reply = TreeLookup::new(dir.path())
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),
-            Some(&graph),
+            Ok(&graph),
         )
         .unwrap();
     for part in ["graph", "text"] {
@@ -442,8 +442,11 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
     }
 }
 
-/// A graph that cannot answer still leaves the text and prose halves answering, the graph's
-/// section stating why.
+/// The reason a caller that could not open its graph hands the lookup in its place.
+const UNOPENED: &str = "the context graph could not be opened: disk full";
+
+/// A graph that cannot answer, or that the caller could not open, still leaves the text and prose
+/// halves answering, the graph's section stating why.
 #[test]
 fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
     let dir = tree(&[
@@ -454,9 +457,9 @@ fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
         owed: true,
         ..Held::default()
     };
-    let cases: [(Option<&dyn Projection>, &str); 2] = [
-        (Some(&owed), REBUILD_OWED),
-        (None, "no context graph is wired to this lookup"),
+    let cases: [(Result<&dyn Projection, String>, &str); 2] = [
+        (Ok(&owed), REBUILD_OWED),
+        (Err(UNOPENED.to_string()), UNOPENED),
     ];
     for (graph, reason) in cases {
         let reply = TreeLookup::new(dir.path())
@@ -483,7 +486,7 @@ fn a_lookup_of_no_term_is_refused() {
     let dir = tree(&[]);
     for list in [&[][..], &["", "  "]] {
         assert!(TreeLookup::new(dir.path())
-            .lookup(&terms(list), None)
+            .lookup(&terms(list), Err(UNOPENED.to_string()))
             .is_err());
     }
 }

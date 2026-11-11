@@ -565,14 +565,15 @@ impl<'a> Server<'a> {
             let lookup = self
                 .lookup
                 .ok_or("rigger_graph: no lookup is wired on this server")?;
+            let graph = self.graph.ok_or_else(|| NO_GRAPH_WIRED.to_string());
             return lookup
-                .lookup(&terms, self.graph)
+                .lookup(&terms, graph)
                 .map(Value::String)
                 .map_err(|e| format!("rigger_graph: {e}").into());
         }
         let graph = self
             .graph
-            .ok_or("rigger_graph: no context graph is wired on this server")?;
+            .ok_or(format!("rigger_graph: {NO_GRAPH_WIRED}"))?;
         self.refuse_if_rebuild_owed("rigger_graph")?;
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
@@ -665,6 +666,9 @@ pub const RIGGER_GRAPH_LOOKUP: &str =
 /// What `rigger_graph` answers when it is passed none of its three forms.
 const GRAPH_ARGUMENTS_MISSING: &str =
     "rigger_graph: pass `lookup` <term>..., `show` <entity> or `around` <file|entity>";
+
+/// Why a server with no context graph wired answers no graph lookup.
+const NO_GRAPH_WIRED: &str = "no context graph is wired on this server";
 
 /// The `rigger_graph` entry of a tool list, the same on every surface.
 fn graph_tool() -> Value {
@@ -2098,10 +2102,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let lookup = TreeLookup::new(tree.path());
         let graph = Owing;
-        let cases: [(Option<&dyn Projection>, &str); 2] = [
-            (Some(&graph), REBUILD_OWED),
-            (None, "no context graph is wired to this lookup"),
-        ];
+        let cases: [(Option<&dyn Projection>, &str); 2] =
+            [(Some(&graph), REBUILD_OWED), (None, NO_GRAPH_WIRED)];
         for (graph, reason) in cases {
             let mut server = Server::new(&store, "run").with_lookup(&lookup);
             if let Some(graph) = graph {

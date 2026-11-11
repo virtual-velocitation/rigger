@@ -47,7 +47,11 @@ impl TreeLookup {
 }
 
 impl Lookup for TreeLookup {
-    fn lookup(&self, terms: &[String], graph: Option<&dyn Projection>) -> Result<String, String> {
+    fn lookup(
+        &self,
+        terms: &[String],
+        graph: Result<&dyn Projection, String>,
+    ) -> Result<String, String> {
         let terms = distinct_terms(terms);
         if terms.is_empty() {
             return Err("lookup: pass one or more non-empty terms".to_string());
