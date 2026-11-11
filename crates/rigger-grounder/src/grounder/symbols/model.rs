@@ -222,7 +222,7 @@ impl FileSymbols {
 }
 
 /// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3),
-/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::index_stamp`) so a
+/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::blast_radius_stamped`) so a
 /// recorded radius names the tag-query generation that produced it, and part of the code store's
 /// extractor fingerprint, so a snapshot written under another set is not trusted. Bump it when a
 /// shipped grammar or an authored tags query changes, so a radius computed under an older grammar

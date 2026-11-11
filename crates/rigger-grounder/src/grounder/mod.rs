@@ -67,7 +67,7 @@ pub(crate) fn relative_path(root: &Path, file: &Path) -> String {
         .into_owned()
 }
 
-pub use rigger_domain::grounder::{BlastRadius, Grounded, Grounder, RankedRef, Ref};
+pub use rigger_domain::grounder::{BlastRadius, Grounded, Grounder, RankedRef, Ref, StampedRadius};
 
 /// Nop grounds nothing.
 pub struct Nop;
@@ -410,23 +410,23 @@ mod tests {
     }
 
     /// A non-structural grounder (grep / nop / the trait default) has NO cross-reference index,
-    /// so its `index_stamp` is EMPTY. That empty stamp is the signal unit 3's conductor reads to
+    /// so the stamp of its radius is EMPTY. That empty stamp is the signal unit 3's conductor reads to
     /// emit NO `BlastRadiusComputed` audit and drive NO retention metric on this path - the exact
     /// mechanism that keeps the shipped (non-symbols) default byte-for-byte unchanged. Ungated: it
     /// holds identically in both feature lanes (the default impl touches no structural index).
     #[test]
-    fn default_index_stamp_is_empty_so_the_default_path_drives_no_audit() {
+    fn default_radius_stamp_is_empty_so_the_default_path_drives_no_audit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
         let g = Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
         assert!(
-            g.index_stamp().is_empty(),
+            g.blast_radius_stamped("foo", 8).stamp.is_empty(),
             "grep is not structural; an empty stamp keeps the default path byte-for-byte unchanged"
         );
         assert!(
-            Nop.index_stamp().is_empty(),
+            Nop.blast_radius_stamped("foo", 8).stamp.is_empty(),
             "nop grounds nothing and stamps nothing"
         );
     }

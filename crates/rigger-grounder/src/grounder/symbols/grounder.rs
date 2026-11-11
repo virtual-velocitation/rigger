@@ -11,7 +11,7 @@
 
 use crate::facts::DirectoryHead;
 use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
-use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref};
+use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref, StampedRadius};
 use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
 use rigger_domain::code_view::{
     CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Tests, Withheld,
@@ -57,17 +57,26 @@ impl Symbols {
     /// cannot be compared and more: every file is withheld, over a view that holds none, so the
     /// radius falls back to the text search, and the label names the failure.
     fn read_labelled<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label) {
+        let (answer, label, _tree) = self.read_opened(read);
+        (answer, label)
+    }
+
+    /// [`Symbols::read_labelled`] with the id of the tree that same open read ([`UNREAD_TREE`]
+    /// when the head cannot be read): the one open every read makes.
+    fn read_opened<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label, String) {
         let worktree = self.root.clone();
         match self.heads.head(Path::new(&self.root)) {
             Ok(head) => {
                 let withheld = Withheld::of(head.diff);
-                let label =
-                    Label::describing(&head.view.stamp().tip, worktree, &withheld, head.behind);
-                (read(&Sight::new(&*head.view, withheld)), label)
+                let tip = &head.view.stamp().tip;
+                let label = Label::describing(tip, worktree, &withheld, head.behind);
+                let tree = tip.tree.clone();
+                (read(&Sight::new(&*head.view, withheld)), label, tree)
             }
             Err(reason) => (
                 read(&Sight::new(&unread_view(), Withheld::All)),
                 Label::unopened(worktree, &reason),
+                UNREAD_TREE.to_string(),
             ),
         }
     }
@@ -698,36 +707,39 @@ impl Grounder for Symbols {
     /// seed-file list into a stable `BlastRadiusComputed` audit event. A query naming no code -
     /// empty, prose only, a single character (ASCII or multibyte) or all punctuation - returns
     /// empty views (the empty-radius fail-safe the scheduler runs alone and unit 3 routes to the
-    /// full panel) WITHOUT running a whole-repo grep, never a partial or a panic. A query WITH code
+    /// full panel) WITHOUT running a whole-repo grep, never a partial or a panic. It is
+    /// [`Self::blast_radius_stamped`]'s radius: one read gives both. A query WITH code
     /// terms that simply matches nothing is ALSO empty, but that case does run the uncapped search
     /// per unresolved name - it just comes back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+        self.blast_radius_stamped(query, k).radius
+    }
+
+    /// The radius with the provenance stamp `<tree-id>/<grammar-tags-version>` of the open that
+    /// grounded it: the tree the view describes unioned with the grammar / tag-query version. The
+    /// `symbols` grounder is STRUCTURAL, so the stamp is NON-EMPTY - the signal unit 3's conductor
+    /// keys the audit + retention metric off - even for the empty-radius fail-safe, whose open
+    /// still names the tree. A change to the tree changes the stamp.
+    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
         let terms = code_terms(query);
-        // The empty-terms fail-safe, applied BEFORE any view read or text search: a query naming
-        // no code (an empty query, prose only, a single character, all punctuation) grounds to the
-        // empty radius - empty precise and empty safe - which the scheduler runs alone and unit 3
-        // routes to the full, unpartitioned panel.
-        if terms.is_empty() {
-            return BlastRadius::default();
+        let (radius, _label, tree) = self.read_opened(|sight| {
+            // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
+            // (an empty query, prose only, a single character, all punctuation) grounds to the
+            // empty radius - empty precise and empty safe - which the scheduler runs alone and
+            // unit 3 routes to the full, unpartitioned panel.
+            if terms.is_empty() {
+                BlastRadius::default()
+            } else {
+                self.radius(sight, &terms, k)
+            }
+        });
+        StampedRadius {
+            radius,
+            stamp: format!("{tree}/{GRAMMAR_TAGS_VERSION}"),
         }
-        self.read(|sight| self.radius(sight, &terms, k))
-    }
-
-    /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event:
-    /// `<tree-id>/<grammar-tags-version>`, the tree the view describes unioned with the grammar /
-    /// tag-query version. The `symbols` grounder is STRUCTURAL, so it returns a NON-EMPTY stamp -
-    /// the signal unit 3's conductor keys the audit + retention metric off (a grep / nop grounder
-    /// inherits the empty default and emits neither). A recorded radius reconstructs which tree
-    /// grounded it, and a change to the tree changes the stamp.
-    fn index_stamp(&self) -> String {
-        let tree = match self.heads.head(Path::new(&self.root)) {
-            Ok(head) => head.view.stamp().tip.tree.clone(),
-            Err(_) => UNREAD_TREE.to_string(),
-        };
-        format!("{tree}/{GRAMMAR_TAGS_VERSION}")
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3): [`scored_hits`]'s already-ranked list,
@@ -1059,16 +1071,16 @@ mod tests {
     use rigger_domain::code_view::{Entry, Extract, Head, Tests, WorktreeDiff};
     use rigger_domain::composed::Compared;
 
-    /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
+    /// The `symbols` grounder is STRUCTURAL, so its radius stamp (unit 3's audit provenance +
     /// the structural-active signal the conductor keys the `BlastRadiusComputed` audit off) is
     /// NON-EMPTY, shaped `<index-content-hash>/<grammar-tags-version>`, and CHANGES with the
     /// index content - so a recorded radius reconstructs which index generation grounded it.
     #[test]
-    fn index_stamp_is_nonempty_and_tracks_index_content() {
+    fn radius_stamp_is_nonempty_and_tracks_index_content() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
-        let stamp = g.index_stamp();
+        let stamp = g.blast_radius_stamped("`foo`", 8).stamp;
         assert!(
             !stamp.is_empty(),
             "symbols is structural: the audit stamp must be non-empty so the conductor emits the audit"
@@ -1084,8 +1096,8 @@ mod tests {
         std::fs::write(dir2.path().join("b.rs"), "fn bar() {}\nfn baz() {}\n").unwrap();
         let g2 = Symbols::in_directory(dir2.path().to_str().unwrap());
         assert_ne!(
-            g.index_stamp(),
-            g2.index_stamp(),
+            g.blast_radius_stamped("`foo`", 8).stamp,
+            g2.blast_radius_stamped("`foo`", 8).stamp,
             "distinct index content must yield a distinct provenance stamp"
         );
         // DETERMINISM (the load-bearing provenance/replay property): the SAME tree opened by a
@@ -1098,8 +1110,8 @@ mod tests {
         let g3a = Symbols::in_directory(dir3.path().to_str().unwrap());
         let g3b = Symbols::in_directory(dir3.path().to_str().unwrap());
         assert_eq!(
-            g3a.index_stamp(),
-            g3b.index_stamp(),
+            g3a.blast_radius_stamped("`foo`", 8).stamp,
+            g3b.blast_radius_stamped("`foo`", 8).stamp,
             "the same tree opened twice must yield the SAME stamp (cross-process determinism)"
         );
     }
@@ -2750,6 +2762,38 @@ mod tests {
         }
     }
 
+    /// A store that advances on every open, naming the open's number in its tree id and its one
+    /// file (beside one test file), so a second open shows as an answer from another tree and as
+    /// a count above one.
+    struct Advancing(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl OpenCodeView for Advancing {
+        fn head(&self, _worktree: &Path) -> Result<Head, String> {
+            let open = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let mut at = stamp();
+            at.tip.tree = format!("tree-{open}");
+            let file = code_file(
+                &format!("open{open}.rs"),
+                "rust",
+                Scope::Product,
+                vec![hand_def("apply_damage", 1)],
+                vec![],
+            );
+            // One test location beside it, which the excluding answer counts, not lists.
+            let test = code_file(
+                &format!("open{open}_test.rs"),
+                "rust",
+                Scope::Test,
+                vec![hand_def("apply_damage_works", 1)],
+                vec![],
+            );
+            Ok(Head {
+                view: Box::new(FactsView::new(at, vec![file, test])),
+                diff: Ok(WorktreeDiff::default()),
+                behind: None,
+            })
+        }
+    }
+
     /// A labelled answer comes from ONE open of the store: the label describes the tree the rows
     /// came from even when the store advances between opens. The double advances on every open,
     /// naming the open's number in its tree id and its one file, so a second open shows as a
@@ -2759,34 +2803,6 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
 
-        struct Advancing(Arc<AtomicUsize>);
-        impl OpenCodeView for Advancing {
-            fn head(&self, _worktree: &Path) -> Result<Head, String> {
-                let open = self.0.fetch_add(1, Ordering::SeqCst) + 1;
-                let mut at = stamp();
-                at.tip.tree = format!("tree-{open}");
-                let file = code_file(
-                    &format!("open{open}.rs"),
-                    "rust",
-                    Scope::Product,
-                    vec![hand_def("apply_damage", 1)],
-                    vec![],
-                );
-                // One test location beside it, which the excluding answer counts, not lists.
-                let test = code_file(
-                    &format!("open{open}_test.rs"),
-                    "rust",
-                    Scope::Test,
-                    vec![hand_def("apply_damage_works", 1)],
-                    vec![],
-                );
-                Ok(Head {
-                    view: Box::new(FactsView::new(at, vec![file, test])),
-                    diff: Ok(WorktreeDiff::default()),
-                    behind: None,
-                })
-            }
-        }
         type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>, usize);
         let ground: Answer = |g| {
             let answer = g.ground_labelled("apply_damage", 8, Tests::Exclude);
@@ -2829,6 +2845,29 @@ mod tests {
                 "{name}: one answer, one open"
             );
         }
+    }
+
+    /// The radius and its audit stamp come from ONE open of the store: a store advanced between
+    /// two opens never stamps a radius with a tree it was not grounded on.
+    #[test]
+    fn a_radius_is_stamped_with_the_tree_of_the_open_that_grounded_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
+        let stamped = g.blast_radius_stamped("`apply_damage`", 8);
+        assert!(
+            stamped.radius.precise.contains(&"open1.rs".to_string()),
+            "the radius reads the first open: {:?}",
+            stamped.radius
+        );
+        assert_eq!(
+            stamped.stamp,
+            format!("tree-1/{GRAMMAR_TAGS_VERSION}"),
+            "the stamp names that same open's tree"
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
     }
 
     /// Every answer's label states what was withheld. Each row: the worktree's difference and the
