@@ -17,19 +17,20 @@ use super::{words, Lookup, TreeLookup};
 #[cfg(feature = "symbols")]
 use crate::contextgraph::KIND_CODE_ENTITY;
 use crate::contextgraph::{
-    CallGraph, CallNode, Direction, EntryBatch, EntryFold, Error, FoldAccess, Graph, Node,
-    Projection, KIND_DECISION, REBUILD_OWED,
+    CallGraph, CallNode, Candidate, Direction, EntryBatch, EntryFold, Error, FoldAccess, Graph,
+    Located, Node, Projection, KIND_DECISION, REBUILD_OWED,
 };
 use rigger_domain::eventstore::Event;
 
 /// A graph held in memory: its nodes, the generation it holds per identity, whether it owes its
-/// rebuild, and its calls as (caller, callee) ids.
+/// rebuild, its calls as (caller, callee) ids, and the ids it locates a term to.
 #[derive(Default)]
 struct Held {
     nodes: Vec<Node>,
     generations: BTreeMap<String, String>,
     owed: bool,
     calls: Vec<(String, String)>,
+    located: BTreeMap<String, Vec<String>>,
 }
 
 impl Projection for Held {
@@ -51,6 +52,19 @@ impl Projection for Held {
     fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
         Ok(None)
     }
+    fn locate(&self, term: &str) -> Result<Located, Error> {
+        Ok(match self.located.get(term) {
+            Some(ids) => Located::Many(
+                ids.iter()
+                    .map(|id| Candidate {
+                        id: id.clone(),
+                        file: String::new(),
+                    })
+                    .collect(),
+            ),
+            None => Located::None,
+        })
+    }
     fn calls(
         &self,
         seed: &[String],
@@ -63,16 +77,26 @@ impl Projection for Held {
             Direction::Down if seed.contains(caller) => Some(callee.clone()),
             _ => None,
         };
-        let nodes = self
-            .calls
-            .iter()
-            .filter_map(other)
-            .filter_map(|id| self.nodes.iter().find(|n| n.id == id).cloned())
-            .map(|node| CallNode {
+        // The walk holds its seed at layer 0 and the seed's direct neighbours at layer 1.
+        let node = |id: &String| self.nodes.iter().find(|n| &n.id == id).cloned();
+        let layered = |layer| {
+            move |node| CallNode {
                 node,
-                layer: 1,
+                layer,
                 frontier: None,
-            })
+            }
+        };
+        let nodes = seed
+            .iter()
+            .filter_map(node)
+            .map(layered(0))
+            .chain(
+                self.calls
+                    .iter()
+                    .filter_map(other)
+                    .filter_map(|id| node(&id))
+                    .map(layered(1)),
+            )
             .collect();
         Ok(CallGraph {
             nodes,
@@ -348,44 +372,59 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
 
 // --- the whole lookup ----------------------------------------------------------------------
 
+/// A tree holding `files`, and a graph that ingested each of them as the tree holds it.
+#[cfg(feature = "symbols")]
+fn ingested(files: &[(&str, &str)], held: Held) -> (tempfile::TempDir, Held) {
+    let dir = tree(files);
+    let generations = files
+        .iter()
+        .map(|(file, _)| {
+            (
+                crate::ingest::code_identity(file),
+                crate::ingest::tree_generation(dir.path(), file, false),
+            )
+        })
+        .collect();
+    (
+        dir,
+        Held {
+            generations,
+            ..held
+        },
+    )
+}
+
 /// A graph over a tree whose `kept.rs` is unchanged since the graph ingested it, `edited.rs` was
 /// edited since and `gone.rs` deleted since, and whose `added.rs` is new since; each defines a
 /// `widget_*` function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`.
 #[cfg(feature = "symbols")]
 fn diverged() -> (tempfile::TempDir, Held) {
-    let dir = tree(&[
-        ("kept.rs", "fn widget_kept() {}\n"),
-        ("edited.rs", "fn widget_edited() { widget_kept() }\n"),
-    ]);
-    let generation = |file: &str| crate::ingest::tree_generation(dir.path(), file, false);
-    let generations = [
-        ("gc/kept.rs".to_string(), generation("kept.rs")),
-        ("gc/edited.rs".to_string(), generation("edited.rs")),
-        (
-            "gc/gone.rs".to_string(),
-            "a generation of bytes gone".to_string(),
-        ),
-    ]
-    .into();
+    let (dir, graph) = ingested(
+        &[
+            ("kept.rs", "fn widget_kept() {}\n"),
+            ("edited.rs", "fn widget_edited() { widget_kept() }\n"),
+            ("gone.rs", "fn widget_gone() {}\n"),
+        ],
+        Held {
+            nodes: vec![
+                entity("kept.rs", "widget_kept", 1),
+                entity("edited.rs", "widget_edited", 1),
+                entity("gone.rs", "widget_gone", 1),
+            ],
+            calls: vec![(
+                "edited.rs::widget_edited".to_string(),
+                "kept.rs::widget_kept".to_string(),
+            )],
+            ..Held::default()
+        },
+    );
+    std::fs::remove_file(dir.path().join("gone.rs")).unwrap();
     write(
         dir.path(),
         "edited.rs",
         "fn widget_renamed() { widget_kept() }\n",
     );
     write(dir.path(), "added.rs", "fn widget_added() {}\n");
-    let graph = Held {
-        nodes: vec![
-            entity("kept.rs", "widget_kept", 1),
-            entity("edited.rs", "widget_edited", 1),
-            entity("gone.rs", "widget_gone", 1),
-        ],
-        generations,
-        calls: vec![(
-            "edited.rs::widget_edited".to_string(),
-            "kept.rs::widget_kept".to_string(),
-        )],
-        ..Held::default()
-    };
     (dir, graph)
 }
 
@@ -889,4 +928,64 @@ crate::test_cases! {
     a_reply_at_the_limit_is_kept_whole: held_under(REPLY_LIMIT / 100, REPLY_LIMIT / 100);
     a_reply_past_the_limit_keeps_the_lines_that_leave_room_for_its_note:
         held_under(REPLY_LIMIT / 100 + 1, (REPLY_LIMIT - budget::NOTE_ROOM) / 100);
+}
+
+/// A term the graph locates but no name reaches is answered by what it locates, with each
+/// entity's direct callers and none of the walk's seed among them.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_located_term_is_answered_with_its_direct_callers() {
+    let (dir, graph) = ingested(
+        &[
+            ("a.rs", "fn target() {}\n"),
+            ("b.rs", "fn caller() { target() }\n"),
+        ],
+        Held {
+            nodes: vec![entity("a.rs", "target", 1), entity("b.rs", "caller", 1)],
+            calls: vec![("b.rs::caller".to_string(), "a.rs::target".to_string())],
+            located: [("the-alias".to_string(), vec!["a.rs::target".to_string()])].into(),
+            ..Held::default()
+        },
+    );
+    let reply = TreeLookup::new(dir.path())
+        .lookup(&terms(&["the-alias"]), Ok(&graph))
+        .unwrap();
+    let expected = "exact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  called by: b.rs:1 b.rs::caller (function)\n";
+    assert!(section(&reply, "graph").contains(expected), "{reply}");
+}
+
+/// A term reaching more entities than the graph half reads says how many it left unread.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_term_reaching_more_entities_than_are_read_says_how_many_were_not() {
+    let reached = super::budget::GRAPH_ENTITIES + 2;
+    let nodes = (0..reached)
+        .map(|i| Node {
+            id: format!("dup.rs::m{i}::dup"),
+            ..entity("dup.rs", "dup", 1)
+        })
+        .collect();
+    let (dir, graph) = ingested(
+        &[("dup.rs", "fn dup() {}\n")],
+        Held {
+            nodes,
+            ..Held::default()
+        },
+    );
+    let reply = TreeLookup::new(dir.path())
+        .lookup(&terms(&["dup"]), Ok(&graph))
+        .unwrap();
+    let part = section(&reply, "graph");
+    for line in [
+        format!("exact match: {reached} entities\n"),
+        format!(
+            "truncated: 2 entities not read past the first {} shown",
+            super::budget::GRAPH_ENTITIES
+        ),
+    ] {
+        assert!(
+            part.contains(&line),
+            "the graph half says {line:?}:\n{reply}"
+        );
+    }
 }
