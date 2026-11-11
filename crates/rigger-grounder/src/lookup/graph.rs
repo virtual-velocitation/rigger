@@ -27,6 +27,8 @@ pub(crate) struct Site {
     pub kind: String,
     /// The file and 1-based line, when the graph records them (line `0` is unknown).
     pub file: Option<(String, u32)>,
+    /// Whether the site is test code, which a lookup that shows tests marks.
+    pub test: bool,
 }
 
 /// One entity a term reached.
@@ -70,6 +72,9 @@ pub(crate) enum TermGraph {
 pub(crate) struct Answered {
     pub label: Label,
     pub terms: Vec<TermGraph>,
+    /// Per term, how many test entities the graph's filter hides that the term reaches: the
+    /// separate count of test hits beside the product hits `terms` holds.
+    pub test_hits: Vec<usize>,
 }
 
 /// This build extracts no code, so its graph holds no code entity to answer from.
@@ -84,10 +89,11 @@ pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answe
 
 /// Each term of `terms` answered from `graph`, in order.
 #[cfg(feature = "symbols")]
-pub(crate) fn answer(terms: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
+pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
     let read = |e: crate::contextgraph::Error| format!("the context graph could not be read: {e}");
     let names = Names::build(graph.nodes_of_kind(KIND_CODE_ENTITY).map_err(read)?);
-    let terms = terms
+    let hidden = Names::build(graph.hidden_tests().map_err(read)?);
+    let terms = asked
         .iter()
         .map(|term| {
             let (tier, ids) = match located(graph, term).map_err(read)? {
@@ -124,9 +130,17 @@ pub(crate) fn answer(terms: &[&str], graph: &dyn ContextGraph) -> Result<Answere
             })
         })
         .collect::<Result<_, String>>()?;
+    let test_hits = asked
+        .iter()
+        .map(|term| match hidden.resolve(term) {
+            Resolved::Found { ids, .. } => ids.len(),
+            Resolved::Missing { .. } => 0,
+        })
+        .collect();
     Ok(Answered {
         label: graph.stamp_label(),
         terms,
+        test_hits,
     })
 }
 
@@ -152,6 +166,7 @@ fn site_of(node: Option<&Node>, id: &str) -> Site {
             id: id.to_string(),
             kind: KIND_CODE_ENTITY.to_string(),
             file: node_file(KIND_CODE_ENTITY, id).map(|f| (f.to_string(), 0)),
+            test: false,
         },
     }
 }
@@ -164,6 +179,7 @@ fn site(node: &Node) -> Site {
         id: site.id,
         kind: site.kind,
         file: site.file.map(|file| (file, site.line)),
+        test: node.attrs.contains_key("test"),
     }
 }
 

@@ -362,6 +362,8 @@ pub struct Composed<'r> {
     label: Label,
     /// The ids withheld so far because they are [`Stale`].
     withheld: Mutex<BTreeSet<String>>,
+    /// The test entities the filter hides, for the readers that count test hits.
+    hidden_tests: Vec<Node>,
 }
 
 impl<'r> Composed<'r> {
@@ -375,6 +377,11 @@ impl<'r> Composed<'r> {
         let groupings = view.groupings();
         let code_graph = CodeGraph::new(view, filter);
         let proofs = code_graph.resolver().proof_calls();
+        let hidden_tests = if filter.tests == Tests::Exclude {
+            code_graph.test_entities()
+        } else {
+            Vec::new()
+        };
         let code = Indexed::new(
             joined(code_graph.whole(), groupings, &proofs, filter.tests),
             Vec::new(),
@@ -407,6 +414,7 @@ impl<'r> Composed<'r> {
             stale,
             label,
             withheld: Mutex::new(BTreeSet::new()),
+            hidden_tests,
         })
     }
 
@@ -643,6 +651,18 @@ impl ContextGraph for Composed<'_> {
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)
+    }
+
+    fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
+        if self.label.compared == Compared::Uncomparable {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .hidden_tests
+            .iter()
+            .filter(|n| !self.withholds(n))
+            .cloned()
+            .collect())
     }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)

@@ -1044,6 +1044,13 @@ pub trait ContextGraph: Send + Sync {
     /// Every node and edge of the graph, nodes in id order.
     fn whole(&self) -> Result<Graph, Error>;
 
+    /// The test code entities the graph's `tests` filter hides, ordered by id and less any the
+    /// caller's worktree puts in doubt: what a reader counts as test hits it does not show. None
+    /// when tests are shown, and by default (a graph that holds no code, a test double).
+    fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
+        Ok(Vec::new())
+    }
+
     /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
     /// differs from it, with the count of nodes withheld so far for differing.
     fn stamp_label(&self) -> crate::composed::Label;

@@ -354,4 +354,30 @@ mod tests {
         let resolver = Resolver::new(&view);
         assert_eq!(resolver.proofs()["src/p.rs::b"], ["tests/t.rs:11"]);
     }
+
+    /// The tests a filter hides are the graph's to report: `exclude` holds them back as
+    /// `hidden_tests`, and `include` and `only` show them, so nothing is hidden.
+    #[test]
+    fn the_graph_reports_the_tests_it_hides() {
+        let view = view();
+        let hidden = |tests: Tests| -> Vec<String> {
+            let records = Indexed::default();
+            let honesty = Honesty {
+                worktree: "W".into(),
+                diff: Ok(Default::default()),
+                behind: None,
+            };
+            Composed::new(&records, &view, ViewFilter { tests }, honesty)
+                .unwrap()
+                .hidden_tests()
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect()
+        };
+        let all = ["t1", "t2", "t3", "t4", "t5"].map(|t| format!("tests/t.rs::{t}"));
+        assert_eq!(hidden(Tests::Exclude), all);
+        assert!(hidden(Tests::Include).is_empty());
+        assert!(hidden(Tests::Only).is_empty());
+    }
 }

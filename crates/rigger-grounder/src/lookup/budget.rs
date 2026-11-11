@@ -76,9 +76,10 @@ fn shares(total: usize, n: usize) -> impl Iterator<Item = usize> {
 /// The graph's label, then each term's graph answer within its share of [`GRAPH_CHARS`].
 fn graph_section(out: &mut String, terms: &[&str], answered: &Answered) {
     let _ = writeln!(out, "{}\n{GRAPH_FILTERED}", answered.label);
-    for ((term, answer), share) in terms
+    for (((term, answer), tests), share) in terms
         .iter()
         .zip(&answered.terms)
+        .zip(&answered.test_hits)
         .zip(shares(GRAPH_CHARS, terms.len()))
     {
         let _ = writeln!(out, "\n### {term}");
@@ -126,6 +127,13 @@ fn graph_section(out: &mut String, terms: &[&str], answered: &Answered) {
                 }
             }
         }
+        if *tests > 0 {
+            let noun = if *tests == 1 { "hit" } else { "hits" };
+            let _ = writeln!(
+                out,
+                "{tests} test {noun} not shown; the tests filter (include or only) shows them"
+            );
+        }
     }
 }
 
@@ -171,12 +179,14 @@ fn more(block: &mut String, dropped: usize) {
     block.push('\n');
 }
 
-/// `file:line id (kind)`, the line left out when unknown and the file when there is none.
+/// `file:line id (kind)`, the line left out when unknown and the file when there is none, and
+/// ` [test]` after a test site.
 fn site_line(site: &Site) -> String {
+    let mark = if site.test { " [test]" } else { "" };
     match &site.file {
-        Some((file, 0)) => format!("{file} {} ({})", site.id, site.kind),
-        Some((file, line)) => format!("{file}:{line} {} ({})", site.id, site.kind),
-        None => format!("{} ({})", site.id, site.kind),
+        Some((file, 0)) => format!("{file} {} ({}){mark}", site.id, site.kind),
+        Some((file, line)) => format!("{file}:{line} {} ({}){mark}", site.id, site.kind),
+        None => format!("{} ({}){mark}", site.id, site.kind),
     }
 }
 
