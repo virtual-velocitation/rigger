@@ -3417,6 +3417,27 @@ impl Projection for Projector {
     fn locate(&self, entity: &str) -> Result<Located, Error> {
         Projector::locate(self, entity)
     }
+
+    /// Overrides the trait default with this project's nodes of `kind`, read as [`whole`]
+    /// reads its nodes and ordered by id.
+    ///
+    /// [`whole`]: Projector::whole
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, attrs FROM nodes
+                 WHERE project = ?1 AND kind = ?2
+                 ORDER BY id",
+            )
+            .map_err(be)?;
+        let nodes = stmt
+            .query_map(params![self.project, kind], row_to_node)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be);
+        nodes
+    }
 }
 
 fn row_to_node(r: &rusqlite::Row) -> rusqlite::Result<Node> {
