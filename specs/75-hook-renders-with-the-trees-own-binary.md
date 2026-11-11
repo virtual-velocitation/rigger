@@ -12,12 +12,18 @@ in the template `install_precommit_hook` composes (src/cli/hygiene.rs:758).
 ## Design
 
 - BINARY SELECTION IN THE TEMPLATE, decided here: before rendering, the managed block
-  resolves the first executable of: `$CARGO_TARGET_DIR/release/rigger`,
-  `$CARGO_TARGET_DIR/debug/rigger`, `./target/release/rigger`, `./target/debug/rigger`,
+  consults candidate tiers in authority order, one target dir per tier:
+  `$CARGO_TARGET_DIR/{release,debug}/rigger`, `./target/{release,debug}/rigger`, the
+  unit's relocated cargo-target under the user cache dir, then
   `<git-common-dir>/../.rigger/tmp/cargo-target-<unit>/{release,debug}/rigger` where
   `<unit>` derives from the worktree directory name (`rigger-wt-<unit>`), then the shared
   step cache `<git-common-dir>/../.rigger/tmp/cargo-target/debug/rigger`, and finally PATH
-  `rigger`. Debug candidates matter: unit gates build the debug profile only.
+  `rigger`. The first tier holding an executable build decides: within it, the more
+  recently modified of its release and debug builds is used, so a stale release build
+  never shadows a fresh debug build in the same dir. Recency never crosses tiers: a lower
+  tier, the shared step cache above all, may hold a newer build of another worktree's
+  tree, and rendering with it would check docs against a foreign binary. Debug candidates
+  matter: unit gates build the debug profile only.
 - SAFE-CLOSED: a wrong candidate renders drift and the existing refusal fires; candidate
   selection can only convert a false refusal into a pass when the render actually matches,
   never the reverse. The refusal message keeps naming the rendering binary and provenance.
@@ -27,10 +33,11 @@ in the template `install_precommit_hook` composes (src/cli/hygiene.rs:758).
 ## Done when
 
 - [ ] The installed hook prefers a tree-built rigger over PATH: a test at the
-  `compose_precommit_bytes` seam proves the managed block resolves the candidate order
-  (env target dir release then debug, local target, unit-derived cargo-target, shared step
-  cache, PATH last) and invokes the resolved binary for both the render and the provenance
-  line. This criterion OWNS the candidate order and its rendering in the template.
+  `compose_precommit_bytes` seam proves the managed block consults the tiers in order
+  (env target dir, local target, relocated unit target, unit-derived cargo-target, shared
+  step cache, PATH last), each later tier only while no binary is resolved, takes the newer
+  build within a tier, and invokes the resolved binary for both the render and the
+  provenance line. This criterion OWNS the tier order and its rendering in the template.
 - [ ] A commit in a worktree whose code adds a rendered fact passes when that worktree's
   own built binary is present and renders docs matching the staged ones, while the same
   commit with only a stale PATH binary still refuses - proven at the hook-execution seam
