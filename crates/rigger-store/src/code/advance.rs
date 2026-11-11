@@ -650,6 +650,40 @@ mod tests {
         }
     }
 
+    /// Each row: a store file replaced by a directory, which every OS refuses to read as a file
+    /// with an error other than not-found. Opening the store, in either mode, is that error,
+    /// never an empty store advanced over.
+    #[test]
+    fn a_store_file_that_cannot_be_read_is_an_error_never_an_empty_store() {
+        let cases = [
+            ("the snapshot CURRENT names", "000001.snap"),
+            ("CURRENT", CURRENT),
+        ];
+        for (name, file) in cases {
+            for mode in [Mode::Read, Mode::Write] {
+                let root = tempfile::tempdir().unwrap();
+                let store = Store::new(root.path());
+                let source = MemSource::default();
+                let group = CountingGroup::default();
+                let first = source.commit("c1", A);
+                store
+                    .advance(&source, &ToyExtract::new(FP), &group, &first)
+                    .unwrap();
+                std::fs::remove_file(store.dir().join(file)).unwrap();
+                std::fs::create_dir(store.dir().join(file)).unwrap();
+                let before = snap_names(&store);
+                source.commit("c2", B);
+                let opened = open_current_in(&store, &source, &ToyExtract::new(FP), &group, mode);
+                assert!(opened.is_err(), "{name}, {mode:?}: the read error surfaces");
+                assert_eq!(
+                    snap_names(&store),
+                    before,
+                    "{name}, {mode:?}: nothing published or reaped"
+                );
+            }
+        }
+    }
+
     /// Fails one publish, as a crash at that step would: a torn temp, or no CURRENT rename.
     struct Crash {
         torn_snapshot: bool,
