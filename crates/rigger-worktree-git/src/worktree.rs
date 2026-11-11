@@ -2688,9 +2688,7 @@ pub fn finish_git(
     started: std::io::Result<std::process::Child>,
     output: GitOutput,
 ) -> Result<Vec<u8>, Vec<u8>> {
-    let out = started
-        .and_then(std::process::Child::wait_with_output)
-        .map_err(|e| e.to_string().into_bytes())?;
+    let out = waited(started)?;
     let answer = match (output, out.status.success()) {
         (GitOutput::Stdout, true) => out.stdout,
         (GitOutput::Stdout, false) => out.stderr,
@@ -2701,6 +2699,30 @@ pub fn finish_git(
     } else {
         Err(answer)
     }
+}
+
+/// The answer of a git query [`start_git`] started that answers a quiet no by exiting 1, as
+/// `rev-parse --verify -q` and `symbolic-ref -q` do: standard output when git answers, none for
+/// that no, and standard error (the exit status when git said nothing) when git fails any other
+/// way or ends by a signal; a start failure holds its message.
+pub fn finish_git_query(
+    started: std::io::Result<std::process::Child>,
+) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    let out = waited(started)?;
+    match out.status.code() {
+        Some(0) => Ok(Some(out.stdout)),
+        Some(1) => Ok(None),
+        _ if out.stderr.is_empty() => Err(out.status.to_string().into_bytes()),
+        _ => Err(out.stderr),
+    }
+}
+
+/// The output of the git run `started` began, once it ends; a start or wait failure holds its
+/// message.
+fn waited(started: std::io::Result<std::process::Child>) -> Result<std::process::Output, Vec<u8>> {
+    started
+        .and_then(std::process::Child::wait_with_output)
+        .map_err(|e| e.to_string().into_bytes())
 }
 
 /// `git <args>` in `dir`, answering standard output and standard error together as text.
@@ -3180,6 +3202,58 @@ mod tests {
             assert_eq!(answer.is_ok(), ok, "{name}");
             let text = String::from_utf8_lossy(answer.as_ref().unwrap_or_else(|e| e)).to_string();
             assert!(text.contains(holds), "{name}: {text}");
+        }
+    }
+
+    /// A git query answers its output, none for git's quiet no (exit 1), and a failure for any
+    /// other exit or a git that could not start.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_query_answers_none_only_for_its_quiet_no() {
+        let ran = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+        };
+        let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        /// (name, the run started, what the query answers)
+        type Row<'a> = (
+            &'a str,
+            std::io::Result<std::process::Child>,
+            Result<Option<&'a str>, &'a str>,
+        );
+        let rows: [Row; 5] = [
+            ("an answer", ran("echo main"), Ok(Some("main\n"))),
+            ("the quiet no", ran("exit 1"), Ok(None)),
+            (
+                "a failure",
+                ran("echo 'fatal: bad object' >&2; exit 128"),
+                Err("fatal: bad object\n"),
+            ),
+            (
+                "a failure that says nothing",
+                ran("exit 128"),
+                Err("exit status: 128"),
+            ),
+            (
+                "a git that could not start",
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no git")),
+                Err("no git"),
+            ),
+        ];
+        for (name, started, expected) in rows {
+            let answer = finish_git_query(started)
+                .map(|out| out.map(text))
+                .map_err(text);
+            assert_eq!(
+                answer,
+                expected
+                    .map(|out| out.map(str::to_owned))
+                    .map_err(str::to_owned),
+                "{name}"
+            );
         }
     }
 
