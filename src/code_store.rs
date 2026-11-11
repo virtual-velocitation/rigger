@@ -27,7 +27,7 @@ impl CodeStore {
     pub fn in_repository(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
-            source: Box::new(GitTreeSource::new(root, Store::new(root).dir())),
+            source: Box::new(GitTreeSource::new(root)),
         }
     }
 

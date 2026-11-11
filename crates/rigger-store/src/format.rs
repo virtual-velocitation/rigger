@@ -18,7 +18,7 @@ use crate::sync_dir::sync_dir;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) of `bytes`, read sixteen bytes a
@@ -258,30 +258,8 @@ impl<'a> Container<'a> {
     }
 }
 
-/// Distinguishes the temp files of one process.
+/// Distinguishes the temp files of concurrent writers within one process.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// The suffix of every temp [`temp_path`] names.
-const TEMP: &str = ".tmp";
-
-/// The suffix of the lock git takes beside a file it rewrites in place.
-const GIT_LOCK: &str = ".lock";
-
-/// A temp path in `dir` for a file named `file_name`, distinct from every other process's temps
-/// and from this one's: `.<file_name>.<pid>.<seq>.tmp`.
-pub fn temp_path(dir: &Path, file_name: &str) -> PathBuf {
-    dir.join(format!(
-        ".{file_name}.{}.{}{TEMP}",
-        std::process::id(),
-        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-/// Whether `name` is a temp [`temp_path`] names, or the lock git takes beside one it rewrites
-/// (as it rewrites a copy of an index): what a crash can leave among a store's files.
-pub fn is_temp(name: &str) -> bool {
-    name.strip_suffix(GIT_LOCK).unwrap_or(name).ends_with(TEMP)
-}
 
 /// Publishes `bytes` at `path` atomically: a reader sees the old file or the new one, never a
 /// part. The bytes go to a `.tmp` sibling that is fsynced, renamed over `path`, and the directory
@@ -294,7 +272,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))?;
-    let tmp = temp_path(dir, file_name);
+    let tmp = dir.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     {
         let mut f =
             File::create(&tmp).map_err(|e| format!("create temp {}: {e}", tmp.display()))?;

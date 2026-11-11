@@ -1839,10 +1839,7 @@ fn head_view<T>(
     // The light lane shares the symbols lane's `Head` shape without a store: the tree's own
     // difference from the worktree over a view that holds no fact.
     let source: Box<dyn TreeSource> = match main_repo_root(worktree)? {
-        Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(
-            &root,
-            rigger_store::code::Store::new(&root).dir(),
-        )),
+        Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(&root)),
         None => Box::new(rigger_store::code::DirTreeSource::new(worktree)),
     };
     let tip = source.head()?;

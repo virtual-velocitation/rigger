@@ -7,11 +7,11 @@ use crate::subprocess::git_in;
 use crate::worktree::{finish_git, finish_git_query, start_command, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
-use rigger_store::format::temp_path;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tempfile::TempDir;
 
 /// The file modes a listing keeps: regular files, executable or not. Symlinks and submodules
 /// hold no bytes of their own to read facts from.
@@ -20,11 +20,8 @@ const FILE_MODES: [&str; 2] = ["100644", "100755"];
 /// The variable naming the index a git run reads in place of its worktree's.
 const INDEX_FILE: &str = "GIT_INDEX_FILE";
 
-/// The file name an [`IndexCopy`]'s temp is named for.
+/// The file name of a git index, in a worktree's git dir and in an [`IndexCopy`]'s directory.
 const INDEX: &str = "index";
-
-/// How many times a diff is read again when its index copy was removed before git read it.
-const COPY_ATTEMPTS: usize = 3;
 
 /// The one git command every git the source runs starts from: git in `dir` ([`git_in`]) with
 /// optional locks off, so a read takes no lock it can do without. A diff refreshes the index it
@@ -35,77 +32,58 @@ fn read_git(dir: &Path) -> Command {
     git
 }
 
-/// A copy of a worktree's index in the source's scratch directory, which git reads, and
-/// refreshes, in place of the worktree's own. It keeps the index's modification time, by which
-/// git judges an entry racily clean. Named as the code store's temps are ([`temp_path`]), so the
-/// store's reaper removes one a crash leaves, and removed when dropped.
+/// A private copy of a worktree's index, in a directory of its own in the OS temp directory,
+/// which git reads, and refreshes, in place of the worktree's own. It keeps the index's
+/// modification time, by which git judges an entry racily clean. Dropping it removes the
+/// directory, with any lock git left beside the copy; one a hard stop leaves is the OS temp
+/// cleaner's.
 struct IndexCopy {
-    path: PathBuf,
-    /// Whether the worktree had an index to copy. One with none has no copy, and git, reading
-    /// none, answers as it answers in the worktree.
-    copied: bool,
+    dir: TempDir,
 }
 
 impl IndexCopy {
     /// The copy of the index of `worktree`, found where git finds it ([`Location::GitDir`]): a
-    /// linked worktree's is in its own administrative directory. A scratch directory that cannot
-    /// be made or written fails the copy; the worktree's own index is never read in its place.
-    fn of(worktree: &Path, scratch: &Path) -> Result<Self, String> {
+    /// linked worktree's is in its own administrative directory. A worktree with no index has no
+    /// copy, so git, reading none, answers as it answers in the worktree; the worktree's own index
+    /// is never read in its place.
+    fn of(worktree: &Path) -> Result<Self, String> {
         let git_dir = rev_parse(worktree, Location::GitDir)?
             .ok_or_else(|| format!("{} is in no git repository", worktree.display()))?;
         let index = Path::new(&git_dir).join(INDEX);
-        let made = |e: std::io::Error| format!("make {}: {e}", scratch.display());
-        std::fs::create_dir_all(scratch).map_err(made)?;
-        let path = temp_path(&std::path::absolute(scratch).map_err(made)?, INDEX);
+        let copy = Self {
+            dir: tempfile::tempdir().map_err(|e| format!("make a temp directory: {e}"))?,
+        };
         let mut original = match File::open(&index) {
             Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Ok(Self {
-                    path,
-                    copied: false,
-                })
-            }
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(copy),
             Err(e) => return Err(format!("read {}: {e}", index.display())),
         };
-        let copy = Self { path, copied: true };
         let mut write = |path: &Path| {
             let modified = original.metadata()?.modified()?;
             let mut file = File::create_new(path)?;
             std::io::copy(&mut original, &mut file)?;
             file.set_modified(modified)
         };
-        write(&copy.path)
-            .map_err(|e| format!("copy {} to {}: {e}", index.display(), copy.path.display()))?;
+        write(&copy.path())
+            .map_err(|e| format!("copy {} to {}: {e}", index.display(), copy.path().display()))?;
         Ok(copy)
     }
 
-    /// Whether the copy is gone, as the store's reaper removes the temps an advance finds: git
-    /// may then have read no index at all.
-    fn vanished(&self) -> bool {
-        self.copied && !self.path.try_exists().unwrap_or(false)
-    }
-}
-
-impl Drop for IndexCopy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+    /// Where the copy is, or, for a worktree with no index, where git finds none.
+    fn path(&self) -> PathBuf {
+        self.dir.path().join(INDEX)
     }
 }
 
 /// The tree source of the git repository holding `root`.
 pub struct GitTreeSource {
     root: PathBuf,
-    /// The directory a diff copies its worktree's index into ([`IndexCopy`]).
-    scratch: PathBuf,
 }
 
 impl GitTreeSource {
-    /// The tree source of the git repository holding `root`, copying a worktree's index into
-    /// `scratch`, the code store's directory, for each diff.
-    pub fn new(root: &Path, scratch: &Path) -> Self {
+    pub fn new(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
-            scratch: scratch.to_path_buf(),
         }
     }
 
@@ -232,40 +210,6 @@ impl TreeSource for GitTreeSource {
         tree: &str,
         worktree: &Path,
     ) -> Result<WorktreeDiff, String> {
-        self.changed_with(tree, worktree, &|_| {})
-    }
-
-    /// Reads every blob through one `git cat-file --batch`; a blob the repository does not hold
-    /// fails the read.
-    fn read_blobs(
-        &self,
-        blobs: &[String],
-        sink: &mut dyn FnMut(&str, &[u8]),
-    ) -> Result<(), String> {
-        let mut batch = crate::worktree::BlobBatch::start(&self.root, read_git(&self.root))
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("{} is in no git repository", self.root.display()))?;
-        for blob in blobs {
-            let bytes = batch
-                .blob(blob)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("the repository holds no blob {blob}"))?;
-            sink(blob, &bytes);
-        }
-        Ok(())
-    }
-}
-
-impl GitTreeSource {
-    /// [`TreeSource::changed_against_worktree`], with `copied` run on each index copy once it is
-    /// made and before git reads it: the seam a test removes the copy through, as the store's
-    /// reaper may.
-    fn changed_with(
-        &self,
-        tree: &str,
-        worktree: &Path,
-        copied: &dyn Fn(&Path),
-    ) -> Result<WorktreeDiff, String> {
         let diff = [
             "-c",
             "core.fileMode=false",
@@ -284,7 +228,11 @@ impl GitTreeSource {
             "--full-name",
         ];
         let listing_started = start_command(read_git(worktree), &listing);
-        let status = self.diffed(worktree, &diff, copied);
+        let status = IndexCopy::of(worktree).and_then(|copy| {
+            let mut git = read_git(worktree);
+            git.env(INDEX_FILE, copy.path());
+            Self::finish(worktree, &diff, start_command(git, &diff))
+        });
         let others = Self::finish(worktree, &listing, listing_started);
         let (status, others) = (status?, others?);
         let mut out = WorktreeDiff::default();
@@ -310,29 +258,24 @@ impl GitTreeSource {
         Ok(out)
     }
 
-    /// The output of `git <diff>` in `worktree`, read over an [`IndexCopy`] (`copied` runs on
-    /// it first). A copy gone once git has run may have left git no index to read, so the diff
-    /// is read again over a new one; once that has happened [`COPY_ATTEMPTS`] times it fails.
-    fn diffed(
+    /// Reads every blob through one `git cat-file --batch`; a blob the repository does not hold
+    /// fails the read.
+    fn read_blobs(
         &self,
-        worktree: &Path,
-        diff: &[&str],
-        copied: &dyn Fn(&Path),
-    ) -> Result<Vec<u8>, String> {
-        for _ in 0..COPY_ATTEMPTS {
-            let copy = IndexCopy::of(worktree, &self.scratch)?;
-            copied(&copy.path);
-            let mut git = read_git(worktree);
-            git.env(INDEX_FILE, &copy.path);
-            let out = Self::finish(worktree, diff, start_command(git, diff))?;
-            if !copy.vanished() {
-                return Ok(out);
-            }
+        blobs: &[String],
+        sink: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String> {
+        let mut batch = crate::worktree::BlobBatch::start(&self.root, read_git(&self.root))
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("{} is in no git repository", self.root.display()))?;
+        for blob in blobs {
+            let bytes = batch
+                .blob(blob)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("the repository holds no blob {blob}"))?;
+            sink(blob, &bytes);
         }
-        Err(format!(
-            "the copy of {}'s index was removed before git read it, {COPY_ATTEMPTS} times",
-            worktree.display()
-        ))
+        Ok(())
     }
 }
 
@@ -342,7 +285,6 @@ mod tests {
     use crate::test_support::{git_commit_all, git_ok, git_out, init_repo};
     use rigger_store::code::doubles::{CountingGroup, ToyExtract};
     use rigger_store::code::{content_id, DirTreeSource, Store};
-    use std::cell::Cell;
 
     type Files = &'static [(&'static str, &'static str)];
 
@@ -444,8 +386,7 @@ mod tests {
             git_ok(dir.path(), &["config", "user.email", "t@example.com"]);
             git_ok(dir.path(), &["config", "user.name", "t"]);
             (row.setup)(dir.path());
-            let copies = tempfile::tempdir().unwrap();
-            let source = GitTreeSource::new(dir.path(), copies.path());
+            let source = GitTreeSource::new(dir.path());
             let tip = source.head().expect(row.name);
             assert_eq!(tip.head, row.head, "{}", row.name);
             assert_eq!(tip.commit.is_some(), row.commit, "{}", row.name);
@@ -498,8 +439,7 @@ mod tests {
             let dir = repo(&[("a.txt", "a\n")]);
             git_ok(dir.path(), &["checkout", "-q", "-b", "work"]);
             break_head(dir.path());
-            let copies = tempfile::tempdir().unwrap();
-            let head = GitTreeSource::new(dir.path(), copies.path()).head();
+            let head = GitTreeSource::new(dir.path()).head();
             assert!(head.is_err(), "{name}: read as {head:?}");
         }
     }
@@ -536,8 +476,7 @@ mod tests {
             let dir = repo(row.committed);
             write(dir.path(), row.edit);
             remove(dir.path(), row.delete);
-            let copies = tempfile::tempdir().unwrap();
-            let source = GitTreeSource::new(dir.path(), copies.path());
+            let source = GitTreeSource::new(dir.path());
             let extract = ToyExtract::new(1);
             let head = source.head().expect(row.name);
             Store::new(dir.path())
@@ -606,8 +545,7 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let copies = tempfile::tempdir().unwrap();
-            let git = GitTreeSource::new(dir.path(), copies.path());
+            let git = GitTreeSource::new(dir.path());
             let plain = DirTreeSource::new(dir.path());
             // Each source is asked about its head as it reads it, before the commit after it: the
             // directory source answers only for the tree it read last.
@@ -649,28 +587,26 @@ mod tests {
         let checkout = repo(tree);
         let copy = tempfile::tempdir().unwrap();
         write(copy.path(), tree);
-        let copies = tempfile::tempdir().unwrap();
-        /// The source over `root`, a git one making its temps in `copies`.
-        type Opens = fn(&Path, &Path) -> Box<dyn TreeSource>;
+        type Opens = fn(&Path) -> Box<dyn TreeSource>;
         let rows: [(&str, &Path, Opens); 3] = [
             (
                 "the git source over the checkout",
                 checkout.path(),
-                |root, copies| Box::new(GitTreeSource::new(root, copies)),
+                |root| Box::new(GitTreeSource::new(root)),
             ),
             (
                 "the directory source over the checkout",
                 checkout.path(),
-                |root, _| Box::new(DirTreeSource::new(root)),
+                |root| Box::new(DirTreeSource::new(root)),
             ),
             (
                 "the directory source over a plain copy",
                 copy.path(),
-                |root, _| Box::new(DirTreeSource::new(root)),
+                |root| Box::new(DirTreeSource::new(root)),
             ),
         ];
         for (name, root, source) in rows {
-            let source = source(root, copies.path());
+            let source = source(root);
             let extract = ToyExtract::new(1);
             let store = tempfile::tempdir().unwrap();
             Store::new(store.path())
@@ -792,8 +728,7 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let copies = tempfile::tempdir().unwrap();
-            let source = GitTreeSource::new(dir.path(), copies.path());
+            let source = GitTreeSource::new(dir.path());
             let head = source.head().expect(row.name);
             write(dir.path(), row.write);
             remove(dir.path(), row.delete);
@@ -819,9 +754,9 @@ mod tests {
         }
     }
 
-    /// A read leaves the index of the worktree it reads as it was, even where a file's stat
-    /// changed while its bytes did not, over which git's diff refreshes the index it reads; and
-    /// whatever the read makes in its scratch directory is gone once the read ends.
+    /// A read leaves the index of the worktree it reads as it was, and takes no lock on it, even
+    /// where a file's stat changed while its bytes did not, over which git's diff refreshes the
+    /// index it reads.
     #[test]
     fn a_read_leaves_the_worktrees_index_as_it_was() {
         struct Row {
@@ -868,8 +803,7 @@ mod tests {
             let git_dir = git_out(&worktree, &["rev-parse", "--absolute-git-dir"]);
             let index = Path::new(&git_dir).join("index");
             let before = std::fs::read(&index).ok();
-            let scratch = dir.path().join("store");
-            let source = GitTreeSource::new(&main, &scratch);
+            let source = GitTreeSource::new(&main);
             let tree = source.head().expect(row.name).tree;
             let diff = source
                 .changed_against_worktree(&tree, &worktree)
@@ -890,81 +824,34 @@ mod tests {
                 "{}",
                 row.name
             );
-            let left: Vec<_> = std::fs::read_dir(&scratch)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.file_name())
-                .collect();
-            assert!(left.is_empty(), "{}: left {left:?}", row.name);
+            assert!(
+                !index.with_extension("lock").exists(),
+                "{}: the worktree's index lock",
+                row.name
+            );
         }
     }
 
-    /// A read whose index copy is lost - removed before git reads it, as the store's reaper may,
-    /// or never made, in a scratch directory that cannot be made - is read again over a new copy
-    /// or fails. It never answers from no index, and never reads the worktree's own in its place.
+    /// An index copy holds the worktree's index as it is, its modification time included, or
+    /// nothing for a worktree with no index; dropping it removes its directory.
     #[test]
-    fn a_read_whose_index_copy_is_lost_is_read_again_or_fails() {
-        struct Row {
-            name: &'static str,
-            /// The scratch directory, made beside the checkout in `dir`.
-            scratch: fn(&Path) -> PathBuf,
-            /// How many copies are removed before git reads them.
-            removed: usize,
-            /// Whether the read answers, describing the checkout as unchanged.
-            answers: bool,
-        }
-        let rows = [
-            Row {
-                name: "a copy removed once is made again",
-                scratch: |dir| dir.join("store"),
-                removed: 1,
-                answers: true,
-            },
-            Row {
-                name: "a copy removed every time fails the read",
-                scratch: |dir| dir.join("store"),
-                removed: usize::MAX,
-                answers: false,
-            },
-            Row {
-                name: "a scratch directory that cannot be made fails the read",
-                scratch: |dir| {
-                    let file = dir.join("file");
-                    std::fs::write(&file, "not a directory\n").unwrap();
-                    file.join("store")
-                },
-                removed: 0,
-                answers: false,
-            },
-        ];
-        for row in rows {
-            let checkout = repo(&[("a.txt", "a\n"), ("b.txt", "b\n")]);
-            restamp(&checkout.path().join("a.txt"));
-            let index = std::fs::read(checkout.path().join(".git").join("index")).unwrap();
-            let beside = tempfile::tempdir().unwrap();
-            let source = GitTreeSource::new(checkout.path(), &(row.scratch)(beside.path()));
-            let tree = source.head().expect(row.name).tree;
-            let removals = Cell::new(0);
-            let read = source.changed_with(&tree, checkout.path(), &|copy| {
-                if removals.get() < row.removed {
-                    removals.set(removals.get() + 1);
-                    std::fs::remove_file(copy).unwrap();
-                }
-            });
-            match read {
-                Ok(diff) => {
-                    assert!(row.answers, "{}: answered {diff:?}", row.name);
-                    assert_eq!(diff, WorktreeDiff::default(), "{}", row.name);
-                }
-                Err(why) => assert!(!row.answers, "{}: failed: {why}", row.name),
+    fn an_index_copy_holds_the_index_as_it_is_until_dropped() {
+        let modified = |file: &Path| std::fs::metadata(file).and_then(|m| m.modified()).ok();
+        for (name, indexed) in [("a checkout with an index", true), ("one with none", false)] {
+            let checkout = repo(&[("a.txt", "a\n")]);
+            let index = checkout.path().join(".git").join(INDEX);
+            restamp(&index);
+            if !indexed {
+                std::fs::remove_file(&index).unwrap();
             }
-            assert_eq!(
-                std::fs::read(checkout.path().join(".git").join("index")).unwrap(),
-                index,
-                "{}: the checkout's index",
-                row.name
-            );
+            let copy = IndexCopy::of(checkout.path()).expect(name);
+            let held = std::fs::read(copy.path()).ok();
+            assert_eq!(held, std::fs::read(&index).ok(), "{name}: the bytes");
+            assert_eq!(held.is_some(), indexed, "{name}: a copy");
+            assert_eq!(modified(&copy.path()), modified(&index), "{name}: the time");
+            let dir = copy.dir.path().to_path_buf();
+            drop(copy);
+            assert!(!dir.exists(), "{name}: the copy's directory");
         }
     }
 
