@@ -27,9 +27,7 @@
 use std::path::Path;
 
 use crate::common;
-use common::cli::open_graph;
 use common::cli::run_rigger;
-use common::fixtures::apply_code_entity;
 use common::git::run_git;
 use common::mcp::McpSession;
 
@@ -80,25 +78,21 @@ fn add_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
     );
 }
 
-/// A committed repository at `root` with a store and a graph holding one code entity,
-/// `a.rs::alpha`, folded under the identity the binary resolves for `root` - the owning graph a
+/// A committed repository at `root` with a store and a tree holding one code entity,
+/// `a.rs::alpha`, in its code store - the owning graph a
 /// lookup from any of its worktrees must answer from - and a relocated worktree of it at
 /// `worktree` on `branch`, carrying the `.rigger/` a unit worktree checks out (its tracked
 /// workflow) with no graph of its own. Answers nothing; the caller owns both directories.
 fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
     git_init_committed(root);
+    std::fs::write(root.join("a.rs"), "fn alpha() {}\n").expect("write a.rs");
+    for args in [&["add", "a.rs"][..], &["commit", "-q", "-m", "alpha"]] {
+        assert!(
+            run_git(root, args).status.success(),
+            "git {args:?} must succeed"
+        );
+    }
     seed_store(root);
-    // Seeded at a position the store below never reaches, so an emit the test folds never
-    // collides with it on the graph's per-position applied ledger.
-    apply_code_entity(
-        &open_graph(root),
-        100_001,
-        "a.rs",
-        "alpha",
-        "function",
-        1,
-        "rust",
-    );
     add_relocated_worktree(root, worktree, branch);
     std::fs::create_dir_all(worktree.join(".rigger")).expect("create the worktree's .rigger");
     std::fs::write(
