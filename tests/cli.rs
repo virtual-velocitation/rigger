@@ -20373,6 +20373,15 @@ rigger::test_cases! {
             "a rendered fact this worktree's code added\n",
             "add a rendered fact",
         );
+    /// The hook checks with the MOST RECENTLY MODIFIED tree-built binary, not the first in
+    /// candidate order: a newer debug build beside an older, stale release build passes the
+    /// commit, though the release build is tried first and would report the fresh docs drifted.
+    setup_precommit_hook_checks_with_a_newer_debug_build_over_an_older_release_build:
+        assert_the_hook_passes_a_matching_render_untouched(
+            stage_a_newer_debug_build_beside_an_older_release_build,
+            "a rendered fact this worktree's debug build added\n",
+            "add a rendered fact",
+        );
 }
 
 /// Over a self-hosting repo that tracks every rendered output as a fresh render, `prepare` the
@@ -20761,9 +20770,13 @@ fn stage_tree_built_binary(root: &Path) {
 /// it is the only binary reachable at all, so a reported drift is unavoidable. Returns a `PATH`
 /// with the shim dir prepended.
 fn stage_stale_rigger_shim(root: &Path) -> String {
-    rigger_shim_on_path(
-        root,
-        "#!/bin/sh\n\
+    rigger_shim_on_path(root, STALE_RIGGER_SCRIPT)
+}
+
+/// The stale `rigger` [`stage_stale_rigger_shim`] puts on `PATH`: its `help` lists `rigger docs
+/// --check`, its `docs --check` reports both `using-rigger` outputs `drifted` and exits 1, and
+/// its `version` names itself as a stale build.
+const STALE_RIGGER_SCRIPT: &str = "#!/bin/sh\n\
 case \"$1 $2\" in\n\
   'help ')\n\
 echo '  rigger docs --check         check every rendered output against a fresh render,' 1>&2\n\
@@ -20779,8 +20792,29 @@ echo 'rigger 0.0.0-stale-test-shim'\n\
 exit 0\n\
 ;;\n\
 esac\n\
-exit 1\n",
-    )
+exit 1\n";
+
+/// Stage the tree's own debug build beside an OLDER release build in `root`'s local target -
+/// the release build is [`STALE_RIGGER_SCRIPT`], last modified an hour before the debug build -
+/// and return a `PATH` whose `rigger` is that same stale script. The release build comes first
+/// in candidate order, so only a hook that checks with the most recently modified tree-built
+/// binary sees the current render.
+fn stage_a_newer_debug_build_beside_an_older_release_build(root: &Path) -> String {
+    stage_tree_built_binary(root);
+    let release_dir = root.join("target").join("release");
+    std::fs::create_dir_all(&release_dir).unwrap();
+    let release = release_dir.join("rigger");
+    std::fs::write(&release, STALE_RIGGER_SCRIPT).unwrap();
+    make_executable(&release);
+    let debug_built = std::fs::metadata(root.join("target").join("debug").join("rigger"))
+        .and_then(|m| m.modified())
+        .expect("the debug build's modification time");
+    std::fs::File::options()
+        .write(true)
+        .open(&release)
+        .and_then(|f| f.set_modified(debug_built - std::time::Duration::from_secs(3600)))
+        .expect("age the release build an hour behind the debug build");
+    stage_stale_rigger_shim(root)
 }
 
 /// Spec 75, crit 2 (the SAME commit shape REFUSES with only a stale PATH rigger, end to end):
