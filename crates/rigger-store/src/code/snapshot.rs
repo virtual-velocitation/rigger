@@ -37,6 +37,7 @@ use rigger_domain::code_view::{Cluster, CodeView, DefRef, FileRef, Groupings, Me
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
+use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
 pub(crate) const VERSION: u16 = 2;
@@ -404,6 +405,8 @@ pub struct Snapshot {
     tables: BTreeMap<u16, Table>,
     leaf: Index,
     name: Index,
+    /// Each file row's facts, decoded the first time this open reads them.
+    decoded: Vec<OnceLock<FileFacts>>,
 }
 
 impl Snapshot {
@@ -506,6 +509,7 @@ impl Snapshot {
             return Err("the groupings have trailing bytes".into());
         }
         drop(container);
+        let files = tables.get(&FILES).map_or(0, |t| t.rows);
         let snapshot = Self {
             stamp,
             groupings,
@@ -514,6 +518,7 @@ impl Snapshot {
             tables,
             leaf,
             name,
+            decoded: (0..files).map(|_| OnceLock::new()).collect(),
         };
         snapshot.validate()?;
         Ok(snapshot)
@@ -810,7 +815,8 @@ impl CodeView for Snapshot {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
                 std::cmp::Ordering::Equal => {
-                    return Some(Cow::Owned(self.facts(self.row(files, mid))))
+                    let facts = self.decoded[mid].get_or_init(|| self.facts(self.row(files, mid)));
+                    return Some(Cow::Borrowed(facts));
                 }
             }
         }
