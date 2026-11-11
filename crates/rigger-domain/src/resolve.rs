@@ -207,6 +207,17 @@ fn one_here_else_one_anywhere<'c, 'v>(
     }
 }
 
+/// `calls` in proof order: by the definition proved, then the calling file, then the evidence
+/// `file:line` as text, then the caller.
+fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
+    fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
+        let file = c.evidence.rsplit_once(':').map_or("", |(file, _)| file);
+        (&c.target, file, &c.evidence, &c.caller)
+    }
+    calls.sort_by(|a, b| key(a).cmp(&key(b)));
+    calls
+}
+
 /// The rule table applied to one view.
 pub struct Resolver<'v> {
     view: &'v dyn CodeView,
@@ -534,32 +545,41 @@ impl<'v> Resolver<'v> {
     }
 
     fn walk_proof_calls(&self) -> Vec<ProofCall> {
-        let mut rows: Vec<(String, &str, String, String)> = Vec::new();
+        let mut rows = Vec::new();
         for &path in &self.code_files {
-            let Some(facts) = self.view.file(path) else {
-                continue;
-            };
-            for m in &facts.mentions {
-                if m.kind != MentionKind::Call || !self.mention_is_test(&facts, m) {
-                    continue;
-                }
-                if let Some(target) = self.proof(path, &m.leaf) {
-                    let caller = m
-                        .enclosing
-                        .and_then(|i| facts.defs.get(i as usize))
-                        .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
-                    rows.push((target, path, format!("{path}:{}", m.line), caller));
-                }
+            if let Some(facts) = self.view.file(path) {
+                rows.extend(self.file_proofs(&facts));
             }
         }
-        rows.sort();
-        rows.into_iter()
-            .map(|(target, _, evidence, caller)| ProofCall {
-                target,
-                caller,
-                evidence,
+        proof_order(rows)
+    }
+
+    /// The proofs of the test calls in `facts`, a code file, unordered.
+    pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
+        let path = facts.path.as_str();
+        facts
+            .mentions
+            .iter()
+            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+            .filter_map(|m| {
+                let target = self.proof(path, &m.leaf)?;
+                let caller = m
+                    .enclosing
+                    .and_then(|i| facts.defs.get(i as usize))
+                    .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
+                Some(ProofCall {
+                    target,
+                    caller,
+                    evidence: format!("{path}:{}", m.line),
+                })
             })
             .collect()
+    }
+
+    /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls
+    /// unless it already holds them.
+    pub fn settle_proofs(&self, calls: Vec<ProofCall>) {
+        let _ = self.proof_calls.set(proof_order(calls));
     }
 
     /// Every product definition a test call proves, with its evidence `file:line`s in file then

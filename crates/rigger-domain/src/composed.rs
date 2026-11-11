@@ -370,14 +370,11 @@ impl<'r> Composed<'r> {
     ) -> Result<Self, Error> {
         let groupings = view.groupings();
         let code_graph = CodeGraph::new(view, filter);
+        let resolved = code_graph.resolved();
+        let hidden_tests = resolved.hidden_tests;
         let proofs = code_graph.resolver().proof_calls();
-        let hidden_tests = if filter.tests == Tests::Exclude {
-            code_graph.test_entities()
-        } else {
-            Vec::new()
-        };
         let code = Indexed::new(
-            joined(code_graph.whole(), groupings, proofs, filter.tests),
+            joined(resolved.graph, groupings, proofs, filter.tests),
             Vec::new(),
         );
         let mut canonical = BTreeMap::new();
