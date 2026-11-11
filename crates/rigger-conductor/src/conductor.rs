@@ -57,7 +57,7 @@ pub use rigger_domain::agent::{
     SpawnOpts, STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
-use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
+use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -3113,6 +3113,7 @@ pub fn run_serving(
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests,
         verdict_key,
+        gate_address: channel.and_then(GateChannel::address),
         settled: Mutex::new(settled_positions(prior_events)),
         live_units: Mutex::new(HashMap::new()),
         compensations: Mutex::new(pending_compensations),
@@ -4022,6 +4023,9 @@ struct RunCtx<'a> {
     /// signed under it, and a recorded pass counts at the frontier only when its MAC verifies under
     /// it. Held only here, in memory; it reaches no row, file, argument or child.
     verdict_key: VerdictKey,
+    /// The absolute address of the gate channel this run serves, handed to every spawn as
+    /// [`GATE_SOCKET_ENV`] ([`spawn_env`](Self::spawn_env)); `None` when it serves none.
+    gate_address: Option<String>,
     /// The log positions of the gate verdict rows a settle record cites ([`settled_positions`]),
     /// seeded at run start and extended as this process settles a battery: passes that are history.
     settled: Mutex<HashSet<u64>>,
@@ -4150,6 +4154,7 @@ impl<'a> RunCtx<'a> {
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
+            gate_address: None,
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -5825,7 +5830,7 @@ impl RunCtx<'_> {
             // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
             // review cache for a review tier - so a reviewer's reproduction never builds into
             // the cache the unit's gates use.
-            env: Self::spawn_env(&build_env, dir, cache),
+            env: self.spawn_env(&build_env, dir, cache),
             reviews: reviews.to_vec(),
             // The headless host and the cli driver read `settings_json`; the other drivers
             // ignore it.
@@ -7162,7 +7167,7 @@ impl RunCtx<'_> {
                         // vars a gate build gets, AND land in the same per-unit
                         // cache a gate build for this `dir` gets, instead of
                         // embedding a `target/` dir inside the worktree itself.
-                        env: Self::spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
+                        env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
                         // An implementer is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -7846,7 +7851,7 @@ impl RunCtx<'_> {
                             // every speculation candidate's own `cargo` invocations share the
                             // same wrapper cache AND land in its own lane's per-unit cache,
                             // never a `target/` dir embedded in its own lane worktree.
-                            env: Self::spawn_env(
+                            env: self.spawn_env(
                                 &build_env,
                                 &dir,
                                 crate::worktree::UNIT_CACHE_PREFIX,
@@ -9533,7 +9538,7 @@ impl RunCtx<'_> {
                         // every other call site (spec 77 c1); the planner's own `dir` is
                         // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                         // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                        env: Self::spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
+                        env: self.spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -9949,9 +9954,23 @@ impl RunCtx<'_> {
     /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`] sibling for a review tier, whose reproductions run
     /// in scratch worktrees at whatever sha they probe and must never swap a binary in the cache
     /// the unit's gates use.
-    fn spawn_env(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> Vec<(String, String)> {
+    ///
+    /// A run serving a gate channel adds its address as [`GATE_SOCKET_ENV`], the
+    /// `SSH_AUTH_SOCK` convention, so `rigger gate` in the spawn asks this driver at the path it
+    /// bound, whatever temp directory the spawn's host hands its tools.
+    fn spawn_env(
+        &self,
+        build_env: &gate::BuildEnv,
+        dir: &str,
+        cache: &str,
+    ) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
         vars.extend(Self::build_cache_var(dir, cache));
+        vars.extend(
+            self.gate_address
+                .clone()
+                .map(|address| (GATE_SOCKET_ENV.to_string(), address)),
+        );
         vars
     }
 
@@ -12229,7 +12248,7 @@ impl RunCtx<'_> {
                 title: format!("resolve integrate conflict: {}", st.name),
                 attempt,
                 run_id: self.run_id.clone(),
-                env: Self::spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
+                env: self.spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
                 reviews: Vec::new(),
                 settings_json: String::new(),
                 resumed_from: String::new(),
@@ -29083,6 +29102,7 @@ mod tests {
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
+            gate_address: None,
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -37219,6 +37239,7 @@ mod tests {
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
+            gate_address: None,
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -37646,9 +37667,15 @@ mod tests {
         // `dir` derives a per-unit cache sibling (a real `rigger-wt-<slug>` unit
         // worktree) - never for an empty `dir` or a non-unit-worktree path (a review
         // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
+        // A run serving no gate channel, so the gate socket variable adds nothing here.
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
         let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
 
-        let with_worktree = RunCtx::spawn_env(
+        let with_worktree = ctx.spawn_env(
             &wrapper_vars,
             "/scratch/rigger-wt-unit-a",
             crate::worktree::UNIT_CACHE_PREFIX,
@@ -37668,7 +37695,7 @@ mod tests {
         );
 
         for dir in ["", "/scratch/rigger-review-stage-0"] {
-            let got = RunCtx::spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
+            let got = ctx.spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
             assert_eq!(
                 got,
                 wrapper_vars.vars().to_vec(),
@@ -37680,7 +37707,7 @@ mod tests {
         // A review tier names the unit's review cache: the same worktree derives the
         // `review-target-<slug>` sibling instead, never the unit's own cache.
         assert_eq!(
-            RunCtx::spawn_env(
+            ctx.spawn_env(
                 &gate::BuildEnv::default(),
                 "/scratch/rigger-wt-unit-a",
                 crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
@@ -37693,7 +37720,7 @@ mod tests {
 
         // No wrapper configured: a real unit worktree dir still gets its
         // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
-        let off = RunCtx::spawn_env(
+        let off = ctx.spawn_env(
             &gate::BuildEnv::default(),
             "/scratch/rigger-wt-unit-b",
             crate::worktree::UNIT_CACHE_PREFIX,

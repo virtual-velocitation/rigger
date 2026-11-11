@@ -1,9 +1,11 @@
 //! The gate request channel's adapters (signed verdicts): the driver serves
 //! [`GateChannel`] on a Unix domain socket readable and writable by its owner only, and
 //! `rigger gate` asks over it with [`ask`]. One request and one reply per connection, each one
-//! JSON line. Both ends find the socket with [`socket_path`]: one path per repo in a private
+//! JSON line. The driver binds the socket [`socket_path`] names: one path per repo in a private
 //! per-user directory under the runtime directory, named by a digest of the canonical repo root
-//! so its length never grows with the repo's path. Windows has no adapter yet: there both ends
+//! so its length never grows with the repo's path. It hands that path to every spawn as
+//! [`GATE_SOCKET_ENV`], and the verb asks there, deriving the same path itself only when the
+//! variable is unset, as in the operator's own shell ([`socket_to_ask`]). Windows has no adapter yet: there both ends
 //! answer an `Unsupported` error naming the named pipe it would take, which the verb reports as
 //! its error.
 
@@ -18,7 +20,7 @@ use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCK
 const DIGEST_HEX: usize = 16;
 
 /// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
-/// and `rigger gate` asks by: [`socket_path_under`] the runtime directory, `$XDG_RUNTIME_DIR`
+/// and `rigger gate` asks by when no driver addressed it ([`socket_to_ask`]): [`socket_path_under`] the runtime directory, `$XDG_RUNTIME_DIR`
 /// when it is set to an absolute path and the OS temp directory otherwise.
 pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -38,8 +40,20 @@ pub fn socket_to_ask(repo_root: &Path) -> io::Result<PathBuf> {
 /// when it is set; [`socket_path`] for `repo_root` when it is unset or empty, the operator's own
 /// shell. A relative value is refused.
 pub fn addressed_or_derived(addressed: Option<OsString>, repo_root: &Path) -> io::Result<PathBuf> {
-    let _ = addressed;
-    socket_path(repo_root)
+    let Some(addressed) = addressed.filter(|value| !value.is_empty()) else {
+        return socket_path(repo_root);
+    };
+    let path = PathBuf::from(addressed);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    // Not `InvalidInput`, the over-long kind the verb runs the gate for information on: a
+    // relative address is a broken environment, so the verb refuses rather than guess.
+    Err(io::Error::other(format!(
+        "{GATE_SOCKET_ENV} is {}, a relative path; it must be the absolute path of the driver's \
+         gate socket",
+        path.display()
+    )))
 }
 
 /// The gate socket path for the project rooted at `repo_root` under the runtime directory
@@ -222,8 +236,10 @@ impl GateChannel for GateSocket {
         let _ = std::os::unix::net::UnixStream::connect(&self.path);
     }
 
+    /// The bound path; `None` for a path that is not UTF-8, which no spawn env can carry, so a
+    /// spawn's verb derives the same path itself.
     fn address(&self) -> Option<String> {
-        None
+        self.path.to_str().map(str::to_owned)
     }
 }
 

@@ -29,7 +29,7 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
             gate: gate_id.clone(),
         };
         let repo = loc.repo_root();
-        let asked = rigger::gate_socket::socket_path(Path::new(&repo))
+        let asked = rigger::gate_socket::socket_to_ask(Path::new(&repo))
             .and_then(|path| rigger::gate_socket::ask(&path, &request));
         let unserved = match asked {
             Ok(Some(GateReply::Ran {

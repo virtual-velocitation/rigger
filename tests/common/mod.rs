@@ -166,6 +166,11 @@ pub fn rigger_bin() -> PathBuf {
 /// that spawn's and subject it to the emit core's id-ownership check. A test that drives the
 /// stamp re-sets it with `.env(...)` on the returned `Command`, which wins.
 ///
+/// Also strips an ambient [`rigger::gate_channel::GATE_SOCKET_ENV`]: a suite run from inside a
+/// unit's spawn inherits the address of the live driver's gate socket, so every fixture
+/// `rigger gate` would ask that driver instead of the fixture's own. A test that drives the
+/// address re-sets it with `.env(...)`, which wins.
+///
 /// Also pins [`KEEP_AWAKE_ENV`] to a recording fake writing under [`test_cache_home`] (spec
 /// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
 /// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
@@ -179,7 +184,7 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
 /// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
@@ -203,6 +208,7 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env_remove(rigger::driver::SPAWN_ENV);
+    cmd.env_remove(rigger::gate_channel::GATE_SOCKET_ENV);
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     let record = test_cache_home().join("keep-awake");
     cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));

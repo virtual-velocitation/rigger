@@ -1815,8 +1815,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     };
     // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the
     // project's gate request socket ([`rigger::gate_socket::socket_path`]) carries each
-    // `rigger gate <id>` to it for as long as the run drives. A socket that cannot be bound
-    // leaves the verb information-only.
+    // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
+    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
     let socket = rigger::gate_socket::socket_path(Path::new(&root))
         .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
