@@ -113,7 +113,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
         migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let identity = project_identity();
+    let identity = project_identity()?;
     let store = Namespaced::new(backend.as_ref(), &identity);
     let graph = open_graph(&db_path("graph.db"), &identity, &selection, "critique")?;
     let critiques = critique_store(backend.as_ref(), &identity);

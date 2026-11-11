@@ -782,8 +782,9 @@ top of this document gives the full design; this is its shape.
   extractor's fingerprint. `advance` moves it to a commit: it lists the target tree, copies the
   facts of every file whose blob is unchanged, extracts only the others in parallel from git
   objects (never the worktree's bytes), computes the groupings (section 5.3), and writes the new
-  snapshot and the `CURRENT` pointer atomically under one lock, reaping the old snapshot - git
-  holds every earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
+  snapshot and its fingerprint's `CURRENT` pointer atomically under one lock, reaping the old
+  snapshot and keeping only the two most recently advanced fingerprints - git holds every
+  earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
   merge advance it. Nothing is resolved at advance: every cross-file rule runs at read, so a file
   changing never rewrites another file's facts and the order of advances never changes an answer.
 - **The record half: the event log and `graph.db`.** The log holds only what cannot be
@@ -930,10 +931,11 @@ force the observer to hunt for the right one. So `rigger dash` (`crates/rigger-d
 without binding a second one, never searching upward.
 
 The run driver does NOT bind the fixed singleton: `rigger run` (`start_run_dashboard` ->
-`spawn_run_dashboard` -> `dash::free_port_from(DEFAULT_PORT)`) spawns its OWN per-run
-dashboard that searches UPWARD from `DEFAULT_PORT` for a free port, so two concurrent
-`rigger run` invocations bind 7420 and 7421 - each run gets a private view for its own
-lifetime, reaped when that run ends. The fixed singleton above is the shared observation
+`spawn_run_dashboard`) spawns its OWN per-run dashboard (`rigger dash --port-from 7420`) that
+binds the first free port UPWARD from `DEFAULT_PORT` itself (`dash::bind_first_free_from`)
+and prints the URL it bound on stdout; the run records only that reported address, so two
+concurrent `rigger run` invocations bind 7420 and 7421 and never record one address - each
+run gets a private view for its own lifetime, reaped when that run ends. The fixed singleton above is the shared observation
 point an operator starts with `rigger dash`; the port-searching per-run dash is `rigger run`'s
 private view, not the machine singleton.
 
@@ -959,7 +961,9 @@ private view, not the machine singleton.
   documented `dash: off` workflow key (or its `false`/`no` synonyms), resolved through the
   single `Workflow::dash_enabled` authority, or with the `RIGGER_NO_DASH` environment
   variable (`dash_opted_out`) - either suppresses the start entirely, so the run proceeds
-  with no dash and no port bind. The `rigger dash` singleton self-reaps only once TWO independent
+  with no dash and no port bind. The per-run dash lives exactly as long as its run: the run
+  holds the dash's stdin pipe open and the dash (`--exit-on-stdin-close`) exits once it
+  closes, however the run ends. The `rigger dash` singleton self-reaps only once TWO independent
   signals both go quiet: the instance registry holds no live entry for any registered
   project (an entry whose heartbeat has aged past the idle window is pruned before this
   check runs), AND no in-flight agent's own liveness marker is still fresh. That

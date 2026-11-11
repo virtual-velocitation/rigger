@@ -172,7 +172,8 @@ Any design that holds test code fully has to keep product views the size they ar
    - Before the overlay, an answer names the stamp commit, lists how many of the caller's files
      differ from it, and withholds hits in those files.
    - With the overlay, it merges those files and describes the caller's worktree.
-3. **Pure.** A snapshot is a pure function of (tree, extractor fingerprint). Advancing from A to B
+3. **Pure.** A snapshot is a pure function of (tree, fingerprint), and the fingerprint names
+   everything that computes it: the extractors and the grouping algorithm. Advancing from A to B
    gives the same bytes as advancing from empty to B.
 4. **Local facts.** A file's facts depend only on that file's path and bytes. Nothing is resolved
    across files at write time.
@@ -183,8 +184,9 @@ Any design that holds test code fully has to keep product views the size they ar
    filtered by the view, never dropped at extraction.
 8. **Atomic publish.** A reader sees one whole snapshot, old or new, never a mix.
 9. **No external systems.**
-   - Git is the version control the project already uses. A project with no git reads its tree
-     from the directory.
+   - Git is the version control the project already uses. A directory that discovery finds no
+     repository enclosing reads its tree from the directory; git refusing inside a repository is
+     an error, never a directory store.
    - Every OS facility sits behind an interface with an implementation for each OS.
 
 ---
@@ -205,7 +207,7 @@ Any design that holds test code fully has to keep product views the size they ar
              ls-tree,                     |       Group (communities, concepts)
              cat-file --batch             v
                                .rigger/store/code/
-                                 CURRENT    -> "000042.snap"
+                                 CURRENT-<fp> -> "000042.snap"  (one per fingerprint)
                                  000042.snap   (immutable, crc-checked)
                                  LOCK
                                          |
@@ -310,13 +312,15 @@ Tip                                  (what a TreeSource names: the tree to descr
 
 Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
-  fingerprint the extractor fingerprint: changes when any extractor's output can change
-              (the symbol extractors' tag version and the facts generation, which a golden test
-              pins to a digest of the facts read over a fixture set, so an unbumped change fails)
+  fingerprint the extractor's fingerprint folded with the grouper's generation: changes when
+              any extractor's output or the groupings can change (the symbol extractors' tag
+              version, the facts generation and the grouping generation; golden tests pin them
+              to digests of the facts and the groupings over fixtures, so an unbumped change
+              fails)
   seq         the snapshot's sequence number
 ```
 
-A source returns a `Tip`. Only `advance` builds a `Stamp`, from a `Tip`, the extractor's
+A source returns a `Tip`. Only `advance` builds a `Stamp`, from a `Tip`, the folded
 fingerprint and the sequence number it assigns, so no stamp ever holds a placeholder.
 
 ### 4.5 Snapshot layout
@@ -327,7 +331,7 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ```
  +-------------------------------------------------------------------------------+
  | header   magic "RGCS"  | u16 format version | u16 section count               |
- |          u64 extractor fingerprint                                            |
+ |          u64 fingerprint (extractor and grouper)                              |
  |          stamp: head (str), commit (str), tree (str), u64 seq                 |
  |          u32 crc32 of the header                                              |
  +-------------------------------------------------------------------------------+
@@ -372,11 +376,12 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ```
 advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) -> Stamp
 
+  fp <- fingerprint(extract, group)
   take LOCK (exclusive: a writer blocks; a reader tries once and, if the lock is held, answers
-       from CURRENT with the label "advance in flight")
-  S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
-       differs from extract.fingerprint()
-  if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
+       from CURRENT-<fp> with the label "advance in flight")
+  S <- snapshot named by CURRENT-<fp>; or EMPTY if there is none, its crc fails, or its
+       fingerprint differs from fp; a store file that exists but cannot be read is an error
+  if S.stamp.tip.tree == target.tree:      reap; release LOCK; return S.stamp      (no-op)
   entries <- source.list(target.tree)                       [(path, blob)] of each in-scope file
   keep    <- S.files whose (path, blob) is in entries       (facts copied, never re-extracted)
   fresh   <- extract every other entry, in parallel         (std::thread::scope, one chunk per
@@ -384,10 +389,13 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
                                                             source.read_blobs, never the worktree)
   view    <- FactsView(keep + fresh)                         (in memory; indexes built)
   G       <- group.group(&view)                              (section 5.4)
+  bytes   <- encode(view, G), then decoded back, every crc and reference checked: a snapshot
+             that fails to read is an error, and nothing is published or reaped
   write   <seq+1>.snap.tmp ; fsync ; rename to <seq+1>.snap ; sync_dir
-  write   CURRENT.tmp      ; fsync ; rename to CURRENT       ; sync_dir
-  reap    every *.snap not named by CURRENT and every *.tmp (a failed delete is left for the
-          next advance)
+  write   CURRENT-<fp>.tmp ; fsync ; rename to CURRENT-<fp>  ; sync_dir
+  reap    keep the two CURRENT-* naming the highest seqs; remove every other CURRENT-*, then
+          every *.snap neither names, and every *.tmp (a failed delete is left for the next
+          advance)
   release LOCK
 ```
 
@@ -400,7 +408,7 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
        | copy            copy |                     |
        v                      v                     v  extract in parallel
    +------+------+------+------+------+
-   | a.rs | b.rs'| d.md | e.rs |      |  -> indexes -> groupings -> <seq+1>.snap -> CURRENT
+   | a.rs | b.rs'| d.md | e.rs |      |  -> indexes -> groupings -> <seq+1>.snap -> CURRENT-<fp>
    +------+------+------+------+------+
 ```
 
@@ -411,8 +419,14 @@ What is *not* done, and why:
 - **No worktree bytes.** The shared store only ever describes a commit, so uncommitted edits in
   the operator checkout cannot leak into what a spawn reads. The overlay shows uncommitted edits
   to the one caller who has them.
-- **No history.** The previous snapshot is reaped once CURRENT names the new one. Git holds every
-  earlier tree, and advancing to any commit rebuilds its snapshot.
+- **No history.** A fingerprint's previous snapshot is reaped once its pointer names the new one.
+  Git holds every earlier tree, and advancing to any commit rebuilds its snapshot.
+- **No more than two fingerprints.** Two binaries sharing one store (an MCP server still on the
+  previous build beside the newly installed CLI, a lane's dev build beside the installed one)
+  each keep their own pointer and snapshot, so neither re-extracts after the other advances. The
+  reaper keeps the two most recently advanced fingerprints and removes every older one's pointer
+  and snapshot. Recency is the order the pointers were written in, which is the order of the
+  sequence numbers they name, since every pointer is written under LOCK with the next number.
 
 ### 5.2 What advances the stamp
 
@@ -421,10 +435,10 @@ Only `advance` writes a snapshot, and it is reached through one function:
 ```
 code::open_current(root) -> CodeView
   tip <- source.head()                                   (operator checkout's HEAD commit)
-  S   <- snapshot named by CURRENT
+  S   <- snapshot named by CURRENT-<fp>
   if S is absent, unreadable, of another fingerprint, or S.stamp.tip.commit != tip.commit:
       advance(..., target = tip)           (on a lock or write failure: answer from S, labelled)
-  return the view of CURRENT
+  return the view of CURRENT-<fp>
 ```
 
 | Caller | When | Effect |
@@ -460,7 +474,7 @@ fails because of, a writer.
                                              |
                                     advance(target = C')
                                              |
-                        CURRENT -> <seq+1>.snap, stamp.tip.commit = C'
+                     CURRENT-<fp> -> <seq+1>.snap, stamp.tip.commit = C'
                                              |
        every later spawn, lookup and dash view answers "describes C'"
 ```
@@ -493,6 +507,10 @@ so it runs once per advance and is stored in the snapshot:
   | **Why** | Groupings stored in a stamped snapshot must be a pure function of the tree. A grouping that read records would go stale at every recorded decision, and would need a record-driven recompute with its own lock and its own staleness. |
   | **Cost** | A concept that existed only because a decision bridged two documents splits into the documents' own concepts. Its decisions then show under each of them. |
 
+- **Generation.** The grouping algorithm carries a generation (`Group::generation`), folded into
+  the stamp's fingerprint, so a snapshot grouped by another algorithm is never trusted and is
+  computed anew. A golden test pins it beside a digest of the groupings over a fixture, so an
+  unbumped change fails.
 - A grain other than the default is computed on demand at read (~2 s) and is not stored.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
@@ -525,7 +543,7 @@ Grouping before and after:
 
 ```
 open(caller worktree W, filter)
-  view  <- code::open_current(root)                               (read CURRENT, read snap,
+  view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
                                                                    untracked list: < 20 ms)
@@ -554,12 +572,17 @@ K is the number of hits of this answer that were withheld, counted in the read t
 nodes it would have answered or reported hidden (`--around`, `--show`, `--lookup`, the MCP graph
 tool, the dash) and the locations `rigger ground` would have shown or reported hidden.
 
-W is the caller's worktree: the git top-level of the cwd, else the cwd. Every reader names it by
-that one rule (graph, ground, lookup, MCP, dash), so a read from a subdirectory counts the whole
-worktree's differing files and its label names the top-level.
+W is the caller's worktree: the git top-level of the cwd, else, outside any repository, the cwd;
+a git failure inside a repository is an error. Every reader names it by that one rule (graph,
+ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing
+files and its label names the top-level.
 
-A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
-until W commits.
+A head with no commit (an unborn branch, which git answers by its quiet no that `HEAD` names no
+object) reads as the empty tree, so every file in W differs until W commits. A head git fails to
+read any other way, a commit it cannot read included, is an error, never the empty tree. Without git, the directory source counts a file in W it cannot read as
+differing, since its content is unknown; its facts hold no such file. With git, the check
+follows git's own view of W, as every git tool does: a file marked assume-unchanged or
+skip-worktree reads as unchanged whatever W holds.
 
 This check replaces the per-hit generation comparison. It runs once per view, not once per hit,
 and the label travels with every answer:
@@ -708,7 +731,10 @@ pub trait Extract: Send + Sync {
     fn fingerprint(&self) -> u64;
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;   // path and blob set from the entry
 }
-pub trait Group   { fn group(&self, view: &dyn CodeView) -> Groupings; }
+pub trait Group {
+    fn generation(&self) -> u64;                                   // folded into the fingerprint
+    fn group(&self, view: &dyn CodeView) -> Groupings;
+}
 
 pub enum Tests { Exclude, Include, Only }
 pub struct ViewFilter { pub tests: Tests }                         // default: Exclude
@@ -727,9 +753,12 @@ Extraction and grouping are passed into it, so it holds no language knowledge. A
 
 Which files a tree's facts cover is one rule, `rigger_domain::code_view::in_scope`: a path with
 no hidden component, or one of `ALWAYS_IN_SCOPE` (the workflow file `.rigger/workflow.yml`).
-Advance reads every source's listing through it, and the directory walk honours the committed
-`.gitignore` and adds each `ALWAYS_IN_SCOPE` path that exists, so `GitTreeSource` and
-`DirTreeSource` list the same files for the same tree.
+Advance reads every source's listing through it, and the one scoped walk that `DirTreeSource`
+and the grounder walk with applies it as it walks, entering a hidden directory only on the way
+to an `ALWAYS_IN_SCOPE` path. Which files are the project's beyond that rule each source answers
+by its own mechanism: `GitTreeSource` lists what git tracks, and the walk, with no index to read,
+honours the committed `.gitignore`, which can leave out the workflow file as it can any other. A
+name that is not UTF-8 is outside the scope, since the facts hold paths as text.
 
 ### 7.2 Splitting `Projection`
 
@@ -975,6 +1004,10 @@ is idempotent.
 
 - **No loss.** Steps 3 and 4 prove that every non-derivable fact survives before anything is
   deleted.
+- **Scope.** Step 4 runs on every refold to rule 7, whatever rule the old file records; step 3
+  runs from the older rules that fold records as rule 7 does (5 and 6, since rule 5 last changed
+  the record fold), because a file an older rule folded holds record facts the records no longer
+  fold to, and a rebuild at rule 7 refolds the log it is handed, a removed or other log included.
 - **Rebuild lock.** Step 6 reuses the existing verb, its rebuild lock and its refusal while a
   live writer holds the log. Its rewrite-to-ledger-entry step is removed, because nothing derived
   is kept.
@@ -988,13 +1021,13 @@ is idempotent.
 
 | Crash point | State left | Recovery |
 |---|---|---|
-| during extraction or before the snapshot rename | CURRENT names the old snapshot; a `*.tmp` orphan | readers see the old stamp; the next advance reaps the orphan and redoes the work |
-| after the snapshot rename, before the CURRENT rename | CURRENT names the old snapshot; a complete unreferenced `<seq+1>.snap` | the same; the reaper removes the unreferenced snapshot |
-| after the CURRENT rename, before the reap | CURRENT names the new snapshot; old files remain | the next advance reaps them |
+| during extraction or before the snapshot rename | the pointer names the old snapshot; a `*.tmp` orphan | readers see the old stamp; the next advance reaps the orphan and redoes the work |
+| after the snapshot rename, before the pointer rename | the pointer names the old snapshot; a complete unreferenced `<seq+1>.snap` | the same; the reaper removes the unreferenced snapshot |
+| after the pointer rename, before or during the reap | the pointer names the new snapshot; old files remain, or an older fingerprint's snapshot whose pointer is already gone | the next advance reaps them |
 | a torn or corrupt snapshot | a crc check fails on open | treated as absent: `open_current` advances from empty (<= 8 s) |
-| an older OS loses the directory entry of a rename | CURRENT names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
-| a reader races the reaper | the snapshot named by a just-read CURRENT is gone | the reader re-reads CURRENT and retries, at most 3 times |
-| two advancers | the second waits on LOCK | it re-reads CURRENT under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
+| an older OS loses the directory entry of a rename | the pointer names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
+| a reader races the reaper | the snapshot named by a just-read pointer is gone | the reader re-reads the pointer and retries, at most 3 times |
+| two advancers | the second waits on LOCK | it re-reads its pointer under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
 | a crash during migration | steps 1-5 write only new files until the swap; step 6 is one transaction | a rerun resumes at the first step that is not yet done |
 
 ---
@@ -1047,7 +1080,8 @@ rigger's own segment log (109), a resolved graph held in memory and loaded from 
   - the lock (`with_write_lock`, on std `File::lock`).
 
   109 and 110 add their modules (`segments`, `graph`) to the same crate.
-- **Publish convention.** The CURRENT pointer convention is the one a MANIFEST uses. The owned
+- **Publish convention.** The pointer convention (a small file naming an immutable snapshot,
+  replaced by an atomic rename) is the one a MANIFEST uses. The owned
   store keeps its manifest beside `store/code/` and follows the same convention.
 
 **Changes to the owned-store work:**
@@ -1105,7 +1139,7 @@ The code store lands first for three reasons:
 |---|---|---|---|---|
 | exclusive lock | `with_write_lock` (std `File::lock` / `File::try_lock`) | `flock` | `LockFileEx` | `flock` |
 | atomic replace | `rename` (std) | `rename(2)` | `MoveFileExW` replace-existing (std) | `rename(2)` |
-| make a rename durable | `sync_dir(dir)` | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves CURRENT at the old, still-true stamp (section 12) | open the directory + `fsync` |
+| make a rename durable | `sync_dir(dir)`; a filesystem that cannot sync a directory (InvalidInput, Unsupported) leaves the rename standing and is not an error, as in SQLite | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves the pointer at the old, still-true stamp (section 12) | open the directory + `fsync` |
 | delete a file another process has open | reaper | unlink | std opens with share-delete, so the delete succeeds; a mapped file's delete fails and is retried at the next advance | unlink |
 | read the tree | `TreeSource` | git or the directory | git or the directory | git or the directory |
 
@@ -1118,8 +1152,10 @@ a reader holding one open (or mapped) never blocks a writer.
   holds no language knowledge.
 - **Process-agnostic.** The store knows nothing of runs, units or gates. It describes a commit,
   and whoever moves HEAD calls `open_current`.
-- **No external systems.** Git is read through the existing worktree crate, a project with no
-  git uses `DirTreeSource`, and no new dependency is added.
+- **No external systems.** Git is read through the existing worktree crate, and no new
+  dependency is added. Discovery (`rigger_worktree_git::discover::rev_parse`) alone decides that
+  no repository encloses a directory, which then uses `DirTreeSource`; git refusing inside a
+  repository is an error wherever a repository is resolved, never a directory store.
 
 ---
 

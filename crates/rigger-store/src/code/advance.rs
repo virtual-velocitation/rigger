@@ -1,28 +1,34 @@
 //! The store's operations: reading the current snapshot, advancing it to a tip, reaping what no
 //! pointer names, and [`open_current`], the one entry point every caller goes through.
 //!
-//! The store is a directory of immutable `<seq>.snap` files, a `CURRENT` file naming the one in
-//! force, and a `LOCK` every writer holds. A snapshot is published before the pointer to it, each
-//! by an atomic rename, so a reader sees the old snapshot or the new one, never a part; a crash
-//! between the two leaves the old one current.
+//! The store is a directory of immutable `<seq>.snap` files, one `CURRENT-<fingerprint>` pointer
+//! per fingerprint naming the snapshot in force under it, and a `LOCK` every writer holds. A
+//! snapshot is published before the pointer to it, each by an atomic rename, so a reader sees the
+//! old snapshot or the new one, never a part; a crash between the two leaves the old one current.
+//! The reaper keeps the pointers of the two most recently advanced fingerprints and their
+//! snapshots, so two binaries sharing a store each keep theirs.
 
 use crate::code::snapshot::{encode, Snapshot};
 use crate::format::{write_atomic, WriteLock};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
+use rigger_domain::playbooks::fnv1a_64;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The pointer file naming the snapshot in force.
-pub const CURRENT: &str = "CURRENT";
+/// The prefix of a pointer file: `CURRENT-<fingerprint>` names the snapshot in force under that
+/// fingerprint, in sixteen lowercase hex digits.
+const CURRENT: &str = "CURRENT-";
 /// The lock file every writer holds.
 pub const LOCK: &str = "LOCK";
 const SNAP: &str = ".snap";
 const TMP: &str = ".tmp";
-/// How many times a reader re-reads CURRENT when the snapshot it named was reaped first.
+/// How many times a reader re-reads its pointer when the snapshot it named was reaped first.
 const READ_ATTEMPTS: usize = 3;
+/// How many fingerprints' snapshots the store keeps: the two most recently advanced.
+const KEPT_FINGERPRINTS: usize = 2;
 
 /// Publishes a file's bytes; the default is [`AtomicPublish`].
 pub trait Publish: Send + Sync {
@@ -38,8 +44,28 @@ impl Publish for AtomicPublish {
     }
 }
 
+/// The fingerprint a snapshot is stamped with: the extractor's fingerprint and the grouper's
+/// generation folded together, since both compute the snapshot, so a change to either computes
+/// it anew.
+pub fn fingerprint(extract: &dyn Extract, group: &dyn Group) -> u64 {
+    let mut both = extract.fingerprint().to_le_bytes().to_vec();
+    both.extend_from_slice(&group.generation().to_le_bytes());
+    fnv1a_64(&both)
+}
+
 fn snap_name(seq: u64) -> String {
     format!("{seq:06}{SNAP}")
+}
+
+/// The pointer file naming the snapshot in force under `fingerprint`.
+fn pointer_name(fingerprint: u64) -> String {
+    format!("{CURRENT}{fingerprint:016x}")
+}
+
+/// Whether `name` is a pointer file's.
+fn is_pointer(name: &str) -> bool {
+    name.strip_prefix(CURRENT)
+        .is_some_and(|hex| hex.len() == 16 && u64::from_str_radix(hex, 16).is_ok())
 }
 
 /// The sequence number a snapshot file name carries; none for any other name.
@@ -79,35 +105,47 @@ impl Store {
         self.dir.join(LOCK)
     }
 
-    /// The snapshot CURRENT names, when it reads whole and was extracted under `fingerprint`;
-    /// none otherwise, which callers treat as an empty store.
-    pub fn current(&self, fingerprint: u64) -> Option<Snapshot> {
+    /// The snapshot `fingerprint`'s pointer names, when it reads whole and was extracted under
+    /// `fingerprint`; none when there is no such snapshot (no pointer, a pointer that names no
+    /// snapshot, a snapshot that fails to decode or was extracted under another fingerprint),
+    /// which callers treat as an empty store. A store file that cannot be read for a reason other
+    /// than its absence is an error.
+    pub fn current(&self, fingerprint: u64) -> Result<Option<Snapshot>, String> {
         self.current_with(fingerprint, &|path| std::fs::read(path))
     }
 
-    /// [`Store::current`], reading snapshot files through `read`. When the file CURRENT named is
-    /// gone, the reaper won the race: CURRENT has moved on, so it is read again, a bounded
+    /// [`Store::current`], reading snapshot files through `read`. When the file the pointer named
+    /// is gone, the reaper won the race: the pointer has moved on, so it is read again, a bounded
     /// number of times.
     pub(crate) fn current_with(
         &self,
         fingerprint: u64,
         read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
-    ) -> Option<Snapshot> {
+    ) -> Result<Option<Snapshot>, String> {
+        let readable = |path: &Path, bytes: std::io::Result<Vec<u8>>| match bytes {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("read {}: {e}", path.display())),
+        };
         for _ in 0..READ_ATTEMPTS {
-            let pointer = std::fs::read_to_string(self.dir.join(CURRENT)).ok()?;
+            let current = self.dir.join(pointer_name(fingerprint));
+            let Some(pointer) = readable(&current, std::fs::read(&current))? else {
+                return Ok(None);
+            };
+            let pointer = String::from_utf8_lossy(&pointer);
             let name = pointer.trim();
-            let seq = seq_of(name)?;
-            match read(&self.dir.join(name)) {
-                Ok(bytes) => {
-                    return Snapshot::decode(bytes).ok().filter(|snap| {
-                        snap.stamp().fingerprint == fingerprint && snap.stamp().seq == seq
-                    })
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return None,
-            }
+            let Some(seq) = seq_of(name) else {
+                return Ok(None);
+            };
+            let path = self.dir.join(name);
+            let Some(bytes) = readable(&path, read(&path))? else {
+                continue;
+            };
+            return Ok(Snapshot::decode(bytes).ok().filter(|snap| {
+                snap.stamp().fingerprint == fingerprint && snap.stamp().seq == seq
+            }));
         }
-        None
+        Ok(None)
     }
 
     /// Advances the store to `target`, waiting for the lock, and returns the snapshot in force.
@@ -132,10 +170,10 @@ impl Store {
         group: &dyn Group,
         target: &Tip,
     ) -> Result<Snapshot, String> {
-        let fingerprint = extract.fingerprint();
-        let base = match self.current(fingerprint) {
+        let fingerprint = fingerprint(extract, group);
+        let base = match self.current(fingerprint)? {
             Some(snap) if snap.stamp().tip == *target => {
-                self.reap(&snap_name(snap.stamp().seq));
+                self.reap();
                 return Ok(snap);
             }
             other => other,
@@ -167,23 +205,33 @@ impl Store {
             Some(b) => b.groupings().clone(),
             None => group.group(&view),
         };
-        let bytes = encode(&view, &groupings);
-        let name = snap_name(view.stamp().seq);
-        self.publish.publish(&self.dir.join(&name), &bytes)?;
+        // Decoded, and so validated, before anything is published: a snapshot that would not
+        // read back is an error, and the store keeps the one in force.
+        let snap = Snapshot::decode(encode(&view, &groupings)?)?;
+        let name = snap_name(snap.stamp().seq);
+        self.publish.publish(&self.dir.join(&name), snap.bytes())?;
         self.publish
-            .publish(&self.dir.join(CURRENT), name.as_bytes())?;
-        self.reap(&name);
-        Snapshot::decode(bytes)
+            .publish(&self.dir.join(pointer_name(fingerprint)), name.as_bytes())?;
+        self.reap();
+        Ok(snap)
     }
 
-    /// One past every sequence number in use: CURRENT's, and every snapshot file's, so a name is
-    /// never reused while a reader may hold the file it named.
+    /// One past every sequence number in use: every pointer's, and every snapshot file's, so a
+    /// name is never reused while a reader may hold the file it named.
     fn next_seq(&self) -> u64 {
-        let pointed = std::fs::read_to_string(self.dir.join(CURRENT))
-            .ok()
-            .and_then(|p| seq_of(p.trim()));
+        let pointed = self.pointers().filter_map(|(_, seq)| seq).max();
         let listed = self.names().filter_map(|n| seq_of(&n)).max();
         pointed.max(listed).unwrap_or(0) + 1
+    }
+
+    /// Every pointer file that reads, with the sequence number of the snapshot it names; none for
+    /// a pointer that names no snapshot. A pointer that cannot be read is not listed.
+    fn pointers(&self) -> impl Iterator<Item = (String, Option<u64>)> + '_ {
+        self.names().filter(|n| is_pointer(n)).filter_map(|name| {
+            let pointer = std::fs::read(self.dir.join(&name)).ok()?;
+            let seq = seq_of(String::from_utf8_lossy(&pointer).trim());
+            Some((name, seq))
+        })
     }
 
     fn names(&self) -> impl Iterator<Item = String> {
@@ -194,14 +242,28 @@ impl Store {
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
     }
 
-    /// Removes every snapshot but `keep` and every temp. A failed delete (a reader holding the
-    /// file open on an OS that refuses it) is left for the next advance.
-    fn reap(&self, keep: &str) {
-        for name in self.names() {
-            let snapshot = seq_of(&name).is_some() && name != keep;
-            if snapshot || name.ends_with(TMP) {
-                let _ = std::fs::remove_file(self.dir.join(name));
-            }
+    /// Keeps the pointers of the [`KEPT_FINGERPRINTS`] most recently advanced fingerprints and
+    /// the snapshots they name, and removes every other pointer, snapshot and temp. Recency is the
+    /// order the pointers were written in, which is the order of the sequence numbers they name,
+    /// since every pointer is written holding the lock with the next number. A pointer is removed
+    /// before its snapshot, so a crash between leaves an unnamed snapshot the next reap removes,
+    /// never a pointer naming nothing. A pointer that cannot be read is left for the next advance,
+    /// though the snapshot it names is not kept, since which one it names is unknown; so is a
+    /// failed delete (a reader holding the file open on an OS that refuses it).
+    fn reap(&self) {
+        let mut ranked: Vec<(String, Option<u64>)> = self.pointers().collect();
+        ranked.sort_by_key(|(_, seq)| std::cmp::Reverse(*seq));
+        let stale = ranked.split_off(KEPT_FINGERPRINTS.min(ranked.len()));
+        let kept: Vec<String> = ranked
+            .iter()
+            .filter_map(|(_, seq)| seq.map(snap_name))
+            .collect();
+        let unnamed: Vec<String> = self
+            .names()
+            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TMP))
+            .collect();
+        for name in stale.into_iter().map(|(name, _)| name).chain(unnamed) {
+            let _ = std::fs::remove_file(self.dir.join(name));
         }
     }
 }
@@ -321,7 +383,7 @@ pub(crate) fn open_current_in(
     group: &dyn Group,
     mode: Mode,
 ) -> Result<Opened, String> {
-    let current = match store.current(extract.fingerprint()) {
+    let current = match store.current(fingerprint(extract, group))? {
         Some(view) if source.still_at(&view.stamp().tip) => {
             let head = view.stamp().tip.clone();
             return Ok(Opened {
@@ -374,11 +436,18 @@ mod tests {
     use super::*;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::format::{Container, WriteLock};
-    use rigger_domain::code_view::CodeView;
+    use rigger_domain::code_facts::FileFacts;
+    use rigger_domain::code_view::{CodeView, Groupings};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
     const FP: u64 = 1;
+
+    /// The fingerprint a snapshot is stamped with when the toy extractor of `extracted_under`
+    /// reads it and the counting grouper groups it.
+    fn stamped(extracted_under: u64) -> u64 {
+        fingerprint(&ToyExtract::new(extracted_under), &CountingGroup::default())
+    }
 
     /// A commit's files as (path, text), and a list of paths.
     type Files = &'static [(&'static str, &'static str)];
@@ -416,6 +485,11 @@ mod tests {
 
     fn names(list: &[&str]) -> BTreeSet<String> {
         list.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    /// The pointer file of the snapshots the toy extractor of `extracted_under` reads.
+    fn pointer(extracted_under: u64) -> String {
+        pointer_name(stamped(extracted_under))
     }
 
     /// Each row: two commits advanced one after the other in one store, and in another store
@@ -548,7 +622,7 @@ mod tests {
             ("same fingerprint", FP, 0),
             ("new fingerprint", FP + 7, A.len()),
         ];
-        for (name, fingerprint, extracted) in cases {
+        for (name, extracted_under, extracted) in cases {
             let root = tempfile::tempdir().unwrap();
             let store = Store::new(root.path());
             let source = MemSource::default();
@@ -557,11 +631,136 @@ mod tests {
             store
                 .advance(&source, &ToyExtract::new(FP), &group, &tip)
                 .unwrap();
-            let extract = ToyExtract::new(fingerprint);
+            let extract = ToyExtract::new(extracted_under);
             let snap = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), extracted, "{name}: extracted");
-            assert_eq!(snap.stamp().fingerprint, fingerprint, "{name}: fingerprint");
-            assert!(store.current(fingerprint).is_some(), "{name}: current");
+            assert_eq!(
+                snap.stamp().fingerprint,
+                stamped(extracted_under),
+                "{name}: fingerprint"
+            );
+            assert!(
+                store.current(stamped(extracted_under)).unwrap().is_some(),
+                "{name}: current"
+            );
+        }
+    }
+
+    /// One open of the shared store: its name, which fingerprint opens it, the commit it moves
+    /// HEAD to first if any, how many files that open extracts, and which fingerprints then hold a
+    /// snapshot.
+    type Open = (&'static str, usize, Option<Files>, usize, [bool; 3]);
+
+    /// Each row: one open of the store, under the extractor of a fingerprint, after checking out
+    /// the commit named, if any. Two fingerprints sharing one store each keep their snapshot, so
+    /// neither re-extracts after its first open; a third reaps the snapshot of the one advanced
+    /// least recently, and the store never holds more than two.
+    #[test]
+    fn the_two_most_recently_advanced_fingerprints_keep_their_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path());
+        let source = MemSource::default();
+        let group = CountingGroup::default();
+        let extractors = [FP, FP + 1, FP + 2].map(ToyExtract::new);
+        let [a, b, c] = [0, 1, 2];
+        let rows: [Open; 8] = [
+            ("a's first open", a, Some(A), A.len(), [true, false, false]),
+            ("b's first open", b, None, A.len(), [true, true, false]),
+            ("a again", a, None, 0, [true, true, false]),
+            ("b again", b, None, 0, [true, true, false]),
+            (
+                "a advances to a new commit",
+                a,
+                Some(B),
+                2,
+                [true, true, false],
+            ),
+            (
+                "c reaps b, advanced least recently",
+                c,
+                None,
+                B.len(),
+                [true, false, true],
+            ),
+            ("a again after c", a, None, 0, [true, false, true]),
+            (
+                "b re-extracts and reaps a",
+                b,
+                None,
+                B.len(),
+                [false, true, true],
+            ),
+        ];
+        for (step, (name, opener, checkout, extracted, held)) in rows.into_iter().enumerate() {
+            if let Some(files) = checkout {
+                source.commit(&format!("c{step}"), files);
+            }
+            let extract = &extractors[opener];
+            let before = extract.calls();
+            open_current_in(&store, &source, extract, &group, Mode::Write).unwrap();
+            assert_eq!(extract.calls() - before, extracted, "{name}: extracted");
+            let holds =
+                [FP, FP + 1, FP + 2].map(|fp| store.current(stamped(fp)).unwrap().is_some());
+            assert_eq!(holds, held, "{name}: which fingerprints hold a snapshot");
+            let listed = snap_names(&store);
+            let (snapshots, pointers): (Vec<&String>, Vec<&String>) = listed
+                .iter()
+                .filter(|n| n.as_str() != LOCK)
+                .partition(|n| seq_of(n).is_some());
+            let held_count = held.iter().filter(|h| **h).count();
+            assert_eq!(snapshots.len(), held_count, "{name}: snapshot files");
+            assert_eq!(
+                pointers.len(),
+                held_count,
+                "{name}: pointer files, one per fingerprint held"
+            );
+        }
+    }
+
+    /// The counting grouper, at a generation of its own.
+    struct GroupedAt {
+        generation: u64,
+        counting: CountingGroup,
+    }
+
+    impl Group for GroupedAt {
+        fn generation(&self) -> u64 {
+            self.generation
+        }
+
+        fn group(&self, view: &dyn CodeView) -> Groupings {
+            self.counting.group(view)
+        }
+    }
+
+    /// Each row: the grouper's generation at a second advance of the same tip. A new generation
+    /// is a new fingerprint, so the snapshot is computed anew and regrouped; the same one keeps
+    /// the snapshot in force.
+    #[test]
+    fn a_grouping_generation_change_regroups_the_snapshot() {
+        let cases = [("the same generation", 1, 0), ("a new generation", 2, 1)];
+        for (name, generation, regrouped) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path());
+            let source = MemSource::default();
+            let tip = source.commit("c1", A);
+            let extract = ToyExtract::new(FP);
+            let first = GroupedAt {
+                generation: 1,
+                counting: CountingGroup::default(),
+            };
+            store.advance(&source, &extract, &first, &tip).unwrap();
+            let second = GroupedAt {
+                generation,
+                counting: CountingGroup::default(),
+            };
+            let snap = store.advance(&source, &extract, &second, &tip).unwrap();
+            assert_eq!(second.counting.calls(), regrouped, "{name}: regrouped");
+            assert_eq!(
+                snap.stamp().fingerprint,
+                fingerprint(&extract, &second),
+                "{name}: the stamp folds both generations"
+            );
         }
     }
 
@@ -592,22 +791,26 @@ mod tests {
             ("version".into(), flip(|_| 4)),
             ("header".into(), flip(|_| 14)),
             (
-                "CURRENT names a missing file".into(),
-                Box::new(|dir: &Path| std::fs::write(dir.join(CURRENT), "000007.snap").unwrap()),
+                "the pointer names a missing file".into(),
+                Box::new(|dir: &Path| {
+                    std::fs::write(dir.join(pointer(FP)), "000007.snap").unwrap()
+                }),
             ),
             (
-                "CURRENT names a path outside the store".into(),
-                Box::new(|dir: &Path| std::fs::write(dir.join(CURRENT), "../000001.snap").unwrap()),
+                "the pointer names a path outside the store".into(),
+                Box::new(|dir: &Path| {
+                    std::fs::write(dir.join(pointer(FP)), "../000001.snap").unwrap()
+                }),
             ),
             (
-                "CURRENT is empty".into(),
-                Box::new(|dir: &Path| std::fs::write(dir.join(CURRENT), "").unwrap()),
+                "the pointer is empty".into(),
+                Box::new(|dir: &Path| std::fs::write(dir.join(pointer(FP)), "").unwrap()),
             ),
             (
                 "the snapshot's seq differs from its name".into(),
                 Box::new(move |dir: &Path| {
                     std::fs::rename(snap(dir), dir.join("000003.snap")).unwrap();
-                    std::fs::write(dir.join(CURRENT), "000003.snap").unwrap();
+                    std::fs::write(dir.join(pointer(FP)), "000003.snap").unwrap();
                 }),
             ),
         ];
@@ -650,24 +853,67 @@ mod tests {
                 .advance(&source, &ToyExtract::new(FP), &group, &tip)
                 .unwrap();
             damage(store.dir());
-            assert!(store.current(FP).is_none(), "{name}: read as absent");
+            assert!(
+                store.current(stamped(FP)).unwrap().is_none(),
+                "{name}: read as absent"
+            );
             let extract = ToyExtract::new(FP);
             let repaired = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), rich.len(), "{name}: advanced from empty");
             assert_eq!(repaired.stamp().tip, tip, "{name}: repaired stamp");
-            assert!(store.current(FP).is_some(), "{name}: repaired");
+            assert!(
+                store.current(stamped(FP)).unwrap().is_some(),
+                "{name}: repaired"
+            );
         }
     }
 
-    /// Fails one publish, as a crash at that step would: a torn temp, or no CURRENT rename.
+    /// Each row: a store file replaced by a directory, which every OS refuses to read as a file
+    /// with an error other than not-found. Opening the store, in either mode, is that error,
+    /// never an empty store advanced over.
+    #[test]
+    fn a_store_file_that_cannot_be_read_is_an_error_never_an_empty_store() {
+        let cases = [
+            ("the snapshot the pointer names", "000001.snap".to_owned()),
+            ("the pointer", pointer(FP)),
+        ];
+        for (name, file) in cases {
+            for mode in [Mode::Read, Mode::Write] {
+                let root = tempfile::tempdir().unwrap();
+                let store = Store::new(root.path());
+                let source = MemSource::default();
+                let group = CountingGroup::default();
+                let first = source.commit("c1", A);
+                store
+                    .advance(&source, &ToyExtract::new(FP), &group, &first)
+                    .unwrap();
+                std::fs::remove_file(store.dir().join(&file)).unwrap();
+                std::fs::create_dir(store.dir().join(&file)).unwrap();
+                let before = snap_names(&store);
+                source.commit("c2", B);
+                let opened = open_current_in(&store, &source, &ToyExtract::new(FP), &group, mode);
+                assert!(opened.is_err(), "{name}, {mode:?}: the read error surfaces");
+                assert_eq!(
+                    snap_names(&store),
+                    before,
+                    "{name}, {mode:?}: nothing published or reaped"
+                );
+            }
+        }
+    }
+
+    /// Fails one publish, as a crash at that step would: a torn temp, or no pointer rename.
     struct Crash {
         torn_snapshot: bool,
     }
 
     impl Publish for Crash {
         fn publish(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
-            let is_current = path.file_name().is_some_and(|n| n == CURRENT);
-            match (self.torn_snapshot, is_current) {
+            let is_pointer = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_pointer);
+            match (self.torn_snapshot, is_pointer) {
                 (true, false) => {
                     let tmp = path.with_extension("snap.4242.0.tmp");
                     std::fs::write(tmp, &bytes[..bytes.len() / 2]).unwrap();
@@ -679,7 +925,7 @@ mod tests {
         }
     }
 
-    /// Each row: where the crash falls. CURRENT keeps the old stamp, and the next advance
+    /// Each row: where the crash falls. The pointer keeps the old stamp, and the next advance
     /// publishes past the debris and reaps it.
     #[test]
     fn a_crash_between_renames_leaves_the_old_stamp_current() {
@@ -705,7 +951,10 @@ mod tests {
             );
             let store = Store::new(root.path());
             assert_eq!(
-                store.current(FP).map(|s| s.stamp().tip.clone()),
+                store
+                    .current(stamped(FP))
+                    .unwrap()
+                    .map(|s| s.stamp().tip.clone()),
                 Some(first),
                 "{name}: the old stamp stays current"
             );
@@ -715,8 +964,81 @@ mod tests {
             assert_eq!(snap.stamp().tip, target, "{name}: advanced");
             assert_eq!(
                 snap_names(&store),
-                names(&[CURRENT, LOCK, next]),
+                names(&[&pointer(FP), LOCK, next]),
                 "{name}: debris reaped"
+            );
+        }
+    }
+
+    /// A damage done to one file's facts.
+    type Damage = fn(&mut FileFacts);
+
+    /// The toy extractor, with each file's facts damaged so they encode but fail to validate.
+    struct Damaging {
+        toy: ToyExtract,
+        damage: Damage,
+    }
+
+    impl Extract for Damaging {
+        fn fingerprint(&self) -> u64 {
+            self.toy.fingerprint()
+        }
+
+        fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+            let mut facts = self.toy.extract(entry, bytes);
+            (self.damage)(&mut facts);
+            facts
+        }
+    }
+
+    /// Each row: facts that encode but fail the snapshot's validation. The advance is an error,
+    /// and nothing is published or reaped: the old snapshot stays current beside the debris.
+    #[test]
+    fn a_snapshot_that_fails_validation_is_an_error_and_never_published() {
+        let cases: [(&str, Damage); 2] = [
+            ("a parent outside the file", |facts| {
+                if let Some(def) = facts.defs.first_mut() {
+                    def.parent = Some(99);
+                }
+            }),
+            ("an enclosing def outside the file", |facts| {
+                if let Some(mention) = facts.mentions.first_mut() {
+                    mention.enclosing = Some(99);
+                }
+            }),
+        ];
+        for (name, damage) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let source = MemSource::default();
+            let group = CountingGroup::default();
+            let store = Store::new(root.path());
+            let first = source.commit("c1", A);
+            store
+                .advance(&source, &ToyExtract::new(FP), &group, &first)
+                .unwrap();
+            std::fs::write(store.dir().join("000000.snap.4242.0.tmp"), b"debris").unwrap();
+            let before = snap_names(&store);
+            let target = source.commit("c2", B);
+            let damaging = Damaging {
+                toy: ToyExtract::new(FP),
+                damage,
+            };
+            assert!(
+                store.advance(&source, &damaging, &group, &target).is_err(),
+                "{name}: the advance fails"
+            );
+            assert_eq!(
+                snap_names(&store),
+                before,
+                "{name}: nothing published or reaped"
+            );
+            assert_eq!(
+                store
+                    .current(stamped(FP))
+                    .unwrap()
+                    .map(|s| s.stamp().tip.clone()),
+                Some(first),
+                "{name}: the old stamp stays current"
             );
         }
     }
@@ -730,7 +1052,8 @@ mod tests {
     impl Probe {
         fn look(&self) {
             let tree = Store::new(&self.root)
-                .current(FP)
+                .current(stamped(FP))
+                .unwrap()
                 .map(|s| s.stamp().tip.tree.clone());
             self.seen.lock().unwrap().push(tree);
         }
@@ -812,7 +1135,7 @@ mod tests {
             assert_eq!(extracted, A.len(), "{advancers}: extracted once");
             assert_eq!(
                 snap_names(&Store::new(root.path())),
-                names(&[CURRENT, LOCK, "000001.snap"]),
+                names(&[&pointer(FP), LOCK, "000001.snap"]),
                 "{advancers}: one snapshot"
             );
         }
@@ -835,11 +1158,12 @@ mod tests {
             store
                 .advance(&source, &ToyExtract::new(FP), &group, &first)
                 .unwrap();
+            let pointer_temp = format!(".{}.77.1.tmp", pointer(FP));
             for debris in [
                 "000000.snap",
                 "000009.snap",
                 ".000004.snap.77.0.tmp",
-                ".CURRENT.77.1.tmp",
+                &pointer_temp,
                 "notes.txt",
             ] {
                 std::fs::write(store.dir().join(debris), b"x").unwrap();
@@ -850,13 +1174,13 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 snap_names(&store),
-                names(&[CURRENT, LOCK, kept, "notes.txt"]),
+                names(&[&pointer(FP), LOCK, kept, "notes.txt"]),
                 "{name}"
             );
         }
     }
 
-    /// Each row: how many reads the reaper wins. The reader re-reads CURRENT and retries, up to
+    /// Each row: how many reads the reaper wins. The reader re-reads its pointer and retries, up to
     /// its bound; past it, the store reads as absent.
     #[test]
     fn a_reader_retries_when_the_reaper_wins() {
@@ -888,7 +1212,7 @@ mod tests {
                 }
                 std::fs::read(path)
             };
-            let snap = store.current_with(FP, &read);
+            let snap = store.current_with(stamped(FP), &read).unwrap();
             assert_eq!(
                 snap.map(|s| s.stamp().tip.clone()),
                 found.then(|| target.clone()),

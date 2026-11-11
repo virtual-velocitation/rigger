@@ -20,10 +20,16 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
     // (spec 39, criterion 3) - never passed by the guard-bound `rigger run` dash (which keeps
-    // its `ReapedChild`).
+    // its `ReapedChild`). `--exit-on-stdin-close` makes this dash exit once its stdin reaches
+    // its end: the `rigger run` dash passes it, so the run's pipe bounds the dash's life.
+    // `--port-from <n>` binds the first free port at or above `n` instead of the one fixed
+    // `--port`, and prints the URL it serves at as a line on stdout: the `rigger run` dash passes
+    // it, so the address the run records is the one its own dash bound.
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
+    let mut first_free = false;
     let mut reap_on_idle = false;
+    let mut exit_on_stdin_close = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -35,14 +41,16 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                         .ok_or("dash: --export expects a path")?,
                 );
             }
-            "--port" => {
+            flag @ ("--port" | "--port-from") => {
                 i += 1;
                 port = args
                     .get(i)
                     .and_then(|p| p.parse().ok())
-                    .ok_or("dash: --port expects a port number (1-65535)")?;
+                    .ok_or_else(|| format!("dash: {flag} expects a port number (1-65535)"))?;
+                first_free = flag == "--port-from";
             }
             "--reap-on-idle" => reap_on_idle = true,
+            "--exit-on-stdin-close" => exit_on_stdin_close = true,
             other => return Err(format!("dash: unknown argument {other:?}").into()),
         }
         i += 1;
@@ -51,7 +59,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     let events_db = db_path("events.db");
     let graph_db = db_path("graph.db");
     let progress_db = db_path("progress.db");
-    let identity = project_identity();
+    let identity = project_identity()?;
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
     // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
@@ -80,7 +88,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         dir: PathBuf::from(RIGGER_DIR),
     });
     let scratch_root = {
-        let repo = git_repo();
+        let repo = git_repo()?;
         // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
         // configured `workdir`) is an EXPLICIT override that `worktree::scratch_root_path`
         // already answers correctly with no git repo at all (its own first match arm checks the
@@ -273,8 +281,15 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             // DIRECTLY - no free-port search. If a rigger dash is already serving that address,
             // report it and exit 0 (never a second dash, never a drifted port); a non-dash
             // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
+            // `--port-from` searches instead and never short-circuits: the dash that binds is the
+            // one that chose the port.
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            match dash::bind_singleton(addr) {
+            let bound = if first_free {
+                dash::bind_first_free_from(port).map(dash::SingletonBind::Bound)
+            } else {
+                dash::bind_singleton(addr)
+            };
+            match bound {
                 Ok(dash::SingletonBind::AlreadyServing(existing)) => {
                     // The singleton is the point: a second invocation reports the ONE known
                     // address and exits cleanly instead of starting a rival dash.
@@ -311,6 +326,12 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // omits the flag and keeps its `ReapedChild` reaping
                     // instead. Started ONLY on the branch that actually binds and serves - a
                     // short-circuited singleton invocation serves nothing and starts no watcher.
+                    if exit_on_stdin_close {
+                        std::thread::spawn(exit_once_stdin_closes);
+                    }
+                    if first_free {
+                        println!("http://{}/", listener.local_addr()?);
+                    }
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();
                         let idle_window = dash_reap_idle_window();
@@ -478,6 +499,14 @@ fn watch_and_self_reap_on_idle(
     }
 }
 
+/// Read this process's stdin to its end, then exit the process: a dash started with
+/// `--exit-on-stdin-close` lives exactly as long as the pipe its starter holds open, which the
+/// system closes however that starter ends, its own teardown or none.
+fn exit_once_stdin_closes() {
+    let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+    std::process::exit(0);
+}
+
 /// Read this project's CURRENT-run events and run id from `events_db` under `identity` through
 /// the one-shot read of the run ([`runscope::read::read_current_run`], spec 101). An absent db is an empty run
 /// and NO file is created (the guard precedes [`Store::open`], which would otherwise fabricate
@@ -536,7 +565,9 @@ fn dash_read<T>(
         .parent()
         .and_then(Path::parent)
         .unwrap_or(Path::new(""));
-    let read_graph = ReadGraph::new(&records, tree_of(checkout));
+    let worktree =
+        tree_of(checkout).map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
+    let read_graph = ReadGraph::new(&records, worktree);
     let graph = read_graph
         .open(ViewFilter { tests })
         .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
@@ -871,9 +902,10 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let graph = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
+        let identity = loc.identity()?;
+        let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
-        let context = ReadGraph::new(&graph, caller_tree());
+        let context = ReadGraph::new(&graph, caller_tree()?);
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -881,9 +913,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             .is_some()
             .then(|| Store::open(&loc.file("progress.db")))
             .transpose()?;
-        let prog_store = prog_backend
-            .as_ref()
-            .map(|b| Namespaced::new(b, &loc.identity()));
+        let prog_store = prog_backend.as_ref().map(|b| Namespaced::new(b, &identity));
         let scratch_root = if spawn.is_some() {
             let repo = loc
                 .dir
@@ -896,7 +926,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let lookup = rigger::lookup::TreeLookup::new(caller_tree());
+        let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
         let mut server = mcpserver::Server::new(store, conductor::STREAM)
             .with_graph(&graph)
             .with_context(&context)

@@ -28,7 +28,7 @@
 //! order, the pool interns in that order and the indexes are built sorted, so the same facts
 //! always give the same bytes.
 
-use crate::format::{put_u32, put_u64, put_u8, write_container, Container, Cursor};
+use crate::format::{narrow, put_u32, put_u64, put_u8, write_container, Container, Cursor};
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, Stamp, Tip,
     WfNode, WfRelation,
@@ -121,11 +121,14 @@ struct Pool {
 }
 
 impl Pool {
-    fn put(&mut self, out: &mut Vec<u8>, s: &str) {
+    fn put(&mut self, out: &mut Vec<u8>, s: &str) -> Result<(), String> {
         let (off, len) = match self.at.get(s) {
             Some(&r) => r,
             None => {
-                let r = (self.text.len() as u32, s.len() as u32);
+                let r = (
+                    narrow(self.text.len(), "string offset")?,
+                    narrow(s.len(), "string length")?,
+                );
                 self.text.push_str(s);
                 self.at.insert(s.to_owned(), r);
                 r
@@ -133,14 +136,16 @@ impl Pool {
         };
         put_u32(out, off);
         put_u32(out, len);
+        Ok(())
     }
 
-    fn put_opt(&mut self, out: &mut Vec<u8>, s: Option<&str>) {
+    fn put_opt(&mut self, out: &mut Vec<u8>, s: Option<&str>) -> Result<(), String> {
         match s {
             Some(s) => self.put(out, s),
             None => {
                 put_u32(out, NONE);
                 put_u32(out, 0);
+                Ok(())
             }
         }
     }
@@ -169,31 +174,42 @@ struct Encoder {
 }
 
 impl Encoder {
-    fn rows(&self, kind: u16, width: usize) -> u32 {
-        self.sections
-            .get(&kind)
-            .map_or(0, |s| (s.len() / width) as u32)
+    fn rows(&self, kind: u16, width: usize) -> Result<u32, String> {
+        narrow(
+            self.sections.get(&kind).map_or(0, |s| s.len() / width),
+            "row count",
+        )
     }
 
-    fn triples<'a>(&mut self, kind: u16, rows: impl Iterator<Item = [&'a str; 3]>) {
+    fn triples<'a>(
+        &mut self,
+        kind: u16,
+        rows: impl Iterator<Item = [&'a str; 3]>,
+    ) -> Result<(), String> {
         let mut out = self.sections.remove(&kind).unwrap_or_default();
         for row in rows {
             for s in row {
-                self.pool.put(&mut out, s);
+                self.pool.put(&mut out, s)?;
             }
         }
         self.sections.insert(kind, out);
+        Ok(())
     }
 
-    fn file(&mut self, facts: &FileFacts) {
-        let starts: Vec<u32> = LISTS
+    fn file(&mut self, facts: &FileFacts) -> Result<(), String> {
+        let starts = LISTS
             .iter()
             .map(|&kind| self.rows(kind, width_of(kind)))
-            .collect();
+            .collect::<Result<Vec<u32>, String>>()?;
+        let row = |start: u32, i: usize| -> Result<u32, String> {
+            start
+                .checked_add(narrow(i, "row")?)
+                .ok_or_else(|| format!("row {start} + {i} does not fit its 4-byte field"))
+        };
         let mut defs = self.sections.remove(&DEFS).unwrap_or_default();
         for (i, def) in facts.defs.iter().enumerate() {
             for s in [&def.local, &def.leaf, &def.kind] {
-                self.pool.put(&mut defs, s);
+                self.pool.put(&mut defs, s)?;
             }
             put_u32(&mut defs, def.line);
             put_u32(&mut defs, def.end_line);
@@ -202,39 +218,45 @@ impl Encoder {
             self.leaf_defs
                 .entry(def.leaf.clone())
                 .or_default()
-                .push(starts[L_DEFS] + i as u32);
+                .push(row(starts[L_DEFS], i)?);
         }
         self.sections.insert(DEFS, defs);
         let mut mentions = self.sections.remove(&MENTIONS).unwrap_or_default();
         for (i, mention) in facts.mentions.iter().enumerate() {
             put_u32(&mut mentions, opt_index(mention.enclosing));
-            self.pool.put(&mut mentions, &mention.name);
-            self.pool.put(&mut mentions, &mention.leaf);
+            self.pool.put(&mut mentions, &mention.name)?;
+            self.pool.put(&mut mentions, &mention.leaf)?;
             let (kind, tag) = match &mention.kind {
                 MentionKind::Call => (KIND_CALL, ""),
                 MentionKind::Tagged(tag) => (KIND_TAGGED, tag.as_str()),
             };
             put_u8(&mut mentions, kind);
-            self.pool.put(&mut mentions, tag);
+            self.pool.put(&mut mentions, tag)?;
             put_u32(&mut mentions, mention.line);
             put_u8(&mut mentions, flag(mention.test));
             self.leaf_mentions
                 .entry(mention.leaf.clone())
                 .or_default()
-                .push(starts[L_MENTIONS] + i as u32);
+                .push(row(starts[L_MENTIONS], i)?);
         }
         self.sections.insert(MENTIONS, mentions);
         let mut modules = self.sections.remove(&MODULES).unwrap_or_default();
         let mut candidates = self.sections.remove(&CANDIDATES).unwrap_or_default();
         for module in &facts.modules {
-            self.pool.put(&mut modules, &module.name);
+            self.pool.put(&mut modules, &module.name)?;
             put_u32(&mut modules, module.def);
             put_u8(&mut modules, flag(module.test));
-            put_u32(&mut modules, (candidates.len() / STR) as u32);
+            put_u32(
+                &mut modules,
+                narrow(candidates.len() / STR, "candidate row")?,
+            );
             for candidate in &module.candidates {
-                self.pool.put(&mut candidates, candidate);
+                self.pool.put(&mut candidates, candidate)?;
             }
-            put_u32(&mut modules, (candidates.len() / STR) as u32);
+            put_u32(
+                &mut modules,
+                narrow(candidates.len() / STR, "candidate row")?,
+            );
         }
         self.sections.insert(MODULES, modules);
         self.sections.insert(CANDIDATES, candidates);
@@ -244,74 +266,77 @@ impl Encoder {
                 .doc_concepts
                 .iter()
                 .map(|c| [c.kind.as_str(), &c.id, &c.title]),
-        );
+        )?;
         self.triples(
             DOC_LINKS,
             facts
                 .doc_links
                 .iter()
                 .map(|l| [l.from.as_str(), &l.rel, &l.to]),
-        );
+        )?;
         self.triples(
             WF_NODES,
             facts
                 .wf_nodes
                 .iter()
                 .map(|n| [n.kind.as_str(), &n.id, &n.title]),
-        );
+        )?;
         self.triples(
             WF_RELATIONS,
             facts
                 .wf_relations
                 .iter()
                 .map(|r| [r.from.as_str(), &r.rel, &r.to]),
-        );
+        )?;
         let mut files = self.sections.remove(&FILES).unwrap_or_default();
         for s in [&facts.path, &facts.blob, &facts.lang] {
-            self.pool.put(&mut files, s);
+            self.pool.put(&mut files, s)?;
         }
         put_u8(&mut files, facts.half as u8);
         put_u8(&mut files, facts.scope as u8);
         put_u8(&mut files, flag(facts.partial));
         for (&kind, start) in LISTS.iter().zip(starts) {
             put_u32(&mut files, start);
-            put_u32(&mut files, self.rows(kind, width_of(kind)));
+            put_u32(&mut files, self.rows(kind, width_of(kind))?);
         }
         self.sections.insert(FILES, files);
+        Ok(())
     }
 
-    fn index(&mut self, kind: u16, leaves: &BTreeMap<String, Vec<u32>>) {
+    fn index(&mut self, kind: u16, leaves: &BTreeMap<String, Vec<u32>>) -> Result<(), String> {
         let mut out = Vec::new();
-        put_u32(&mut out, leaves.len() as u32);
-        let mut at = 0u32;
+        put_u32(&mut out, narrow(leaves.len(), "leaf count")?);
+        let mut at = 0usize;
         for (leaf, rows) in leaves {
-            self.pool.put(&mut out, leaf);
-            put_u32(&mut out, at);
-            at += rows.len() as u32;
-            put_u32(&mut out, at);
+            self.pool.put(&mut out, leaf)?;
+            put_u32(&mut out, narrow(at, "index row")?);
+            at += rows.len();
+            put_u32(&mut out, narrow(at, "index row")?);
         }
         for row in leaves.values().flatten() {
             put_u32(&mut out, *row);
         }
         self.sections.insert(kind, out);
+        Ok(())
     }
 
-    fn groupings(&mut self, groupings: &Groupings) {
+    fn groupings(&mut self, groupings: &Groupings) -> Result<(), String> {
         let mut out = Vec::new();
         for clusters in [&groupings.communities, &groupings.concepts] {
-            put_u32(&mut out, clusters.len() as u32);
+            put_u32(&mut out, narrow(clusters.len(), "cluster count")?);
             for c in clusters {
-                self.pool.put(&mut out, &c.id);
-                self.pool.put(&mut out, &c.label);
+                self.pool.put(&mut out, &c.id)?;
+                self.pool.put(&mut out, &c.label)?;
                 put_u64(&mut out, c.resolution.to_bits());
-                self.pool.put(&mut out, &c.hash);
-                put_u32(&mut out, c.members.len() as u32);
+                self.pool.put(&mut out, &c.hash)?;
+                put_u32(&mut out, narrow(c.members.len(), "member count")?);
                 for m in &c.members {
-                    self.pool.put(&mut out, m);
+                    self.pool.put(&mut out, m)?;
                 }
             }
         }
         self.sections.insert(GROUPINGS, out);
+        Ok(())
     }
 }
 
@@ -327,30 +352,30 @@ fn width_of(kind: u16) -> usize {
 }
 
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
-pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Vec<u8> {
+pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
     let mut enc = Encoder::default();
     let stamp = view.stamp();
     let mut header = Vec::new();
     put_u64(&mut header, stamp.fingerprint);
-    enc.pool.put(&mut header, &stamp.tip.head);
-    enc.pool.put_opt(&mut header, stamp.tip.commit.as_deref());
-    enc.pool.put(&mut header, &stamp.tip.tree);
+    enc.pool.put(&mut header, &stamp.tip.head)?;
+    enc.pool.put_opt(&mut header, stamp.tip.commit.as_deref())?;
+    enc.pool.put(&mut header, &stamp.tip.tree)?;
     put_u64(&mut header, stamp.seq);
     for kind in [FILES, CANDIDATES].into_iter().chain(LISTS) {
         enc.sections.insert(kind, Vec::new());
     }
     for file in view.files() {
         if let Some(facts) = view.file(file.path) {
-            enc.file(&facts);
+            enc.file(&facts)?;
         }
     }
     let (leaf_defs, leaf_mentions) = (
         std::mem::take(&mut enc.leaf_defs),
         std::mem::take(&mut enc.leaf_mentions),
     );
-    enc.index(IDX_LEAF, &leaf_defs);
-    enc.index(IDX_NAME, &leaf_mentions);
-    enc.groupings(groupings);
+    enc.index(IDX_LEAF, &leaf_defs)?;
+    enc.index(IDX_NAME, &leaf_mentions)?;
+    enc.groupings(groupings)?;
     let mut sections = vec![(STRINGS, std::mem::take(&mut enc.pool.text).into_bytes())];
     sections.extend(enc.sections);
     write_container(MAGIC, VERSION, &header, &sections)
@@ -677,6 +702,11 @@ impl Snapshot {
             let row = self.row(table, i);
             [0, STR, 2 * STR].map(|at| self.text(row, at).to_owned())
         })
+    }
+
+    /// The bytes this snapshot was decoded from, as a publish writes them.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
     fn facts(&self, row: &[u8]) -> FileFacts {
@@ -1045,7 +1075,7 @@ mod tests {
         ];
         for (name, stamp, files, groupings) in cases {
             let view = FactsView::new(stamp.clone(), files.clone());
-            let bytes = encode(&view, &groupings);
+            let bytes = encode(&view, &groupings).expect("encodes");
             let snap = Snapshot::decode(bytes.clone())
                 .unwrap_or_else(|e| panic!("{name}: decode failed: {e}"));
             assert_eq!(snap.stamp(), &stamp, "{name}: stamp");
@@ -1079,7 +1109,11 @@ mod tests {
             }
             assert!(snap.file("absent").is_none(), "{name}: absent file");
             assert_eq!(snap.defs_named("absent").count(), 0, "{name}: absent leaf");
-            assert_eq!(encode(&snap, snap.groupings()), bytes, "{name}: re-encode");
+            assert_eq!(
+                encode(&snap, snap.groupings()),
+                Ok(bytes),
+                "{name}: re-encode"
+            );
         }
     }
 }

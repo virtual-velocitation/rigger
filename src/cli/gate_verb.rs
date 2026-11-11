@@ -19,7 +19,7 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
     let [gate_id] = args else {
         return Err("gate: usage: rigger gate <id>".into());
     };
-    let dir = git_repo();
+    let dir = git_repo()?;
     if dir.is_empty() {
         return Err("gate: not inside a git checkout".into());
     }

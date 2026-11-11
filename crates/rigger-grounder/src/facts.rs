@@ -15,7 +15,7 @@ use rigger_domain::code_view::{CodeView, Entry, Extract, Head, OpenCodeView, Tre
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
-use rigger_store::code::{open_current, DirTreeSource, Mode, Opened};
+use rigger_store::code::{fingerprint, open_current, DirTreeSource, Mode, Opened};
 
 use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
@@ -29,7 +29,8 @@ use crate::grounder::workflowdef;
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
 /// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the fingerprint. A golden
+/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
+/// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
 /// test pins it beside the digest of the facts read over a fixture set, so a change that is not
 /// bumped fails there.
 const FACTS_GENERATION: &str = "facts-v2";
@@ -38,6 +39,12 @@ const FACTS_GENERATION: &str = "facts-v2";
 /// stores it and a later process compares against it.
 fn fingerprint_of(grammar_generation: &str, facts_generation: &str) -> u64 {
     fnv1a_64(format!("{grammar_generation}\n{facts_generation}").as_bytes())
+}
+
+/// The fingerprint every snapshot of the store [`open_store`] opens is stamped with: the
+/// extractor's and the grouper's folded, as the advance folds them.
+pub fn store_fingerprint() -> u64 {
+    fingerprint(&FactsExtractor, &ProductionGroupings)
 }
 
 /// The code store at `root` opened as `mode` says over `source`: its facts read by

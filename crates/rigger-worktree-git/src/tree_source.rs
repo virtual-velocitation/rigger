@@ -3,7 +3,7 @@
 //! a tree's facts never depend on what the worktree holds.
 
 use crate::discover::read_head;
-use crate::worktree::{finish_git, start_git, GitOutput};
+use crate::worktree::{finish_git, finish_git_query, start_git, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use std::path::{Path, PathBuf};
@@ -36,21 +36,38 @@ impl GitTreeSource {
         args: &[&str],
         started: std::io::Result<std::process::Child>,
     ) -> Result<Vec<u8>, String> {
-        finish_git(started, GitOutput::Stdout).map_err(|said| {
-            format!(
-                "git {} in {}: {}",
-                args.join(" "),
-                dir.display(),
-                String::from_utf8_lossy(&said).trim()
-            )
-        })
+        finish_git(started, GitOutput::Stdout).map_err(|said| failed(dir, args, &said))
     }
 
-    /// The trimmed answer of `git <args>` in the repository, or none when git refuses it.
-    fn answer(&self, args: &[&str]) -> Option<String> {
-        let out = Self::git(&self.root, args).ok()?;
-        Some(String::from_utf8_lossy(&out).trim().to_owned())
+    /// The trimmed answer of `git <args>` in the repository, or the failure naming the command
+    /// and what git said.
+    fn answer(&self, args: &[&str]) -> Result<String, String> {
+        Self::git(&self.root, args).map(|out| trimmed(&out))
     }
+
+    /// The trimmed answer of the git query `args` in the repository ([`finish_git_query`]): none
+    /// for git's quiet no, and the failure naming the command and what git said for any other
+    /// failure.
+    fn query(&self, args: &[&str]) -> Result<Option<String>, String> {
+        finish_git_query(start_git(&self.root, args))
+            .map(|out| out.as_deref().map(trimmed))
+            .map_err(|said| failed(&self.root, args, &said))
+    }
+}
+
+/// The failure of `git <args>` in `dir`, naming the command and what git said.
+fn failed(dir: &Path, args: &[&str], said: &[u8]) -> String {
+    format!(
+        "git {} in {}: {}",
+        args.join(" "),
+        dir.display(),
+        String::from_utf8_lossy(said).trim()
+    )
+}
+
+/// A git answer as trimmed text.
+fn trimmed(out: &[u8]) -> String {
+    String::from_utf8_lossy(out).trim().to_owned()
 }
 
 /// The fields of a `-z` output: NUL-separated, the last one empty.
@@ -64,17 +81,30 @@ fn file_side(mode: &str, blob: &str) -> Option<String> {
 }
 
 impl TreeSource for GitTreeSource {
-    /// The checked-out commit and its tree; a branch with no commit yet names the empty tree.
+    /// The checked-out commit and its tree. A branch with no commit yet, which git answers by
+    /// its quiet no that `HEAD` names no object, names the empty tree; a head git fails to read
+    /// any other way, a commit it cannot read included, is an error.
     fn head(&self) -> Result<Tip, String> {
-        let branch = self.answer(&["symbolic-ref", "--short", "-q", "HEAD"]);
-        let commit = self.answer(&["rev-parse", "--verify", "-q", "HEAD^{commit}"]);
-        let tree = match (&commit, &branch) {
-            (Some(commit), _) => self.answer(&["rev-parse", &format!("{commit}^{{tree}}")]),
-            (None, Some(_)) => self.answer(&["hash-object", "-t", "tree", "--stdin"]),
-            (None, None) => None,
+        let branch = self.query(&["symbolic-ref", "--short", "-q", "HEAD"])?;
+        let named = self.query(&["rev-parse", "--verify", "-q", "HEAD"])?;
+        let (commit, tree) = match (named, &branch) {
+            (Some(named), _) => {
+                let commit =
+                    self.answer(&["rev-parse", "--verify", &format!("{named}^{{commit}}")])?;
+                let tree = self.answer(&["rev-parse", &format!("{commit}^{{tree}}")])?;
+                (Some(commit), tree)
+            }
+            (None, Some(_)) => (
+                None,
+                self.answer(&["hash-object", "-t", "tree", "--stdin"])?,
+            ),
+            (None, None) => {
+                return Err(format!(
+                    "{} has no HEAD git can resolve",
+                    self.root.display()
+                ))
+            }
         };
-        let tree =
-            tree.ok_or_else(|| format!("{} has no HEAD git can resolve", self.root.display()))?;
         Ok(Tip {
             head: branch.unwrap_or_else(|| "HEAD".into()),
             commit,
@@ -297,6 +327,42 @@ mod tests {
             write(dir.path(), &[("moved.txt", "m\n")]);
             git_commit_all(dir.path(), "moved");
             assert!(!source.still_at(&tip), "{}: moved past its head", row.name);
+        }
+    }
+
+    /// A branch whose ref names a commit git cannot read is a head that cannot be read, never a
+    /// branch with no commit: only git's own answer that the ref does not exist names the empty
+    /// tree.
+    #[test]
+    fn a_head_git_cannot_read_is_an_error_never_the_empty_tree() {
+        fn objects_file(root: &Path) -> PathBuf {
+            let commit = git_out(root, &["rev-parse", "HEAD"]);
+            let (fan, rest) = commit.split_at(2);
+            root.join(".git").join("objects").join(fan).join(rest)
+        }
+        /// Leaves the head of the repository at its root unreadable.
+        type BreakHead = fn(&Path);
+        let rows: [(&str, BreakHead); 2] = [
+            ("a commit whose object is corrupt", |root| {
+                let file = objects_file(root);
+                std::fs::remove_file(&file).unwrap();
+                std::fs::write(&file, b"junk").unwrap();
+            }),
+            ("a branch naming a commit the repository lacks", |root| {
+                let missing = "1".repeat(git_out(root, &["rev-parse", "HEAD"]).len());
+                std::fs::write(
+                    root.join(".git").join("refs").join("heads").join("work"),
+                    format!("{missing}\n"),
+                )
+                .unwrap();
+            }),
+        ];
+        for (name, break_head) in rows {
+            let dir = repo(&[("a.txt", "a\n")]);
+            git_ok(dir.path(), &["checkout", "-q", "-b", "work"]);
+            break_head(dir.path());
+            let head = GitTreeSource::new(dir.path()).head();
+            assert!(head.is_err(), "{name}: read as {head:?}");
         }
     }
 

@@ -71,7 +71,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
         );
     }
     let records = owning_graph_to_read()?;
-    let read = ReadGraph::new(&records, caller_tree());
+    let read = ReadGraph::new(&records, caller_tree()?);
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
         exit_once_printed(print_around(graph, &around, depth))
     })
@@ -267,10 +267,10 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 /// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
 fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     use rigger::lookup::Lookup as _;
-    let lookup = rigger::lookup::TreeLookup::new(caller_tree());
+    let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
     match owning_graph_to_read() {
         Ok(records) => {
-            let read = ReadGraph::new(&records, caller_tree());
+            let read = ReadGraph::new(&records, caller_tree()?);
             contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
                 exit_once_printed(
                     lookup
@@ -293,7 +293,7 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
 
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let records = owning_graph_to_read()?;
-    let read = ReadGraph::new(&records, caller_tree());
+    let read = ReadGraph::new(&records, caller_tree()?);
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
         exit_once_printed(print_show(graph, entity))
     })
@@ -513,7 +513,10 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    let root = git_repo();
+    let root = match git_repo() {
+        Ok(root) => root,
+        Err(why) => return ShowBody::Note(format!("source unavailable at {file}:{start}: {why}")),
+    };
     let path = if root.is_empty() {
         std::path::PathBuf::from(file)
     } else {
@@ -623,7 +626,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     resolve_store(&selection, &db_path("events.db"))?;
     open_graph(
         &db_path("graph.db"),
-        &project_identity(),
+        &project_identity()?,
         &selection,
         "graph build",
     )?;

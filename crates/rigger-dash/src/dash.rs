@@ -192,21 +192,18 @@ fn console_font_response(suffix: &str) -> Response {
 /// The default loopback port for `rigger dash` when `--port` is not given.
 pub const DEFAULT_PORT: u16 = 7420;
 
-/// The first bindable loopback port at or above `start` (pass [`DEFAULT_PORT`]).
+/// A loopback listener bound on the first free port at or above `start` (pass [`DEFAULT_PORT`]).
 ///
 /// The always-on dash (spec 19b, unit 1) auto-starts on `DEFAULT_PORT` "or the next free
 /// port so concurrent harnesses each get their own": the first harness binds `DEFAULT_PORT`,
 /// a second finds it busy and takes the next free port, so two harnesses (e.g. two repos)
-/// never fight over one port. Each candidate is bound and immediately released to test it, so
-/// the returned port is free at probe time. A concurrent process could still claim it in the
-/// narrow window before the dash re-binds, in which case the dash's OWN `bind` fails loudly
-/// at startup rather than silently serving nothing - the safe direction (the same ephemeral
-/// probe pattern the reaping test's `free_loopback_port` uses). `std`-only, so it is
-/// identical on the default and `--no-default-features` lanes.
-pub fn free_port_from(start: u16) -> io::Result<u16> {
+/// never fight over one port. The listener is returned still bound, so the process that searched
+/// is the one that serves: no other process can claim the port between the choice and the bind.
+/// `std`-only, so it is identical on the default and `--no-default-features` lanes.
+pub fn bind_first_free_from(start: u16) -> io::Result<TcpListener> {
     for port in start..=u16::MAX {
         if let Ok(listener) = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))) {
-            return listener.local_addr().map(|addr| addr.port());
+            return Ok(listener);
         }
     }
     Err(io::Error::new(
@@ -444,7 +441,7 @@ pub enum SingletonBind {
 ///     operator resolves with an explicit `--port`, never a silent drift to another port.
 ///
 /// This is the one place the fixed-address policy lives: the address in / the address out, or a
-/// loud conflict; it never searches upward the way [`free_port_from`] does. `std`-only, so it
+/// loud conflict; it never searches upward the way [`bind_first_free_from`] does. `std`-only, so it
 /// holds identically on the default and `--no-default-features` lanes.
 pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
     match TcpListener::bind(addr) {
@@ -4367,16 +4364,23 @@ mod tests {
     }
 
     /// Spec 19b, unit 1 (always-on dash, "on `DEFAULT_PORT` or the next free port so
-    /// concurrent harnesses each get their own"): the port selector returns the requested
-    /// start port when it is free, and SKIPS to the next free port when it is taken - so a
-    /// second harness auto-starting its dash never collides with the first's.
+    /// concurrent harnesses each get their own"): the bind binds the requested start port when
+    /// it is free, and SKIPS to the next free port when it is taken - so a second harness
+    /// auto-starting its dash never collides with the first's.
     #[test]
-    fn free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken() {
+    fn bind_first_free_from_binds_the_start_port_when_free_and_the_next_free_one_when_it_is_taken()
+    {
+        let bound_port = |start| {
+            bind_first_free_from(start)
+                .ok()
+                .and_then(|listener| listener.local_addr().ok())
+                .map(|addr| addr.port())
+        };
         // Free: the requested start port is chosen as-is (a lone harness gets DEFAULT_PORT).
         // An ephemeral high port stands in for DEFAULT_PORT so the test never fights a real
         // dash. The retry loop absorbs the rare window where a PARALLEL test grabs the
-        // just-released probe port between finding it free and calling free_port_from - it is
-        // the CONTRACT (pick the requested port when free), not the OS scheduler, under test.
+        // just-released probe port between finding it free and binding it - it is the
+        // CONTRACT (pick the requested port when free), not the OS scheduler, under test.
         let mut chose_start = false;
         for _ in 0..25 {
             let start = TcpListener::bind(("127.0.0.1", 0))
@@ -4384,24 +4388,24 @@ mod tests {
                 .local_addr()
                 .unwrap()
                 .port();
-            // The probe listener is dropped, so `start` is free again for free_port_from.
-            if free_port_from(start).ok() == Some(start) {
+            // The probe listener is dropped, so `start` is free again for the bind.
+            if bound_port(start) == Some(start) {
                 chose_start = true;
                 break;
             }
         }
         assert!(
             chose_start,
-            "a free start port must be returned unchanged (a lone harness gets DEFAULT_PORT)"
+            "a free start port must be bound unchanged (a lone harness gets DEFAULT_PORT)"
         );
 
         // Taken: HOLD an ephemeral port (a first harness's dash), then ask for a dash starting
         // at that same port - it must SKIP the held port for a strictly higher free one, so
         // two concurrent harnesses never collide on one port. Robust because we hold the port
-        // ourselves, so free_port_from can never return it.
+        // ourselves, so the bind can never land on it.
         let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let taken = held.local_addr().unwrap().port();
-        let next = free_port_from(taken).unwrap();
+        let next = bound_port(taken).unwrap();
         assert!(
             next > taken,
             "a busy start port is skipped for the next free one; got {next} for start {taken}"
@@ -4412,7 +4416,7 @@ mod tests {
     /// Spec 50, criterion 1 (fixed address, no free-port search): `bind_singleton` binds the
     /// EXACT requested address when it is free, and NEVER drifts to another port when the port
     /// is held by an UNRELATED (non-dash) process - that is a genuine conflict surfaced as an
-    /// `AddrInUse` error, the deliberate opposite of `free_port_from`'s search-upward behavior.
+    /// `AddrInUse` error, the deliberate opposite of `bind_first_free_from`'s search-upward behavior.
     #[test]
     fn bind_singleton_binds_the_exact_port_and_never_searches() {
         // A free ephemeral port (learn it, release it): `bind_singleton` returns `Bound` on

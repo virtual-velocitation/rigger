@@ -149,7 +149,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // the SAME namespaced run stream `rigger validate`'s drift advisory folds, so the warning
     // and this trigger can never disagree on what "the model changed" means.
     if if_model_changed {
-        let drift = read_model_drift(&db_path("events.db"), &project_identity())?;
+        let drift = read_model_drift(&db_path("events.db"), &project_identity()?)?;
         if !drift.changed() {
             println!(
                 "canary: no resolved-model change since the previous run - skipping (run \
@@ -219,7 +219,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
         migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let store = Namespaced::new(backend.as_ref(), &project_identity()?);
     let driver = cli::Driver::default();
 
     // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
@@ -291,7 +291,7 @@ pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
     let db = db_path("events.db");
     let events = if !selection.log_absent(&db) {
         let backend = resolve_store(&selection, &db)?;
-        let store = Namespaced::new(backend.as_ref(), &project_identity());
+        let store = Namespaced::new(backend.as_ref(), &project_identity()?);
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?
     } else {
         Vec::new()

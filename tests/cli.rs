@@ -2170,6 +2170,58 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
     );
 }
 
+/// A git failure inside a repository is an error, never a directory store: given a linked
+/// worktree whose administrative directory is gone, so git refuses every call there, when the
+/// operator runs `rigger graph communities` in it, then it fails naming git's refusal and leaves
+/// no `.rigger/` in the worktree.
+#[test]
+fn a_git_failure_inside_a_repository_fails_rather_than_opening_a_directory_store() {
+    use common::fixtures::{git_ok, temp_git_project_with_commit};
+    let repo = temp_git_project_with_commit();
+    let outside = tempfile::tempdir().unwrap();
+    let tree = outside.path().join("tree");
+    git_ok(
+        repo.path(),
+        &["worktree", "add", "-q", tree.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(repo.path().join(".git").join("worktrees")).unwrap();
+    std::fs::write(tree.join("lib.rs"), "fn helper() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(&tree, &["graph", "communities"]);
+
+    assert_eq!(
+        (
+            ok,
+            tree.join(".rigger").exists(),
+            err.contains("git rev-parse")
+        ),
+        (false, false, true),
+        "the command fails naming git's refusal and creates no store; stdout: {out}; \
+         stderr: {err}"
+    );
+}
+
+/// `rigger setup` in a directory no repository encloses, with git discovery stopped at its
+/// parent, installs no pre-commit hook and leaves no `.git` behind: only discovery decides there
+/// is a repository to hook.
+#[test]
+fn setup_outside_any_repository_creates_no_git_directory() {
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    let ceiling = [(
+        "GIT_CEILING_DIRECTORIES",
+        root.parent().unwrap().to_str().unwrap(),
+    )];
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &ceiling);
+
+    assert_eq!(
+        (ok, root.join(".git").exists()),
+        (true, false),
+        "setup succeeds and creates no repository; stdout: {out}; stderr: {err}"
+    );
+}
+
 /// The scope of the tree a build reads (spec 49, section 3): the graph `rigger graph build` leaves
 /// holds the project's OWN sources, in both halves at once - the code half (a definition) AND the
 /// design half (an inline `// WHY:` rationale) - because both are read out of one listing of the
@@ -9879,6 +9931,206 @@ fn rigger_run_records_its_dash_marker_while_the_dash_serves_and_removes_it_on_re
     );
 }
 
+/// The dash a `rigger run` in `root` records in `.rigger/dash.marker`, read once it serves at the
+/// URL `.rigger/dash.url` names, with the start time read with it: the witness that tells this
+/// dash from a later process given its pid.
+struct SeenRunDash {
+    marker: rigger::dash::DashMarker,
+    started: u64,
+    url: String,
+}
+
+impl SeenRunDash {
+    /// The dash the run in `root` serves once its marker names a dash other than `not`, polled
+    /// beside the run; panics when none serves within [`POLLS_BESIDE_A_RUN`].
+    fn wait_for(root: &Path, not: Option<rigger::dash::DashMarker>) -> Self {
+        let rigger_dir = root.join(".rigger");
+        let mut marker = None;
+        assert!(
+            common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+                marker = rigger::dash::DashMarker::read(&rigger_dir.join("dash.marker"))
+                    .filter(|m| Some(*m) != not);
+                marker.is_some()
+            }),
+            "the run records a dash of its own in dash.marker"
+        );
+        let marker = marker.expect("the marker the poll read");
+        let url = std::fs::read_to_string(rigger_dir.join("dash.url"))
+            .expect("a run with its dash on records dash.url beside its marker")
+            .trim()
+            .to_string();
+        assert!(
+            matches!(http_get(&url), Some(body) if body.contains("rigger dash")),
+            "the run's dash serves at {url}"
+        );
+        let started = rigger::reap::pid_starttime(marker.pid)
+            .expect("the serving dash's start time, read by its pid");
+        let seen = Self {
+            marker,
+            started,
+            url,
+        };
+        assert!(
+            seen.running(),
+            "the dash dash.marker names (pid {}) runs while {} serves",
+            seen.marker.pid,
+            seen.url
+        );
+        seen
+    }
+
+    /// Whether this dash's process still runs: its pid carries the start time read with it and
+    /// is no zombie.
+    fn running(&self) -> bool {
+        rigger::reap::still_started(self.marker.pid, self.started)
+            && common::is_running(self.marker.pid)
+    }
+}
+
+/// A fake worker that holds on its first launch until `$here/sampled` stands, marking
+/// `$here/working`, and on any later launch until `$here/released` stands, marking
+/// `$here/relaunched`, before it writes the unit's work: a run relaunched after its predecessor
+/// died stays live while a test samples it.
+const WORKER_HELD_ON_EACH_LAUNCH_ARM: &str = concat!(
+    "  *\"Do the unit.\"*)\n",
+    "    if [ ! -e \"$here/working\" ]; then\n",
+    "    : > \"$here/working\"\n",
+    waiting_for!("sampled"),
+    "    else\n",
+    "    : > \"$here/relaunched\"\n",
+    waiting_for!("released"),
+    "    fi\n",
+    "    echo \"pub fn work() {}\" > work.rs\n",
+    "    ;;\n"
+);
+
+/// Given a `rigger run` with its dash on whose one worker holds, when the run ends from outside
+/// (its owner drops it, so the run never reaches its own teardown), then the dash process it
+/// started is gone within a bound: a dash a run started never outlives that run.
+#[cfg(unix)]
+#[test]
+fn a_run_ended_from_outside_takes_its_dash_down_with_it() {
+    use std::process::Stdio;
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let (fakebin, path_env) = install_fake_claude(WORKER_HELD_UNTIL_SAMPLED_ARM);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let marks = fakebin.path().join("bin");
+    let run = common::cli::OwnedChild::new(
+        dash_entry_command(root, &["run"], Some(&path_env), false, root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the rigger binary"),
+    );
+    assert!(
+        common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || marks.join("working").exists()),
+        "rigger run: its unit's worker starts"
+    );
+    let dash = SeenRunDash::wait_for(root, None);
+    drop(run);
+    std::fs::write(marks.join("sampled"), "").unwrap();
+    assert!(
+        common::fixtures::wait_until_for(400, || !dash.running()),
+        "the dash (pid {}) of a run ended from outside is gone once the run is gone",
+        dash.marker.pid
+    );
+}
+
+/// Given a `rigger run` with its dash on whose driver ended from outside while its worker held,
+/// when the operator relaunches `rigger run` on the same project, then exactly one dash serves:
+/// the dead driver's dash is gone, and `dash.url` and `dash.marker` both name the relaunched
+/// run's dash, which serves at that URL.
+#[cfg(unix)]
+#[test]
+fn a_relaunched_run_serves_the_one_dash_its_dead_predecessor_left_none_beside() {
+    use std::process::Stdio;
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let (fakebin, path_env) = install_fake_claude(WORKER_HELD_ON_EACH_LAUNCH_ARM);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let marks = fakebin.path().join("bin");
+    let launch = || {
+        common::cli::OwnedChild::new(
+            dash_entry_command(root, &["run"], Some(&path_env), false, root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("failed to spawn the rigger binary"),
+        )
+    };
+    let first = launch();
+    assert!(
+        common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || marks.join("working").exists()),
+        "rigger run: its unit's worker starts"
+    );
+    let dead = SeenRunDash::wait_for(root, None);
+    drop(first);
+    std::fs::write(marks.join("sampled"), "").unwrap();
+    let _relaunched = launch();
+    let live = SeenRunDash::wait_for(root, Some(dead.marker));
+    let dead_gone = common::fixtures::wait_until_for(400, || !dead.running());
+    let url_port = rigger::dash::url_port(&live.url);
+    assert_eq!(
+        (dead_gone, live.running(), url_port),
+        (true, true, Some(live.marker.port)),
+        "beside the relaunched run, the dead driver's dash (pid {}, {}) is gone and dash.url and \
+         dash.marker name the one live dash (pid {}, {})",
+        dead.marker.pid,
+        dead.url,
+        live.marker.pid,
+        live.url
+    );
+    std::fs::write(marks.join("released"), "").unwrap();
+}
+
+/// A run's dash started at a port another dash already serves binds the next free port itself
+/// and reports where it serves, rather than deferring to that other dash: the dash that binds is
+/// the one that chooses the port, so two runs starting together never record one address.
+#[test]
+fn a_run_dash_started_where_another_dash_serves_binds_the_next_free_port_and_reports_it() {
+    use std::process::Stdio;
+    let dir = temp_store_project();
+    let root = dir.path();
+    let held = free_loopback_port();
+    let _other = serving_dash(root, held);
+    let mut owned = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args([
+                "dash",
+                "--port-from",
+                &held.to_string(),
+                "--exit-on-stdin-close",
+            ])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a run's dash"),
+    );
+    let mut reported = None;
+    owned.read_lines_until(Instant::now() + Duration::from_secs(10), |line| {
+        reported = Some(line.to_string());
+        std::ops::ControlFlow::Break(())
+    });
+    let url = reported.expect("the run's dash reports the address it serves at");
+    let serves = |url: &str| matches!(http_get(url), Some(body) if body.contains("rigger dash"));
+    assert_eq!(
+        (
+            rigger::dash::url_port(&url).is_some_and(|port| port > held),
+            serves(&url),
+            serves(&format!("http://127.0.0.1:{held}/")),
+        ),
+        (true, true, true),
+        "beside the dash serving port {held}, the run's dash serves at the higher port it \
+         reported ({url})"
+    );
+}
+
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
@@ -16905,14 +17157,16 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
     let proj = temp_project();
     let port = free_loopback_port();
 
-    let mut child = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(proj.path())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
-    let mut out = child.stdout.take().expect("dash stdout is piped");
+    let mut child = common::cli::OwnedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(proj.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
+    let mut out = child.child().stdout.take().expect("dash stdout is piped");
 
     // Watch the piped stdout on a helper thread: a read that BLOCKS means the dash is still
     // alive (its write end is open); a read that yields 0 means it exited and its stdout
@@ -16925,7 +17179,7 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
         let _ = tx.send(n);
     });
 
-    let guard = ReapedChild::new(child);
+    let guard = ReapedChild::new(child.into_child());
 
     // The standalone dash is a genuinely long-lived child: it stays alive while its guard
     // holds it (the watcher stays blocked, nothing arrives). If it had exited on startup
@@ -17028,24 +17282,25 @@ fn http_get_path(port: u16, path: &str) -> Option<String> {
 }
 
 /// A standalone `rigger dash` serving `root` on loopback `port`, waited on until it genuinely
-/// serves its page (a marker written before the dash finishes binding would race the probe);
-/// torn down and failed loudly when it never comes up. The caller owns the returned child.
-fn serving_dash(root: &Path, port: u16) -> std::process::Child {
+/// serves its page (a marker written before the dash finishes binding would race the probe), and
+/// failed loudly when it never comes up. The returned guard owns the dash from its spawn:
+/// dropping it, on any path out of the caller and a panic's unwind included, ends and reaps it.
+fn serving_dash(root: &Path, port: u16) -> rigger::dash::ReapedChild {
     use std::process::Stdio;
 
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn a serving `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn a serving `rigger dash`"),
+    );
     let url = format!("http://127.0.0.1:{port}/");
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = dash.kill();
-        let _ = dash.wait();
         panic!("the serving `rigger dash` never came up at {url}");
     }
     dash
@@ -17065,10 +17320,9 @@ fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
     common::fixtures::git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     let port = free_loopback_port();
-    let mut dash = serving_dash(root, port);
+    let dash = serving_dash(root, port);
     let graph = http_get_path(port, "/api/graph");
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let graph = graph.expect("the dash never served /api/graph");
     assert!(
@@ -17140,10 +17394,9 @@ fn a_dash_graph_reply_states_what_it_describes() {
         let worktree = root.canonicalize().unwrap().display().to_string();
         let expected = expected.replace("{head}", &head).replace("{w}", &worktree);
         let port = free_loopback_port();
-        let mut dash = serving_dash(root, port);
+        let dash = serving_dash(root, port);
         let reply = http_get_path(port, "/api/graph");
-        let _ = dash.kill();
-        let _ = dash.wait();
+        drop(dash);
 
         let reply = reply.unwrap_or_else(|| panic!("{case}: the dash never served /api/graph"));
         let head_end = reply.find("\r\n\r\n").unwrap_or(reply.len());
@@ -17247,10 +17500,9 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
     ];
     mcp.finish_cleanly();
     let port = free_loopback_port();
-    let mut dash = serving_dash(root, port);
+    let dash = serving_dash(root, port);
     let reply = http_get_path(port, "/api/graph");
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
     let reply = reply.expect("the dash never served /api/graph");
     let overview = (reply.lines())
         .find_map(|l| l.strip_prefix("X-Rigger-Graph-Label: "))
@@ -17275,6 +17527,7 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
 }
 
 /// `line` with each `%XX` escape the dash's graph headers carry read back as its byte.
+#[cfg(feature = "symbols")]
 fn percent_decoded(line: &str) -> String {
     let bytes = line.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -17433,7 +17686,7 @@ fn assert_status_trusts_a_serving_dash_url(mismatched_marker: bool) {
     let dir = temp_store_project();
     let root = dir.path();
     let port = free_loopback_port();
-    let mut dash = serving_dash(root, port);
+    let dash = serving_dash(root, port);
     let url = format!("http://127.0.0.1:{port}/");
     if mismatched_marker {
         let marker_port = free_loopback_port();
@@ -17447,8 +17700,7 @@ fn assert_status_trusts_a_serving_dash_url(mismatched_marker: bool) {
     }
 
     let reads = StatusReads::of(root);
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let (out, json) = reads.checked();
     assert!(
@@ -17516,7 +17768,7 @@ fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverif
         url_port, marker_port,
         "the shared free_loopback_port ledger guarantees distinct ports"
     );
-    let mut dash = serving_dash(root, marker_port);
+    let dash = serving_dash(root, marker_port);
     let marker_pid = dash.id();
     // Genuinely dead: url_port was reserved-then-released by `free_loopback_port` and nothing
     // else binds it, so it is unbound at status-read time; the marker names the OTHER,
@@ -17525,8 +17777,7 @@ fn status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverif
     write_dash_breadcrumbs(root, &url, marker_port, marker_pid);
 
     let reads = StatusReads::of(root);
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let (out, json) = reads.checked();
     assert!(
@@ -19981,7 +20232,7 @@ fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port
 
     let dash_port = free_loopback_port();
     let url = format!("http://127.0.0.1:{dash_port}/");
-    let mut dash = serving_dash(root, dash_port);
+    let dash = serving_dash(root, dash_port);
 
     // Exactly the marker-absent shape: only `.rigger/dash.url` recorded, no
     // `.rigger/dash.marker` - the URL points at a port a REAL dash answers on.
@@ -19993,9 +20244,7 @@ fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port
 
     let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
 
-    // Reap the dash BEFORE asserting so a failure never leaks a dashboard.
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     assert!(
         ok,
@@ -22282,10 +22531,10 @@ impl Heartbeat {
 
 /// A `rigger dash --port <free port> <args>` with its stdout piped and watched: the dash logs to
 /// stderr, so stdout stays empty-and-open until the process exits, and a 0-byte read (EOF)
-/// means it exited. Dropping it - on success or on any panicking assertion - stops its
-/// [`Heartbeat`] (if any) and reaps the process, so nothing leaks.
+/// means it exited. The dash is owned from its spawn, so dropping this - on success or on any
+/// panicking assertion - stops its [`Heartbeat`] (if any) and ends the process, so nothing leaks.
 struct WatchedDash {
-    child: std::process::Child,
+    child: common::cli::OwnedChild,
     port: u16,
     exited: std::sync::mpsc::Receiver<usize>,
     heartbeat: Option<Heartbeat>,
@@ -22301,16 +22550,19 @@ impl WatchedDash {
         use std::process::Stdio;
 
         let port = free_loopback_port();
-        let mut cmd = common::rigger_courier();
-        cmd.args(["dash", "--port", &port.to_string()])
-            .args(args)
-            .env_remove("RIGGER_NO_DASH");
-        let mut child = configure(&mut cmd)
+        let mut child = common::cli::OwnedChild::new(
+            configure(
+                common::rigger_courier()
+                    .args(["dash", "--port", &port.to_string()])
+                    .args(args)
+                    .env_remove("RIGGER_NO_DASH"),
+            )
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to spawn `rigger dash`");
-        let mut out = child.stdout.take().expect("dash stdout is piped");
+            .expect("failed to spawn `rigger dash`"),
+        );
+        let mut out = child.child().stdout.take().expect("dash stdout is piped");
 
         let (tx, exited) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -22369,10 +22621,6 @@ impl Drop for WatchedDash {
         if let Some(heartbeat) = self.heartbeat.take() {
             let _ = heartbeat.stop();
         }
-        // Nothing owns this dash in the test (in production its parent's `ReapedChild` would);
-        // on the self-reaped path the process already exited and this just collects it.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -22485,17 +22733,19 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
     let hb_b = spawn_heartbeat("proj-b", "/home/dev/proj-b", stop_b.clone());
 
     let port = free_loopback_port();
-    let mut child = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
-        .env("XDG_STATE_HOME", &xdg)
-        .env("RIGGER_DASH_REAP_POLL_MS", "150")
-        .env("RIGGER_DASH_REAP_STALE_SECS", "2")
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash --reap-on-idle`");
-    let mut out = child.stdout.take().expect("dash stdout is piped");
+    let mut child = common::cli::OwnedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string(), "--reap-on-idle"])
+            .env("XDG_STATE_HOME", &xdg)
+            .env("RIGGER_DASH_REAP_POLL_MS", "150")
+            .env("RIGGER_DASH_REAP_STALE_SECS", "2")
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash --reap-on-idle`"),
+    );
+    let mut out = child.child().stdout.take().expect("dash stdout is piped");
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -22514,8 +22764,6 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
         stop_all(&stop_a, &stop_b);
         let _ = hb_a.join();
         let _ = hb_b.join();
-        let _ = child.kill();
-        let _ = child.wait();
         panic!("the singleton never served its page");
     }
 
@@ -22528,8 +22776,6 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
     if rx.recv_timeout(Duration::from_millis(3500)).is_ok() {
         stop_b.store(true, Ordering::Relaxed);
         let _ = hb_b.join();
-        let _ = child.kill();
-        let _ = child.wait();
         panic!(
             "the singleton reaped when project A's run ended while project B was still live - it \
              must survive one run ending as long as another instance heartbeats"
@@ -22545,8 +22791,7 @@ fn a_reap_on_idle_singleton_survives_one_run_ending_while_another_project_is_liv
     stop_b.store(true, Ordering::Relaxed);
     hb_b.join().expect("B heartbeat thread joins");
     let reaped = rx.recv_timeout(Duration::from_secs(12));
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     let n = reaped.expect(
         "the singleton did not SELF-REAP within 12s after BOTH runs ended - a quiet machine's dash \
          must not leak",
@@ -23271,8 +23516,8 @@ fn read_all_public_contract_holds_at_the_crate_boundary() {
 /// `rigger dash` processes: the header recognition over the real socket and the clean exit-0
 /// report instead of an `Address already in use` failure.
 ///
-/// The first dash is a real, long-lived process; this test REAPS it before its assertions so a
-/// failed assertion never leaks a dashboard.
+/// The first dash is a real, long-lived process, owned from its spawn so a failed assertion never
+/// leaks a dashboard.
 #[test]
 fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean() {
     use std::io::Read;
@@ -23287,18 +23532,18 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     let url = format!("http://127.0.0.1:{port}/");
 
     // FIRST dash: bind the address and wait until it genuinely serves its page.
-    let mut first = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the first `rigger dash`");
+    let first = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the first `rigger dash`"),
+    );
 
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = first.kill();
-        let _ = first.wait();
         panic!("the first `rigger dash` never served its page at {url}");
     }
 
@@ -23306,48 +23551,43 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
     // own) and must NOT bind a second port. It reports the existing address and exits 0. Poll
     // `try_wait` on a bounded deadline so a regression that DID enter the serve loop fails LOUD
     // (a hang caught by the deadline) rather than hanging the whole suite.
-    let mut second = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the second `rigger dash`");
+    let mut second = common::cli::OwnedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn the second `rigger dash`"),
+    );
 
     let deadline = Instant::now() + Duration::from_secs(15);
     let exited = loop {
-        match second.try_wait() {
+        match second.child().try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             Ok(None) => break None,
             Err(_) => break None,
         }
     };
-
-    // Collect the second invocation's output (its pipes are at EOF once it has exited).
-    let mut out = String::new();
-    if let Some(mut so) = second.stdout.take() {
-        let _ = so.read_to_string(&mut out);
-    }
-    let mut err = String::new();
-    if let Some(mut se) = second.stderr.take() {
-        let _ = se.read_to_string(&mut err);
-    }
-
-    // Reap the first (still the ONLY serving process) and, if the second hung, kill it too -
-    // BEFORE any assertion, so a failure never leaks a dashboard.
-    let _ = first.kill();
-    let _ = first.wait();
-    if exited.is_none() {
-        let _ = second.kill();
-        let _ = second.wait();
+    drop(first);
+    let Some(status) = exited else {
         panic!(
             "the second `rigger dash` never exited within the deadline - a singleton invocation \
              must recognize the serving dash and NOT enter a serve loop"
         );
+    };
+
+    // Collect the second invocation's output (its pipes are at EOF once it has exited).
+    let mut out = String::new();
+    if let Some(mut so) = second.child().stdout.take() {
+        let _ = so.read_to_string(&mut out);
     }
-    let status = exited.unwrap();
+    let mut err = String::new();
+    if let Some(mut se) = second.child().stderr.take() {
+        let _ = se.read_to_string(&mut err);
+    }
 
     assert!(
         status.success(),
@@ -23373,7 +23613,7 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
 /// (`src/beta.rs`) folded with an empty run stream. A third, NEUTRAL project is the dash's own cwd,
 /// so its default (no-selector) state is empty - proving that what `?instance=` serves comes from
 /// the SELECTED instance's stores, not the dash's own project. The dash is a real, long-lived
-/// process the test REAPS before its assertions so a failure never leaks a dashboard.
+/// process owned from its spawn, so a failure never leaks a dashboard.
 #[test]
 fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     use rigger::registry;
@@ -23450,17 +23690,18 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     // proves attach reads the SELECTED store, not the dash's cwd.
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(neutral.path())
-        .env("XDG_STATE_HOME", xdg)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(neutral.path())
+            .env("XDG_STATE_HOME", xdg)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
-    // Drive every read, then REAP the dash before asserting so a failure never leaks a process.
     let landing = http_get_path(port, "/api/instances");
     let default_state = http_get_path(port, "/api/state");
     let a_state = http_get_path(port, &format!("/api/state?instance={a_id}"));
@@ -23479,8 +23720,7 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
         port,
         &format!("/api/graph?instance={b_id}&seed=d-beta&depth=1"),
     );
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let landing = landing.expect("the dash never served /api/instances");
     let default_state = default_state.expect("the dash never served /api/state");
@@ -23563,8 +23803,8 @@ fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
 /// bug this guards: a since-gone selection quietly showing the operator's own run under a stale
 /// bookmark) and did not attach to some other instance.
 ///
-/// Three-way contrast, all through per-request store opens on ONE long-lived dash process (reaped
-/// before the assertions so a failure never leaks a dashboard): with no selector the dash serves
+/// Three-way contrast, all through per-request store opens on ONE long-lived dash process (owned
+/// from its spawn so a failure never leaks a dashboard): with no selector the dash serves
 /// its OWN local run (`u-ownrun`, backward compatible); `?instance=<live id>` serves that
 /// instance's run (`u-gamma`) and NOT the local run; and `?instance=<bogus>` serves an EMPTY run
 /// (a 200 with `"units":[]`, never a 500) that is neither the local run nor the instance's.
@@ -23627,22 +23867,23 @@ fn dash_attach_unknown_or_since_gone_instance_serves_empty_not_the_local_run() {
 
     // The dash serves its OWN project (cwd = own_root); the registry it discovers is the sandbox.
     let port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(own_root)
-        .env("XDG_STATE_HOME", xdg)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(own_root)
+            .env("XDG_STATE_HOME", xdg)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
     let default_state = http_get_path(port, "/api/state");
     let gamma_state = http_get_path(port, &format!("/api/state?instance={gamma_id}"));
     // A selector that never named a registry entry - the since-gone / stale-bookmark case.
     let bogus_state = http_get_path(port, "/api/state?instance=this-id-was-never-registered");
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let default_state = default_state.expect("the dash never served /api/state");
     let gamma_state = gamma_state.expect("the dash never served the attached state");
@@ -23739,20 +23980,21 @@ fn dash_landing_filters_stale_instances_without_pruning_and_pins_the_wire_contra
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(neutral.path())
-        .env("XDG_STATE_HOME", xdg)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(neutral.path())
+            .env("XDG_STATE_HOME", xdg)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
     let landing = http_get_path(port, "/api/instances");
     let stale_state = http_get_path(port, &format!("/api/state?instance={stale_id}"));
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let landing = landing.expect("the dash never served /api/instances");
     let stale_state = stale_state.expect("the dash never served the stale-selector state");
@@ -23866,22 +24108,23 @@ fn dash_attach_to_shared_instance_never_creates_a_store_under_its_root() {
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(neutral.path())
-        .env("XDG_STATE_HOME", xdg)
-        // No ambient server address: the Shared arm degrades to sqlite (rung 5) and MUST hit the
-        // existence guard - never resolve the dash's own `KURRENTDB_CONN` for a foreign instance.
-        .env_remove("KURRENTDB_CONN")
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(neutral.path())
+            .env("XDG_STATE_HOME", xdg)
+            // No ambient server address: the Shared arm degrades to sqlite (rung 5) and MUST hit the
+            // existence guard - never resolve the dash's own `KURRENTDB_CONN` for a foreign instance.
+            .env_remove("KURRENTDB_CONN")
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
     let attached = http_get_path(port, &format!("/api/state?instance={id}"));
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let attached = attached.expect("the dash never served the shared-attached state");
     // The attach degrades to an EMPTY run - a 200, never a 500 - because the store is absent.
@@ -23965,23 +24208,24 @@ fn dash_attach_to_shared_instance_reads_its_own_store_not_the_dash_process_kurre
 
     let neutral = temp_project();
     let port = free_loopback_port();
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(neutral.path())
-        .env("XDG_STATE_HOME", xdg)
-        // The dash process HOLDS a `KURRENTDB_CONN`, pointed at a store that is NOT this instance's.
-        // The attach must ignore it and read the instance's OWN sqlite (rungs 3-5 at the instance's
-        // `.rigger`), never let the dash env (rung 2) redirect the foreign read.
-        .env("KURRENTDB_CONN", &dead_conn)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(neutral.path())
+            .env("XDG_STATE_HOME", xdg)
+            // The dash process HOLDS a `KURRENTDB_CONN`, pointed at a store that is NOT this instance's.
+            // The attach must ignore it and read the instance's OWN sqlite (rungs 3-5 at the instance's
+            // `.rigger`), never let the dash env (rung 2) redirect the foreign read.
+            .env("KURRENTDB_CONN", &dead_conn)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
     let attached = http_get_path(port, &format!("/api/state?instance={id}"));
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     let attached = attached.expect("the dash never served the shared-attached state");
     // A 200 (never a 500): the read is best-effort and the instance's own sqlite is present.
@@ -24024,21 +24268,23 @@ fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
     let holder = reserved_loopback_listener();
     let port = holder.local_addr().unwrap().port();
 
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger dash` against a held port");
+    let mut dash = common::cli::OwnedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn `rigger dash` against a held port"),
+    );
 
     // The conflict path exits immediately; poll `try_wait` on a bounded deadline so a regression
     // that drifted to a free port and entered the serve loop is caught LOUD (as a hang past the
     // deadline) rather than blocking the whole suite forever.
     let deadline = Instant::now() + Duration::from_secs(15);
     let exited = loop {
-        match dash.try_wait() {
+        match dash.child().try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             Ok(None) => break None,
@@ -24046,24 +24292,24 @@ fn dash_on_a_port_held_by_a_non_dash_process_fails_loud_and_never_drifts() {
         }
     };
 
+    // Ended before its pipes are read, a hung dash's pipes reach EOF: the read never blocks.
+    let (stdout, stderr) = (dash.child().stdout.take(), dash.child().stderr.take());
+    drop(dash);
     let mut out = String::new();
-    if let Some(mut so) = dash.stdout.take() {
+    if let Some(mut so) = stdout {
         let _ = so.read_to_string(&mut out);
     }
     let mut err = String::new();
-    if let Some(mut se) = dash.stderr.take() {
+    if let Some(mut se) = stderr {
         let _ = se.read_to_string(&mut err);
     }
 
-    if exited.is_none() {
-        let _ = dash.kill();
-        let _ = dash.wait();
+    let Some(status) = exited else {
         panic!(
             "`rigger dash` never exited on a conflicting port - a non-dash holder must be a LOUD \
              conflict, never a drift-and-serve; stdout: {out:?} stderr: {err:?}"
         );
-    }
-    let status = exited.unwrap();
+    };
 
     assert!(
         !status.success(),
@@ -24107,18 +24353,18 @@ fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
     let url = format!("http://127.0.0.1:{port}/");
 
     // The WINNER: a real, serving `rigger dash` process holding the address.
-    let mut winner = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the serving `rigger dash`");
+    let winner = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn the serving `rigger dash`"),
+    );
 
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = winner.kill();
-        let _ = winner.wait();
         panic!("the serving `rigger dash` never came up at {url}");
     }
 
@@ -24136,9 +24382,7 @@ fn many_claimants_racing_a_live_serving_singleton_all_defer_cleanly() {
     }
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
-    // Reap the winner (the only serving process) BEFORE asserting so a failure never leaks a dash.
-    let _ = winner.kill();
-    let _ = winner.wait();
+    drop(winner);
 
     for (i, r) in results.iter().enumerate() {
         match r {
@@ -24266,8 +24510,8 @@ fn a_cold_race_for_a_port_taken_after_its_probe_re_races_on_a_fresh_port() {
 /// DIRECTLY on a real response localizes a regression: a dropped or renamed header would
 /// otherwise surface only as a confusing "the second invocation refused to defer" failure
 /// elsewhere. The header rides the root page every dash already serves, so the dash stays
-/// read-only and gains no endpoint. The dash is a real, long-lived process; it is reaped BEFORE
-/// the assertion so a failed assertion never leaks a dashboard.
+/// read-only and gains no endpoint. The dash is a real, long-lived process, owned
+/// from its spawn so a failed assertion never leaks a dashboard.
 #[test]
 fn every_dash_response_carries_the_rigger_dash_recognition_header() {
     use std::io::{Read, Write};
@@ -24279,19 +24523,19 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
     let port = free_loopback_port();
     let url = format!("http://127.0.0.1:{port}/");
 
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn `rigger dash`");
+    let dash = rigger::dash::ReapedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn `rigger dash`"),
+    );
 
     // Wait until the dash genuinely serves its page (the body helper polls the startup window).
     if !matches!(http_get(&url), Some(body) if body.contains("rigger dash")) {
-        let _ = dash.kill();
-        let _ = dash.wait();
         panic!("`rigger dash` never served its page at {url}");
     }
 
@@ -24307,8 +24551,6 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
                     std::thread::sleep(Duration::from_millis(50))
                 }
                 Err(_) => {
-                    let _ = dash.kill();
-                    let _ = dash.wait();
                     panic!("could not connect to the serving dash at {url}");
                 }
             }
@@ -24318,8 +24560,6 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
             .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .is_err()
         {
-            let _ = dash.kill();
-            let _ = dash.wait();
             panic!("could not write the probe request to the serving dash at {url}");
         }
         let mut resp = String::new();
@@ -24329,9 +24569,7 @@ fn every_dash_response_carries_the_rigger_dash_recognition_header() {
         resp[..end].to_string()
     };
 
-    // Reap the dash (the ONLY serving process) BEFORE asserting so a failure never leaks it.
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
 
     // The recognition contract: a header line whose NAME (case-insensitively) is the public
     // `DASH_HEADER` constant. Line-anchored - the same discipline `dash_serving_on` uses - so the
@@ -24409,20 +24647,22 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
         // `holder` drops here, releasing the port - only after the probe has already concluded.
     });
 
-    let mut dash = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn `rigger dash` against a dribbling holder");
+    let mut dash = common::cli::OwnedChild::new(
+        common::rigger_courier()
+            .args(["dash", "--port", &port.to_string()])
+            .current_dir(root)
+            .env_remove("RIGGER_NO_DASH")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn `rigger dash` against a dribbling holder"),
+    );
 
     // A bounded probe exits in ~1s; poll `try_wait` on a deadline comfortably above that so a
     // regression to an UNBOUNDED head-read (spinning on the dribble) is caught LOUD as a hang.
     let deadline = Instant::now() + Duration::from_secs(20);
     let exited = loop {
-        match dash.try_wait() {
+        match dash.child().try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             Ok(None) => break None,
@@ -24430,19 +24670,16 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
         }
     };
 
+    // Ended before its pipes are read, a hung dash's pipes reach EOF: the read never blocks.
+    let (stdout, stderr) = (dash.child().stdout.take(), dash.child().stderr.take());
+    drop(dash);
     let mut out = String::new();
-    if let Some(mut so) = dash.stdout.take() {
+    if let Some(mut so) = stdout {
         let _ = so.read_to_string(&mut out);
     }
     let mut err = String::new();
-    if let Some(mut se) = dash.stderr.take() {
+    if let Some(mut se) = stderr {
         let _ = se.read_to_string(&mut err);
-    }
-
-    // Reap a hung dash (if any) BEFORE asserting, then let the dribbler wind down.
-    if exited.is_none() {
-        let _ = dash.kill();
-        let _ = dash.wait();
     }
     let _ = dribbler.join();
 
@@ -24476,7 +24713,7 @@ fn the_dash_singleton_probe_stays_bounded_against_a_dribbling_holder() {
 /// process that merely holds the port and never answers. This is the precise input/output edge of
 /// the probe that the singleton short-circuit hinges on (a real dash defers, a non-dash
 /// conflicts), stated directly rather than only by consequence of the CLI behavior tests. The real
-/// dash is reaped BEFORE the assertion so a failure never leaks a dashboard.
+/// dash is owned from its spawn so a failure never leaks a dashboard.
 #[test]
 fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     use rigger::dash::dash_serving_on;
@@ -24485,7 +24722,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     let proj = temp_project();
     let root = proj.path();
     let dash_port = free_loopback_port();
-    let mut dash = serving_dash(root, dash_port);
+    let dash = serving_dash(root, dash_port);
     let recognized_real = dash_serving_on(dash_port);
 
     // Case 2 - a NON-dash holder that never answers the probe: `dash_serving_on` must reject it
@@ -24495,9 +24732,7 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
     let non_dash_port = non_dash.local_addr().unwrap().port();
     let recognized_non_dash = dash_serving_on(non_dash_port);
 
-    // Reap the serving dash BEFORE asserting so a failure never leaks a dashboard.
-    let _ = dash.kill();
-    let _ = dash.wait();
+    drop(dash);
     drop(non_dash);
 
     assert!(

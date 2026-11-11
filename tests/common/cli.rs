@@ -461,6 +461,10 @@ pub fn path_without(tool: &str) -> String {
 /// back to a caller that reaps the child itself.
 pub struct OwnedChild(Option<Child>);
 
+/// Why an [`OwnedChild`] always holds its handle: only [`OwnedChild::into_child`] gives it up,
+/// and that consumes the owner.
+const HELD: &str = "an owned child is held until it is handed back";
+
 impl OwnedChild {
     /// Own `child`.
     pub fn new(child: Child) -> Self {
@@ -469,16 +473,17 @@ impl OwnedChild {
 
     /// The owned handle.
     pub fn child(&mut self) -> &mut Child {
-        self.0
-            .as_mut()
-            .expect("an owned child is held until it is handed back")
+        self.0.as_mut().expect(HELD)
+    }
+
+    /// The owned child's OS process id.
+    pub fn id(&self) -> u32 {
+        self.0.as_ref().map(Child::id).expect(HELD)
     }
 
     /// The handle, handed back: its caller reaps the child.
     pub fn into_child(mut self) -> Child {
-        self.0
-            .take()
-            .expect("an owned child is held until it is handed back")
+        self.0.take().expect(HELD)
     }
 }
 

@@ -2,6 +2,7 @@
 //! grep and ingests, and the directory tree source) goes through [`walk_scoped`], so the scope
 //! can never drift between them and every walk covers exactly the same file set.
 
+use rigger_domain::code_view::{in_scope, ALWAYS_IN_SCOPE};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
@@ -18,9 +19,14 @@ use std::path::{Path, PathBuf};
 ///   machine). `require_git(false)` applies those rules even when the tree is not a checked-out
 ///   repository, and `parents(false)` confines rule-reading to the root so a `.gitignore` above
 ///   the project never bleeds in.
-/// - **The always-excluded set.** Hidden entries are skipped: the VCS metadata directory `.git`,
-///   rigger's own runtime directory `.rigger`, and every other tooling dot-directory, none of
-///   which is first-party source.
+/// - **The domain's scope rule.** A file is visited only when
+///   [`in_scope`](rigger_domain::code_view::in_scope) keeps its path under `root`, the one rule
+///   the code store's advance reads every tree source's listing through: hidden entries are
+///   skipped (the VCS metadata directory `.git`, rigger's own runtime directory `.rigger`, every
+///   other tooling dot-directory), save each
+///   [`ALWAYS_IN_SCOPE`](rigger_domain::code_view::ALWAYS_IN_SCOPE) path, and a hidden directory
+///   is entered only on the way to one. A name that is not UTF-8 is outside the scope, since the
+///   facts hold paths as text.
 /// - **Root confinement.** Symlinks are not followed, so a link that escapes the root, or a link
 ///   cycle, is never traversed.
 ///
@@ -38,8 +44,8 @@ where
 {
     let mut walker = ignore::WalkBuilder::new(root);
     walker
-        // The always-excluded set, independent of any ignore file.
-        .hidden(true)
+        // Hidden entries are the domain's scope rule's to judge, below, never the walker's own.
+        .hidden(false)
         // The project's own committed ignore rules only, so the scope is a pure function of the
         // tree.
         .git_ignore(true)
@@ -53,10 +59,22 @@ where
         // Root confinement: nothing escapes the root and no cycle forms.
         .follow_links(false)
         .sort_by_file_name(|a, b| a.cmp(b));
-    if let Some(named) = named {
-        let wanted: Vec<PathBuf> = named.iter().map(|n| root.join(n)).collect();
-        walker.filter_entry(move |entry| wanted.iter().any(|w| w.starts_with(entry.path())));
-    }
+    let base = root.to_path_buf();
+    let wanted: Option<Vec<PathBuf>> =
+        named.map(|named| named.iter().map(|n| root.join(n)).collect());
+    walker.filter_entry(move |entry| {
+        let scoped = tree_path(&base, entry.path()).is_some_and(|path| {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                leads_into_scope(&path)
+            } else {
+                in_scope(&path)
+            }
+        });
+        scoped
+            && wanted
+                .as_ref()
+                .is_none_or(|wanted| wanted.iter().any(|w| w.starts_with(entry.path())))
+    });
     for dent in walker.build() {
         let Ok(entry) = dent else { continue };
         // An unfollowed symlink's file type is the link, so it never reaches `on_file`.
@@ -65,4 +83,135 @@ where
         }
     }
     ControlFlow::Continue(())
+}
+
+/// The `/`-separated path of `file` under `root`, or none when `file` is not under `root` or a
+/// component is not UTF-8.
+pub fn tree_path(root: &Path, file: &Path) -> Option<String> {
+    let parts: Option<Vec<&str>> = file
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect();
+    Some(parts?.join("/"))
+}
+
+/// Whether the directory at `dir` (a tree path) can hold a file in scope: it is in scope itself,
+/// or it lies on the way to an [`ALWAYS_IN_SCOPE`] path.
+fn leads_into_scope(dir: &str) -> bool {
+    in_scope(dir)
+        || ALWAYS_IN_SCOPE.iter().any(|path| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rigger_domain::code_view::in_scope;
+
+    /// Every file a fixture holds besides its committed `.gitignore`.
+    const FILES: &[&str] = &[
+        ".git/HEAD",
+        ".github/workflows/ci.yml",
+        ".rigger/blob.txt",
+        ".rigger/cache/x.bin",
+        ".rigger/workflow.yml",
+        "src/.hidden.rs",
+        "src/lib.rs",
+        "target/out.bin",
+    ];
+
+    /// A tree holding every one of [`FILES`] and, when `gitignore` is not empty, a committed
+    /// `.gitignore` holding it.
+    fn fixture(gitignore: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("tempdir");
+        for file in FILES {
+            let path = root.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("a file sits in a directory"))
+                .expect("create the file's directory");
+            std::fs::write(&path, file.as_bytes()).expect("write the file");
+        }
+        if !gitignore.is_empty() {
+            std::fs::write(root.path().join(".gitignore"), gitignore).expect("write .gitignore");
+        }
+        root
+    }
+
+    /// The files a scoped walk of `root` visits, as sorted `/`-separated paths under it.
+    fn visited(root: &Path, named: Option<&[String]>) -> Vec<String> {
+        let mut out = Vec::new();
+        let _ = walk_scoped(root, named, &mut |file| {
+            let rel = file
+                .strip_prefix(root)
+                .expect("a visited file is under the root");
+            let parts: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            out.push(parts.join("/"));
+            ControlFlow::Continue(())
+        });
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_scoped_walk_visits_the_files_in_scope_that_the_committed_gitignore_keeps() {
+        /// The committed `.gitignore`, the paths the walk is confined to, the files it visits.
+        type Case = (
+            &'static str,
+            Option<&'static [&'static str]>,
+            &'static [&'static str],
+        );
+        let cases: &[Case] = &[
+            (
+                "",
+                None,
+                &[".rigger/workflow.yml", "src/lib.rs", "target/out.bin"],
+            ),
+            ("target/\n", None, &[".rigger/workflow.yml", "src/lib.rs"]),
+            (".rigger/\n", None, &["src/lib.rs", "target/out.bin"]),
+            (
+                "target/\n",
+                Some(&[".rigger/workflow.yml", ".rigger/blob.txt", "target/out.bin"]),
+                &[".rigger/workflow.yml"],
+            ),
+        ];
+        for (gitignore, named, expected) in cases {
+            let root = fixture(gitignore);
+            let named: Option<Vec<String>> =
+                named.map(|n| n.iter().map(|p| (*p).to_owned()).collect());
+            assert_eq!(
+                visited(root.path(), named.as_deref()),
+                *expected,
+                "gitignore {gitignore:?}, named {named:?}"
+            );
+        }
+        // With nothing ignored, the walk keeps a file exactly when the domain's one scope rule
+        // does.
+        let root = fixture("");
+        let all = visited(root.path(), None);
+        for file in FILES {
+            assert_eq!(all.contains(&(*file).to_owned()), in_scope(file), "{file}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_utf8_is_outside_the_scoped_walk() {
+        use std::os::unix::ffi::OsStrExt;
+        let not_utf8 = std::ffi::OsStr::from_bytes(b"n\xffme");
+        let root = fixture("");
+        std::fs::write(root.path().join("src").join(not_utf8), b"a file").expect("write the file");
+        let dir = root.path().join(not_utf8);
+        std::fs::create_dir(&dir).expect("create the directory");
+        std::fs::write(dir.join("lib.rs"), b"a file").expect("write the file within");
+        assert_eq!(
+            visited(root.path(), None),
+            [".rigger/workflow.yml", "src/lib.rs", "target/out.bin"]
+        );
+    }
 }

@@ -145,6 +145,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// `n` as the fixed-width field type `T` that stores it, or an error naming `what` when it does
+/// not fit: a writer never wraps a count, length or offset into a smaller one.
+pub fn narrow<T: TryFrom<usize>>(n: usize, what: &str) -> Result<T, String> {
+    T::try_from(n).map_err(|_| {
+        format!(
+            "{what} {n} does not fit its {}-byte field",
+            std::mem::size_of::<T>()
+        )
+    })
+}
+
 /// The size of one section-table row: kind, offset, length, crc.
 const TABLE_ROW: usize = 2 + 8 + 8 + 4;
 
@@ -154,27 +165,30 @@ pub fn write_container(
     version: u16,
     payload: &[u8],
     sections: &[(u16, Vec<u8>)],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     out.extend_from_slice(magic);
     put_u16(&mut out, version);
-    put_u16(&mut out, sections.len() as u16);
-    put_u32(&mut out, payload.len() as u32);
+    put_u16(&mut out, narrow(sections.len(), "section count")?);
+    put_u32(&mut out, narrow(payload.len(), "payload length")?);
     out.extend_from_slice(payload);
     let crc = crc32(&out);
     put_u32(&mut out, crc);
-    let mut offset = (out.len() + sections.len() * TABLE_ROW) as u64;
+    let mut offset: u64 = narrow(out.len() + sections.len() * TABLE_ROW, "section offset")?;
     for (kind, bytes) in sections {
+        let length: u64 = narrow(bytes.len(), "section length")?;
         put_u16(&mut out, *kind);
         put_u64(&mut out, offset);
-        put_u64(&mut out, bytes.len() as u64);
+        put_u64(&mut out, length);
         put_u32(&mut out, crc32(bytes));
-        offset += bytes.len() as u64;
+        offset = offset
+            .checked_add(length)
+            .ok_or_else(|| "section offset overflows its 8-byte field".to_string())?;
     }
     for (_, bytes) in sections {
         out.extend_from_slice(bytes);
     }
-    out
+    Ok(out)
 }
 
 /// A parsed container whose header and every section passed their crc.
@@ -370,7 +384,8 @@ mod tests {
                 (2, Vec::new()),
                 (9, b"nine".to_vec()),
             ],
-        );
+        )
+        .expect("writes");
         let parsed = Container::parse(&bytes, b"TEST", 3).expect("parses");
         assert_eq!(parsed.payload, b"payload");
         assert_eq!(parsed.section(7), Ok(&b"seven"[..]));
@@ -382,7 +397,8 @@ mod tests {
     /// Each row: how the bytes are damaged; every damage is refused, never a panic.
     #[test]
     fn a_damaged_container_is_refused() {
-        let good = write_container(b"TEST", 1, b"payload", &[(1, b"section".to_vec())]);
+        let good =
+            write_container(b"TEST", 1, b"payload", &[(1, b"section".to_vec())]).expect("writes");
         let flip = |at: usize| {
             let mut b = good.clone();
             b[at] ^= 0x40;
@@ -402,6 +418,21 @@ mod tests {
             assert!(
                 Container::parse(&bytes, b"TEST", 1).is_err(),
                 "{name} damage must be refused"
+            );
+        }
+    }
+
+    /// Each row: how many sections, and whether their count fits the header's u16 field. A count
+    /// that does not fit is an error, never a header that wraps to a smaller one.
+    #[test]
+    fn a_section_count_that_overflows_its_field_is_an_error() {
+        let fits = usize::from(u16::MAX);
+        for (count, written) in [(fits, true), (fits + 1, false)] {
+            let sections = vec![(1, Vec::new()); count];
+            assert_eq!(
+                write_container(b"TEST", 1, b"", &sections).is_ok(),
+                written,
+                "{count} sections"
             );
         }
     }

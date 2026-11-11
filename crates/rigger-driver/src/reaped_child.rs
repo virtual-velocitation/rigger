@@ -5,12 +5,15 @@
 
 /// A supervised handle over a long-lived `rigger` child PROCESS - the auto-started
 /// dashboard, and any future `rigger` child a run spawns. When this guard is dropped,
-/// the child is KILLED and REAPED, so it can never outlive the run that started it.
+/// the child is KILLED and REAPED, so it does not outlive a run that drops it.
 ///
 /// This is the single reaping mechanism the dash and the other `rigger` children rely
 /// on (spec 19b, unit 3: no orphaned `rigger` processes). `Drop` runs on BOTH a normal
 /// scope exit AND an unwinding panic, so a normally-finishing OR a crashing driver
-/// leaves no orphaned `rigger` process reparented to `init`. Reaping is `kill` followed
+/// leaves no orphaned `rigger` process reparented to `init`. A driver that ends with neither
+/// (an abort, an exit that skips unwinding, an outside signal) runs no `Drop`; a child that
+/// must not outlive it is bound to it by a pipe the guarded handle holds as well, as the
+/// auto-started dash is to its stdin. Reaping is `kill` followed
 /// by `wait` (not `kill` alone): the `wait` collects the exited child, so a
 /// finished-but-unwaited process leaves no defunct zombie either.
 ///

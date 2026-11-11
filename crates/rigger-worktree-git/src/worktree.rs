@@ -1633,38 +1633,10 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-/// The arguments of the one repository detection: `git rev-parse --git-dir` succeeds under a root
-/// inside a git repository.
-const REPOSITORY_DETECTION: [&str; 2] = ["rev-parse", "--git-dir"];
-
-/// Whether `root` is inside a git repository, so an object database stands there to read from and
-/// write to ([`REPOSITORY_DETECTION`] run under it, read by [`repository_answer`]). The one
-/// repository detection [`BlobBatch::start`] applies.
-fn in_repository(root: &std::path::Path) -> Result<bool, Error> {
-    repository_answer(
-        root,
-        crate::subprocess::git_in(root)
-            .args(REPOSITORY_DETECTION)
-            .output(),
-    )
-}
-
-/// What the repository detection's run under `root` answers: inside for a `git` that ran and
-/// succeeded, outside for one that ran and failed, and for one that could not start a failure
-/// naming the detection's command, the root and the cause - a `git` that never ran says nothing
-/// about where `root` is.
-fn repository_answer(
-    root: &std::path::Path,
-    ran: std::io::Result<std::process::Output>,
-) -> Result<bool, Error> {
-    ran.map(|out| out.status.success())
-        .map_err(|e| git_failure(&REPOSITORY_DETECTION, root, &e.to_string()))
-}
-
 /// The failure of the git command whose arguments are `args`, run under `root`, for the cause
 /// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
 /// not start with, so the text names the command that failed.
-fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
+pub(crate) fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
     Error(format!(
         "git {} in {}: {why}",
         args.join(" "),
@@ -1686,15 +1658,18 @@ pub struct BlobBatch {
 
 impl BlobBatch {
     /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
-    /// by [`batch_answer`]), or answer none when there is no object database to ask: `root` is
-    /// outside a git repository, or the detection's `git` ([`in_repository`]) cannot start, which
-    /// says nothing about where `root` is. Inside a repository a batch `git` that cannot start
-    /// fails the start, naming its command, the root and the cause: an object database stands
-    /// there to ask.
+    /// by [`batch_answer`]), or answer none when `root` lies in no repository
+    /// ([`crate::discover::rev_parse`]), so no object database stands there to ask. Where git
+    /// refuses inside a repository, and where a batch `git` cannot start there, the start fails,
+    /// naming the command, the root and the cause.
     pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
+        use crate::discover::{rev_parse, Location};
         use std::process::Stdio;
 
-        if in_repository(root).ok() != Some(true) {
+        if rev_parse(root, Location::CommonDir)
+            .map_err(Error)?
+            .is_none()
+        {
             return Ok(None);
         }
         batch_answer(
@@ -1756,7 +1731,7 @@ impl BlobBatch {
 /// The arguments of the one batch process a [`BlobBatch`] reads its blobs from.
 const BLOB_BATCH: [&str; 2] = ["cat-file", "--batch"];
 
-/// What the start of the batch process under `root` - a repository, as the detection answered -
+/// What the start of the batch process under `root` - a repository, as discovery found -
 /// answers, its spawn having answered `spawned`: the batch over a process that started, and for
 /// one that could not a failure naming the batch's command, the root and the cause
 /// ([`git_failure`]).
@@ -2413,12 +2388,15 @@ fn reap_dir_before_removal(dir: &str, authorized_root: &str) {
 /// below call it directly, bypassing `Worktree::create` and the lock entirely - that is fine,
 /// they exercise the heal predicate in isolation, not the concurrency guard.)
 pub fn heal_corrupt_worktree_admin(repo: &str) {
-    let Ok(common) = run_git(repo, &["rev-parse", "--git-common-dir"]) else {
+    use crate::discover::{rev_parse, Location};
+    // A heal that cannot find the common directory heals nothing, whether `repo` lies in no
+    // repository or git refuses there: the `git worktree add` it precedes runs git in the same
+    // repository and fails, naming git's refusal.
+    let Ok(Some(common)) = rev_parse(std::path::Path::new(repo), Location::CommonDir) else {
         return;
     };
-    let common = common.trim();
     let common_path = {
-        let p = std::path::Path::new(common);
+        let p = std::path::Path::new(&common);
         if p.is_absolute() {
             p.to_path_buf()
         } else {
@@ -2688,9 +2666,7 @@ pub fn finish_git(
     started: std::io::Result<std::process::Child>,
     output: GitOutput,
 ) -> Result<Vec<u8>, Vec<u8>> {
-    let out = started
-        .and_then(std::process::Child::wait_with_output)
-        .map_err(|e| e.to_string().into_bytes())?;
+    let out = waited(started)?;
     let answer = match (output, out.status.success()) {
         (GitOutput::Stdout, true) => out.stdout,
         (GitOutput::Stdout, false) => out.stderr,
@@ -2701,6 +2677,30 @@ pub fn finish_git(
     } else {
         Err(answer)
     }
+}
+
+/// The answer of a git query [`start_git`] started that answers a quiet no by exiting 1, as
+/// `rev-parse --verify -q` and `symbolic-ref -q` do: standard output when git answers, none for
+/// that no, and standard error (the exit status when git said nothing) when git fails any other
+/// way or ends by a signal; a start failure holds its message.
+pub fn finish_git_query(
+    started: std::io::Result<std::process::Child>,
+) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    let out = waited(started)?;
+    match out.status.code() {
+        Some(0) => Ok(Some(out.stdout)),
+        Some(1) => Ok(None),
+        _ if out.stderr.is_empty() => Err(out.status.to_string().into_bytes()),
+        _ => Err(out.stderr),
+    }
+}
+
+/// The output of the git run `started` began, once it ends; a start or wait failure holds its
+/// message.
+fn waited(started: std::io::Result<std::process::Child>) -> Result<std::process::Output, Vec<u8>> {
+    started
+        .and_then(std::process::Child::wait_with_output)
+        .map_err(|e| e.to_string().into_bytes())
 }
 
 /// `git <args>` in `dir`, answering standard output and standard error together as text.
@@ -3183,42 +3183,59 @@ mod tests {
         }
     }
 
-    /// The one repository detection answers inside or outside only for a `git` that ran: run
-    /// under a repository it answers inside, run under a directory that is none it answers
-    /// outside, and a `git` that could not start - here inside a repository - answers neither:
-    /// its failure names the detection's command, the root and the cause, which
-    /// [`BlobBatch::start`] reads as no object database to ask.
+    /// A git query answers its output, none for git's quiet no (exit 1), and a failure for any
+    /// other exit or a git that could not start.
+    #[cfg(unix)]
     #[test]
-    fn the_repository_detection_tells_a_git_that_could_not_start_from_one_run_outside() {
-        use crate::test_support::temp_git_project_with_commit;
-
-        let inside = temp_git_project_with_commit();
-        let outside = tempfile::tempdir().unwrap();
-        let ran = |root: &std::path::Path| {
-            crate::subprocess::git_in(root)
-                .args(REPOSITORY_DETECTION)
-                .output()
+    fn a_git_query_answers_none_only_for_its_quiet_no() {
+        let ran = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
         };
-        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
-        let rows = [
-            (inside.path(), ran(inside.path()), Ok(true)),
-            (outside.path(), ran(outside.path()), Ok(false)),
+        let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        /// (name, the run started, what the query answers)
+        type Row<'a> = (
+            &'a str,
+            std::io::Result<std::process::Child>,
+            Result<Option<&'a str>, &'a str>,
+        );
+        let rows: [Row; 5] = [
+            ("an answer", ran("echo main"), Ok(Some("main\n"))),
+            ("the quiet no", ran("exit 1"), Ok(None)),
             (
-                inside.path(),
-                Err(could_not_start()),
-                Err(format!(
-                    "git rev-parse --git-dir in {}: {}",
-                    inside.path().display(),
-                    could_not_start()
-                )),
+                "a failure",
+                ran("echo 'fatal: bad object' >&2; exit 128"),
+                Err("fatal: bad object\n"),
+            ),
+            (
+                "a failure that says nothing",
+                ran("exit 128"),
+                Err("exit status: 128"),
+            ),
+            (
+                "a git that could not start",
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no git")),
+                Err("no git"),
             ),
         ];
-        for (root, ran, answer) in rows {
-            assert_eq!(repository_answer(root, ran).map_err(|e| e.0), answer);
+        for (name, started, expected) in rows {
+            let answer = finish_git_query(started)
+                .map(|out| out.map(text))
+                .map_err(text);
+            assert_eq!(
+                answer,
+                expected
+                    .map(|out| out.map(str::to_owned))
+                    .map_err(str::to_owned),
+                "{name}"
+            );
         }
     }
 
-    /// The batch process's start under a repository the detection answered: a `git` that started
+    /// The batch process's start under a repository discovery found: a `git` that started
     /// is the batch, and one that could not start fails the start, naming the batch's command, the
     /// root and the cause - never none, which would read every entry of a rebuild from the tree
     /// with an object database standing there to ask.
