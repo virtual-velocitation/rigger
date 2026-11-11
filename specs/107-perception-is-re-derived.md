@@ -203,7 +203,11 @@ the stage names), split out as a bytes form that `load_workflow` keeps calling a
 then `workflowdef::extract_events`, else (no bytes, bytes that are not UTF-8, a failed parse) the
 empty batch, as `project_events` answers. `excluded` changes only a parsed `gc` batch. An empty
 batch keys no event, so it has no generation, resolves no entry and is never recorded
-(`batches_within` and `project_batches` skip it). Criterion 4 splits out `events::lower_file` and
+(`batches_within` and `project_batches` skip it). The sinks and the rebuild's resolver read every
+half through `ingest::extraction`, which answers no bytes with `gc`'s batch for no bytes whatever
+the prefix, so a deleted `gd` or `gw` file records that boundary batch and its fold retires the
+file; only bytes a half extracts nothing from leave the empty batch. Criterion 4 splits out
+`events::lower_file` and
 the `gd` and `gw` bytes forms, each keeping the caller it has, and criterion 5 owns the three total
 functions over them at their first production caller, the rebuild's resolver; the sinks'
 `ingest::entry_of_batch` reuses them. ONE function, `ingest::walk_exclusions(root)`
@@ -274,7 +278,8 @@ first, never the test. An unkeyed batch's generation is ONE grounder function,
 rebuild's resolver `ingest::resolve_entry` calls it from criterion 5, criterion 9 changes only
 `key_batch`'s flag and criterion 10 calls `key_batch` from `ingest::entry_of_batch`. Source 3
 resolves every entry recorded from an input the function maps to the no-bytes batch, whatever became
-of the bytes; for `gd` and `gw` it yields the empty batch, which resolves nothing. In the default
+of the bytes; for `gd` and `gw` it yields that same no-bytes batch (`ingest::extraction`), so a
+deleted `gd` or `gw` file's entry resolves too. In the default
 lane, source 1 is skipped only outside a git repository or when the batch process cannot start at
 all, decided ONCE before the first entry, so an entry recorded from uncommitted bytes resolves while
 the tree's file extracts to its generation. A batch process that fails after it started (it dies, or
@@ -304,10 +309,11 @@ them records an entry at its next default-lane ingest of the file (SINK OUTCOMES
 re-recording of row 13 included), and a gone or out-of-scope `gc` path it does not count may record
 one too, by rows 10 and 11, when an integration reindex names it; the number prints in the default
 lane with a note saying the counted identities record an entry at their next ingest (criteria 10 and
-12 assert it), and a zero prints without the note. A deleted `gc` file's identity holds `gc`'s batch
-for no bytes once the walk's deletion ingest recorded it, so that ingest retires the file's facts,
-at a rebuild as live; a `gd` or `gw` identity whose file is gone or extracts to the empty batch is
-named by no ingest, so live it keeps what its last fold left, and after a rebuild it holds what its
+12 assert it), and a zero prints without the note. A deleted file's identity, under any prefix,
+holds the batch for no bytes once the walk's retirement batch recorded it, so that ingest retires
+the file's facts, at a rebuild as live; a `gd` or `gw` identity whose file extracts to the empty
+batch is named by no ingest, so live it keeps what its last fold left, and after a rebuild it
+holds what its
 latest resolvable entry gave, none for a migrated identity with no earlier entry (WHAT A REBUILD
 REPRODUCES). An identity whose path holds no such file is not counted: what it holds after a
 rebuild, nothing for a gone file with no resolvable entry, is its correct state. The `applied` rows
@@ -726,10 +732,10 @@ graph build` keeps none and asks the store each batch).
 | 4 | the graph owes its rebuild and the log side holds the batch's generation | none | none | succeeds | no | looked up |
 | 5 | not current; the read of the bytes fails for a reason other than absence | none | none | fails, naming the read | no | looked up |
 | 6 | not current; the sink's own extraction is itself current (a lagging lowering whose bytes extract to the generation both sides hold) | none | none | succeeds | no | looked up |
-| 7 | not current; the own extraction of a `gd` or `gw` file is the empty batch (deleted, truncated or made unparsable since the walk) | none | none: the identity keeps what its last fold left | succeeds | no | looked up |
+| 7 | not current; the own extraction of a `gd` or `gw` file's bytes is the empty batch (truncated or made unparsable since the walk) | none | none: the identity keeps what its last fold left | succeeds | no | looked up |
 | 8 | not current; hashing the bytes of an extraction it will record fails, a hash process that cannot start included | none | none | fails, naming the hash | no | looked up |
 | 9 | not current; bytes read and extracted to a batch neither empty nor current, a lagging lowering whose generation both sides do not hold included | the extraction's generation, the bytes' blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
-| 10 | not current; a `gc` path holding no file (an absent path reads as no bytes) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
+| 10 | not current; a path holding no file, under any prefix (an absent path reads as no bytes; the whole-project walk hands one to every identity the graph holds whose path it no longer sees) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
 | 11 | not current; a `gc` path outside the walk's scope, handed no bytes (the `gd` walk never hands one) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
 | 12 | an appended entry the graph folds (outcome (c), resolved) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the extraction folded at the entry's position | succeeds | yes | the entry's generation |
 | 13 | an appended entry that is a re-recording (THE ENTRY block's outcome (b)) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the `applied` row only | succeeds | no | the entry's generation |
