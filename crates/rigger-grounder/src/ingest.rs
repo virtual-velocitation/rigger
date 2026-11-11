@@ -516,12 +516,7 @@ pub fn graph_index_lag(
         .iter()
         .filter(|file| {
             let identity = code_identity(file);
-            let bytes = crate::grounder::tree_bytes(root, "gc", file);
-            let generation = batch_generation(&crate::grounder::symbols::events::bytes_batch(
-                file,
-                bytes.as_deref(),
-                excluded.contains(&identity),
-            ));
+            let generation = tree_generation(root, file, excluded.contains(&identity));
             let held = graph.and_then(|graph| graph.current_generation(&identity).ok());
             let side = held
                 .as_ref()
@@ -530,6 +525,22 @@ pub fn graph_index_lag(
         })
         .cloned()
         .collect()
+}
+
+/// The generation the bytes the tree at `root` holds for `file` extract to: the batch the code
+/// half extracts ([`bytes_batch`](crate::grounder::symbols::events::bytes_batch)) from the bytes
+/// the tree's one read rule hands ([`crate::grounder::tree_bytes`]), under the exclusion flag
+/// `excluded`, hashed as a batch is ([`batch_generation`]). A file the tree hands no bytes for
+/// extracts to the batch for no bytes. The one computation the index-lag advisory and the
+/// combined lookup's graph check compare against a graph's [`Projection::current_generation`].
+#[cfg(feature = "symbols")]
+pub fn tree_generation(root: &std::path::Path, file: &str, excluded: bool) -> String {
+    let bytes = crate::grounder::tree_bytes(root, "gc", file);
+    batch_generation(&crate::grounder::symbols::events::bytes_batch(
+        file,
+        bytes.as_deref(),
+        excluded,
+    ))
 }
 
 /// Light lane: no extraction pass is compiled, so no file can ever be extracted - nothing to compare
