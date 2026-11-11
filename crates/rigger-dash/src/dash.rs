@@ -738,8 +738,8 @@ pub enum DashStatus {
     /// A URL is recorded and TRUSTED: either a probe PROVES it is still serving, or no marker
     /// exists to check against and it is left unverified. An absent marker reads as
     /// "unverifiable", never "dead" - the marker LIFECYCLE is a separate concern (spec 62), and
-    /// a dash-starting path (the guard-bound `rigger run` dash) records a URL but no marker
-    /// at all, so treating "no marker" as "dead" would falsely
+    /// `rigger run` removes its marker when it reaps its dash while the URL stays recorded, so
+    /// treating "no marker" as "dead" would falsely
     /// report a genuinely live dash as down.
     Serving(String),
     /// A probe PROVED the recorded URL's own port is not serving - the lie this criterion
@@ -8588,7 +8588,7 @@ mod tests {
         );
 
         // A recorded URL with NO marker to check against is TRUSTED as-is, with NO probe - the
-        // guard-bound `rigger run` dash records a URL but no marker at all
+        // URL `rigger run` records outlives the marker it removes on reaping its dash
         // (spec 62 owns the marker lifecycle), so an absent marker must never read as "dead".
         assert_eq!(
             dash_status(Some(url.clone()), None, |_| panic!(

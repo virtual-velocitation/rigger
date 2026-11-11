@@ -79,8 +79,9 @@ const DASH_URL_FILE: &str = "dash.url";
 
 /// The per-project dash marker file, under [`RIGGER_DIR`] alongside [`DASH_URL_FILE`]: the
 /// port + pid of a dashboard serving this project (a [`dash::DashMarker`]). `rigger status`
-/// and `rigger watch` read it to probe a recorded dash; the guard-bound dash `rigger run`
-/// starts writes none, so an absent file is the ordinary state during a run.
+/// and `rigger watch` read it to probe a recorded dash. `rigger run` writes it when it starts
+/// its dash and removes it when it reaps that dash, so an absent file is the ordinary state
+/// between runs and under a dash opt-out.
 const DASH_MARKER_FILE: &str = "dash.marker";
 
 /// The per-project breadcrumb, under [`RIGGER_DIR`], naming the run id whose OWN drive most
@@ -3193,10 +3194,11 @@ fn watch_poll_over(
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
     // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
     //
-    // `rigger run` (`start_run_dashboard`/`spawn_run_dashboard`) writes no marker; it records
-    // the `dash.url` and `dash.attempt` breadcrumbs only. Without a fallback, a marker-absent
-    // project would read as `NotRecorded` regardless of whether a dash was ever actually up -
-    // silently blind for `rigger run` (round-3 reject cause
+    // `rigger run` (`spawn_run_dashboard`) records the marker beside the `dash.url` and
+    // `dash.attempt` breadcrumbs and removes it when it reaps its dash, so the URL outlives the
+    // marker. Without a fallback, a marker-absent project would read as `NotRecorded` regardless
+    // of whether a dash was ever actually up - silently blind to the URL a run left (round-3
+    // reject cause
     // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
     // safe, timeout-bounded `dash::dash_answer_on` probe, just without a pid to name. Only

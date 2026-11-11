@@ -1269,8 +1269,8 @@ pub(crate) fn load_criteria(
 /// get their OWN); its URL is printed at run start and recorded in `.rigger/`[`DASH_URL_FILE`]
 /// so `rigger status` can surface it.
 ///
-/// Returns the [`dash::ReapedChild`] guard the DRIVER holds for the whole run: dropping it
-/// (on a normal finish OR an unwinding panic) reaps the dash. That guard is unit 3's reaping
+/// Returns the [`RunDash`] guard the DRIVER holds for the whole run: dropping it (on a normal
+/// finish OR an unwinding panic) reaps the dash and removes its marker. That guard is unit 3's reaping
 /// mechanism, reused here as the single reaper - THIS unit owns only start + discoverability,
 /// never stopping. Best-effort: if the dash cannot be started the run still proceeds (the
 /// dash is observability, not the deliverable), so a port-starved or spawn-refused
@@ -1283,10 +1283,7 @@ pub(crate) fn load_criteria(
 ///
 /// OPT-OUT: the one opt-out ([`dash_opted_out`] over `config_dash_enabled`, the workflow's
 /// resolved [`config::Workflow::dash_enabled`]) starts no dash and stamps no attempt.
-fn start_run_dashboard(
-    config_dash_enabled: bool,
-    store: &dyn EventStore,
-) -> Option<dash::ReapedChild> {
+fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Option<RunDash> {
     if dash_opted_out(config_dash_enabled) {
         return None;
     }
@@ -1309,11 +1306,12 @@ fn start_run_dashboard(
 }
 
 /// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
-/// and record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status`. The child's stdout
+/// record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
+/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The child's stdout
 /// is silenced (the parent's stdout is the run's own report, which the dash child must never
 /// write to) and its stdin is closed; the dash
 /// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
-fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
+fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
     let child = subprocess::command(exe)
@@ -1327,7 +1325,39 @@ fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::err
     // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
     // `.rigger/` already exists (the driver created it before reaching here).
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok((dash::ReapedChild::new(child), url))
+    let marker = dash::DashMarker {
+        port,
+        pid: child.id(),
+    };
+    let marker_path = PathBuf::from(db_path(DASH_MARKER_FILE));
+    let _ = marker.write(&marker_path);
+    Ok((
+        RunDash {
+            child: Some(dash::ReapedChild::new(child)),
+            marker,
+            marker_path,
+        },
+        url,
+    ))
+}
+
+/// The dash `rigger run` started, held for the whole run: dropping it reaps the dash child
+/// ([`dash::ReapedChild`]) and then removes the [`DASH_MARKER_FILE`] it recorded, unless the
+/// file by then names another dash, so a marker on disk names a dash a run still holds or one
+/// whose run never reached its teardown.
+struct RunDash {
+    child: Option<dash::ReapedChild>,
+    marker: dash::DashMarker,
+    marker_path: PathBuf,
+}
+
+impl Drop for RunDash {
+    fn drop(&mut self) {
+        drop(self.child.take());
+        if dash::DashMarker::read(&self.marker_path) == Some(self.marker) {
+            let _ = std::fs::remove_file(&self.marker_path);
+        }
+    }
 }
 
 /// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -

@@ -324,8 +324,8 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
     // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME probe
     // `rigger watch` consumes, so the two surfaces can never disagree about whether a recorded
-    // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` dash writes none)
-    // is unverifiable, not dead, and stays trusted; a marker naming a DIFFERENT dash than the
+    // dash is alive. A marker-less recorded URL (what a run leaves once it reaps its dash and
+    // removes the marker) is unverifiable, not dead, and stays trusted; a marker naming a DIFFERENT dash than the
     // recorded URL (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT
     // "nothing to check" either -
     // `dash_status` probes the URL's own port directly in that case, never the marker's

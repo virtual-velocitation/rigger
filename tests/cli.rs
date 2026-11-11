@@ -10297,6 +10297,50 @@ fn rigger_run_honors_each_dash_opt_out_and_starts_its_dash_without_one() {
     assert_one_dash(&run(false, false), "rigger run with no opt-out");
 }
 
+/// Given a workflow whose one agent copies `.rigger/dash.marker` aside while it works, when the
+/// operator runs `rigger run` with its dash on, then the marker read mid-run names the port of
+/// the URL the run printed and a real pid, and once the run has reaped its dash the marker is
+/// gone, leaving the `dash.url` breadcrumb alone.
+#[cfg(unix)]
+#[test]
+fn rigger_run_records_its_dash_marker_while_the_dash_serves_and_removes_it_on_reap() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let marker = root.join(".rigger").join("dash.marker");
+    let seen = root.join("marker-seen");
+    let (_fakebin, path_env) = install_fake_claude(&format!(
+        r#"  *"Do the unit."*)
+    cp "{marker}" "{seen}" 2>/dev/null
+    echo "did the unit"
+    ;;
+"#,
+        marker = marker.display(),
+        seen = seen.display(),
+    ));
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
+    let out = dash_entry_command(root, &["run"], Some(&path_env), false, root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let trace = dash_trace(root, &out);
+    assert_one_dash(&trace, "rigger run with its dash on");
+    let url_port = trace.url.as_deref().and_then(rigger::dash::url_port);
+    let recorded = std::fs::read_to_string(&seen)
+        .ok()
+        .and_then(|text| rigger::dash::DashMarker::parse(&text));
+    assert_eq!(
+        (
+            recorded.map(|m| m.port),
+            recorded.is_some_and(|m| m.pid != rigger::dash::UNATTRIBUTED_PID),
+            marker.exists(),
+        ),
+        (url_port, true, false),
+        "the run records its dash's port and pid in dash.marker while the dash serves and \
+         removes the marker when it reaps the dash; stderr:\n{}",
+        trace.stderr
+    );
+}
+
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
@@ -19889,7 +19933,7 @@ rigger::test_cases! {
 }
 
 /// A `dash.url` naming a definitely-unbound loopback port followed by `path`, with NO marker
-/// recorded (the `rigger run` shape): the port is correctly parsed out of the
+/// recorded (what a run leaves once it reaps its dash): the port is correctly parsed out of the
 /// url and reported dead, and no pid is named - with no marker there is none to read.
 fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
     let dead_port = free_loopback_port();
@@ -19912,8 +19956,8 @@ fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
 rigger::test_cases! {
     /// Round-3 reject cause (adv-u69c1r3-watch-once-inherits-marker-absent-blindspot), closed:
     /// the sibling test above only seeds `.rigger/dash.marker`, a shape only an earlier
-    /// binary's drive path wrote. `rigger run` (`spawn_run_dashboard`) writes ONLY
-    /// `.rigger/dash.url`, never a marker. Before the round-4 fix, `watch_poll`
+    /// binary's drive path wrote. `rigger run` (`spawn_run_dashboard`) removes its marker when it
+    /// reaps its dash and leaves `.rigger/dash.url`. Before the round-4 fix, `watch_poll`
     /// mapped an absent marker straight to `DashProbe::NotRecorded`, which `detect()` never
     /// turns into an anomaly, so `rigger watch --once` printed NOTHING for this exact,
     /// empirically-reproduced shape (verified by the round-3 adversary against the real
@@ -19941,7 +19985,7 @@ rigger::test_cases! {
     /// `http://127.0.0.1:<port>/` or `.../api/state` shape), so this exact divergence class was
     /// never driven through the compiled binary. This seeds a `dash.url` naming a
     /// definitely-unbound loopback port followed by a path segment containing a colon, with NO
-    /// marker recorded (the `rigger run` shape), and proves the port is still
+    /// marker recorded (what a run leaves once it reaps its dash), and proves the port is still
     /// correctly extracted and reported dead. Confirmed this reproduces the pre-round-12 defect:
     /// against the old `port_from_dash_url` (`url.rsplit_once(':')` over the whole string), the
     /// last colon in this fixture's url falls inside the path, so the parse yields a non-numeric
@@ -20033,7 +20077,7 @@ rigger::test_cases! {
 /// `watch_poll`'s marker-absent branch hardcoded to `false` survived every test in the
 /// suite - nothing drove a real, answering dash through this exact fallback path, so a
 /// regression that always reported it as dead would have gone undetected. Spins up a real
-/// `rigger dash`, records ONLY its URL (the `rigger run` shape - no
+/// `rigger dash`, records ONLY its URL (what a run leaves once it reaps its dash - no
 /// marker), and asserts `rigger watch --once` reports no anomaly.
 #[test]
 fn watch_once_reports_nothing_when_a_real_dash_serves_the_url_only_recorded_port() {
