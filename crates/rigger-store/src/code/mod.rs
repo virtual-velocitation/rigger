@@ -1,5 +1,6 @@
-//! The code store: one immutable snapshot of the tree's facts at `.rigger/store/code/`, named by
-//! a `CURRENT` pointer and advanced under a `LOCK`.
+//! The code store: an immutable snapshot of the tree's facts at `.rigger/store/code/` for each of
+//! the two most recently advanced fingerprints, each named by its `CURRENT-<fingerprint>` pointer
+//! and advanced under a `LOCK`.
 
 mod advance;
 mod dir_source;

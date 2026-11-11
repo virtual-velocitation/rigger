@@ -206,7 +206,7 @@ Any design that holds test code fully has to keep product views the size they ar
              ls-tree,                     |       Group (communities, concepts)
              cat-file --batch             v
                                .rigger/store/code/
-                                 CURRENT    -> "000042.snap"
+                                 CURRENT-<fp> -> "000042.snap"  (one per fingerprint)
                                  000042.snap   (immutable, crc-checked)
                                  LOCK
                                          |
@@ -375,12 +375,12 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ```
 advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) -> Stamp
 
+  fp <- fingerprint(extract, group)
   take LOCK (exclusive: a writer blocks; a reader tries once and, if the lock is held, answers
-       from CURRENT with the label "advance in flight")
-  S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
-       differs from fingerprint(extract, group); a store file that exists but cannot be read is an
-       error
-  if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
+       from CURRENT-<fp> with the label "advance in flight")
+  S <- snapshot named by CURRENT-<fp>; or EMPTY if there is none, its crc fails, or its
+       fingerprint differs from fp; a store file that exists but cannot be read is an error
+  if S.stamp.tip.tree == target.tree:      reap; release LOCK; return S.stamp      (no-op)
   entries <- source.list(target.tree)                       [(path, blob)] of each in-scope file
   keep    <- S.files whose (path, blob) is in entries       (facts copied, never re-extracted)
   fresh   <- extract every other entry, in parallel         (std::thread::scope, one chunk per
@@ -391,9 +391,10 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   bytes   <- encode(view, G), then decoded back, every crc and reference checked: a snapshot
              that fails to read is an error, and nothing is published or reaped
   write   <seq+1>.snap.tmp ; fsync ; rename to <seq+1>.snap ; sync_dir
-  write   CURRENT.tmp      ; fsync ; rename to CURRENT       ; sync_dir
-  reap    every *.snap not named by CURRENT and every *.tmp (a failed delete is left for the
-          next advance)
+  write   CURRENT-<fp>.tmp ; fsync ; rename to CURRENT-<fp>  ; sync_dir
+  reap    keep the two CURRENT-* naming the highest seqs; remove every other CURRENT-*, then
+          every *.snap neither names, and every *.tmp (a failed delete is left for the next
+          advance)
   release LOCK
 ```
 
@@ -406,7 +407,7 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
        | copy            copy |                     |
        v                      v                     v  extract in parallel
    +------+------+------+------+------+
-   | a.rs | b.rs'| d.md | e.rs |      |  -> indexes -> groupings -> <seq+1>.snap -> CURRENT
+   | a.rs | b.rs'| d.md | e.rs |      |  -> indexes -> groupings -> <seq+1>.snap -> CURRENT-<fp>
    +------+------+------+------+------+
 ```
 
@@ -417,8 +418,14 @@ What is *not* done, and why:
 - **No worktree bytes.** The shared store only ever describes a commit, so uncommitted edits in
   the operator checkout cannot leak into what a spawn reads. The overlay shows uncommitted edits
   to the one caller who has them.
-- **No history.** The previous snapshot is reaped once CURRENT names the new one. Git holds every
-  earlier tree, and advancing to any commit rebuilds its snapshot.
+- **No history.** A fingerprint's previous snapshot is reaped once its pointer names the new one.
+  Git holds every earlier tree, and advancing to any commit rebuilds its snapshot.
+- **No more than two fingerprints.** Two binaries sharing one store (an MCP server still on the
+  previous build beside the newly installed CLI, a lane's dev build beside the installed one)
+  each keep their own pointer and snapshot, so neither re-extracts after the other advances. The
+  reaper keeps the two most recently advanced fingerprints and removes every older one's pointer
+  and snapshot. Recency is the order the pointers were written in, which is the order of the
+  sequence numbers they name, since every pointer is written under LOCK with the next number.
 
 ### 5.2 What advances the stamp
 
@@ -427,10 +434,10 @@ Only `advance` writes a snapshot, and it is reached through one function:
 ```
 code::open_current(root) -> CodeView
   tip <- source.head()                                   (operator checkout's HEAD commit)
-  S   <- snapshot named by CURRENT
+  S   <- snapshot named by CURRENT-<fp>
   if S is absent, unreadable, of another fingerprint, or S.stamp.tip.commit != tip.commit:
       advance(..., target = tip)           (on a lock or write failure: answer from S, labelled)
-  return the view of CURRENT
+  return the view of CURRENT-<fp>
 ```
 
 | Caller | When | Effect |
@@ -466,7 +473,7 @@ fails because of, a writer.
                                              |
                                     advance(target = C')
                                              |
-                        CURRENT -> <seq+1>.snap, stamp.tip.commit = C'
+                     CURRENT-<fp> -> <seq+1>.snap, stamp.tip.commit = C'
                                              |
        every later spawn, lookup and dash view answers "describes C'"
 ```
@@ -535,7 +542,7 @@ Grouping before and after:
 
 ```
 open(caller worktree W, filter)
-  view  <- code::open_current(root)                               (read CURRENT, read snap,
+  view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
                                                                    untracked list: < 20 ms)
@@ -989,13 +996,13 @@ is idempotent.
 
 | Crash point | State left | Recovery |
 |---|---|---|
-| during extraction or before the snapshot rename | CURRENT names the old snapshot; a `*.tmp` orphan | readers see the old stamp; the next advance reaps the orphan and redoes the work |
-| after the snapshot rename, before the CURRENT rename | CURRENT names the old snapshot; a complete unreferenced `<seq+1>.snap` | the same; the reaper removes the unreferenced snapshot |
-| after the CURRENT rename, before the reap | CURRENT names the new snapshot; old files remain | the next advance reaps them |
+| during extraction or before the snapshot rename | the pointer names the old snapshot; a `*.tmp` orphan | readers see the old stamp; the next advance reaps the orphan and redoes the work |
+| after the snapshot rename, before the pointer rename | the pointer names the old snapshot; a complete unreferenced `<seq+1>.snap` | the same; the reaper removes the unreferenced snapshot |
+| after the pointer rename, before or during the reap | the pointer names the new snapshot; old files remain, or an older fingerprint's snapshot whose pointer is already gone | the next advance reaps them |
 | a torn or corrupt snapshot | a crc check fails on open | treated as absent: `open_current` advances from empty (<= 8 s) |
-| an older OS loses the directory entry of a rename | CURRENT names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
-| a reader races the reaper | the snapshot named by a just-read CURRENT is gone | the reader re-reads CURRENT and retries, at most 3 times |
-| two advancers | the second waits on LOCK | it re-reads CURRENT under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
+| an older OS loses the directory entry of a rename | the pointer names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
+| a reader races the reaper | the snapshot named by a just-read pointer is gone | the reader re-reads the pointer and retries, at most 3 times |
+| two advancers | the second waits on LOCK | it re-reads its pointer under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
 | a crash during migration | steps 1-5 write only new files until the swap; step 6 is one transaction | a rerun resumes at the first step that is not yet done |
 
 ---
@@ -1048,7 +1055,8 @@ rigger's own segment log (109), a resolved graph held in memory and loaded from 
   - the lock (`with_write_lock`, on std `File::lock`).
 
   109 and 110 add their modules (`segments`, `graph`) to the same crate.
-- **Publish convention.** The CURRENT pointer convention is the one a MANIFEST uses. The owned
+- **Publish convention.** The pointer convention (a small file naming an immutable snapshot,
+  replaced by an atomic rename) is the one a MANIFEST uses. The owned
   store keeps its manifest beside `store/code/` and follows the same convention.
 
 **Changes to the owned-store work:**
@@ -1106,7 +1114,7 @@ The code store lands first for three reasons:
 |---|---|---|---|---|
 | exclusive lock | `with_write_lock` (std `File::lock` / `File::try_lock`) | `flock` | `LockFileEx` | `flock` |
 | atomic replace | `rename` (std) | `rename(2)` | `MoveFileExW` replace-existing (std) | `rename(2)` |
-| make a rename durable | `sync_dir(dir)`; a filesystem that cannot sync a directory (InvalidInput, Unsupported) leaves the rename standing and is not an error, as in SQLite | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves CURRENT at the old, still-true stamp (section 12) | open the directory + `fsync` |
+| make a rename durable | `sync_dir(dir)`; a filesystem that cannot sync a directory (InvalidInput, Unsupported) leaves the rename standing and is not an error, as in SQLite | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves the pointer at the old, still-true stamp (section 12) | open the directory + `fsync` |
 | delete a file another process has open | reaper | unlink | std opens with share-delete, so the delete succeeds; a mapped file's delete fails and is retried at the next advance | unlink |
 | read the tree | `TreeSource` | git or the directory | git or the directory | git or the directory |
 

@@ -782,8 +782,9 @@ top of this document gives the full design; this is its shape.
   extractor's fingerprint. `advance` moves it to a commit: it lists the target tree, copies the
   facts of every file whose blob is unchanged, extracts only the others in parallel from git
   objects (never the worktree's bytes), computes the groupings (section 5.3), and writes the new
-  snapshot and the `CURRENT` pointer atomically under one lock, reaping the old snapshot - git
-  holds every earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
+  snapshot and its fingerprint's `CURRENT` pointer atomically under one lock, reaping the old
+  snapshot and keeping only the two most recently advanced fingerprints - git holds every
+  earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
   merge advance it. Nothing is resolved at advance: every cross-file rule runs at read, so a file
   changing never rewrites another file's facts and the order of advances never changes an answer.
 - **The record half: the event log and `graph.db`.** The log holds only what cannot be
