@@ -1,6 +1,6 @@
 //! The context graph's sqlite adapter: the `Projector` that folds the event log into
 //! bi-temporal node and edge tables, and the payload shapes only its fold reads. The model, the
-//! `Projection` port and the query engine live in `rigger-domain`'s `contextgraph`, re-exported
+//! `RecordFold` port and the query engine live in `rigger-domain`'s `contextgraph`, re-exported
 //! here so the fold names them by their historical paths.
 
 // The sqlite projector is the concrete adapter Design names as `store`-gated, so it is excluded

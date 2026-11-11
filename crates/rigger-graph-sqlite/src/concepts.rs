@@ -17,7 +17,7 @@ mod tests {
     use crate::test_support::edge;
     use crate::test_support::node_with_optional_attrs;
     use std::collections::BTreeMap;
-    // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
+    // `RecordFold` (the `.whole()` trait) and the two rel constants are needed only by the
     // sqlite-backed rebuild test above, gated the same way for the same reason.
     use crate::contextgraph::{KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
     #[cfg(any(feature = "store", not(feature = "core")))]

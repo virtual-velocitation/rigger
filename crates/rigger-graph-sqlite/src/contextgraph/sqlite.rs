@@ -3,32 +3,29 @@
 //! A single connection behind a mutex serializes the read-then-write of apply.
 
 use std::cell::{Cell, OnceCell};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-use super::query::{
-    entity_id, leaf_of, node_file, node_leaf, node_name, path_leaf, placeholder_id, split_id,
-};
+use super::query::{entity_id, placeholder_id, split_id};
 use super::{
-    definition_precedence, entity_site, reference_candidate_kinds, staged_rel, CallEdge, CallGraph,
-    CallNode, Candidate, Direction, Edge, EntitySite, EntryBatch, EntryFold, Error, FoldAccess,
-    Graph, Located, Node, Projection, KIND_AGENT, KIND_ARCH_DECISION, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
-    KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, KIND_STAGE,
-    LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR, NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE,
-    PLACEHOLDER_SIGIL, REBUILD_OWED, REBUILD_OWED_FOR_LOST_FOLD, REF_KIND_MODULE, REL_ABOUT,
-    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
-    REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS,
-    REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
-    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
-    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    definition_precedence, holds_attachment, reference_candidate_kinds, staged_rel, Edge,
+    EntryBatch, EntryFold, Error, FoldAccess, Graph, Neighbors, Node, RecordFold, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, LEAF_REF_KINDS, MODULE_CANDIDATE_SEPARATOR,
+    NON_TARGET_KINDS, OWED_LOST_FOLD, OWED_OLDER_RULE, PLACEHOLDER_SIGIL, REBUILD_OWED,
+    REBUILD_OWED_FOR_LOST_FOLD, REF_KIND_MODULE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS,
+    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS,
+    REL_RAISED, REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, REL_SUPERSEDES, STAGED_RELS, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
@@ -401,7 +398,7 @@ pub enum StaleCopy {
     InUse,
 }
 
-/// Projector is the SQLite-backed Projection.
+/// Projector is the SQLite-backed RecordFold.
 ///
 /// `project` is the plain project string `Namespaced::new` uses to build the `proj-<id>-`
 /// stream prefix (spec 28): every node and edge this projector folds is stamped with it, so a
@@ -666,11 +663,6 @@ impl FrameError {
         }
     }
 }
-
-// `Located`, `EntitySite` and `Candidate` (the `rigger graph --show <entity>` resolution, spec 58)
-// are PORT-owned types defined in `super` (spec 92's fix round): every sibling `Projection` method
-// returns a port-owned type, so `Projector::locate` and its `Projection::locate` override do too,
-// converting to/from no internal representation because these are already plain data.
 
 impl Projector {
     /// Open (or create) the graph at `path`, scoped to `project` - the plain project string
@@ -1493,7 +1485,7 @@ impl Projector {
 
     /// The WHOLE live projection for this project: every node plus every currently-valid edge
     /// (`valid_to IS NULL`), read DIRECTLY (spec 45, criterion 2 - the direct-projection read the
-    /// dedicated `/api/graph` provider consults). Unlike [`Projection::subgraph`] it takes no seed
+    /// dedicated `/api/graph` provider consults). Unlike [`ContextGraph::subgraph`] it takes no seed
     /// and walks no reachability CTE - it returns the full graph, so a whole-graph overview and a
     /// seeded neighborhood both reach any node the projection holds (the fix for the never-built
     /// repo whose run-seed set is empty). Read isolation (spec 28, criterion 2): scoped to
@@ -1719,71 +1711,6 @@ impl Projector {
         .map_err(FrameError::unframed)
     }
 
-    /// Resolve a `rigger graph --show <entity>` query to a located entity, a candidate list, or
-    /// nothing (spec 58, criterion 1). It serves from the SAME node/edge tables every graph surface
-    /// reads - reusing [`node_row`] and the pinned [`definitions_with_suffix`] leaf match - so the
-    /// show surface never forks a second resolution authority.
-    ///
-    /// Resolution order (spec 119, A BARE SHOW FINDS A LEAF OR PATH), each step taken only on zero
-    /// answers from the one before: the EXACT node id, unless its node is a knowledge-held flat
-    /// id's bare node ([`is_bare_flat_node`]); then [`shown_candidates`]' three forms over
-    /// code-entity definitions (the whole query as a leaf, the path form, the file-qualified
-    /// form), a data member and a declaration among them (a lookup, never the walks' call-target
-    /// test); then the bare node's exact id. Zero answers -> [`Located::None`]; exactly one ->
-    /// [`Located::One`] (its site); more than one -> [`Located::Many`] the SORTED candidates,
-    /// never a guess among them.
-    ///
-    /// Read-only over the projection; a missing / drifted working-tree location is NOT this method's
-    /// concern (it reports the recorded graph site) - the CLI reads and, if stale, degrades the body.
-    pub fn locate(&self, entity: &str) -> Result<Located, Error> {
-        let conn = self.conn.lock().unwrap();
-        // Exact id first: a full `<file>::<path>` id resolves directly to its node, a bare flat
-        // node's only once no definition answers.
-        let (exact, deferred) = match node_row(&conn, entity, &self.project)? {
-            Some(node) if is_bare_flat_node(&node) => (None, Some(node)),
-            found => (found, None),
-        };
-        if let Some(node) = exact {
-            return Ok(Located::One(self.site_of(&conn, node)?));
-        }
-        let cands = shown_candidates(&conn, entity, &self.project)?;
-        match cands.as_slice() {
-            [] => match deferred {
-                Some(node) => Ok(Located::One(self.site_of(&conn, node)?)),
-                None => Ok(Located::None),
-            },
-            [only] => {
-                let node = node_row(&conn, only, &self.project)?.ok_or_else(|| {
-                    Error(format!("locate: candidate {only:?} vanished between reads"))
-                })?;
-                Ok(Located::One(self.site_of(&conn, node)?))
-            }
-            many => Ok(Located::Many(
-                many.iter()
-                    .map(|id| Candidate {
-                        file: node_file(KIND_CODE_ENTITY, id)
-                            .unwrap_or_default()
-                            .to_string(),
-                        id: id.clone(),
-                    })
-                    .collect(),
-            )),
-        }
-    }
-
-    /// Build an [`EntitySite`] from a resolved node: [`entity_site`]'s rules over the row read,
-    /// at its one-hop live-edge degree, a `file` node's unresolved references read beside it
-    /// ([`unresolved_leaves`]). Read-only; used by [`locate`](Projector::locate). The
-    /// body's extent is NOT bounded here: the show surface derives it from the working tree
-    /// through the shared multi-grammar symbols authority (the grammar's own node boundary), so
-    /// the graph adapter carries no structural end-line guess.
-    fn site_of(&self, conn: &Connection, node: Node) -> Result<EntitySite, Error> {
-        let degree = one_hop_degree(conn, &node.id, &self.project)?;
-        let mut site = entity_site(&node, degree);
-        site.unresolved = unresolved_leaves(conn, &node, &self.project)?;
-        Ok(site)
-    }
-
     /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
     /// `code-entity` nodes this project's graph currently holds that are RETIRED - reachable by NO
     /// live edge at all, in either direction, though each DID at some point carry a live `CONTAINS`
@@ -1829,247 +1756,6 @@ impl Projector {
             .map_err(be)?;
         Ok(n as usize)
     }
-
-    /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
-    /// the seed. A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges
-    /// (spec 37), following callees transitively. It answers "what does this call" as a directed,
-    /// layered DAG - the thing the undirected [`subgraph`](Projection::subgraph) cannot, because a
-    /// naive forward walk stops at the first file boundary where a cross-file call points at a BARE
-    /// placeholder node (the definition lives in another file's namespace).
-    ///
-    /// - **Layers.** The seed is layer 0; each callee reached for the FIRST time takes its
-    ///   discoverer's layer + 1. BFS visits shallowest-first, so a node's recorded layer is its
-    ///   minimum hop distance from the seed, stable across polls.
-    /// - **Resolution by leaf.** A `CALLS` edge whose callee is no named call target is resolved
-    ///   by the leaf its id names over the call-target DEFINITION nodes of that leaf; only the
-    ///   placeholder `<file>::%<leaf>` a call lands on when its file holds no one call target of
-    ///   the leaf names one, so an id with no sigil (a data member, a declaration) has no
-    ///   candidate. EXACTLY ONE definition auto-continues (the edge is redirected onto the real
-    ///   definition); MORE THAN ONE becomes a marked frontier ([`CallNode::frontier`] carrying the
-    ///   SORTED candidate ids) the walk does NOT descend - honest by construction, the human
-    ///   re-seeds on a chosen candidate; ZERO leaves the callee a terminal leaf. A
-    ///   same-file call landed on its one candidate targets its real definition, so it needs no
-    ///   resolution.
-    /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
-    ///   mutual calls TERMINATE into a DAG instead of looping. An edge whose target layer is NOT
-    ///   deeper than its source is marked a BACK edge ([`CallEdge::back`]) rather than duplicated.
-    /// - **Tier floor.** An edge is followed only when its confidence tier is at or above
-    ///   `tier_floor`; the default (an empty / unrecognized value or [`TIER_INFERRED`]) is the
-    ///   resolvable floor that excludes [`TIER_AMBIGUOUS`], and passing [`TIER_AMBIGUOUS`] opts the
-    ///   unresolved tier in.
-    /// - **Determinism / isolation.** Neighbor and candidate reads are `ORDER BY` sorted and the
-    ///   result nodes/edges are sorted (by layer then id, and by endpoints), so the same graph and
-    ///   seed yield a byte-identical [`CallGraph`] across polls. Every read is scoped to
-    ///   `self.project` exactly like [`subgraph`](Projection::subgraph). A missing seed, or a seed
-    ///   with no calls, yields an empty view - never an error.
-    fn calls_down(
-        &self,
-        seed: &[String],
-        depth: i64,
-        tier_floor: &str,
-    ) -> Result<CallGraph, Error> {
-        let conn = self.conn.lock().unwrap();
-        let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
-        let (nodes, edges) = layered_call_walk(
-            &conn,
-            &self.project,
-            seed,
-            depth,
-            |cur| {
-                let mut hops: Vec<CallHop> = Vec::new();
-                for (raw_to, tier, valid_from, source) in calls_out(&conn, cur, &self.project)? {
-                    if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
-                        continue; // below the confidence floor: not a followed edge
-                    }
-                    // Resolve the callee: a same-file call-target definition lands directly; a
-                    // placeholder `<file>::%<leaf>` resolves by its leaf to the call-target
-                    // definition(s) of that leaf; any other id names no leaf and stays put.
-                    let (target, frontier) = resolve_down_hop(&conn, &raw_to, &self.project)?;
-                    hops.push((target, tier, valid_from, source, frontier));
-                }
-                Ok(hops)
-            },
-            // A DOWN edge runs from the node being expanded to the callee it reached.
-            |cur, callee| (cur.to_string(), callee.to_string()),
-        )?;
-        Ok(CallGraph {
-            nodes,
-            edges,
-            // The "referenced but not called" sidecar is an UP-direction concept (who references
-            // the seed - a file-level import/use or a definition's reference - without calling
-            // it); the DOWN execution path never carries it.
-            referenced_not_called: Vec::new(),
-        })
-    }
-
-    /// The UP direction of [`Projection::calls`] (spec 52 criterion 3): the CALL SITES into the seed.
-    /// A breadth-first walk by LAYER over the live, caller-attributed `CALLS` edges (spec 37), this
-    /// time following CALLERS transitively - the REVERSE of [`calls_down`](Projector::calls_down). It
-    /// answers "who calls this, transitively" as a directed, layered DAG, resolving THROUGH the bare
-    /// placeholder nodes a naive reverse walk would never connect (a call that found no one
-    /// same-file candidate, in another file or in the seed's own, targets the placeholder
-    /// `<file>::%<leaf>` in the CALLER's file namespace, not the seed's definition).
-    ///
-    /// - **Layers.** The seed is layer 0; each caller reached for the FIRST time takes its callee's
-    ///   layer + 1. BFS visits shallowest-first, so a caller's recorded layer is its minimum hop
-    ///   distance from the seed, stable across polls. The left-to-right renderer draws the seed on the
-    ///   RIGHT with callers flowing in from deeper layers.
-    /// - **Reverse resolution by leaf (the mirror of the DOWN policy).** A caller of the seed's
-    ///   leaf is found through the reverse leaf-match: an edge that literally targets `cur` is a
-    ///   DIRECT caller (its call landed on its one same-file candidate - always followed,
-    ///   unambiguous); an edge to a BARE placeholder (in another file, or in `cur`'s own when the
-    ///   call found no one same-file candidate), or to a named data member or declaration (only a
-    ///   hand-built edge targets one), whose target text binds `cur`'s leaf (spelled
-    ///   `<file>::<leaf>` or `<file>::%<leaf>`, spec 119) is a caller THROUGH A PLACEHOLDER,
-    ///   attributed to `cur` only when that leaf has EXACTLY ONE call-target definition
-    ///   (`cur` itself). A `cur` that is itself a data member or
-    ///   a declaration, as seed or as a node the walk reached, has no caller. When the
-    ///   name has MORE THAN ONE definition the caller is a marked FRONTIER ([`CallNode::frontier`]
-    ///   carrying the SORTED candidate definition ids) the walk does NOT ascend - honest by
-    ///   construction, since that caller might be calling a same-named sibling rather than the seed;
-    ///   the human re-seeds on a chosen candidate.
-    /// - **Cycles / dedup.** Reached nodes dedup (a node is expanded at most once), so recursion and
-    ///   mutual calls TERMINATE into a DAG. An edge whose discovered caller sits at a layer NOT deeper
-    ///   than the callee it was found from is marked a BACK edge ([`CallEdge::back`]) rather than
-    ///   ascended a second time.
-    /// - **Referenced-but-not-called.** Beyond the traversed caller DAG, the UP view carries a flat,
-    ///   NON-traversed [`CallGraph::referenced_not_called`] list: the FILE nodes that reference the
-    ///   seed's leaf at file level (top-level imports / uses) or from a definition within them (a
-    ///   staged reference, spec 117) but call it from no function within them - the who-uses-this
-    ///   sites the caller DAG deliberately excludes.
-    /// - **Tier floor / determinism / isolation.** Identical to [`calls_down`](Projector::calls_down):
-    ///   an edge is followed only at/above `tier_floor`; neighbor and candidate reads are `ORDER BY`
-    ///   sorted and the result is sorted, so the same graph and seed yield a byte-identical
-    ///   [`CallGraph`] across polls; every read is scoped to `self.project`; a missing seed, or a seed
-    ///   nothing calls, yields an empty / seed-only view - never an error.
-    fn calls_up(&self, seed: &[String], depth: i64, tier_floor: &str) -> Result<CallGraph, Error> {
-        let conn = self.conn.lock().unwrap();
-        let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
-        let (nodes, edges) = layered_call_walk(
-            &conn,
-            &self.project,
-            seed,
-            depth,
-            |cur| {
-                Ok(callers_of(&conn, cur, &self.project)?
-                    .into_iter()
-                    // Below the confidence floor: not a followed edge.
-                    .filter(|(_, tier, ..)| tier_rank(tier, UNRECOGNIZED_EDGE_RANK) >= floor)
-                    .collect())
-            },
-            // An UP edge keeps its real CALLS direction: from the caller reached to the callee it
-            // was found from.
-            |cur, caller| (caller.to_string(), cur.to_string()),
-        )?;
-        let referenced_not_called = referenced_not_called(&conn, seed, &self.project)?;
-        Ok(CallGraph {
-            nodes,
-            edges,
-            referenced_not_called,
-        })
-    }
-}
-
-/// THE layered `CALLS` walk both directions of [`Projection::calls`] share (spec 52 criteria 1 and
-/// 3): a breadth-first walk by LAYER from `seed` over the hops `hops` yields for each expanded node
-/// (already filtered to the tier floor and resolved, each a [`CallHop`] naming the neighbor
-/// reached), bounded by `depth`. `orient` turns `(expanded node, neighbor)` into the edge's real
-/// `(from, to)` - callee-ward for DOWN, caller-ward for UP.
-///
-/// Only seed ids that EXIST as nodes in `project` are seeded (layer 0), deduped and ordered so the
-/// walk is deterministic. Dequeuing shallowest-first makes each node's recorded layer its MINIMUM
-/// hop distance; `layer_of` doubles as the visited set, so recursion and mutual calls dedup into a
-/// DAG. A neighbor carrying a frontier (a multi-candidate hop) is marked but NEVER expanded - the
-/// human re-seeds on a chosen candidate, so the walk never guesses. An edge whose neighbor sits no
-/// deeper than the node it was found from is marked a BACK edge rather than walked a second time.
-/// The reached nodes come back ordered by (layer, id) and the edges by endpoints, so the same
-/// graph and seed yield a byte-identical result across polls.
-fn layered_call_walk(
-    conn: &Connection,
-    project: &str,
-    seed: &[String],
-    depth: i64,
-    hops: impl Fn(&str) -> Result<Vec<CallHop>, Error>,
-    orient: impl Fn(&str, &str) -> (String, String),
-) -> Result<(Vec<CallNode>, Vec<CallEdge>), Error> {
-    let mut layer_of: BTreeMap<String, i64> = BTreeMap::new();
-    let mut frontier_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut call_edges: Vec<CallEdge> = Vec::new();
-    let mut queue: VecDeque<(String, i64)> = VecDeque::new();
-
-    let mut seeds: Vec<String> = seed.to_vec();
-    seeds.sort();
-    seeds.dedup();
-    for s in seeds {
-        if layer_of.contains_key(&s) {
-            continue;
-        }
-        if node_row(conn, &s, project)?.is_some() {
-            layer_of.insert(s.clone(), 0);
-            queue.push_back((s, 0));
-        }
-    }
-
-    while let Some((cur, cur_layer)) = queue.pop_front() {
-        if cur_layer >= depth {
-            continue; // depth clamp: do not expand a node at the bound
-        }
-        for (next, tier, valid_from, source, frontier) in hops(&cur)? {
-            let newly = !layer_of.contains_key(&next);
-            let next_layer = if newly {
-                cur_layer + 1
-            } else {
-                layer_of[&next]
-            };
-            if newly {
-                layer_of.insert(next.clone(), next_layer);
-                match frontier {
-                    Some(cands) => {
-                        frontier_of.insert(next.clone(), cands);
-                    }
-                    None => queue.push_back((next.clone(), next_layer)),
-                }
-            }
-            let back = next_layer <= cur_layer;
-            let (from, to) = orient(&cur, &next);
-            call_edges.push(CallEdge {
-                edge: Edge {
-                    from,
-                    to,
-                    rel: REL_CALLS.to_string(),
-                    valid_from,
-                    valid_to: None,
-                    source,
-                    tier,
-                },
-                back,
-            });
-        }
-    }
-
-    let mut nodes: Vec<CallNode> = Vec::with_capacity(layer_of.len());
-    for (id, layer) in &layer_of {
-        if let Some(node) = node_row(conn, id, project)? {
-            nodes.push(CallNode {
-                node,
-                layer: *layer,
-                frontier: frontier_of.get(id).cloned(),
-            });
-        }
-    }
-    nodes.sort_by(|a, b| {
-        a.layer
-            .cmp(&b.layer)
-            .then_with(|| a.node.id.cmp(&b.node.id))
-    });
-    call_edges.sort_by(|a, b| {
-        a.edge
-            .from
-            .cmp(&b.edge.from)
-            .then_with(|| a.edge.to.cmp(&b.edge.to))
-            .then_with(|| a.edge.rel.cmp(&b.edge.rel))
-    });
-    Ok((nodes, call_edges))
 }
 
 /// The run-closure prune [`Projector::prune`] applies, inside the caller's transaction `tx` on the
@@ -2423,11 +2109,11 @@ fn fold_source(
 /// a catch-up ([`Projector::catch_up`]) reading its `caught_up` cursor again under the write lock
 /// and advancing it ([`CatchUpCut`]); a cursor that declines its open folds nothing, answering
 /// its decline. A position already in the `applied` ledger, passed over or folded, is passed by
-/// the fold's per-position guard. An event other than an entry folds as [`Projection::apply`]
+/// the fold's per-position guard. An event other than an entry folds as [`RecordFold::apply`]
 /// folds it, from its own bytes, under a savepoint of its own ([`fold_in_savepoint`]); one whose
 /// own payload the judge ([`super::check_fold_payload`] - deterministic, so no fold will ever hold
 /// it) rejects is passed over with the class [`PAYLOAD_REJECTED`]. An entry folds as
-/// [`Projection::apply_generation`] folds it ([`fold_entry`]), in its own transaction
+/// [`RecordFold::apply_generation`] folds it ([`fold_entry`]), in its own transaction
 /// ([`fold_entry_alone`]), with the batch `reextract` answers for it when its fold asks one,
 /// before that transaction opens ([`extracted_batch`], spec 122, EXTRACTION OUTSIDE THE WRITE
 /// TRANSACTION), so no extraction holds the write lock - with the batch `batches` names for it
@@ -2611,7 +2297,7 @@ struct EntryBatches<'a, 'r, 'b> {
 }
 
 /// THE OWN ENTRY (spec 124): the ledger entry at `position` an appender folds
-/// ([`Projection::apply_generation`]), with the batch function it was handed, asked at most once,
+/// ([`RecordFold::apply_generation`]), with the batch function it was handed, asked at most once,
 /// by whichever fold of the entry asks first - its direct fold's or one of its calls' - and its
 /// answer kept for every later one ([`OwnEntry::batch`]); what its calls did with the entry is
 /// recorded here ([`OwnEntry::settle`]). It lives in the appender's frame and drops with it.
@@ -2775,7 +2461,7 @@ fn extracted_batch(
 /// The failure of a ledger entry's fold at `position` that asked a batch it was not handed
 /// ([`EntryOutcome::Unread`]): a fold pass - a rebuild's, or a catch-up call's, an appender's own
 /// entry included - meets it when the entry's retry misses too ([`fold_entry_alone`]), and an
-/// appender's direct fold ([`Projection::apply_generation`]) would answer it for that outcome,
+/// appender's direct fold ([`RecordFold::apply_generation`]) would answer it for that outcome,
 /// which its batch function, always answering a batch, never meets.
 fn unread_entry(position: Position) -> Error {
     Error(format!(
@@ -3218,7 +2904,7 @@ fn be<E: std::fmt::Display>(e: E) -> Error {
     Error(e.to_string())
 }
 
-impl Projection for Projector {
+impl RecordFold for Projector {
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error> {
         self.apply_batch(std::slice::from_ref(e), access)
     }
@@ -3231,7 +2917,7 @@ impl Projection for Projector {
     /// Fold a whole batch of events as THE APPENDER of them ([`Projector::guarded`], spec 124):
     /// refused on a file that owes its rebuild, and a batch that does not fold returns its cause
     /// and writes no mark. The result is IDENTICAL to folding each event with
-    /// [`apply`](Projection::apply) in order - same per-position idempotency guard (`applied`),
+    /// [`apply`](RecordFold::apply) in order - same per-position idempotency guard (`applied`),
     /// same fold - so batching alters CADENCE only, never the graph.
     ///
     /// Folded directly, the batch folds in ONE transaction (spec 49's batched-fold cadence): the
@@ -3309,7 +2995,7 @@ impl Projection for Projector {
     }
 
     /// A plain read of the `generations` table ([`current_generation`]): it asks no
-    /// [`Projection::rebuild_owed`], so it answers on a file that owes its rebuild.
+    /// [`RecordFold::rebuild_owed`], so it answers on a file that owes its rebuild.
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
         current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
@@ -3325,128 +3011,109 @@ impl Projection for Projector {
             .map_err(be)?;
         rows.collect::<Result<Vec<String>, _>>().map_err(be)
     }
+}
 
-    fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
-        let seed_json = serde_json::to_string(seed).map_err(be)?;
-        let conn = self.conn.lock().unwrap();
-
-        // Read isolation (spec 28, criterion 2): every read is scoped to `self.project` - the
-        // SAME plain project string `Namespaced::new` uses for the `proj-<id>-` stream prefix
-        // and the write tag (criterion 1) stamps on each row. So on a shared backend holding
-        // many projects, a seed id present in two projects returns ONLY the current project's
-        // neighborhood. This mirrors, for the graph, what `Namespaced::scope_filter` does for
-        // streams - it is one authority keyed on the injected identity, never a second source
-        // of truth. The traversal itself is scoped (`e.project`), so it never walks another
-        // project's edge into a node it does not own, and the node/edge fetches are scoped so a
-        // same-id row from another project is never returned.
-        // The walk crosses live edges and THE MEMBER RULE's two hops (spec 119), [`reach_sql`].
-        let mut reach = conn.prepare(&reach_sql()).map_err(be)?;
-        let ids: Vec<String> = reach
-            .query_map(params![seed_json, depth, self.project], |r| r.get(0))
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-        if ids.is_empty() {
-            return Ok(Graph::default());
-        }
-        let ids_json = serde_json::to_string(&ids).map_err(be)?;
-
-        let mut nstmt = conn
-            .prepare(
-                "SELECT id, kind, attrs FROM nodes
-                 WHERE id IN (SELECT value FROM json_each(?1)) AND project = ?2",
-            )
-            .map_err(be)?;
-        let nodes: Vec<Node> = nstmt
-            .query_map(params![ids_json, self.project], row_to_node)
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-
-        let mut estmt = conn
-            .prepare(
-                "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
-                 WHERE valid_to IS NULL
-                   AND project = ?2
-                   AND from_id IN (SELECT value FROM json_each(?1))
-                   AND to_id IN (SELECT value FROM json_each(?1))",
-            )
-            .map_err(be)?;
-        let edges: Vec<Edge> = estmt
-            .query_map(params![ids_json, self.project], row_to_edge)
-            .map_err(be)?
-            .collect::<Result<_, _>>()
-            .map_err(be)?;
-
-        Ok(Graph { nodes, edges })
+/// The record half's reads (7.2): each scoped to `self.project`, so on a shared backend a same-id
+/// row of another project is never returned (spec 28, criterion 2). The walks over them are
+/// [`Composed`](rigger_domain::composed::Composed)'s, one for both halves.
+impl Neighbors for Projector {
+    fn node(&self, id: &str) -> Result<Option<Node>, Error> {
+        node_row(&self.conn.lock().unwrap(), id, &self.project)
     }
 
-    /// Directed `CALLS` traversal (spec 52): dispatch on direction. `Down` (callees - the execution
-    /// path) runs the forward layered walk; `Up` (callers - the call sites) runs the reverse layered
-    /// walk plus the referenced-but-not-called sidecar (spec 52 criterion 3). Read isolation and
-    /// clamping match [`subgraph`]: both walks stay scoped to `self.project` and bounded by `depth`.
-    fn calls(
-        &self,
-        seed: &[String],
-        direction: Direction,
-        depth: i64,
-        tier_floor: &str,
-    ) -> Result<CallGraph, Error> {
-        match direction {
-            Direction::Down => self.calls_down(seed, depth, tier_floor),
-            Direction::Up => self.calls_up(seed, depth, tier_floor),
-        }
+    fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        self.live_edges("from_id", id)
     }
 
-    fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
-        let conn = self.conn.lock().unwrap();
-        let canonical: Option<String> = conn
-            .query_row(
-                "SELECT canonical_id FROM aliases WHERE alias = ?1",
-                [mention],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(be)?;
-        if canonical.is_some() {
-            return Ok(canonical);
-        }
-        // Read isolation (spec 28, criterion 2): the node-existence fallback is a read of the
-        // nodes table, so it answers for `self.project` only - a node id living solely under
-        // another project on a shared backend must not resolve here (no cross-project
-        // false-positive existence). The alias arm above stays unscoped: the `aliases` table
-        // carries no project column and is shared, so only this node lookup is scoped.
-        conn.query_row(
-            "SELECT id FROM nodes WHERE id = ?1 AND project = ?2",
-            params![mention, self.project],
-            |r| r.get(0),
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        self.live_edges("to_id", id)
+    }
+
+    /// The nodes in `file`'s `<file>::` id range ([`id_range_sql`]) whose [`member_sql`] is
+    /// `file` (THE MEMBER RULE, spec 119).
+    fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
+        let sql = format!(
+            "SELECT id, kind, attrs FROM nodes
+              WHERE {} AND +project = ?1 AND {} = ?2
+              ORDER BY id",
+            id_range_sql("id", "?2"),
+            member_sql()
+        );
+        self.nodes_where(&sql, file)
+    }
+
+    /// The nodes named `leaf` ([`node_leaf_sql`], a seek of `idx_nodes_leaf`) and the nodes a live
+    /// edge targets whose target text binds `leaf` ([`edge_binds_leaf_sql`], THE EDGE SIDE BINDS
+    /// THE LEAF): no reader keys a node by its id's rest but through an edge into it.
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error> {
+        let sql = format!(
+            "SELECT id, kind, attrs FROM nodes WHERE project = ?1 AND {} = ?2
+             UNION
+             SELECT id, kind, attrs FROM nodes
+              WHERE project = ?1 AND id IN (
+                SELECT to_id FROM edges
+                 WHERE valid_to IS NULL AND project = ?1 AND {})
+             ORDER BY id",
+            node_leaf_sql(),
+            edge_binds_leaf_sql("to_id", "?2")
+        );
+        self.nodes_where(&sql, leaf)
+    }
+
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        self.nodes_where(
+            "SELECT id, kind, attrs FROM nodes WHERE project = ?1 AND kind = ?2 ORDER BY id",
+            kind,
         )
-        .optional()
-        .map_err(be)
     }
 
-    /// Overrides the trait default with the real lookup: the inherent [`Projector::locate`]
-    /// already implements the exact resolution this trait method promises, so this is a
-    /// pass-through, never a second implementation.
-    fn locate(&self, entity: &str) -> Result<Located, Error> {
-        Projector::locate(self, entity)
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error> {
+        unresolved_leaves(&self.conn.lock().unwrap(), node, &self.project)
     }
 
-    /// Overrides the trait default with this project's nodes of `kind`, read as [`whole`]
-    /// reads its nodes and ordered by id.
-    ///
-    /// [`whole`]: Projector::whole
-    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+    /// The `aliases` table, which carries no project column and is shared.
+    fn aliases(&self) -> Result<Vec<(String, String)>, Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT id, kind, attrs FROM nodes
-                 WHERE project = ?1 AND kind = ?2
-                 ORDER BY id",
-            )
+            .prepare("SELECT canonical_id, alias FROM aliases ORDER BY alias")
             .map_err(be)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(1)?, r.get(0)?)))
+            .map_err(be)?;
+        rows.collect::<Result<_, _>>().map_err(be)
+    }
+
+    fn whole(&self) -> Result<Graph, Error> {
+        Projector::whole(self)
+    }
+}
+
+impl Projector {
+    /// The live edges of this project whose `column` (`from_id` or `to_id`) is `id`, ordered by
+    /// their ends then relation.
+    fn live_edges(&self, column: &str, id: &str) -> Result<Vec<Edge>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT from_id, to_id, rel, valid_from, source, tier FROM edges
+                  WHERE valid_to IS NULL AND project = ?1 AND {column} = ?2
+                  ORDER BY from_id, to_id, rel, valid_from"
+            ))
+            .map_err(be)?;
+        let edges = stmt
+            .query_map(params![self.project, id], row_to_edge)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be);
+        edges
+    }
+
+    /// The nodes `sql` reads, `?1` this project and `?2` the one value `arg`.
+    fn nodes_where(&self, sql: &str, arg: &str) -> Result<Vec<Node>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(sql).map_err(be)?;
         let nodes = stmt
-            .query_map(params![self.project, kind], row_to_node)
+            .query_map(params![self.project, arg], row_to_node)
             .map_err(be)?
             .collect::<Result<_, _>>()
             .map_err(be);
@@ -3513,7 +3180,7 @@ fn fold_new(tx: &Transaction, events: &[Event], project: &str) -> Result<Option<
         if is_ledger_entry(&e.type_) {
             return Err(Error(format!(
                 "a {TYPE_GENERATION_INGESTED} entry folds only with its batch, through \
-                 `Projection::apply_generation`"
+                 `RecordFold::apply_generation`"
             )));
         }
         if record_applied(tx, e.position)? {
@@ -3632,7 +3299,7 @@ enum BatchAnswer {
 /// What became of a ledger entry's fold ([`fold_entry`]): one of the three outcomes of
 /// [`EntryFold`] (`Folded`); `Unresolved` - its batch function answered no batch, no source
 /// resolving the entry, so it wrote nothing past its `applied` row, which an appender's direct
-/// fold ([`Projection::apply_generation`]) answers as [`EntryFold::BatchAsked`] and a fold pass -
+/// fold ([`RecordFold::apply_generation`]) answers as [`EntryFold::BatchAsked`] and a fold pass -
 /// a rebuild's, or a catch-up call's, an appender's own entry included - passes over with
 /// [`RESOLVED_TO_NOTHING`] (spec 124);
 /// or `Unread` - it asked a batch its batch function answered [`BatchAnswer::Unread`] for, and
@@ -4356,15 +4023,6 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
 /// The graph-derived attachments: the edges a community pass ([`REL_IN_COMMUNITY`]) or a concept
 /// pass ([`REL_REALIZES`]) hangs off a node.
 const ATTACHMENT_RELS: [&str; 2] = [REL_IN_COMMUNITY, REL_REALIZES];
-
-/// Whether a node the graph holds as `kind` holds a `rel` attachment live (spec 101, "only
-/// knowledge holds a node"): a concept's `REALIZES` rides any held node, since the intent links
-/// that derive it are knowledge, while a community's `IN_COMMUNITY` rides only a source file or a
-/// code entity, since code coupling derives it - a path whose code retired while a record still
-/// names it is held as an artifact and is in no community.
-fn holds_attachment(kind: &str, rel: &str) -> bool {
-    rel != REL_IN_COMMUNITY || [KIND_FILE, KIND_CODE_ENTITY].contains(&kind)
-}
 
 /// Detach, at `at`, node `id`'s live graph-derived attachments it no longer holds: every one when
 /// the graph no longer holds it (`held` is `None`, as `id` retires), else each its kind `held`
@@ -5485,21 +5143,6 @@ fn code_entity_id(file: &str, path: &str) -> String {
     entity_id(file, path)
 }
 
-/// The one-hop degree of a node (spec 58): the count of currently-LIVE edges (`valid_to IS NULL`)
-/// incident to `id` in `project`, in either direction. Read-only; the show surface prints it so a
-/// reader knows how connected the entity is. A fresh / isolated node yields `0`.
-fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, Error> {
-    let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM edges
-              WHERE valid_to IS NULL AND project = ?2 AND (from_id = ?1 OR to_id = ?1)",
-            params![id, project],
-            |r| r.get(0),
-        )
-        .map_err(be)?;
-    Ok(n as usize)
-}
-
 /// A file node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ), read at
 /// read time and never stored: the sorted distinct leaves of its live `type`, `const` and `use`
 /// rows ([`LEAF_REF_KINDS`], so a module row is never listed) in `project` - those read from the
@@ -5532,31 +5175,8 @@ fn unresolved_leaves(conn: &Connection, node: &Node, project: &str) -> Result<Ve
     Ok(leaves.into_iter().collect())
 }
 
-/// The confidence rank of a tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
-/// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only); any
-/// other value ranks `unrecognized`. A directed walk follows an edge only when its rank is at or
-/// above the floor's.
-fn tier_rank(tier: &str, unrecognized: u8) -> u8 {
-    match tier {
-        TIER_EXTRACTED => 2,
-        TIER_INFERRED => 1,
-        TIER_AMBIGUOUS => 0,
-        _ => unrecognized,
-    }
-}
-
-/// [`tier_rank`]'s fallback for an EDGE's tier: an unrecognized edge tier ranks with
-/// `ambiguous`, the lowest.
-const UNRECOGNIZED_EDGE_RANK: u8 = 0;
-
-/// [`tier_rank`]'s fallback for a requested tier FLOOR (spec 52): an empty or unrecognized
-/// value defaults to the resolvable floor (rank 1 = `inferred`), so a directed walk defaults to
-/// `extracted` + `inferred` and EXCLUDES the unresolved `ambiguous` tier, and a caller opts the
-/// ambiguous tier in per-request by passing [`TIER_AMBIGUOUS`].
-const UNRECOGNIZED_FLOOR_RANK: u8 = 1;
-
 /// Fetch a node's `(id, kind, attrs)` scoped to `project`, or `None` when it does not exist there
-/// (spec 52). Read isolation matches [`Projection::subgraph`]: a same-id row in another project is
+/// (spec 52). Read isolation matches [`ContextGraph::subgraph`]: a same-id row in another project is
 /// never returned. Used to seed the directed walk on real nodes only and to materialize each
 /// reached node's kind/attrs for the result.
 fn node_row(conn: &Connection, id: &str, project: &str) -> Result<Option<Node>, Error> {
@@ -5601,8 +5221,8 @@ fn node_leaf_sql() -> &'static str {
 /// byte after `:`), so a seek of an index on `column` answers it and no `LIKE`/`GLOB` wildcard a
 /// real path could hold is read. The one spelling every reader of a file's id range embeds: the
 /// leaf lookup filtered to a file ([`leaf_definitions_sql`]), a file's supersession
-/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]), `subgraph`'s member hop
-/// ([`reach_sql`]) and its unresolved references ([`unresolved_leaves`]).
+/// ([`supersede_file_edges`]), its relabel debt ([`owe_relabel_of`]), a file's members
+/// ([`Neighbors::members`]) and its unresolved references ([`unresolved_leaves`]).
 fn id_range_sql(column: &str, file: &str) -> String {
     format!("{column} >= {file} || '::' AND {column} < {file} || ':;'")
 }
@@ -5610,48 +5230,15 @@ fn id_range_sql(column: &str, file: &str) -> String {
 /// The store form of [`member_file`](super::query::member_file) over a node row's `kind`, `id`
 /// and `attrs` (spec 119, THE MEMBER RULE): the file half of a `code-entity` row's id when its
 /// [`node_leaf_sql`] is not NULL, else NULL, and NULL too for an id holding no `::` or an empty
-/// file half, where `query::node_file` names none. ONE expression both of [`reach_sql`]'s member
-/// hops embed, the range load (file to members) and the member-to-file hop, so a placeholder, a
-/// bare parent, a bare caller or a knowledge-held flat id enters the reach only through an edge.
+/// file half, where `query::node_file` names none. The expression a file's members
+/// ([`Neighbors::members`]) embed, so a placeholder, a bare parent, a bare caller or a
+/// knowledge-held flat id enters a reach only through an edge.
 fn member_sql() -> String {
     let leaf = node_leaf_sql();
     format!(
         "CASE WHEN kind = '{KIND_CODE_ENTITY}' AND {leaf} IS NOT NULL
               THEN {} END",
         file_half_sql("id")
-    )
-}
-
-/// The recursive reach [`Projection::subgraph`] walks from the seed ids `?1` (a JSON array)
-/// within `?2` hops in project `?3`, each row a reached id and the hop it was reached at, by three
-/// legs taken one hop on under the same depth bound: a live edge in either direction; a reached
-/// file's members (spec 119, THE MEMBER RULE), every node in its `<file>::` id range
-/// ([`id_range_sql`], a seek of the node key, the unary `+` on `project` keeping the planner off
-/// the leaf index's project prefix) whose [`member_sql`] is that file, whatever its
-/// nesting; and a reached member's file, its [`member_sql`]. So a nested definition's file and
-/// file-mates sit at the hops a file `CONTAINS` hop gave them.
-fn reach_sql() -> String {
-    let member = member_sql();
-    let range = id_range_sql("id", "r.rid");
-    format!(
-        "WITH RECURSIVE reach(rid, depth) AS (
-           SELECT value, 0 FROM json_each(?1)
-           UNION
-           SELECT CASE WHEN e.from_id = r.rid THEN e.to_id ELSE e.from_id END, r.depth + 1
-           FROM reach r JOIN edges e
-             ON (e.from_id = r.rid OR e.to_id = r.rid)
-                AND e.valid_to IS NULL AND e.project = ?3
-           WHERE r.depth < ?2
-           UNION
-           SELECT id, r.depth + 1
-           FROM reach r JOIN nodes
-           WHERE r.depth < ?2 AND {range} AND +project = ?3 AND {member} = r.rid
-           UNION
-           SELECT {member}, r.depth + 1
-           FROM reach r JOIN nodes ON project = ?3 AND id = r.rid
-           WHERE r.depth < ?2 AND {member} IS NOT NULL
-         )
-         SELECT DISTINCT rid FROM reach"
     )
 }
 
@@ -5668,34 +5255,12 @@ fn edge_text_sql(to_id: &str) -> String {
 /// SQL value `leaf` and that value prefixed by [`PLACEHOLDER_SIGIL`]: two seeks of the index, the
 /// first matching a target spelled `<file>::<leaf>`, the second one spelled `<file>::%<leaf>`, so
 /// the binding holds under both spellings and decides nothing about where a reference lands.
-/// `to_id` names the edge's target column. The one spelling every edge-side reader embeds: the
-/// callers walk ([`callers_via_bare`]), the definition arm's tier upgrade, [`definition_retired`]'s
-/// demotion and both legs of [`referenced_not_called`].
+/// `to_id` names the edge's target column. The one spelling every edge-side reader embeds: a
+/// leaf's nodes ([`Neighbors::leaf_nodes`]), the definition arm's tier upgrade and
+/// [`definition_retired`]'s demotion.
 fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
     let text = edge_text_sql(to_id);
     format!("{text} IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})")
-}
-
-/// Whether the NAMED node `id` is a call target in `project` ([`call_target_sql`]): `Some(true)`
-/// for a code-entity definition a call resolves onto, `Some(false)` for a named node of a
-/// non-target kind (a data member, a declaration), and `None` for a node carrying no non-empty
-/// `name` ([`node_leaf_sql`]: a bare placeholder the reference fold created attr-less)
-/// or for no node at all. This is how a directed hop tells a same-file callee (a call landed on its
-/// one same-file candidate) from a callee that must be resolved by its leaf: every answer but
-/// `Some(true)`.
-fn named_call_target(conn: &Connection, id: &str, project: &str) -> Result<Option<bool>, Error> {
-    conn.query_row(
-        &format!(
-            "SELECT {} FROM nodes
-              WHERE id = ?1 AND project = ?2 AND {} IS NOT NULL",
-            call_target_sql(),
-            node_leaf_sql()
-        ),
-        params![id, project],
-        |r| r.get(0),
-    )
-    .optional()
-    .map_err(be)
 }
 
 /// The SQL term an `edges` row passes while no assertion holds it: no `edge_assertions` entry names
@@ -5741,8 +5306,6 @@ fn leaf_definitions_sql(rule: &str, in_file: bool) -> String {
 /// Which named nodes of a leaf [`definitions_with_suffix`] admits.
 #[derive(Clone, Copy)]
 enum Admitted {
-    /// Every named node, a data member and a declaration included: what a lookup by name shows.
-    Named,
     /// The call targets alone, by the node's own `kind` ([`call_target_sql`]): what a walk
     /// resolves a call onto.
     CallTargets,
@@ -5754,7 +5317,6 @@ enum Admitted {
 /// The SQL term [`leaf_definitions_sql`] admits a node by under `admitted`.
 fn admitted_sql(admitted: Admitted) -> String {
     match admitted {
-        Admitted::Named => "1".to_string(),
         Admitted::CallTargets => call_target_sql(),
         Admitted::LiveCallTargets => live_definition_sql(),
     }
@@ -5803,47 +5365,6 @@ fn definitions_with_suffix(
     Ok(ids)
 }
 
-/// The definitions a show query names when no exact id answers it (spec 119, A BARE SHOW FINDS A
-/// LEAF OR PATH), sorted by id: the first non-empty of the whole `query` as a leaf
-/// ([`Admitted::Named`]); the leaf lookup of its [`path_leaf`] filtered on the id suffix
-/// `::<query>`, compared byte for byte (`Struct.field` answers `a.rs::Struct.field`); and the
-/// leaf lookup of its [`split_id`] rest half filtered to its file half's `<file>::` id range (the
-/// pre-spec flat `a.rs::new` answers `a.rs::T::new`), an empty or absent rest half naming no
-/// leaf, since [`node_leaf_sql`] is never empty.
-fn shown_candidates(conn: &Connection, query: &str, project: &str) -> Result<Vec<String>, Error> {
-    let by_leaf = definitions_with_suffix(conn, query, project, Admitted::Named, None)?;
-    if !by_leaf.is_empty() {
-        return Ok(by_leaf);
-    }
-    let suffix = entity_id("", query);
-    let by_path: Vec<String> =
-        definitions_with_suffix(conn, path_leaf(query), project, Admitted::Named, None)?
-            .into_iter()
-            .filter(|id| id.ends_with(&suffix))
-            .collect();
-    if !by_path.is_empty() {
-        return Ok(by_path);
-    }
-    let (file, rest) = split_id(query);
-    definitions_with_suffix(
-        conn,
-        rest.unwrap_or_default(),
-        project,
-        Admitted::Named,
-        Some(file),
-    )
-}
-
-/// Whether `node` is a knowledge-held flat id's bare node (spec 119, A BARE SHOW FINDS A LEAF OR
-/// PATH): a `code-entity` or `artifact` with no name ([`node_name`]) whose id holds `::` (a
-/// decision governing the pre-spec `a.rs::new`, an artifact `T::new`), which a show answers by
-/// its exact id only when no definition answers the query ([`Projector::locate`]).
-fn is_bare_flat_node(node: &Node) -> bool {
-    node_name(node).is_none()
-        && [KIND_CODE_ENTITY, KIND_ARTIFACT].contains(&node.kind.as_str())
-        && split_id(&node.id).1.is_some()
-}
-
 /// The call targets of `leaf` a live assertion defines in `file` ([`definitions_with_suffix`]
 /// admitting [`Admitted::LiveCallTargets`] over the file's `<file>::` id range), in `project`,
 /// sorted by id: the candidates a reference from `file` lands on when there is exactly one (the
@@ -5857,301 +5378,10 @@ fn same_file_candidates(
     definitions_with_suffix(tx, leaf, project, Admitted::LiveCallTargets, Some(file))
 }
 
-/// The live, caller-attributed `CALLS` edges OUT of `from_id` in `project`, as
-/// `(to_id, tier, valid_from, source)`, sorted by callee (spec 52). Carries the exact
-/// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index serves, so
-/// each hop's forward scan seeks rather than scans. The ordering makes the walk deterministic.
-fn calls_out(
-    conn: &Connection,
-    from_id: &str,
-    project: &str,
-) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    call_edge_rows(
-        conn,
-        "SELECT to_id, tier, valid_from, source FROM edges
-              WHERE from_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
-              ORDER BY to_id",
-        params![from_id, REL_CALLS, project],
-    )
-}
-
-/// The `(other end, tier, valid_from, source)` rows a CALLS-edge `sql` query selects, in its
-/// own order - the one row shape every call-graph hop reads.
-fn call_edge_rows(
-    conn: &Connection,
-    sql: &str,
-    params: impl rusqlite::Params,
-) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    let mut stmt = conn.prepare(sql).map_err(be)?;
-    let rows = stmt
-        .query_map(params, |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, i64>(3)? as Position,
-            ))
-        })
-        .map_err(be)?
-        .collect::<Result<_, _>>()
-        .map_err(be)?;
-    Ok(rows)
-}
-
-/// Resolve one DOWN hop's callee target (spec 52 criterion 1). Returns the id the edge should land
-/// on and, when the hop is a multi-candidate frontier, its SORTED candidate ids:
-///
-/// - a SAME-FILE callee that is a named call target (it is its own definition) -> land on it,
-///   no frontier;
-/// - any other target resolves by the leaf its id names ([`leaf_of`]) over the call-target
-///   DEFINITION nodes: only a placeholder `<file>::%<leaf>` names one, so an id with no sigil (a
-///   data member, a declaration, a hand-built bare id) has no candidate. EXACTLY ONE definition
-///   auto-continues (the edge is redirected onto the real definition, no frontier); MORE THAN ONE
-///   is a marked frontier (the placeholder id, carrying the sorted candidates) the caller does NOT
-///   descend; ZERO leaves the target a terminal leaf (no descent target).
-fn resolve_down_hop(
-    conn: &Connection,
-    raw_to: &str,
-    project: &str,
-) -> Result<(String, Option<Vec<String>>), Error> {
-    if named_call_target(conn, raw_to, project)? == Some(true) {
-        return Ok((raw_to.to_string(), None));
-    }
-    let cands = match leaf_of(raw_to) {
-        Some(leaf) => definitions_with_suffix(conn, leaf, project, Admitted::CallTargets, None)?,
-        None => Vec::new(),
-    };
-    match cands.len() {
-        1 => Ok((cands.into_iter().next().unwrap(), None)),
-        0 => Ok((raw_to.to_string(), None)),
-        _ => Ok((raw_to.to_string(), Some(cands))),
-    }
-}
-
-/// The live, caller-attributed `CALLS` edges whose target is EXACTLY `to_id`, in `project`, as
-/// `(from_id, tier, valid_from, source)` sorted by caller (spec 52). These are the DIRECT callers
-/// of `to_id`: a same-file call landed on its one candidate, the callee's definition, so its edge
-/// literally targets it - always an unambiguous caller. Carries the
-/// `rel = CALLS AND valid_to IS NULL` shape the partial `idx_edges_live_rel_from` index cannot
-/// serve on `to_id`, but the reverse read stays scoped and ordered so the UP walk is deterministic.
-fn callers_direct(
-    conn: &Connection,
-    to_id: &str,
-    project: &str,
-) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    call_edge_rows(
-        conn,
-        "SELECT from_id, tier, valid_from, source FROM edges
-              WHERE to_id = ?1 AND rel = ?2 AND valid_to IS NULL AND project = ?3
-              ORDER BY from_id",
-        params![to_id, REL_CALLS, project],
-    )
-}
-
-/// The live, caller-attributed `CALLS` edges into a BARE placeholder whose target text binds
-/// `leaf`, in `project`, as `(from_id, tier, valid_from, source)` sorted by caller (spec 52 - the
-/// reverse resolution by leaf). A call with no one same-file candidate, in another file or in the
-/// definition's own, lands on the bare placeholder `<file>::%<leaf>` in the CALLER's file namespace
-/// (no `name` attr), so these are the callers that call `leaf` without landing on its definition,
-/// an edge's target text spelled `<file>::<leaf>` or `<file>::%<leaf>` ([`edge_binds_leaf_sql`],
-/// THE EDGE SIDE BINDS THE LEAF); filtered to targets that are no call target (no non-empty
-/// `name`, [`node_leaf_sql`], or a named data member or declaration, which only a hand-built
-/// target is, since the fold lands no call on one) so an edge that lands directly on a real
-/// definition (a same-file call landed on its one candidate, or a call to a DIFFERENT same-named
-/// definition) is never miscounted here - those are covered by [`callers_direct`] on the exact
-/// definition, keeping the two caller sets disjoint.
-fn callers_via_bare(
-    conn: &Connection,
-    leaf: &str,
-    project: &str,
-) -> Result<Vec<(String, String, i64, Position)>, Error> {
-    call_edge_rows(
-        conn,
-        &callers_via_bare_sql(),
-        params![REL_CALLS, project, leaf],
-    )
-}
-
-/// The read [`callers_via_bare`] runs: `?1` the relation, `?2` the project and `?3` the leaf its
-/// target text binds ([`edge_binds_leaf_sql`]). The relation term is written `+e.rel` so the
-/// planner seeks by the bound leaf, never by `idx_edges_live_rel_from`'s every live edge of the
-/// relation.
-fn callers_via_bare_sql() -> String {
-    format!(
-        "SELECT e.from_id, e.tier, e.valid_from, e.source FROM edges e
-           JOIN nodes n ON n.id = e.to_id AND n.project = e.project
-          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
-            AND {}
-            AND ({} IS NULL OR NOT ({}))
-          ORDER BY e.from_id",
-        edge_binds_leaf_sql("e.to_id", "?3"),
-        node_leaf_sql(),
-        call_target_sql()
-    )
-}
-
-/// One resolved `CALLS` hop of a layered walk (spec 52): `(neighbor_id, tier, valid_from, source,
-/// frontier)`, where `frontier` is `Some(sorted candidate definition ids)` when the hop is
-/// multi-candidate (the walk must not expand it) and `None` for an unambiguous one. Named to keep
-/// the walk signatures out of clippy's `type_complexity`.
-type CallHop = (String, String, i64, Position, Option<Vec<String>>);
-
-/// The callers of `cur` for one UP hop (spec 52 criterion 3), each a [`CallHop`] whose `frontier`
-/// carries the SORTED candidate definition ids on a multi-candidate hop the walk must NOT ascend.
-/// A named `cur` that is no call target (a data member or a declaration, as seed or as a node the
-/// walk reached) has NO caller: the calls naming its leaf are callers of the call target they
-/// resolve onto. Otherwise two disjoint sources, mirroring [`resolve_down_hop`] in reverse:
-///
-/// - **Direct callers** ([`callers_direct`]) whose edge literally targets `cur` - a same-file call
-///   landed on its one candidate, always an unambiguous caller, no frontier.
-/// - **Callers through a placeholder** ([`callers_via_bare`]), in another file or in `cur`'s own
-///   when the call found no one same-file candidate, that call `cur`'s LEAF ([`node_leaf`] over its
-///   node row, `new` for a nested `a.rs::T::new`) through a node that is no call target, the
-///   call's target text bound to the leaf or the sigil-prefixed leaf (spec 119), attributed to
-///   `cur` only when that leaf resolves unambiguously: its candidates key by the same leaf
-///   ([`definitions_with_suffix`]), so `cur` is among them, and AT MOST ONE candidate definition
-///   -> a real caller, no frontier; MORE THAN ONE -> a marked frontier carrying the sorted
-///   candidate ids (the caller might be calling a same-named sibling, so the walk stops there).
-///   The placeholder source applies only when `cur` is a call-target DEFINITION: a bare node is
-///   not a definition, so a call to its name resolves to the real definitions, never to it. The
-///   mirror stops at a hand-built edge onto an unsigiled data member or declaration: this source
-///   finds its caller by the target text, while the DOWN hop names no leaf for it.
-fn callers_of(conn: &Connection, cur: &str, project: &str) -> Result<Vec<CallHop>, Error> {
-    let definition = match named_call_target(conn, cur, project)? {
-        Some(false) => return Ok(Vec::new()),
-        target => target.is_some(),
-    };
-    let mut out: Vec<CallHop> = Vec::new();
-    for (from, tier, vf, src) in callers_direct(conn, cur, project)? {
-        out.push((from, tier, vf, src, None));
-    }
-    let node = if definition {
-        node_row(conn, cur, project)?
-    } else {
-        None
-    };
-    // A definition's node carries a non-empty `name`, so its leaf is that name.
-    if let Some(leaf) = node.as_ref().and_then(node_leaf) {
-        let cands = definitions_with_suffix(conn, leaf, project, Admitted::CallTargets, None)?;
-        // The candidates and the seed key by the same leaf, so `cur` is among them: at most one
-        // is unambiguous, more than one a frontier.
-        let frontier = if cands.len() > 1 { Some(cands) } else { None };
-        for (from, tier, vf, src) in callers_via_bare(conn, leaf, project)? {
-            out.push((from, tier, vf, src, frontier.clone()));
-        }
-    }
-    Ok(out)
-}
-
-/// Both legs' projection of [`seed_leaf_leg_sql`]: the file of the edge's source, the source
-/// itself when it is a file container, else its [`file_half_sql`] - a staged reference read from a
-/// fn names its fn (spec 117), a call its `<file>::<caller>`, whose file is what a leg lists.
-fn source_file_sql() -> String {
-    format!("COALESCE({}, e.from_id)", file_half_sql("e.from_id"))
-}
-
 /// The file half of the id `column` holds, cut in SQL at its first `::`: NULL for an id with no
 /// `::` or an empty file half, where [`split_id`] names the whole id or an empty file.
 fn file_half_sql(column: &str) -> String {
     format!("NULLIF(substr({column}, 1, instr({column}, '::') - 1), '')")
-}
-
-/// One leg of [`referenced_not_called`]: `projected` over every live `?1` edge `e` in project `?2`
-/// whose target binds a leaf of the JSON array `?3`, a UNION of two seeks: the target text bound
-/// to the leaf ([`edge_binds_leaf_sql`] on `idx_edges_live_to_name_suffix`), or the target node
-/// named it ([`node_leaf_sql`] on the leaf index `idx_nodes_leaf`), since a target landed on a
-/// nested definition holds its path after the first `::`. The relation term is written `+e.rel`
-/// so the planner seeks by the bound leaf, never by `idx_edges_live_rel_from`'s every live edge of
-/// the relation.
-fn seed_leaf_leg_sql(projected: &str) -> String {
-    format!(
-        "SELECT {projected} FROM json_each(?3) j, edges e
-          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2 AND {}
-         UNION
-         SELECT {projected} FROM edges e
-          WHERE +e.rel = ?1 AND e.valid_to IS NULL AND e.project = ?2
-            AND e.to_id IN (SELECT id FROM nodes
-                             WHERE project = ?2 AND {} IN (SELECT value FROM json_each(?3)))",
-        edge_binds_leaf_sql("e.to_id", "j.value"),
-        node_leaf_sql()
-    )
-}
-
-/// The file of the source of every live `rel` edge in `project` whose target binds a leaf of the
-/// JSON array `leaves_json` ([`seed_leaf_leg_sql`] projecting [`source_file_sql`]), one per edge:
-/// one leg of [`referenced_not_called`] per relation.
-fn seed_leaf_files(
-    conn: &Connection,
-    rel: &str,
-    project: &str,
-    leaves_json: &str,
-) -> Result<Vec<String>, Error> {
-    conn.prepare(&seed_leaf_leg_sql(&source_file_sql()))
-        .and_then(|mut stmt| {
-            let files = stmt
-                .query_map(params![rel, project, leaves_json], |r| r.get(0))
-                .and_then(Iterator::collect);
-            files
-        })
-        .map_err(be)
-}
-
-/// The FILE nodes that reference the seed's leaves at file level or from a definition within them
-/// but call them from no function within them (spec 52 criterion 3 - the UP direction's
-/// "referenced but not called" sidecar). Sorted by id, scoped to `project`.
-///
-/// A file references a leaf when it, or a definition within it (a staged reference read from a fn,
-/// spec 117), carries a live `REFERENCES` edge whose target binds it ([`seed_leaf_leg_sql`]: the
-/// target text spelled `<file>::<leaf>` or `<file>::%<leaf>`, or a target node named the leaf, as
-/// a reference landed on a nested `<file>::T::new` is for `new`), listed as its file
-/// ([`source_file_sql`]); it CALLS the leaf when some caller inside it (a `<file>::<caller>`
-/// source) carries a live `CALLS` edge to such a target. The result is the set difference - files
-/// that reference but never call - the imports / uses and the definitions' references a
-/// who-uses-this reader wants beside the caller DAG. The seed leaves are the
-/// [`node_leaf`]s of the seed ids that exist as nodes; a seed that is not a node, or a node with no
-/// leaf (no `name` and no `::` in its id), contributes nothing. Empty when no seed has a leaf.
-fn referenced_not_called(
-    conn: &Connection,
-    seed: &[String],
-    project: &str,
-) -> Result<Vec<Node>, Error> {
-    // The seed leaves to look up, deduped and sorted for a deterministic query.
-    let mut leaves: Vec<String> = Vec::new();
-    for s in seed {
-        if let Some(node) = node_row(conn, s, project)? {
-            leaves.extend(node_leaf(&node).map(str::to_string));
-        }
-    }
-    leaves.sort();
-    leaves.dedup();
-    if leaves.is_empty() {
-        return Ok(Vec::new());
-    }
-    let leaves_json = serde_json::to_string(&leaves).map_err(be)?;
-
-    // Files that reference any seed leaf (a REFERENCES edge from the file container, or from a
-    // definition within it, a staged reference's, listed as its file).
-    let referencing = seed_leaf_files(conn, REL_REFERENCES, project, &leaves_json)?;
-
-    // Files that CALL any seed leaf from within (the file part of each caller-attributed CALLS edge).
-    let calling: BTreeSet<String> = seed_leaf_files(conn, REL_CALLS, project, &leaves_json)?
-        .into_iter()
-        .collect();
-
-    // Referenced but not called: materialize each such file as its node, sorted by id.
-    let mut files: Vec<String> = referencing
-        .into_iter()
-        .filter(|f| !calling.contains(f))
-        .collect();
-    files.sort();
-    files.dedup();
-    let mut nodes: Vec<Node> = Vec::with_capacity(files.len());
-    for f in files {
-        if let Some(node) = node_row(conn, &f, project)? {
-            nodes.push(node);
-        }
-    }
-    Ok(nodes)
 }
 
 /// The confidence tier for a REFERENCES edge landed on the placeholder `target` (spec 29a
@@ -6909,6 +6139,8 @@ mod tests {
         call_back_edge, call_edge_pairs, call_layer, call_node_ids, decision_json, dir_snapshot,
         edge_tier,
     };
+    use crate::test_support::{records_graph, RecordsRead};
+    use rigger_domain::contextgraph::{Direction, Located};
 
     #[test]
     fn prune_drops_the_named_nodes_and_their_edges_and_a_replay_does_not_resurrect_them() {
@@ -12335,7 +11567,8 @@ mod tests {
             (KIND_LESSON, &[]),
         ];
         for (kind, ids) in cases {
-            let listed: Vec<String> = Projection::nodes_of_kind(&p, kind)
+            let listed: Vec<String> = p
+                .nodes_of_kind(kind)
                 .unwrap()
                 .into_iter()
                 .map(|n| n.id)
@@ -14274,7 +13507,7 @@ mod tests {
             assert_eq!(edge_tier(&g, REL_CALLS, "src/a.rs::%x"), TIER_INFERRED);
             assert_eq!(edge_tier(&g, REL_REFERENCES, "src/a.rs::%x"), TIER_INFERRED);
 
-            let down = walk(&p, "src/a.rs::f", Direction::Down);
+            let down = walk(&records_graph(&p), "src/a.rs::f", Direction::Down);
             assert_eq!(call_node_ids(&down), ["src/a.rs::f", "src/c.rs::x"]);
             assert_eq!(
                 call_edge_pairs(&down),
@@ -14282,7 +13515,7 @@ mod tests {
             );
             assert_eq!(frontiers(&down), []);
 
-            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            let up = walk(&records_graph(&p), "src/c.rs::x", Direction::Up);
             assert_eq!(call_node_ids(&up), ["src/a.rs::f", "src/c.rs::x"]);
             assert_eq!(
                 call_edge_pairs(&up),
@@ -14342,12 +13575,12 @@ mod tests {
                     })
                     .collect()
             };
-            let down = walk(&p, "src/b.rs::g", Direction::Down);
+            let down = walk(&records_graph(&p), "src/b.rs::g", Direction::Down);
             let mut reached = ["src/b.rs::g", landing];
             reached.sort();
             assert_eq!(call_node_ids(&down), reached);
             assert_eq!(frontiers(&down), marked(landing));
-            let up = walk(&p, "src/c.rs::x", Direction::Up);
+            let up = walk(&records_graph(&p), "src/c.rs::x", Direction::Up);
             assert_eq!(call_node_ids(&up), ["src/b.rs::g", "src/c.rs::x"]);
             assert_eq!(frontiers(&up), marked("src/b.rs::g"));
         }
@@ -14366,7 +13599,7 @@ mod tests {
             apply_call(&p, 5, A, "x", "f");
             apply_call(&p, 6, B, "x", "g");
 
-            let up = walk(&p, seed, Direction::Up);
+            let up = walk(&records_graph(&p), seed, Direction::Up);
             assert_eq!(call_node_ids(&up), nodes);
             assert_eq!(up.edges.len(), nodes.len() - 1);
         }
@@ -14384,7 +13617,7 @@ mod tests {
             apply_call(&p, 6, A, "x", "f");
             apply_call(&p, 7, B, "x", "g");
 
-            let up = walk(&p, "src/c.rs::t", Direction::Up);
+            let up = walk(&records_graph(&p), "src/c.rs::t", Direction::Up);
             assert_eq!(call_node_ids(&up), ["src/a.rs::x", "src/c.rs::t"]);
             assert_eq!(call_layer(&up, "src/a.rs::x"), Some(1));
             assert_eq!(
@@ -15796,7 +15029,7 @@ mod tests {
 
     #[test]
     fn resolve_is_project_scoped_on_a_shared_backend() {
-        // Spec 28, criterion 2 (read isolation, the resolve read): `Projection::resolve`'s
+        // Spec 28, criterion 2 (read isolation, the resolve read): `ContextGraph::resolve`'s
         // node-existence fallback is a read of the nodes table, so on a shared backend it must
         // answer for the CURRENT project only - a node id that exists solely under project beta
         // must resolve to None for project alpha, never a cross-project false-positive. The
@@ -16500,23 +15733,6 @@ mod tests {
             "the two-value edge seek uses idx_edges_live_to_name_suffix; plan was {plan:?}"
         );
 
-        // ARE USED (both legs of `referenced_not_called`): each leg seeks the edge target-text
-        // index for the bound leaf and the leaf index for a target node named it.
-        for rel in [REL_REFERENCES, REL_CALLS] {
-            let plan = query_plan(
-                &p,
-                &seed_leaf_leg_sql(&source_file_sql()),
-                params![rel, "test", r#"["new"]"#],
-            );
-            for index in ["idx_edges_live_to_name_suffix", "idx_nodes_leaf"] {
-                assert!(
-                    plan.iter()
-                        .any(|d| d.contains(&format!("USING INDEX {index}"))),
-                    "the {rel} leg seeks {index}; plan was {plan:?}"
-                );
-            }
-        }
-
         // ARE USED (partial index): the relationship-scoped forward scan
         // (`rel = ? AND valid_to IS NULL`, the shape a directed CALLS traversal walks) is served by
         // the partial live-edge index. The query carries the exact `valid_to IS NULL` term, so
@@ -16626,7 +15842,7 @@ mod tests {
             target: &str,
         ) -> Vec<String> {
             edge_directly(p, caller, target, REL_CALLS, TIER_INFERRED);
-            call_node_ids(&call_walk(p, caller, Direction::Down))
+            call_node_ids(&call_walk(&records_graph(p), caller, Direction::Down))
         }
 
         /// The value the SQL expression `expr` gives node `id`'s row, paired with the value the
@@ -16683,7 +15899,11 @@ mod tests {
             apply_def(&p, 2, "b.rs", "run", 5, false);
             apply_call(&p, 3, "b.rs", "new", "main");
             assert_eq!(
-                call_node_ids(&call_walk(&p, "b.rs::main", Direction::Down)),
+                call_node_ids(&call_walk(
+                    &records_graph(&p),
+                    "b.rs::main",
+                    Direction::Down
+                )),
                 vec!["a.rs::T::new", "b.rs::main"]
             );
             // A placeholder spelled with the sigil, its call written directly.
@@ -16750,7 +15970,7 @@ mod tests {
             // The call written directly onto the empty-named node, which no fold lands one on.
             edge_directly(&p, "b.rs::main", "b.rs::new", REL_CALLS, TIER_INFERRED);
             assert_eq!(
-                call_node_ids(&call_walk(&p, "a.rs::new", Direction::Up)),
+                call_node_ids(&call_walk(&records_graph(&p), "a.rs::new", Direction::Up)),
                 vec!["a.rs::new", "b.rs::main"]
             );
         }
@@ -16831,9 +16051,9 @@ mod tests {
     }
 
     /// Spec 119 criterion 14 (THE MEMBER RULE): a file's members are its named code entities by
-    /// `query::member_file`, spelled in the store by `member_sql()`, which both of `subgraph`'s
-    /// member hops embed: a file entering the reach loads its members one hop on and a member its
-    /// file, with no file `CONTAINS` written.
+    /// `query::member_file`, spelled in the store by `member_sql()`, which `members` embeds, so
+    /// `subgraph`'s member hops load a file's members one hop on and a member its file, with no
+    /// file `CONTAINS` written.
     mod member_rule {
         use super::generations::ledger_entries::label;
         use super::leaf_keys_resolution::{
@@ -17005,17 +16225,6 @@ mod tests {
                 .collect();
             assert_eq!(held, [false, true, true, false]);
         }
-
-        #[test]
-        fn the_member_range_load_seeks_the_node_key() {
-            let p = plant();
-            let seed = serde_json::to_string(&[file_half(NESTED_METHOD)]).unwrap();
-            let plan = query_plan(&p, &reach_sql(), params![seed, 1, p.project]);
-            assert_plan_uses(
-                &plan,
-                "USING INDEX sqlite_autoindex_nodes_1 (id>? AND id<?)",
-            );
-        }
     }
 
     /// Spec 119 criterion 7 (A BARE SHOW FINDS A LEAF OR PATH): after the exact id and the leaf,
@@ -17148,7 +16357,7 @@ mod tests {
             let p = Projector::open(":memory:", "test").unwrap();
             define(&p, &[seed]);
             edge_directly(&p, caller, target, REL_CALLS, TIER_INFERRED);
-            let up = call_walk(&p, seed.0, Direction::Up);
+            let up = call_walk(&records_graph(&p), seed.0, Direction::Up);
             assert_eq!(call_node_ids(&up), vec![seed.0, caller]);
             assert_eq!(call_frontiers(&up), Vec::new());
         }
@@ -17220,20 +16429,9 @@ mod tests {
                 edge_directly(&p, caller, target, REL_CALLS, TIER_INFERRED);
             }
             assert_eq!(
-                referenced_not_called_ids(&p, "a.rs::T::new"),
+                referenced_not_called_ids(&records_graph(&p), "a.rs::T::new"),
                 vec!["x.rs", "y.rs", "z.rs"]
             );
-        }
-
-        #[test]
-        fn the_callers_walks_cross_file_read_seeks_its_bound_leaf_on_the_edge_text_index() {
-            let p = Projector::open(":memory:", "test").unwrap();
-            let plan = query_plan(
-                &p,
-                &callers_via_bare_sql(),
-                params![REL_CALLS, "test", "new"],
-            );
-            assert_plan_uses(&plan, "SEARCH e USING INDEX idx_edges_live_to_name_suffix");
         }
 
         /// A leg of the referenced-but-not-called read whose edge's source cannot be read fails
@@ -17259,10 +16457,7 @@ mod tests {
                 )
                 .map(drop)
                 .map_err(|e| e.0),
-                Err(format!(
-                    "Invalid column type Blob at index: 0, name: {}",
-                    source_file_sql()
-                ))
+                Err("Invalid column type Blob at index: 0, name: from_id".to_string())
             );
         }
 
@@ -17278,7 +16473,10 @@ mod tests {
             let p = Projector::open(":memory:", "test").unwrap();
             write_directly(&p, |tx, project| entity(tx, project, &UNKEYED, "x", &[]));
             edge_directly(&p, "f.rs", "f.rs::x", REL_REFERENCES, TIER_AMBIGUOUS);
-            assert_eq!(referenced_not_called_ids(&p, "x"), Vec::<String>::new());
+            assert_eq!(
+                referenced_not_called_ids(&records_graph(&p), "x"),
+                Vec::<String>::new()
+            );
         }
     }
 
@@ -18286,15 +17484,15 @@ mod tests {
                 "the migration retires exactly the one legacy test entity - this is what `rigger \
                  validate` reports"
             );
-            {
-                let conn = p.conn.lock().unwrap();
-                assert_eq!(
-                    one_hop_degree(&conn, "tests/integration.rs::an_integration_test", "test")
-                        .unwrap(),
-                    0,
-                    "the retired entity has no live edge left"
-                );
-            }
+            let retired = "tests/integration.rs::an_integration_test";
+            assert_eq!(
+                (
+                    p.out(retired).unwrap().is_empty(),
+                    p.incoming(retired).unwrap().is_empty()
+                ),
+                (true, true),
+                "the retired entity has no live edge left"
+            );
             let raw = edges_from(&p, "tests/integration.rs");
             assert!(
                 raw.iter().any(|(to, rel, valid_to)| {
@@ -19207,7 +18405,7 @@ mod tests {
         }
 
         /// Spec 107, THE ENTRY AND ITS BATCH FOLD AS ONE: a `GenerationIngested` ledger entry
-        /// folds only through `Projection::apply_generation`, with the batch its `batch` function
+        /// folds only through `RecordFold::apply_generation`, with the batch its `batch` function
         /// answers, at the entry's position and valid-time and under the entry's identity and
         /// generation. Every entry is built by the one constructor and no sink is involved.
         pub(in crate::contextgraph::sqlite::tests) mod ledger_entries {
@@ -20594,7 +19792,7 @@ mod tests {
         /// definition of its kinds answers its leaf - the staging file's own, else the project's
         /// one in the row's language - settled at the end of every batch that stages it or
         /// changes a definition of its leaf. Every batch here folds through
-        /// `Projection::apply_generation`, the one fold that stages a row.
+        /// `RecordFold::apply_generation`, the one fold that stages a row.
         mod staged_references {
             use super::super::leaf_keys_resolution::{keyed, write_directly};
             use super::ledger_entries::{
@@ -21510,7 +20708,7 @@ mod tests {
             #[test]
             fn referenced_not_called_lists_a_fn_level_rows_file_never_the_fn() {
                 let p = const_read_resolved();
-                assert_eq!(referenced_not_called_ids(&p, CAP), [A]);
+                assert_eq!(referenced_not_called_ids(&records_graph(&p), CAP), [A]);
             }
 
             /// The resolving batch's fold pays the row edge's relabel debt, and a dropped
@@ -21940,7 +21138,10 @@ mod tests {
                 b_defines(&p, "b1", 1, 10, &[("CAP", CODE_KIND_CONSTANT)]);
                 let call = crate::test_support::call_event(A, "CAP", "read");
                 a_reads(&p, "a1", 2, 20, vec![read_of("CAP"), call]);
-                assert_eq!(referenced_not_called_ids(&p, CAP), Vec::<String>::new());
+                assert_eq!(
+                    referenced_not_called_ids(&records_graph(&p), CAP),
+                    Vec::<String>::new()
+                );
             }
 
             /// The communities of `project` a relabel is owed to after `owe` writes, which the
