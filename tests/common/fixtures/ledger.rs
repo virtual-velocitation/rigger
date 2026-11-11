@@ -223,45 +223,6 @@ pub fn seed_pre_ledger_rows_without_a_group(
     });
 }
 
-/// A GRAPH AHEAD OF THE RUN STREAM: record every batch the SHIPPED walk extracts from the tree at
-/// `root` as a ledger entry on `stream` of `store`, a stream other than the run's, and fold each
-/// with its batch into `graph`. The run stream's group lookup then answers no generation for any
-/// identity while the graph holds each one's - the state
-/// [`seed_pre_ledger_rows_without_a_group`] leaves, reached without a derived row, for a crate
-/// whose tests cannot insert one.
-#[cfg(feature = "symbols")]
-pub fn seed_generations_on_another_stream(
-    root: &std::path::Path,
-    store: &dyn rigger::eventstore::EventStore,
-    graph: &dyn rigger::contextgraph::RecordFold,
-    stream: &str,
-) {
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, excluded| {
-        let (identity, generation) = rigger::ingest::derived_key_parts(&batch[0].0).unwrap();
-        let (prefix, file) =
-            rigger::retention::GenerationIngested::identity_parts(identity).unwrap();
-        let entry = super::generation_ingested(prefix, file, generation, "", excluded);
-        let events = batch.iter().map(|(_, event)| (*event).clone()).collect();
-        record_folded_entry(store, graph, stream, &entry, events);
-    });
-}
-
-/// Record `entry` on `stream` of `store` with `batch` as its batch, folding the two into `graph`,
-/// and insist the batch folded.
-#[cfg(feature = "symbols")]
-pub fn record_folded_entry(
-    store: &dyn rigger::eventstore::EventStore,
-    graph: &dyn rigger::contextgraph::RecordFold,
-    stream: &str,
-    entry: &GenerationIngested,
-    batch: Vec<Event>,
-) {
-    let done = rigger::ingest::folding_into(store, Some(graph), &|_| {})
-        .append_entry_and_fold(stream, &entry.event(batch.len()), batch)
-        .unwrap();
-    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
-}
-
 /// The generation `graph` holds for each of `identities`, in order.
 pub fn held_generations(
     graph: &dyn rigger::contextgraph::RecordFold,
@@ -378,26 +339,4 @@ pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::RecordFold, graph_db: &st
         )
         .unwrap();
     assert!(graph.rebuild_owed().unwrap());
-}
-
-/// The generation the walk of the tree at `root` keys the `gc` batch of `path` under now.
-#[cfg(feature = "symbols")]
-pub fn code_generation_now(root: &std::path::Path, path: &str) -> String {
-    handed_by_the_walk(root.to_str().unwrap(), &format!("gc/{path}")).generation()
-}
-
-/// Record a ledger entry of the `gc` batch of `path` at `generation` on the run stream of
-/// `store`, by a plain append that folds nothing: the log's side alone moves.
-pub fn record_unfolded_entry(
-    store: &dyn rigger::eventstore::EventStore,
-    path: &str,
-    generation: &str,
-) {
-    store
-        .append(
-            rigger::conductor::STREAM,
-            rigger::eventstore::ExpectedRevision::Any,
-            &[super::generation_ingested("gc", path, generation, "", false).event(1)],
-        )
-        .unwrap();
 }

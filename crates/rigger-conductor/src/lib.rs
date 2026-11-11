@@ -21,8 +21,6 @@ pub mod conductor;
 pub mod held;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod hold_controller;
-#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
-mod logged_generations;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod replay_keys;
 /// The per-run verdict key and the MAC every gate verdict the driver records carries.
@@ -210,18 +208,12 @@ mod test_support {
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::event_fixtures::*;
-    #[cfg(feature = "symbols")]
-    pub use crate::extraction_tree_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::git_fixtures::*;
     pub use crate::graph_fixtures::*;
-    #[cfg(feature = "symbols")]
-    pub use crate::host_fixtures::*;
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
     pub use crate::ledger_fixtures::*;
     pub use crate::plan_critique_fixtures::*;
-    #[cfg(feature = "symbols")]
-    pub use crate::read_fault_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

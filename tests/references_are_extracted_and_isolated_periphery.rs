@@ -209,7 +209,7 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
 /// included.
 #[cfg(feature = "symbols")]
 fn staged_edges(
-    graph: &rigger::contextgraph::sqlite::Projector,
+    graph: &(impl rigger::contextgraph::Neighbors + ?Sized),
 ) -> Vec<(String, String, String, i64, u64)> {
     common::fixtures::live_edges(graph)
         .into_iter()

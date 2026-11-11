@@ -69,7 +69,6 @@ fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,

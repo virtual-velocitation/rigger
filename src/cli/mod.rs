@@ -378,31 +378,6 @@ pub(crate) fn stderr_line(line: &str) {
     eprintln!("{line}");
 }
 
-/// THE ONE HASH FUNCTION as a run is handed it ([`conductor::Deps::hash_blob`]) at this
-/// composition root: `git hash-object` under `root`, the run's tree
-/// ([`rigger::worktree::hash_blob`]), which inside a repository writes the object it hashes into
-/// that repository's object database before the call returns (spec 124, THE BLOB IS WRITTEN), so
-/// another process re-extracting the entry reads its blob from there, and outside one hashes
-/// without writing; a hash that fails, a failed write included, answers its error. The binding
-/// detects whether `root` is inside a repository once, at its first hash, and keeps the answer
-/// ([`rigger::worktree::BlobHasher`]), so each hash is one process. A binding handed no root (an
-/// empty `root`, as a replay's run is) hashes nothing: asked, it answers a failure naming why
-/// ([`NO_TREE_TO_HASH_UNDER`]), never a hash under the working directory, whose repository it
-/// would otherwise write into.
-pub(crate) fn hash_blob_in(
-    root: &str,
-) -> impl Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync + '_ {
-    let hasher = (!root.is_empty()).then(|| rigger::worktree::BlobHasher::new(root));
-    move |bytes| match &hasher {
-        Some(hasher) => hasher.hash(bytes),
-        None => Err(rigger::worktree::Error(NO_TREE_TO_HASH_UNDER.to_string())),
-    }
-}
-
-/// What a hash binding handed no root answers when asked ([`hash_blob_in`]).
-const NO_TREE_TO_HASH_UNDER: &str =
-    "no tree to hash under: a binding handed no root, as a replay's run is, hashes no blob";
-
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
 /// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
 /// the local identity migration - which needs the concrete [`Store`] for its stream-rename
@@ -2742,9 +2717,6 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
         let driver = ReplayDriver::new(&iso);
-        // A replay walks no tree (`repo` is empty), so its hash is never asked; asked, it fails
-        // naming why rather than hash under the working directory.
-        let hash_blob = hash_blob_in("");
         let deps = Deps {
             store: &iso,
             driver: &driver,
@@ -2754,7 +2726,6 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             graph: None,
             criteria,
             log: &stderr_line,
-            hash_blob: &hash_blob,
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host,
             code_store: None,
@@ -5485,35 +5456,6 @@ mod tests {
     use crate::test_support::RecordsRead;
     use rigger::spawn::SpawnEvent;
     use std::process::Command;
-
-    /// The hash bound to no tree - an empty root, as a replay's run is handed - fails naming why
-    /// when asked, and writes nothing into the repository of the working directory, which a
-    /// `git -C ""` would operate on.
-    #[test]
-    #[serial_test::serial(cwd)]
-    fn the_hash_bound_to_no_tree_fails_naming_why_and_writes_into_no_repository() {
-        let _restore = CwdGuard(std::env::current_dir().unwrap());
-        let dir = tempfile::tempdir().unwrap();
-        git_init_quiet(dir.path());
-        std::env::set_current_dir(dir.path()).unwrap();
-
-        let hashed = hash_blob_in("")(b"bytes no tree holds\n").map_err(|e| e.0);
-
-        assert_eq!(
-            (
-                hashed,
-                crate::test_support::git_out(dir.path(), &["count-objects"])
-            ),
-            (
-                Err(
-                    "no tree to hash under: a binding handed no root, as a replay's run is, \
-                     hashes no blob"
-                        .to_string()
-                ),
-                "0 objects, 0 kilobytes".to_string()
-            )
-        );
-    }
 
     /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
     /// owes its rebuild - never for a current file, and never by creating an absent one.

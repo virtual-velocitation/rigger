@@ -194,7 +194,6 @@ fn the_conductor_advances_the_store_after_a_landed_merge() {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: Some(&recording),

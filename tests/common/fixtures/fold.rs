@@ -215,12 +215,14 @@ pub fn fold_asked(
 }
 
 /// Everything `p` serves - every node and edge of its whole graph - as one comparable JSON text.
-pub fn whole_json(p: &Projector) -> String {
+pub fn whole_json(p: &(impl rigger::contextgraph::Neighbors + ?Sized)) -> String {
     serde_json::to_string(&p.whole().unwrap()).unwrap()
 }
 
 /// Every live edge `p` serves as `(from, rel, to, valid_from, source)`, sorted.
-pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
+pub fn live_edges(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+) -> Vec<(String, String, String, i64, u64)> {
     let mut edges: Vec<_> = p
         .whole()
         .unwrap()
@@ -233,7 +235,10 @@ pub fn live_edges(p: &Projector) -> Vec<(String, String, String, i64, u64)> {
 }
 
 /// Every live `rel` edge `p` serves as `(from, to)`, sorted.
-pub fn live_of(p: &Projector, rel: &str) -> Vec<(String, String)> {
+pub fn live_of(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+    rel: &str,
+) -> Vec<(String, String)> {
     live_edges(p)
         .into_iter()
         .filter(|(_, edge_rel, ..)| edge_rel == rel)
@@ -242,13 +247,18 @@ pub fn live_of(p: &Projector, rel: &str) -> Vec<(String, String)> {
 }
 
 /// Every live `CALLS` edge `p` serves as `(caller, callee)`, sorted.
-pub fn live_calls(p: &Projector) -> Vec<(String, String)> {
+pub fn live_calls(p: &(impl rigger::contextgraph::Neighbors + ?Sized)) -> Vec<(String, String)> {
     live_of(p, REL_CALLS)
 }
 
 /// Every live `rel` edge `p` serves ([`live_of`]) is exactly `edges`, `(from, to)` ids in that
 /// sorted order, `why` naming the rule the edges follow.
-pub fn assert_live(p: &Projector, rel: &str, edges: &[(&str, &str)], why: &str) {
+pub fn assert_live(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+    rel: &str,
+    edges: &[(&str, &str)],
+    why: &str,
+) {
     let edges: Vec<(String, String)> = edges
         .iter()
         .map(|(from, to)| (from.to_string(), to.to_string()))
@@ -258,13 +268,19 @@ pub fn assert_live(p: &Projector, rel: &str, edges: &[(&str, &str)], why: &str) 
 
 /// Every live `CALLS` edge `p` serves ([`live_calls`]) is exactly `calls`, `(caller, callee)`
 /// ids in that sorted order, `why` naming the rule the edges follow.
-pub fn assert_live_calls(p: &Projector, calls: &[(&str, &str)], why: &str) {
+pub fn assert_live_calls(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+    calls: &[(&str, &str)],
+    why: &str,
+) {
     assert_live(p, REL_CALLS, calls, why);
 }
 
 /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
 /// where each reference landed and at what tier.
-pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
+pub fn landed(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+) -> Vec<(String, String, String, String)> {
     let mut edges: Vec<_> = p
         .whole()
         .unwrap()
@@ -279,7 +295,9 @@ pub fn landed(p: &Projector) -> Vec<(String, String, String, String)> {
 
 /// Every live module `CONTAINS` edge `p` serves - one onto a `file` node (spec 117, A MODULE ROW
 /// REACHES ITS FILE) - as `(from, to, tier)`, sorted.
-pub fn module_edges(p: &Projector) -> Vec<(String, String, String)> {
+pub fn module_edges(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+) -> Vec<(String, String, String)> {
     let g = p.whole().unwrap();
     let files: BTreeSet<&str> = g
         .nodes
@@ -1644,7 +1662,7 @@ pub fn file_and_entity_ids(files: &[&str], entities: &[&str]) -> [Vec<String>; 2
 
 /// Every definition `p`'s whole graph holds - a code entity carrying a non-empty `name`, never a
 /// placeholder or a bare node - as its id, sorted.
-pub fn definition_ids(p: &Projector) -> Vec<String> {
+pub fn definition_ids(p: &(impl rigger::contextgraph::Neighbors + ?Sized)) -> Vec<String> {
     let mut ids: Vec<String> = p
         .whole()
         .unwrap()
@@ -1660,20 +1678,26 @@ pub fn definition_ids(p: &Projector) -> Vec<String> {
 }
 
 /// The node `id` of `p`'s whole graph, which must hold it.
-pub fn node_of(p: &Projector, id: &str) -> Node {
+pub fn node_of(p: &(impl rigger::contextgraph::Neighbors + ?Sized), id: &str) -> Node {
     let nodes = p.whole().unwrap().nodes;
     let node = nodes.into_iter().find(|n| n.id == id);
     node.unwrap_or_else(|| panic!("{id} is held"))
 }
 
 /// The attrs node `id` carries in `p`'s whole graph ([`node_of`]).
-pub fn attrs_of(p: &Projector, id: &str) -> BTreeMap<String, String> {
+pub fn attrs_of(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+    id: &str,
+) -> BTreeMap<String, String> {
     node_of(p, id).attrs
 }
 
 /// The `proven_by` attr node `id` carries in `p`'s whole graph ([`attrs_of`]), `None` when it
 /// carries no proof.
-pub fn proven_by_attr(p: &Projector, id: &str) -> Option<String> {
+pub fn proven_by_attr(
+    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
+    id: &str,
+) -> Option<String> {
     attrs_of(p, id).get("proven_by").cloned()
 }
 

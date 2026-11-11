@@ -29,8 +29,6 @@ mod agent_fallback_model_config_periphery;
 mod architecture_current_surface;
 mod architecture_integrity;
 mod batched_fold_cadence;
-#[cfg(feature = "symbols")]
-mod blob_is_written_periphery;
 mod build_watch_paths;
 #[cfg(feature = "symbols")]
 mod call_lands_on_its_one_same_file_candidate_periphery;
@@ -44,6 +42,7 @@ mod canary_progress_hook_periphery;
 mod canary_tolerant_attribution_periphery;
 mod canary_unattributed_rejects_periphery;
 mod cause_wire_periphery;
+#[cfg(feature = "symbols")]
 mod change_path_revert_periphery;
 mod checkin_mutation_diff_base_periphery;
 mod checkpoint_commit_hook_bypass_periphery;
@@ -133,8 +132,6 @@ mod graph_density_spread_floor_and_centring;
 mod graph_fold_dedup_live_edge;
 mod graph_fold_dedup_live_only_scoping;
 #[cfg(feature = "symbols")]
-mod graph_fresh_on_integration_periphery;
-#[cfg(feature = "symbols")]
 mod graph_honesty_label_cli;
 mod graph_query_engine_relocation_periphery;
 mod graph_rebuild_collapses_dupes;
@@ -145,7 +142,6 @@ mod graph_show_surface;
 mod graph_superseded_prune;
 mod grep_fallback_metric_periphery;
 mod grounder_name_contract;
-mod group_lookup_periphery;
 mod halted_spawn_wip_recovery_periphery;
 mod handbook_grounder_accuracy;
 mod heartbeat_write_read_agree_periphery;
@@ -161,7 +157,6 @@ mod kurrentdb_always_available;
 mod kurrentdb_contract_test_surface;
 mod land_refused_names_its_paths_periphery;
 mod leaf_keys_resolution_periphery;
-mod ledger_entry_fold_periphery;
 mod ledger_rebuild;
 mod live_project_ingestion;
 mod max_parallel_units_wave_width_periphery;
@@ -226,8 +221,6 @@ mod run_boundary_lookup_periphery;
 mod run_hold_periphery;
 mod run_root_resolution_periphery;
 mod run_scoping_survives_periphery;
-#[cfg(feature = "symbols")]
-mod run_sink_periphery;
 mod rust_definitions_are_nodes_periphery;
 mod scaffold_grounder_resolves;
 mod scratch_workdir_config;

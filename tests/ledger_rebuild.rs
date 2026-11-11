@@ -2628,61 +2628,6 @@ fn the_log_side_of_the_report_reads_the_one_stream_it_is_handed() {
     );
 }
 
-/// Given a tree whose source file the log's keyed derived rows record at the generation it
-/// extracts to, when the index-lag readers are asked over the log's side alone, then neither
-/// lists it; and when a later ledger entry of the same identity at another generation and a
-/// ledger entry alone of the out-of-line test module follow, then both readers read each entry
-/// as its identity's latest recording: the first lists the source file it is handed and the
-/// sample both files, in sorted order.
-#[cfg(feature = "symbols")]
-#[test]
-fn the_index_lag_readers_read_a_ledger_entry_as_the_latest_recording() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_text(root, SOURCE_PATH, SOURCE_BODY);
-    write_text(root, TEST_MODULE_PATH, TEST_MODULE_BODY);
-    let file = vec![SOURCE_PATH.to_string()];
-    let lag = |prior: &[Event]| {
-        let latest = rigger::ingest::project_scoped_latest_generations(prior);
-        (
-            rigger::ingest::graph_index_lag(root, &latest, None, &file),
-            rigger::ingest::graph_index_lag_sample(root, &latest, None),
-        )
-    };
-
-    let mut prior = keyed_source_rows();
-    assert_eq!(
-        (lag(&prior), lag(&[])),
-        (
-            (Vec::<String>::new(), Vec::<String>::new()),
-            (file.clone(), Vec::new())
-        ),
-        "the derived rows record the generation the file extracts to; without them it lags"
-    );
-
-    prior.push(entry_of(&named_recording(
-        "gc",
-        SOURCE_PATH,
-        UNREPRODUCED,
-        false,
-        10,
-    )));
-    prior.push(entry_of(&named_recording(
-        "gc",
-        TEST_MODULE_PATH,
-        UNREPRODUCED,
-        false,
-        11,
-    )));
-    assert_eq!(
-        lag(&prior),
-        (
-            file.clone(),
-            vec![TEST_MODULE_PATH.to_string(), SOURCE_PATH.to_string()]
-        )
-    );
-}
-
 /// Given a tree holding two source files, a log whose keyed derived row records the first at a
 /// generation the rebuilt graph then holds and whose entry of the second no source reproduces,
 /// when the operator runs `rigger setup`, then the rebuild counts the second alone: an identity

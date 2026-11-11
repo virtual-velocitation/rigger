@@ -146,7 +146,6 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         graph: graph.map(|g| g as _),
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,

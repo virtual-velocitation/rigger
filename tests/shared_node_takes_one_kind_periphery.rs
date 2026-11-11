@@ -75,7 +75,7 @@ pub fn Kept() {}
 /// `function`), `Maker` and `Kept` the type at the type's line whichever side the fn sits on.
 #[cfg(feature = "symbols")]
 fn every_path_is_its_precedence_winner(
-    graph: &rigger::contextgraph::sqlite::Projector,
+    graph: &(impl rigger::contextgraph::Neighbors + ?Sized),
     above: u64,
     why: &str,
 ) {

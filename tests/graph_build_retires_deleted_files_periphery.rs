@@ -1,22 +1,21 @@
 //! Periphery for the whole-project walk's retirement of deleted files: a file the tree no longer
 //! holds stops answering in the graph after one `rigger graph build`, whatever the persisted
-//! symbols index says of it, and a second build records nothing.
+//! symbols index says of it, and a second build appends nothing to the log.
 //!
 //! Each row plants the extraction tree (one file of each prefix the walk keys: `gc` code, `gd`
 //! design, `gw` workflow definition) in a repository, builds, deletes one file, optionally moves
 //! the symbols index around the deletion, and builds again through the shipped binary. The
 //! reader's view is `rigger graph --show`: every id the deleted file held answers before the
 //! deletion and none answers after it, while the kept files still answer. A cold row deletes
-//! `graph.db` after the repairing build, so the rebuild `rigger setup` makes folds the retirement
-//! from the log alone. No cold row deletes the workflow definition: `rigger setup` scaffolds a new
+//! `graph.db` after the repairing build, so `rigger setup` rebuilds the record half from the log
+//! while the code store still answers for the tree it advanced to. No cold row deletes the workflow definition: `rigger setup` scaffolds a new
 //! one where none exists, so the tree would hold the file again.
 
 use crate::common;
 
-use common::cli::{ingested_count, read_run_events, run_rigger};
+use common::cli::{read_run_events, run_rigger};
 use common::fixtures::{
-    git_init_quiet, planted_extraction_tree, recorded_entry_keys, write_file, DOCUMENT_PATH,
-    SOURCE_PATH, WORKFLOW_PATH,
+    git_init_quiet, planted_extraction_tree, write_file, DOCUMENT_PATH, SOURCE_PATH, WORKFLOW_PATH,
 };
 use std::path::Path;
 
@@ -85,16 +84,11 @@ fn answers(root: &Path, (id, kind): Shown) -> bool {
         })
 }
 
-/// The ledger entries the log at `root` records.
-fn entries(root: &Path) -> Vec<String> {
-    recorded_entry_keys(&read_run_events(root))
-}
-
 /// GIVEN the extraction tree built into the graph, with the row's index state,
 /// WHEN the row's file is deleted and `rigger graph build` runs (and, for a cold row, `rigger setup`
 /// rebuilds the graph from the log over no `graph.db`),
 /// THEN no id the file held answers `--show`, every kept id still does, and one more build
-/// records nothing.
+/// appends nothing to the log.
 fn assert_a_build_retires(row: Deletion) {
     let dir = planted_extraction_tree(write_file);
     let root = dir.path();
@@ -141,12 +135,12 @@ fn assert_a_build_retires(row: Deletion) {
         );
     }
 
-    let recorded = entries(root);
-    let repeat = rigger(root, &["graph", "build"]);
+    let recorded = read_run_events(root).len();
+    rigger(root, &["graph", "build"]);
     assert_eq!(
-        (ingested_count(&repeat), entries(root)),
-        (0, recorded),
-        "a repeat build over the same tree records nothing"
+        read_run_events(root).len(),
+        recorded,
+        "a repeat build over the same tree appends nothing to the log"
     );
 }
 

@@ -1,17 +1,10 @@
 //! Periphery for spec 107, criterion 4 - THE EXTRACTION READS BYTES.
 //!
 //! The criterion splits each extraction half's bytes form out of its disk read. From outside the
-//! crates that own the splits, the whole observable is that nothing the walk records moved: the
-//! real `rigger graph build` over the extraction tree records the batches the tree's fixture
-//! holds, under the keys the library walk mints. These tests hold that from the binary's side and
-//! hold the three public forms through the paths an outside caller reaches them by:
-//! `rigger::ingest::walk_exclusions` in both lanes, `rigger::ingest::batch_generation` over what
-//! the log holds, and `rigger::config_store::parse_workflow` over the definition the real
-//! `rigger init` writes.
-//!
-//! What this file OWNS: the recorded log of a real build over the tree, the named walk beside the
-//! whole walk, and each public form as an outside caller sees it - the light-lane
-//! `walk_exclusions` among them. NOT OWNED: each split against its own caller and against literal
+//! crates that own the splits, these tests hold the public forms through the paths an outside
+//! caller reaches them by: the named walk beside the whole walk, `rigger::ingest::walk_exclusions`
+//! in both lanes, and `rigger::config_store::parse_workflow` over the definition the real
+//! `rigger init` writes. NOT OWNED: each split against its own caller and against literal
 //! payloads, which the tests of the module owning the split pin beside the code.
 
 use crate::common;
@@ -21,11 +14,8 @@ use common::fixtures::{planted_extraction_tree, write_file};
 use rigger::config_store::{load_workflow, parse_workflow};
 
 #[cfg(feature = "symbols")]
-use common::cli::read_run_events;
-#[cfg(feature = "symbols")]
 use common::fixtures::{
-    entry_key_parts, events_of, minted_events, recorded_entry_keys, wire_owned, WalkedBatch,
-    SOURCE_PATH, TEST_MODULE_PATH, WALKED,
+    events_of, minted_events, wire_owned, WalkedBatch, SOURCE_PATH, TEST_MODULE_PATH, WALKED,
 };
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;
@@ -89,24 +79,6 @@ fn triples(keyed: &[(String, Event)]) -> Vec<(&str, &str, &[u8])> {
         .collect()
 }
 
-/// The extraction tree planted in a fresh git repository.
-#[cfg(feature = "symbols")]
-fn planted_repository() -> tempfile::TempDir {
-    let dir = planted_extraction_tree(write_file);
-    let _ = common::git::run_git(dir.path(), &["init", "-q"]);
-    dir
-}
-
-/// Each ledger entry `root`'s log holds as `(identity, generation, batch event count)`, oldest
-/// first, the log holding no derived index event.
-#[cfg(feature = "symbols")]
-fn recorded(root: &std::path::Path) -> Vec<(String, String, usize)> {
-    recorded_entry_keys(&read_run_events(root))
-        .iter()
-        .map(|key| entry_key_parts(key))
-        .collect()
-}
-
 /// The paths of the index `rigger::ingest::walk_exclusions` answers over the extraction tree, and
 /// the identities it excludes, each in its own sorted order.
 fn walk_exclusions_over_the_extraction_tree() -> (Vec<String>, Vec<String>) {
@@ -116,62 +88,6 @@ fn walk_exclusions_over_the_extraction_tree() -> (Vec<String>, Vec<String>) {
         index.files().keys().cloned().collect(),
         excluded.into_iter().collect(),
     )
-}
-
-/// Given the extraction tree in a repository, when the operator runs `rigger graph build`, then
-/// the log holds exactly one ledger entry per batch the library walk mints for the tree, and they
-/// name the six batches the tree's fixture records: the out-of-line test module hollowed to one
-/// boundary event under `gc` while the same path keeps its rationale under `gd`, the workflow
-/// definition's parse under `gw`, and every batch under the generation and the event count
-/// recorded for it.
-#[cfg(feature = "symbols")]
-#[test]
-fn graph_build_records_the_batches_the_walk_lowers_from_the_extraction_tree() {
-    let dir = planted_repository();
-    let root = dir.path();
-    let minted: Vec<(String, String, usize)> = batches(&minted_events(root))
-        .into_iter()
-        .map(|(identity, generation, events)| (identity, generation, events.len()))
-        .collect();
-    let fixture: Vec<(String, String, usize)> = walked(|_| true)
-        .into_iter()
-        .map(|(identity, generation, events)| (identity, generation, events.len()))
-        .collect();
-
-    run_rigger_ok(root, &["graph", "build"]);
-
-    let recorded = recorded(root);
-    assert_eq!(recorded, minted);
-    assert_eq!(recorded, fixture);
-}
-
-/// Given the log a real `rigger graph build` wrote for the extraction tree, `batch_generation`
-/// over the events of each batch the library walk mints answers the generation the build's
-/// ledger entry for that batch names and the tree's fixture records.
-#[cfg(feature = "symbols")]
-#[test]
-fn batch_generation_answers_the_generation_of_every_batch_graph_build_recorded() {
-    let dir = planted_repository();
-    let root = dir.path();
-    run_rigger_ok(root, &["graph", "build"]);
-
-    let minted = grouped(&minted_events(root));
-    let answered: Vec<(&str, String)> = minted
-        .iter()
-        .map(|(identity, _, events)| (identity.as_str(), rigger::ingest::batch_generation(events)))
-        .collect();
-    let recorded = recorded(root);
-    let entered: Vec<(&str, String)> = recorded
-        .iter()
-        .map(|(identity, generation, _)| (identity.as_str(), generation.clone()))
-        .collect();
-    let fixture = walked(|_| true);
-    let expected: Vec<(&str, String)> = fixture
-        .iter()
-        .map(|(identity, generation, _)| (identity.as_str(), generation.clone()))
-        .collect();
-    assert_eq!(answered, entered);
-    assert_eq!(answered, expected);
 }
 
 /// The named walk hands, for the two source files it is named, the keyed events the whole walk

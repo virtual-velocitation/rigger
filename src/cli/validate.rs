@@ -48,31 +48,6 @@ fn print_claude_login() {
     }
 }
 
-/// The `rigger validate` GRAPH INDEX LAG sample (spec 107, THE LEDGER ANSWERS THE INDEX-LAG
-/// ADVISORY): reads the log's side from `store` in ONE typed read of the perception types
-/// ([`rigger::ingest::perceived_generations`]), never the whole stream, and hands it to
-/// [`rigger::ingest::graph_index_lag_sample`], the one authority that draws the bounded candidate
-/// list from it and compares each candidate's current bytes, read under `root`, against its
-/// latest recording and against `graph`'s current generation. With no `graph` the log's side
-/// alone is compared.
-fn read_graph_index_lag(
-    store: &dyn EventStore,
-    graph: Option<&dyn contextgraph::RecordFold>,
-    root: &Path,
-) -> Result<Vec<String>, rigger::eventstore::Error> {
-    let latest = rigger::ingest::perceived_generations(store, conductor::STREAM)?;
-    Ok(rigger::ingest::graph_index_lag_sample(root, &latest, graph))
-}
-
-/// The graph the index-lag advisory compares against: the project's `graph.db` when it stands
-/// ([`standing_graph`]) and owes no rebuild. An owed graph is not asked, nor one whose debt
-/// cannot be read: the advisory then compares the log's side alone.
-fn graph_to_compare(graph_db: &str, project: &str) -> Option<Projector> {
-    let graph = standing_graph(graph_db, project)?;
-    let owed = graph.rebuild_owed().ok()?;
-    (!owed).then_some(graph)
-}
-
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
 /// each tier whose resolved model id re-pointed since the previous run and recommending the
 /// drift-gated canary, or `None` when nothing drifted. Pure over the [`metrics::ModelDrift`]
@@ -322,33 +297,6 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
-    // GRAPH INDEX LAG advisory (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY): warn when
-    // a bounded sample of files the log has recorded extracts, from the bytes the tree holds
-    // now, to a generation the log's latest recording and `graph.db` do not both hold -
-    // staleness the integration-time reindex is supposed to prevent, surfaced before it is felt
-    // rather than discovered by a stale `graph --show` line. The tree is read under the ONE
-    // ROOT, the top level of the repository holding the store's `.rigger/`, which the entries'
-    // paths are relative to. An absent store has recorded nothing, and a store-read failure
-    // just skips the advisory (never fails validate), exactly like the model-drift advisory
-    // above.
-    let project = project_identity();
-    let graph = graph_to_compare(&db_path("graph.db"), &project);
-    let lagging = store_selection(None, None).and_then(|sel| {
-        with_project_store(&db_path("events.db"), &project, &sel, |store| {
-            read_graph_index_lag(
-                store,
-                graph
-                    .as_ref()
-                    .map(|graph| graph as &dyn contextgraph::RecordFold),
-                &tree_root(&cwd().join(RIGGER_DIR)),
-            )
-        })
-    });
-    if let Ok(Some(lagging)) = lagging {
-        if let Some(advisory) = graph_index_lag_advisory(&lagging) {
-            eprintln!("{advisory}");
-        }
-    }
     // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
     // the event log still holds a derived event and name `rigger reset --derived`, the migration
     // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
@@ -544,28 +492,6 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
         rigger::grounder::symbols::store::index_path(".").display(),
         parts.join(", "),
     )
-}
-
-/// The GRAPH INDEX LAG advisory line (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY),
-/// rendered from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`]
-/// named: each one's current bytes extract to a generation other than its latest ledger entry's
-/// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
-/// about, not merely nothing measured (the pure formatting stays separate from the gathering,
-/// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
-/// count) and the command the line points the operator at, `rigger graph build`: the verb that
-/// re-perceives the tree, recording each lagging file's ledger entry and folding it through the
-/// one function the integration reindex also calls ([`rigger::ingest::entry_of_batch`]).
-/// `rigger reindex` refreshes the symbols index alone, so it moves neither side compared.
-fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
-    if lagging.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger graph build` to refresh it.",
-        lagging.len(),
-        lagging.join(", "),
-    ))
 }
 
 /// The LOG BLOAT advisory line (spec 107), rendered from an already-read
@@ -1968,77 +1894,6 @@ mod tests {
         assert!(
             msg.contains("rigger reindex"),
             "the message must name the fix: {msg}"
-        );
-    }
-
-    // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
-    // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
-    // own implementation) ---
-
-    #[test]
-    fn graph_index_lag_advisory_names_every_lagging_file_and_the_fix() {
-        let lagging = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-        let msg = graph_index_lag_advisory(&lagging).expect("a non-empty sample draws an advisory");
-        assert!(msg.starts_with("warning:"), "advisory: {msg}");
-        assert!(
-            msg.contains("src/a.rs") && msg.contains("src/b.rs"),
-            "the message must name every lagging file: {msg}"
-        );
-        assert!(
-            msg.contains("Run `rigger graph build` to refresh it.") && !msg.contains("reindex"),
-            "the message must name the verb that records and folds the lagging entries: {msg}"
-        );
-    }
-
-    #[test]
-    fn graph_index_lag_advisory_is_none_when_the_sample_is_empty() {
-        assert_eq!(graph_index_lag_advisory(&[]), None);
-    }
-
-    /// The advisory reads the log's side in ONE typed read of the perception types from the
-    /// stream's start and no whole-stream read (spec 107): over a log holding a run's start, a
-    /// stale ledger entry of a file the tree holds and an entry of a file it does not, it
-    /// materializes the two entries alone, and with no graph to ask names the stale file where
-    /// an extraction is compiled and nothing where none is.
-    #[test]
-    fn the_index_lag_advisory_reads_the_log_in_one_typed_read_of_the_perception_types() {
-        use crate::test_support::{generation_ingested, CountedRead, ReadCountingStore};
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
-        let inner = Store::open(":memory:").unwrap();
-        inner
-            .append(
-                conductor::STREAM,
-                ExpectedRevision::Any,
-                &[
-                    Event::new("RunStarted", b"{}".to_vec()),
-                    generation_ingested("gc", "kept.rs", "stale", "", false).event(1),
-                    generation_ingested("gc", "gone.rs", "stale", "", false).event(1),
-                ],
-            )
-            .unwrap();
-        let store = ReadCountingStore::new(&inner);
-
-        let lagging = read_graph_index_lag(&store, None, dir.path()).unwrap();
-
-        let sampled: &[&str] = if cfg!(feature = "symbols") {
-            &["kept.rs"]
-        } else {
-            &[]
-        };
-        assert_eq!(lagging, sampled);
-        assert_eq!(
-            store.reads(),
-            [CountedRead::Typed {
-                stream: conductor::STREAM.to_string(),
-                from: 0,
-                only: true,
-                types: rigger::retention::PERCEPTION_TYPES
-                    .map(String::from)
-                    .to_vec(),
-                materialized: 2,
-            }]
         );
     }
 

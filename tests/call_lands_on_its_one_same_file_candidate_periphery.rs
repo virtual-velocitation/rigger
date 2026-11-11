@@ -12,7 +12,6 @@ use crate::common;
 
 use common::cli::{built_graph, rebuilt_graph};
 use common::fixtures::{a_call_from_main, hold, landed};
-use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY, TIER_AMBIGUOUS, TIER_EXTRACTED};
 
 /// `f.rs` defining `foo` and calling it from `main`: the first generation.
@@ -25,7 +24,7 @@ const ONLY_CALLS: &str = "fn main() { foo(); }\n";
 const KEEPS_AND_CALLS: &str = "fn foo() {}\nfn bar() {}\nfn main() { foo(); }\n";
 
 /// The `(id, kind)` of the node `f.rs::foo` in `p`, when one stands.
-fn foo_node(p: &Projector) -> Vec<(String, String)> {
+fn foo_node(p: &(impl rigger::contextgraph::Neighbors + ?Sized)) -> Vec<(String, String)> {
     p.whole()
         .unwrap()
         .nodes
@@ -46,7 +45,7 @@ fn a_rebuild_lands_the_call(held: &[&str], next: &str, to: &str, tier: &str, foo
         a_call_from_main("f.rs::foo", TIER_EXTRACTED),
         "while `foo` stands the call lands on its one same-file definition"
     );
-    hold(&graph, 1_000_000, held);
+    hold(&graph.records, 1_000_000, held);
     drop(graph);
 
     let graph = rebuilt_graph(dir.path(), &[("f.rs", next)]);

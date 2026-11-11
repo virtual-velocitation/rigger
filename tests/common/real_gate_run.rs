@@ -129,7 +129,6 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,

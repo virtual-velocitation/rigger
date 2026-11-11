@@ -964,7 +964,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
-    let hash_blob = hash_blob_in(&root);
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at.
     let code_store = run_code_store(&repo);
     // The grounding reads compare with the operator checkout the run lands its merges on.
@@ -978,7 +977,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         graph: Some(&graph),
         criteria,
         log: &stderr_line,
-        hash_blob: &hash_blob,
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host,
         code_store: code_store.as_deref(),

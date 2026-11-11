@@ -1633,7 +1633,7 @@ fn graph_around_gives_a_reviewer_of_either_form_one_edge_of_each_tier() {
     for workflow in workflows.as_flattened() {
         let project = temp_project();
         write_scaffold(project.path(), &[], workflow);
-        run_rigger_ok(project.path(), &["graph", "build"]);
+        common::cli::build_head(project.path());
         let (around, err, ok) = run_around(project.path(), "stage:implement", 1);
         assert!(ok, "graph --around must answer; stderr:\n{err}");
         let mut review_edges: Vec<(String, String, String)> = edge_lines(&around)
@@ -1694,7 +1694,6 @@ fn assert_winner_reviewed_aliases(panel: ReviewPanel, expected: &[&str]) {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,

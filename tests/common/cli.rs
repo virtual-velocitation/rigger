@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::config::RIGGER_DIR;
 use rigger::contextgraph::sqlite::Projector;
+use rigger::contextgraph::{Edge, Error as GraphError, Graph, Node};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
@@ -1730,21 +1731,89 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
     })
 }
 
-/// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a
-/// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
-pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
+/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
+/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
+/// code store to.
+pub struct BuiltGraph {
+    pub records: Projector,
+    pub view: rigger_store::code::Snapshot,
+}
+
+impl BuiltGraph {
+    /// The project at `root` as its last `graph build` left it: the code store is read, never
+    /// advanced, so a build that left it behind the head fails here.
+    pub fn of(root: &Path) -> Self {
+        let opened = rigger::code_store::CodeStore::in_repository(root)
+            .open(rigger_store::code::Mode::Read)
+            .expect("the code store opens");
+        assert!(
+            opened.behind.is_none(),
+            "graph build advanced the code store to the head: {:?}",
+            opened.behind.map(|b| b.to_string())
+        );
+        Self {
+            records: open_graph(root),
+            view: opened.view,
+        }
+    }
+
+    /// Every node and edge the composed graph serves ([`Self::composed`]).
+    pub fn whole(&self) -> Result<Graph, GraphError> {
+        rigger::contextgraph::Neighbors::whole(&self.composed())
+    }
+
+    /// The record half composed with the code store's view.
+    pub fn composed(&self) -> rigger::composed::Composed<'_> {
+        super::fixtures::view_graph(&self.records, &self.view)
+    }
+}
+
+impl rigger::contextgraph::Neighbors for BuiltGraph {
+    fn node(&self, id: &str) -> Result<Option<Node>, GraphError> {
+        self.composed().node(id)
+    }
+    fn out(&self, id: &str) -> Result<Vec<Edge>, GraphError> {
+        self.composed().out(id)
+    }
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, GraphError> {
+        self.composed().incoming(id)
+    }
+    fn members(&self, file: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().members(file)
+    }
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().leaf_nodes(leaf)
+    }
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().of_kind(kind)
+    }
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, GraphError> {
+        self.composed().unresolved(node)
+    }
+    fn aliases(&self) -> Result<Vec<(String, String)>, GraphError> {
+        self.composed().aliases()
+    }
+    fn whole(&self) -> Result<Graph, GraphError> {
+        rigger::contextgraph::Neighbors::whole(&self.composed())
+    }
+}
+
+/// The graph `rigger graph build` leaves a fresh [`temp_project`] holding each of `files`, a
+/// `(root-relative path, source text)` pair ([`BuiltGraph`]); the project lives as long as the
+/// returned directory.
+pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, BuiltGraph) {
     let dir = temp_project();
     let graph = rebuilt_graph(dir.path(), files);
     (dir, graph)
 }
 
-/// The graph `rigger graph build` folds over the project at `root` once each of `files`, a
-/// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
-/// the files' next generation.
-pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
+/// The graph `rigger graph build` leaves the project at `root` once each of `files`, a
+/// `(root-relative path, source text)` pair, is written and committed there ([`BuiltGraph`]): a
+/// first build, or a rebuild over the files' next generation.
+pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> BuiltGraph {
     super::fixtures::write_files(root, files);
     build_head(root);
-    open_graph(root)
+    BuiltGraph::of(root)
 }
 
 /// `rigger graph build` over the project at `root` once its worktree is committed, so the code
@@ -2040,45 +2109,6 @@ pub fn site_entries_as_printed(
             (key.to_string(), text)
         })
         .collect()
-}
-
-/// The line `rigger graph build` prints for a build that counted `events` batch events, with
-/// `lost`, its fold-loss clause: empty when the build lost no fold.
-pub fn graph_build_line(events: usize, lost: &str) -> String {
-    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
-}
-
-/// How many batch events `entries` stand for: the sum of the event counts their replay keys
-/// carry.
-#[cfg(feature = "symbols")]
-pub fn batch_events(entries: &[super::fixtures::EntryRecord]) -> usize {
-    entries
-        .iter()
-        .map(|(_, _, key)| super::fixtures::entry_key_parts(key).2)
-        .sum()
-}
-
-/// What the log of the project at `root` records as ledger entries, beside what a run records
-/// for the tree as it stands under the blob `git hash-object` gives each file.
-#[cfg(feature = "symbols")]
-pub type RecordedAndWalked = [Vec<super::fixtures::EntryRecord>; 2];
-
-#[cfg(feature = "symbols")]
-pub fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
-    use super::fixtures::{entry_records, walked_git_entry_records};
-    [
-        entry_records(&read_run_events(root)),
-        walked_git_entry_records(root),
-    ]
-}
-
-/// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
-pub fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
 }
 
 /// Write a heartbeat marker at `marker` last touched `secs_ago` seconds ago, so a liveness
@@ -2532,22 +2562,6 @@ pub fn assert_light_lane_extent_note(out: &str) {
         !out.contains(" | ") && body_line_count(out) == 0,
         "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
     );
-}
-
-/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
-pub fn index_lag_advisory(files: &[&str]) -> String {
-    format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger graph build` to refresh it.",
-        files.len(),
-        files.join(", ")
-    )
-}
-
-/// Every graph index-lag advisory line among `stderr`, what `rigger validate` wrote there, in
-/// order.
-pub fn index_lag_lines(stderr: &str) -> Vec<&str> {
-    lines_where(stderr, |line| line.contains("fallen behind"))
 }
 
 /// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived

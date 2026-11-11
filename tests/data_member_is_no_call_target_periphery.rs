@@ -14,9 +14,8 @@
 //!  - the files lens, whole-graph and re-projected, in process and through the served route;
 //!  - the coupling layer the code lens detects communities over.
 //!
-//! No grammar yields one of the three kinds yet, so each enters as the entity event the fold
-//! reads. The rebuild test extracts real source, so it runs on the `symbols` lane alone; both
-//! lanes run every other test.
+//! The rebuild test extracts each member from real source, so it runs on the `symbols` lane
+//! alone; both lanes run every other test, entering each kind as the entity event the fold reads.
 
 use crate::common;
 #[cfg(feature = "symbols")]
@@ -121,7 +120,7 @@ fn is_call_target_refuses_exactly_the_three_non_target_kind_strings() {
 }
 
 /// The `<rel> <tier>` of each live edge of `p` onto `target`, sorted.
-fn tiers_onto(p: &Projector, target: &str) -> Vec<String> {
+fn tiers_onto(p: &(impl rigger::contextgraph::Neighbors + ?Sized), target: &str) -> Vec<String> {
     let mut tiers: Vec<String> = p
         .whole()
         .unwrap()
@@ -599,31 +598,52 @@ fn the_served_files_regrain_keeps_a_placeholder_off_a_field() {
     );
 }
 
-/// The tiers of the live edges onto `b.rs::%x` ([`tiers_onto`]), and whether `a.rs::x` is still
-/// a node, after `rigger graph build` folded a tree where `f.rs` defines `fn x` and `b.rs`'s
-/// `fn g` calls it, an `a.rs::x` of kind `beside` was folded into the project graph when one is
-/// named, and a second build folded the tree with `f.rs` defining `fn y` instead.
+/// A member of the leaf `x` of each non-target kind and of `constant`, as one file of real source
+/// the extraction yields it from: `(kind, path, source, the member's id)`.
+#[cfg(feature = "symbols")]
+const MEMBERS_OF_X: [(&str, &str, &str, &str); 4] = [
+    (
+        "declaration",
+        "a.rs",
+        "trait T {\n    fn x();\n}\n",
+        "a.rs::T::x",
+    ),
+    ("field", "a.rs", "struct S {\n    x: u8,\n}\n", "a.rs::S.x"),
+    (
+        "property",
+        "a.cs",
+        "class C {\n    int x { get; set; }\n}\n",
+        "a.cs::C.x",
+    ),
+    ("constant", "a.rs", "const x: u8 = 0;\n", "a.rs::x"),
+];
+
+/// The tiers of the live edges onto `b.rs::%x` ([`tiers_onto`]), and whether the member of
+/// [`MEMBERS_OF_X`] of kind `beside` still stands, after `rigger graph build` over a tree where
+/// `f.rs` defines `fn x`, `b.rs`'s `fn g` calls it and, when a kind is named, that member stands
+/// beside them, and a second build over the tree with `f.rs` defining `fn y` instead.
 #[cfg(feature = "symbols")]
 fn tiers_after_the_fn_retires(beside: Option<&str>) -> (Vec<String>, bool) {
-    let (dir, graph) =
-        common::cli::built_graph(&[("f.rs", "fn x() {}\n"), ("b.rs", "fn g() { x(); }\n")]);
+    let member = beside.map(|kind| {
+        let (_, path, source, id) = MEMBERS_OF_X
+            .into_iter()
+            .find(|(k, ..)| *k == kind)
+            .expect("a member of each kind");
+        (path, source, id)
+    });
+    let mut files = vec![("f.rs", "fn x() {}\n"), ("b.rs", "fn g() { x(); }\n")];
+    files.extend(member.map(|(path, source, _)| (path, source)));
+    let (dir, graph) = common::cli::built_graph(&files);
     assert_eq!(
         tiers_onto(&graph, "b.rs::%x"),
         ["CALLS inferred", "REFERENCES inferred"],
         "while the fn stands the cross-file call is inferred"
     );
-    if let Some(kind) = beside {
-        apply_code_entity(&graph, 1_000_000, "a.rs", "x", kind, 1, "rust");
-    }
     drop(graph);
 
     let graph = common::cli::rebuilt_graph(dir.path(), &[("f.rs", symbol_index::FN_Y)]);
-    let member_stands = graph
-        .whole()
-        .unwrap()
-        .nodes
-        .iter()
-        .any(|n| n.id == "a.rs::x");
+    let member_stands =
+        member.is_some_and(|(_, _, id)| graph.whole().unwrap().nodes.iter().any(|n| n.id == id));
     (tiers_onto(&graph, "b.rs::%x"), member_stands)
 }
 
