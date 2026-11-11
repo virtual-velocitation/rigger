@@ -831,8 +831,8 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
     // The rows and their honesty label (6.1) come from one read of the code store.
-    let (rows, label) = grounder.ground_ranked_labelled(query, k, tests);
-    match rows {
+    let grounded = grounder.ground_ranked_labelled(query, k, tests);
+    match grounded.rows {
         None => println!("no entity matches strongly for {query:?}"),
         Some(rows) => {
             for r in rows {
@@ -844,11 +844,11 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         }
     }
     // The label travels with every answer; stderr keeps the rows themselves clean.
-    if let Some(label) = label {
+    if let Some(label) = grounded.label {
         eprintln!("{label}");
     }
     // The test hits the filter left out, counted apart from the rows above.
-    let hidden = grounder.hidden_test_hits(query, tests);
+    let hidden = grounded.tests_hidden;
     if hidden > 0 {
         let noun = if hidden == 1 { "hit" } else { "hits" };
         eprintln!("{hidden} test {noun} not shown; --tests include or only shows them");

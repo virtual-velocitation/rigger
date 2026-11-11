@@ -53,6 +53,17 @@ pub struct BlastRadius {
 }
 
 /// Grounder returns up to k locations relevant to a query.
+/// A grounder's answer: the rows, the honesty label they travel with, and how many test hits the
+/// `tests` filter left out of them, all from one read of the code store so they describe one tree.
+/// The count is none unless the filter excludes tests, and for a grounder that cannot tell test
+/// code from product code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grounded<T> {
+    pub rows: T,
+    pub label: Option<crate::composed::Label>,
+    pub tests_hidden: usize,
+}
+
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
@@ -105,17 +116,13 @@ pub trait Grounder: Send + Sync {
         query: &str,
         k: usize,
         tests: crate::code_view::Tests,
-    ) -> (Vec<Ref>, Option<crate::composed::Label>) {
+    ) -> Grounded<Vec<Ref>> {
         let _ = tests;
-        (self.ground(query, k), None)
-    }
-
-    /// How many test locations `query` matches that `tests` leaves out of the answer: the separate
-    /// count of test hits beside the product hits shown. None unless `tests` excludes them, and
-    /// for a grounder that cannot tell test code from product code (the DEFAULT).
-    fn hidden_test_hits(&self, query: &str, tests: crate::code_view::Tests) -> usize {
-        let _ = (query, tests);
-        0
+        Grounded {
+            rows: self.ground(query, k),
+            label: None,
+            tests_hidden: 0,
+        }
     }
 
     /// The ranked page `rigger ground` prints with its label: `None` rows when `k > 0` and no
@@ -126,11 +133,15 @@ pub trait Grounder: Send + Sync {
         query: &str,
         k: usize,
         tests: crate::code_view::Tests,
-    ) -> (Option<Vec<RankedRef>>, Option<crate::composed::Label>) {
+    ) -> Grounded<Option<Vec<RankedRef>>> {
         let _ = tests;
         let rows =
             (k == 0 || self.has_strong_match(query, k)).then(|| self.ground_ranked(query, k));
-        (rows, None)
+        Grounded {
+            rows,
+            label: None,
+            tests_hidden: 0,
+        }
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by

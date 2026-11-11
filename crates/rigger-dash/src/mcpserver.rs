@@ -536,16 +536,16 @@ impl<'a> Server<'a> {
             .grounder
             .ok_or("rigger_ground: no grounder is wired on this server")?;
         // The rows and their honesty label (6.1) come from one read of the code store.
-        let (rows, label) = grounder.ground_labelled(query, k, tests);
-        let hidden = grounder.hidden_test_hits(query, tests);
-        let results: Vec<Value> = rows
+        let grounded = grounder.ground_labelled(query, k, tests);
+        let results: Vec<Value> = grounded
+            .rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
             .collect();
         Ok(json!({
             "results": results,
-            "label": label.map(|l| l.to_string()),
-            "tests_hidden": hidden,
+            "label": grounded.label.map(|l| l.to_string()),
+            "tests_hidden": grounded.tests_hidden,
         }))
     }
 
@@ -2254,7 +2254,7 @@ mod tests {
     /// read. Each row: the argument, and the filter the grounder was asked under or the refusal.
     #[test]
     fn mcp_ground_tool_accepts_tests() {
-        use crate::grounder::{Grounder, Ref};
+        use crate::grounder::{Grounded, Grounder, Ref};
         use std::sync::Mutex;
 
         struct Spy(Mutex<Vec<Tests>>);
@@ -2262,17 +2262,13 @@ mod tests {
             fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
                 Vec::new()
             }
-            fn ground_labelled(
-                &self,
-                _query: &str,
-                _k: usize,
-                tests: Tests,
-            ) -> (Vec<Ref>, Option<crate::composed::Label>) {
+            fn ground_labelled(&self, _query: &str, _k: usize, tests: Tests) -> Grounded<Vec<Ref>> {
                 self.0.lock().unwrap().push(tests);
-                (Vec::new(), None)
-            }
-            fn hidden_test_hits(&self, _query: &str, _tests: Tests) -> usize {
-                2
+                Grounded {
+                    rows: Vec::new(),
+                    label: None,
+                    tests_hidden: 2,
+                }
             }
         }
 
@@ -2321,23 +2317,19 @@ mod tests {
     #[test]
     fn ground_returns_the_grounders_label_as_a_field() {
         use crate::composed::Label;
-        use crate::grounder::{Grounder, Nop, Ref};
+        use crate::grounder::{Grounded, Grounder, Nop, Ref};
 
         struct Labelled;
         impl Grounder for Labelled {
             fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
                 Vec::new()
             }
-            fn ground_labelled(
-                &self,
-                query: &str,
-                k: usize,
-                _tests: Tests,
-            ) -> (Vec<Ref>, Option<Label>) {
-                (
-                    self.ground(query, k),
-                    Some(Label::unopened("W".to_string(), "locked")),
-                )
+            fn ground_labelled(&self, query: &str, k: usize, _tests: Tests) -> Grounded<Vec<Ref>> {
+                Grounded {
+                    rows: self.ground(query, k),
+                    label: Some(Label::unopened("W".to_string(), "locked")),
+                    tests_hidden: 0,
+                }
             }
         }
         let store = Store::open(":memory:").unwrap();

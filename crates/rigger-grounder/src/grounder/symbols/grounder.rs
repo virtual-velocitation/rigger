@@ -11,7 +11,7 @@
 
 use crate::facts::DirectoryHead;
 use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
-use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
+use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref};
 use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
 use rigger_domain::code_view::{
     CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Tests, Withheld,
@@ -573,26 +573,33 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
 
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
-        self.ground_labelled(query, k, Tests::Include).0
+        self.ground_labelled(query, k, Tests::Include).rows
     }
 
-    fn ground_labelled(&self, query: &str, k: usize, tests: Tests) -> (Vec<Ref>, Option<Label>) {
+    fn ground_labelled(&self, query: &str, k: usize, tests: Tests) -> Grounded<Vec<Ref>> {
+        let none = Grounded {
+            rows: Vec::new(),
+            label: None,
+            tests_hidden: 0,
+        };
         if query.is_empty() || k == 0 {
-            return (Vec::new(), None);
+            return none;
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
         // stays one term). Single-character terms are dropped as noise. This is the prompt seed's
         // whole-text match; `blast_radius` grounds on `code_terms` instead.
         let terms = query_terms(query);
         if terms.is_empty() {
-            return (Vec::new(), None);
+            return none;
         }
         // Ranked by intent (spec 92 criterion 3): exact-name match first, then the rarest
         // matching token, then definition-over-reference - NOT deduplicated by entity (that is
         // `ground_ranked`'s page-shape concern), so this stays the SAME row-per-location
         // contract `grounded_seed` (conductor.rs) relies on for prompt-seed file diversity.
-        let (hits, label) = self.read_labelled(|sight| {
-            scored_hits(sight, &terms)
+        let ((rows, tests_hidden), label) = self.read_labelled(|sight| {
+            let hits = scored_hits(sight, &terms);
+            let hidden = hidden_test_hits(&hits, tests);
+            let rows = hits
                 .into_iter()
                 .filter(|h| tests.admits(h.test))
                 .take(k)
@@ -601,9 +608,14 @@ impl Grounder for Symbols {
                     line: h.line,
                     text: h.name,
                 })
-                .collect()
+                .collect();
+            (rows, hidden)
         });
-        (hits, Some(label))
+        Grounded {
+            rows,
+            label: Some(label),
+            tests_hidden,
+        }
     }
 
     /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
@@ -747,20 +759,18 @@ impl Grounder for Symbols {
         query: &str,
         k: usize,
         tests: Tests,
-    ) -> (Option<Vec<RankedRef>>, Option<Label>) {
+    ) -> Grounded<Option<Vec<RankedRef>>> {
         let terms = query_terms(query);
-        let (rows, label) = self.read_labelled(|sight| {
-            (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests))
+        let ((rows, tests_hidden), label) = self.read_labelled(|sight| {
+            let rows =
+                (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests));
+            (rows, hidden_test_hits(&scored_hits(sight, &terms), tests))
         });
-        (rows, Some(label))
-    }
-
-    fn hidden_test_hits(&self, query: &str, tests: Tests) -> usize {
-        if tests != Tests::Exclude {
-            return 0;
+        Grounded {
+            rows,
+            label: Some(label),
+            tests_hidden,
         }
-        let terms = query_terms(query);
-        self.read(|sight| scored_hits(sight, &terms).iter().filter(|h| h.test).count())
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
@@ -792,6 +802,16 @@ impl Grounder for Symbols {
     /// confident about.
     fn has_strong_match(&self, query: &str, _k: usize) -> bool {
         self.read(|sight| has_strong(sight, &query_terms(query)))
+    }
+}
+
+/// How many of `hits` are test locations `tests` leaves out of an answer: none unless it excludes
+/// them.
+fn hidden_test_hits(hits: &[ScoredHit], tests: Tests) -> usize {
+    if tests == Tests::Exclude {
+        hits.iter().filter(|h| h.test).count()
+    } else {
+        0
     }
 }
 
@@ -2656,7 +2676,9 @@ mod tests {
         .unwrap();
         let g = Symbols::over(worktree.path().to_str().unwrap(), Box::new(Unopenable));
 
-        let (hits, label) = g.ground_labelled("apply_damage", 8, Tests::Include);
+        let Grounded {
+            rows: hits, label, ..
+        } = g.ground_labelled("apply_damage", 8, Tests::Include);
         assert!(hits.is_empty(), "nothing is served");
         let radius = g.blast_radius("`apply_damage`", 8);
         assert!(radius.precise.is_empty(), "no structural view");
@@ -2711,17 +2733,20 @@ mod tests {
             (Tests::Only, &["tests/t.rs"]),
         ];
         for (tests, expected) in cases {
-            let rows = g.ground_labelled("widget", 8, tests).0;
+            let grounded = g.ground_labelled("widget", 8, tests);
+            let rows = grounded.rows;
             let found: Vec<&str> = rows.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(found, expected, "{tests:?}");
-            let ranked = g
-                .ground_ranked_labelled("widget", 8, tests)
-                .0
-                .unwrap_or_default();
-            let ranked: Vec<&str> = ranked.iter().map(|r| r.loc.file.as_str()).collect();
-            assert_eq!(ranked, expected, "{tests:?}: the ranked page follows it");
+            let ranked = g.ground_ranked_labelled("widget", 8, tests);
+            let page = ranked.rows.unwrap_or_default();
+            let page: Vec<&str> = page.iter().map(|r| r.loc.file.as_str()).collect();
+            assert_eq!(page, expected, "{tests:?}: the ranked page follows it");
             let hidden = usize::from(tests == Tests::Exclude);
-            assert_eq!(g.hidden_test_hits("widget", tests), hidden, "{tests:?}");
+            assert_eq!(grounded.tests_hidden, hidden, "{tests:?}");
+            assert_eq!(
+                ranked.tests_hidden, hidden,
+                "{tests:?}: the ranked page counts it"
+            );
         }
     }
 
@@ -2747,26 +2772,41 @@ mod tests {
                     vec![hand_def("apply_damage", 1)],
                     vec![],
                 );
+                // One test location beside it, which the excluding answer counts, not lists.
+                let test = code_file(
+                    &format!("open{open}_test.rs"),
+                    "rust",
+                    Scope::Test,
+                    vec![hand_def("apply_damage_works", 1)],
+                    vec![],
+                );
                 Ok(Head {
-                    view: Box::new(FactsView::new(at, vec![file])),
+                    view: Box::new(FactsView::new(at, vec![file, test])),
                     diff: Ok(WorktreeDiff::default()),
                     behind: None,
                 })
             }
         }
-        type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>);
+        type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>, usize);
         let ground: Answer = |g| {
-            let (rows, label) = g.ground_labelled("apply_damage", 8, Tests::Include);
-            (rows.into_iter().map(|r| r.file).collect(), label)
+            let answer = g.ground_labelled("apply_damage", 8, Tests::Exclude);
+            (
+                answer.rows.into_iter().map(|r| r.file).collect(),
+                answer.label,
+                answer.tests_hidden,
+            )
         };
         let ranked: Answer = |g| {
-            let (rows, label) = g.ground_ranked_labelled("apply_damage", 8, Tests::Include);
+            let answer = g.ground_ranked_labelled("apply_damage", 8, Tests::Exclude);
             (
-                rows.unwrap_or_default()
+                answer
+                    .rows
+                    .unwrap_or_default()
                     .into_iter()
                     .map(|r| r.loc.file)
                     .collect(),
-                label,
+                answer.label,
+                answer.tests_hidden,
             )
         };
         for (name, answer) in [
@@ -2775,8 +2815,9 @@ mod tests {
         ] {
             let opens = Arc::new(AtomicUsize::new(0));
             let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
-            let (files, label) = answer(&g);
+            let (files, label, hidden) = answer(&g);
             assert_eq!(files, ["open1.rs"], "{name}: the rows read the first open");
+            assert_eq!(hidden, 1, "{name}: the count comes from that open too");
             assert_eq!(
                 label.expect("labelled").to_string(),
                 "describes tree-1",
@@ -2829,7 +2870,7 @@ mod tests {
             );
             let label = g
                 .ground_labelled("alpha", 8, Tests::Include)
-                .1
+                .label
                 .expect("labelled")
                 .to_string();
             assert_eq!(

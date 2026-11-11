@@ -142,7 +142,7 @@ pub(crate) fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
     bytes.and_then(|bytes| std::str::from_utf8(bytes).ok())
 }
 
-pub use rigger_domain::grounder::{BlastRadius, Grounder, RankedRef, Ref};
+pub use rigger_domain::grounder::{BlastRadius, Grounded, Grounder, RankedRef, Ref};
 
 /// Nop grounds nothing.
 pub struct Nop;
