@@ -1103,6 +1103,8 @@ By a later operator decision on graph adoption, the grep guard's denial names th
 the graph tool description and the lookup pointer each carry one worked example; criterion 2's
 exact-message pin and the method cut hold everywhere except those three texts.
 
+The in-session workflow path (the workflow driver, `rigger serve` and its workflow-only MCP tool surface) and the `rigger step` courier commands have been removed, so a criterion naming one of those surfaces is met by its removal, and a criterion naming a step holds for `rigger run`, the one driver.
+
 ## Notes (non-criteria)
 
 INTERIM SENTENCES: a doc or handbook sentence a later criterion makes false is left by an earlier
