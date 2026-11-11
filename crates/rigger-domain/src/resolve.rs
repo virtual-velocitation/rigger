@@ -190,6 +190,25 @@ fn one_here_else_one_anywhere<'c, 'v>(
     }
 }
 
+/// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
+/// so far, joins it.
+fn grow<'v>(
+    declared: &[(&'v str, bool, &'v str)],
+    set: &mut BTreeSet<&'v str>,
+    admits: impl Fn(&str, bool, &str, &BTreeSet<&'v str>) -> bool,
+) {
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for &(from, test, to) in declared {
+            if !set.contains(to) && admits(from, test, to, set) {
+                set.insert(to);
+                grew = true;
+            }
+        }
+    }
+}
+
 /// The rule table applied to one view.
 pub struct Resolver<'v> {
     view: &'v dyn CodeView,
@@ -202,8 +221,11 @@ pub struct Resolver<'v> {
 }
 
 impl<'v> Resolver<'v> {
-    /// The resolver of `view`. Its test files are the Test-scope files, then every file a
-    /// test-only module declaration, or any declaration in a test file, reaches.
+    /// The resolver of `view`. Its test files are the Test-scope files, then the test-module
+    /// closure: every file a test-only module declaration, or any declaration in a test file,
+    /// reaches, unless a product declaration reaches it. The product files are a fixed point
+    /// from the roots, the code files no declaration reaches outside Test scope, through every
+    /// declaration not marked test that a product file makes; a Test-scope file is never product.
     pub fn new(view: &'v dyn CodeView) -> Self {
         let mut code_files = BTreeSet::new();
         let mut test_files = BTreeSet::new();
@@ -228,15 +250,18 @@ impl<'v> Resolver<'v> {
                 }
             }
         }
-        let mut grew = true;
-        while grew {
-            grew = false;
-            for &(from, test, to) in &declared {
-                if (test || test_files.contains(from)) && test_files.insert(to) {
-                    grew = true;
-                }
-            }
-        }
+        let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
+        let mut product: BTreeSet<&str> = code_files
+            .iter()
+            .copied()
+            .filter(|path| !reached.contains(path) && !test_files.contains(path))
+            .collect();
+        grow(&declared, &mut product, |from, test, to, product| {
+            !test && product.contains(from) && !test_files.contains(to)
+        });
+        grow(&declared, &mut test_files, |from, test, to, test_files| {
+            (test || test_files.contains(from)) && !product.contains(to)
+        });
         Self {
             view,
             code_files,
