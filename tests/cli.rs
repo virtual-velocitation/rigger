@@ -2307,11 +2307,13 @@ fn ground_states_what_the_worktree_puts_in_doubt() {
         (
             "one uncommitted file",
             Some("extra.rs"),
-            "; 1 file in . differs",
+            "; 1 file in {w} differs",
         ),
     ] {
         let dir = temp_project();
         let root = dir.path();
+        let after_commit =
+            after_commit.replace("{w}", &root.canonicalize().unwrap().display().to_string());
         write_grounder_workflow(root, "symbols");
         std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
         common::fixtures::commit_tree(root);

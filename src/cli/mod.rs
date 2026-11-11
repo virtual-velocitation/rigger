@@ -5329,19 +5329,22 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     // feature is built (it reads the code store's view of the head, opened on every read); a build
     // WITHOUT the feature falls through to `grounder_for`, whose `symbols` arm is the loud
     // no-silent-degrade error.
+    // Every grounder reads the caller's worktree, named as every other read names it.
+    let worktree = caller_tree();
+    let worktree = worktree.to_string_lossy();
     #[cfg(feature = "symbols")]
     {
         let n = name.trim();
         if n.is_empty() || n.eq_ignore_ascii_case("symbols") {
             return Ok(Box::new(
                 rigger::grounder::symbols::grounder::Symbols::over(
-                    ".",
+                    &worktree,
                     Box::new(project_code_store(&cwd())),
                 ),
             ));
         }
     }
-    Ok(rigger::grounder::grounder_for(name, ".")?)
+    Ok(rigger::grounder::grounder_for(name, &worktree)?)
 }
 
 fn git_repo() -> String {

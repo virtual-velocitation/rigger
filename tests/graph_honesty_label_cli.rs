@@ -246,3 +246,31 @@ fn ground_takes_the_same_tests_option_and_counts_what_it_hides() {
     let (_, err, ok) = run_rigger(root, &["ground", "alpha", "--tests", "some"]);
     assert!(!ok && err.contains("not \"some\""), "{err}");
 }
+
+/// GIVEN a committed, built project with an untracked file at its top level, WHEN `rigger ground`
+/// runs from a subdirectory, THEN its label names the caller's worktree (the git top-level, as
+/// every other read names it) and counts the untracked file outside the cwd among the differing.
+#[test]
+fn ground_names_the_callers_worktree_from_a_subdirectory() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    write_text(root, "loose.rs", "pub fn beta() {}\n");
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+    let label = format!("describes {head}; 1 file in {worktree} differs");
+
+    let (out, err, ok) = run_rigger(&root.join("src"), &["ground", "alpha"]);
+
+    assert!(ok, "ground answers; stderr:\n{err}");
+    assert!(
+        out.contains("src/lib.rs:1:"),
+        "the hit answers; stdout:\n{out}"
+    );
+    assert!(
+        err.lines().any(|l| l == label),
+        "the label is {label:?}; stderr:\n{err}"
+    );
+}

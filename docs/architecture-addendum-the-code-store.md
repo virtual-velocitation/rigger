@@ -543,6 +543,10 @@ open(caller worktree W, filter)
                      record half still answers
 ```
 
+W is the caller's worktree: the git top-level of the cwd, else the cwd. Every reader names it by
+that one rule (graph, ground, lookup, MCP, dash), so a read from a subdirectory counts the whole
+worktree's differing files and its label names the top-level.
+
 A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
 until W commits.
 
