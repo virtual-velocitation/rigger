@@ -27,7 +27,7 @@ use crate::contextgraph::{
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{ProofCall, INTENT_KINDS};
+use crate::resolve::{def_leaves, ProofCall, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -483,13 +483,7 @@ impl<'v> State<'v> {
         let Some(facts) = self.code_place(file).and_then(|at| self.facts(at)) else {
             return Vec::new();
         };
-        let mut leaves: Vec<String> = Vec::new();
-        for d in facts.defs.iter().filter(|d| d.local == local) {
-            if !leaves.contains(&d.leaf) {
-                leaves.push(d.leaf.clone());
-            }
-        }
-        leaves
+        def_leaves(&facts, local)
     }
 
     /// The places of the code files holding a tagged reference to one of `leaves`.
@@ -537,8 +531,7 @@ impl<'v> State<'v> {
             }
         }
         if !leaves.is_empty() {
-            let leaves: Vec<&str> = leaves.iter().map(String::as_str).collect();
-            let evidence: Vec<String> = (self.graph.resolver().proofs_of(id, &leaves))
+            let evidence: Vec<String> = (self.graph.resolver().proofs_of(id))
                 .into_iter()
                 .map(|c| c.evidence)
                 .collect();
@@ -673,9 +666,7 @@ impl<'v> State<'v> {
         // A test call proves one member: its caller is the definition enclosing it, or its file.
         let mut callers = BTreeSet::new();
         for m in &members {
-            let leaves = self.leaves_of(m);
-            let leaves: Vec<&str> = leaves.iter().map(String::as_str).collect();
-            let calls = self.graph.resolver().proofs_of(m, &leaves);
+            let calls = self.graph.resolver().proofs_of(m);
             callers.extend(calls.into_iter().map(|c| c.caller));
         }
         let mut tests = Vec::new();
@@ -1362,10 +1353,12 @@ mod tests {
         }
     }
 
-    /// A view that records every file, definition and mention read of it.
+    /// A view that records every file, definition and mention read of it, holding settled rows
+    /// when `settles` does.
     struct Counting {
         view: FactsView,
         reads: Mutex<Vec<String>>,
+        settles: Option<Settles>,
     }
 
     impl Counting {
@@ -1399,6 +1392,9 @@ mod tests {
         }
         fn groupings(&self) -> &Groupings {
             self.view.groupings()
+        }
+        fn settled(&self) -> Option<&dyn Settled> {
+            self.settles.as_ref().map(|s| s as &dyn Settled)
         }
     }
 
@@ -1460,6 +1456,7 @@ mod tests {
             let view = Counting {
                 view: view(),
                 reads: Mutex::new(Vec::new()),
+                settles: None,
             };
             let near = Near::new(&view, ViewFilter::default());
             near.node(id).unwrap();
@@ -1474,5 +1471,31 @@ mod tests {
             want.dedup();
             assert_eq!(got, want, "{id}");
         }
+    }
+
+    /// Over a view that settles its proofs, a cluster's node, which counts the tests attached to
+    /// it, reads no file's facts: the settled rows name each member's proofs and each test's
+    /// calls.
+    #[test]
+    fn a_settled_clusters_node_reads_no_files_facts() {
+        let groupings = view().groupings().clone();
+        let clusters = groupings.communities.iter().chain(&groupings.concepts);
+        let mut counted = 0;
+        for cluster in clusters {
+            let view = Counting {
+                view: view(),
+                reads: Mutex::new(Vec::new()),
+                settles: Some(Settles::of(view())),
+            };
+            let near = Near::new(&view, ViewFilter::default());
+            view.taken();
+            let node = near.node(&cluster.id).unwrap().expect("a cluster's node");
+            counted += usize::from(node.attrs.contains_key(TESTS_ATTR));
+            let files: Vec<String> = (view.taken().into_iter())
+                .filter(|r| r.starts_with("file "))
+                .collect();
+            assert_eq!(files, Vec::<String>::new(), "{}", cluster.id);
+        }
+        assert!(counted > 0, "the fixture attaches tests to a cluster");
     }
 }

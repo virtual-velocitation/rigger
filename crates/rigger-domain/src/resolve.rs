@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef, Proofs, Settled};
-use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id};
+use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id, split_id};
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
     KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE,
@@ -251,6 +251,18 @@ fn grow<'v>(
             }
         }
     }
+}
+
+/// The leaves of the definitions in `facts` whose local is `local`, each once, in source order:
+/// the names a call to the code entity `local` of that file is written with.
+pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
+    let mut leaves: Vec<String> = Vec::new();
+    for d in facts.defs.iter().filter(|d| d.local == local) {
+        if !leaves.contains(&d.leaf) {
+            leaves.push(d.leaf.clone());
+        }
+    }
+    leaves
 }
 
 /// The test files of `view`, whose code files are `code_files`, `declaring` those that declare a
@@ -698,15 +710,22 @@ impl<'v> Resolver<'v> {
         proof_order(facts.map_or_else(Vec::new, |facts| self.file_proofs(&facts)))
     }
 
-    /// The proof calls landing on the definition `id`, whose definitions are named `leaves`, in
-    /// proof order: the view's settled rows, else each test call of one of `leaves` in a code
-    /// file that the proof rule resolves onto `id`, read from the mentions of those leaves alone.
-    pub fn proofs_of(&self, id: &str, leaves: &[&str]) -> Vec<ProofCall> {
+    /// The proof calls landing on the definition `id`, in proof order: the view's settled rows,
+    /// else each test call of one of its definitions' leaves (`def_leaves`) in a code file that
+    /// the proof rule resolves onto `id`, read from the mentions of those leaves alone.
+    pub fn proofs_of(&self, id: &str) -> Vec<ProofCall> {
         if let Some(settled) = self.settled {
             return settled.proofs(Proofs::Of(id));
         }
+        let (file, Some(local)) = split_id(id) else {
+            return Vec::new();
+        };
+        let facts = (self.is_code_file(file))
+            .then(|| self.view.file(file))
+            .flatten();
+        let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
         let mut calls = Vec::new();
-        for &leaf in leaves {
+        for leaf in leaves.iter().map(String::as_str) {
             for m in self.view.mentions_named(leaf) {
                 let path = m.file.path;
                 let test = m.test || self.is_test_file(path);
