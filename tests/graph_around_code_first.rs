@@ -26,6 +26,7 @@ use common::cli::temp_store_project;
 /// The `node <id> <kind>` lines of a `rigger graph --around` transcript, in the ORDER they
 /// printed (their 0-based line index) - parsed exactly, never substring-matched, so "code first,
 /// never interleaved" is a claim about POSITION in the output, not merely membership.
+#[cfg(feature = "symbols")]
 fn node_lines(out: &str) -> Vec<(usize, String)> {
     out.lines()
         .enumerate()
