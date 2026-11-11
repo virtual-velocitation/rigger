@@ -3,7 +3,7 @@
 //! a tree's facts never depend on what the worktree holds.
 
 use crate::discover::read_head;
-use crate::worktree::{git_output, GitOutput};
+use crate::worktree::{finish_git, start_git, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,16 @@ impl GitTreeSource {
     /// The standard output of `git <args>` run in `dir`, or the failure naming the command and
     /// what git said.
     fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-        git_output(dir, args, GitOutput::Stdout).map_err(|said| {
+        Self::finish(dir, args, start_git(dir, args))
+    }
+
+    /// [`Self::git`]'s answer for the run of `git <args>` in `dir` that `started` began.
+    fn finish(
+        dir: &Path,
+        args: &[&str],
+        started: std::io::Result<std::process::Child>,
+    ) -> Result<Vec<u8>, String> {
+        finish_git(started, GitOutput::Stdout).map_err(|said| {
             format!(
                 "git {} in {}: {}",
                 args.join(" "),
@@ -101,25 +110,34 @@ impl TreeSource for GitTreeSource {
     /// Staged and unstaged edits both count: a path the tree holds is changed when the
     /// worktree's bytes differ or are gone, and a path it does not hold is untracked unless
     /// git ignores it. A change of the worktree's mode alone leaves the bytes as they were, so
-    /// it is no change.
+    /// it is no change. The diff and the untracked listing run at once.
     fn changed_against_worktree(
         &self,
         tree: &str,
         worktree: &Path,
     ) -> Result<WorktreeDiff, String> {
-        let status = Self::git(
-            worktree,
-            &[
-                "-c",
-                "core.fileMode=false",
-                "diff",
-                "--name-status",
-                "-z",
-                "--no-renames",
-                "--no-relative",
-                tree,
-            ],
-        )?;
+        let diff = [
+            "-c",
+            "core.fileMode=false",
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            "--no-relative",
+            tree,
+        ];
+        let listing = [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--full-name",
+        ];
+        let (diffing, listing_started) =
+            (start_git(worktree, &diff), start_git(worktree, &listing));
+        let status = Self::finish(worktree, &diff, diffing);
+        let others = Self::finish(worktree, &listing, listing_started);
+        let (status, others) = (status?, others?);
         let mut out = WorktreeDiff::default();
         let mut status = fields(&status);
         while let (Some(kind), Some(path)) = (status.next(), status.next()) {
@@ -132,16 +150,6 @@ impl TreeSource for GitTreeSource {
                 out.changed.push(path.to_owned());
             }
         }
-        let others = Self::git(
-            worktree,
-            &[
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--full-name",
-            ],
-        )?;
         for path in fields(&others).filter_map(|p| std::str::from_utf8(p).ok()) {
             if !out.changed.iter().any(|c| c == path) {
                 out.untracked.push(path.to_owned());
