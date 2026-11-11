@@ -1260,4 +1260,84 @@ pub(crate) mod tests {
             ),
         ]);
     }
+
+    #[test]
+    fn the_test_module_closure_holds_only_files_no_product_declaration_reaches() {
+        // Each file: its path, its scope, and its module declarations as (test mark, target).
+        type File = (&'static str, Scope, &'static [(bool, &'static str)]);
+        // Each row: the case, the view's files, and every test file of the view.
+        type Case = (&'static str, &'static [File], &'static [&'static str]);
+        let cases: &[Case] = &[
+            (
+                "a file a product file and a test file both declare is product",
+                &[
+                    ("build.rs", Scope::Product, &[(false, "build/sv.rs")]),
+                    ("build/sv.rs", Scope::Product, &[]),
+                    ("tests/sv.rs", Scope::Test, &[(false, "build/sv.rs")]),
+                ],
+                &["tests/sv.rs"],
+            ),
+            (
+                "a file reached through a product file a test file also declares is product",
+                &[
+                    ("src/main.rs", Scope::Product, &[(false, "src/m.rs")]),
+                    ("src/m.rs", Scope::Product, &[(false, "src/m/deep.rs")]),
+                    ("src/m/deep.rs", Scope::Product, &[]),
+                    ("tests/m.rs", Scope::Test, &[(false, "src/m.rs")]),
+                ],
+                &["tests/m.rs"],
+            ),
+            (
+                "a file a test-only and a product declaration both reach is product",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/x.rs")]),
+                    ("src/main.rs", Scope::Product, &[(false, "src/x.rs")]),
+                    ("src/x.rs", Scope::Product, &[]),
+                ],
+                &[],
+            ),
+            (
+                "files only test-only declarations reach are test, and so is what they declare",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/t.rs")]),
+                    ("src/t.rs", Scope::Product, &[(false, "src/t/deep.rs")]),
+                    ("src/t/deep.rs", Scope::Product, &[]),
+                    ("tests/it.rs", Scope::Test, &[(false, "src/h.rs")]),
+                    ("src/h.rs", Scope::Product, &[]),
+                ],
+                &["src/h.rs", "src/t.rs", "src/t/deep.rs", "tests/it.rs"],
+            ),
+            (
+                "a Test-scope file a product file declares stays test",
+                &[
+                    ("src/main.rs", Scope::Product, &[(false, "tests/common.rs")]),
+                    ("tests/common.rs", Scope::Test, &[(false, "src/c.rs")]),
+                    ("src/c.rs", Scope::Product, &[]),
+                ],
+                &["src/c.rs", "tests/common.rs"],
+            ),
+        ];
+        for (name, files, want) in cases {
+            let facts = files
+                .iter()
+                .map(|(path, scope, decls)| {
+                    let mut f = code(path, "rust", *scope, vec![], vec![]);
+                    f.modules = decls
+                        .iter()
+                        .map(|(test, target)| decl("m", 0, *test, &[target]))
+                        .collect();
+                    f
+                })
+                .collect();
+            let view = FactsView::new(stamp(), facts);
+            let r = Resolver::new(&view);
+            let mut got: Vec<&str> = view
+                .files()
+                .filter(|f| r.is_test_file(f.path))
+                .map(|f| f.path)
+                .collect();
+            got.sort_unstable();
+            assert_eq!(&got, want, "{name}");
+        }
+    }
 }
