@@ -21,8 +21,9 @@
 //! product edge, tier, frontier or placeholder. A test call proves product definitions whatever
 //! tests a reader shows, and resolves against every candidate when tests are shown.
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
@@ -243,9 +244,9 @@ pub struct Resolver<'v> {
     /// Every code-half file of the view.
     code_files: BTreeSet<&'v str>,
     /// Every test file: Test-scope by path, or in the test-module closure.
-    test_files: BTreeSet<&'v str>,
+    test_files: FxHashSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
-    candidates: RefCell<HashMap<String, Arc<Vec<Candidate<'v>>>>>,
+    candidates: RefCell<FxHashMap<String, Arc<Vec<Candidate<'v>>>>>,
     /// The test calls that prove a product definition, walked once per resolver.
     proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
@@ -300,8 +301,8 @@ impl<'v> Resolver<'v> {
         Self {
             view,
             code_files,
-            test_files,
-            candidates: RefCell::new(HashMap::new()),
+            test_files: test_files.into_iter().collect(),
+            candidates: RefCell::default(),
             proof_calls: std::cell::OnceCell::new(),
         }
     }
@@ -527,7 +528,7 @@ impl<'v> Resolver<'v> {
         // A product reference is held only by a product edge, so showing tests changes no
         // product edge. A call's reference runs from the file, so only one from the file is held;
         // each target maps to whether a product call references it.
-        let mut referenced: HashMap<String, bool> = HashMap::new();
+        let mut referenced: FxHashMap<String, bool> = FxHashMap::default();
         for m in mentions.clone() {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
