@@ -739,3 +739,131 @@ Prose and the graph's records ranked by relevance to all the terms together.
     );
     assert_eq!(reply, expected);
 }
+
+/// One term's entity blocks of `lengths` characters each against the graph section's size
+/// bound: the first `shown` are shown, and `cut` is the note on the rest, if any.
+fn graph_blocks_kept(lengths: &[usize], shown: usize, cut: Option<&str>) {
+    // A block is `- <id> (f)\n`: its id's length plus seven.
+    let entities: Vec<Entity> = lengths
+        .iter()
+        .enumerate()
+        .map(|(i, &len)| Entity {
+            site: Site {
+                id: format!("{i}{}", "e".repeat(len - 8)),
+                kind: "f".to_string(),
+                file: None,
+            },
+            callers: vec![],
+            callees: vec![],
+            referenced_in: vec![],
+        })
+        .collect();
+    let graph = vec![TermGraph::Found {
+        tier: "exact",
+        reached: entities.len(),
+        entities,
+        unread: 0,
+        withheld: vec![],
+    }];
+    let reply = budget::reply(&["t"], Ok(graph), Err("x".into()), Err("x".into()));
+    let part = section(&reply, "graph");
+    assert_eq!(part.matches("\n- ").count(), shown, "{lengths:?}");
+    match cut {
+        Some(cut) => assert!(part.contains(cut), "{lengths:?} states {cut:?}"),
+        None => assert!(!part.contains("truncated:"), "{lengths:?} states no cut"),
+    }
+}
+
+crate::test_cases! {
+    blocks_filling_the_graph_bound_exactly_are_all_shown:
+        graph_blocks_kept(&[budget::GRAPH_CHARS / 2, budget::GRAPH_CHARS / 2], 2, None);
+    a_block_one_character_past_the_graph_bound_is_dropped: graph_blocks_kept(
+        &[budget::GRAPH_CHARS / 2, budget::GRAPH_CHARS / 2 + 1], 1,
+        Some("truncated: 1 entity dropped to the graph section's size bound"));
+}
+
+/// One term's `lines` matching lines, each a fortieth of the text section's characters: the
+/// first `shown` are shown, and any left over are said dropped.
+fn text_lines_kept(lines: usize, shown: usize) {
+    assert_eq!(
+        budget::TEXT_CHARS % 40,
+        0,
+        "forty lines fill the bound exactly"
+    );
+    // A line is `<file>:1: <text>\n`: its file's and text's lengths plus five.
+    let file_chars = budget::TEXT_CHARS / 40 - budget::LINE_CHARS - 5;
+    let hits = (0..lines)
+        .map(|i| TextHit {
+            file: format!("{i:02}{}", "f".repeat(file_chars - 2)),
+            line: 1,
+            text: "y".repeat(budget::LINE_CHARS),
+        })
+        .collect();
+    let text = vec![TermText {
+        hits,
+        matched: lines,
+    }];
+    let reply = budget::reply(&["t"], Err("x".into()), Ok(text), Err("x".into()));
+    let part = section(&reply, "text");
+    assert_eq!(part.matches(":1: ").count(), shown, "{lines} lines");
+    let cut = format!("truncated: {shown} of {lines} matching lines shown");
+    assert_eq!(part.contains(&cut), shown < lines, "{lines} lines: {cut:?}");
+    assert_eq!(part.contains("truncated:"), shown < lines, "{lines} lines");
+}
+
+crate::test_cases! {
+    lines_filling_the_text_bound_exactly_are_all_shown: text_lines_kept(40, 40);
+    a_line_past_the_text_bound_is_dropped: text_lines_kept(41, 40);
+}
+
+/// Three terms of twenty matching lines each share the text section's lines as evenly as they
+/// go, the first terms taking the remainder.
+#[test]
+fn terms_share_the_text_lines_evenly_the_first_taking_the_remainder() {
+    let text: Vec<TermText> = (0..3)
+        .map(|_| TermText {
+            hits: (0..20)
+                .map(|i| TextHit {
+                    file: "a.rs".to_string(),
+                    line: i + 1,
+                    text: "t".to_string(),
+                })
+                .collect(),
+            matched: 20,
+        })
+        .collect();
+    let reply = budget::reply(&["a", "b", "c"], Err("x".into()), Ok(text), Err("x".into()));
+    let shown: Vec<&str> = section(&reply, "text")
+        .lines()
+        .filter_map(|line| line.strip_prefix("truncated: "))
+        .map(|line| &line[..line.find(" matching").unwrap()])
+        .collect();
+    assert_eq!(
+        TEXT_TOTAL, 50,
+        "fifty lines split 17, 17, 16 among three terms"
+    );
+    assert_eq!(shown, ["17 of 20", "17 of 20", "16 of 20"]);
+}
+
+/// A reply of `lines` lines of a hundred characters each, held under the reply's limit, keeps
+/// its first `kept` lines and states how many it dropped.
+fn held_under(lines: usize, kept: usize) {
+    let line = format!("{}\n", "x".repeat(99));
+    let reply = budget::held_under_limit(line.repeat(lines));
+    let expected = if kept == lines {
+        line.repeat(lines)
+    } else {
+        format!(
+            "{}\ntruncated: the reply reached its {REPLY_LIMIT}-character bound; {} of {lines} lines dropped. Pass fewer terms.\n",
+            line.repeat(kept),
+            lines - kept
+        )
+    };
+    assert_eq!(reply, expected, "{lines} lines");
+}
+
+crate::test_cases! {
+    a_reply_at_the_limit_is_kept_whole: held_under(REPLY_LIMIT / 100, REPLY_LIMIT / 100);
+    a_reply_past_the_limit_keeps_the_lines_that_leave_room_for_its_note:
+        held_under(REPLY_LIMIT / 100 + 1, (REPLY_LIMIT - budget::NOTE_ROOM) / 100);
+}

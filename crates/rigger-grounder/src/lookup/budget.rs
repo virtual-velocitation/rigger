@@ -30,6 +30,9 @@ pub(crate) const LINE_CHARS: usize = 200;
 /// The most characters of one prose snippet.
 pub(crate) const SNIPPET_CHARS: usize = 200;
 
+/// The characters a reply cut to [`REPLY_LIMIT`] keeps free for the note stating the cut.
+pub(crate) const NOTE_ROOM: usize = 200;
+
 /// What the graph section says of every answer it gives.
 pub(crate) const GRAPH_FILTERED: &str = "Filtered, not worktree-true: a hit whose file differs \
 in your tree from what the graph ingested is withheld; the text section answers from your tree.";
@@ -275,12 +278,12 @@ fn clipped(text: &str, limit: usize) -> String {
 
 /// `reply` held under [`REPLY_LIMIT`]: cut at the last whole line that fits, with a stated note
 /// of how much was cut.
-fn held_under_limit(reply: String) -> String {
+pub(super) fn held_under_limit(reply: String) -> String {
     if reply.chars().count() <= REPLY_LIMIT {
         return reply;
     }
     let total_lines = reply.lines().count();
-    let room = REPLY_LIMIT - 200;
+    let room = REPLY_LIMIT - NOTE_ROOM;
     let mut kept = String::with_capacity(reply.len().min(room * 4));
     let (mut lines, mut chars) = (0, 0);
     for line in reply.lines() {
