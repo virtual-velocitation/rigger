@@ -603,6 +603,77 @@ mod tests {
         }
     }
 
+    /// One open of the shared store: its name, which fingerprint opens it, the commit it moves
+    /// HEAD to first if any, how many files that open extracts, and which fingerprints then hold a
+    /// snapshot.
+    type Open = (&'static str, usize, Option<Files>, usize, [bool; 3]);
+
+    /// Each row: one open of the store, under the extractor of a fingerprint, after checking out
+    /// the commit named, if any. Two fingerprints sharing one store each keep their snapshot, so
+    /// neither re-extracts after its first open; a third reaps the snapshot of the one advanced
+    /// least recently, and the store never holds more than two.
+    #[test]
+    fn the_two_most_recently_advanced_fingerprints_keep_their_snapshots() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path());
+        let source = MemSource::default();
+        let group = CountingGroup::default();
+        let extractors = [FP, FP + 1, FP + 2].map(ToyExtract::new);
+        let [a, b, c] = [0, 1, 2];
+        let rows: [Open; 8] = [
+            ("a's first open", a, Some(A), A.len(), [true, false, false]),
+            ("b's first open", b, None, A.len(), [true, true, false]),
+            ("a again", a, None, 0, [true, true, false]),
+            ("b again", b, None, 0, [true, true, false]),
+            (
+                "a advances to a new commit",
+                a,
+                Some(B),
+                2,
+                [true, true, false],
+            ),
+            (
+                "c reaps b, advanced least recently",
+                c,
+                None,
+                B.len(),
+                [true, false, true],
+            ),
+            ("a again after c", a, None, 0, [true, false, true]),
+            (
+                "b re-extracts and reaps a",
+                b,
+                None,
+                B.len(),
+                [false, true, true],
+            ),
+        ];
+        for (step, (name, opener, checkout, extracted, held)) in rows.into_iter().enumerate() {
+            if let Some(files) = checkout {
+                source.commit(&format!("c{step}"), files);
+            }
+            let extract = &extractors[opener];
+            let before = extract.calls();
+            open_current_in(&store, &source, extract, &group, Mode::Write).unwrap();
+            assert_eq!(extract.calls() - before, extracted, "{name}: extracted");
+            let holds =
+                [FP, FP + 1, FP + 2].map(|fp| store.current(stamped(fp)).unwrap().is_some());
+            assert_eq!(holds, held, "{name}: which fingerprints hold a snapshot");
+            let listed = snap_names(&store);
+            let (snapshots, pointers): (Vec<&String>, Vec<&String>) = listed
+                .iter()
+                .filter(|n| n.as_str() != LOCK)
+                .partition(|n| seq_of(n).is_some());
+            let held_count = held.iter().filter(|h| **h).count();
+            assert_eq!(snapshots.len(), held_count, "{name}: snapshot files");
+            assert_eq!(
+                pointers.len(),
+                held_count,
+                "{name}: pointer files, one per fingerprint held"
+            );
+        }
+    }
+
     /// The counting grouper, at a generation of its own.
     struct GroupedAt {
         generation: u64,
