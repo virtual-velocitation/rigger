@@ -1,6 +1,6 @@
 //! The production groupings: the communities and concepts computed over a resolved code view at
-//! advance. Both run over the view's product graph under the default filter, so no test entity is
-//! ever clustered. Communities detect over the coupling layer with each placeholder end taken to
+//! advance. Both run over the view's product graph under the default filter, less any test file a
+//! design link names, so no test code is ever clustered. Communities detect over the coupling layer with each placeholder end taken to
 //! the one product definition its down-hop reaches; each is labelled by its most-coupled member,
 //! ties to the smaller name. Concepts detect over the tree's intent layer. Numbering is the
 //! detection's own: a function of the tree alone.
@@ -11,7 +11,7 @@ use crate::code_graph::CodeGraph;
 use crate::code_view::{Cluster, CodeView, Group, Groupings, ViewFilter};
 use crate::community::{couples, detect, Coupling, DEFAULT_RESOLUTION};
 use crate::concepts::{derive, intent_layer};
-use crate::contextgraph::query::node_name;
+use crate::contextgraph::query::{node_name, split_id};
 use crate::contextgraph::Graph;
 use crate::resolve::{Hop, Pool};
 
@@ -27,6 +27,20 @@ fn coupling(code: &CodeGraph, graph: &Graph) -> Coupling {
             _ => id.to_string(),
         }
     })
+}
+
+/// The graph the groupings run over: the view's product graph under the default filter, less the
+/// nodes in a test file and the edges onto them, which a design link names as it names any file.
+fn product(code: &CodeGraph) -> Graph {
+    let Graph { nodes, edges } = code.whole();
+    let test = |id: &str| code.resolver().is_test_file(split_id(id).0);
+    Graph {
+        nodes: nodes.into_iter().filter(|n| !test(&n.id)).collect(),
+        edges: edges
+            .into_iter()
+            .filter(|e| !test(&e.from) && !test(&e.to))
+            .collect(),
+    }
 }
 
 /// `members` grouped by cluster id, in the order the ids first appear, each labelled by `label`.
@@ -65,7 +79,7 @@ fn clusters<'a>(
 impl Group for ProductionGroupings {
     fn group(&self, view: &dyn CodeView) -> Groupings {
         let code = CodeGraph::new(view, ViewFilter::default());
-        let graph = code.whole();
+        let graph = product(&code);
         let kind_of = graph.kinds();
         let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
         for e in &graph.edges {
@@ -117,14 +131,49 @@ impl Group for ProductionGroupings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code_facts::{DocConcept, DocLink, FileFacts, Half};
     use crate::code_view::{FactsView, Tests};
     use crate::concepts::{derive, intent_layer};
+    use crate::contextgraph::{KIND_DESIGN_DOC, REL_SPECIFIES};
     use crate::resolve::tests::{fixture, stamp};
     use std::collections::BTreeSet;
 
+    /// The fixture with a design doc that specifies a test file and a file of the test-module
+    /// closure.
+    fn linked_to_tests() -> FactsView {
+        let view = fixture();
+        let mut files: Vec<FileFacts> = view
+            .files()
+            .map(|f| view.file(f.path).unwrap().into_owned())
+            .collect();
+        let doc = "docs/tests.md";
+        let link = |to: &str| DocLink {
+            from: doc.into(),
+            rel: REL_SPECIFIES.into(),
+            to: to.into(),
+        };
+        files.push(FileFacts {
+            path: doc.into(),
+            lang: "markdown".into(),
+            half: Half::Design,
+            doc_concepts: vec![DocConcept {
+                kind: KIND_DESIGN_DOC.into(),
+                id: doc.into(),
+                title: "Tests".into(),
+            }],
+            doc_links: vec![
+                link("tests/it.rs"),
+                link("src/a_tests.rs"),
+                link("src/a.rs"),
+            ],
+            ..Default::default()
+        });
+        FactsView::new(stamp(), files)
+    }
+
     #[test]
     fn groupings_never_cluster_test_entities() {
-        let view = fixture();
+        let view = linked_to_tests();
         let shown = CodeGraph::new(
             &view,
             ViewFilter {
@@ -132,7 +181,7 @@ mod tests {
             },
         )
         .whole();
-        let test_ids: BTreeSet<&str> = shown
+        let mut test_ids: BTreeSet<&str> = shown
             .nodes
             .iter()
             .filter(|n| n.attrs.contains_key("test"))
@@ -142,6 +191,7 @@ mod tests {
             test_ids.contains("src/a.rs::tests::checks"),
             "the fixture holds test code"
         );
+        test_ids.extend(["tests/it.rs", "src/a_tests.rs"]);
         let g = ProductionGroupings.group(&view);
         let members: BTreeSet<&str> = g
             .communities
@@ -150,6 +200,10 @@ mod tests {
             .flat_map(|c| c.members.iter().map(String::as_str))
             .collect();
         assert!(members.contains("src/a.rs::run"), "product code is grouped");
+        assert!(
+            members.contains("docs/tests.md"),
+            "a doc linking tests is grouped"
+        );
         let clustered: Vec<_> = members.intersection(&test_ids).collect();
         assert!(
             clustered.is_empty(),
@@ -265,7 +319,15 @@ mod tests {
     fn community_coupling_reads_resolved_edges() {
         let view = fixture();
         let code = CodeGraph::new(&view, ViewFilter::default());
-        let layer = coupling(&code, &code.whole());
+        let graph = code.whole();
+        let layer = coupling(&code, &graph);
+        let retired = detect(&Coupling::from_graph(&graph), DEFAULT_RESOLUTION);
+        let found = detect(&layer, DEFAULT_RESOLUTION);
+        assert_eq!(
+            (found.members, found.hash),
+            (retired.members, retired.hash),
+            "the resolver's down-hop couples as the graph's unique-leaf rule did"
+        );
         let degree = |id: &str| {
             let at = layer.nodes().iter().position(|n| n == id)?;
             Some(layer.degrees()[at])
