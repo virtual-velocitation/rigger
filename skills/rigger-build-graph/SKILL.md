@@ -17,7 +17,7 @@ Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and re-run
 
 ## See also
 
-rigger-reindex for a narrower staleness problem - one that is really about the symbols grounding index, not the whole structural graph; rigger-reset-store for pruning `graph.db`'s dead-run accumulation rather than rebuilding it.
+rigger-reset-store for pruning `graph.db`'s dead-run accumulation rather than rebuilding it.
 
 
 ## Operator binary boundary

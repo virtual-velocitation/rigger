@@ -129,7 +129,7 @@ fn parse_item(s: &str) -> Result<CanaryItem, Error> {
 /// A deterministic content hash over the loaded corpus (MODEL PINNING criterion's scorecard
 /// header): every item's scored fields, in the corpus's own id-sorted order ([`load_corpus`]
 /// already sorts it), fold through the crate's ONE stable content-hash primitive
-/// ([`crate::grounder::symbols::store::content_hash`]) rather than growing an eighth parallel
+/// ([`crate::grounder::symbols::content_hash`]) rather than growing an eighth parallel
 /// FNV-1a copy (the consolidation of the existing seven is separately tracked, out of this
 /// criterion's scope). Any change to any item's content moves the hash; the same corpus
 /// content always hashes the same, across processes and machines.
@@ -151,7 +151,7 @@ pub fn corpus_hash(corpus: &[CanaryItem]) -> String {
         s.push_str(&item.review);
         s.push('\n');
     }
-    crate::grounder::symbols::store::content_hash(&s)
+    crate::grounder::symbols::content_hash(&s)
 }
 
 /// A parsed `--model <tier>=<id>` pin set (MODEL PINNING criterion): tier label

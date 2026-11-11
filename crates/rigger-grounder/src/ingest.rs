@@ -287,14 +287,13 @@ pub struct IngestStats {
 /// other batch, so a sink never computes it or loads an index.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
-/// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
-/// grounder's PERSISTED index when the project has one (see [`walk_batches`]) and derives its events
-/// from the indexed symbols without reading the file. So on such a project the keys track that
-/// index's view of each file the walk sees. A file the walk no longer sees is never lowered from
-/// the index: every identity of `held` - the identities the graph holds a generation for
-/// ([`RecordFold::held_identities`]) - whose file the walk no longer sees is handed the batch a
-/// sink extracts from no bytes, whatever the index lists, so its fold retires what the file
-/// asserted (see [`walk_batches`]).
+/// halves differ: the design half reads the live tree, while the code half derives its events
+/// from the symbols a fresh build of the tree indexed (see [`walk_batches`]), so a file edited
+/// between that build and the sink's own read lowers to bytes the sink does not record. A file the
+/// walk no longer sees is never lowered: every identity of `held` - the identities the graph holds a
+/// generation for ([`RecordFold::held_identities`]) - whose file the walk no longer sees is handed
+/// the batch a sink extracts from no bytes, so its fold retires what the file asserted (see
+/// [`walk_batches`]).
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
@@ -350,9 +349,7 @@ fn walk_batches(
     let mut batches_emitted = 0usize;
     let walked = crate::grounder::walked_paths(std::path::Path::new(root));
     let sees = |prefix: &str, path: &str| walk_sees(root, &walked, prefix, path);
-    // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
-    // grounder's persisted index when present (no re-parse), so in a live run this is a cheap read of
-    // what the grounder already built - not a second whole-tree parse.
+    // The code half (spec 29a): parallel parse feeds this ordered emit.
     let (code_batches, workers_engaged) =
         crate::grounder::symbols::events::project_batches_paced(root, workers);
     for (file, batch, excluded) in code_batches.iter().filter(|(file, ..)| sees("gc", file)) {
@@ -474,9 +471,8 @@ pub(crate) fn code_identity(path: &str) -> String {
     format!("gc/{path}")
 }
 
-/// The index the walk's code half lowers and the identities it excludes (spec 107): the index
-/// loaded as the walk loads it - the `symbols` grounder's persisted one when the tree holds one,
-/// else a fresh build of the tree, in memory only and never persisted - and the `gc/<path>`
+/// The index the walk's code half lowers and the identities it excludes (spec 107): a fresh
+/// build of the tree, in memory only and never persisted - and the `gc/<path>`
 /// identity of every file that index resolves as an out-of-line test module's target
 /// ([`out_of_line_test_module_files`](crate::grounder::symbols::events::out_of_line_test_module_files)).
 /// Only `gc` identities are named, so the same path's batch under another prefix is never excluded.
@@ -487,8 +483,7 @@ pub fn walk_exclusions(
     crate::grounder::symbols::model::SymbolIndex,
     std::collections::BTreeSet<String>,
 ) {
-    let index = crate::grounder::symbols::store::load(root)
-        .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
+    let index = crate::grounder::symbols::build_index(root, None);
     let excluded = crate::grounder::symbols::events::out_of_line_test_module_files(&index)
         .iter()
         .map(|path| code_identity(path))
@@ -512,8 +507,8 @@ pub fn walk_exclusions(
 }
 
 /// The generation of an unkeyed `batch` (spec 107): the content hash of its events' bytes
-/// concatenated in order, by the SAME line-ending-normalized content primitive the symbols reindex
-/// freshening keys on (reused, not a fresh copy, so the change-detection key is one
+/// concatenated in order, by the line-ending-normalized content primitive
+/// ([`crate::grounder::symbols::content_hash`], so the change-detection key is one
 /// content-identity authority). The batch bytes are JSON the emit pass just serialized, so they
 /// are valid UTF-8.
 #[cfg(feature = "symbols")]
@@ -522,7 +517,7 @@ pub fn batch_generation(batch: &[Event]) -> String {
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
         .collect();
-    crate::grounder::symbols::store::content_hash(&concat)
+    crate::grounder::symbols::content_hash(&concat)
 }
 
 /// A half's `(path, bytes, excluded)` function (spec 107): the batch the half extracts from the
@@ -903,10 +898,6 @@ mod tests {
             std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
         );
         assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
-        assert!(
-            !crate::grounder::symbols::store::index_path(root).exists(),
-            "the fallback build is in memory only"
-        );
     }
 
     /// `code_identity` answers a path's `gc` identity: the path whole, nested directories and
@@ -918,30 +909,6 @@ mod tests {
             "gc/src/deep/checks.rs"
         );
         assert_eq!(super::code_identity("lib.rs"), "gc/lib.rs");
-    }
-
-    /// `walk_exclusions` loads the index as the walk does: a persisted index answers ahead of
-    /// the tree, so a source file deleted since the index was saved is still indexed and still
-    /// declares the test module, which a fresh build of the tree would no longer exclude.
-    #[test]
-    fn walk_exclusions_answers_the_persisted_index_ahead_of_the_tree() {
-        use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
-
-        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
-        let root = dir.path().to_str().unwrap();
-        let persisted = crate::grounder::symbols::build_index(root, None);
-        crate::grounder::symbols::store::save(&persisted, root).unwrap();
-        std::fs::remove_file(dir.path().join(SOURCE_PATH)).unwrap();
-
-        let (index, excluded) = super::walk_exclusions(root);
-        assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
-        assert_eq!(
-            excluded,
-            std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
-        );
-
-        let rebuilt = crate::grounder::symbols::build_index(root, None);
-        assert_eq!(indexed_paths(&rebuilt), vec![TEST_MODULE_PATH]);
     }
 
     /// The walk's keyed batches over the extraction tree: every batch in emit order, each event

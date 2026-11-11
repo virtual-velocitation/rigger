@@ -60,7 +60,7 @@ pub const DEFAULT_RESOLUTION: f64 = 1.0;
 const EPS: f64 = 1e-9;
 
 // FNV-1a: the crate's stable, fixed-seed, dependency-free content-hash discipline (the SAME 64-bit
-// constants `registry`, `grounder::symbols::store`, and the run's `definition_hash` use). An ungated
+// constants `registry` and the run's `definition_hash` use). An ungated
 // module cannot call the feature-gated copies, so - per the recorded `arch-u2i-fnv1a-fourth-parallel-copy`
 // note that a single shared primitive is a separate cross-cutting refactor - it keeps its own copy
 // matching the algorithm, never `DefaultHasher` (whose seed the stdlib does not guarantee stable).

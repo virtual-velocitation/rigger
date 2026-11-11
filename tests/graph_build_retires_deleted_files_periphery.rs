@@ -1,10 +1,9 @@
 //! Periphery for the whole-project walk's retirement of deleted files: a file the tree no longer
-//! holds stops answering in the graph after one `rigger graph build`, whatever the persisted
-//! symbols index says of it, and a second build appends nothing to the log.
+//! holds stops answering in the graph after one `rigger graph build`, and a second build records
+//! nothing.
 //!
 //! Each row plants the extraction tree (one file of each prefix the walk keys: `gc` code, `gd`
-//! design, `gw` workflow definition) in a repository, builds, deletes one file, optionally moves
-//! the symbols index around the deletion, and builds again through the shipped binary. The
+//! design, `gw` workflow definition) in a repository, builds, deletes one file, and builds again through the shipped binary. The
 //! reader's view is `rigger graph --show`: every id the deleted file held answers before the
 //! deletion and none answers after it, while the kept files still answer. A cold row deletes
 //! `graph.db` after the repairing build, so `rigger setup` rebuilds the record half from the log
@@ -47,13 +46,10 @@ const DESIGN_DOC: &[Shown] = &[
 /// What the workflow definition answers while the tree holds it.
 const WORKFLOW_DEFINITION: &[Shown] = &[("stage:implement", "stage"), ("gate:fmt", "gate")];
 
-/// One row: the file deleted, the `rigger` commands run before the first build and after the
-/// deletion (the symbols index's state), whether the graph is rebuilt cold from the log after the
-/// repairing build, and what the deleted file answered.
+/// One row: the file deleted, whether the graph is rebuilt cold from the log after the repairing
+/// build, and what the deleted file answered.
 struct Deletion {
     deleted: &'static str,
-    before: &'static [&'static [&'static str]],
-    after: &'static [&'static [&'static str]],
     cold: bool,
     held: &'static [Shown],
 }
@@ -84,7 +80,7 @@ fn answers(root: &Path, (id, kind): Shown) -> bool {
         })
 }
 
-/// GIVEN the extraction tree built into the graph, with the row's index state,
+/// GIVEN the extraction tree built into the graph,
 /// WHEN the row's file is deleted and `rigger graph build` runs (and, for a cold row, `rigger setup`
 /// rebuilds the graph from the log over no `graph.db`),
 /// THEN no id the file held answers `--show`, every kept id still does, and one more build
@@ -93,9 +89,6 @@ fn assert_a_build_retires(row: Deletion) {
     let dir = planted_extraction_tree(write_file);
     let root = dir.path();
     git_init_quiet(root);
-    for args in row.before {
-        rigger(root, args);
-    }
     crate::common::cli::build_head(root);
     for &shown in row.held {
         assert!(
@@ -106,9 +99,6 @@ fn assert_a_build_retires(row: Deletion) {
     }
 
     std::fs::remove_file(root.join(row.deleted)).unwrap();
-    for args in row.after {
-        rigger(root, args);
-    }
     crate::common::cli::build_head(root);
     if row.cold {
         for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
@@ -145,30 +135,10 @@ fn assert_a_build_retires(row: Deletion) {
 }
 
 rigger::test_cases! {
-    /// A code file deleted from a tree with no persisted symbols index.
-    a_build_retires_a_deleted_code_file_with_no_persisted_index:
+    /// A code file deleted.
+    a_build_retires_a_deleted_code_file:
         assert_a_build_retires(Deletion {
             deleted: SOURCE_PATH,
-            before: &[],
-            after: &[],
-            cold: false,
-            held: CODE_FILE,
-        });
-    /// A code file deleted while the persisted symbols index still lists it.
-    a_build_retires_a_deleted_code_file_the_index_still_lists:
-        assert_a_build_retires(Deletion {
-            deleted: SOURCE_PATH,
-            before: &[&["symbols-index"]],
-            after: &[],
-            cold: false,
-            held: CODE_FILE,
-        });
-    /// A code file deleted and then reindexed, so the persisted index no longer lists it.
-    a_build_retires_a_deleted_code_file_the_index_no_longer_lists:
-        assert_a_build_retires(Deletion {
-            deleted: SOURCE_PATH,
-            before: &[&["symbols-index"]],
-            after: &[&["reindex", SOURCE_PATH]],
             cold: false,
             held: CODE_FILE,
         });
@@ -176,8 +146,6 @@ rigger::test_cases! {
     a_build_retires_a_deleted_design_doc:
         assert_a_build_retires(Deletion {
             deleted: DOCUMENT_PATH,
-            before: &[],
-            after: &[],
             cold: false,
             held: DESIGN_DOC,
         });
@@ -185,8 +153,6 @@ rigger::test_cases! {
     a_build_retires_a_deleted_workflow_definition:
         assert_a_build_retires(Deletion {
             deleted: WORKFLOW_PATH,
-            before: &[],
-            after: &[],
             cold: false,
             held: WORKFLOW_DEFINITION,
         });
@@ -194,8 +160,6 @@ rigger::test_cases! {
     a_cold_rebuild_keeps_a_deleted_code_file_retired:
         assert_a_build_retires(Deletion {
             deleted: SOURCE_PATH,
-            before: &[&["symbols-index"]],
-            after: &[&["reindex", SOURCE_PATH]],
             cold: true,
             held: CODE_FILE,
         });
@@ -203,8 +167,6 @@ rigger::test_cases! {
     a_cold_rebuild_keeps_a_deleted_design_doc_retired:
         assert_a_build_retires(Deletion {
             deleted: DOCUMENT_PATH,
-            before: &[],
-            after: &[],
             cold: true,
             held: DESIGN_DOC,
         });

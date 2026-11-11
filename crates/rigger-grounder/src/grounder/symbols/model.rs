@@ -1,7 +1,7 @@
 //! The parser-free symbol data model (architecture 5.5.2). No `tree_sitter::` type appears
 //! here: spans are plain integers, `kind` is a rigger-owned enum, and the whole module
 //! compiles in a build that never links tree-sitter. That is the dependency-direction proof
-//! the grounder, persistence, and (spec 16) blast-radius all rely on.
+//! the extractors, the code store's facts, and (spec 16) blast-radius all rely on.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -55,16 +55,12 @@ pub struct Def {
     /// Spec 119 (ONE EXTENT): the 1-based line the definition's whole construct ends on, its body
     /// included - the row of the last byte of its byte range plus one, never below `line`, and
     /// `line` itself for a zero-length range ([`crate::grounder::symbols::extract::extract`] sets
-    /// it on every definition). No serde default: an index persisted before it existed fails to
-    /// deserialize, so [`crate::grounder::symbols::store::load`] answers it absent and it is
-    /// rebuilt, never a live index mixing a defaulted 0 with real values.
+    /// it on every definition).
     pub end_line: u32,
     /// Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH): the definition's id path in its file - the path
     /// of the definitions enclosing it, `::`, its leaf (`.` before a field or property), `name`
     /// itself at file level - so its node is `<file>::<path>`
-    /// ([`crate::grounder::symbols::extract::extract`] sets it on every definition). No serde
-    /// default, as `end_line`: an index persisted before it existed loads as absent and is
-    /// rebuilt.
+    /// ([`crate::grounder::symbols::extract::extract`] sets it on every definition).
     pub path: String,
     /// Spec 119 (CONTAINS IS STRUCTURE): the [`Def::path`] of the definition this one's
     /// `CONTAINS` comes from ([`crate::grounder::symbols::extract::extract`] sets it): its
@@ -225,120 +221,50 @@ impl FileSymbols {
     }
 }
 
-/// The version of the grammar / tag-query set this build indexes with (architecture 5.5.3),
+/// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3),
 /// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::index_stamp`) so a
-/// recorded radius names the tag-query generation that produced it. Bump it when a shipped
-/// grammar or an authored tags query changes, so a radius computed under an older grammar set
-/// is distinguishable on replay from one the current set would produce, and so a persisted
-/// [`SymbolIndex`] built under an older set loads as absent and is rebuilt (gap 104); so does a
+/// recorded radius names the tag-query generation that produced it, and part of the code store's
+/// extractor fingerprint, so a snapshot written under another set is not trusted. Bump it when a
+/// shipped grammar or an authored tags query changes, so a radius computed under an older grammar
+/// set is distinguishable on replay from one the current set would produce (gap 104); so does a
 /// change to what extraction records under an unchanged query, the caller a reference carries
 /// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
-/// spec 119's one bump, so a `ts-tags-v3` index - callers by leaf, or by path with no parent -
-/// loads as absent and is rebuilt, and `ts-tags-v5` is spec 117's, at the tagged references
+/// spec 119's one bump, and `ts-tags-v5` is spec 117's, at the tagged references
 /// (`SymRef::ref_kind`: const reads, type references and the leaves a `use` imports) and the
-/// test regions and impl-header callers they take, so a `ts-tags-v4` index, which holds none of
-/// them, loads as absent and is rebuilt. The registry's golden test
+/// test regions and impl-header callers they take. The registry's golden test
 /// `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins this tag beside the digest
 /// of a fixed extraction, so a change to what extraction records fails it until the tag is bumped
 /// and the pair re-pinned together. Parser-free, so it lives in the model both feature lanes
 /// compile.
 pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v5";
 
-/// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
-/// serialization is stable across processes, unlike a `HashMap` whose iteration order is
-/// per-process randomized. That determinism-by-construction is what unit 3's persistence
-/// relies on, so the choice is made here, in the shared model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The whole-project index, held in memory while an emit pass lowers it. Deterministic containers
+/// only (`BTreeMap`): iterating it is stable across processes, unlike a `HashMap` whose
+/// iteration order is per-process randomized.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SymbolIndex {
-    /// The extraction generation ([`GRAMMAR_TAGS_VERSION`]) this index was built under. A new
-    /// index carries the current one; an index persisted before the field existed deserializes
-    /// with none, which is never current.
-    #[serde(default)]
-    grammar: String,
     /// rel-path -> that file's symbols.
     files: BTreeMap<String, FileSymbols>,
-    /// rel-path -> the content hash (`symbols::store::content_hash`) of that file's source AT
-    /// THE TIME it was last indexed. Populated by `index_one_file` alongside `files` (spec 68),
-    /// never computed here - the model stays hash-algorithm-agnostic and never depends on
-    /// `store` (dependency direction: `store` is a projection OF the model, never the reverse).
-    /// `rigger validate`'s index-staleness advisory rehashes a small deterministic sample of
-    /// the CURRENT tree and diffs it against these persisted values, so genuine content drift
-    /// is detected without a full-tree rehash. `#[serde(default)]` so an index persisted before
-    /// this field existed still loads - as empty, which [`SymbolIndex::hash_for`] reports as
-    /// "unknown" rather than "unchanged" or "changed", so a pre-upgrade index never manufactures
-    /// a false drift signal.
-    #[serde(default)]
-    hashes: BTreeMap<String, String>,
-}
-
-impl Default for SymbolIndex {
-    /// An empty index of the current extraction generation.
-    fn default() -> Self {
-        SymbolIndex {
-            grammar: GRAMMAR_TAGS_VERSION.to_string(),
-            files: BTreeMap::new(),
-            hashes: BTreeMap::new(),
-        }
-    }
 }
 
 impl SymbolIndex {
-    /// Whether this index was built under the current extraction generation - false for one
-    /// persisted by a build whose grammar or tags query has since changed, whose symbols the
-    /// current extractor would not reproduce.
-    pub fn is_current(&self) -> bool {
-        self.grammar == GRAMMAR_TAGS_VERSION
-    }
-
     /// Insert (or replace) a file's symbols under its normalized relative path.
     pub fn insert_file(&mut self, rel_path: String, fs: FileSymbols) {
         self.files.insert(rel_path, fs);
     }
 
     /// Drop a file's symbols from the index (a no-op when no entry is held for `rel_path`). The
-    /// incremental reindex path calls this when a changed file can no longer be read or extracted
-    /// (it was deleted or became unreadable), so the freshened index matches a fresh whole-tree
-    /// `build_index`, which never visits the gone file: a stale definition or reference from a
-    /// removed file must not keep grounding. Parser-free by construction, so it stays in the light
-    /// lane exactly like the rest of the model. Drops that file's recorded content hash too
-    /// (spec 68), so a removed file can never survive as a stale hash entry with no symbols
-    /// behind it.
+    /// per-file indexing path calls this when a file can no longer be read or extracted (it was
+    /// deleted or became unreadable), so the index matches a fresh whole-tree `build_index`, which
+    /// never visits the gone file. Parser-free by construction, so it stays in the light lane
+    /// exactly like the rest of the model.
     pub fn remove_file(&mut self, rel_path: &str) {
         self.files.remove(rel_path);
-        self.hashes.remove(rel_path);
-    }
-
-    /// Insert (or replace) a file's symbols together with its content hash (spec 68) - the
-    /// caller computes the hash (via `symbols::store::content_hash`, the one hash primitive)
-    /// and hands it in, so the model itself never depends on `store`.
-    pub fn insert_hashed_file(&mut self, rel_path: String, fs: FileSymbols, hash: String) {
-        self.hashes.insert(rel_path.clone(), hash);
-        self.insert_file(rel_path, fs);
-    }
-
-    /// The content hash last recorded for `rel_path`, or `None` when never recorded (an index
-    /// persisted before this field existed, or a file this index never indexed).
-    pub fn hash_for(&self, rel_path: &str) -> Option<&str> {
-        self.hashes.get(rel_path).map(String::as_str)
     }
 
     /// The whole file map (rel-path -> symbols), for consumers that iterate the index.
     pub fn files(&self) -> &BTreeMap<String, FileSymbols> {
         &self.files
-    }
-
-    /// How many call references ([`FileSymbols::calls`]) name `name` WITHIN `lang` - the
-    /// per-language fan-out degree an entity row reports, which no tagged reference (spec 117)
-    /// moves. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so the
-    /// degree over it is too. A name that over-links in another language never inflates this
-    /// count (a Python `parse` leaves the Rust `parse` degree untouched).
-    pub fn reference_degree(&self, name: &str, lang: Lang) -> usize {
-        self.files
-            .values()
-            .filter(|f| f.lang == lang)
-            .flat_map(FileSymbols::calls)
-            .filter(|r| r.name == name)
-            .count()
     }
 }
 
@@ -363,202 +289,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reference_degree_counts_every_file_s_references_to_a_name() {
-        let mut idx = SymbolIndex::default();
-        // `new` is referenced in many files; `apply_damage` in one.
-        for i in 0..20 {
-            idx.insert_file(
-                format!("f{i}.rs"),
-                FileSymbols {
-                    lang: Lang::Rust,
-                    defs: vec![],
-                    refs: vec![SymRef {
-                        name: "new".into(),
-                        line: 1,
-                        enclosing: None,
-                        is_test: false,
-                        ref_kind: None,
-                    }],
-                    partial: false,
-                },
-            );
-        }
-        idx.insert_file(
-            "combat.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![Def {
-                    kind: Kind::Function,
-                    name: "apply_damage".into(),
-                    line: 1,
-                    end_line: 1,
-                    path: "apply_damage".into(),
-                    parent: None,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![SymRef {
-                    name: "apply_damage".into(),
-                    line: 2,
-                    enclosing: None,
-                    is_test: false,
-                    ref_kind: None,
-                }],
-                partial: false,
-            },
-        );
-        assert_eq!(idx.reference_degree("new", Lang::Rust), 20);
-        assert_eq!(idx.reference_degree("apply_damage", Lang::Rust), 1);
-        assert_eq!(idx.reference_degree("absent", Lang::Rust), 0);
-    }
-
-    #[test]
-    fn reference_degree_is_language_scoped_no_cross_language_inflation() {
-        // The exact cross-language collision per-language scoping exists to prevent (5.5.2):
-        // the name `parse` is referenced ONCE in Rust but TWENTY times in Python. A
-        // language-BLIND degree would report 21 for the Rust `parse` purely from Python usage.
-        // Per-language scoping must keep the two graphs disjoint.
-        let mut idx = SymbolIndex::default();
-        for i in 0..20 {
-            idx.insert_file(
-                format!("py/f{i}.py"),
-                FileSymbols {
-                    lang: Lang::Python,
-                    defs: vec![],
-                    refs: vec![SymRef {
-                        name: "parse".into(),
-                        line: 1,
-                        enclosing: None,
-                        is_test: false,
-                        ref_kind: None,
-                    }],
-                    partial: false,
-                },
-            );
-        }
-        // Rust references `parse` once and `new` ten times.
-        idx.insert_file(
-            "a.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![],
-                refs: vec![SymRef {
-                    name: "parse".into(),
-                    line: 3,
-                    enclosing: None,
-                    is_test: false,
-                    ref_kind: None,
-                }],
-                partial: false,
-            },
-        );
-        for i in 0..10 {
-            idx.insert_file(
-                format!("rs/f{i}.rs"),
-                FileSymbols {
-                    lang: Lang::Rust,
-                    defs: vec![],
-                    refs: vec![SymRef {
-                        name: "new".into(),
-                        line: 1,
-                        enclosing: None,
-                        is_test: false,
-                        ref_kind: None,
-                    }],
-                    partial: false,
-                },
-            );
-        }
-        // Degree is per-language: the 20 Python refs do NOT inflate the Rust `parse` degree,
-        // and vice versa.
-        assert_eq!(idx.reference_degree("parse", Lang::Rust), 1);
-        assert_eq!(idx.reference_degree("parse", Lang::Python), 20);
-        assert_eq!(idx.reference_degree("new", Lang::Rust), 10);
-    }
-
-    #[test]
     fn data_model_api_is_tree_sitter_free_and_serdes_by_plain_types() {
         // The whole model API is composed of serde-able rigger types (integer spans, the
         // `Kind`/`Lang` enums) - no `tree_sitter::Range` (which is not `Serialize`) could
         // appear here or this round-trip would not compile. Together with this module
         // compiling in the tree-sitter-free `--no-default-features` lane, that is the
         // criterion-1 assertion that no tree-sitter type crosses into the data-model API.
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(
-            "combat.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![Def {
-                    kind: Kind::Method,
-                    name: "apply_damage".into(),
-                    line: 7,
-                    end_line: 7,
-                    path: "apply_damage".into(),
-                    parent: None,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![SymRef {
-                    name: "clamp".into(),
-                    line: 9,
-                    enclosing: None,
-                    is_test: false,
-                    ref_kind: None,
-                }],
-                partial: false,
-            },
-        );
-        let json = serde_json::to_string(&idx).expect("model serializes with plain serde");
-        let back: SymbolIndex = serde_json::from_str(&json).expect("model round-trips");
-        assert_eq!(back, idx);
-    }
-
-    #[test]
-    fn content_hash_is_recorded_and_dropped_with_its_file() {
-        // spec 68: a hash recorded via `insert_hashed_file` is readable via `hash_for`; a path never
-        // recorded is `None` (unknown - never misread as "unchanged").
-        let mut idx = SymbolIndex::default();
-        assert_eq!(idx.hash_for("a.rs"), None);
-        idx.insert_hashed_file(
-            "a.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![],
-                refs: vec![],
-                partial: false,
-            },
-            "deadbeef".into(),
-        );
-        assert_eq!(idx.hash_for("a.rs"), Some("deadbeef"));
-        // `remove_file` drops the recorded hash along with the symbols, so a removed file can
-        // never survive as a stale hash entry with no symbols behind it.
-        idx.remove_file("a.rs");
-        assert_eq!(idx.hash_for("a.rs"), None);
-    }
-
-    #[test]
-    fn a_pre_upgrade_index_with_no_hashes_field_loads_with_every_hash_unknown() {
-        // An index persisted before this field existed serializes with no `hashes` key at all;
-        // `#[serde(default)]` must still load it, with every `hash_for` answering `None` -
-        // never manufacturing a false "changed" or "unchanged" signal for pre-existing data.
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(
-            "a.rs".into(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![],
-                refs: vec![],
-                partial: false,
-            },
-        );
-        let mut json: serde_json::Value = serde_json::to_value(&idx).unwrap();
-        json.as_object_mut().unwrap().remove("hashes");
-        let loaded: SymbolIndex = serde_json::from_value(json).unwrap();
-        assert_eq!(loaded.hash_for("a.rs"), None);
-        assert!(loaded.files().contains_key("a.rs"));
+        let file = FileSymbols {
+            lang: Lang::Rust,
+            defs: vec![Def {
+                kind: Kind::Method,
+                name: "apply_damage".into(),
+                line: 7,
+                end_line: 7,
+                path: "apply_damage".into(),
+                parent: None,
+                is_test: false,
+                is_out_of_line_module: false,
+                path_override: None,
+                enclosing_inline_module_path: None,
+            }],
+            refs: vec![SymRef {
+                name: "clamp".into(),
+                line: 9,
+                enclosing: None,
+                is_test: false,
+                ref_kind: None,
+            }],
+            partial: false,
+        };
+        let json = serde_json::to_string(&file).expect("model serializes with plain serde");
+        let back: FileSymbols = serde_json::from_str(&json).expect("model round-trips");
+        assert_eq!(back, file);
     }
 }

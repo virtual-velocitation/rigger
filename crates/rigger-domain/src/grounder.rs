@@ -56,11 +56,6 @@ pub struct BlastRadius {
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
-    /// Re-index the given files after a unit integrates, so the next agent grounds
-    /// on the accepted code (the `symbols` grounder freshens the changed files). The
-    /// default is a no-op - grep re-reads the tree each time and needs no index.
-    fn reindex(&self, _src_dir: &str, _files: &[String]) {}
-
     /// The prompt seed of `query`: at most `k` distinct files an agent is grounded on. The
     /// DEFAULT - the one a grep / nop grounder inherits - is the distinct files of its own
     /// `ground(query, k)`, in ground order. The `symbols` grounder overrides it to start from the
@@ -85,16 +80,38 @@ pub trait Grounder: Send + Sync {
     }
 
     /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
-    /// architecture 5.5.9): the index content-hash + grammar / tag-query version that
-    /// produced this grounder's radii, so a recorded radius reconstructs which index state
+    /// architecture 5.5.9): the tree id + grammar / tag-query version that
+    /// produced this grounder's radii, so a recorded radius reconstructs which tree
     /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
     /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
     /// nop - no structural cross-reference index) returns an EMPTY stamp, so the
     /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
     /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
-    /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
+    /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
     fn index_stamp(&self) -> String {
         String::new()
+    }
+
+    /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the
+    /// rows describe and what the caller's worktree puts in doubt, or why nothing could be read.
+    /// A grounder that answers from the code store's view of the head overrides it to read that
+    /// view ONCE, so the label describes exactly the tree the rows came from. The DEFAULT
+    /// (grep / nop) reads the worktree itself, so it has nothing to state.
+    fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<crate::composed::Label>) {
+        (self.ground(query, k), None)
+    }
+
+    /// The ranked page `rigger ground` prints with its label: `None` rows when `k > 0` and no
+    /// entity matches strongly ([`Self::has_strong_match`]), else [`Self::ground_ranked`]'s page.
+    /// Overridden, like [`Self::ground_labelled`], to read the view once.
+    fn ground_ranked_labelled(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> (Option<Vec<RankedRef>>, Option<crate::composed::Label>) {
+        let rows =
+            (k == 0 || self.has_strong_match(query, k)).then(|| self.ground_ranked(query, k));
+        (rows, None)
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by

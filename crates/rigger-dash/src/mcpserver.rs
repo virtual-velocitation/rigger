@@ -534,12 +534,13 @@ impl<'a> Server<'a> {
         let grounder = self
             .grounder
             .ok_or("rigger_ground: no grounder is wired on this server")?;
-        let results: Vec<Value> = grounder
-            .ground(query, k)
+        // The rows and their honesty label (6.1) come from one read of the code store.
+        let (rows, label) = grounder.ground_labelled(query, k);
+        let results: Vec<Value> = rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
             .collect();
-        Ok(json!({"results": results}))
+        Ok(json!({"results": results, "label": label.map(|l| l.to_string())}))
     }
 
     /// Refuse `tool`, whose answer depends on the fold, while the wired graph owes its rebuild
@@ -2224,6 +2225,46 @@ mod tests {
             "rigger_emit must be UNDISPATCHABLE (not merely unadvertised) on the lookup \
              surface; got:\n{resp2}"
         );
+    }
+
+    /// `rigger_ground` returns the grounder's honesty label (6.1) as a field when it has one and
+    /// `null` when it does not (a grounder that reads the worktree itself).
+    #[test]
+    fn ground_returns_the_grounders_label_as_a_field() {
+        use crate::composed::Label;
+        use crate::grounder::{Grounder, Nop, Ref};
+
+        struct Labelled;
+        impl Grounder for Labelled {
+            fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
+                Vec::new()
+            }
+            fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<Label>) {
+                (
+                    self.ground(query, k),
+                    Some(Label::unopened("W".to_string(), "locked")),
+                )
+            }
+        }
+        let store = Store::open(":memory:").unwrap();
+        let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
+        let labelled = Labelled;
+        let nop = Nop;
+        for (name, grounder, want) in [
+            (
+                "a labelled grounder",
+                &labelled as &dyn Grounder,
+                json!("describes nothing; W cannot be compared; the code store cannot be opened: locked"),
+            ),
+            ("a grounder with no label", &nop as &dyn Grounder, Value::Null),
+        ] {
+            let server = Server::new(&store, "run").with_grounder(Ok(grounder));
+            let mut out = Vec::new();
+            server.run(Cursor::new(ground_input), &mut out).unwrap();
+            let resp: Value =
+                serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert_eq!(resp["result"]["structuredContent"]["label"], want, "{name}");
+        }
     }
 
     /// Reject-fix regression: `with_grounder(Err(..))` (the graceful-degrade path a caller

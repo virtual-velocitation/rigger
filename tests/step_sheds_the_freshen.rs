@@ -15,13 +15,12 @@
 //!
 //!   1. PER-STEP GROUNDER CONSTRUCTION. `rigger run` builds the configured grounder via
 //!      `main::select_grounder`, whose UNSET / empty default resolves to the structural
-//!      `symbols` grounder - `Symbols::open(root, None)`. A freshen-on-open that touched the
-//!      embedding index would read/rewrite `.rigger/grounding/`.
-//!   2. THE POST-INTEGRATE FRESHEN. After a unit's merge lands, the conductor's integrate seam
-//!      (`src/conductor.rs`, the `deps.grounder.reindex(&deps.repo, &files)` call) freshens the
-//!      grounder over the just-changed files. With turbovec retired this is the symbols-
-//!      structural reindex, which writes the SYMBOL index under `.rigger/symbols/` - never the
-//!      embedding index under `.rigger/grounding/`.
+//!      `symbols` grounder - `Symbols::in_directory(root)` here. A freshen-on-open that touched
+//!      the embedding index would read/rewrite `.rigger/grounding/`.
+//!   2. GROUNDING AFTER A UNIT LANDS. The conductor advances the code store after each landed
+//!      merge, and the grounder reads the store afresh on every call, so there is nothing left to
+//!      freshen: the next ground over the changed tree answers from the new code store snapshot -
+//!      never from the embedding index under `.rigger/grounding/`.
 //!
 //! HOW THE SENTINELS PIN BOTH HALVES. Each temp project is seeded with a booby-trapped embedding
 //! index under `.rigger/grounding/`: the two entries a pre-retirement run persisted there - the
@@ -51,16 +50,15 @@
 //! `.rigger/grounding/`. It does NOT (and a black-box periphery test cannot) claim the seam issues
 //! no bare `read_dir`/`exists` syscall against the directory - but such a probe obtains no index
 //! byte and loads nothing, so it is not the embedding-index load or freshen criterion 3 forbids.
-//! The surviving symbols seam does neither read nor write here: its real target is the SYMBOL index
-//! under `.rigger/symbols/`, and it never touches `.rigger/grounding/` - grounding is served from
-//! the symbol index, proven below by a symbol going absent -> present across the freshen.
+//! The surviving symbols seam does neither read nor write here: it reads the code store under
+//! `.rigger/store/code/` and never touches `.rigger/grounding/` - proven below by a symbol going
+//! absent -> present as the tree changes.
 
 use rigger::grounder::grounder_for;
-use rigger::grounder::symbols::store;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The retired persisted EMBEDDING index directory - the one the step path must never load or
 /// freshen. Relative to a project root.
@@ -162,12 +160,6 @@ fn fingerprint_subtree(dir: &Path) -> BTreeMap<String, FileFingerprint> {
     out
 }
 
-/// The persisted symbol-index path for `root`, used to prove the freshen's real write target is
-/// `.rigger/symbols/`, not the retired `.rigger/grounding/`.
-fn symbol_index_path(root: &str) -> PathBuf {
-    store::index_path(root)
-}
-
 /// Assert a step-seam operation left the seeded embedding index untouched, pinning BOTH halves of
 /// the criterion. NO WRITE: the directory's fingerprint is identical (nothing added, removed,
 /// resized, rewritten, re-typed, or re-permissioned under `.rigger/grounding/`). NO READ: every
@@ -200,31 +192,12 @@ fn assert_grounding_index_untouched(
 
 /// BOTH FEATURE LANES. The grounders a `--no-default-features` (feature-off) build still ships -
 /// `grep` and `nop`, the only names `grounder_for` resolves without the `symbols` feature - have
-/// NO embedding index, so their post-integrate freshen (`Grounder::reindex`, the exact call the
-/// conductor's integrate seam makes) is a no-op that never touches `.rigger/grounding/`. This
+/// NO embedding index, so grounding over a changed file never touches `.rigger/grounding/`. This
 /// pins the runtime removal in the light lane, where the substantive symbols-lane test below
-/// does not compile. It also pins the surviving PERSISTED-INDEX AUTHORITY: `store::index_path`
-/// (parser-free, both lanes) points at the SYMBOL index under `.rigger/symbols/`, never the
-/// retired embedding index under `.rigger/grounding/`.
+/// does not compile.
 #[test]
-fn the_surviving_freshen_never_touches_the_embedding_index() {
-    // The persisted-index authority is the symbol index, not the retired embedding directory.
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_str().unwrap();
-    let index_path = symbol_index_path(root);
-    assert!(
-        index_path.ends_with(".rigger/symbols/index.json"),
-        "the surviving persisted index is the SYMBOL index under .rigger/symbols/; got {}",
-        index_path.display()
-    );
-    assert!(
-        !index_path.starts_with(dir.path().join(EMBEDDING_INDEX_REL)),
-        "the persisted index must not live under the retired embedding directory {}; got {}",
-        EMBEDDING_INDEX_REL,
-        index_path.display()
-    );
-
-    // Every grounder a feature-off build can select, freshened over a changed file, leaves the
+fn the_surviving_grounders_never_touch_the_embedding_index() {
+    // Every grounder a feature-off build can select, grounding over a changed file, leaves the
     // seeded embedding index fingerprint-identical and every sentinel still unreadable.
     for name in ["grep", "nop"] {
         let dir = tempfile::tempdir().unwrap();
@@ -235,30 +208,28 @@ fn the_surviving_freshen_never_touches_the_embedding_index() {
 
         let grounder = grounder_for(name, root)
             .unwrap_or_else(|e| panic!("the surviving grounder {name:?} must resolve: {e}"));
-        // The post-integrate freshen the conductor's integrate seam runs, over the changed file.
-        grounder.reindex(root, &["lib.rs".to_string()]);
+        grounder.ground("changed_symbol", 8);
 
         assert_grounding_index_untouched(
             root_path,
             &seeded,
-            &format!("the {name:?} grounder's post-integrate freshen"),
+            &format!("the {name:?} grounder's ground over a changed file"),
         );
     }
 }
 
 /// SYMBOLS LANE (the default lane). The DEFAULT step grounder - what `main::select_grounder`
-/// resolves the unset/empty `defaults.grounder` to, `Symbols::open(root, None)` - and the
-/// conductor's post-integrate freshen (`Grounder::reindex`) together perform NO read or write of
-/// the retired embedding index `.rigger/grounding/`. The freshen's real target is the SYMBOL
-/// index under `.rigger/symbols/`, and grounding is served from it.
+/// resolves the unset/empty `defaults.grounder` to - performs NO read or write of the retired
+/// embedding index `.rigger/grounding/`, before or after a unit lands a change: it reads the code
+/// store, afresh on every call.
 #[cfg(feature = "symbols")]
 #[test]
 fn the_default_step_grounder_seam_never_reads_or_writes_the_embedding_index() {
     // `Grounder` is imported HERE (not at module scope) because only this feature-gated test calls
-    // its trait methods (`ground`/`reindex`) on the CONCRETE `Symbols`, which needs the trait in
-    // scope. The light-lane test above calls `reindex` through a `Box<dyn Grounder>`, which
-    // resolves without importing the trait - so a module-scope import would be unused (and, under
-    // `-D warnings`, a hard error) in the `--no-default-features` lane.
+    // its trait methods (`ground`) on the CONCRETE `Symbols`, which needs the trait in scope. The
+    // light-lane test above calls `ground` through a `Box<dyn Grounder>`, which resolves without
+    // importing the trait - so a module-scope import would be unused (and, under `-D warnings`, a
+    // hard error) in the `--no-default-features` lane.
     use rigger::grounder::symbols::grounder::Symbols;
     use rigger::grounder::Grounder;
 
@@ -271,46 +242,36 @@ fn the_default_step_grounder_seam_never_reads_or_writes_the_embedding_index() {
     fs::write(root_path.join("lib.rs"), "pub fn alpha_symbol_one() {}\n").unwrap();
     let seeded = seed_embedding_index_poison(root_path);
 
-    // SEAM 1 - per-step grounder construction. select_grounder resolves the unset default to this
-    // exact call. On a cold start it builds the SYMBOL index and persists it under
-    // .rigger/symbols/; a freshen-on-open that loaded the embedding index would read a sentinel
-    // (EISDIR) or write a fresh readable index into the directory - both caught below.
-    let grounder = Symbols::open(root, None);
+    // SEAM 1 - per-step grounder construction. A freshen-on-open that loaded the embedding index
+    // would read a sentinel (EISDIR) or write a fresh readable index into the directory - both
+    // caught below.
+    let grounder = Symbols::in_directory(root);
     assert_grounding_index_untouched(root_path, &seeded, "constructing the default step grounder");
-    assert!(
-        symbol_index_path(root).exists(),
-        "constructing the default grounder builds and persists the SYMBOL index under \
-         .rigger/symbols/ - the freshen's real target"
-    );
-    // The construction actually indexed the project (so the seam is exercised, not vacuous), and
-    // grounding is served from the symbol index, never the embedding directory.
+    // The grounder indexed the project (so the seam is exercised, not vacuous), and grounding is
+    // served from the code store, never the embedding directory.
     assert!(
         !grounder.ground("alpha_symbol_one", 8).is_empty(),
-        "the default grounder grounds the project's symbol from the persisted SYMBOL index"
+        "the default grounder grounds the project's symbol from the code store"
     );
-    // The new symbol does not exist yet, so the freshen below has real work to do.
+    // The new symbol does not exist yet, so the change below has real work to show.
     assert!(
         grounder.ground("beta_symbol_two", 8).is_empty(),
-        "the new symbol is absent before the post-integrate freshen"
+        "the new symbol is absent before the change lands"
     );
 
-    // SEAM 2 - the post-integrate freshen. A unit merged a change to lib.rs; the conductor's
-    // integrate seam calls grounder.reindex(repo, &files) over the changed file (conductor.rs).
-    // With turbovec retired this freshens the SYMBOL index, never the embedding index.
+    // SEAM 2 - a unit lands a change to lib.rs. The next ground reads the code store afresh.
     fs::write(
         root_path.join("lib.rs"),
         "pub fn alpha_symbol_one() {}\npub fn beta_symbol_two() {}\n",
     )
     .unwrap();
-    grounder.reindex(root, &["lib.rs".to_string()]);
 
-    // The freshen landed in the symbol index: the newly-added symbol now grounds.
     assert!(
         !grounder.ground("beta_symbol_two", 8).is_empty(),
-        "the post-integrate freshen re-parsed the changed file into the SYMBOL index"
+        "the next ground sees the changed file"
     );
     // ...and never touched the retired embedding index: the directory fingerprint is identical and
     // every sentinel is still unreadable - no readable byte was ever exposed for a load to consume,
     // nothing was written. The step sheds that freshen.
-    assert_grounding_index_untouched(root_path, &seeded, "the post-integrate freshen");
+    assert_grounding_index_untouched(root_path, &seeded, "grounding after the change");
 }

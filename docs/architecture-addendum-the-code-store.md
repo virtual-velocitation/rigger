@@ -553,6 +553,12 @@ and the label travels with every answer:
 - the MCP tools return it as a field;
 - the dash shows it in the header.
 
+The symbols grounder carries the label too (`Grounder::ground_labelled`, one open of the store for the rows and the label; the CLI prints it on stderr, beside
+the rows). It applies the same withholding rule (`Withheld`, shared with the composed view). A store
+that cannot be opened is read as a worktree that cannot be compared: every file is withheld, the
+blast radius falls back to the text search, and the label names the failure; an unopenable store
+never answers as an empty "no hit".
+
 Freshness has this one mechanism, the label; no hit carries its own. A reader that cannot tell
 whether a code hit is stale does not serve it, and the combined lookup's text half still answers
 for the code.

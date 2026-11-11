@@ -47,8 +47,6 @@ const SUBCOMMANDS: &[&str] = &[
     "dash",
     "watch",
     "ground",
-    "reindex",
-    "symbols-index",
     "emit",
     "gate",
     "progress",
@@ -143,8 +141,6 @@ fn main() {
         "dash" => cmd_dash(&args[2..]),
         "watch" => cmd_watch(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
-        "reindex" => cmd_reindex(&args[2..]),
-        "symbols-index" => cmd_symbols_index(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
         "gate" => cmd_gate(&args[2..]),
         "progress" => cmd_progress(&args[2..]),
@@ -264,12 +260,6 @@ anomalies and exits (cron/CI); default streams (poll every\n                    
 with the driver dead\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
-rigger reindex <file>...    incrementally re-index the named files in the project's\n                              \
-persisted grounding index (the grounder's reindex), so a\n                              \
-later `rigger ground` reflects just-landed changes\n  \
-rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
-(default .) and print its path + file count - the fresh-\n                              \
-process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
 rigger gate <id>            ask the driver serving this run to run declared gate <id>\n                              \

@@ -2086,74 +2086,37 @@ fn ground_via_nop_backend_stays_silent_and_never_prints_the_weak_match_line() {
     );
 }
 
-/// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
-/// a workflow agent calling it with no files must get a non-zero exit, not a silent
-/// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
+/// The symbols index has no verb: the code store holds the facts a grounder reads and advances
+/// itself, so `rigger reindex` and the `rigger symbols-index` harness that wrote the index are
+/// unknown commands, absent from the known-command list and from the usage text.
 #[test]
-fn reindex_requires_at_least_one_file() {
+fn reindex_is_not_a_verb() {
     let dir = temp_project();
     let root = dir.path();
-    // The grep grounder's reindex is a no-op, but the CLI still enforces the arg
-    // contract before dispatching, so this is deterministic and offline.
-    write_grounder_workflow(root, "grep");
-
-    let (_out, err, ok) = run_rigger(root, &["reindex"]);
-    assert!(!ok, "reindex with no files must be a non-zero exit");
-    assert!(
-        err.contains("expected at least one file"),
-        "the error must explain that a file is required; got: {err:?}"
-    );
-}
-
-/// Criterion 3 (spec 15): the persisted symbol index is BYTE-IDENTICAL when built in two
-/// SEPARATE processes over the same tree. This is the guard the in-process lib test
-/// structurally CANNOT make: Rust `HashMap`/`HashSet` seed randomization differs only ACROSS
-/// processes, so a `HashMap` that leaked onto the serialized path would pass every in-process
-/// test yet diverge here. The `rigger symbols-index` harness builds + persists unit 3's index
-/// directly (independent of grounder selection - so this test needs nothing from unit 4), and
-/// each `run_rigger` is a genuinely fresh process with its own hash seed; a stable diff proves
-/// the determinism-by-construction (`BTreeMap`, never `HashMap`) the persistence relies on.
-#[cfg(feature = "symbols")]
-#[test]
-fn symbol_index_is_byte_identical_across_processes() {
-    let dir = temp_project();
-    let root = dir.path();
-    // TWO source files with distinct symbols, NOT one: a single-key map serializes identically
-    // whether it is a `BTreeMap` or a `HashMap`, so the cross-process guard only bites with >= 2
-    // keys whose rel-path ordering a `HashMap` seed would scramble. Their names also let us assert
-    // the index is NON-EMPTY, so a total extraction failure (an empty index in BOTH processes,
-    // which is vacuously byte-identical) cannot pass this test green.
-    std::fs::write(root.join("m.rs"), "fn alpha(){} fn beta(){}\n").unwrap();
-    std::fs::write(root.join("z.rs"), "fn gamma(){} fn delta(){}\n").unwrap();
-    let index = root.join(".rigger").join("symbols").join("index.json");
-
-    // Process 1 builds + persists the index.
-    let (out1, err1, ok1) = run_rigger(root, &["symbols-index"]);
-    assert!(ok1, "first symbols-index must succeed; stderr: {err1}");
-    assert!(
-        out1.contains("2 file(s)"),
-        "the harness must report both indexed files, not a vacuous empty index; stdout: {out1}"
-    );
-    let first = std::fs::read(&index).expect("the first process must persist the index");
-    let first_text = String::from_utf8(first.clone()).expect("index.json is UTF-8");
-    // The index must actually reflect the tree, so byte-identity is over MEANINGFUL content.
-    for name in ["alpha", "beta", "gamma", "delta"] {
+    for (retired, args) in [
+        ("reindex", vec!["reindex"]),
+        ("reindex", vec!["reindex", "combat.rs"]),
+        ("symbols-index", vec!["symbols-index"]),
+    ] {
+        let (_out, err, ok) = run_rigger(root, &args);
+        assert!(!ok, "{args:?} must be refused");
         assert!(
-            first_text.contains(name),
-            "the persisted index must contain the extracted symbol {name:?}; got: {first_text}"
+            err.contains(&format!("unknown command {retired:?}")),
+            "{args:?} must be an unknown command; stderr: {err}"
+        );
+        let known = err
+            .lines()
+            .find_map(|l| l.strip_prefix("known commands: "))
+            .expect("an unknown command lists the known ones");
+        assert!(
+            !known.split(", ").any(|c| c == retired),
+            "{retired} must not be a known command; known: {known}"
+        );
+        assert!(
+            !err.contains("rigger reindex") && !err.contains("rigger symbols-index"),
+            "the usage text must not teach a retired verb; stderr: {err}"
         );
     }
-
-    // Remove it, then a SECOND, independent process rebuilds it over the same tree.
-    std::fs::remove_file(&index).unwrap();
-    let (_out2, err2, ok2) = run_rigger(root, &["symbols-index"]);
-    assert!(ok2, "second symbols-index must succeed; stderr: {err2}");
-    let second = std::fs::read(&index).expect("the second process must persist the index");
-
-    assert_eq!(
-        first, second,
-        "the persisted multi-file index must be byte-identical across processes"
-    );
 }
 
 /// `rigger graph build` advances the code store and records nothing in the log, in both lanes:
@@ -2468,6 +2431,8 @@ fn ground_via_symbols(files: &[(&str, &str)], query_args: &[&str]) -> String {
     for (name, source) in files {
         std::fs::write(root.join(name), source).unwrap();
     }
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     let args: Vec<&str> = std::iter::once("ground")
         .chain(query_args.iter().copied())
         .collect();
@@ -2479,11 +2444,48 @@ fn ground_via_symbols(files: &[(&str, &str)], query_args: &[&str]) -> String {
     out
 }
 
+/// The honesty label (6.1) travels with every `rigger ground` answer, on stderr beside the rows.
+/// Each row: what the worktree holds beyond the committed tree and the label's text after
+/// `describes <commit>`.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_states_what_the_worktree_puts_in_doubt() {
+    for (name, uncommitted, after_commit) in [
+        ("a worktree that agrees", None, ""),
+        (
+            "one uncommitted file",
+            Some("extra.rs"),
+            "; 1 file in . differs",
+        ),
+    ] {
+        let dir = temp_project();
+        let root = dir.path();
+        write_grounder_workflow(root, "symbols");
+        std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        common::fixtures::commit_tree(root);
+        if let Some(file) = uncommitted {
+            std::fs::write(root.join(file), "fn extra() {}\n").unwrap();
+        }
+        let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
+        assert!(ok, "{name}: ground must succeed; stderr: {err}");
+        assert!(
+            out.starts_with("combat.rs:"),
+            "{name}: rows on stdout: {out}"
+        );
+        let label = err.lines().last().unwrap_or_default();
+        let after = label.find(';').map_or("", |at| &label[at..]);
+        assert!(
+            label.starts_with("describes ") && after == after_commit,
+            "{name}: the label states what differs; stderr: {err}"
+        );
+    }
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
-/// ground` resolves the real `Symbols` grounder through `select_grounder` - building + persisting
-/// the structural index over the project - and ranks a DEFINITION above an incidental prose
-/// mention. This drives the whole feature-on path (config -> select_grounder -> Symbols::open ->
-/// build_index -> ground) that a lib test rooted at `.` cannot exercise over a controlled tree.
+/// ground` resolves the real `Symbols` grounder through `select_grounder` - reading the code
+/// store over the project - and ranks a DEFINITION above an incidental prose
+/// mention. This drives the whole feature-on path (config -> select_grounder -> Symbols::over ->
+/// code view -> ground) that a lib test rooted at `.` cannot exercise over a controlled tree.
 #[cfg(feature = "symbols")]
 #[test]
 fn ground_via_symbols_grounder_ranks_a_definition_first() {
@@ -2534,6 +2536,8 @@ fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
         .unwrap();
     }
 
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     // The rare token outranks the six tree-wide `run` definitions - the audit's own shape.
     let (out, err, ok) = run_rigger(root, &["ground", "dash run", "10"]);
     assert!(ok, "ground must succeed; stderr: {err}");
@@ -2646,9 +2650,8 @@ fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
     let dir = temp_project();
     let root = dir.path();
     write_grounder_workflow(root, "symbols");
-    // The whole fixture is written BEFORE the first `ground` call, so the cold index build
-    // (the persisted index is not auto-refreshed by a later call - it needs an explicit
-    // `reindex`) sees it all at once: six tree-wide `run` definitions (weak) plus a rare
+    // The whole fixture is written and committed BEFORE the first `ground` call, so the code
+    // store sees it all at once: six tree-wide `run` definitions (weak) plus a rare
     // `apply_damage` definition with three call sites (strong) - the same shape the test
     // above proves is weak-for-`run`, strong-for-`apply_damage` at k=10.
     for i in 0..6 {
@@ -2663,6 +2666,8 @@ fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
         .unwrap();
     }
 
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     // k=0 on a query that is weak at k>0 (proven above) must print nothing at all - neither
     // rows nor the honest no-match line.
     let (out, err, ok) = run_rigger(root, &["ground", "run", "0"]);
@@ -2709,6 +2714,8 @@ fn ground_ranked_via_cli_keeps_a_cross_language_reference_as_its_own_entity_not_
         std::fs::write(root.join(format!("r{i}.rs")), "fn go() { unwrap(); }\n").unwrap();
     }
 
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["ground", "unwrap", "50"]);
     assert!(ok, "ground must succeed; stderr: {err}");
 
@@ -2762,6 +2769,8 @@ fn ground_ranked_via_cli_never_pools_cross_language_definition_counts_into_a_fal
     std::fs::write(root.join("combat.rs"), "fn collide() {}\n").unwrap();
     std::fs::write(root.join("other.py"), "def collide():\n    pass\n").unwrap();
 
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["ground", "collide", "8"]);
     assert!(ok, "ground must succeed; stderr: {err}");
     assert!(
@@ -2810,6 +2819,8 @@ fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_r
         .unwrap();
     }
 
+    // The code store describes the committed tree, so commit what the fixture wrote.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["ground", "dup_name", "10"]);
     assert!(ok, "ground must succeed; stderr: {err}");
     assert!(
@@ -2855,70 +2866,6 @@ fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_r
         "the Standalone row alone must carry the real aggregate unattributed call-reference \
          count - genuinely different from the ambiguous definitions' degree, never a shared pooled \
          number printed on every row; got {out:?}"
-    );
-}
-
-/// End-to-end reindex wiring (spec 15, unit 4): with `defaults.grounder: symbols`, the shipped
-/// `rigger reindex <file>` CLI must resolve the SAME real `Symbols` grounder through
-/// `select_reindex_grounder` that `rigger ground` resolves through `select_grounder` - NOT die
-/// with the false `symbols_feature_missing_error` while the feature is built. It must exit 0 AND
-/// actually freshen: a symbol written into a file AFTER the index is first built becomes findable
-/// via `rigger ground` once that file is reindexed. This is the symmetric guard to
-/// `ground_via_symbols_grounder_ranks_a_definition_first`; without the symbols arm in
-/// `select_reindex_grounder` (both cfg lanes) it turns RED at the very first `reindex` exit code.
-#[cfg(feature = "symbols")]
-#[test]
-fn reindex_via_symbols_grounder_updates_the_persisted_index() {
-    let dir = temp_project();
-    let root = dir.path();
-    // Pin `defaults.grounder: symbols` (the helper also creates the `agents/` dir `config::load`
-    // needs, so the pinned grounder actually takes effect rather than falling back to the default).
-    write_grounder_workflow(root, "symbols");
-    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
-
-    // First ground builds + persists the structural index (cold path) under .rigger/symbols/.
-    let (_out, err, ok) = run_rigger(root, &["ground", "apply_damage", "1"]);
-    assert!(ok, "the initial ground must build the index; stderr: {err}");
-    assert!(
-        root.join(".rigger")
-            .join("symbols")
-            .join("index.json")
-            .exists(),
-        "grounding via symbols must persist the structural index to .rigger/symbols/"
-    );
-
-    // The change lands: combat.rs gains teleport_player (a symbol absent from the built index).
-    std::fs::write(
-        root.join("combat.rs"),
-        "fn apply_damage() {}\nfn teleport_player() {}\n",
-    )
-    .unwrap();
-
-    // Reindex ONLY that file via the shipped CLI. Under `defaults.grounder: symbols` with the
-    // feature BUILT this MUST exit 0 (the selector-drift regression made it exit 1 with a false
-    // feature-missing error), and it must name the reindexed file.
-    let (out, err, ok) = run_rigger(root, &["reindex", "combat.rs"]);
-    assert!(
-        ok,
-        "reindex under defaults.grounder: symbols must succeed, not falsely report a missing \
-         feature; stderr: {err}"
-    );
-    assert!(
-        out.contains("combat.rs"),
-        "reindex prints a confirmation naming the file; got: {out:?}"
-    );
-
-    // The just-landed symbol is now findable through the SAME persisted index a later ground uses -
-    // the reindex freshened the on-disk store, not just an in-process copy.
-    let (out, err, ok) = run_rigger(root, &["ground", "teleport_player", "1"]);
-    assert!(ok, "ground after reindex must succeed; stderr: {err}");
-    assert!(
-        out.lines()
-            .next()
-            .map(|l| l.starts_with("combat.rs:"))
-            .unwrap_or(false),
-        "after the reindex CLI freshens the symbols index, the new symbol must ground to \
-         combat.rs; got: {out:?}"
     );
 }
 
@@ -18882,13 +18829,12 @@ fn the_drift_gate_reports_a_committed_project_copy_drifted_beside_its_shadow() {
     );
 }
 
-/// The five per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
+/// The four per-operation skill names spec 68, criterion 2 adds to the registry (rigger-docs,
 /// rigger-validate, and rigger-setup already loop over `skill_registry()` generically as of
 /// spec 68, criterion 1 - shared by the three tests below).
-const PER_OPERATION_SKILL_NAMES: [&str; 5] = [
+const PER_OPERATION_SKILL_NAMES: [&str; 4] = [
     "rigger-reset-store",
     "rigger-build-graph",
-    "rigger-reindex",
     "rigger-resume-a-run",
     "rigger-handle-an-escalation",
 ];

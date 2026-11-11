@@ -1,30 +1,29 @@
 //! CLI periphery for spec 68, criterion 4 - VALIDATE ADVISORIES.
 //!
-//! `rigger validate` gains two advisory-only checks (Design):
-//!   (a) INDEX STALENESS - the persisted `symbols` grounding index has drifted from the tree,
-//!       warn and name `rigger reindex`.
-//!   (b) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
+//! `rigger validate` carries advisory-only checks (Design):
+//!   (a) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
 //!       events and file identities left and `rigger reset --derived`, the migration.
+//!   (b) GRAPH INDEX LAG - the context graph has fallen behind the tree.
 //!
-//! Both are stderr-only warnings that NEVER change `validate`'s exit status (Design: "advisory-
+//! The symbols index has no staleness advisory: the code store holds the facts grounding reads
+//! and advances itself to the head, so there is no index file to drift.
+//!
+//! Each is a stderr-only warning that NEVER changes `validate`'s exit status (Design: "advisory-
 //! warn, never failing"). These tests drive the compiled binary so the observable surface -
 //! stdout/stderr/exit code - is pinned exactly as an operator sees it.
 //!
-//! What this file OWNS (criterion 4): the two advisories' trigger conditions, their wording (the
-//! staleness kind, the derived events and file identities left, the named fix each names), that
-//! a clean store draws neither and the exit status is unaffected either way, AND boundary-only
+//! What this file OWNS (criterion 4): the advisories' trigger conditions, their wording (the
+//! derived events and file identities left, the named fix each names), that a clean store draws
+//! none and the exit status is unaffected either way, AND boundary-only
 //! properties neither advisory's own unit tests can see from inside their module: the LOG BLOAT
 //! advisory's sqlite-only boundary - a server-selected store must draw no warning from a local
 //! events.db sitting beside it, regardless of what that local file holds ("one resolution
 //! authority": `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset
 //! --derived` itself) - and its COUNT, every derived event of the project's run stream however
 //! its key or type repeats, since `rigger reset --derived` sheds every one of them; plus the
-//! INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
-//! pre-spec-68 `index.json` (missing the `hashes` key entirely, not merely an in-memory struct
-//! built via the current API) must load and stay silent. NOT OWNED: the underlying measurement
-//! primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
-//! `rigger::eventstore::sqlite::Store::count_derived`), which carry their own unit tests beside
-//! their implementations.
+//! BLOAT advisory's real on-disk boundary. NOT OWNED: the underlying measurement primitive
+//! itself (`rigger::eventstore::sqlite::Store::count_derived`), which carries its own unit tests
+//! beside its implementation.
 //!
 //! It also owns spec 105's CLAUDE LOGIN report (A PERSON SEES THE HOLD): the auth method
 //! `rigger validate` reads from `claude auth status --json` through the one login reader, the
@@ -42,44 +41,11 @@ use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
 use common::cli::validate_after_init;
 use rigger::eventstore::Event;
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
-use rigger::grounder::symbols::store as symstore;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_derived_compaction.rs's conventions)
 // ---------------------------------------------------------------------------------------
-
-/// Persist a `symbols` index directly (no tree-sitter needed - the staleness check is ungated),
-/// one entry per `(rel_path, content)`, its hash recorded from the CONTENT GIVEN (so a caller can
-/// hand a hash that does not match what is on disk, to provoke drift deliberately).
-fn persist_index(root: &Path, entries: &[(&str, &str)]) {
-    let mut idx = SymbolIndex::default();
-    for (path, content) in entries {
-        idx.insert_hashed_file(
-            (*path).to_string(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![Def {
-                    kind: Kind::Function,
-                    name: "f".into(),
-                    line: 1,
-                    end_line: 1,
-                    path: "f".into(),
-                    parent: None,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![],
-                partial: false,
-            },
-            symstore::content_hash(content),
-        );
-    }
-    symstore::save(&idx, root.to_str().unwrap()).unwrap();
-}
 
 /// Seed `root`'s event log with `rounds` recordings of ONE derived-index replay key, in the
 /// project's own namespaced stream - `rounds` derived events of one file identity, each of which
@@ -128,8 +94,49 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 }
 
 // ---------------------------------------------------------------------------------------
-// (a) INDEX STALENESS
+// (a) NO INDEX STALENESS ADVISORY
 // ---------------------------------------------------------------------------------------
+
+/// A `.rigger/symbols/index.json` an earlier build left behind, beside a tree it has drifted
+/// from, draws no advisory: nothing reads that file, so there is no index to be stale. Each row
+/// is a drift the retired advisory warned of: an edited file, a file the index lacks and a file
+/// the index holds that the tree no longer does.
+#[test]
+fn validate_has_no_index_staleness_advisory() {
+    let index = r#"{"grammar":"ts-tags-v5","files":{"a.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":1,"end_line":1,"path":"f"}],"refs":[]},"gone.rs":{"lang":"Rust","defs":[],"refs":[]}},"hashes":{"a.rs":"ca21bc77c906456a","gone.rs":"cbf29ce484222325"}}"#;
+    let drifts: [(&str, &[(&str, &str)]); 3] = [
+        (
+            "an edited file",
+            &[("a.rs", "fn onemodified() {}\n"), ("gone.rs", "")],
+        ),
+        (
+            "a file the index lacks",
+            &[
+                ("a.rs", "fn f() {}\n"),
+                ("gone.rs", ""),
+                ("b.rs", "fn two() {}\n"),
+            ],
+        ),
+        ("a file the tree lost", &[("a.rs", "fn f() {}\n")]),
+    ];
+    for (drift, files) in drifts {
+        let err = validate_stderr_after(|root| {
+            let planted = root.join(".rigger").join("symbols");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("index.json"), index).unwrap();
+            for (name, content) in files {
+                std::fs::write(root.join(name), content).unwrap();
+            }
+        });
+        let lower = err.to_lowercase();
+        assert!(
+            !lower.contains("symbols grounding index")
+                && !lower.contains("reindex")
+                && !lower.contains("drifted"),
+            "{drift}: validate must not advise on a symbols index; stderr:\n{err}"
+        );
+    }
+}
 
 /// `rigger validate`'s stderr over a fresh `rigger init` project that `prepare` then edited;
 /// validate must still succeed - an advisory never fails its exit status.
@@ -138,102 +145,6 @@ fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
     let root = dir.path();
     let (_out, err) = validate_after_init(root, prepare);
     err
-}
-
-/// Validate's stderr after `prepare` carries an advisory naming (case-insensitively) at least one
-/// of `any_of` (`warning_why`), and every `(needle, why)` of `names` - the fix it points at among
-/// them.
-fn assert_validate_advises(
-    prepare: impl FnOnce(&Path),
-    any_of: &[&str],
-    warning_why: &str,
-    names: &[(&str, &str)],
-) {
-    let err = validate_stderr_after(prepare);
-    let lower = err.to_lowercase();
-    assert!(
-        any_of.iter().any(|w| lower.contains(w)),
-        "{warning_why}; stderr:\n{err}"
-    );
-    for (needle, why) in names {
-        assert!(err.contains(needle), "{why}; stderr:\n{err}");
-    }
-}
-
-rigger::test_cases! {
-    /// Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
-    /// reindexing - the drift a path-set-only check cannot see (same path, changed content).
-    validate_warns_of_index_staleness_and_names_reindex: assert_validate_advises(
-        |root| {
-            std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
-            persist_index(root, &[("a.rs", "fn one() {}\n")]);
-            std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
-        },
-        &["drift", "stale"],
-        "validate must warn that the symbols index has drifted",
-        &[(
-            "rigger reindex",
-            "the staleness warning must name `rigger reindex` as the fix",
-        )],
-    );
-}
-
-#[test]
-fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err) = validate_after_init(root, |root| {
-        let content = "fn one() {}\n";
-        std::fs::write(root.join("a.rs"), content).unwrap();
-        persist_index(root, &[("a.rs", content)]);
-    });
-    assert!(
-        !err.contains("rigger reindex"),
-        "an index that matches the tree must draw no staleness warning; stderr:\n{err}"
-    );
-}
-
-#[test]
-fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
-    // `SymbolIndex` gained a persisted `hashes` field (spec 68) alongside its pre-existing
-    // `files` field. An index written by a binary from BEFORE this field existed has no
-    // "hashes" key at all on disk. This drives the REAL persisted file (not an in-memory
-    // struct built via the current `insert_hashed_file`) through the compiled binary, proving an
-    // operator's pre-upgrade index still loads without crashing and never manufactures a
-    // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
-    // load, and every path's hash reads as "unknown", which is nothing to compare against.
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let content = "fn one() {}\n";
-    std::fs::write(root.join("a.rs"), content).unwrap();
-    persist_index(root, &[("a.rs", content)]);
-
-    // Strip the "hashes" key from the REAL persisted file, simulating exactly what a
-    // pre-spec-68 binary would have written - every other field of `SymbolIndex` predates
-    // this spec, so the rest of the file is unchanged.
-    let index_path = root.join(".rigger").join("symbols").join("index.json");
-    let raw = std::fs::read_to_string(&index_path).expect("read the persisted index");
-    let mut value: serde_json::Value = serde_json::from_str(&raw).expect("index is valid JSON");
-    value
-        .as_object_mut()
-        .expect("a symbols index serializes as a JSON object")
-        .remove("hashes");
-    std::fs::write(&index_path, serde_json::to_string(&value).unwrap())
-        .expect("rewrite the index without its hashes field");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed against a pre-upgrade index; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("rigger reindex"),
-        "a pre-upgrade index missing the hashes field must never manufacture a false \
-         staleness warning from the absence alone; stderr:\n{err}"
-    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -437,7 +348,7 @@ fn validate_is_silent_on_a_gated_scaffolded_fanout_template() {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_advisory() {
+fn a_clean_store_with_no_derived_event_draws_neither_advisory() {
     let dir = temp_rigger_project();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
@@ -446,10 +357,6 @@ fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_adviso
     assert!(
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"
-    );
-    assert!(
-        !err.contains("rigger reindex"),
-        "a project with no persisted symbols index must draw no staleness warning; stderr:\n{err}"
     );
     assert_eq!(
         common::cli::bloat_lines(&err),
