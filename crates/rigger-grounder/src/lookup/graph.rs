@@ -136,8 +136,8 @@ pub(crate) fn answer(
                     .map_err(read)?;
                 entities.push(Entity {
                     site,
-                    callers: fresh.kept(neighbours(&up, id), &mut withheld),
-                    callees: fresh.kept(neighbours(&down, id), &mut withheld),
+                    callers: fresh.kept(neighbours(&up), &mut withheld),
+                    callees: fresh.kept(neighbours(&down), &mut withheld),
                     referenced_in: up
                         .referenced_not_called
                         .iter()
@@ -194,12 +194,13 @@ fn site(node: &Node) -> Site {
     }
 }
 
-/// The sites of `walk`'s first layer: the seed's direct neighbours in the walk's direction.
+/// The sites of `walk`'s first layer: the seed's direct neighbours in the walk's direction (the
+/// seed itself is layer 0, a recursive call to it included).
 #[cfg(feature = "symbols")]
-fn neighbours(walk: &CallGraph, seed: &str) -> Vec<Site> {
+fn neighbours(walk: &CallGraph) -> Vec<Site> {
     walk.nodes
         .iter()
-        .filter(|n| n.layer == 1 && n.node.id != seed)
+        .filter(|n| n.layer == 1)
         .map(|n| site(&n.node))
         .collect()
 }
