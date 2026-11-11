@@ -11,9 +11,9 @@
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
 //! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
-//! | structure | each definition's `CONTAINS` from its parent, else from its file |
+//! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
 //! | proof | a test call: one same-file product call-target candidate, else one in the view |
-//! | duplicate id, kind precedence | one entity per id, its kind and line by [`definition_precedence`] |
+//! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
 //! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure; any node in such a file, whatever fact names it, and any link onto one |
 //! | design link, workflow relation | the node kinds and relations an intent fact may name |
 //!
@@ -363,6 +363,23 @@ impl<'v> Resolver<'v> {
 
     /// The entities of `facts`, one per id, in id order; test entities only when `tests`.
     pub fn entities(&self, facts: &FileFacts, tests: bool) -> Vec<Entity> {
+        self.winners(facts, tests)
+            .into_iter()
+            .map(|(local, d, test)| Entity {
+                id: entity_id(&facts.path, local),
+                name: d.leaf.clone(),
+                kind: d.kind.clone(),
+                line: d.line,
+                test,
+            })
+            .collect()
+    }
+
+    /// The one definition of `facts` that settles each id, in id order, with its local path and
+    /// whether the id is test code: the product share's first by [`definition_precedence`]
+    /// ([`settled`]), the test share only when no definition of the id is product; test ids only
+    /// when `tests`.
+    fn winners<'f>(&self, facts: &'f FileFacts, tests: bool) -> Vec<(&'f str, &'f Def, bool)> {
         let file_test = self.is_test_file(&facts.path);
         let mut by_local: BTreeMap<&str, Vec<(&Def, bool)>> = BTreeMap::new();
         for d in &facts.defs {
@@ -379,20 +396,14 @@ impl<'v> Resolver<'v> {
                     return None;
                 }
                 let d = settled(share, |d| (d.kind.as_str(), d.line))?;
-                Some(Entity {
-                    id: entity_id(&facts.path, local),
-                    name: d.leaf.clone(),
-                    kind: d.kind.clone(),
-                    line: d.line,
-                    test,
-                })
+                Some((local, d, test))
             })
             .collect()
     }
 
     /// The code edges of `facts`: the call, tagged, held and module rules over its mentions and
-    /// declarations, and each definition's `CONTAINS` from its parent or its file; test code's
-    /// edges only when `tests`.
+    /// declarations, and each id's one `CONTAINS`, from the parent (or the file) of the definition
+    /// that settles it ([`Self::winners`]); test code's edges only when `tests`.
     pub fn links(&self, facts: &FileFacts, tests: bool) -> Vec<Link> {
         let file = facts.path.as_str();
         let file_test = self.is_test_file(file);
@@ -473,15 +484,11 @@ impl<'v> Resolver<'v> {
                 test,
             });
         }
-        for d in &facts.defs {
-            let test = d.test || file_test;
-            if test && !tests {
-                continue;
-            }
+        for (local, d, test) in self.winners(facts, tests) {
             links.push(Link {
                 from: from_of(d.parent),
                 rel: REL_CONTAINS,
-                to: entity_id(file, &d.local),
+                to: entity_id(file, local),
                 tier: TIER_EXTRACTED,
                 test,
             });
