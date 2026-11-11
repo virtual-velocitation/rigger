@@ -377,7 +377,7 @@ mod tests {
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::format::{Container, WriteLock};
     use rigger_domain::code_facts::FileFacts;
-    use rigger_domain::code_view::CodeView;
+    use rigger_domain::code_view::{CodeView, Groupings};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
@@ -567,6 +567,53 @@ mod tests {
             assert!(
                 store.current(fingerprint).unwrap().is_some(),
                 "{name}: current"
+            );
+        }
+    }
+
+    /// The counting grouper, at a generation of its own.
+    struct GroupedAt {
+        generation: u64,
+        counting: CountingGroup,
+    }
+
+    impl Group for GroupedAt {
+        fn generation(&self) -> u64 {
+            self.generation
+        }
+
+        fn group(&self, view: &dyn CodeView) -> Groupings {
+            self.counting.group(view)
+        }
+    }
+
+    /// Each row: the grouper's generation at a second advance of the same tip. A new generation
+    /// is a new fingerprint, so the snapshot is computed anew and regrouped; the same one keeps
+    /// the snapshot in force.
+    #[test]
+    fn a_grouping_generation_change_regroups_the_snapshot() {
+        let cases = [("the same generation", 1, 0), ("a new generation", 2, 1)];
+        for (name, generation, regrouped) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path());
+            let source = MemSource::default();
+            let tip = source.commit("c1", A);
+            let extract = ToyExtract::new(FP);
+            let first = GroupedAt {
+                generation: 1,
+                counting: CountingGroup::default(),
+            };
+            store.advance(&source, &extract, &first, &tip).unwrap();
+            let second = GroupedAt {
+                generation,
+                counting: CountingGroup::default(),
+            };
+            let snap = store.advance(&source, &extract, &second, &tip).unwrap();
+            assert_eq!(second.counting.calls(), regrouped, "{name}: regrouped");
+            assert_eq!(
+                snap.stamp().fingerprint,
+                fingerprint(&extract, &second),
+                "{name}: the stamp folds both generations"
             );
         }
     }
