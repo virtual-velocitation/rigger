@@ -394,8 +394,8 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   write   <seq+1>.snap.tmp ; fsync ; rename to <seq+1>.snap ; sync_dir
   write   CURRENT-<fp>.tmp ; fsync ; rename to CURRENT-<fp>  ; sync_dir
   reap    keep the two CURRENT-* naming the highest seqs; remove every other CURRENT-*, then
-          every *.snap neither names, and every *.tmp (a failed delete is left for the next
-          advance)
+          every *.snap neither names, every *.tmp, and every *.tmp.lock git leaves beside a
+          reader's index copy (6.1) (a failed delete is left for the next advance)
   release LOCK
 ```
 
@@ -554,12 +554,21 @@ open(caller worktree W, filter)
                      with such an endpoint, is withheld, and K counts the nodes withheld so far
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
-  diff fails (the stamp commit is not in W's object store, or W's index cannot be read)
+  diff fails (the stamp commit is not in W's object store, or W's index cannot be copied)
                   -> label "describes <commit>; W cannot be compared; K withheld"; it fails
                      closed: every node of the code half, and every edge with such an
                      endpoint, is withheld, and K counts the nodes withheld so far; the
                      record half still answers
 ```
+
+The check never writes W's index. Every git the source runs passes `--no-optional-locks`, and
+since git still rewrites an index whose entries only a stat change has dirtied, the diff reads a
+copy of W's index instead: the index in W's own git dir (a linked worktree's included), copied
+into the store directory as a `*.tmp` with the index's mtime kept, so git judges a racily clean
+entry as it would over the index itself, and removed when the read ends. A copy the reaper
+removes before git reads it is seen gone when git exits, and the diff is redone, at most 3
+times. A W with no index reads as git reads it: every tracked file deleted. Until W's own git
+refreshes a stat-dirty index, each check re-hashes the files it names.
 
 A head with no commit (an unborn branch, which git answers by its quiet no that `HEAD` names no
 object) reads as the empty tree, so every file in W differs until W commits. A head git fails to
@@ -719,7 +728,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff --name-status`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
@@ -1003,6 +1012,8 @@ is idempotent.
 | a torn or corrupt snapshot | a crc check fails on open | treated as absent: `open_current` advances from empty (<= 8 s) |
 | an older OS loses the directory entry of a rename | the pointer names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
 | a reader races the reaper | the snapshot named by a just-read pointer is gone | the reader re-reads the pointer and retries, at most 3 times |
+| the reaper removes a reader's index copy before git reads it | git read no index and answered every file deleted | the reader sees its copy gone and redoes the diff, at most 3 times |
+| a reader stops mid-read | its index copy (`*.tmp`), or git's lock beside it (`*.tmp.lock`) | the next advance reaps them |
 | two advancers | the second waits on LOCK | it re-reads its pointer under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
 | a crash during migration | steps 1-5 write only new files until the swap; step 6 is one transaction | a rerun resumes at the first step that is not yet done |
 

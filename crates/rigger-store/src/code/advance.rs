@@ -9,7 +9,7 @@
 //! snapshots, so two binaries sharing a store each keep theirs.
 
 use crate::code::snapshot::{encode, Snapshot};
-use crate::format::{write_atomic, WriteLock};
+use crate::format::{is_temp, write_atomic, WriteLock};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
@@ -24,7 +24,6 @@ const CURRENT: &str = "CURRENT-";
 /// The lock file every writer holds.
 pub const LOCK: &str = "LOCK";
 const SNAP: &str = ".snap";
-const TMP: &str = ".tmp";
 /// How many times a reader re-reads its pointer when the snapshot it named was reaped first.
 const READ_ATTEMPTS: usize = 3;
 /// How many fingerprints' snapshots the store keeps: the two most recently advanced.
@@ -243,13 +242,14 @@ impl Store {
     }
 
     /// Keeps the pointers of the [`KEPT_FINGERPRINTS`] most recently advanced fingerprints and
-    /// the snapshots they name, and removes every other pointer, snapshot and temp. Recency is the
-    /// order the pointers were written in, which is the order of the sequence numbers they name,
-    /// since every pointer is written holding the lock with the next number. A pointer is removed
-    /// before its snapshot, so a crash between leaves an unnamed snapshot the next reap removes,
-    /// never a pointer naming nothing. A pointer that cannot be read is left for the next advance,
-    /// though the snapshot it names is not kept, since which one it names is unknown; so is a
-    /// failed delete (a reader holding the file open on an OS that refuses it).
+    /// the snapshots they name, and removes every other pointer, snapshot and temp ([`is_temp`]),
+    /// a reader's index copy and git's lock beside it included. Recency is the order the pointers
+    /// were written in, which is the order of the sequence numbers they name, since every pointer
+    /// is written holding the lock with the next number. A pointer is removed before its snapshot,
+    /// so a crash between leaves an unnamed snapshot the next reap removes, never a pointer naming
+    /// nothing. A pointer that cannot be read is left for the next advance, though the snapshot it
+    /// names is not kept, since which one it names is unknown; so is a failed delete (a reader
+    /// holding the file open on an OS that refuses it).
     fn reap(&self) {
         let mut ranked: Vec<(String, Option<u64>)> = self.pointers().collect();
         ranked.sort_by_key(|(_, seq)| std::cmp::Reverse(*seq));
@@ -260,7 +260,7 @@ impl Store {
             .collect();
         let unnamed: Vec<String> = self
             .names()
-            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TMP))
+            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || is_temp(name))
             .collect();
         for name in stale.into_iter().map(|(name, _)| name).chain(unnamed) {
             let _ = std::fs::remove_file(self.dir.join(name));
@@ -1164,6 +1164,9 @@ mod tests {
                 "000009.snap",
                 ".000004.snap.77.0.tmp",
                 &pointer_temp,
+                ".index.77.2.tmp",
+                ".index.77.2.tmp.lock",
+                "notes.lock",
                 "notes.txt",
             ] {
                 std::fs::write(store.dir().join(debris), b"x").unwrap();
@@ -1174,7 +1177,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 snap_names(&store),
-                names(&[&pointer(FP), LOCK, kept, "notes.txt"]),
+                names(&[&pointer(FP), LOCK, kept, "notes.lock", "notes.txt"]),
                 "{name}"
             );
         }

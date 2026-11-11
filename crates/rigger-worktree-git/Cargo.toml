@@ -23,6 +23,9 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 rigger-process = { path = "../rigger-process", default-features = false }
 # The scratch-root resolvers' cache-home resolver and liveness marker encoding (a same-ring edge).
 rigger-driver = { path = "../rigger-driver", default-features = false }
+# The temp naming of the code store's directory, which the git tree source copies a worktree's
+# index into (a same-ring edge).
+rigger-store = { path = "../rigger-store", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]

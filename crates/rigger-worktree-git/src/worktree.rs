@@ -1657,12 +1657,15 @@ pub struct BlobBatch {
 }
 
 impl BlobBatch {
-    /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
-    /// by [`batch_answer`]), or answer none when `root` lies in no repository
-    /// ([`crate::discover::rev_parse`]), so no object database stands there to ask. Where git
-    /// refuses inside a repository, and where a batch `git` cannot start there, the start fails,
-    /// naming the command, the root and the cause.
-    pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
+    /// Start the batch process as `git`, a git command run in `root`, over the repository holding
+    /// `root` ([`BLOB_BATCH`], its start read by [`batch_answer`]), or answer none when `root` lies
+    /// in no repository ([`crate::discover::rev_parse`]), so no object database stands there to
+    /// ask. Where git refuses inside a repository, and where a batch `git` cannot start there, the
+    /// start fails, naming the command, the root and the cause.
+    pub fn start(
+        root: &std::path::Path,
+        mut git: std::process::Command,
+    ) -> Result<Option<Self>, Error> {
         use crate::discover::{rev_parse, Location};
         use std::process::Stdio;
 
@@ -1674,8 +1677,7 @@ impl BlobBatch {
         }
         batch_answer(
             root,
-            crate::subprocess::git_in(root)
-                .args(BLOB_BATCH)
+            git.args(BLOB_BATCH)
                 .env("GIT_NO_LAZY_FETCH", "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -2647,14 +2649,21 @@ pub fn git_output(
     finish_git(start_git(dir, args), output)
 }
 
-/// `git <args>` in `dir`, started with no input and its output streams piped, so several can
-/// run at once before [`finish_git`] waits for each.
+/// `git <args>` in `dir`, started as [`start_command`] starts it.
 pub fn start_git(
     dir: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
 ) -> std::io::Result<std::process::Child> {
-    crate::subprocess::git_in(dir)
-        .args(args)
+    start_command(crate::subprocess::git_in(dir), args)
+}
+
+/// `git`, a git command, run with `args`, no input and its output streams piped, so several can
+/// run at once before [`finish_git`] waits for each.
+pub fn start_command(
+    mut git: std::process::Command,
+    args: &[&str],
+) -> std::io::Result<std::process::Child> {
+    git.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -2932,12 +2941,17 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 mod blob_batch_tests {
     //! Tests for [`BlobBatch`]: the one `git cat-file --batch` process blobs are read from.
 
-    use super::BlobBatch;
+    use super::{BlobBatch, Error};
     use crate::test_support::{
         git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
         temp_git_project_with_commit, write_file,
     };
     use std::path::Path;
+
+    /// The batch process over the repository holding `root`, run as the plain git there.
+    fn started(root: &Path) -> Result<Option<BlobBatch>, Error> {
+        BlobBatch::start(root, crate::subprocess::git_in(root))
+    }
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
     pub(super) fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
@@ -2959,7 +2973,7 @@ mod blob_batch_tests {
         let empty = git_hash_object(root, "empty", true);
         let absent = "1111111111111111111111111111111111111111";
 
-        let mut batch = BlobBatch::start(root)
+        let mut batch = started(root)
             .unwrap()
             .expect("a repository starts the batch process");
         assert_eq!(
@@ -2998,7 +3012,7 @@ mod blob_batch_tests {
             .unwrap()
             .stdout;
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         for id in [
             "",
             "zz zz",
@@ -3024,7 +3038,7 @@ mod blob_batch_tests {
     fn outside_a_repository_no_batch_process_starts() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(matches!(BlobBatch::start(root), Ok(None)));
+        assert!(matches!(started(root), Ok(None)));
 
         git_init_quiet(root);
         write_file(
@@ -3032,7 +3046,7 @@ mod blob_batch_tests {
             b"held once the directory is a repository\n",
         );
         let id = git_hash_object(root, "a.txt", true);
-        let mut batch = BlobBatch::start(root)
+        let mut batch = started(root)
             .unwrap()
             .expect("a repository starts a batch process");
         assert_eq!(
@@ -3056,7 +3070,7 @@ mod blob_batch_tests {
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(
             asked(&mut batch, &whole),
             Ok(Some(b"an object git holds whole\n".to_vec()))
@@ -3085,7 +3099,7 @@ mod blob_batch_tests {
         let corrupt = git_hash_object(root, "b.txt", true);
         std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &corrupt), Ok(None));
         assert_eq!(
             asked(&mut batch, &whole),
@@ -3115,7 +3129,7 @@ mod blob_batch_tests {
         write_file(&root.join("a.txt"), b"the body\n");
         let text = git_hash_object(root, "a.txt", true);
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
         let running = processes_naming(root);
         assert_eq!(running.len(), 1, "one batch process: {running:?}");

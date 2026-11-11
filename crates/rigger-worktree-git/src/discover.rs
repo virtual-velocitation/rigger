@@ -50,6 +50,8 @@ pub enum Location {
     /// `--show-prefix`: the directory's path below the top of its worktree, each part followed
     /// by `/`; empty at the top.
     Prefix,
+    /// `--absolute-git-dir`: the worktree's administrative directory, which holds its index.
+    GitDir,
 }
 
 impl Location {
@@ -58,6 +60,7 @@ impl Location {
             Location::Toplevel => "--show-toplevel",
             Location::CommonDir => "--git-common-dir",
             Location::Prefix => "--show-prefix",
+            Location::GitDir => "--absolute-git-dir",
         }
     }
 }
@@ -76,6 +79,7 @@ impl Repository {
                 .iter()
                 .map(|part| format!("{}/", part.to_string_lossy()))
                 .collect(),
+            Location::GitDir => self.git_dir.to_string_lossy().into_owned(),
         }
     }
 
@@ -561,7 +565,12 @@ mod tests {
             ("pruned", false, true),
             ("headless", false, true),
         ];
-        let asks = [Location::Toplevel, Location::CommonDir, Location::Prefix];
+        let asks = [
+            Location::Toplevel,
+            Location::CommonDir,
+            Location::Prefix,
+            Location::GitDir,
+        ];
         for (path, read, inside) in cases {
             let start = dir.path().join(path);
             let found = read_repository(&start);
