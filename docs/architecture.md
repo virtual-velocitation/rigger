@@ -879,8 +879,9 @@ is recorded under can never drift between them. Four properties define it:
     emptied still yields a NON-empty batch while the index lists it.
     Refreshing the index is `rigger reindex`'s job, not this rule's.
 
-  On the INGEST path the projection deletes nothing, so shedding a removed file's facts is a
-  deliberate act (`Projector::prune`), never a consequence of the next ingest. The projection is not
+  On the INGEST path the projection deletes nothing: the next whole-project walk RETIRES a removed
+  file's facts (`valid_to` stamped, the rows kept), and reclaiming those rows is a deliberate act
+  (`Projector::prune`), never a consequence of an ingest. The projection is not
   delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
   the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
   grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
