@@ -34,16 +34,20 @@ use crate::common;
 #[cfg(not(feature = "symbols"))]
 use common::cli::assert_light_lane_extent_note;
 
+#[cfg(feature = "symbols")]
 use common::cli::ambiguous_show;
 use common::cli::open_graph;
 use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
+#[cfg(feature = "symbols")]
 use common::cli::show_head;
 use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
-use common::fixtures::{fold_path_def_rows, hold, PathDef, A_RS_NEWS, FLAT_LEAF_ID, T_NEW, U_NEW};
+#[cfg(feature = "symbols")]
+use common::fixtures::A_RS_NEWS;
+use common::fixtures::{fold_path_def_rows, hold, PathDef, FLAT_LEAF_ID, T_NEW, U_NEW};
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -167,6 +171,7 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
 /// graph --show` on the flat `a.rs::new` and on the path `T::new`, THEN each lists every
 /// definition it names, sorted, and prints no body: the flat id `a.rs`'s two, never `b.rs`'s, and
 /// the path both `T::new`, never `U::new`.
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
     let dir = temp_project();
@@ -200,6 +205,7 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 /// `T::new` and a decision holding the pre-spec flat id `a.rs::new`, WHEN the operator runs `rigger
 /// graph --show a.rs::new`, THEN it shows `a.rs::T::new` at its site, never the decision's bare
 /// node. (Its degree counts the view's containment edge beside the decision's.)
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
     let dir = temp_project();
@@ -250,6 +256,7 @@ fn held_flat_id_project(defs: &[PathDef]) -> tempfile::TempDir {
 
 /// Write each `(path, source)` of `files` into the tree at `root` and commit it, so the code
 /// store describes exactly these files.
+#[cfg(feature = "symbols")]
 fn plant_sources(root: &std::path::Path, files: &[(&str, &str)]) {
     for (path, source) in files {
         std::fs::write(root.join(path), source).unwrap();

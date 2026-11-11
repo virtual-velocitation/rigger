@@ -29,6 +29,7 @@ use std::path::Path;
 use crate::common;
 use common::cli::run_rigger;
 use common::git::run_git;
+#[cfg(feature = "symbols")]
 use common::mcp::McpSession;
 
 /// `git init` plus one real commit under `root` - a bare `git init` has no commit for `git
@@ -83,6 +84,7 @@ fn add_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
 /// lookup from any of its worktrees must answer from - and a relocated worktree of it at
 /// `worktree` on `branch`, carrying the `.rigger/` a unit worktree checks out (its tracked
 /// workflow) with no graph of its own. Answers nothing; the caller owns both directories.
+#[cfg(feature = "symbols")]
 fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &str) {
     git_init_committed(root);
     std::fs::write(root.join("a.rs"), "fn alpha() {}\n").expect("write a.rs");
@@ -103,6 +105,7 @@ fn owning_graph_with_relocated_worktree(root: &Path, worktree: &Path, branch: &s
 }
 
 /// The node ids of a `rigger_graph` `around` answer.
+#[cfg(feature = "symbols")]
 fn node_ids(around: &serde_json::Value) -> Vec<String> {
     around["nodes"]
         .as_array()
@@ -183,6 +186,7 @@ fn rigger_emit_from_a_relocated_worktree_resolves_the_owning_repos_real_store() 
 /// the lookups every spawned agent is told to run from its worktree - answers from the OWNING
 /// repository's graph, and never opens a graph of its own in the worktree: a worktree carries no
 /// graph, so a read rooted there answers every lookup empty and the agent loses the graph.
+#[cfg(feature = "symbols")]
 #[test]
 fn rigger_graph_show_and_around_from_a_relocated_worktree_answer_from_the_owning_repos_graph() {
     let dir = tempfile::tempdir().expect("create the fixture repo dir");
@@ -219,6 +223,7 @@ fn rigger_graph_show_and_around_from_a_relocated_worktree_answer_from_the_owning
 /// `rigger_graph` from the OWNING repository's graph, and folds an emit it serves into that same
 /// graph - never a graph.db of its own in the worktree, which would answer every lookup empty and
 /// swallow every fold.
+#[cfg(feature = "symbols")]
 #[test]
 fn rigger_mcp_spawn_from_a_relocated_worktree_serves_and_folds_into_the_owning_repos_graph() {
     let dir = tempfile::tempdir().expect("create the fixture repo dir");

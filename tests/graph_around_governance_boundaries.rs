@@ -39,6 +39,7 @@ use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::apply_code_entity;
 
+#[cfg(feature = "symbols")]
 #[test]
 fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or_findings() {
     let dir = temp_store_project();
