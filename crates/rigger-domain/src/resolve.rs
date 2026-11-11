@@ -390,7 +390,7 @@ impl<'v> Resolver<'v> {
     }
 
     /// The proof rule: the product definition a test call to `leaf` from `file` proves.
-    fn proof(&self, file: &str, leaf: &str) -> Option<String> {
+    pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
         let targets: Vec<&Candidate> = candidates
             .iter()
@@ -400,7 +400,7 @@ impl<'v> Resolver<'v> {
     }
 
     /// Whether `m`, a mention in `facts`, is test code.
-    fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
+    pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
         m.test || self.is_test_file(&facts.path)
     }
 

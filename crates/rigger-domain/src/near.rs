@@ -10,21 +10,22 @@
 //! the test calls of its leaves; and its groupings are read from the view's groupings by id. Each
 //! file's assertions are read once and kept for the answer.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::code_facts::{Half, MentionKind};
+use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Tests, ViewFilter};
 use crate::composed::{binds_leaf, id_binds_leaf, joined, ordered, CodeHalf, Indexed};
-use crate::contextgraph::query::{entity_id, member_file, placeholder_id, split_id};
+use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
 use crate::contextgraph::{
     holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{ProofCall, INTENT_KINDS};
+use crate::resolve::INTENT_KINDS;
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -126,6 +127,39 @@ impl Asserts for Fragment {
     }
 }
 
+/// What a code file asserts of its definitions and declarations, with its mentions indexed by
+/// the definition enclosing them and by leaf, as places in its mentions in file order.
+struct Declared {
+    fragment: Fragment,
+    enclosed: FxHashMap<u32, Vec<u32>>,
+    named: FxHashMap<String, Vec<u32>>,
+}
+
+/// The assertions touching one id, folded into a builder in the order said.
+struct Touching<'a> {
+    id: &'a str,
+    b: &'a mut Builder,
+}
+
+impl Asserts for Touching<'_> {
+    fn node(
+        &mut self,
+        id: &str,
+        kind: &'static str,
+        attrs: impl IntoIterator<Item = (&'static str, String)>,
+        test: bool,
+    ) {
+        if id == self.id {
+            self.b.node(id, kind, attrs, test);
+        }
+    }
+    fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool) {
+        if from == self.id || to == self.id {
+            Asserts::link(self.b, from, rel, to, tier, test);
+        }
+    }
+}
+
 /// Which of a file's assertions a source names: its code facts', or its design and workflow
 /// facts'. A code file's code assertions come before its intent ones, as the whole graph reads
 /// them.
@@ -142,6 +176,13 @@ struct Reach {
     tagged: bool,
     /// The files declaring the id as a module.
     modules: bool,
+}
+
+impl Reach {
+    /// This reach's place among the four.
+    fn at(self) -> usize {
+        usize::from(self.tagged) * 2 + usize::from(self.modules)
+    }
 }
 
 /// The view's groupings, indexed by member and by cluster id.
@@ -208,19 +249,27 @@ struct State<'v> {
     files: Vec<FileRef<'v>>,
     places: FxHashMap<&'v str, u32>,
     intent: Option<Intent>,
-    code: FxHashMap<u32, Arc<Fragment>>,
+    /// The facts of each code file read so far, by place.
+    facts: FxHashMap<u32, Arc<Cow<'v, FileFacts>>>,
+    /// What each code file read so far asserts of its definitions and declarations, and its
+    /// mentions indexed, by place.
+    declared: FxHashMap<u32, Arc<Declared>>,
     /// Each file a module declaration reaches, with the places of the files declaring it.
     modules: Option<FxHashMap<String, Vec<u32>>>,
-    proofs: FxHashMap<u32, Arc<Vec<ProofCall>>>,
     clusters: Option<Arc<Clusters<'v>>>,
-    nodes: FxHashMap<String, Option<Node>>,
-    outs: FxHashMap<String, Arc<Vec<Edge>>>,
-    ins: FxHashMap<String, Arc<Vec<Edge>>>,
+    /// Each id resolved so far, under each reach ([`Reach::at`]).
+    resolved: FxHashMap<String, [Option<Arc<Resolved>>; 4]>,
     /// Each (arm, test entity)'s cluster place, the plurality rule's winner.
     attach: FxHashMap<(usize, String), Option<usize>>,
+    /// Each code file's test calls by the definition enclosing them, by place.
+    test_calls: FxHashMap<u32, Arc<TestCalls>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
     attached: FxHashMap<(usize, String), Arc<Vec<String>>>,
 }
+
+/// A code file's test call mentions (their indices), by the local path of the definition
+/// enclosing them (none at file level).
+type TestCalls = FxHashMap<Option<String>, Vec<u32>>;
 
 /// The code half of a view under one filter, resolved only near the ids it is asked about. Its
 /// answers are the whole graph's ([`crate::composed::Indexed`] over [`joined`]): the reads that
@@ -244,14 +293,13 @@ impl<'v> Near<'v> {
                 files,
                 places,
                 intent: None,
-                code: FxHashMap::default(),
+                facts: FxHashMap::default(),
+                declared: FxHashMap::default(),
                 modules: None,
-                proofs: FxHashMap::default(),
                 clusters: None,
-                nodes: FxHashMap::default(),
-                outs: FxHashMap::default(),
-                ins: FxHashMap::default(),
+                resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
+                test_calls: FxHashMap::default(),
                 attached: FxHashMap::default(),
             }),
             whole: OnceLock::new(),
@@ -323,19 +371,78 @@ impl<'v> State<'v> {
         self.intent.as_ref().expect("read above")
     }
 
-    /// The code assertions of the code file at `place`.
-    fn code(&mut self, place: u32) -> Arc<Fragment> {
-        if let Some(held) = self.code.get(&place) {
+    /// The facts of the code file at `place`.
+    fn facts(&mut self, place: u32) -> Option<Arc<Cow<'v, FileFacts>>> {
+        if let Some(held) = self.facts.get(&place) {
+            return Some(Arc::clone(held));
+        }
+        let facts = Arc::new(self.view.file(self.files[place as usize].path)?);
+        self.facts.insert(place, Arc::clone(&facts));
+        Some(facts)
+    }
+
+    /// The file node, entities and declared edges of the code file at `place`
+    /// ([`CodeGraph::code_nodes`], [`CodeGraph::code_declared`]), and its mentions indexed.
+    fn declared(&mut self, place: u32, facts: &FileFacts) -> Arc<Declared> {
+        if let Some(held) = self.declared.get(&place) {
             return Arc::clone(held);
         }
+        let tests = self.tests != Tests::Exclude;
         let mut fragment = Fragment::default();
-        if let Some(facts) = self.view.file(self.files[place as usize].path) {
-            let tests = self.tests != Tests::Exclude;
-            self.graph.code(&facts, tests, &mut fragment, None);
+        self.graph.code_nodes(facts, tests, &mut fragment, None);
+        self.graph.code_declared(facts, tests, &mut fragment);
+        let mut enclosed: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+        let mut named: FxHashMap<String, Vec<u32>> = FxHashMap::default();
+        for (at, m) in facts.mentions.iter().enumerate() {
+            if let Some(d) = m.enclosing {
+                enclosed.entry(d).or_default().push(at as u32);
+            }
+            match named.get_mut(m.leaf.as_str()) {
+                Some(held) => held.push(at as u32),
+                None => {
+                    named.insert(m.leaf.clone(), vec![at as u32]);
+                }
+            }
         }
-        let fragment = Arc::new(fragment);
-        self.code.insert(place, Arc::clone(&fragment));
-        fragment
+        let declared = Arc::new(Declared {
+            fragment,
+            enclosed,
+            named,
+        });
+        self.declared.insert(place, Arc::clone(&declared));
+        declared
+    }
+
+    /// The code assertions touching `id` that the code file at `place` makes, folded into `b`:
+    /// its definitions' and declarations', then its mentions' ([`CodeGraph::code`] asserts the
+    /// mentions' edges between the two, but no mention's edge is a declaration's, so the fold is
+    /// the same). Only the mentions that can touch `id` are resolved: in `id`'s own file, every
+    /// mention when `id` is the file, else the mentions its definitions enclose; in any file, the
+    /// mentions of `named`, the leaves a mention lands on `id` by.
+    fn code(&mut self, place: u32, id: &str, named: &[&str], b: &mut Builder) {
+        let Some(facts) = self.facts(place) else {
+            return;
+        };
+        let declared = self.declared(place, &facts);
+        declared.fragment.replay(id, b);
+        let (file, rest) = split_id(id);
+        let own = facts.path == file;
+        let mut at: Vec<u32> = if own && rest.is_none() {
+            (0..facts.mentions.len() as u32).collect()
+        } else {
+            let enclosing = (facts.defs.iter().enumerate())
+                .filter(|(_, d)| own && Some(d.local.as_str()) == rest)
+                .filter_map(|(d, _)| declared.enclosed.get(&(d as u32)));
+            let of_leaves = named.iter().filter_map(|leaf| declared.named.get(*leaf));
+            enclosing.chain(of_leaves).flatten().copied().collect()
+        };
+        at.sort_unstable();
+        at.dedup();
+        let mentions = at.iter().map(|&at| &facts.mentions[at as usize]);
+        let tests = self.tests != Tests::Exclude;
+        let mut touching = Touching { id, b };
+        self.graph
+            .code_mentions(&facts, mentions, tests, &mut touching);
     }
 
     /// The places of the code files declaring `path` as a module.
@@ -366,14 +473,11 @@ impl<'v> State<'v> {
     }
 
     /// The leaves of the definitions settling the code entity `id`; none for any other id.
-    fn leaves_of(&self, id: &str) -> Vec<String> {
+    fn leaves_of(&mut self, id: &str) -> Vec<String> {
         let (file, Some(local)) = split_id(id) else {
             return Vec::new();
         };
-        if self.code_place(file).is_none() {
-            return Vec::new();
-        }
-        let Some(facts) = self.view.file(file) else {
+        let Some(facts) = self.code_place(file).and_then(|at| self.facts(at)) else {
             return Vec::new();
         };
         let mut leaves: Vec<String> = Vec::new();
@@ -417,10 +521,12 @@ impl<'v> State<'v> {
         sources.extend(intent.into_iter().map(|at| (at, Part::Intent)));
         sources.sort_unstable();
         sources.dedup();
+        let mut named: Vec<&str> = leaves.iter().map(String::as_str).collect();
+        named.extend(leaf_of(id));
         let mut b = Builder::default();
         for (place, part) in sources {
             match part {
-                Part::Code => self.code(place).replay(id, &mut b),
+                Part::Code => self.code(place, id, &named, &mut b),
                 Part::Intent => {
                     let intent = self.intent.as_ref().expect("read above");
                     intent.fragments[&place].replay(id, &mut b);
@@ -444,11 +550,19 @@ impl<'v> State<'v> {
         }
     }
 
+    /// `id` resolved from the assertions `reach` folds, read once per reach.
+    fn resolved(&mut self, id: &str, reach: Reach) -> Arc<Resolved> {
+        if let Some(held) = self.resolved.get(id).and_then(|r| r[reach.at()].as_ref()) {
+            return Arc::clone(held);
+        }
+        let resolved = Arc::new(self.resolve(id, reach));
+        let held = self.resolved.entry(id.to_string()).or_default();
+        held[reach.at()] = Some(Arc::clone(&resolved));
+        resolved
+    }
+
     /// The code node `id`, without the groupings.
     fn code_node(&mut self, id: &str) -> Option<Node> {
-        if let Some(held) = self.nodes.get(id) {
-            return held.clone();
-        }
         // A test file a product module declaration reaches is product code; shown alone, a node
         // is shown when an edge reaches it.
         let only = self.tests == Tests::Only;
@@ -457,37 +571,26 @@ impl<'v> State<'v> {
             tagged: only,
             modules: only || test_file,
         };
-        let node = self.resolve(id, reach).node;
-        self.nodes.insert(id.to_string(), node.clone());
-        node
+        self.resolved(id, reach).node.clone()
     }
 
-    /// The code edges from `id`: only its own file and the intent facts assert them.
-    fn code_out(&mut self, id: &str) -> Arc<Vec<Edge>> {
-        if let Some(held) = self.outs.get(id) {
-            return Arc::clone(held);
-        }
+    /// The code edges from `id`: only its own file and the intent facts assert them, so the
+    /// resolve that reads the node of a product id reads them.
+    fn code_out(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
             tagged: false,
             modules: false,
         };
-        let out = Arc::new(self.resolve(id, reach).out);
-        self.outs.insert(id.to_string(), Arc::clone(&out));
-        out
+        self.resolved(id, reach)
     }
 
     /// The code edges into `id`.
-    fn code_incoming(&mut self, id: &str) -> Arc<Vec<Edge>> {
-        if let Some(held) = self.ins.get(id) {
-            return Arc::clone(held);
-        }
+    fn code_incoming(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
             tagged: true,
             modules: true,
         };
-        let incoming = Arc::new(self.resolve(id, reach).incoming);
-        self.ins.insert(id.to_string(), Arc::clone(&incoming));
-        incoming
+        self.resolved(id, reach)
     }
 
     fn clusters(&mut self) -> Arc<Clusters<'v>> {
@@ -499,17 +602,26 @@ impl<'v> State<'v> {
         Arc::clone(clusters)
     }
 
-    /// The proof calls of the test calls in the code file at `place`.
-    fn proofs(&mut self, place: u32) -> Arc<Vec<ProofCall>> {
-        if let Some(held) = self.proofs.get(&place) {
+    /// The test calls of the code file at `place`, by the local path of the definition
+    /// enclosing them (none at file level): the calls each test entity makes.
+    fn test_calls(&mut self, place: u32) -> Arc<TestCalls> {
+        if let Some(held) = self.test_calls.get(&place) {
             return Arc::clone(held);
         }
-        let calls = match self.view.file(self.files[place as usize].path) {
-            Some(facts) => self.graph.resolver().file_proofs(&facts),
-            None => Vec::new(),
-        };
+        let mut calls = TestCalls::default();
+        if let Some(facts) = self.facts(place) {
+            let resolver = self.graph.resolver();
+            for (at, m) in facts.mentions.iter().enumerate() {
+                if m.kind == MentionKind::Call && resolver.mention_is_test(&facts, m) {
+                    let local = (m.enclosing)
+                        .and_then(|d| facts.defs.get(d as usize))
+                        .map(|d| d.local.clone());
+                    calls.entry(local).or_default().push(at as u32);
+                }
+            }
+        }
         let calls = Arc::new(calls);
-        self.proofs.insert(place, Arc::clone(&calls));
+        self.test_calls.insert(place, Arc::clone(&calls));
         calls
     }
 
@@ -521,17 +633,28 @@ impl<'v> State<'v> {
         if let Some(&held) = self.attach.get(&key) {
             return held;
         }
-        let won = match self.code_place(split_id(test).0) {
+        let (file, local) = split_id(test);
+        let won = match self.code_place(file) {
             Some(place) => {
-                let calls = self.proofs(place);
-                let targets: BTreeSet<&str> = (calls.iter())
-                    .filter(|p| p.caller == test)
-                    .map(|p| p.target.as_str())
+                let calls = self.test_calls(place);
+                let facts = self.facts(place).expect("a file with calls is read");
+                let resolver = self.graph.resolver();
+                let leaves: FxHashSet<&str> = (calls.get(&local.map(String::from)).into_iter())
+                    .flatten()
+                    .map(|&at| facts.mentions[at as usize].leaf.as_str())
+                    .collect();
+                let targets: BTreeSet<String> = (leaves.into_iter())
+                    .filter_map(|leaf| resolver.proof(file, leaf))
                     .collect();
                 let clusters = self.clusters();
                 let mut votes: std::collections::BTreeMap<usize, usize> = Default::default();
-                for target in targets {
-                    for &(a, at) in clusters.membership.get(target).into_iter().flatten() {
+                for target in &targets {
+                    for &(a, at) in clusters
+                        .membership
+                        .get(target.as_str())
+                        .into_iter()
+                        .flatten()
+                    {
                         if a == arm {
                             *votes.entry(at).or_default() += 1;
                         }
@@ -562,24 +685,32 @@ impl<'v> State<'v> {
             .filter(|(a, _)| *a == arm)
             .flat_map(|&c| clusters.cluster(c).members.iter().map(String::as_str))
             .collect();
-        let mut files = BTreeSet::new();
+        // A test call proves a member only by one of the member's leaves: its caller is the
+        // definition enclosing it, or its file.
+        let mut callers = BTreeSet::new();
         for m in &members {
             for leaf in self.leaves_of(m) {
+                let resolver = self.graph.resolver();
+                let mut calls = Vec::new();
                 for mention in self.view.mentions_named(&leaf) {
                     let path = mention.file.path;
-                    let test = mention.test || self.graph.resolver().is_test_file(path);
-                    if mention.file.half == Half::Code && mention.kind == MentionKind::Call && test
+                    let test = mention.test || resolver.is_test_file(path);
+                    if mention.file.half == Half::Code
+                        && mention.kind == MentionKind::Call
+                        && test
+                        && resolver
+                            .proof(path, &leaf)
+                            .is_some_and(|t| members.contains(t.as_str()))
                     {
-                        files.extend(self.code_place(path));
+                        calls.push((path, mention.enclosing));
                     }
                 }
-            }
-        }
-        let mut callers = BTreeSet::new();
-        for place in files {
-            for p in self.proofs(place).iter() {
-                if members.contains(p.target.as_str()) {
-                    callers.insert(p.caller.clone());
+                for (path, enclosing) in calls {
+                    let facts = self.code_place(path).and_then(|at| self.facts(at));
+                    let local = (enclosing.zip(facts.as_deref()))
+                        .and_then(|(d, facts)| facts.defs.get(d as usize))
+                        .map(|d| d.local.as_str());
+                    callers.insert(local.map_or_else(|| path.to_string(), |l| entity_id(path, l)));
                 }
             }
         }
@@ -630,7 +761,7 @@ impl<'v> State<'v> {
 
     /// The edges from `id`: its code edges, its memberships and its tests' attachments.
     fn out(&mut self, id: &str) -> Vec<Edge> {
-        let mut edges = self.code_out(id).to_vec();
+        let mut edges = self.code_out(id).out.clone();
         if let Some(node) = self.code_node(id) {
             let clusters = self.clusters();
             let memberships = clusters.membership.get(id).map_or(&[][..], Vec::as_slice);
@@ -652,7 +783,7 @@ impl<'v> State<'v> {
 
     /// The edges into `id`: its code edges, and into a cluster its members' and its tests'.
     fn incoming(&mut self, id: &str) -> Vec<Edge> {
-        let mut edges = self.code_incoming(id).to_vec();
+        let mut edges = self.code_incoming(id).incoming.clone();
         let clusters = self.clusters();
         for (arm, (_, rel)) in ARMS.into_iter().enumerate() {
             let with_id: Vec<(usize, usize)> = (clusters.with_id(id).iter())
@@ -688,11 +819,20 @@ impl<'v> State<'v> {
         let Some(place) = self.code_place(file) else {
             return Vec::new();
         };
-        let mut ids: Vec<String> = (self.code(place).touching.keys())
-            .filter(|id| matches!(split_id(id), (f, Some(_)) if f == file))
-            .cloned()
+        let Some(facts) = self.facts(place) else {
+            return Vec::new();
+        };
+        // A file's named entities are its definitions' ids and the placeholders of its calls.
+        let mut ids: Vec<String> = (facts.defs.iter())
+            .map(|d| entity_id(file, &d.local))
+            .chain(
+                (facts.mentions.iter())
+                    .filter(|m| m.kind == MentionKind::Call)
+                    .map(|m| placeholder_id(file, &m.leaf)),
+            )
             .collect();
         ids.sort_unstable();
+        ids.dedup();
         let mut nodes = Vec::new();
         for id in ids {
             nodes.extend(self.node(&id).filter(|n| member_file(n) == Some(file)));
@@ -1150,10 +1290,10 @@ mod tests {
 
     /// Each row: an id, and every file, definition and mention a read of its node and edges
     /// makes once the view is open. A definition reads its own file, the design and workflow
-    /// files, the files holding a tagged reference to its leaf, and the mentions of that leaf
-    /// alone; a file read resolves every mention it holds, so the definitions read are those of
-    /// the leaves its own file and the tagging files name. A file reads itself, the design files
-    /// and the module declarations.
+    /// files, the files holding a tagged reference to its leaf, and the mentions of that leaf;
+    /// it resolves only the mentions it encloses and those of its leaf, so the definitions read
+    /// are those of the leaves it names and its own. A file reads itself, the design files and
+    /// the files declaring modules, and resolves the mentions it holds alone.
     #[test]
     fn a_neighbourhood_reads_one_ids_file_and_its_leaf_only() {
         let intent = [
@@ -1165,8 +1305,6 @@ mod tests {
             (
                 "src/c.rs::Widget",
                 &[
-                    // src/b.rs tags Widget, and a mentioning file resolves as one unit.
-                    "defs Shape",
                     "defs Widget",
                     "file src/b.rs",
                     "file src/c.rs",
@@ -1176,12 +1314,12 @@ mod tests {
             (
                 "src/a.rs::run",
                 &[
+                    // run calls helper, compute and draw and tags Shape.
                     "defs Shape",
                     "defs compute",
                     "defs draw",
                     "defs helper",
                     "defs run",
-                    "defs vanish",
                     "file src/a.rs",
                     "mentions run",
                 ],
@@ -1189,12 +1327,6 @@ mod tests {
             (
                 "src/sub.rs",
                 &[
-                    // src/a.rs declares the module, and resolves as one unit.
-                    "defs Shape",
-                    "defs compute",
-                    "defs draw",
-                    "defs helper",
-                    "defs vanish",
                     "file src/a.rs",
                     "file src/a_tests.rs",
                     "file src/b.rs",
