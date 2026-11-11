@@ -300,6 +300,42 @@ mod tests {
         }
     }
 
+    /// A branch whose ref names a commit git cannot read is a head that cannot be read, never a
+    /// branch with no commit: only git's own answer that the ref does not exist names the empty
+    /// tree.
+    #[test]
+    fn a_head_git_cannot_read_is_an_error_never_the_empty_tree() {
+        fn objects_file(root: &Path) -> PathBuf {
+            let commit = git_out(root, &["rev-parse", "HEAD"]);
+            let (fan, rest) = commit.split_at(2);
+            root.join(".git").join("objects").join(fan).join(rest)
+        }
+        /// Leaves the head of the repository at its root unreadable.
+        type BreakHead = fn(&Path);
+        let rows: [(&str, BreakHead); 2] = [
+            ("a commit whose object is corrupt", |root| {
+                let file = objects_file(root);
+                std::fs::remove_file(&file).unwrap();
+                std::fs::write(&file, b"junk").unwrap();
+            }),
+            ("a branch naming a commit the repository lacks", |root| {
+                let missing = "1".repeat(git_out(root, &["rev-parse", "HEAD"]).len());
+                std::fs::write(
+                    root.join(".git").join("refs").join("heads").join("work"),
+                    format!("{missing}\n"),
+                )
+                .unwrap();
+            }),
+        ];
+        for (name, break_head) in rows {
+            let dir = repo(&[("a.txt", "a\n")]);
+            git_ok(dir.path(), &["checkout", "-q", "-b", "work"]);
+            break_head(dir.path());
+            let head = GitTreeSource::new(dir.path()).head();
+            assert!(head.is_err(), "{name}: read as {head:?}");
+        }
+    }
+
     #[test]
     fn advance_reads_git_objects_never_worktree_bytes() {
         struct Row {
