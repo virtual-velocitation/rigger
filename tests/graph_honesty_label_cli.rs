@@ -2,7 +2,7 @@
 //! describes, then how the caller's worktree differs from it and what that withheld.
 
 use crate::common;
-use common::cli::{run_rigger, run_rigger_ok, temp_project};
+use common::cli::{run_rigger, run_rigger_envs, run_rigger_ok, temp_project};
 use common::fixtures::{git_commit_all, git_out, write_text};
 
 /// GIVEN a project whose source is committed and built, WHEN `rigger graph --around` reads it
@@ -50,6 +50,53 @@ fn around_prints_the_label_first() {
                 "subgraph around \"src/lib.rs\" (depth 1):",
             ],
             "{case}: the label heads the answer; stdout:\n{out}"
+        );
+    }
+}
+
+/// GIVEN a committed, built project with one file edited since, WHEN `rigger graph` answers
+/// `--around` the file, `--show` its function and `--lookup` the function's name, each read traced
+/// by git itself (`GIT_TRACE`), THEN each read's one open runs exactly two git commands: the
+/// worktree diff against the head's tree and the untracked listing.
+#[cfg(feature = "symbols")]
+#[test]
+fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    write_text(root, "src/other.rs", "pub fn beta() {}\n");
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    write_text(root, "src/other.rs", "pub fn gamma() {}\n");
+    let traces = tempfile::tempdir().unwrap();
+    // (read, the arguments)
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "around",
+            &["graph", "--around", "src/lib.rs", "--depth", "1"],
+        ),
+        ("show", &["graph", "--show", "src/lib.rs::alpha"]),
+        ("lookup", &["graph", "--lookup", "alpha"]),
+    ];
+    for (case, args) in cases {
+        let trace = traces.path().join(case);
+        let (_, err, ok) = run_rigger_envs(root, args, &[("GIT_TRACE", trace.to_str().unwrap())]);
+        assert!(ok, "{case}: the read answers; stderr:\n{err}");
+        let traced = std::fs::read_to_string(&trace).unwrap_or_default();
+        // Each git process names its command once, as a built-in or as the program it runs.
+        let mut commands: Vec<String> = (traced.lines())
+            .filter_map(|l| {
+                let (_, rest) = l
+                    .split_once("trace: built-in: git ")
+                    .or_else(|| l.split_once("trace: exec: "))?;
+                Some(rest.split(' ').take(2).collect::<Vec<_>>().join(" "))
+            })
+            .collect();
+        commands.sort();
+        assert_eq!(
+            commands,
+            ["diff --name-status", "ls-files --others"],
+            "{case}: one open runs the diff and the untracked listing alone; trace:\n{traced}"
         );
     }
 }
