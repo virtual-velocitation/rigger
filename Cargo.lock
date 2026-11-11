@@ -2186,6 +2186,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "rigger-domain",
+ "ring",
  "rustix 1.1.4",
  "tempfile",
  "tokio",

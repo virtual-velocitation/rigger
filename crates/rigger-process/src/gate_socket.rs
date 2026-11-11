@@ -5,11 +5,15 @@
 //! `Unsupported` error naming the named pipe it would take, which the verb reports as its error.
 
 use std::io;
-use std::path::Path;
-#[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
+
+/// The gate socket path for the project rooted at `repo_root`, under the runtime directory
+/// `runtime_dir`.
+pub fn socket_path_under(_runtime_dir: &Path, _repo_root: &Path) -> io::Result<PathBuf> {
+    Err(io::Error::other("no socket path rule yet"))
+}
 
 /// A bound gate request socket, its file removed when it drops.
 pub struct GateSocket {
@@ -258,5 +262,91 @@ mod tests {
             .expect("a live socket is not taken");
         assert_eq!(again.kind(), std::io::ErrorKind::AddrInUse);
         drop(live);
+    }
+
+    /// ONE SOCKET PER REPO, NEVER OUT OF PATH: GIVEN two repo paths under one runtime directory,
+    /// THEN they share a socket path exactly when they name the same repo (a path through `..`
+    /// included), the socket sits in the owner's `rigger-<uid>` directory, and its length is the
+    /// runtime directory's plus a fixed tail however long the repo path is.
+    #[test]
+    fn the_socket_path_is_one_per_repo_under_the_owners_directory_with_a_bounded_length() {
+        let runtime = tempfile::tempdir().unwrap();
+        let repos = tempfile::tempdir().unwrap();
+        let deep = repos.path().join("d".repeat(200)).join("e".repeat(200));
+        for dir in ["a", "b", "a/sub"] {
+            std::fs::create_dir_all(repos.path().join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let path = |p: &Path| socket_path_under(runtime.path(), p).unwrap();
+        let (a, b, a_via_sub) = (
+            repos.path().join("a"),
+            repos.path().join("b"),
+            repos.path().join("a/sub/.."),
+        );
+        let owner_dir = runtime
+            .path()
+            .join(format!("rigger-{}", rustix::process::getuid().as_raw()));
+        let tail = "/".len() + 16 + ".sock".len();
+        for (left, right, same) in [
+            (&a, &a, true),
+            (&a, &a_via_sub, true),
+            (&a, &b, false),
+            (&a, &deep, false),
+        ] {
+            let (l, r) = (path(left), path(right));
+            assert_eq!(l == r, same, "{} vs {}", left.display(), right.display());
+            for p in [&l, &r] {
+                assert_eq!(p.parent(), Some(owner_dir.as_path()), "{}", p.display());
+                assert_eq!(
+                    p.as_os_str().len(),
+                    owner_dir.as_os_str().len() + tail,
+                    "{}",
+                    p.display()
+                );
+                assert_eq!(p.extension().and_then(|e| e.to_str()), Some("sock"));
+            }
+        }
+    }
+
+    /// THE OWNER'S DIRECTORY IS PRIVATE: GIVEN no `rigger-<uid>` directory, WHEN the socket binds,
+    /// THEN the directory is made readable by its owner only; GIVEN one others can enter, THEN
+    /// binding and asking are refused rather than trusting a socket another user could place.
+    #[test]
+    fn binding_makes_the_owner_directory_private_and_a_shared_one_is_refused() {
+        let runtime = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+        let owner_dir = path.parent().unwrap().to_path_buf();
+        let socket = GateSocket::bind(&path).unwrap();
+        let mode = std::fs::metadata(&owner_dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "only the owner may enter its directory");
+        drop(socket);
+        std::fs::set_permissions(&owner_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (end, err) in [
+            ("bind", GateSocket::bind(&path).err()),
+            ("ask", ask(&path, &request()).err()),
+        ] {
+            let err = err.unwrap_or_else(|| panic!("{end}: a shared directory is refused"));
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{end}: {err}");
+        }
+    }
+
+    /// A PATH TOO LONG FOR A SOCKET IS NAMED AS SUCH: GIVEN a runtime directory so long the
+    /// socket path overflows the OS limit, THEN binding and asking both answer `InvalidInput`,
+    /// the cause the verb reports before it falls back to an information-only run.
+    #[test]
+    fn a_socket_path_longer_than_the_os_allows_is_invalid_input_at_both_ends() {
+        let runtime = tempfile::tempdir().unwrap();
+        let long = runtime.path().join("r".repeat(120));
+        std::fs::create_dir_all(&long).unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let path = socket_path_under(&long, repo.path()).unwrap();
+        for (end, err) in [
+            ("bind", GateSocket::bind(&path).err()),
+            ("ask", ask(&path, &request()).err()),
+        ] {
+            let err = err.unwrap_or_else(|| panic!("{end}: an over-long path fails"));
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{end}: {err}");
+        }
     }
 }

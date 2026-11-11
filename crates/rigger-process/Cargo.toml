@@ -29,6 +29,9 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 # The build budget's cross-process advisory slot lock (`flock` under the hood).
 fs2 = "0.4"
+# The gate socket's path rule: the SHA-256 of the canonical repo root names the socket, the same
+# digest the conductor's verdict key already takes from this crate.
+ring = "0.17"
 
 # The Linux keep-awake adapter's logind client (spec 105): zbus's async API on its tokio
 # integration, driven by a current-thread tokio runtime each acquire builds and shuts down before
