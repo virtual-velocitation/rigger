@@ -66,6 +66,7 @@ pub use crate::contextgraph::query::{
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, run, spawn};
+use rigger_domain::code_view::Tests;
 /// The supervised child-process guard, re-exported from `rigger-driver` under its historical path.
 pub use rigger_driver::reaped_child::ReapedChild;
 
@@ -2026,7 +2027,7 @@ fn calls_view(
 /// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
 fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
 where
-    G: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    G: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
         return None;
@@ -2045,11 +2046,13 @@ where
         .map(percent_decode)
         .unwrap_or_else(|| TIER_INFERRED.to_string());
     let dir = parse_call_dir(query_param(target, "dir").map(percent_decode).as_deref());
+    // The caller refuses a malformed `tests=` before this runs.
+    let tests = tests_param(target).unwrap_or_default();
 
     let down = matches!(dir, CallDir::Down | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor));
+        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor, tests));
     let up = matches!(dir, CallDir::Up | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor));
+        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor, tests));
 
     let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
@@ -3187,6 +3190,14 @@ pub fn route(
     }
 }
 
+/// The `tests` filter a request names: `exclude` when it carries none, else the one
+/// [`Tests`] parser's reading of `tests=`.
+fn tests_param(target: &str) -> Result<Tests, String> {
+    query_param(target, "tests")
+        .map(percent_decode)
+        .map_or(Ok(Tests::Exclude), |spelled| spelled.parse())
+}
+
 /// Percent-decode a URL query value (`%XX` -> the byte; every other byte verbatim). The client
 /// `encodeURIComponent`s a seed id before putting it on `/api/graph?seed=`, because graph node ids
 /// carry `#` (a rationale's `<file>#L<line>`), `::` (a `<file>::<name>` entity), and `/` (a path);
@@ -3273,9 +3284,9 @@ pub fn serve_on<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> Graph,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
@@ -3331,9 +3342,9 @@ fn handle_conn<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> Graph,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -3444,7 +3455,14 @@ where
                 // opens only the calls provider, never the whole-graph read. `calls_route` returns
                 // `None` for every other `/api/graph` request (and every non-graph path), so those
                 // fall through to the byte-identical neighborhood / overview / drill path below.
-                if let Some(resp) = (path == "/api/graph")
+                //
+                // The graph's `tests=exclude|include|only` filter rides every `/api/graph` read, the
+                // directed-call views included; a value that is none of the three is refused 400
+                // before any provider is consulted.
+                let tests = tests_param(&target);
+                if let (true, Err(refusal)) = (path == "/api/graph", &tests) {
+                    Response::text(400, &format!("dash: {refusal}"))
+                } else if let Some(resp) = (path == "/api/graph")
                     .then(|| calls_route(instance, &target, calls_provider))
                     .flatten()
                 {
@@ -3458,7 +3476,7 @@ where
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
                             let graph = if path == "/api/graph" {
-                                graph_provider(instance)
+                                graph_provider(instance, tests.unwrap_or_default())
                             } else {
                                 polled_graph
                             };
@@ -4332,12 +4350,15 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
         };
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let instances_provider = Vec::new;
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         // A dash that FAILS instead of serving reports its error here, so the failure surfaces
         // LOUD and named (spec 19c) rather than as a silent stall that only shows up much later
         // as an unexplained deadline.
@@ -8113,11 +8134,14 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let provider = Arc::new(provider);
         let server = std::thread::spawn(move || {
@@ -8155,6 +8179,97 @@ mod tests {
         assert_eq!(v["metrics"]["review_approve"], 1);
     }
 
+    /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
+    /// graph provider, to the directed-call provider too; a value that is none of the three is
+    /// refused 400 before either provider is consulted. Each row: the request's target, the status
+    /// it answers, and the filters the whole-graph and directed-call providers were opened under.
+    #[test]
+    fn api_graph_takes_the_tests_parameter() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::Mutex;
+
+        let ask = |target: &str| -> (String, Vec<Tests>, Vec<Tests>) {
+            let graph_seen = Arc::new(Mutex::new(Vec::new()));
+            let calls_seen = Arc::new(Mutex::new(Vec::new()));
+            let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
+            let provider = |_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            };
+            let graph_provider = move |_: Option<&str>, tests: Tests| {
+                g.lock().unwrap().push(tests);
+                Graph::default()
+            };
+            let calls_provider = move |_: Option<&str>,
+                                       _: &[String],
+                                       _: crate::contextgraph::Direction,
+                                       _: i64,
+                                       _: &str,
+                                       tests: Tests| {
+                c.lock().unwrap().push(tests);
+                crate::contextgraph::CallGraph::default()
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let provider = Arc::new(provider);
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let status = resp.lines().next().unwrap().to_string();
+            let graph_seen = graph_seen.lock().unwrap().clone();
+            let calls_seen = calls_seen.lock().unwrap().clone();
+            (status, graph_seen, calls_seen)
+        };
+        let ok = "HTTP/1.1 200 OK";
+        let refused = "HTTP/1.1 400 Bad Request";
+        let cases = [
+            ("/api/graph", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=exclude", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=include", ok, vec![Tests::Include], vec![]),
+            ("/api/graph?tests=only", ok, vec![Tests::Only], vec![]),
+            (
+                "/api/graph?lens=code&tests=include",
+                ok,
+                vec![Tests::Include],
+                vec![],
+            ),
+            (
+                "/api/graph?view=calls&seed=x&dir=down&tests=only",
+                ok,
+                vec![],
+                vec![Tests::Only],
+            ),
+            ("/api/graph?tests=some", refused, vec![], vec![]),
+            (
+                "/api/graph?view=calls&seed=x&tests=",
+                refused,
+                vec![],
+                vec![],
+            ),
+        ];
+        for (target, status, graph, calls) in cases {
+            assert_eq!(ask(target), (status.to_string(), graph, calls), "{target}");
+        }
+    }
+
     /// The read-only guard also holds over a real socket: a POST is refused 405 and the
     /// provider is never even consulted (it would panic if called), proving no request can
     /// reach a mutation path.
@@ -8166,14 +8281,15 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = |_instance: Option<&str>| -> Graph {
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
         let calls_provider = |_: Option<&str>,
                               _: &[String],
                               _: crate::contextgraph::Direction,
                               _: i64,
-                              _: &str|
+                              _: &str,
+                              _: Tests|
          -> crate::contextgraph::CallGraph {
             panic!("a non-GET request must never open the calls projection");
         };
@@ -8238,7 +8354,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>| -> Graph {
+        let graph_provider = move |_instance: Option<&str>, _tests: Tests| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {
@@ -8253,9 +8369,12 @@ mod tests {
         // A call view is not exercised here (no request carries `view=calls`), so the calls
         // provider must never be consulted; a plain empty walk keeps the wiring complete.
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -9250,7 +9369,8 @@ mod tests {
                       seed: &[String],
                       dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 p.calls(seed, dir, depth, floor).unwrap_or_default()
             };
@@ -9308,7 +9428,8 @@ mod tests {
                       _seed: &[String],
                       _dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 seen.borrow_mut().push((depth, floor.to_string()));
                 CallGraph::default()
@@ -9341,7 +9462,8 @@ mod tests {
                       _seed: &[String],
                       dir: Direction,
                       _depth: i64,
-                      _floor: &str|
+                      _floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 dirs.borrow_mut().push(dir);
                 CallGraph::default()
