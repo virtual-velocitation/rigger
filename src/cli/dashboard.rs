@@ -21,8 +21,12 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // (spec 39, criterion 3) - never passed by the guard-bound `rigger run` dash (which keeps
     // its `ReapedChild`). `--exit-on-stdin-close` makes this dash exit once its stdin reaches
     // its end: the `rigger run` dash passes it, so the run's pipe bounds the dash's life.
+    // `--port-from <n>` binds the first free port at or above `n` instead of the one fixed
+    // `--port`, and prints the URL it serves at as a line on stdout: the `rigger run` dash passes
+    // it, so the address the run records is the one its own dash bound.
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
+    let mut first_free = false;
     let mut reap_on_idle = false;
     let mut exit_on_stdin_close = false;
     let mut i = 0;
@@ -36,12 +40,13 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                         .ok_or("dash: --export expects a path")?,
                 );
             }
-            "--port" => {
+            flag @ ("--port" | "--port-from") => {
                 i += 1;
                 port = args
                     .get(i)
                     .and_then(|p| p.parse().ok())
-                    .ok_or("dash: --port expects a port number (1-65535)")?;
+                    .ok_or_else(|| format!("dash: {flag} expects a port number (1-65535)"))?;
+                first_free = flag == "--port-from";
             }
             "--reap-on-idle" => reap_on_idle = true,
             "--exit-on-stdin-close" => exit_on_stdin_close = true,
@@ -269,8 +274,15 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             // DIRECTLY - no free-port search. If a rigger dash is already serving that address,
             // report it and exit 0 (never a second dash, never a drifted port); a non-dash
             // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
+            // `--port-from` searches instead and never short-circuits: the dash that binds is the
+            // one that chose the port.
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            match dash::bind_singleton(addr) {
+            let bound = if first_free {
+                dash::bind_first_free_from(port).map(dash::SingletonBind::Bound)
+            } else {
+                dash::bind_singleton(addr)
+            };
+            match bound {
                 Ok(dash::SingletonBind::AlreadyServing(existing)) => {
                     // The singleton is the point: a second invocation reports the ONE known
                     // address and exits cleanly instead of starting a rival dash.
@@ -309,6 +321,9 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // short-circuited singleton invocation serves nothing and starts no watcher.
                     if exit_on_stdin_close {
                         std::thread::spawn(exit_once_stdin_closes);
+                    }
+                    if first_free {
+                        println!("http://{}/", listener.local_addr()?);
                     }
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();

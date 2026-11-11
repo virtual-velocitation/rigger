@@ -930,10 +930,11 @@ force the observer to hunt for the right one. So `rigger dash` (`crates/rigger-d
 without binding a second one, never searching upward.
 
 The run driver does NOT bind the fixed singleton: `rigger run` (`start_run_dashboard` ->
-`spawn_run_dashboard` -> `dash::free_port_from(DEFAULT_PORT)`) spawns its OWN per-run
-dashboard that searches UPWARD from `DEFAULT_PORT` for a free port, so two concurrent
-`rigger run` invocations bind 7420 and 7421 - each run gets a private view for its own
-lifetime, reaped when that run ends. The fixed singleton above is the shared observation
+`spawn_run_dashboard`) spawns its OWN per-run dashboard (`rigger dash --port-from 7420`) that
+binds the first free port UPWARD from `DEFAULT_PORT` itself (`dash::bind_first_free_from`)
+and prints the URL it bound on stdout; the run records only that reported address, so two
+concurrent `rigger run` invocations bind 7420 and 7421 and never record one address - each
+run gets a private view for its own lifetime, reaped when that run ends. The fixed singleton above is the shared observation
 point an operator starts with `rigger dash`; the port-searching per-run dash is `rigger run`'s
 private view, not the machine singleton.
 

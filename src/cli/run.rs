@@ -1426,7 +1426,7 @@ pub(crate) fn load_criteria(
 /// than failing the whole page.
 /// Auto-start a read-only `rigger dash` for the run a driver is about to drive, so an active
 /// harness is never invisible (spec 19b, unit 1: always-on, no opt-in flag). The dash binds
-/// [`dash::DEFAULT_PORT`] or the next free loopback port (so two concurrent harnesses each
+/// [`dash::DEFAULT_PORT`] or the next free loopback port itself (so two concurrent harnesses each
 /// get their OWN); its URL is printed at run start and recorded in `.rigger/`[`DASH_URL_FILE`]
 /// so `rigger status` can surface it.
 ///
@@ -1466,25 +1466,43 @@ fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Opt
     }
 }
 
-/// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
-/// record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
-/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The child's stdout
-/// is silenced (the parent's stdout is the run's own report, which the dash child must never
-/// write to); the dash logs only to its own stderr. Its stdin is a pipe whose write end the
-/// guard's child handle holds for the whole run, and the dash runs with
-/// `--exit-on-stdin-close`, so however the run ends, the closed pipe ends the dash with it.
-/// Returns the guard plus the URL for the run-start pointer.
+/// How long the run waits for its dash to report the address it bound before it continues
+/// headless: a dash that fails to start ends its stdout and is noticed at once, so the bound only
+/// ever holds a run whose dash hangs before binding.
+const DASH_REPORT_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Spawn `rigger dash --port-from <DEFAULT_PORT>` as a child of the current executable, read the
+/// URL it reports once it has bound the first free port, and record that URL in
+/// `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
+/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The dash chooses its
+/// own port by binding it, so two runs starting together never record one address. The child's
+/// stdout is piped to this read alone, never the run's own report; the dash logs to its own
+/// stderr. Its stdin is a pipe whose write end the guard's child handle holds for the whole run,
+/// and the dash runs with `--exit-on-stdin-close`, so however the run ends, the closed pipe ends
+/// the dash with it. A dash that reports no address within [`DASH_REPORT_BOUND`] is reaped and
+/// nothing is recorded. Returns the guard plus the URL for the run-start pointer.
 fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
-    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
-    let child = subprocess::command(exe)
-        .arg("dash")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--exit-on-stdin-close")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()?;
+    let mut child = dash::ReapedChild::new(
+        subprocess::command(exe)
+            .arg("dash")
+            .arg("--port-from")
+            .arg(dash::DEFAULT_PORT.to_string())
+            .arg("--exit-on-stdin-close")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut reported = None;
+    child.read_lines_until(std::time::Instant::now() + DASH_REPORT_BOUND, |line| {
+        reported = dash::url_port(line);
+        if reported.is_some() {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    });
+    let port = reported.ok_or("the dashboard reported no address it serves at")?;
     let url = format!("http://127.0.0.1:{port}/");
     // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
     // `.rigger/` already exists (the driver created it before reaching here).
@@ -1497,7 +1515,7 @@ fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>
     let _ = marker.write(&marker_path);
     Ok((
         RunDash {
-            child: Some(dash::ReapedChild::new(child)),
+            child: Some(child),
             marker,
             marker_path,
         },
