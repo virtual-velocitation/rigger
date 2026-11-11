@@ -12,6 +12,10 @@ pub mod grounder;
 /// generation a batch is recorded under can never drift between the two ingest entries.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
+/// The combined lookup: one call answering a list of terms from the code graph, a live text scan
+/// of the caller's working tree and the tree's ranked prose, in one bounded reply.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod lookup;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
