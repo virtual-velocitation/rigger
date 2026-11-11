@@ -1,5 +1,10 @@
 # 119 - A node is addressed by its path and shown by one renderer
 
+**Status: partly superseded.** This spec is built. Its path ids, member rule and one renderer
+stand: the code store (docs/architecture-addendum-the-code-store.md) keeps the id scheme. Its STATE PLACEMENT and its fold and
+extraction clauses describe code nodes as graph.db projections of the ledger and the tree; the
+code store replaces them, holding code in a snapshot at a commit and leaving graph.db records only.
+
 **Goal:** a persona reaches a definition by the name its language gives it and reads what the graph
 knows about it in one place. Today every code node hangs off its file only (`CONTAINS` file ->
 entity, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:2718-2727`), two `new` methods in

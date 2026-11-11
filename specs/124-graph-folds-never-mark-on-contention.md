@@ -1,5 +1,10 @@
 # 124 - Graph folds never mark on contention
 
+**Status: partly superseded.** This spec is built. The catch-up cursor and the one in-order
+procedure stand for record events. The code store (docs/architecture-addendum-the-code-store.md) removes the ledger entry, so
+the re-extraction of a foreign ledger entry at any age, the entry's own transaction and its retry
+under the ceiling go.
+
 **Goal:** every appended event is folded into `graph.db` at its append, or caught up by the next
 call through the one in-order catch-up procedure, or passed over with its cause, from the `applied`
 ledger and a catch-up cursor, never by an owed mark and a whole-log rebuild; and the whole-log rebuild is kept for a fold-rule

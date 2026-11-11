@@ -1,5 +1,11 @@
 # 101 - A one-shot command folds only the run it serves
 
+**Status: partly superseded.** This spec is built. The code store (docs/architecture-addendum-the-code-store.md) removes
+the machinery it bounds for perception: the per-file latest-generation group lookup,
+`project_scoped_latest_generations`, the index-lag sample and the pending-proof reconcile, because
+the log keeps no entry per file generation and graph.db holds records only. The bound on every
+one-shot read to the run it serves stands.
+
 **Goal:** every `rigger` invocation that serves one run reads that run, not the whole
 history of the project. Measured on the 2026-09-15 store (2,075,706 events, 1.24 GB):
 `rigger status` peaks at 2.7 GB resident, `rigger peers` at 5.3 GB (its sidecar replays from

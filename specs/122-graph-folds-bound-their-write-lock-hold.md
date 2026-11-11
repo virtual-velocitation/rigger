@@ -1,5 +1,10 @@
 # 122 - Graph folds bound their write-lock hold
 
+**Status: partly superseded.** This spec is built. The code store (docs/architecture-addendum-the-code-store.md) removes the
+ledger entry it bounds the fold of, so the fold of a single entry, extraction outside the write
+transaction and the cost bound over proof rows go; the bounded transaction for the record fold
+stands.
+
 **Goal:** the rebuild's fold passes (`fold_source`: the shadow fold and the tail) and the live fold of
 a single ledger entry hold `graph.db`'s write lock for at most one bounded transaction - `FOLD_BATCH`
 non-entry events, or one entry alone - with no extraction inside it, each transaction's cost linear
