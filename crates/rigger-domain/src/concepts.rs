@@ -36,6 +36,9 @@ use crate::contextgraph::{
 /// default can never drift between the lenses.
 pub use community::DEFAULT_RESOLUTION;
 
+/// What every concept id begins with: `concept/<resolution>/<number>`, minted by [`derive`].
+pub const CONCEPT_ID_PREFIX: &str = "concept/";
+
 /// The node kinds that make up the INTENT layer's document side (spec 29b): a design / RA doc, a
 /// load-bearing decision, a handbook rule, or a `# WHY:` rationale comment. An edge only enters the
 /// intent layer if one of its endpoints is one of these - which EXCLUDES a dev-loop
@@ -143,7 +146,7 @@ pub fn derive(g: &Graph, layer: &Coupling, resolution: f64) -> Derivation {
             grouping
                 .group_of
                 .iter()
-                .map(|n| format!("concept/{res_str}/{n}")),
+                .map(|n| format!("{CONCEPT_ID_PREFIX}{res_str}/{n}")),
         )
         .collect();
 
@@ -162,7 +165,7 @@ pub fn derive(g: &Graph, layer: &Coupling, resolution: f64) -> Derivation {
         .iter()
         .enumerate()
         .map(|(gnum, idxs)| {
-            let concept = format!("concept/{res_str}/{gnum}");
+            let concept = format!("{CONCEPT_ID_PREFIX}{res_str}/{gnum}");
             // The most-central DOCUMENT member names the concept; fall back to the most-central
             // member overall when the concept has no document.
             let pick = most_central(idxs, degs, nodes, &node_by_id, true)

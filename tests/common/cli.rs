@@ -1441,17 +1441,13 @@ fn show_planted(root: &Path, file: &str, path: &str, kind: &str, line: u64, lang
 }
 
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
-/// identity"): the node and edge assertions each record holds (edges by their columns, never
-/// their row ids). Everything else in the file is history a compacted log no longer replays.
+/// identity"): the node assertions each record holds. Everything else in the file is history a
+/// compacted log no longer replays.
 pub fn fold_state(graph_db: &Path) -> Vec<String> {
     let conn = rusqlite::Connection::open(graph_db).unwrap();
     [
         "SELECT project, identity, generation, node_id, kind, attrs FROM node_assertions
-          ORDER BY project, identity, node_id",
-        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
-                e.valid_from, e.valid_to, e.source
-           FROM edge_assertions a JOIN edges e ON e.id = a.edge_id
-          ORDER BY 1, 2, 3, 4, 5, 6, 7",
+       ORDER BY project, identity, node_id",
     ]
     .into_iter()
     .flat_map(|sql| {

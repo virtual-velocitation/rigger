@@ -47,19 +47,13 @@ CREATE TABLE IF NOT EXISTS node_assertions (
   PRIMARY KEY (project, identity, node_id)
 );
 CREATE INDEX IF NOT EXISTS idx_node_assertions_node ON node_assertions(project, node_id);
-CREATE TABLE IF NOT EXISTS edge_assertions (
-  project TEXT NOT NULL, identity TEXT NOT NULL, generation TEXT NOT NULL, edge_id INTEGER NOT NULL,
-  since INTEGER NOT NULL, source INTEGER NOT NULL,
-  PRIMARY KEY (project, identity, edge_id)
-);
-CREATE INDEX IF NOT EXISTS idx_edge_assertions_edge ON edge_assertions(project, edge_id);
 CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT NOT NULL);
 ";
 
 /// The fold rule `graph.db` was folded under, recorded as the file's `user_version`. Rule 1 is
 /// generations superseding their predecessors (spec 101): a file folded before it holds facts a
 /// superseded generation asserted and has no assertion ledgers to retire them from. Rule 2 is
-/// the shared node's one kind (spec 116, [`settling_definition`]): a file folded before it gave
+/// the shared node's one kind (spec 116): a file folded before it gave
 /// a node the definitions of one file share the kind and line of the last one folded. Rule 3 is
 /// the node addressed by its path (spec 119): a file folded before it holds a nested definition
 /// at its flat `<file>::<leaf>` id rather than its path's, with no `CONTAINS` from its parent.
@@ -70,12 +64,15 @@ CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT
 /// ([`locations`](super::locations)): a file folded before it holds a record naming its location
 /// by `file` with no ABOUT edge to that file. Rule 6 is a community membership held only by code
 /// ([`holds_attachment`]): a file folded before it keeps an `IN_COMMUNITY` edge live on a path whose
-/// code retired while a record still names it. A file at an older version that folded anything owes
+/// code retired while a record still names it. Rule 7 is the records-only fold: every derived type
+/// is skipped, so a file folded before it holds the code, document and grouping facts the code
+/// store's view now answers, and its rebuild swaps in only a refold that keeps every record fact it
+/// holds ([`refuse_a_lossy_refold`]). A file at an older version that folded anything owes
 /// one cold rebuild from the log ([`Projector::rebuild`], which only `rigger setup` runs) and
 /// nothing folds into it incrementally until then. A rebuild's shadow records the rule it is
 /// folded under the same way, from the moment it is opened, so one a binary of another rule left
 /// is never resumed ([`open_shadow`]).
-pub const PROJECTION_VERSION: i64 = 6;
+pub const PROJECTION_VERSION: i64 = 7;
 
 /// The assertion ledgers, dropped from a file at an older [`PROJECTION_VERSION`] so [`SCHEMA`]
 /// recreates them in their current shape, and every table and view an older rule kept for the code
@@ -99,7 +96,7 @@ DROP TABLE IF EXISTS proofs;
 /// rows [`Projector::migrate_project`] re-keys with the facts, each only when the file holds it
 /// with that column, since a file that owes its rebuild is opened as it stands and may predate
 /// any of them.
-const PROJECT_KEYED_LEDGERS: [&str; 2] = ["node_assertions", "edge_assertions"];
+const PROJECT_KEYED_LEDGERS: [&str; 1] = ["node_assertions"];
 
 /// The state a rebuild ([`Projector::rebuild`]) keeps in the shadow file it folds and, from the
 /// swap until the tail it owes is folded, in the live one, born together in one transaction
@@ -707,6 +704,9 @@ impl Projector {
                 })
                 .map_err(FrameError::unframed)?;
                 fold_source(&mut shadow, project, source, progress, true)?;
+                if fold_rule(live)? == RECORDS_ONLY_RULE - 1 {
+                    refuse_a_lossy_refold(&shadow, path, project)?;
+                }
                 // The graph the live one would hold, never a larger one: the prune `rigger reset
                 // --runs` applies, derived from what the fold gathered, on a copy of the shadow.
                 let copy = pruned_copy(path);
@@ -1795,6 +1795,197 @@ fn prune_a_copy(shadow: &Connection, copy: &str, project: &str) -> Result<Connec
         .pragma_update(None, "user_version", PROJECTION_VERSION)
         .map_err(be)?;
     Ok(pruned)
+}
+
+/// The fold rule that folds the records alone ([`PROJECTION_VERSION`] 7).
+const RECORDS_ONLY_RULE: i64 = 7;
+
+/// The node kinds a record event folds, whose nodes, edges and assertions a migration to the
+/// records-only rule keeps ([`refuse_a_lossy_refold`]).
+const RECORD_KINDS: [&str; 3] = [KIND_DECISION, KIND_FINDING, KIND_LESSON];
+
+/// Refuse the swap of the records-only refold the shadow behind `shadow` holds for `project` over
+/// the graph file at `live_path`, which the rule before it folded (addendum section 11, steps 3 and
+/// 4): that rule folded the records exactly as this one does, so every record fact the old file
+/// holds - each record node with its attrs, each live or retired edge from or onto one (its
+/// endpoints, relation, validity and tier, endpoints compared by id, so a governed file the old
+/// file held as a file is kept as the refold's bare artifact), each assertion the record identity
+/// holds, and each alias - must be in the refold, and no record may name a grouping id, which no
+/// fold holds any longer ([`grouping_id_sql`]). A grouping's memberships, and the record identity's
+/// assertion of a grouping, are the grouping passes' rows rather than record facts and are not
+/// compared. Anything missing, or any record naming a grouping, is an error printing each one,
+/// returned before the swap, so the old file stands untouched and the shadow stays standing for a
+/// rerun to compare and refuse again. Only the old file's columns are compared: a file an older
+/// shape left may lack one.
+fn refuse_a_lossy_refold(shadow: &Connection, live_path: &str, project: &str) -> Result<(), Error> {
+    shadow
+        .execute("ATTACH DATABASE ?1 AS old", [live_path])
+        .map_err(be)?;
+    let lost = record_facts_lost(shadow, project);
+    shadow.execute_batch("DETACH DATABASE old").map_err(be)?;
+    let lost = lost?;
+    let groupings = labels(
+        shadow,
+        &format!(
+            "SELECT 'edge ' || from_id || ' -' || rel || '-> ' || to_id FROM edges
+              WHERE project = {p} AND from_id IN (SELECT id FROM nodes WHERE project = {p}
+                                                   AND kind IN ({kinds}))
+                AND {grouping}",
+            p = sql_text(project),
+            kinds = record_kinds_sql(),
+            grouping = grouping_id_sql("to_id"),
+        ),
+    )?;
+    if lost.is_empty() && groupings.is_empty() {
+        return Ok(());
+    }
+    let mut refusal = vec![format!(
+        "{live_path} was not migrated to the records-only fold and is kept as it stands:"
+    )];
+    for (heading, lines) in [
+        (
+            "record facts it holds that the records refold to without:",
+            lost,
+        ),
+        (
+            "records naming a grouping id, which no fold holds:",
+            groupings,
+        ),
+    ] {
+        if !lines.is_empty() {
+            refusal.push(heading.to_string());
+            refusal.extend(lines.into_iter().map(|line| format!("  {line}")));
+        }
+    }
+    Err(Error(refusal.join("\n")))
+}
+
+/// Every record fact the file attached as `old` holds for `project` that the main file lacks
+/// ([`refuse_a_lossy_refold`]), one line each: its record nodes, the edges from or onto them, the
+/// record identity's assertions and the aliases, each compared on the columns the old file has
+/// of those it names, and scoped to `project` in each file whose table carries one.
+fn record_facts_lost(conn: &Connection, project: &str) -> Result<Vec<String>, Error> {
+    let p = sql_text(project);
+    let kinds = record_kinds_sql();
+    let old_records = format!("SELECT id FROM old.nodes WHERE kind IN ({kinds})");
+    let tables: [(&str, &[&str], &[&str], String, String); 4] = [
+        (
+            "nodes",
+            &["id", "kind"],
+            &["attrs"],
+            format!("kind IN ({kinds})"),
+            "'node ' || id || ' (' || kind || ')'".to_string(),
+        ),
+        (
+            "edges",
+            &["from_id", "to_id", "rel"],
+            &["valid_from", "valid_to", "tier"],
+            format!(
+                "(from_id IN ({old_records}) OR to_id IN ({old_records})) AND NOT {} AND NOT {}",
+                grouping_id_sql("from_id"),
+                grouping_id_sql("to_id")
+            ),
+            "'edge ' || from_id || ' -' || rel || '-> ' || to_id".to_string(),
+        ),
+        (
+            "node_assertions",
+            &["node_id", "kind"],
+            &["attrs", "generation"],
+            format!("identity = '' AND NOT {}", grouping_id_sql("node_id")),
+            "'assertion of ' || node_id || ' (' || kind || ')'".to_string(),
+        ),
+        (
+            "aliases",
+            &["alias", "canonical_id"],
+            &[],
+            "1".to_string(),
+            "'alias ' || alias || ' -> ' || canonical_id".to_string(),
+        ),
+    ];
+    let mut lost = Vec::new();
+    for (table, named, compared, filter, label) in tables {
+        let columns = columns_of(conn, "old", table)?;
+        if !named.iter().all(|c| columns.contains(*c)) {
+            continue;
+        }
+        let scoped = |schema: &str, keyed: bool| {
+            let scope = if keyed {
+                format!("project = {p} AND ")
+            } else {
+                String::new()
+            };
+            format!("SELECT {{compared}} FROM {schema}.{table} WHERE {scope}{filter}")
+        };
+        let (old, new) = (
+            scoped("old", columns.contains("project")),
+            scoped("main", columns_of(conn, "main", table)?.contains("project")),
+        );
+        let compared: Vec<&str> = named
+            .iter()
+            .chain(compared)
+            .copied()
+            .filter(|c| columns.contains(*c))
+            .collect();
+        let compared = compared.join(", ");
+        lost.extend(labels(
+            conn,
+            &format!("SELECT {label} FROM ({old} EXCEPT {new})").replace("{compared}", &compared),
+        )?);
+    }
+    Ok(lost)
+}
+
+/// The columns the file `conn` holds as `schema` gives `table`: none when it holds no such table.
+fn columns_of(conn: &Connection, schema: &str, table: &str) -> Result<BTreeSet<String>, Error> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1, ?2)")
+        .map_err(be)?;
+    let names = stmt
+        .query_map([table, schema], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be);
+    names
+}
+
+/// The distinct one-column text rows `sql` selects, sorted.
+fn labels(conn: &Connection, sql: &str) -> Result<Vec<String>, Error> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT DISTINCT * FROM ({sql}) ORDER BY 1"))
+        .map_err(be)?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))
+        .map_err(be)?
+        .collect::<Result<_, _>>()
+        .map_err(be);
+    rows
+}
+
+/// [`RECORD_KINDS`] as a SQL list of text literals.
+fn record_kinds_sql() -> String {
+    RECORD_KINDS.map(sql_text).join(", ")
+}
+
+/// The SQL term the id `column` holds passes when it names a grouping: a community or a concept,
+/// each id beginning with its pass's prefix.
+fn grouping_id_sql(column: &str) -> String {
+    let prefixed = |prefix: &str| {
+        format!(
+            "substr({column}, 1, {}) = {}",
+            prefix.len(),
+            sql_text(prefix)
+        )
+    };
+    format!(
+        "({} OR {})",
+        prefixed(rigger_domain::community::COMMUNITY_ID_PREFIX),
+        prefixed(rigger_domain::concepts::CONCEPT_ID_PREFIX)
+    )
+}
+
+/// `text` as a SQL text literal, each quote doubled.
+fn sql_text(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
 }
 
 /// Open the rebuild's shadow file at `path`, creating it when there is none, and start it afresh
@@ -3029,19 +3220,12 @@ fn edge_binds_leaf_sql(to_id: &str, leaf: &str) -> String {
     format!("{text} IN ({leaf}, '{PLACEHOLDER_SIGIL}' || {leaf})")
 }
 
-/// The SQL term an `edges` row passes while no assertion holds it: no `edge_assertions` entry names
-/// its `id`, so the history prune's count and delete never touch an edge an assertion still names.
-const UNASSERTED_EDGE_SQL: &str = "id NOT IN (SELECT edge_id FROM edge_assertions)";
-
 /// The statement `verb` over the `edges` rows the history prune reclaims (spec 41), past the
 /// further conditions `exclusions`, so [`Projector::count_prunable`] counts and [`prune_in`]
 /// deletes one set: an edge retired before the boundary `?1` - a live edge's NULL `valid_to` is
-/// before no boundary - in project `?2`, held by no assertion ([`UNASSERTED_EDGE_SQL`]).
+/// before no boundary - in project `?2`.
 fn superseded_edges_sql(verb: &str, exclusions: &str) -> String {
-    format!(
-        "{verb} FROM edges
-          WHERE valid_to < ?1 AND project = ?2 AND {UNASSERTED_EDGE_SQL} {exclusions}"
-    )
+    format!("{verb} FROM edges WHERE valid_to < ?1 AND project = ?2 {exclusions}")
 }
 
 /// The file half of the id `column` holds, cut in SQL at its first `::`: NULL for an id with no
@@ -9237,7 +9421,7 @@ mod tests {
         use super::*;
 
         /// Every table of the projection that carries a `project` column.
-        const PROJECT_KEYED: [&str; 4] = ["nodes", "edges", "node_assertions", "edge_assertions"];
+        const PROJECT_KEYED: [&str; 3] = ["nodes", "edges", "node_assertions"];
 
         /// How many rows of each of `tables` in `p`'s file carry the scope `project`.
         fn rows_under(p: &Projector, tables: &[&str], project: &str) -> Vec<(String, i64)> {
@@ -9275,7 +9459,7 @@ mod tests {
         }
 
         /// The rows of each [`PROJECT_KEYED`] table [`holding_a_decision`] leaves.
-        const HELD: [i64; 4] = [2, 1, 2, 0];
+        const HELD: [i64; 3] = [2, 1, 2];
 
         /// A file that owes its rebuild is opened as it stands, so it may hold `nodes` and `edges`
         /// and none of the ledgers; the migration moves both and skips every table the file does
@@ -9365,7 +9549,7 @@ mod tests {
                 ),
                 (
                     counted(&PROJECT_KEYED, &HELD),
-                    counted(&PROJECT_KEYED, &[0; 4])
+                    counted(&PROJECT_KEYED, &[0; 3])
                 ),
                 "a refused re-key of {table} leaves every row under the old scope"
             );
@@ -9433,7 +9617,7 @@ mod tests {
             );
             assert_eq!(
                 rows_under(&p, &PROJECT_KEYED, &from),
-                counted(&PROJECT_KEYED, &[0; 4])
+                counted(&PROJECT_KEYED, &[0; 3])
             );
         }
     }

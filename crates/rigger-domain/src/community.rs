@@ -52,6 +52,9 @@ use crate::contextgraph::{
 /// to prove, but the algorithm is parameterized by it here.
 pub const DEFAULT_RESOLUTION: f64 = 1.0;
 
+/// What every community id begins with: `community/<resolution>/<number>`, minted by [`detect`].
+pub const COMMUNITY_ID_PREFIX: &str = "community/";
+
 /// The strict-improvement threshold a local move must clear. Real modularity gains from
 /// integer-weight coupling edges differ by at least `~1/2m` (far above this), while floating-point
 /// noise sits far below it, so this cleanly separates a genuine improvement from numeric zero -
@@ -286,7 +289,7 @@ pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
         .zip(
             g.group_of
                 .iter()
-                .map(|n| format!("community/{res_str}/{n}")),
+                .map(|n| format!("{COMMUNITY_ID_PREFIX}{res_str}/{n}")),
         )
         .collect();
     Assignment {
