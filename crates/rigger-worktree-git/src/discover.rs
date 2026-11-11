@@ -79,12 +79,22 @@ impl Repository {
         }
     }
 
-    /// Whether a ref named `name` exists, loose in the worktree's or the common directory, or
-    /// packed in `packed`.
-    fn has_ref(&self, name: &str, packed: &str) -> bool {
-        self.git_dir.join(name).is_file()
-            || self.common_dir.join(name).is_file()
-            || packed_ref(packed, name).is_some()
+    /// Whether a ref named `name` lies loose in the worktree's or the common directory.
+    fn has_loose_ref(&self, name: &str) -> bool {
+        self.git_dir.join(name).is_file() || self.common_dir.join(name).is_file()
+    }
+
+    /// The text of the common directory's `packed-refs`, read through `read`: empty when there
+    /// is none, None when it cannot be read.
+    fn packed_refs(
+        &self,
+        read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+    ) -> Option<String> {
+        match read(&self.common_dir.join("packed-refs")) {
+            Ok(packed) => Some(packed),
+            Err(e) if e.kind() == ErrorKind::NotFound => Some(String::new()),
+            Err(_) => None,
+        }
     }
 }
 
@@ -383,7 +393,10 @@ pub fn read_head(start: &Path) -> Option<(String, Option<String>)> {
     read_head_with(start, &mut |path| std::fs::read_to_string(path))
 }
 
-/// [`read_head`], reading each of git's files through `read`.
+/// [`read_head`], reading each of git's files through `read`. A ref is read as git reads it:
+/// loose first, and only where it is not loose from a `packed-refs` read after that. `git
+/// pack-refs` writes `packed-refs` before it deletes the loose refs it packs, so a ref a pack
+/// moves between the two reads is in the later one.
 fn read_head_with(
     start: &Path,
     read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
@@ -398,21 +411,21 @@ fn read_head_with(
         return is_object_id(head).then(|| ("HEAD".to_owned(), Some(head.to_owned())));
     };
     let name = full.strip_prefix("refs/heads/")?;
-    let packed = match read(&repo.common_dir.join("packed-refs")) {
-        Ok(packed) => packed,
-        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
-        Err(_) => return None,
-    };
-    let spelled_elsewhere = [
+    let others = [
         name.to_owned(),
         format!("refs/{name}"),
         format!("refs/tags/{name}"),
         format!("refs/remotes/{name}"),
         format!("refs/remotes/{name}/HEAD"),
-    ]
-    .iter()
-    .any(|other| repo.has_ref(other, &packed));
-    if spelled_elsewhere {
+    ];
+    if others.iter().any(|other| repo.has_loose_ref(other)) {
+        return None;
+    }
+    let packed = repo.packed_refs(read)?;
+    if others
+        .iter()
+        .any(|other| packed_ref(&packed, other).is_some())
+    {
         return None;
     }
     let commit = match read(&repo.common_dir.join(full)) {
@@ -420,7 +433,9 @@ fn read_head_with(
             let loose = loose.trim_end_matches(['\n', '\r']);
             Some(is_object_id(loose).then(|| loose.to_owned())?)
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => packed_ref(&packed, full).map(str::to_owned),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            packed_ref(&repo.packed_refs(read)?, full).map(str::to_owned)
+        }
         Err(_) => return None,
     };
     Some((name.to_owned(), commit))
