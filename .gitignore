@@ -34,6 +34,9 @@
 # Distilled playbook pool (spec 13, unit 7): a rebuildable projection of the log
 # (`rigger playbooks --rebuild`), derived per-machine, never hand-edited state.
 .rigger/playbooks/
+# The code store's immutable snapshots of the tree's facts: a rebuildable projection,
+# per-machine derived data, never committed.
+.rigger/store/
 
 # Editor / OS
 .DS_Store

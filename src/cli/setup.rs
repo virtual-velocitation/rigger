@@ -223,6 +223,8 @@ fn init_project(
     // ignored here for the same reason. `.rigger/store.conn` is the store resolver's per-machine
     // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
     // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
+    // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
+    // that every graph read rewrites, so left untracked it would read as a dirty tree.
     // Record WHICH patterns were appended so the summary reports the real gitignore change and
     // nothing it did not do.
     let mut gitignore_added = Vec::new();
@@ -232,6 +234,7 @@ fn init_project(
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
         ".rigger/store.conn",
+        ".rigger/store",
     ] {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
@@ -3344,6 +3347,10 @@ mod tests {
         /// setup adds no duplicate line.
         init_project_gitignores_the_store_conn_secret_file_idempotently:
             assert_init_gitignores_idempotently(&[".rigger/store.conn"]);
+        /// The code store's snapshots are a per-machine projection of the tree, rewritten by
+        /// every graph read, so `rigger init`/`setup` ignores them like the other runtime state.
+        init_project_gitignores_the_code_store_idempotently:
+            assert_init_gitignores_idempotently(&[".rigger/store"]);
     }
 
     /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
