@@ -58,9 +58,11 @@ fn section<'a>(reply: &'a str, name: &str) -> &'a str {
 const KEPT: &str = "pub fn widget_kept() {}\npub fn kept_caller() { widget_kept(); }\n";
 const CHANGED: &str = "pub fn widget_changed() {}\n";
 const GONE: &str = "pub fn widget_gone() {}\n";
+const BODY: &str = "pub fn widget_body() {}\n";
 
-/// A repository whose graph was built, then whose tree moved: one file changed, one deleted and
-/// one added since.
+/// A repository whose graph was built, then whose tree moved: one file changed so the graph would
+/// record it differently, one changed in a way the graph records nothing of, one deleted and one
+/// added since.
 fn diverged() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -70,12 +72,18 @@ fn diverged() -> tempfile::TempDir {
             ("src/kept.rs", KEPT),
             ("src/changed.rs", CHANGED),
             ("src/gone.rs", GONE),
+            ("src/body.rs", BODY),
             ("docs/widgets.md", "# Widgets\n\nThe widget_kept rule.\n"),
         ],
     );
     std::fs::write(
         root.join("src/changed.rs"),
-        "pub fn widget_changed() { let now = 1; }\n",
+        "// moved\npub fn widget_changed() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/body.rs"),
+        "pub fn widget_body() { let now = 1; }\n",
     )
     .unwrap();
     std::fs::remove_file(root.join("src/gone.rs")).unwrap();
@@ -85,12 +93,13 @@ fn diverged() -> tempfile::TempDir {
 
 /// A file changed, deleted or added since the graph was built is answered by the text half from
 /// the tree as it stands and withheld by the graph half, which names the file; a file the tree
-/// holds as the graph ingested it is answered by both.
+/// holds as the graph ingested it, or changed in nothing the graph records of it (the generation
+/// its bytes extract to is the graph's), is answered by both.
 #[test]
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
     let dir = diverged();
     let withheld = "changed in your tree; see the text results";
-    let cases: [(&str, &[String], &[&str]); 4] = [
+    let cases: [(&str, &[String], &[&str]); 5] = [
         (
             "widget_kept",
             &["src/kept.rs:1 src/kept.rs::widget_kept".to_string()],
@@ -99,7 +108,12 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         (
             "widget_changed",
             &[format!("{withheld}: src/changed.rs")],
-            &["src/changed.rs:1: pub fn widget_changed() { let now = 1; }"],
+            &["src/changed.rs:2: pub fn widget_changed() {}"],
+        ),
+        (
+            "widget_body",
+            &["src/body.rs:1 src/body.rs::widget_body".to_string()],
+            &["src/body.rs:1: pub fn widget_body() { let now = 1; }"],
         ),
         (
             "widget_gone",
