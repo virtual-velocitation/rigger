@@ -13,7 +13,7 @@
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 
-use crate::code_facts::{FileFacts, Half};
+use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
@@ -185,6 +185,22 @@ impl Builder {
     }
 }
 
+/// The edge `from` -`rel`-> `to` asserted to `b`, its end first asserted as a code entity when
+/// it is a placeholder.
+fn linked(
+    b: &mut impl Asserts,
+    from: &str,
+    rel: &'static str,
+    to: &str,
+    tier: &'static str,
+    test: bool,
+) {
+    if leaf_of(to).is_some() {
+        b.node(to, KIND_CODE_ENTITY, [], test);
+    }
+    b.link(from, rel, to, tier, test);
+}
+
 /// A view resolved whole under one filter.
 pub struct Resolved {
     /// Every node and edge the filter shows.
@@ -259,6 +275,20 @@ impl<'v> CodeGraph<'v> {
         facts: &FileFacts,
         tests: bool,
         b: &mut impl Asserts,
+        hidden: Option<&mut Vec<Node>>,
+    ) {
+        self.code_nodes(facts, tests, b, hidden);
+        self.code_mentions(facts, facts.mentions.iter(), tests, b);
+        self.code_declared(facts, tests, b);
+    }
+
+    /// The file node and entities of the code file `facts`, asserted to `b`: what [`Self::code`]
+    /// asserts first.
+    pub(crate) fn code_nodes(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        b: &mut impl Asserts,
         mut hidden: Option<&mut Vec<Node>>,
     ) {
         let file_test = self.resolver.is_test_file(&facts.path);
@@ -293,13 +323,28 @@ impl<'v> CodeGraph<'v> {
                 test,
             );
         }
-        self.resolver
-            .each_link(facts, tests, |from, rel, to, tier, test| {
-                if leaf_of(to).is_some() {
-                    b.node(to, KIND_CODE_ENTITY, [], test);
-                }
-                b.link(from, rel, to, tier, test);
-            });
+    }
+
+    /// The edges and placeholders of `mentions`, mentions of the code file `facts` in file order,
+    /// asserted to `b` ([`Resolver::each_mention_link`]).
+    pub(crate) fn code_mentions<'f>(
+        &self,
+        facts: &'f FileFacts,
+        mentions: impl Iterator<Item = &'f Mention> + Clone,
+        tests: bool,
+        b: &mut impl Asserts,
+    ) {
+        (self.resolver).each_mention_link(facts, mentions, tests, |from, rel, to, tier, test| {
+            linked(b, from, rel, to, tier, test)
+        });
+    }
+
+    /// The module declarations' and definitions' `CONTAINS` edges of the code file `facts`,
+    /// asserted to `b` ([`Resolver::each_declared_link`]).
+    pub(crate) fn code_declared(&self, facts: &FileFacts, tests: bool, b: &mut impl Asserts) {
+        (self.resolver).each_declared_link(facts, tests, |from, rel, to, tier, test| {
+            linked(b, from, rel, to, tier, test)
+        });
     }
 
     /// The design and workflow nodes and edges of `facts`, asserted to `b`.

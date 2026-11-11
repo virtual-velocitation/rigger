@@ -462,27 +462,43 @@ impl<'v> Resolver<'v> {
     }
 
     /// [`Self::links`] handed to `sink` one at a time as (from, relation, to, tier, test), in
-    /// the same order, without holding them.
+    /// the same order, without holding them: the mentions' edges
+    /// ([`Self::each_mention_link`]), then the declarations' ([`Self::each_declared_link`]).
     pub fn each_link(
         &self,
         facts: &FileFacts,
         tests: bool,
         mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
     ) {
+        self.each_mention_link(facts, facts.mentions.iter(), tests, &mut sink);
+        self.each_declared_link(facts, tests, sink);
+    }
+
+    /// The call and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
+    /// to `sink` in [`Self::each_link`] order. A tagged reference a call holds stays held when
+    /// `mentions` hold every call whose leaf a file-level tagged reference among them names.
+    pub fn each_mention_link<'f>(
+        &self,
+        facts: &'f FileFacts,
+        mentions: impl Iterator<Item = &'f Mention> + Clone,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
         let file = facts.path.as_str();
-        let file_test = self.is_test_file(file);
-        let ids: Vec<String> = facts
-            .defs
-            .iter()
-            .map(|d| entity_id(file, &d.local))
-            .collect();
-        let entity = |i: u32| ids.get(i as usize).map(String::as_str);
+        let ids: Vec<std::cell::OnceCell<String>> = vec![Default::default(); facts.defs.len()];
+        let entity = |i: u32| {
+            let held = ids.get(i as usize)?;
+            Some(
+                held.get_or_init(|| entity_id(file, &facts.defs[i as usize].local))
+                    .as_str(),
+            )
+        };
         let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
         // A product reference is held only by a product edge, so showing tests changes no
         // product edge. A call's reference runs from the file, so only one from the file is held;
         // each target maps to whether a product call references it.
         let mut referenced: HashMap<String, bool> = HashMap::new();
-        for m in &facts.mentions {
+        for m in mentions.clone() {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
@@ -502,7 +518,7 @@ impl<'v> Resolver<'v> {
         let held = |from: &str, to: &str, test: bool| {
             from == file && referenced.get(to).is_some_and(|&product| test || product)
         };
-        for m in &facts.mentions {
+        for m in mentions {
             let MentionKind::Tagged(tag) = &m.kind else {
                 continue;
             };
@@ -520,13 +536,29 @@ impl<'v> Resolver<'v> {
             }
             sink(from, REL_REFERENCES, &to, tier, test);
         }
+    }
+
+    /// The module declarations' and the definitions' `CONTAINS` edges of `facts`, handed to
+    /// `sink` in [`Self::each_link`] order.
+    pub fn each_declared_link(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
+        let file = facts.path.as_str();
+        let file_test = self.is_test_file(file);
+        let from_of = |i: Option<u32>| match i.and_then(|i| facts.defs.get(i as usize)) {
+            Some(d) => entity_id(file, &d.local),
+            None => file.to_string(),
+        };
         for decl in &facts.modules {
             let test = decl.test || file_test;
             let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
                 continue;
             };
             sink(
-                from_of(Some(decl.def)),
+                &from_of(Some(decl.def)),
                 REL_CONTAINS,
                 target,
                 TIER_EXTRACTED,
@@ -535,7 +567,7 @@ impl<'v> Resolver<'v> {
         }
         for (local, d, test) in self.winners(facts, tests) {
             let to = entity_id(file, local);
-            sink(from_of(d.parent), REL_CONTAINS, &to, TIER_EXTRACTED, test);
+            sink(&from_of(d.parent), REL_CONTAINS, &to, TIER_EXTRACTED, test);
         }
     }
 
