@@ -1008,18 +1008,21 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
-    if k > 0 && !grounder.has_strong_match(query, k) {
-        println!("no entity matches strongly for {query:?}");
-    } else {
-        for r in grounder.ground_ranked(query, k) {
-            println!(
-                "{}:{}: {} (degree {})",
-                r.loc.file, r.loc.line, r.loc.text, r.degree
-            );
+    // The rows and their honesty label (6.1) come from one read of the code store.
+    let (rows, label) = grounder.ground_ranked_labelled(query, k);
+    match rows {
+        None => println!("no entity matches strongly for {query:?}"),
+        Some(rows) => {
+            for r in rows {
+                println!(
+                    "{}:{}: {} (degree {})",
+                    r.loc.file, r.loc.line, r.loc.text, r.degree
+                );
+            }
         }
     }
-    // The honesty label (6.1) travels with every answer; stderr keeps the rows themselves clean.
-    if let Some(label) = grounder.label() {
+    // The label travels with every answer; stderr keeps the rows themselves clean.
+    if let Some(label) = label {
         eprintln!("{label}");
     }
     Ok(())

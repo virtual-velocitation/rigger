@@ -92,12 +92,26 @@ pub trait Grounder: Send + Sync {
         String::new()
     }
 
-    /// The honesty label (spec 6.1) the grounder's answers travel with: the tree they describe
-    /// and what the caller's worktree puts in doubt, or why nothing could be read. The DEFAULT
-    /// (grep / nop) reads the worktree itself, so it has nothing to state; only the `symbols`
-    /// grounder, which answers from the code store's view of the head, overrides it.
-    fn label(&self) -> Option<crate::composed::Label> {
-        None
+    /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the
+    /// rows describe and what the caller's worktree puts in doubt, or why nothing could be read.
+    /// A grounder that answers from the code store's view of the head overrides it to read that
+    /// view ONCE, so the label describes exactly the tree the rows came from. The DEFAULT
+    /// (grep / nop) reads the worktree itself, so it has nothing to state.
+    fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<crate::composed::Label>) {
+        (self.ground(query, k), None)
+    }
+
+    /// The ranked page `rigger ground` prints with its label: `None` rows when `k > 0` and no
+    /// entity matches strongly ([`Self::has_strong_match`]), else [`Self::ground_ranked`]'s page.
+    /// Overridden, like [`Self::ground_labelled`], to read the view once.
+    fn ground_ranked_labelled(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> (Option<Vec<RankedRef>>, Option<crate::composed::Label>) {
+        let rows =
+            (k == 0 || self.has_strong_match(query, k)).then(|| self.ground_ranked(query, k));
+        (rows, None)
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by

@@ -51,15 +51,30 @@ impl Symbols {
         Symbols::over(root, Box::new(DirectoryHead::new(Path::new(root))))
     }
 
-    /// `read` over the head's view as it stands now, less the files `root` puts in doubt. A head
-    /// that cannot be read is a worktree that cannot be compared and more: every file is
-    /// withheld, over a view that holds none, so the radius falls back to the text search
-    /// ([`Grounder::label`] states why).
-    fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> T {
+    /// `read` over the head's view as it stands now, less the files `root` puts in doubt, with
+    /// the label of that same head: ONE open of the store gives both, so the label always
+    /// describes the tree the answer came from. A head that cannot be read is a worktree that
+    /// cannot be compared and more: every file is withheld, over a view that holds none, so the
+    /// radius falls back to the text search, and the label names the failure.
+    fn read_labelled<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label) {
+        let worktree = self.root.clone();
         match self.heads.head(Path::new(&self.root)) {
-            Ok(head) => read(&Sight::new(&*head.view, Withheld::of(head.diff))),
-            Err(_) => read(&Sight::new(&unread_view(), Withheld::All)),
+            Ok(head) => {
+                let withheld = Withheld::of(head.diff);
+                let label =
+                    Label::describing(&head.view.stamp().tip, worktree, &withheld, head.behind);
+                (read(&Sight::new(&*head.view, withheld)), label)
+            }
+            Err(reason) => (
+                read(&Sight::new(&unread_view(), Withheld::All)),
+                Label::unopened(worktree, &reason),
+            ),
         }
+    }
+
+    /// [`Symbols::read_labelled`] without the label.
+    fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> T {
+        self.read_labelled(read).0
     }
 }
 
@@ -558,21 +573,25 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
 
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+        self.ground_labelled(query, k).0
+    }
+
+    fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<Label>) {
         if query.is_empty() || k == 0 {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
         // stays one term). Single-character terms are dropped as noise. This is the prompt seed's
         // whole-text match; `blast_radius` grounds on `code_terms` instead.
         let terms = query_terms(query);
         if terms.is_empty() {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         // Ranked by intent (spec 92 criterion 3): exact-name match first, then the rarest
         // matching token, then definition-over-reference - NOT deduplicated by entity (that is
         // `ground_ranked`'s page-shape concern), so this stays the SAME row-per-location
         // contract `grounded_seed` (conductor.rs) relies on for prompt-seed file diversity.
-        self.read(|sight| {
+        let (hits, label) = self.read_labelled(|sight| {
             scored_hits(sight, &terms)
                 .into_iter()
                 .take(k)
@@ -582,7 +601,8 @@ impl Grounder for Symbols {
                     text: h.name,
                 })
                 .collect()
-        })
+        });
+        (hits, Some(label))
     }
 
     /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
@@ -697,23 +717,6 @@ impl Grounder for Symbols {
         format!("{tree}/{GRAMMAR_TAGS_VERSION}")
     }
 
-    /// The label of the head as it stands now: the tree it describes, how many of the worktree's
-    /// files differ (every file when it cannot be compared) and why the view is behind; or, when
-    /// the store cannot be opened, the failure ([`Label::unopened`]). The answers withhold exactly
-    /// those files.
-    fn label(&self) -> Option<Label> {
-        let worktree = self.root.clone();
-        Some(match self.heads.head(Path::new(&self.root)) {
-            Ok(head) => Label::describing(
-                &head.view.stamp().tip,
-                worktree,
-                &Withheld::of(head.diff),
-                head.behind,
-            ),
-            Err(reason) => Label::unopened(worktree, &reason),
-        })
-    }
-
     /// The RANKED-BY-INTENT page (spec 92 criterion 3): [`scored_hits`]'s already-ranked list,
     /// deduplicated to one row per ENTITY - "six call sites of one function occupy one row with
     /// its degree." A DEFINITION is its own entity, keyed by `(name, file, line)` - always
@@ -735,97 +738,19 @@ impl Grounder for Symbols {
     /// cannot be pinned to any given reference must never claim it too - see the degree
     /// computation below for the full reasoning.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
-        if query.is_empty() || k == 0 {
-            return Vec::new();
-        }
+        self.read(|sight| ranked_in(sight, &query_terms(query), k))
+    }
+
+    fn ground_ranked_labelled(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> (Option<Vec<RankedRef>>, Option<Label>) {
         let terms = query_terms(query);
-        if terms.is_empty() {
-            return Vec::new();
-        }
-        self.read(|sight| {
-            let hits = scored_hits(sight, &terms);
-
-            // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look
-            // up whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Read over the WHOLE
-            // view (not just the hits), since a name's definition is only a "hit" itself when it
-            // also matches a term - the absorption question ("how many definitions does this name
-            // have, within this language") is independent of that. Keyed by `(name, language)`,
-            // never a bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-
-            // reject / adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name
-            // key let a Rust reference with NO Rust definition (e.g. a `.unwrap()` call site)
-            // resolve through a same-named definition in an unrelated language as if it were that
-            // entity's own sole definer - silently absorbing and deduplicating the entire
-            // cross-language reference population into ONE foreign row.
-            let mut def_sites: HashMap<(String, String), Vec<(String, u32)>> = HashMap::new();
-
-            #[derive(PartialEq, Eq, Hash, Clone)]
-            enum EntityKey {
-                /// A specific definition site - always a distinct entity.
-                Def(String, String, u32),
-                /// A `(name, language)` with zero or ambiguous (multiple SAME-LANGUAGE)
-                /// definitions - its references stand alone, keyed by name AND language (never a
-                /// bare name: a standalone Rust `unwrap` and a standalone Python `unwrap` are
-                /// different entities, there is only ever one such row per pair).
-                Standalone(String, String),
-            }
-
-            let mut seen: HashSet<EntityKey> = HashSet::new();
-            let mut out: Vec<RankedRef> = Vec::new();
-            for h in hits {
-                // How many SAME-LANGUAGE definitions this hit's own name has - independent of
-                // which hit kind matched, since a Def hit's own definition is always counted in
-                // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
-                let sites = def_sites
-                    .entry((h.name.clone(), h.lang.clone()))
-                    .or_insert_with(|| {
-                        sight
-                            .defs_named(&h.name)
-                            .filter(|d| d.file.lang == h.lang)
-                            .map(|d| (d.file.path.to_string(), d.line))
-                            .collect()
-                    });
-                let def_count = sites.len();
-                let key = match h.kind {
-                    HitKind::Def => EntityKey::Def(h.name.clone(), h.file.clone(), h.line),
-                    HitKind::Ref => match sites.as_slice() {
-                        [(file, line)] => EntityKey::Def(h.name.clone(), file.clone(), *line),
-                        _ => EntityKey::Standalone(h.name.clone(), h.lang.clone()),
-                    },
-                };
-                if !seen.insert(key.clone()) {
-                    continue;
-                }
-                // An AMBIGUOUS (more than one same-language definition) entity's own Def row
-                // reports an attributable degree of 0, never the tree-wide call-reference count
-                // (spec 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
-                // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
-                // Standalone row for this same `(name, language)` exists SPECIFICALLY because a
-                // reference cannot be pinned to any one of its several candidates, so a Def row
-                // must never turn around and claim that identical unattributable pool as its own
-                // - the opposite of what creating the Standalone row already decided. An
-                // UNAMBIGUOUS (exactly one definer) Def row keeps the real reference degree -
-                // every call reference to that name genuinely IS this entity's own, nothing is
-                // pooled. A Standalone row always keeps the real reference degree too - it IS the
-                // pooled, unattributed call-reference count (no tagged reference counts, spec
-                // 117), by construction of why it exists at all.
-                let degree = match key {
-                    EntityKey::Def(..) if def_count > 1 => 0,
-                    _ => sight.reference_degree(&h.name, &h.lang),
-                };
-                out.push(RankedRef {
-                    loc: Ref {
-                        file: h.file,
-                        line: h.line,
-                        text: h.name,
-                    },
-                    degree,
-                });
-                if out.len() >= k {
-                    break;
-                }
-            }
-            out
-        })
+        let (rows, label) = self.read_labelled(|sight| {
+            (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k))
+        });
+        (rows, Some(label))
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
@@ -856,50 +781,143 @@ impl Grounder for Symbols {
     /// A query with no matches at all is not strong either - it has no candidate to be
     /// confident about.
     fn has_strong_match(&self, query: &str, _k: usize) -> bool {
-        let terms = query_terms(query);
-        if terms.is_empty() {
-            return false;
-        }
-        self.read(|sight| {
-            let hits = scored_hits(sight, &terms);
-            if hits.is_empty() {
-                return false;
-            }
-            let ambiguity = ambiguity_map(sight);
-            // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
-            // distinct-definition distribution - never one pooled cutoff across every language
-            // present (5.5.2). A language absent from `ambiguity` (no definition anywhere in it)
-            // falls back to 0: nothing has EVER been observed as ambiguous there, so every hit in
-            // that language trivially clears the cutoff, matching the `unwrap_or(0)` below for
-            // every such hit regardless.
-            let mut cutoffs: BTreeMap<&str, usize> = BTreeMap::new();
-            for lang in hits
-                .iter()
-                .map(|h| h.lang.as_str())
-                .collect::<BTreeSet<_>>()
-            {
-                let mut degrees: Vec<usize> = ambiguity
-                    .iter()
-                    .filter_map(|((_, l), &count)| (l == lang).then_some(count))
-                    .collect();
-                let cutoff = if degrees.is_empty() {
-                    0
-                } else {
-                    percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
-                };
-                cutoffs.insert(lang, cutoff);
-            }
-            hits.iter().any(|h| {
-                let cutoff = cutoffs.get(h.lang.as_str()).copied().unwrap_or(0);
-                let (name, lang) = h.entity();
-                let ambiguous = ambiguity
-                    .get(&(name.to_string(), lang.to_string()))
-                    .copied()
-                    .unwrap_or(0);
-                ambiguous <= cutoff
-            })
-        })
+        self.read(|sight| has_strong(sight, &query_terms(query)))
     }
+}
+
+/// The ranked-by-intent page of `terms` over what `sight` serves ([`Grounder::ground_ranked`]
+/// states the contract): empty for no terms or `k == 0`.
+fn ranked_in(sight: &Sight<'_>, terms: &[&str], k: usize) -> Vec<RankedRef> {
+    if terms.is_empty() || k == 0 {
+        return Vec::new();
+    }
+    let hits = scored_hits(sight, terms);
+
+    // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look
+    // up whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Read over the WHOLE
+    // view (not just the hits), since a name's definition is only a "hit" itself when it
+    // also matches a term - the absorption question ("how many definitions does this name
+    // have, within this language") is independent of that. Keyed by `(name, language)`,
+    // never a bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-
+    // reject / adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name
+    // key let a Rust reference with NO Rust definition (e.g. a `.unwrap()` call site)
+    // resolve through a same-named definition in an unrelated language as if it were that
+    // entity's own sole definer - silently absorbing and deduplicating the entire
+    // cross-language reference population into ONE foreign row.
+    let mut def_sites: HashMap<(String, String), Vec<(String, u32)>> = HashMap::new();
+
+    #[derive(PartialEq, Eq, Hash, Clone)]
+    enum EntityKey {
+        /// A specific definition site - always a distinct entity.
+        Def(String, String, u32),
+        /// A `(name, language)` with zero or ambiguous (multiple SAME-LANGUAGE)
+        /// definitions - its references stand alone, keyed by name AND language (never a
+        /// bare name: a standalone Rust `unwrap` and a standalone Python `unwrap` are
+        /// different entities, there is only ever one such row per pair).
+        Standalone(String, String),
+    }
+
+    let mut seen: HashSet<EntityKey> = HashSet::new();
+    let mut out: Vec<RankedRef> = Vec::new();
+    for h in hits {
+        // How many SAME-LANGUAGE definitions this hit's own name has - independent of
+        // which hit kind matched, since a Def hit's own definition is always counted in
+        // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
+        let sites = def_sites
+            .entry((h.name.clone(), h.lang.clone()))
+            .or_insert_with(|| {
+                sight
+                    .defs_named(&h.name)
+                    .filter(|d| d.file.lang == h.lang)
+                    .map(|d| (d.file.path.to_string(), d.line))
+                    .collect()
+            });
+        let def_count = sites.len();
+        let key = match h.kind {
+            HitKind::Def => EntityKey::Def(h.name.clone(), h.file.clone(), h.line),
+            HitKind::Ref => match sites.as_slice() {
+                [(file, line)] => EntityKey::Def(h.name.clone(), file.clone(), *line),
+                _ => EntityKey::Standalone(h.name.clone(), h.lang.clone()),
+            },
+        };
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        // An AMBIGUOUS (more than one same-language definition) entity's own Def row
+        // reports an attributable degree of 0, never the tree-wide call-reference count
+        // (spec 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
+        // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
+        // Standalone row for this same `(name, language)` exists SPECIFICALLY because a
+        // reference cannot be pinned to any one of its several candidates, so a Def row
+        // must never turn around and claim that identical unattributable pool as its own
+        // - the opposite of what creating the Standalone row already decided. An
+        // UNAMBIGUOUS (exactly one definer) Def row keeps the real reference degree -
+        // every call reference to that name genuinely IS this entity's own, nothing is
+        // pooled. A Standalone row always keeps the real reference degree too - it IS the
+        // pooled, unattributed call-reference count (no tagged reference counts, spec
+        // 117), by construction of why it exists at all.
+        let degree = match key {
+            EntityKey::Def(..) if def_count > 1 => 0,
+            _ => sight.reference_degree(&h.name, &h.lang),
+        };
+        out.push(RankedRef {
+            loc: Ref {
+                file: h.file,
+                line: h.line,
+                text: h.name,
+            },
+            degree,
+        });
+        if out.len() >= k {
+            break;
+        }
+    }
+    out
+}
+
+/// Whether `terms` have a match over what `sight` serves whose entity sits at or below the
+/// name-ambiguity cutoff ([`Grounder::has_strong_match`] states the contract): false for no terms.
+fn has_strong(sight: &Sight<'_>, terms: &[&str]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let hits = scored_hits(sight, terms);
+    if hits.is_empty() {
+        return false;
+    }
+    let ambiguity = ambiguity_map(sight);
+    // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
+    // distinct-definition distribution - never one pooled cutoff across every language
+    // present (5.5.2). A language absent from `ambiguity` (no definition anywhere in it)
+    // falls back to 0: nothing has EVER been observed as ambiguous there, so every hit in
+    // that language trivially clears the cutoff, matching the `unwrap_or(0)` below for
+    // every such hit regardless.
+    let mut cutoffs: BTreeMap<&str, usize> = BTreeMap::new();
+    for lang in hits
+        .iter()
+        .map(|h| h.lang.as_str())
+        .collect::<BTreeSet<_>>()
+    {
+        let mut degrees: Vec<usize> = ambiguity
+            .iter()
+            .filter_map(|((_, l), &count)| (l == lang).then_some(count))
+            .collect();
+        let cutoff = if degrees.is_empty() {
+            0
+        } else {
+            percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
+        };
+        cutoffs.insert(lang, cutoff);
+    }
+    hits.iter().any(|h| {
+        let cutoff = cutoffs.get(h.lang.as_str()).copied().unwrap_or(0);
+        let (name, lang) = h.entity();
+        let ambiguous = ambiguity
+            .get(&(name.to_string(), lang.to_string()))
+            .copied()
+            .unwrap_or(0);
+        ambiguous <= cutoff
+    })
 }
 
 impl Symbols {
@@ -2625,7 +2643,8 @@ mod tests {
         .unwrap();
         let g = Symbols::over(worktree.path().to_str().unwrap(), Box::new(Unopenable));
 
-        assert!(g.ground("apply_damage", 8).is_empty(), "nothing is served");
+        let (hits, label) = g.ground_labelled("apply_damage", 8);
+        assert!(hits.is_empty(), "nothing is served");
         let radius = g.blast_radius("`apply_damage`", 8);
         assert!(radius.precise.is_empty(), "no structural view");
         let mut safe = radius.safe;
@@ -2635,12 +2654,77 @@ mod tests {
             ["caller.rs", "def.rs"],
             "the text search answers in place of the view"
         );
-        let label = g.label().expect("the symbols grounder labels its answers");
+        let label = label.expect("the symbols grounder labels its answers");
         assert_eq!(label.compared, Compared::Uncomparable);
         assert!(
             label.to_string().contains("the code store is locked"),
             "the label names why: {label}"
         );
+    }
+
+    /// A labelled answer comes from ONE open of the store: the label describes the tree the rows
+    /// came from even when the store advances between opens. The double advances on every open,
+    /// naming the open's number in its tree id and its one file, so a second open shows as a
+    /// label and rows from different trees, and as a count above one.
+    #[test]
+    fn a_labelled_answer_opens_the_store_once_and_describes_the_tree_it_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct Advancing(Arc<AtomicUsize>);
+        impl OpenCodeView for Advancing {
+            fn head(&self, _worktree: &Path) -> Result<Head, String> {
+                let open = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut at = stamp();
+                at.tip.tree = format!("tree-{open}");
+                let file = code_file(
+                    &format!("open{open}.rs"),
+                    "rust",
+                    Scope::Product,
+                    vec![hand_def("apply_damage", 1)],
+                    vec![],
+                );
+                Ok(Head {
+                    view: Box::new(FactsView::new(at, vec![file])),
+                    diff: Ok(WorktreeDiff::default()),
+                    behind: None,
+                })
+            }
+        }
+        type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>);
+        let ground: Answer = |g| {
+            let (rows, label) = g.ground_labelled("apply_damage", 8);
+            (rows.into_iter().map(|r| r.file).collect(), label)
+        };
+        let ranked: Answer = |g| {
+            let (rows, label) = g.ground_ranked_labelled("apply_damage", 8);
+            (
+                rows.unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.loc.file)
+                    .collect(),
+                label,
+            )
+        };
+        for (name, answer) in [
+            ("ground_labelled", ground),
+            ("ground_ranked_labelled", ranked),
+        ] {
+            let opens = Arc::new(AtomicUsize::new(0));
+            let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
+            let (files, label) = answer(&g);
+            assert_eq!(files, ["open1.rs"], "{name}: the rows read the first open");
+            assert_eq!(
+                label.expect("labelled").to_string(),
+                "describes tree-1",
+                "{name}: the label describes that same open"
+            );
+            assert_eq!(
+                opens.load(Ordering::SeqCst),
+                1,
+                "{name}: one answer, one open"
+            );
+        }
     }
 
     /// Every answer's label states what was withheld. Each row: the worktree's difference and the
@@ -2651,7 +2735,7 @@ mod tests {
             "src/a.rs",
             "rust",
             Scope::Product,
-            vec![hand_def("a", 1)],
+            vec![hand_def("alpha", 1)],
             vec![],
         )];
         let cases = [
@@ -2680,7 +2764,11 @@ mod tests {
                     diff,
                 }),
             );
-            let label = g.label().expect("labelled").to_string();
+            let label = g
+                .ground_labelled("alpha", 8)
+                .1
+                .expect("labelled")
+                .to_string();
             assert_eq!(
                 label,
                 format!("describes {}{after_tree}", stamp().tip.tree),
