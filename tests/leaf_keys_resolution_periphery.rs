@@ -20,12 +20,12 @@ use common::fixtures::RecordsRead;
 use common::fixtures::{
     apply_code_entity, apply_def, def_node, definition, edge, empty_named_node, plain,
 };
-use common::lens::{coupling_rows, files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
+use common::lens::{files_lens_rows, SUB_C, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    EntitySite, Graph, Located, Node, KIND_CODE_ENTITY, KIND_CONCEPT, REL_CALLS, REL_CONTAINS,
-    REL_REALIZES, TIER_EXTRACTED, TIER_INFERRED,
+    EntitySite, Graph, Located, Node, KIND_CODE_ENTITY, KIND_CONCEPT, REL_CALLS, REL_REALIZES,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The nested definition every placeholder below resolves onto.
@@ -153,52 +153,6 @@ fn the_served_files_regrain_folds_a_placeholder_onto_the_nested_definition() {
         }),
         "the served re-grain folds the placeholder under the nested definition's file and \
          carries no unresolved member"
-    );
-}
-
-/// The coupling rows of a graph where `src/a.rs` contains [`NESTED`] and [`CALLER`] calls
-/// [`PLACEHOLDER`], with each of `beside` one more edgeless node.
-fn coupling_of_the_call(beside: Vec<Node>) -> Vec<String> {
-    let mut nodes = vec![
-        def_node(NESTED, "new"),
-        def_node(CALLER, "caller"),
-        plain(PLACEHOLDER, KIND_CODE_ENTITY),
-    ];
-    nodes.extend(beside);
-    coupling_rows(&Graph {
-        nodes,
-        edges: vec![
-            edge("src/a.rs", NESTED, REL_CONTAINS, TIER_EXTRACTED),
-            edge(CALLER, PLACEHOLDER, REL_CALLS, TIER_INFERRED),
-        ],
-    })
-}
-
-/// GIVEN a call onto a placeholder whose leaf is a nested definition's name, WHEN the coupling
-/// layer is built, THEN the call's edge lands on the nested definition; beside a second
-/// definition of the leaf the placeholder stays its own node; beside a node of an empty `name`
-/// the edge still lands on the nested definition.
-#[test]
-fn the_coupling_layer_canonicalises_a_placeholder_onto_the_nested_definition_of_its_leaf() {
-    assert_eq!(
-        coupling_of_the_call(Vec::new()),
-        ["src/a.rs 1", "src/a.rs::T::new 2", "src/c.rs::caller 1"],
-        "the call's edge lands on the nested definition"
-    );
-    assert_eq!(
-        coupling_of_the_call(vec![def_node("src/d.rs::new", "new")]),
-        [
-            "src/a.rs 1",
-            "src/a.rs::T::new 1",
-            "src/c.rs::%new 1",
-            "src/c.rs::caller 1"
-        ],
-        "two definitions of the leaf leave the placeholder its own node"
-    );
-    assert_eq!(
-        coupling_of_the_call(vec![empty_named_node("src/e.rs::%new")]),
-        ["src/a.rs 1", "src/a.rs::T::new 2", "src/c.rs::caller 1"],
-        "a node of an empty `name` is no second definition"
     );
 }
 

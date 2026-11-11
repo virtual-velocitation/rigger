@@ -29,15 +29,14 @@ use common::fixtures::{
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
     node_with_optional_attrs, plain,
 };
-use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES_ROUTE};
+use common::lens::{files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES_ROUTE};
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     is_call_target, CallGraph, Direction, Graph, CODE_KIND_CONSTANT, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
     CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE, KIND_CODE_ENTITY, KIND_CONCEPT,
-    NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-    TIER_INFERRED,
+    NON_TARGET_KINDS, REL_CALLS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The three kind strings no call resolves onto, as an entity event spells them.
@@ -597,47 +596,6 @@ fn the_served_files_regrain_keeps_a_placeholder_off_a_field() {
         body["unresolved"],
         serde_json::json!([{ "id": "src/c.rs::%x", "candidates": [] }]),
         "the served placeholder names no candidate: {body}"
-    );
-}
-
-/// The coupling layer's `<node> <degree>` rows over a graph where `src/a.rs` contains
-/// `src/a.rs::x`, a definition of `kind`, and `src/c.rs::caller` calls the bare `src/c.rs::%x`.
-fn coupling_beside(kind: &str) -> Vec<String> {
-    let graph = Graph {
-        nodes: vec![
-            kinded_def_node("src/a.rs::x", kind),
-            kinded_def_node("src/c.rs::caller", "function"),
-            plain("src/c.rs::%x", KIND_CODE_ENTITY),
-        ],
-        edges: vec![
-            edge("src/a.rs", "src/a.rs::x", REL_CONTAINS, TIER_EXTRACTED),
-            edge("src/c.rs::caller", "src/c.rs::%x", REL_CALLS, TIER_INFERRED),
-        ],
-    };
-    coupling_rows(&graph)
-}
-
-/// GIVEN a bare placeholder whose leaf one field, property or declaration shares, WHEN the
-/// coupling layer is built, THEN the placeholder stays its own node and the member keeps its
-/// one edge; a fn in the member's place takes the placeholder's edge.
-#[test]
-fn the_coupling_layer_redirects_no_placeholder_onto_a_member_and_keeps_the_members_edges() {
-    for kind in NON_TARGETS {
-        assert_eq!(
-            coupling_beside(kind),
-            [
-                "src/a.rs 1",
-                "src/a.rs::x 1",
-                "src/c.rs::%x 1",
-                "src/c.rs::caller 1"
-            ],
-            "{kind}: the placeholder is its own node and the member keeps its CONTAINS edge"
-        );
-    }
-    assert_eq!(
-        coupling_beside("function"),
-        ["src/a.rs 1", "src/a.rs::x 2", "src/c.rs::caller 1"],
-        "a fn of the leaf takes the placeholder's edge"
     );
 }
 

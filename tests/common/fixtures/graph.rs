@@ -240,7 +240,17 @@ pub fn records_graph(
         fingerprint: 0,
         seq: 0,
     };
-    let view = rigger::code_view::FactsView::new(stamp, Vec::new());
+    view_graph(
+        records,
+        &rigger::code_view::FactsView::new(stamp, Vec::new()),
+    )
+}
+
+/// The record half `records` composed with `view`, read from a worktree that matches its tree.
+pub fn view_graph<'r>(
+    records: &'r dyn rigger::contextgraph::Neighbors,
+    view: &dyn rigger::code_view::CodeView,
+) -> rigger::composed::Composed<'r> {
     let honesty = rigger::composed::Honesty {
         worktree: "the worktree".to_string(),
         diff: Ok(rigger::code_view::WorktreeDiff::default()),
@@ -248,11 +258,11 @@ pub fn records_graph(
     };
     rigger::composed::Composed::new(
         records,
-        &view,
+        view,
         rigger::code_view::ViewFilter::default(),
         honesty,
     )
-    .expect("an empty view composes")
+    .expect("a view composes")
 }
 
 /// An opener of the record half it holds read as [`records_graph`], whatever the filter: the

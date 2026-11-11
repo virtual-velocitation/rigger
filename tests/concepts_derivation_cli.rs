@@ -1,277 +1,72 @@
-//! Periphery (CLI / end-to-end) tests for spec 54's CONCEPTS lens derivation exercised through the
-//! BUILT BINARY: `rigger graph concepts [--resolution <r>]`. The inside-out unit tests in
-//! `src/concepts.rs` feed a hand-built `Graph` to `derive` / `events` and hand-apply the resulting
-//! events into a `Projector`. So none of them exercises the actual subcommand: its dispatch, its
-//! argument parsing, its store bootstrap, the real `whole()` read it derives over, or the real
-//! `FoldingStore::append_and_fold` seam that appends the `ConceptDerived` / `ConceptRealized` events to the
-//! run log AND folds them into live `REALIZES` edges under the local `.rigger/`. This file guards
-//! exactly that binary boundary, over the shipped executable and the public projection surface:
-//!
-//!  - SUBCOMMAND wiring + arg parsing: `graph concepts` dispatches, `--resolution` parses, and a
-//!    malformed or unknown argument exits non-zero with its documented message (before any store
-//!    side effect).
-//!  - the END-TO-END record seam over the REAL store: a seeded INTENT layer (design docs + their
-//!    intent edges, ingested as `DocConceptExtracted` / `DocLinkExtracted` events), derived through
-//!    the binary, materializes a live concept layer (`KIND_CONCEPT` nodes + `REALIZES` edges) read
-//!    back over `Projector::whole`, groups each document WITH the code it governs ACROSS directory
-//!    lines, EXCLUDES a dev-loop `decision --GOVERNS--> file` (harness noise, no intent-doc
-//!    endpoint), and the summary line reports honest counts.
-//!  - the EMPTY no-op: a project with no intent edges records nothing and still exits 0.
-//!  - GRAIN coexistence + supersession: two resolutions coexist (distinct `concept/<r>/*` ids, both
-//!    live), and re-running one grain REPLACES only that grain's concept set - no stale duplicate
-//!    memberships and the other grain untouched.
-//!  - DETERMINISM through the binary: re-running a grain reproduces the byte-identical live layer.
-//!
-//! The intent layer is built from the ALWAYS-COMPILED design-intent folds (spec 29b), and the
-//! derivation, the fold, and `FoldingStore::append_and_fold` are all always-compiled, so every test here
-//! runs identically in BOTH feature lanes.
+//! Periphery (CLI) tests for `rigger graph concepts [--resolution <r>]` over the built binary: a
+//! read-only report of the concepts the code store holds for the head. The derivation itself is
+//! proven over the library (`concepts_shared_assembly.rs`, `rigger_domain::groupings`); this file
+//! guards the subcommand's dispatch, its argument parsing, its summary and that it records nothing.
 
-use std::path::Path;
+use crate::layer_cli::LayerCli;
 
-use rigger::conductor;
-use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{
-    RecordFold, KIND_CONCEPT, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_EXPLAINS,
-    REL_GOVERNS, REL_REALIZES, REL_SPECIFIES, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED,
-};
-use rigger::eventstore::namespace::Namespaced;
-use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Event, ExpectedRevision};
-use rigger::ingest::folding_into;
-
-// The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
-// `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
-// and every suite that spawns the product then dies with a bare NotFound.
-use crate::common;
-use crate::layer_cli;
-use layer_cli::{member_of, rigger_db, LayerCli};
-
-/// A stable project identity pinned into the fixture, so the in-test SEED store and the BINARY
-/// resolve the SAME namespace: the binary reads `.rigger/project.id` at the git top-level, and the
-/// seed opens its `Store` / `Projector` under that identity, so a fold the seed lands is the exact
-/// projection the binary later derives concepts over and records into.
-const IDENTITY: &str = "concepttest";
-
-/// A `DocConceptExtracted` event (spec 29b): one design-intent node of `kind` at `id`, carrying a
-/// `title` (the label source the concept derivation reads). Folds the intent-doc node.
-fn doc(kind: &str, id: &str, title: &str) -> Event {
-    Event::new(
-        TYPE_DOC_CONCEPT_EXTRACTED,
-        serde_json::to_vec(&serde_json::json!({
-            "kind": kind, "id": id, "title": title, "doc": id
-        }))
-        .unwrap(),
-    )
+#[cfg(feature = "symbols")]
+/// A tree of two design documents, each specifying the code of its own region across two
+/// directories.
+fn intent_tree() -> Vec<(String, String)> {
+    [
+        (
+            "docs/graph-design.md",
+            "# The knowledge graph\n\nThe code is `src/graph/store.rs` and `src/db/sqlite.rs`.\n",
+        ),
+        (
+            "docs/review-design.md",
+            "# Review adjudication\n\nThe code is `src/review/panel.rs` and `src/verdict/judge.rs`.\n",
+        ),
+        ("src/graph/store.rs", "pub fn store() {}\n"),
+        ("src/db/sqlite.rs", "pub fn sqlite() {}\n"),
+        ("src/review/panel.rs", "pub fn panel() {}\n"),
+        ("src/verdict/judge.rs", "pub fn judge() {}\n"),
+    ]
+    .map(|(path, text)| (path.to_string(), text.to_string()))
+    .to_vec()
 }
 
-/// A `DocLinkExtracted` event (spec 29b): one design-intent edge `<from> --rel--> <to>` at the
-/// extracted tier. `from` is an intent-doc, `to` is the code it attaches to - the coupling the
-/// concepts derivation groups over.
-fn link(from: &str, to: &str, rel: &str) -> Event {
-    Event::new(
-        TYPE_DOC_LINK_EXTRACTED,
-        serde_json::to_vec(&serde_json::json!({ "from": from, "to": to, "rel": rel })).unwrap(),
-    )
-}
-
-/// A dev-loop `DecisionMade` GOVERNING a file (spec's harness-noise case): it folds a `decision`
-/// node and a `decision --GOVERNS--> file` edge. The relation is an intent relation, but the
-/// `decision` endpoint is NOT an intent-doc, so the intent-layer filter must REJECT this edge - a
-/// concept is design intent, never a dev-loop artifact.
-fn decision_noise(id: &str, file: &str) -> Event {
-    Event::new(
-        TYPE_DECISION_MADE,
-        serde_json::to_vec(&serde_json::json!({
-            "id": id, "summary": "noise", "governs": [file], "supersedes": ""
-        }))
-        .unwrap(),
-    )
-}
-
-/// The subcommand under test: `rigger graph concepts`, its live layer the `KIND_CONCEPT` nodes
-/// and `REALIZES` edges, seeded from the canonical spec-54 intent layer.
+/// The subcommand under test, grouping the two design regions.
 const CONCEPTS: LayerCli = LayerCli {
     subcommand: "concepts",
-    identity: IDENTITY,
-    kind: KIND_CONCEPT,
-    rel: REL_REALIZES,
-    id_prefix: "concept",
-    empty_summary: [
-        "derived 0 concept",
-        "0 intent-linked node(s)",
-        "0 event(s) recorded",
-    ],
-    seed: seed_intent,
+    empty_summary: "graph concepts: 0 concepts over 0 node(s) at resolution 1",
+    #[cfg(feature = "symbols")]
+    tree: intent_tree,
 };
 
-/// Seed the canonical spec-54 INTENT layer into the fixture's REAL store via the exact production
-/// seam (`FoldingStore::append_and_fold` on the run stream): it appends the design-intent events to
-/// `.rigger/events.db` and folds them into `.rigger/graph.db`.
-///
-/// - Concept A ("The knowledge graph"): a `design-doc` SPECIFIES four files across `src/graph` and
-///   `src/db` (a doc grouped with its code ACROSS directory lines).
-/// - Concept B ("Review adjudication"): a `handbook-rule` GOVERNS four files across `src/review` and
-///   `src/verdict`.
-/// - Concept C: a `rationale` EXPLAINS `src/graph/index.rs` - a file in the SAME directory as
-///   concept A's `src/graph/store.rs`, yet a DIFFERENT concept, because no design doc governs it
-///   (grouping is by INTENT, never by directory).
-/// - NOISE: a dev-loop `decision --GOVERNS--> src/graph/store.rs` the intent-layer filter rejects.
-///
-/// The store / projection handles drop at function end, freeing the sqlite files before the binary
-/// opens them.
-fn seed_intent(root: &Path) {
-    // The layer is seeded from derived events, which a store refuses: they land as the rows of
-    // a store recorded before the ledger.
-    let db = rigger_db(root, "events.db");
-    let backend = Store::open(&db).unwrap();
-    let pre_ledger = common::fixtures::PreLedgerStore {
-        db: Path::new(&db),
-        inner: &backend,
-    };
-    let store = Namespaced::new(&pre_ledger, IDENTITY);
-    let graph = Projector::open(&rigger_db(root, "graph.db"), IDENTITY).unwrap();
-
-    let a_files = [
-        "src/graph/store.rs",
-        "src/graph/fold.rs",
-        "src/db/sqlite.rs",
-        "src/db/schema.rs",
-    ];
-    let b_files = [
-        "src/review/panel.rs",
-        "src/review/lens.rs",
-        "src/verdict/judge.rs",
-        "src/verdict/tally.rs",
-    ];
-
-    let mut events = vec![
-        doc(KIND_DESIGN_DOC, "docs/kg.md", "The knowledge graph"),
-        doc(KIND_HANDBOOK_RULE, "docs/review.md", "Review adjudication"),
-        doc(KIND_RATIONALE, "src/graph/index.rs#L5", "why index by name"),
-    ];
-    for f in &a_files {
-        events.push(link("docs/kg.md", f, REL_SPECIFIES));
-    }
-    for f in &b_files {
-        events.push(link("docs/review.md", f, REL_GOVERNS));
-    }
-    events.push(link(
-        "src/graph/index.rs#L5",
-        "src/graph/index.rs",
-        REL_EXPLAINS,
-    ));
-    // NOISE: a dev-loop decision GOVERNS a region-A file. Same rel as an intent edge, but a
-    // `decision` node is not an intent-doc, so the layer must EXCLUDE it.
-    events.push(decision_noise("d-noise", "src/graph/store.rs"));
-
-    let done = folding_into(&store, Some(&graph as &dyn RecordFold), &|_| {})
-        .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
-        .expect("seed the intent layer through the real append-and-fold seam");
-    assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);
-}
-
+#[cfg(feature = "symbols")]
 #[test]
-fn the_subcommand_records_a_live_concept_layer_over_the_real_store() {
-    // Drive the built binary end-to-end: it reads the seeded intent layer via `whole()`, derives
-    // concepts, and records them THROUGH `FoldingStore::append_and_fold` into live `REALIZES` edges - the
-    // seam the inside-out tests (which hand-apply events) never exercise.
-    let dir = CONCEPTS.project();
-    let root = dir.path();
-    seed_intent(root);
-
-    let out = CONCEPTS.run(root, &[]);
+fn the_subcommand_reports_the_concepts_of_the_head() {
+    let dir = CONCEPTS.project(&intent_tree());
+    let (summary, clusters) = CONCEPTS.report(dir.path(), &[]);
     assert!(
-        out.status.success(),
-        "graph concepts must succeed over a real seeded store: {}",
-        String::from_utf8_lossy(&out.stderr)
+        summary.starts_with(&format!(
+            "graph concepts: {} concepts over ",
+            clusters.len()
+        )),
+        "the summary counts the reported concepts: {summary}"
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("graph concepts: derived"),
-        "the summary line reports the derivation outcome: {stdout}"
-    );
-    assert!(
-        stdout.contains("at resolution 1"),
-        "the summary reports the default resolution grain: {stdout}"
-    );
-    assert!(
-        stdout.contains("event(s) recorded into"),
-        "the summary reports the events recorded into the store: {stdout}"
-    );
-
-    let (concept_nodes, edges) = CONCEPTS.live_layer(root);
-    // Two docs governing disjoint regions plus a rationale on a doc-less file: three connected
-    // intent regions, three concepts.
     assert_eq!(
-        concept_nodes.len(),
-        3,
-        "three connected intent regions became three live concepts, got {}: {concept_nodes:?}",
-        concept_nodes.len()
+        clusters.len(),
+        2,
+        "each design region is one concept: {clusters:?}"
     );
-    for c in &concept_nodes {
-        assert!(
-            c.starts_with("concept/1/"),
-            "the default-grain pass names concepts `concept/1/<n>`: {c}"
-        );
-    }
-
-    // Concept A groups the design-doc WITH all four files it specifies, ACROSS src/graph and src/db.
-    let ca = member_of(&edges, "docs/kg.md").expect("the design-doc realizes concept A");
-    for member in [
-        "src/graph/store.rs",
-        "src/graph/fold.rs",
-        "src/db/sqlite.rs",
-        "src/db/schema.rs",
-    ] {
-        assert_eq!(
-            member_of(&edges, member),
-            Some(ca),
-            "{member} realizes concept A (a doc grouped with its code across directory lines)"
-        );
-    }
-    // Concept B groups the handbook-rule WITH its four files across src/review and src/verdict.
-    let cb = member_of(&edges, "docs/review.md").expect("the handbook-rule realizes concept B");
-    for member in [
-        "src/review/panel.rs",
-        "src/review/lens.rs",
-        "src/verdict/judge.rs",
-        "src/verdict/tally.rs",
-    ] {
-        assert_eq!(
-            member_of(&edges, member),
-            Some(cb),
-            "{member} realizes concept B across directory lines"
-        );
-    }
-    assert_ne!(ca, cb, "the two doc regions are DISTINCT concepts");
-
-    // Grouping is by INTENT, not directory: `src/graph/index.rs` sits in the SAME directory as
-    // concept A's `src/graph/store.rs`, yet lands in a DIFFERENT concept - no design doc governs it.
-    let cc =
-        member_of(&edges, "src/graph/index.rs").expect("the rationale's file realizes a concept");
-    assert_ne!(
-        cc, ca,
-        "a src/graph file with no design-doc link is NOT forced into concept A by its directory"
-    );
-
-    // The dev-loop decision noise never entered the layer: it realizes NO concept, and the `decision`
-    // node is not a concept member.
     assert!(
-        member_of(&edges, "d-noise").is_none(),
-        "a dev-loop decision --GOVERNS--> file is NOT intent and realizes no concept"
+        clusters.iter().all(|(_, members, _)| *members == 3),
+        "each concept groups its document with the code it specifies: {clusters:?}"
     );
 }
 
 rigger::test_cases! {
-    an_empty_project_records_no_concept_and_still_succeeds:
-        CONCEPTS.an_empty_project_records_nothing_and_still_succeeds();
-    resolution_grains_coexist_and_a_rerun_supersedes_only_its_own_grain:
-        CONCEPTS.resolution_grains_coexist_and_a_rerun_supersedes_only_its_own_grain();
+    an_empty_project_reports_no_concept_and_still_succeeds:
+        CONCEPTS.an_empty_project_reports_no_grouping_and_still_succeeds();
     a_malformed_resolution_or_unknown_argument_fails_loudly:
         CONCEPTS.a_malformed_resolution_or_unknown_argument_fails_loudly();
-    re_running_a_grain_reproduces_the_byte_identical_live_layer:
-        CONCEPTS.re_running_a_grain_reproduces_the_byte_identical_live_layer();
-    a_pass_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing:
-        CONCEPTS.a_pass_behind_a_held_lock_folds_once_it_is_released_and_marks_nothing();
+    #[cfg(feature = "symbols")]
+    the_report_writes_nothing_to_the_log:
+        CONCEPTS.the_report_writes_nothing_to_the_log();
+    #[cfg(feature = "symbols")]
+    each_grain_names_its_concepts_by_its_resolution:
+        CONCEPTS.each_grain_names_its_clusters_by_its_resolution();
 }

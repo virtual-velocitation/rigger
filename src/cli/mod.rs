@@ -8,7 +8,6 @@ use rigger::budget::BuildBudget;
 use rigger::canary;
 use rigger::canary_store;
 use rigger::community;
-use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::config_store;

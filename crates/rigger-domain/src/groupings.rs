@@ -64,53 +64,59 @@ fn clusters<'a>(
 
 impl Group for ProductionGroupings {
     fn group(&self, view: &dyn CodeView) -> Groupings {
-        let code = CodeGraph::new(view, ViewFilter::default());
-        let graph = code.whole();
-        let kind_of = graph.kinds();
-        let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
-        for e in &graph.edges {
-            if couples(&e.rel, kind_of.get(e.to.as_str()).copied()) {
-                *degree.entry(&e.from).or_default() += 1;
-                if e.to != e.from {
-                    *degree.entry(&e.to).or_default() += 1;
-                }
+        group_at(view, DEFAULT_RESOLUTION)
+    }
+}
+
+/// The production groupings of `view` at the grain `resolution`: the default grain is stored at
+/// advance, and any other is computed here on demand and never stored.
+pub fn group_at(view: &dyn CodeView, resolution: f64) -> Groupings {
+    let code = CodeGraph::new(view, ViewFilter::default());
+    let graph = code.whole();
+    let kind_of = graph.kinds();
+    let mut degree: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if couples(&e.rel, kind_of.get(e.to.as_str()).copied()) {
+            *degree.entry(&e.from).or_default() += 1;
+            if e.to != e.from {
+                *degree.entry(&e.to).or_default() += 1;
             }
         }
-        let names: BTreeMap<&str, &str> = graph
-            .nodes
-            .iter()
-            .filter_map(|n| node_name(n).map(|name| (n.id.as_str(), name)))
-            .collect();
-        let label = |_: &str, members: &[String]| {
-            let ranked = members.iter().map(|m| {
-                let name = names.get(m.as_str()).copied().unwrap_or(m.as_str());
-                (
-                    std::cmp::Reverse(degree.get(m.as_str()).copied().unwrap_or(0)),
-                    name,
-                )
-            });
-            ranked
-                .min()
-                .map(|(_, name)| name.to_string())
-                .unwrap_or_default()
-        };
-        let found = detect(&coupling(&code, &graph), DEFAULT_RESOLUTION);
-        let pairs = found.members.iter().map(|(n, c)| (n, c));
-        let communities = clusters(pairs, found.resolution, &found.hash, label);
-        let derived = derive(&graph, &intent_layer(&graph), DEFAULT_RESOLUTION);
-        let titles: BTreeMap<&str, &str> = derived
-            .concepts
-            .iter()
-            .map(|(id, title)| (id.as_str(), title.as_str()))
-            .collect();
-        let pairs = derived.members.iter().map(|(n, c)| (n, c));
-        let concepts = clusters(pairs, derived.resolution, &derived.hash, |id, _| {
-            titles.get(id).copied().unwrap_or_default().to_string()
+    }
+    let names: BTreeMap<&str, &str> = graph
+        .nodes
+        .iter()
+        .filter_map(|n| node_name(n).map(|name| (n.id.as_str(), name)))
+        .collect();
+    let label = |_: &str, members: &[String]| {
+        let ranked = members.iter().map(|m| {
+            let name = names.get(m.as_str()).copied().unwrap_or(m.as_str());
+            (
+                std::cmp::Reverse(degree.get(m.as_str()).copied().unwrap_or(0)),
+                name,
+            )
         });
-        Groupings {
-            communities,
-            concepts,
-        }
+        ranked
+            .min()
+            .map(|(_, name)| name.to_string())
+            .unwrap_or_default()
+    };
+    let found = detect(&coupling(&code, &graph), resolution);
+    let pairs = found.members.iter().map(|(n, c)| (n, c));
+    let communities = clusters(pairs, found.resolution, &found.hash, label);
+    let derived = derive(&graph, &intent_layer(&graph), resolution);
+    let titles: BTreeMap<&str, &str> = derived
+        .concepts
+        .iter()
+        .map(|(id, title)| (id.as_str(), title.as_str()))
+        .collect();
+    let pairs = derived.members.iter().map(|(n, c)| (n, c));
+    let concepts = clusters(pairs, derived.resolution, &derived.hash, |id, _| {
+        titles.get(id).copied().unwrap_or_default().to_string()
+    });
+    Groupings {
+        communities,
+        concepts,
     }
 }
 
@@ -274,13 +280,6 @@ mod tests {
         let code = CodeGraph::new(&view, ViewFilter::default());
         let graph = code.whole();
         let layer = coupling(&code, &graph);
-        let retired = detect(&Coupling::from_graph(&graph), DEFAULT_RESOLUTION);
-        let found = detect(&layer, DEFAULT_RESOLUTION);
-        assert_eq!(
-            (found.members, found.hash),
-            (retired.members, retired.hash),
-            "the resolver's down-hop couples as the graph's unique-leaf rule did"
-        );
         let degree = |id: &str| {
             let at = layer.nodes().iter().position(|n| n == id)?;
             Some(layer.degrees()[at])

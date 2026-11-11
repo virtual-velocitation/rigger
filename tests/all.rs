@@ -60,8 +60,10 @@ mod code_store_writers_periphery;
 #[cfg(feature = "symbols")]
 mod combined_lookup_periphery;
 mod community_detection_cli;
+#[cfg(feature = "symbols")]
 mod community_detection_pass;
 mod community_fold_periphery;
+#[cfg(feature = "symbols")]
 mod community_resolution_knob;
 mod compaction_generations_periphery;
 mod compiler_pass_stage1_audit;

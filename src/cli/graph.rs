@@ -6,13 +6,10 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     if args.first().map(String::as_str) == Some("build") {
         return cmd_graph_build(&args[1..]);
     }
-    // `rigger graph communities` is the OFFLINE detection pass (spec 53): derive the code lens's
-    // coupling communities over the already-folded structure layer and record them as events.
+    // `rigger graph communities` and `rigger graph concepts` report the code store's groupings.
     if args.first().map(String::as_str) == Some("communities") {
         return cmd_graph_communities(&args[1..]);
     }
-    // `rigger graph concepts` is the OFFLINE intent-derivation pass (spec 54): derive the concepts
-    // lens's grouping over the already-folded intent layer and record them as events.
     if args.first().map(String::as_str) == Some("concepts") {
         return cmd_graph_concepts(&args[1..]);
     }
@@ -820,66 +817,72 @@ fn record_batch(
     Ok(None)
 }
 
-/// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
-/// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
-/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes, but a module
-/// declaration's `CONTAINS` onto its file, spec 117), runs modularity-based detection over it at
-/// the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]), and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
-/// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
-/// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
-/// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live
-/// set per grain.
-///
-/// Store lifecycle mirrors `graph build` (the composition root, not the courier walk-up): it
-/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
-/// appends-and-folds the pass's events in ONE batch. Detection is always-compiled and reads only
-/// folded edges, so this runs identically in both feature lanes; a graph with no coupling edges
-/// detects nothing and records nothing (exit 0, never an error). Because an empty result records NO
-/// events, an empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior assignment - the last
-/// NON-empty pass at that resolution stays live (see `community::events`, decision
-/// d-u53c2-empty-rerun-keep-last-good). A real subsystem removal is a SHRINK - a smaller NON-empty
-/// result - which DOES supersede via the `fresh` boundary and drops the emptied community's node.
+/// `rigger graph communities [--resolution <r>]` - a read-only report of the code store's
+/// communities: the coupling layer of the production view, detected at advance at the default
+/// grain and computed here on demand at any other. It records nothing: groupings have one writer,
+/// the advance that stores them in the snapshot.
 fn cmd_graph_communities(args: &[String]) -> Res {
-    run_graph_pass(
+    report_groupings(
         "communities",
         args,
-        community::DEFAULT_RESOLUTION,
-        |whole, resolution| {
-            // Detect communities over the live projection's coupling layer. The `fresh` head
-            // supersedes this grain's prior memberships; the rest re-add, so a re-run REPLACES this
-            // resolution's assignment set.
-            let coupling = community::Coupling::from_graph(whole);
-            let assignment = community::detect(&coupling, resolution);
-            let events = community::events(&assignment);
-            let summary = format!(
-            "detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
-            assignment.num_communities,
-            if assignment.num_communities == 1 { "y" } else { "ies" },
-            coupling.len(),
-            resolution,
-            events.len(),
-            db_path("graph.db")
-        );
-            (events, summary)
-        },
+        |g| &g.communities,
+        |n| format!("{n} communit{}", if n == 1 { "y" } else { "ies" }),
     )
 }
 
-/// One offline, deterministic `rigger graph <verb> [--resolution <r>]` pass: parse the
-/// positive, finite resolution (defaulting to `default`), bootstrap the store like `graph build`/
-/// `run` do (create-or-open under the cwd's `.rigger/`), and read the WHOLE live projection - the
-/// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
-/// turns it into the pass's events plus its summary line; the events are appended in ONE store
-/// append and folded through the shared batched append-and-fold authority, at the transaction
-/// cadence [`RecordFold::apply_batch`](rigger::contextgraph::RecordFold::apply_batch) states,
-/// then the summary is printed.
-fn run_graph_pass(
+/// `rigger graph concepts [--resolution <r>]` - a read-only report of the code store's concepts:
+/// the tree's intent layer, derived at advance at the default grain and computed here on demand
+/// at any other. It records nothing.
+fn cmd_graph_concepts(args: &[String]) -> Res {
+    report_groupings(
+        "concepts",
+        args,
+        |g| &g.concepts,
+        |n| format!("{n} concept{}", if n == 1 { "" } else { "s" }),
+    )
+}
+
+/// One `rigger graph <verb> [--resolution <r>]` report: parse the positive, finite resolution
+/// (defaulting to the stored grain), open the code store as a reader, and print the clusters
+/// `pick` selects - a summary line, then each cluster's id, member count and label.
+fn report_groupings(
     verb: &str,
     args: &[String],
-    default: f64,
-    derive: impl FnOnce(&contextgraph::Graph, f64) -> (Vec<Event>, String),
+    pick: impl Fn(&rigger_domain::code_view::Groupings) -> &Vec<rigger_domain::code_view::Cluster>,
+    counted: impl Fn(usize) -> String,
 ) -> Res {
-    let mut resolution = default;
+    let resolution = grain(verb, args)?;
+    let lines = head_view(&cwd(), |view, _, _| {
+        let computed;
+        let groupings = if resolution == community::DEFAULT_RESOLUTION {
+            view.groupings()
+        } else {
+            computed = rigger_domain::groupings::group_at(view, resolution);
+            &computed
+        };
+        let clusters = pick(groupings);
+        let members: usize = clusters.iter().map(|c| c.members.len()).sum();
+        let mut lines = vec![format!(
+            "graph {verb}: {} over {members} node(s) at resolution {resolution}",
+            counted(clusters.len())
+        )];
+        lines.extend(
+            clusters
+                .iter()
+                .map(|c| format!("{}\t{}\t{}", c.id, c.members.len(), c.label)),
+        );
+        Ok(lines)
+    })?;
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The `--resolution` grain `args` ask `rigger graph <verb>` for: a positive, finite number,
+/// [`community::DEFAULT_RESOLUTION`] when none is given.
+fn grain(verb: &str, args: &[String]) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut resolution = community::DEFAULT_RESOLUTION;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -902,70 +905,7 @@ fn run_graph_pass(
         }
         i += 1;
     }
-
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let selection = store_selection(None, None)?;
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(
-        &db_path("graph.db"),
-        &project_identity(),
-        &selection,
-        &format!("graph {verb}"),
-    )?;
-
-    let (events, summary) = derive(&graph.whole()?, resolution);
-    let done = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line).append_and_fold(
-        conductor::STREAM,
-        ExpectedRevision::Any,
-        &events,
-    )?;
-    println!("graph {verb}: {summary}{}", fold_loss_clause(&done.fold));
-    Ok(())
-}
-
-/// `rigger graph concepts [--resolution <r>]` - the OFFLINE, DETERMINISTIC intent-derivation pass
-/// (spec 54, the CONCEPTS lens). It reads the project's already-folded INTENT layer (the live
-/// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` / `references` edges among design docs,
-/// handbook rules, specs, rationale, and the code they attach to), runs the SAME deterministic
-/// community detection the code lens ships over it at the given `--resolution` grain (default
-/// [`concepts::DEFAULT_RESOLUTION`]), and RECORDS the result as `ConceptDerived` / `ConceptRealized`
-/// events - so the derived grouping is event-sourced (the `REALIZES` membership edges are a
-/// rebuildable fold of the log), never computed at request time. Re-running at a resolution with a
-/// NON-empty result supersedes only that grain's prior grouping (the fold's `fresh` boundary), so
-/// distinct grains coexist and the lens reads one live set per grain.
-///
-/// Store lifecycle mirrors `graph communities` (the composition root, not the courier walk-up): it
-/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
-/// appends-and-folds the pass's events in ONE batch. The derivation is always-compiled and reads only
-/// folded edges, so this runs identically in both feature lanes; a graph with no intent edges derives
-/// nothing and records nothing (exit 0, never an error). Because an empty result records NO events, an
-/// empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior grouping - the last NON-empty
-/// pass at that resolution stays live (see `concepts::events`).
-fn cmd_graph_concepts(args: &[String]) -> Res {
-    run_graph_pass(
-        "concepts",
-        args,
-        concepts::DEFAULT_RESOLUTION,
-        |whole, resolution| {
-            // Derive concepts over the live projection's intent layer. The `fresh` head supersedes
-            // this grain's prior grouping; the rest re-add, so a re-run REPLACES this resolution's
-            // concept set.
-            let layer = concepts::intent_layer(whole);
-            let derivation = concepts::derive(whole, &layer, resolution);
-            let events = concepts::events(&derivation);
-            let summary = format!(
-            "derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
-            derivation.num_concepts,
-            if derivation.num_concepts == 1 { "" } else { "s" },
-            layer.len(),
-            resolution,
-            events.len(),
-            db_path("graph.db")
-        );
-            (events, summary)
-        },
-    )
+    Ok(resolution)
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the

@@ -3,20 +3,18 @@
 //! "subsystem" a maintainer holds in their head - regardless of directory. It reads the live
 //! coupling layer (the `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes,
 //! but a module declaration's `CONTAINS` onto its file) already folded into the projection, runs
-//! modularity-based community detection over it, and turns the result into `CommunityAssigned`
-//! events. The fold (the always-compiled projector arm)
-//! turns each event into an `IN_COMMUNITY` membership edge, so the derived grouping is EVENT-SOURCED
-//! (a rebuildable projection over the log), never computed at request time.
+//! modularity-based community detection over it. The code store runs it at every advance and
+//! keeps the result in the snapshot ([`crate::groupings`]), so a grouping is a pure function of
+//! the tree, never recorded as an event.
 //!
-//! ALWAYS compiled, exactly like the fold it feeds. Detection reads only the folded coupling edges
-//! and needs no grammar, so it carries no `symbols` gate: the pass, its determinism, and its
-//! connectedness are proven identically in BOTH feature lanes. The event type, node kind, and
-//! relation live in [`crate::contextgraph`]; this module is the one WRITER of `CommunityAssigned`.
+//! ALWAYS compiled. Detection reads only coupling edges and needs no grammar, so it carries no
+//! `symbols` gate: the pass, its determinism, and its connectedness are proven identically in
+//! BOTH feature lanes.
 //!
 //! # Determinism (a hard requirement, not a wish)
 //!
 //! The same coupling graph at the same resolution yields BYTE-IDENTICAL assignments on every run
-//! and every machine, so a rebuild from the recorded events reproduces the same membership rows:
+//! and every machine, so every advance over one tree stores the same groupings:
 //!
 //! - Nodes are processed in SORTED node-id order (the coupling graph's node vector is sorted, and a
 //!   node's index IS its rank in that order, so an index loop is an id-sorted loop).
@@ -45,13 +43,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contextgraph::query::{leaf_of, node_name};
 use crate::contextgraph::{
-    declares_a_module, is_call_target, CommunityAssigned, Graph, KIND_CODE_ENTITY, REL_CALLS,
-    REL_CONTAINS, REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
+    declares_a_module, Graph, REL_CALLS, REL_CONTAINS, REL_REFERENCES, TIER_AMBIGUOUS,
 };
-use crate::eventstore::Event;
-use crate::resolve::{hop, Hop};
 
 /// The default resolution grain (spec 53): 1.0. Higher resolutions yield more and smaller
 /// communities; the grain knob's SEMANTICS (monotonicity, coexisting grains) are a later criterion's
@@ -118,61 +112,6 @@ pub struct Coupling {
 }
 
 impl Coupling {
-    /// Build the coupling graph from the WHOLE projection graph (as
-    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector::whole` returns it - live edges only,
-    /// project-scoped, sorted). Keeps only the `CALLS` / `REFERENCES` / `CONTAINS` structural edges
-    /// at resolvable tiers (never [`TIER_AMBIGUOUS`]), but a module declaration's `CONTAINS` onto a
-    /// `file` node ([`declares_a_module`]), collapses each unordered node pair to one undirected
-    /// edge weighted by how many such edges join it, and drops self-loops. A node with no surviving
-    /// coupling edge is excluded (it joins no community).
-    pub fn from_graph(g: &Graph) -> Self {
-        // Index real DEFINITIONS by leaf so a cross-file reference that folded onto a bare
-        // same-file placeholder can be redirected to the definition it actually reaches. A
-        // code-entity node carrying a non-empty `name` attr ([`node_name`]) is a real definition
-        // (the extraction fold sets it), a redirect target only when its kind is a call target: a
-        // placeholder never redirects onto a data member or a declaration, which keeps its own
-        // edges as every named node does; a code-entity with no `name`, or an empty one, is a
-        // bare placeholder. A definition keys by its leaf, which for a named node is
-        // its name, and a placeholder by the leaf its id names ([`leaf_of`]): the leaf the
-        // store's resolution by leaf keys on too (spec 119).
-        let mut defs_by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        let mut bare: BTreeMap<&str, bool> = BTreeMap::new();
-        for node in &g.nodes {
-            let is_code = node.kind == KIND_CODE_ENTITY;
-            let name = node_name(node);
-            bare.insert(node.id.as_str(), is_code && name.is_none());
-            let target = is_code && is_call_target(node.attrs.get("kind").map(String::as_str));
-            if let (true, Some(leaf)) = (target, name) {
-                defs_by_name.entry(leaf).or_default().push(&node.id);
-            }
-        }
-        // Canonicalize a node id: a bare placeholder resolves to the UNIQUE call-target
-        // definition sharing its leaf (EXACTLY ONE resolves; ZERO or MANY stays itself, honest by
-        // construction) - the resolver's one "exactly one" decision ([`hop`]), here over the
-        // in-memory whole-graph read so the undirected coupling layer genuinely spans files
-        // instead of stopping at same-file bare placeholders. Every other node (a real
-        // definition, a file, a non-code node) is itself.
-        let canon = |id: &str| -> String {
-            if *bare.get(id).unwrap_or(&false) {
-                if let Some(defs) = leaf_of(id).and_then(|leaf| defs_by_name.get(leaf)) {
-                    if let Hop::One(def) = hop(defs.clone()) {
-                        return def.to_string();
-                    }
-                }
-            }
-            id.to_string()
-        };
-
-        // Feed the CANONICAL endpoints of every surviving coupling edge to the shared assembly,
-        // which collapses each unordered pair to one undirected weighted edge (multiplicity), drops
-        // self-loops, and sorts the node vector - so the code lens and the concepts lens build their
-        // input layer through ONE assembly, and the canonical hash string is identical by
-        // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
-        // that resolved back onto its file-mate) are dropped inside `from_edges`.
-        // A module declaration's `CONTAINS` onto its file couples nothing ([`declares_a_module`]).
-        Coupling::layer(g, canon)
-    }
-
     /// The coupling layer of `g`: every coupling edge at a resolved tier ([`is_coupling`]), its
     /// ends taken through `canon`, assembled by [`Coupling::from_edges`].
     pub fn layer(g: &Graph, canon: impl Fn(&str) -> String) -> Self {
@@ -192,7 +131,7 @@ impl Coupling {
     /// `b -> a` collapse to one edge. The resulting node vector is SORTED and unique (a node's index
     /// IS its id rank), the adjacency is index-sorted, and the canonical rendering (`from\tto\tweight`
     /// per pair, in sorted pair order) is byte-stable - so the pass hash the detection takes over it
-    /// is deterministic across runs and machines. The code lens's [`Coupling::from_graph`] feeds it
+    /// is deterministic across runs and machines. The code lens's [`Coupling::layer`] feeds it
     /// canonicalized coupling endpoints; the concepts lens feeds it intent-edge endpoints - the
     /// detection, the numbering, and the determinism are then IDENTICAL over either layer.
     pub fn from_edges<I: IntoIterator<Item = (String, String)>>(edges: I) -> Self {
@@ -282,8 +221,7 @@ impl Coupling {
 /// A deterministic community assignment produced by [`detect`]: every coupling-graph member mapped
 /// to its `community/<resolution>/<n>` id, plus the pass's `resolution`, content `hash`, and the
 /// number of distinct communities. `members` is sorted by node id, so the first entry is always the
-/// lexicographically-smallest node - the one whose `CommunityAssigned` event carries the pass
-/// boundary [`CommunityAssigned::fresh`].
+/// lexicographically-smallest node.
 pub struct Assignment {
     /// The resolution grain this pass ran at.
     pub resolution: f64,
@@ -357,41 +295,6 @@ pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
         members,
         num_communities: g.num_groups,
     }
-}
-
-/// The `CommunityAssigned` events recording an [`Assignment`], in sorted-node-id order, with the
-/// FIRST event carrying `fresh: true` (the pass boundary the fold supersedes the resolution grain's
-/// prior memberships on - so a re-run whose assignment is NON-empty REPLACES this grain's assignment
-/// set). Appending and folding these events materializes the community layer; a rebuild replays them
-/// to byte-identical rows.
-///
-/// An EMPTY assignment yields NO events - which is the KEEP-LAST-GOOD policy, not an oversight: with
-/// no member there is no event to carry the `fresh` boundary, so the fold never fires the
-/// supersession and the grain's last NON-empty assignment stays LIVE. This is deliberate (an empty
-/// coupling is the degenerate whole-layer-empty read - detection run before code ingest, or all
-/// coupling removed - where clobbering a good derivation is worse than keeping it); CLEARING on empty
-/// would need a new event type to represent "this grain is now empty" (the event-sourced no-new-type
-/// constraint forbids one) or a projector-level clear outside the fold (which would break the
-/// rebuildable-projection invariant). A real SHRINK is a smaller NON-empty assignment that DOES carry
-/// `fresh` and DOES supersede, so "code lost a subsystem" is handled by supersession; only the
-/// all-coupling-gone case keeps last-good.
-pub fn events(assignment: &Assignment) -> Vec<Event> {
-    assignment
-        .members
-        .iter()
-        .enumerate()
-        .map(|(i, (node, community))| {
-            let payload = CommunityAssigned {
-                node: node.clone(),
-                community: community.clone(),
-                resolution: assignment.resolution,
-                hash: assignment.hash.clone(),
-                fresh: i == 0,
-            };
-            let data = serde_json::to_vec(&payload).expect("CommunityAssigned always serializes");
-            Event::new(TYPE_COMMUNITY_ASSIGNED, data)
-        })
-        .collect()
 }
 
 /// Phase 1 - local moving. Returns `comm`, mapping each node index to an (arbitrary-integer)
@@ -551,18 +454,12 @@ fn number_groups(c: &Coupling, refined: &[usize]) -> Vec<usize> {
 mod tests {
     use super::*;
     use crate::contextgraph::query::split_id;
-    use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
-    use crate::test_support::def_node;
-    use crate::test_support::edge;
-    use crate::test_support::empty_named_node;
-    use crate::test_support::kinded_def_node;
-    use crate::test_support::node_with_optional_attrs;
+    use crate::contextgraph::{Edge, Node, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::pair_map;
-    use crate::test_support::plain;
     use std::collections::BTreeMap as Map;
 
     /// Build a coupling `Graph` from a list of undirected structural edges `(from, to, rel, tier)`,
-    /// so a test can express a coupling topology directly without folding events. Nodes are inferred
+    /// so a test can express a coupling topology directly. Nodes are inferred
     /// from the endpoints. Attrs are irrelevant to detection, so left empty.
     fn graph(edges: &[(&str, &str, &str, &str)]) -> Graph {
         let mut node_ids: BTreeSet<String> = BTreeSet::new();
@@ -583,10 +480,8 @@ mod tests {
         let nodes = node_ids
             .into_iter()
             .map(|id| {
-                // A real definition carries a `name` attr (the extraction fold sets it); the fixture
-                // makes every endpoint a real definition so canonicalization is a no-op here and the
-                // topology under test is exactly the edges given. Cross-file BARE resolution has its
-                // own dedicated test.
+                // Every endpoint is a named definition, so the topology under test is exactly the
+                // edges given.
                 let mut node = Node {
                     id,
                     kind: "code-entity".to_string(),
@@ -694,7 +589,7 @@ mod tests {
         // The core criterion-1 claim: densely-coupled entities group into the same community
         // REGARDLESS of directory, and the thin bridge does not fuse the two subsystems.
         let g = two_subsystem_graph();
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         let a = detect(&c, DEFAULT_RESOLUTION);
         let m = pair_map(&a.members);
 
@@ -737,7 +632,7 @@ mod tests {
     fn every_community_is_internally_connected() {
         // The connectedness invariant criterion 1 owns, over the two-subsystem fixture.
         let g = two_subsystem_graph();
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         let a = detect(&c, DEFAULT_RESOLUTION);
         assert_internally_connected(&g, &a);
     }
@@ -752,7 +647,7 @@ mod tests {
             edges.extend(clique(&["b1", "b2", "b3"]));
             graph(&edges)
         };
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         // Force every node into the SAME (disconnected) community label 0.
         let forced = vec![0usize; c.len()];
         let refined = refine_connected(&c, &forced);
@@ -786,8 +681,8 @@ mod tests {
         // assignments (members, community ids, hash) AND byte-identical event payloads - the
         // property the rebuild-from-events guarantee rests on.
         let g = two_subsystem_graph();
-        let c1 = Coupling::from_graph(&g);
-        let c2 = Coupling::from_graph(&g);
+        let c1 = Coupling::layer(&g, str::to_string);
+        let c2 = Coupling::layer(&g, str::to_string);
         let a1 = detect(&c1, DEFAULT_RESOLUTION);
         let a2 = detect(&c2, DEFAULT_RESOLUTION);
         assert_eq!(
@@ -796,37 +691,6 @@ mod tests {
         );
         assert_eq!(a1.hash, a2.hash, "the content hash is stable across runs");
         assert_eq!(a1.num_communities, a2.num_communities);
-
-        // The recorded event payloads (the bytes a rebuild replays) are byte-identical.
-        let wire = |a: &Assignment| -> Vec<(String, Vec<u8>)> {
-            events(a).into_iter().map(|e| (e.type_, e.data)).collect()
-        };
-        assert_eq!(
-            wire(&a1),
-            wire(&a2),
-            "event payloads are byte-identical across runs"
-        );
-    }
-
-    #[test]
-    fn the_first_event_carries_the_fresh_pass_boundary() {
-        // The pass boundary marker rides the FIRST event only (the lexicographically-smallest node),
-        // so the fold supersedes the grain's prior memberships exactly once per pass.
-        let g = two_subsystem_graph();
-        let c = Coupling::from_graph(&g);
-        let a = detect(&c, DEFAULT_RESOLUTION);
-        let evs = events(&a);
-        assert_eq!(evs.len(), a.members.len(), "one event per member");
-        let first: CommunityAssigned = serde_json::from_slice(&evs[0].data).unwrap();
-        assert!(first.fresh, "the first event marks the pass boundary");
-        assert_eq!(
-            first.node, a.members[0].0,
-            "the boundary rides the smallest node's event"
-        );
-        for e in &evs[1..] {
-            let c: CommunityAssigned = serde_json::from_slice(&e.data).unwrap();
-            assert!(!c.fresh, "no non-first event carries the pass boundary");
-        }
     }
 
     #[test]
@@ -836,7 +700,7 @@ mod tests {
         // on the same graph. Two well-separated cliques at r=1 are two communities; a high
         // resolution splits, never merges.
         let g = two_subsystem_graph();
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         let low = detect(&c, 1.0);
         let high = detect(&c, 4.0);
         assert!(
@@ -847,136 +711,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_graph_resolves_a_bare_cross_file_reference_onto_its_unique_definition() {
-        // The cross-directory heart of the pass: a reference in file B to `foo` (defined in file A)
-        // folds onto a BARE same-file placeholder `src/b.rs::%foo` (no `name` attr). Detection must
-        // redirect that bare node onto the UNIQUE real definition `src/a.rs::foo`, so B genuinely
-        // couples to A across the directory line - not to a dead-end placeholder. Without resolution,
-        // B and A would sit in different components and never share a community.
-        let g = Graph {
-            nodes: vec![
-                node_with_optional_attrs("src/a.rs", KIND_FILE, &[("title", None), ("name", None)]),
-                node_with_optional_attrs(
-                    "src/a.rs::foo",
-                    KIND_CODE_ENTITY,
-                    &[("title", None), ("name", Some("foo"))],
-                ),
-                node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
-                node_with_optional_attrs(
-                    "src/b.rs::%foo",
-                    KIND_CODE_ENTITY,
-                    &[("title", None), ("name", None)],
-                ), // bare placeholder
-            ],
-            edges: vec![
-                edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),
-                // The cross-file reference, landed on the bare placeholder at the inferred tier.
-                edge("src/b.rs", "src/b.rs::%foo", REL_REFERENCES, TIER_INFERRED),
-            ],
-        };
-        let c = Coupling::from_graph(&g);
-        let a = detect(&c, DEFAULT_RESOLUTION);
-        let m = pair_map(&a.members);
-
-        assert!(
-            !m.contains_key("src/b.rs::%foo"),
-            "the bare placeholder resolves away - it is never a member on its own"
-        );
-        assert!(
-            m.contains_key("src/a.rs::foo") && m.contains_key("src/b.rs"),
-            "the real definition and the referencing file are both members"
-        );
-        assert_eq!(
-            m["src/b.rs"], m["src/a.rs::foo"],
-            "file B couples to A's definition across the directory line (one community)"
-        );
-    }
-
     /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod` node's `CONTAINS` onto its module's
     /// `file` node declares the module and couples nothing, while its file's `CONTAINS` onto the
     /// `mod` node couples the two, so the module file joins no community.
     #[test]
-    fn from_graph_couples_no_mod_to_its_module_file() {
+    fn the_layer_couples_no_mod_to_its_module_file() {
         use crate::test_support::{module_graph, DECLARING_FILE, MOD_NODE};
         assert_eq!(
-            Coupling::from_graph(&module_graph()).nodes,
+            Coupling::layer(&module_graph(), str::to_string).nodes,
             [DECLARING_FILE, MOD_NODE]
-        );
-    }
-
-    #[test]
-    fn from_graph_canonicalises_a_placeholder_onto_the_nested_definition_of_its_leaf() {
-        // Spec 119 criterion 1: `b.rs`'s placeholder `%new` and `c.rs`'s empty-named one both
-        // couple to `a.rs::T::new`, the one call-target definition of the leaf `new`. The field
-        // `d.rs::new` is named, so it is no placeholder and stays itself; neither it nor the
-        // named design doc `e.md` is a definition of `new`.
-        let g = Graph {
-            nodes: vec![
-                def_node("a.rs::T::new", "new"),
-                plain("b.rs", KIND_FILE),
-                plain("b.rs::%new", KIND_CODE_ENTITY),
-                plain("c.rs", KIND_FILE),
-                empty_named_node("c.rs::%new"),
-                plain("d.rs", KIND_FILE),
-                kinded_def_node("d.rs::new", "field"),
-                node_with_optional_attrs("e.md", "design-doc", &[("name", Some("new"))]),
-            ],
-            edges: vec![
-                edge("b.rs", "b.rs::%new", REL_REFERENCES, TIER_INFERRED),
-                edge("c.rs", "c.rs::%new", REL_REFERENCES, TIER_INFERRED),
-                edge("d.rs", "d.rs::new", REL_REFERENCES, TIER_INFERRED),
-            ],
-        };
-        assert_eq!(
-            Coupling::from_graph(&g).nodes,
-            vec!["a.rs::T::new", "b.rs", "c.rs", "d.rs", "d.rs::new"]
-        );
-    }
-
-    #[test]
-    fn from_graph_leaves_an_ambiguous_bare_reference_unresolved() {
-        // Honest by construction: a bare `foo` reference whose leaf matches MORE THAN ONE
-        // definition does NOT resolve (it would be a guess). The bare node stays itself, so it does
-        // not spuriously fuse the two candidate definitions' subsystems.
-        let g = Graph {
-            nodes: vec![
-                node_with_optional_attrs(
-                    "src/a.rs::foo",
-                    KIND_CODE_ENTITY,
-                    &[("title", None), ("name", Some("foo"))],
-                ),
-                node_with_optional_attrs(
-                    "src/x.rs::foo",
-                    KIND_CODE_ENTITY,
-                    &[("title", None), ("name", Some("foo"))],
-                ),
-                node_with_optional_attrs("src/b.rs", KIND_FILE, &[("title", None), ("name", None)]),
-                node_with_optional_attrs(
-                    "src/b.rs::%foo",
-                    KIND_CODE_ENTITY,
-                    &[("title", None), ("name", None)],
-                ),
-            ],
-            edges: vec![edge(
-                "src/b.rs",
-                "src/b.rs::%foo",
-                REL_REFERENCES,
-                TIER_INFERRED,
-            )],
-        };
-        let c = Coupling::from_graph(&g);
-        let a = detect(&c, DEFAULT_RESOLUTION);
-        let m = pair_map(&a.members);
-        // The bare node stays itself (two candidates => no resolution), so B couples only to the
-        // unresolved placeholder, never to either real definition.
-        assert!(
-            m.contains_key("src/b.rs::%foo"),
-            "an ambiguous bare reference stays unresolved rather than guessing a definition"
-        );
-        assert!(
-            !m.contains_key("src/a.rs::foo") && !m.contains_key("src/x.rs::foo"),
-            "neither candidate definition is coupled by the ambiguous reference"
         );
     }
 
@@ -985,7 +728,7 @@ mod tests {
         // A graph with no coupling edges (all references ambiguous, or none at all) has no community
         // layer: detection returns nothing and records no event.
         let g = graph(&[("x", "y", REL_REFERENCES, TIER_AMBIGUOUS)]);
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         assert!(
             c.is_empty(),
             "ambiguous-only edges leave the coupling graph empty"
@@ -993,10 +736,6 @@ mod tests {
         let a = detect(&c, DEFAULT_RESOLUTION);
         assert_eq!(a.num_communities, 0);
         assert!(a.members.is_empty());
-        assert!(
-            events(&a).is_empty(),
-            "an empty assignment records no event"
-        );
     }
 
     /// Build a coupling `Graph` from WEIGHTED undirected edges `(from, to, weight)`, emitted as
@@ -1067,7 +806,7 @@ mod tests {
             ("n5", "n7", 1),
             ("n6", "n9", 4),
         ]);
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         let res = 0.6;
 
         // Local moving alone leaves at least one community internally DISCONNECTED (>= 2 components):
@@ -1140,7 +879,7 @@ mod tests {
             ("n1", "n3", 1),
             ("n2", "n3", 1),
         ]);
-        let c = Coupling::from_graph(&g);
+        let c = Coupling::layer(&g, str::to_string);
         let res = 2.0;
 
         // The fresh-singleton arm is the ONLY place a label at or beyond the initial `n` singletons is
@@ -1165,75 +904,5 @@ mod tests {
         // The isolated node's community is a genuine singleton (internally connected trivially), and
         // every community stays internally connected.
         assert_internally_connected(&g, &a);
-    }
-
-    /// The coupling pairs of `c`, each once, by id.
-    fn coupled(c: &Coupling) -> Vec<(&str, &str)> {
-        let mut pairs = Vec::new();
-        for (i, neighbors) in c.adj.iter().enumerate() {
-            for &(j, _) in neighbors.iter().filter(|(j, _)| i < *j) {
-                pairs.push((c.nodes[i].as_str(), c.nodes[j].as_str()));
-            }
-        }
-        pairs
-    }
-
-    /// Spec 116 criterion 4: `src/b.rs` references `x` through a bare placeholder while
-    /// `src/a.rs` contains a data member `x` of kind `member`, and `src/c.rs` the fn `x` when
-    /// `with_fn`. The placeholder never resolves onto the member, which keeps its own edge.
-    fn from_graph_beside_a_member(member: &str, with_fn: bool, pairs: &[(&str, &str)]) {
-        let mut g = Graph {
-            nodes: vec![
-                plain("src/a.rs", KIND_FILE),
-                kinded_def_node("src/a.rs::x", member),
-                plain("src/b.rs", KIND_FILE),
-                plain("src/b.rs::%x", KIND_CODE_ENTITY),
-            ],
-            edges: vec![
-                edge("src/a.rs", "src/a.rs::x", REL_CONTAINS, TIER_EXTRACTED),
-                edge("src/b.rs", "src/b.rs::%x", REL_REFERENCES, TIER_INFERRED),
-            ],
-        };
-        if with_fn {
-            g.nodes.push(plain("src/c.rs", KIND_FILE));
-            g.nodes.push(kinded_def_node("src/c.rs::x", "function"));
-            let contains = edge("src/c.rs", "src/c.rs::x", REL_CONTAINS, TIER_EXTRACTED);
-            g.edges.push(contains);
-        }
-        assert_eq!(coupled(&Coupling::from_graph(&g)), pairs);
-    }
-
-    const MEMBER_KEEPS_ITS_EDGE: (&str, &str) = ("src/a.rs", "src/a.rs::x");
-
-    crate::test_cases! {
-        a_placeholder_never_resolves_onto_a_field: from_graph_beside_a_member(
-            "field",
-            false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
-        );
-        a_placeholder_never_resolves_onto_a_property: from_graph_beside_a_member(
-            "property",
-            false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
-        );
-        a_placeholder_never_resolves_onto_a_declaration: from_graph_beside_a_member(
-            "declaration",
-            false,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/b.rs::%x")],
-        );
-        a_placeholder_resolves_past_a_field_onto_the_one_fn: from_graph_beside_a_member(
-            "field",
-            true,
-            &[MEMBER_KEEPS_ITS_EDGE, ("src/b.rs", "src/c.rs::x"), ("src/c.rs", "src/c.rs::x")],
-        );
-        a_placeholder_beside_a_constant_and_a_fn_stays_unresolved: from_graph_beside_a_member(
-            "constant",
-            true,
-            &[
-                MEMBER_KEEPS_ITS_EDGE,
-                ("src/b.rs", "src/b.rs::%x"),
-                ("src/c.rs", "src/c.rs::x"),
-            ],
-        );
     }
 }

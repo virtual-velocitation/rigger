@@ -239,7 +239,7 @@ pub fn build(graph: &Graph) -> MapModel {
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
         // A code entity with NO `name` attr is a BARE placeholder, never a real
-        // definition. `Coupling::from_graph` canonicalizes every RESOLVABLE bare reference onto
+        // definition. The code store's coupling layer canonicalizes every RESOLVABLE bare reference onto
         // its unique call-target definition, reading a definition as a node with a non-empty
         // name (`query::node_name`), but an AMBIGUOUS one (more than one call target of its leaf
         // elsewhere, or none) keeps its own placeholder id and still joins a community as a

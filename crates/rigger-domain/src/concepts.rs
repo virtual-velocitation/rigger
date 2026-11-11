@@ -9,20 +9,16 @@
 //! sorted visit order, lexicographic tie-breaks, connected communities, the `--resolution` knob - so
 //! the grouping, the numbering, and the determinism are ONE story across both lenses. What differs is
 //! only the INPUT LAYER (intent edges, not call coupling; see [`intent_layer`]) and the membership
-//! relation it records (`REALIZES`, not `IN_COMMUNITY`). The derivation is EVENT-SOURCED: one
-//! [`crate::contextgraph::TYPE_CONCEPT_DERIVED`] event per concept and one
-//! [`crate::contextgraph::TYPE_CONCEPT_REALIZED`] per member; the always-compiled fold turns them
-//! into the concept super-node plus its `REALIZES` membership edges, so a rebuild reproduces the same
-//! grouping from the log without re-running the pass.
+//! relation a reader shows (`REALIZES`, not `IN_COMMUNITY`). The code store derives concepts at
+//! every advance and keeps them in the snapshot ([`crate::groupings`]), never as events.
 //!
-//! ALWAYS compiled, exactly like the fold it feeds. Detection reads only folded edges and needs no
-//! grammar, so this carries no `symbols` gate: the pass, its determinism, and its connectedness are
-//! proven identically in BOTH feature lanes.
+//! ALWAYS compiled. Detection needs no grammar, so this carries no `symbols` gate: the pass, its
+//! determinism, and its connectedness are proven identically in BOTH feature lanes.
 //!
 //! # Determinism (a hard requirement, not a wish)
 //!
 //! The same intent layer at the same resolution yields BYTE-IDENTICAL concepts on every run and every
-//! machine, so a rebuild from the recorded events reproduces the same membership rows: the grouping
+//! machine, so every advance over one tree stores the same concepts: the grouping
 //! inherits the detection's determinism (sorted node order, ascending-representative numbering, no
 //! hash-set iteration in the output), the pass content `hash` is FNV-1a over the canonical intent
 //! edge set plus the resolution, and every label / member is derived by an order-independent choice.
@@ -31,11 +27,9 @@ use std::collections::BTreeMap;
 
 use crate::community::{self, Coupling};
 use crate::contextgraph::{
-    ConceptDerived, ConceptRealized, Graph, Node, KIND_ARCH_DECISION, KIND_DESIGN_DOC,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
-    REL_GOVERNS, REL_SPECIFIES, TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED,
+    Graph, Node, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
+    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
 };
-use crate::eventstore::Event;
 
 /// The default resolution grain (spec 54): the same `1.0` the Code lens ships, so the two lenses
 /// share one default grain. Re-exported from [`community`] rather than re-declared, so the grain
@@ -233,47 +227,4 @@ fn node_label(id: &str, node_by_id: &BTreeMap<&str, &Node>) -> String {
             .unwrap_or_else(|| n.id.clone()),
         None => id.to_string(),
     }
-}
-
-/// The events recording a [`Derivation`]: one [`TYPE_CONCEPT_DERIVED`] per concept (the FIRST event
-/// carrying `fresh: true` - the pass boundary the fold supersedes the resolution grain's prior
-/// membership on) followed by one [`TYPE_CONCEPT_REALIZED`] per member. Emitting all concept nodes
-/// before any membership means the `fresh` boundary retires the grain's prior `REALIZES` edges and
-/// drops its orphan concept nodes ONCE, at the head, before this pass's grouping folds. Appending and
-/// folding these events materializes the concepts layer; a rebuild replays them to byte-identical
-/// rows.
-///
-/// An EMPTY derivation yields NO events - the KEEP-LAST-GOOD policy, not an oversight: with no concept
-/// there is no event to carry the `fresh` boundary, so the fold never fires the supersession and the
-/// grain's last NON-empty grouping stays LIVE (an empty intent layer is the degenerate
-/// derivation-run-before-ingest case, where clobbering a good grouping is worse than keeping it),
-/// mirroring [`community::events`]. A real SHRINK is a smaller NON-empty derivation that DOES carry
-/// `fresh` and DOES supersede.
-pub fn events(d: &Derivation) -> Vec<Event> {
-    if d.concepts.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(d.concepts.len() + d.members.len());
-    for (i, (concept, label)) in d.concepts.iter().enumerate() {
-        let payload = ConceptDerived {
-            concept: concept.clone(),
-            label: label.clone(),
-            resolution: d.resolution,
-            hash: d.hash.clone(),
-            fresh: i == 0,
-        };
-        let data = serde_json::to_vec(&payload).expect("ConceptDerived always serializes");
-        out.push(Event::new(TYPE_CONCEPT_DERIVED, data));
-    }
-    for (node, concept) in &d.members {
-        let payload = ConceptRealized {
-            node: node.clone(),
-            concept: concept.clone(),
-            resolution: d.resolution,
-            hash: d.hash.clone(),
-        };
-        let data = serde_json::to_vec(&payload).expect("ConceptRealized always serializes");
-        out.push(Event::new(TYPE_CONCEPT_REALIZED, data));
-    }
-    out
 }

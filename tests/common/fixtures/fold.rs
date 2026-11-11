@@ -1367,6 +1367,28 @@ pub const TWO_SUBSYSTEM_CALLS: [(&str, &str, &str); 11] = [
     ("src/combat/hit.rs", "paint", "strike"),
 ];
 
+/// The two-subsystem coupling graph written as Rust sources, `(path, text)`: each definition of
+/// [`TWO_SUBSYSTEM_DEFS`] is a function in its file calling the callees [`TWO_SUBSYSTEM_CALLS`]
+/// names for it.
+pub fn two_subsystem_sources() -> Vec<(String, String)> {
+    let mut files: BTreeMap<&str, String> = BTreeMap::new();
+    for (file, name) in TWO_SUBSYSTEM_DEFS {
+        let calls: String = TWO_SUBSYSTEM_CALLS
+            .iter()
+            .filter(|(at, _, caller)| *at == file && *caller == name)
+            .map(|(_, callee, _)| format!(" {callee}();"))
+            .collect();
+        files
+            .entry(file)
+            .or_default()
+            .push_str(&format!("pub fn {name}() {{{calls} }}\n"));
+    }
+    files
+        .into_iter()
+        .map(|(file, text)| (file.to_string(), text))
+        .collect()
+}
+
 /// The file the show-renderer seed's three definitions live in ([`seed_shown_nodes`]).
 pub const SHOWN_FILE: &str = "src/limits.rs";
 
