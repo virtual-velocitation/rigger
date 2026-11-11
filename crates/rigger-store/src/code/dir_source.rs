@@ -34,8 +34,9 @@ pub fn tree_id(entries: &[Entry]) -> String {
 /// Every file under `root` a tree's facts cover, path-sorted, with its content id: the files
 /// the one scoped walk visits (committed `.gitignore` honoured, hidden entries and symlinks
 /// skipped), plus each [`ALWAYS_IN_SCOPE`] path that is a regular file. A path that is not UTF-8
-/// is skipped, since the facts hold paths as text.
-fn walk(root: &Path) -> Result<Vec<Entry>, String> {
+/// is skipped, since the facts hold paths as text, and so is a file that cannot be read (a
+/// permissions race, a file removed mid-walk), as the walk skips an unreadable entry.
+fn walk(root: &Path) -> Vec<Entry> {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     let _ = walk_scoped(root, None, &mut |file| {
         if let Some(path) = tree_path(root, file) {
@@ -49,20 +50,19 @@ fn walk(root: &Path) -> Result<Vec<Entry>, String> {
             files.push(((*path).to_owned(), file));
         }
     }
-    let mut entries = files
+    let mut entries: Vec<Entry> = files
         .into_iter()
-        .map(|(path, file)| {
-            let bytes =
-                std::fs::read(&file).map_err(|e| format!("read {}: {e}", file.display()))?;
-            Ok(Entry {
+        .filter_map(|(path, file)| {
+            let bytes = std::fs::read(file).ok()?;
+            Some(Entry {
                 path,
                 blob: content_id(&bytes),
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect();
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     entries.dedup_by(|a, b| a.path == b.path);
-    Ok(entries)
+    entries
 }
 
 /// The `/`-separated path of `file` under `root`, or none when a component is not UTF-8.
@@ -104,7 +104,7 @@ impl DirTreeSource {
 
 impl TreeSource for DirTreeSource {
     fn head(&self) -> Result<Tip, String> {
-        let entries = walk(&self.root)?;
+        let entries = walk(&self.root);
         let tree = tree_id(&entries);
         self.listings
             .lock()
@@ -131,7 +131,7 @@ impl TreeSource for DirTreeSource {
             .into_iter()
             .map(|e| (e.path, e.blob))
             .collect();
-        let now: HashMap<String, String> = walk(worktree)?
+        let now: HashMap<String, String> = walk(worktree)
             .into_iter()
             .map(|e| (e.path, e.blob))
             .collect();
