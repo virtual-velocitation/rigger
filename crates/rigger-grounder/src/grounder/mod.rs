@@ -119,6 +119,26 @@ where
     ControlFlow::Continue(())
 }
 
+/// The path of `file`, a file a walk under `root` visited, relative to `root`: the ONE spelling
+/// every walk's leaf action names a file by, so a path one walk answers is the path another holds.
+pub(crate) fn relative_path(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The path of every file [`walk_guarded`] visits under `root`, relative to it
+/// ([`relative_path`]): the tree as every walk sees it, in one pass.
+pub(crate) fn walked_paths(root: &Path) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    let _ = walk_guarded(root, &mut |file| {
+        paths.insert(relative_path(root, file));
+        ControlFlow::Continue(())
+    });
+    paths
+}
+
 /// The workflow definition's path relative to a project root, its ONE spelling: the path the
 /// workflow-definition pass reads and attributes every entity it extracts to (the `doc` attr on
 /// every folded node), and the one path [`in_walk_scope`] admits for `gw`.
@@ -332,11 +352,7 @@ fn search_file(
         Ok(c) => c,
         Err(_) => return, // binary or unreadable
     };
-    let rel = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned();
+    let rel = relative_path(Path::new(root), path);
     for (i, line) in content.lines().enumerate() {
         if refs.len() >= k {
             return;

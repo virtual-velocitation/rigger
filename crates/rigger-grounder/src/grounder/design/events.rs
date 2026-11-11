@@ -115,11 +115,7 @@ fn batches_within(root: &str, named: Option<&[String]>) -> Vec<(String, Vec<Even
 
     let mut batches: Vec<(String, Vec<Event>)> = Vec::new();
     let _ = crate::grounder::walk_guarded_within(Path::new(root), named, &mut |path| {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
+        let rel = crate::grounder::relative_path(Path::new(root), path);
         let events = file_batch(root, &rel);
         if !events.is_empty() {
             batches.push((rel, events));

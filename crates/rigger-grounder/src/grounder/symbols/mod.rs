@@ -47,13 +47,16 @@ pub mod grounder;
 // live here, unconditionally, rather than duplicated under a second `#[cfg(feature = "symbols")]`
 // block (which would conflict with this one under a `symbols` build).
 use crate::grounder::symbols::model::SymbolIndex;
-use crate::grounder::walk_guarded;
+use crate::grounder::walked_paths;
 use std::collections::BTreeSet;
-use std::ops::ControlFlow;
 use std::path::Path;
 
 #[cfg(feature = "symbols")]
 use crate::grounder::symbols::model::Lang;
+#[cfg(feature = "symbols")]
+use crate::grounder::{relative_path, walk_guarded};
+#[cfg(feature = "symbols")]
+use std::ops::ControlFlow;
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
 /// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
@@ -67,11 +70,7 @@ use crate::grounder::symbols::model::Lang;
 pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
     let mut idx = SymbolIndex::default();
     let _ = walk_guarded(Path::new(root), &mut |path| {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
+        let rel = relative_path(Path::new(root), path);
         index_one_file(root, &rel, &mut idx, override_lang);
         ControlFlow::Continue(())
     });
@@ -243,36 +242,21 @@ pub fn staleness(root: &str) -> Option<IndexDrift> {
     let idx = store::load(root)?;
     // The extensions the index already covers - derived from the index itself, never from the
     // tree-sitter registry, which is exactly what keeps this function ungated.
-    let extensions: BTreeSet<String> = idx
-        .files()
-        .keys()
-        .filter_map(|p| {
-            Path::new(p)
-                .extension()
-                .map(|e| e.to_string_lossy().into_owned())
-        })
-        .collect();
+    let extension_of = |p: &str| {
+        Path::new(p)
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+    };
+    let extensions: BTreeSet<String> = idx.files().keys().filter_map(|p| extension_of(p)).collect();
     if extensions.is_empty() {
         // Nothing persisted to compare an extension against - an empty index is never "stale".
         return None;
     }
     let root_path = Path::new(root);
-    let mut tree_paths: BTreeSet<String> = BTreeSet::new();
-    let _ = walk_guarded(root_path, &mut |path| {
-        let matches = path
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned())
-            .is_some_and(|ext| extensions.contains(&ext));
-        if matches {
-            let rel = path
-                .strip_prefix(root_path)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .into_owned();
-            tree_paths.insert(rel);
-        }
-        ControlFlow::Continue(())
-    });
+    let tree_paths: BTreeSet<String> = walked_paths(root_path)
+        .into_iter()
+        .filter(|rel| extension_of(rel).is_some_and(|ext| extensions.contains(&ext)))
+        .collect();
     let indexed: BTreeSet<String> = idx.files().keys().cloned().collect();
     // The sample: the sorted INTERSECTION's first `STALENESS_SAMPLE_SIZE` paths (deterministic -
     // see the constant's docs), each rehashed from its CURRENT content. A file that cannot be
