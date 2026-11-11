@@ -205,12 +205,12 @@ rigger graph --lookup <term>... answer each term from the graph, your tree and i
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
 (the text half of lookup; resolves a full id, a bare name or a path)\n  \
-rigger graph build          fold the project's source into the graph from a cold\n                              \
-checkout (no run required)\n  \
-rigger graph communities    derive the code lens's coupling communities offline and\n                              \
-[--resolution <r>]          record them as events (deterministic; default r=1.0)\n  \
-rigger graph concepts       derive the concepts lens's intent-layer grouping offline\n                              \
-[--resolution <r>]          and record them as events (deterministic; default r=1.0)\n  \
+rigger graph build          advance the project's code store to the head, from a\n                              \
+cold checkout or a live one (no run required)\n  \
+rigger graph communities    print the code store's coupling communities, read-only\n                              \
+[--resolution <r>]          (stored at the default r=1.0; any other r is computed)\n  \
+rigger graph concepts       print the code store's intent-layer concepts, read-only\n                              \
+[--resolution <r>]          (stored at the default r=1.0; any other r is computed)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -297,17 +297,17 @@ keeps them open and is named with its remedy,\n                              \
 `rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
 the pruned copy a rebuild's stopped swap\n                              \
 left, unless another `rigger setup` or `rigger reset` holds graph.db.lock\n  \
-rigger reset --derived      migrate the EVENT LOG, once: rewrite the first row of\n                              \
-each file's latest derived batch into that generation's\n                              \
-ledger entry, in place, delete every other derived\n                              \
-event, and vacuum so the file shrinks on disk.\n                              \
+rigger reset --derived      delete every derived event of the EVENT LOG in one\n                              \
+transaction (`rigger setup` runs the same delete once\n                              \
+its rebuilt graph is in place), and vacuum so the file\n                              \
+shrinks on disk.\n                              \
 Every other event survives;\n                              \
 composes with --runs (each sheds its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \
 in-flight spawn's marker inside its wall-clock bound,\n                              \
 or a driver registration's heartbeat inside the idle\n                              \
 window), naming what is live (a dead driver's run is\n                              \
-not): the migration\n                              \
+not): the delete\n                              \
 leaves revision gaps by design, and a stale writer can\n                              \
 reissue one and reorder the log - the corruption this\n                              \
 guard exists to prevent. --force-live skips the check\n                              \

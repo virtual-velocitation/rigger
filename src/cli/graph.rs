@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
-    // read: fold the project's source into the graph from a cold checkout, no run required.
+    // read: advance the project's code store to the head, no run required.
     if args.first().map(String::as_str) == Some("build") {
         return cmd_graph_build(&args[1..]);
     }
