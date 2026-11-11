@@ -25691,9 +25691,10 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
 #[test]
 fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_not() {
     let reinstalled = "installed the graph-first lookup hook into the existing settings.json - \
-                       a Grep tool call or `grep` command over src/, tests/, or workflows/ now \
-                       bounces toward rigger_ground/rigger_graph (end a `grep` command with a \
-                       `# --literal` comment to proceed anyway)";
+                       a Grep tool call, or a `grep` command or `sed` or `awk` pattern search, \
+                       over src/, tests/, or workflows/ now bounces toward the combined lookup, \
+                       rigger_graph `lookup` (end the command with a `# --literal` comment to \
+                       proceed anyway)";
     let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
     // (whether the workflow keeps `defaults.grep_guard`, the one lookup-hook line setup reports)
     for (declared, report) in [(true, reinstalled), (false, removal)] {
