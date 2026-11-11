@@ -3,7 +3,7 @@
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
-//! crates and guard the two boundaries a tagged reference crosses on its way to an operator:
+//! crates and guard the boundary a tagged reference crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
@@ -15,22 +15,17 @@
 //!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
-//!    fold no edge and prove no definition, while their call proves one;
-//!  - the persisted symbol index: `SymRef.ref_kind` is written for a tagged reference and omitted
-//!    for a call, the form an index saved before the field existed holds, and reads back so a
-//!    reloaded index counts no tagged reference as a call.
+//!    fold no edge and prove no definition, while their call proves one.
 
 #[cfg(feature = "symbols")]
 use crate::common;
+#[cfg(feature = "symbols")]
 use crate::symbol_index;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER};
-use rigger::contextgraph::REF_KIND_TYPE;
-use rigger::grounder::symbols::model::{FileSymbols, Lang, SymRef};
 #[cfg(feature = "symbols")]
 use symbol_index::USE_ONLY_SOURCE;
-use symbol_index::{defining_f, g_called_in_f, SavedIndex};
 
 /// The file the use-only rebuild adds, holding [`USE_ONLY_SOURCE`].
 #[cfg(feature = "symbols")]
@@ -367,59 +362,4 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
             test_code.0
         );
     }
-}
-
-/// A Rust file defining `f`, whose body calls `G` and names the type `Kestrel` on line 2.
-fn a_call_beside_a_type_reference() -> FileSymbols {
-    defining_f(vec![
-        g_called_in_f(),
-        SymRef {
-            ref_kind: Some(REF_KIND_TYPE.into()),
-            name: "Kestrel".into(),
-            ..g_called_in_f()
-        },
-    ])
-}
-
-/// The persisted index writes `ref_kind` for the type reference alone - the call is written
-/// without the key, the form an index saved before the field existed holds - and reads the file
-/// back whole, so the reloaded index counts the call and never the type reference.
-#[test]
-fn the_persisted_index_keeps_a_tagged_reference_out_of_the_reloaded_calls() {
-    let file = "a.rs";
-    let saved = SavedIndex::save(file, a_call_beside_a_type_reference());
-    assert_eq!(
-        saved.bytes.matches("\"ref_kind\"").count(),
-        1,
-        "only the tagged reference writes the key; got:\n{}",
-        saved.bytes
-    );
-    let reloaded = saved.reload();
-    assert_eq!(reloaded.files()[file], a_call_beside_a_type_reference());
-    let calls: Vec<&str> = reloaded.files()[file]
-        .calls()
-        .map(|r| r.name.as_str())
-        .collect();
-    assert_eq!(calls, ["G"]);
-    assert_eq!(
-        ["G", "Kestrel"].map(|name| reloaded.reference_degree(name, Lang::Rust)),
-        [1, 0]
-    );
-}
-
-/// The index the public `build_index` extracts from the reference-kinds tree reads back from
-/// the real persistence boundary whole, its tagged references with their kinds and callers.
-#[cfg(feature = "symbols")]
-#[test]
-fn build_index_tags_survive_the_save_load_pipeline() {
-    let dir = tempfile::tempdir().unwrap();
-    common::fixtures::write_files(dir.path(), &common::fixtures::REFERENCE_KINDS_TREE);
-
-    let (built, reloaded) = symbol_index::built_and_reloaded(dir.path().to_str().unwrap());
-
-    assert_eq!(reloaded.files(), built.files());
-    assert_eq!(
-        symbol_index::tagged_refs(&reloaded.files()[USER]),
-        common::fixtures::REFERENCE_KINDS_USER_TAGGED
-    );
 }

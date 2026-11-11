@@ -6,7 +6,7 @@
 //! Every existing test of this criterion's new code (`workflowdef::tests`, the new
 //! `contextgraph::sqlite::tests::workflow_definition_events_fold_into_...` fold test, and
 //! `registry.rs`'s / `grounder.rs`'s new JS-constant tests) calls the crate's INTERNAL functions
-//! directly - `extract()`, `p.subgraph(...)` after hand-built events, `Symbols::open(..).ground(..)`.
+//! directly - `extract()`, `p.subgraph(...)` after hand-built events, `Symbols::in_directory(..).ground(..)`.
 //! None of them drive the SHIPPED `rigger` binary, so none of them can see:
 //!
 //! 1. That `extract_events` / `project_events` / `project_batches` - now PUBLIC API reachable as

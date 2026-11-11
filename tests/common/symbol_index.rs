@@ -1,30 +1,26 @@
-//! Shared fixtures for the persisted symbol index's wire-format suites: building a one-file index,
-//! building one from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of
-//! line, the `mod x;` declaration sources, the one-fn source the module-row tests extract and
-//! the one-`use` source,
-//! saving it through the real `store` boundary and reading the bytes back, writing a hand-authored
-//! `index.json` under the current extraction generation and loading a legacy one through the real
-//! `store::load`, building a tree's index and reloading it, projecting a file's definitions, its
-//! test-marked definitions and references and its call references with their callers, checking a
-//! language's definition types against a file's definitions, checking a language's definitions
-//! fixture whole and a source's callers whole, projecting a file's definition extents, checking the
-//! variant names a file's kinds persist under, rendering and checking a file's tagged references,
-//! and looking up a registered language. Mounted once by `tests/all.rs` (a suite reaches it with
-//! `use crate::symbol_index;`) and included by the grounder crate for its unit tests; a suite uses the subset it needs (hence the module-wide
-//! `dead_code` allowance, the same convention `tests/common/mod.rs` keeps). Every lane compiles it;
-//! `registered` and `extracted`, with `assert_definitions_fixture` and `assert_callers` through it,
-//! alone reach a grammar and are held by the `symbols` lane only, as is `extracted_rust_index`,
-//! which calls `extracted`.
+//! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
+//! them from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of line, the
+//! `mod x;` declaration sources, the one-fn source the module-row tests extract and the one-`use`
+//! source, projecting a file's definitions, its test-marked definitions and references and its call
+//! references with their callers, checking a language's definition types against a file's
+//! definitions, checking a language's definitions fixture whole and a source's callers whole,
+//! projecting a file's definition extents, rendering and checking a file's tagged references, and
+//! looking up a registered language. Mounted once by `tests/all.rs` (a suite reaches it with
+//! `use crate::symbol_index;`) and included by the grounder crate for its unit tests; a suite uses
+//! the subset it needs (hence the module-wide `dead_code` allowance, the same convention
+//! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
+//! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held
+//! by the `symbols` lane only, as is `extracted_rust_index`, which calls `extracted`.
 
 #![allow(dead_code)]
 
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef, SymbolIndex};
-use rigger::grounder::symbols::store;
+#[cfg(feature = "symbols")]
+use rigger::grounder::symbols::model::SymbolIndex;
+use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 
 /// A line-1 file-level definition of `kind` named `name` with every optional field unset,
-/// `end_line` 0 and `path` its name, the end line and path [`legacy_file`] stamps on a legacy
-/// definition - the shape a product-only definition persists as; a caller sets the one field its
-/// case is about with struct-update syntax.
+/// `end_line` 0 and `path` its name - the shape a product-only definition takes; a caller sets the
+/// one field its case is about with struct-update syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
         kind,
@@ -69,89 +65,6 @@ pub fn defining_f(refs: Vec<SymRef>) -> FileSymbols {
 /// The call to `G` on line 2, inside the function `f` ([`defining_f`]).
 pub fn g_called_in_f() -> SymRef {
     sym_ref("G", 2, Some("f"), false)
-}
-
-/// An index holding `symbols` under `path`, saved through the real `store::save` under a fresh
-/// temp root; the root lives as long as this value does.
-pub struct SavedIndex {
-    dir: tempfile::TempDir,
-    /// The persisted `index.json`, byte for byte.
-    pub bytes: String,
-}
-
-impl SavedIndex {
-    pub fn save(path: &str, symbols: FileSymbols) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(path.into(), symbols);
-        store::save(&idx, root).unwrap();
-        let bytes = std::fs::read_to_string(store::index_path(root)).unwrap();
-        Self { dir, bytes }
-    }
-
-    /// The kind each definition of `path` is written under in the persisted `index.json`, in
-    /// the order written.
-    pub fn written_kinds(&self, path: &str) -> Vec<String> {
-        let persisted: serde_json::Value = serde_json::from_str(&self.bytes).unwrap();
-        persisted["files"][path]["defs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|d| d["kind"].as_str().unwrap().to_string())
-            .collect()
-    }
-
-    /// The saved index read back through the real `store::load`.
-    pub fn reload(&self) -> SymbolIndex {
-        store::load(self.dir.path().to_str().unwrap()).expect("the persisted index loads")
-    }
-}
-
-/// The persisted index writes each definition of `kinds`, a (kind, name, variant name) triple,
-/// under its variant name, in the order given, and reads the file saved under `path` back as
-/// the kinds it was saved as.
-pub fn assert_kinds_persist_under_their_variant_names(path: &str, kinds: &[(Kind, &str, &str)]) {
-    let file = || {
-        rust_file(
-            kinds
-                .iter()
-                .map(|(kind, name, _)| def(*kind, name))
-                .collect(),
-            vec![],
-        )
-    };
-    let variants: Vec<&str> = kinds.iter().map(|(_, _, variant)| *variant).collect();
-    let saved = SavedIndex::save(path, file());
-    assert_eq!(saved.written_kinds(path), variants);
-    assert_eq!(saved.reload().files()[path], file());
-}
-
-/// Saving `symbols` under `path` writes no `key` at all - a field at its default serializes
-/// byte-identically to the form written before the field existed; `why` states the contract.
-pub fn assert_saved_without_key(path: &str, symbols: FileSymbols, key: &str, why: &str) {
-    let bytes = SavedIndex::save(path, symbols).bytes;
-    assert!(!bytes.contains(key), "{why}; got:\n{bytes}");
-}
-
-/// Saving `symbols` under `path` writes `key` (`why` states the contract); returns the saved
-/// index read back, for the caller to check the value survived the round-trip.
-pub fn saved_with_key(path: &str, symbols: FileSymbols, key: &str, why: &str) -> SymbolIndex {
-    let saved = SavedIndex::save(path, symbols);
-    let bytes = &saved.bytes;
-    assert!(bytes.contains(key), "{why}; got:\n{bytes}");
-    saved.reload()
-}
-
-/// The index the public `build_index` builds over the tree at `root`, beside that index saved
-/// through the real `store::save` and read back through the real `store::load`: the one trip of
-/// an extracted index across the persistence boundary.
-#[cfg(feature = "symbols")]
-pub fn built_and_reloaded(root: &str) -> (SymbolIndex, SymbolIndex) {
-    let idx = rigger::grounder::symbols::build_index(root, None);
-    store::save(&idx, root).unwrap();
-    let loaded = store::load(root).expect("the built index persists and reloads");
-    (idx, loaded)
 }
 
 /// The grammar and query entry registered for the extension `ext`: the one lookup of a registered
@@ -348,71 +261,4 @@ pub fn tagged_refs(fs: &FileSymbols) -> String {
 #[cfg(feature = "symbols")]
 pub fn assert_tagged_refs(ext: &str, src: &str, expected: &str, case: &str) {
     assert_eq!(tagged_refs(&extracted(ext, src)), expected, "{case}");
-}
-
-/// A hand-authored `index.json` body holding `file` alone, a Rust file of the definitions `defs`
-/// and the references `refs` (each a JSON array), for [`persist_stamped`] or [`persist_current`]
-/// to write.
-pub fn rust_index_json(file: &str, defs: serde_json::Value, refs: serde_json::Value) -> String {
-    serde_json::json!({ "files": { file: { "lang": "Rust", "defs": defs, "refs": refs } } })
-        .to_string()
-}
-
-/// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as
-/// built under the extraction generation `grammar`.
-pub fn persist_stamped(root: &str, grammar: &str, body: &str) {
-    let path = store::index_path(root);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let mut stamped: serde_json::Value =
-        serde_json::from_str(body).expect("the hand-authored index is JSON");
-    stamped["grammar"] = serde_json::Value::String(grammar.to_string());
-    std::fs::write(&path, serde_json::to_vec(&stamped).unwrap()).unwrap();
-}
-
-/// Writes `body`, a hand-authored `index.json`, as the persisted index of `root`, stamped as
-/// built under the current extraction generation, so only its own shape decides whether it loads.
-pub fn persist_current(root: &str, body: &str) {
-    persist_stamped(
-        root,
-        rigger::grounder::symbols::model::GRAMMAR_TAGS_VERSION,
-        body,
-    );
-}
-
-/// The `file` entry of a hand-authored legacy `index.json` (`legacy`) loaded through the real
-/// `store::load`, which must succeed (`must_load` names the back-compat promise) and hold it.
-/// The legacy form is stamped with the CURRENT extraction generation first, and each of its
-/// definitions lacking `end_line` with 0 and lacking `path` with its `name`, the shape a current
-/// index holds, so what it proves is the per-field default alone: an index from another
-/// generation, or one lacking `end_line` or `path`, loads as absent by design (it is rebuilt), a
-/// separate contract pinned beside `store::load` itself.
-pub fn legacy_file(legacy: &str, file: &str, must_load: &str) -> FileSymbols {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_str().unwrap();
-    let mut current: serde_json::Value =
-        serde_json::from_str(legacy).expect("the hand-authored index is JSON");
-    for symbols in current["files"]
-        .as_object_mut()
-        .expect("the legacy index holds files")
-        .values_mut()
-    {
-        for def in symbols["defs"]
-            .as_array_mut()
-            .expect("a legacy file holds defs")
-        {
-            let def = def
-                .as_object_mut()
-                .expect("a legacy definition is an object");
-            let name = def["name"].clone();
-            def.entry("end_line").or_insert(0.into());
-            def.entry("path").or_insert(name);
-        }
-    }
-    persist_current(root, &current.to_string());
-    store::load(root)
-        .expect(must_load)
-        .files()
-        .get(file)
-        .expect("the legacy file entry is present")
-        .clone()
 }

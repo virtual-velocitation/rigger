@@ -639,7 +639,7 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 /// determinism, of which the first [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] that the tree's one read rule
 /// ([`crate::grounder::tree_bytes`]) hands bytes for right now are taken, and the tree is asked
 /// about no name past the one that fills the sample - mirroring
-/// `grounder::symbols::staleness`'s own sorted-intersection-then-take sampling shape. Two kinds
+/// a sorted-intersection-then-take sampling shape. Two kinds
 /// of file are deliberately left OUT of
 /// the candidate set, not merely filtered from the result:
 ///
@@ -692,9 +692,8 @@ pub(crate) fn code_identity(path: &str) -> String {
     format!("gc/{path}")
 }
 
-/// The index the walk's code half lowers and the identities it excludes (spec 107): the index
-/// loaded as the walk loads it - the `symbols` grounder's persisted one when the tree holds one,
-/// else a fresh build of the tree, in memory only and never persisted - and the `gc/<path>`
+/// The index the walk's code half lowers and the identities it excludes (spec 107): a fresh
+/// build of the tree, in memory only and never persisted - and the `gc/<path>`
 /// identity of every file that index resolves as an out-of-line test module's target
 /// ([`out_of_line_test_module_files`](crate::grounder::symbols::events::out_of_line_test_module_files)).
 /// Only `gc` identities are named, so the same path's batch under another prefix is never excluded.
@@ -705,8 +704,7 @@ pub fn walk_exclusions(
     crate::grounder::symbols::model::SymbolIndex,
     std::collections::BTreeSet<String>,
 ) {
-    let index = crate::grounder::symbols::store::load(root)
-        .unwrap_or_else(|| crate::grounder::symbols::build_index(root, None));
+    let index = crate::grounder::symbols::build_index(root, None);
     let excluded = crate::grounder::symbols::events::out_of_line_test_module_files(&index)
         .iter()
         .map(|path| code_identity(path))
@@ -731,8 +729,8 @@ pub fn walk_exclusions(
 }
 
 /// The generation of an unkeyed `batch` (spec 107): the content hash of its events' bytes
-/// concatenated in order, by the SAME line-ending-normalized content primitive the symbols reindex
-/// freshening keys on (reused, not a fresh copy, so the change-detection key is one
+/// concatenated in order, by the line-ending-normalized content primitive
+/// ([`crate::grounder::symbols::content_hash`], so the change-detection key is one
 /// content-identity authority). The batch bytes are JSON the emit pass just serialized, so they
 /// are valid UTF-8.
 #[cfg(feature = "symbols")]
@@ -741,7 +739,7 @@ pub fn batch_generation(batch: &[Event]) -> String {
         .iter()
         .filter_map(|e| std::str::from_utf8(&e.data).ok())
         .collect();
-    crate::grounder::symbols::store::content_hash(&concat)
+    crate::grounder::symbols::content_hash(&concat)
 }
 
 /// A half's `(path, bytes, excluded)` function (spec 107): the batch the half extracts from the
@@ -1291,10 +1289,6 @@ mod tests {
             std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
         );
         assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
-        assert!(
-            !crate::grounder::symbols::store::index_path(root).exists(),
-            "the fallback build is in memory only"
-        );
     }
 
     /// `code_identity` answers a path's `gc` identity: the path whole, nested directories and
@@ -1306,30 +1300,6 @@ mod tests {
             "gc/src/deep/checks.rs"
         );
         assert_eq!(super::code_identity("lib.rs"), "gc/lib.rs");
-    }
-
-    /// `walk_exclusions` loads the index as the walk does: a persisted index answers ahead of
-    /// the tree, so a source file deleted since the index was saved is still indexed and still
-    /// declares the test module, which a fresh build of the tree would no longer exclude.
-    #[test]
-    fn walk_exclusions_answers_the_persisted_index_ahead_of_the_tree() {
-        use crate::extraction_tree::{SOURCE_PATH, TEST_MODULE_PATH};
-
-        let dir = planted_extraction_tree(crate::host_fixtures::write_file);
-        let root = dir.path().to_str().unwrap();
-        let persisted = crate::grounder::symbols::build_index(root, None);
-        crate::grounder::symbols::store::save(&persisted, root).unwrap();
-        std::fs::remove_file(dir.path().join(SOURCE_PATH)).unwrap();
-
-        let (index, excluded) = super::walk_exclusions(root);
-        assert_eq!(indexed_paths(&index), vec![TEST_MODULE_PATH, SOURCE_PATH]);
-        assert_eq!(
-            excluded,
-            std::collections::BTreeSet::from(["gc/src/checks.rs".to_string()])
-        );
-
-        let rebuilt = crate::grounder::symbols::build_index(root, None);
-        assert_eq!(indexed_paths(&rebuilt), vec![TEST_MODULE_PATH]);
     }
 
     /// The walk's keyed batches over the extraction tree: every batch in emit order, each event

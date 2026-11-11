@@ -5378,15 +5378,18 @@ fn spec_lint_next_step(spec_path: &str) -> String {
 /// and the loud migration error for the retired `turbovec` / `hybrid` names).
 fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
-    // feature is built (it opens or builds+persists the index over the repo root); a build WITHOUT
-    // the feature falls through to `grounder_for`, whose `symbols` arm is the loud no-silent-degrade
-    // error.
+    // feature is built (it reads the code store's view of the head, opened on every read); a build
+    // WITHOUT the feature falls through to `grounder_for`, whose `symbols` arm is the loud
+    // no-silent-degrade error.
     #[cfg(feature = "symbols")]
     {
         let n = name.trim();
         if n.is_empty() || n.eq_ignore_ascii_case("symbols") {
             return Ok(Box::new(
-                rigger::grounder::symbols::grounder::Symbols::open(".", None),
+                rigger::grounder::symbols::grounder::Symbols::over(
+                    ".",
+                    Box::new(project_code_store(&cwd())),
+                ),
             ));
         }
     }
@@ -6487,10 +6490,6 @@ mod tests {
             assert_skills_reference_only_real_subcommands(&[
             ("rigger-reset-store", &["reset", "validate", "status"]),
             ("rigger-build-graph", &["graph"]),
-            (
-                "rigger-reindex",
-                &["reindex", "graph", "ground", "validate"],
-            ),
             (
                 "rigger-resume-a-run",
                 &["status", "run"],

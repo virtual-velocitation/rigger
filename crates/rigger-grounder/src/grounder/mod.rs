@@ -74,6 +74,7 @@ pub(crate) fn relative_path(root: &Path, file: &Path) -> String {
 
 /// The path of every file [`walk_guarded`] visits under `root`, relative to it
 /// ([`relative_path`]): the tree as every walk sees it, in one pass.
+#[cfg(feature = "symbols")]
 pub(crate) fn walked_paths(root: &Path) -> std::collections::BTreeSet<String> {
     let mut paths = std::collections::BTreeSet::new();
     let _ = walk_guarded(root, &mut |file| {

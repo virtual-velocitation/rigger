@@ -11098,7 +11098,7 @@ impl RunCtx<'_> {
             postmerge_reclaim = Some((self.postmerge_unit_dir(&st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
-        // NOW - once the tree the run branch carries is the verified one - reindex and record the
+        // NOW - once the tree the run branch carries is the verified one - ingest and record the
         // artifact graph edges. A blocked integration does neither, so a rolled-back merge leaves
         // no phantom FILE_TOUCHED for a unit whose work never landed.
         //
@@ -11118,18 +11118,14 @@ impl RunCtx<'_> {
             crate::worktree::DiffMode::MergeBase,
         )?;
         if !commit.is_empty() {
-            if let Some(g) = self.deps.grounder {
-                g.reindex(&self.deps.repo, &landed);
-            }
             // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
             // what `graph --show`/`graph --around` read) used to populate only ONCE per process
             // (`ingest_project_into_graph`'s once-per-process guard) - so a unit that integrated
             // earlier in a long-lived driver process never made the graph learn of it, and a
             // moved function kept resolving at its stale recorded line (docs/audit/2026-09-
-            // graph-vs-grep.md findings 4/9/11/12). This reindexes exactly the files THIS
+            // graph-vs-grep.md findings 4/9/11/12). This ingests exactly the files THIS
             // integration touched - bounded by the merge's own file list, never a whole-project
-            // walk - right alongside the grounder's own (already-existing) reindex above, so the
-            // two stay in lockstep from every integration on.
+            // walk - and the code store the grounder reads advances right after it.
             self.ingest_files_into_graph(&landed)?;
             self.advance_code_store();
         }
@@ -44965,7 +44961,7 @@ mod tests {
         std::fs::write(dir.path().join("tests.rs"), "fn tests() {}\n").unwrap();
         std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
         let grounder =
-            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
+            crate::grounder::symbols::grounder::Symbols::in_directory(dir.path().to_str().unwrap());
         let graph = SpyGraph::default();
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
@@ -45062,7 +45058,7 @@ mod tests {
             !graph.rebuild_owed().unwrap(),
             "the measured graph owes its rebuild"
         );
-        let symbols = crate::grounder::symbols::grounder::Symbols::open(&root, None);
+        let symbols = crate::grounder::symbols::grounder::Symbols::in_directory(&root);
         let structural_only = StructuralOnly(&symbols);
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
@@ -45346,7 +45342,7 @@ mod tests {
             .unwrap();
         }
         let root = dir.path().to_str().unwrap();
-        let symbols = Symbols::open(root, None);
+        let symbols = Symbols::in_directory(root);
 
         // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`
         // (named in a code span, as a criterion names code).
@@ -45675,7 +45671,7 @@ mod tests {
             .unwrap();
         }
         let grounder =
-            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
+            crate::grounder::symbols::grounder::Symbols::in_directory(dir.path().to_str().unwrap());
         let probe = OverlapProbe::meeting(2);
         let integrated = probe_one_wave(
             2,

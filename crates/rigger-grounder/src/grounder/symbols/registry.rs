@@ -1057,42 +1057,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
-    /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
-    /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
-    /// STRUCTURE), and one stamped `ts-tags-v4`, the generation before a reference carried its
-    /// `ref_kind` (spec 117); one stamped `ts-tags-v5` is current and loads.
-    #[test]
-    fn a_persisted_ts_tags_v2_index_is_not_current() {
-        use crate::grounder::symbols::model::SymbolIndex;
-        use crate::grounder::symbols::store;
-        let persisted = |grammar: &str| -> (bool, bool) {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().to_str().unwrap();
-            crate::symbol_index::persist_stamped(root, grammar, r#"{"files":{}}"#);
-            let index: SymbolIndex =
-                serde_json::from_slice(&std::fs::read(store::index_path(root)).unwrap()).unwrap();
-            (index.is_current(), store::load(root).is_some())
-        };
-        for (grammar, current) in [
-            ("ts-tags-v2", false),
-            ("ts-tags-v3", false),
-            ("ts-tags-v4", false),
-            ("ts-tags-v5", true),
-        ] {
-            let reading = if current {
-                "is current and loads"
-            } else {
-                "is not current and loads as absent"
-            };
-            assert_eq!(
-                persisted(grammar),
-                (current, current),
-                "a {grammar} index {reading}"
-            );
-        }
-    }
-
     /// The golden fixtures: an (extension, source) for each registered grammar and query and a
     /// malformed Rust file. The extraction golden and the facts golden both digest them.
     pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
@@ -1186,15 +1150,14 @@ def calc(n):
     /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
     /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
     /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
-    /// persisted before the change loads as absent. The fixtures set every part a persisted index
-    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// extraction records fails here until the tag is bumped and the pair re-pinned, and a snapshot
+    /// of the code store written before the change is not trusted. The fixtures set every part a
+    /// snapshot stores, the stored inputs of the derived out-of-line module row and each tagged reference
     /// kind included, so a change to any of them moves the digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        use crate::grounder::symbols::store;
         const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
         let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
@@ -1248,7 +1211,8 @@ def calc(n):
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }
-        let digest = store::content_hash(&serde_json::to_string(&extracted).unwrap());
+        let digest =
+            crate::grounder::symbols::content_hash(&serde_json::to_string(&extracted).unwrap());
         assert_eq!(
             (GRAMMAR_TAGS_VERSION, digest.as_str()),
             PINNED,

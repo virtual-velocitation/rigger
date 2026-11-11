@@ -2404,8 +2404,7 @@ fn an_integration_test() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         // "deleted.rs" is named but was never written to disk, so a fresh build of `root` (there is
-        // no persisted index here) never indexes it - the same shape as a file the persisted index
-        // dropped because `Grounder::reindex` already purged it as deleted.
+        // no persisted index here) never indexes it - the same shape as a file the tree no longer holds.
         let batches = super::file_batches(root, &["deleted.rs".to_string()]);
         assert_eq!(
             batches.len(),
