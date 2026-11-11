@@ -1283,6 +1283,26 @@ pub fn hold(p: &Projector, pos: u64, nodes: &[&str]) {
     apply_decision(p, pos, &format!("hold@{pos}"), "held", nodes, "");
 }
 
+/// Hold `nodes` in `p`'s graph from `pos` on as code, one log position each for those it does not
+/// hold as code yet: a `<file>::<name>` id as the definition of `name` in `<file>`, any other id as
+/// a file defining one function. A community membership folded onto them is live, as it is on no
+/// node only knowledge holds (spec 101: code coupling derives membership).
+pub fn hold_as_code(p: &Projector, pos: u64, nodes: &[&str]) {
+    let code: BTreeSet<String> = p
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|n| [KIND_FILE, KIND_CODE_ENTITY].contains(&n.kind.as_str()))
+        .map(|n| n.id)
+        .collect();
+    let unheld = nodes.iter().filter(|node| !code.contains(**node));
+    for (i, node) in unheld.enumerate() {
+        let (file, name) = node.split_once("::").unwrap_or((node, "held"));
+        apply_code_entity(p, pos + i as u64, file, name, "function", 1, "rust");
+    }
+}
+
 /// `source`, so the LATEST assertion wins.
 pub fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64) {
     apply_json_at(
