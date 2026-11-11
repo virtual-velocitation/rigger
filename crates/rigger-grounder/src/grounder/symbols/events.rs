@@ -788,7 +788,7 @@ fn module_dir(path: &str) -> String {
 ///    inline-mod chain appended, as the override nested in one takes it, so `mod outer { mod x; }`
 ///    in `src/lib.rs` names `src/outer/x.rs` first: the flat `<dir>/<name>.rs`, then the
 ///    directory-module form `<dir>/<name>/mod.rs`.
-fn module_candidates(declaring_path: &str, d: &Def) -> Vec<String> {
+pub(crate) fn module_candidates(declaring_path: &str, d: &Def) -> Vec<String> {
     let module_dir = module_dir(declaring_path);
     let inline_dir = match &d.enclosing_inline_module_path {
         Some(chain) => join_under(&module_dir, chain),
@@ -905,7 +905,7 @@ pub(crate) fn kind_str(k: Kind) -> &'static str {
 
 /// The lowercase, stable string for a rigger `Lang`, carried on the emitted event and folded onto
 /// the file / entity `lang` attr.
-fn lang_str(l: Lang) -> &'static str {
+pub(crate) fn lang_str(l: Lang) -> &'static str {
     match l {
         Lang::Rust => "rust",
         Lang::CSharp => "csharp",

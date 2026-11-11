@@ -37,11 +37,11 @@ fn agent_id(name: &str) -> String {
 
 /// One `(kind, id, title)` concept tuple, before it is lowered into a `DocConceptExtracted`
 /// payload - see [`extract`]'s own doc.
-type ConceptTuple = (&'static str, String, String);
+pub(crate) type ConceptTuple = (&'static str, String, String);
 
 /// One `(from, rel, to)` link tuple, before it is lowered into a `DocLinkExtracted` payload - see
 /// [`extract`]'s own doc.
-type LinkTuple = (String, &'static str, String);
+pub(crate) type LinkTuple = (String, &'static str, String);
 
 /// Lower `workflow`'s stages, gates and agent roles into `(kind, id, title)` concepts and
 /// `(from, rel, to)` links - the pure computation [`extract_events`] serializes. Kept separate
@@ -61,7 +61,7 @@ type LinkTuple = (String, &'static str, String);
 /// Every declared gate (`workflow.gates`, whether or not any stage runs it) and every agent role
 /// named anywhere above becomes its own concept too, so "gates... become graph entities" holds
 /// for the whole definition, not merely the ones a stage happens to reference.
-fn extract(workflow: &Workflow) -> (Vec<ConceptTuple>, Vec<LinkTuple>) {
+pub(crate) fn extract(workflow: &Workflow) -> (Vec<ConceptTuple>, Vec<LinkTuple>) {
     let mut concepts: Vec<ConceptTuple> = Vec::new();
     let mut links: Vec<LinkTuple> = Vec::new();
     let mut gate_names: BTreeSet<String> = workflow.gates.keys().cloned().collect();

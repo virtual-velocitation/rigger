@@ -243,10 +243,14 @@ FileFacts
   lang        "rust" | "python" | ...      (from the extractor registry)
   half        Code | Design | Workflow
   scope       Product | Test               (path rule, see section 8)
-  defs        [Def]                        (in source order)
-  mentions    [Mention]                    (in source order)
+  partial     true when the parse held an error, so defs and mentions cover only as far as
+              the parse reached
+  defs        [Def]                        (in the extractor's order)
+  mentions    [Mention]                    (in the extractor's order)
   modules     [ModuleDecl]
-  doc         [DocConcept], [DocLink]      (design half; names and targets as written)
+  doc         [DocConcept], [DocLink]      (design half; names and targets as written. A code
+                                            file also holds the rationale concepts and links
+                                            found in its source)
   workflow    [WfNode], [WfRelation]       (workflow half; names as written)
 
 Def
@@ -259,8 +263,9 @@ Def
 
 Mention
   enclosing   index of the enclosing Def, or the file
-  name        the name as written: "bar", "Foo::bar", "crate::x::bar"
-  kind        Call | Plain | Tagged(<ref kind>)
+  name        the name as written: the reference's identifier ("bar")
+  leaf        the final identifier of name; equal to name for every extractor today
+  kind        Call | Tagged(<ref kind>)    (Call is the untagged reference)
   line
   test        true when inside a test-only def
 
@@ -305,6 +310,8 @@ Tip                                  (what a TreeSource names: the tree to descr
 Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
   fingerprint the extractor fingerprint: changes when any extractor's output can change
+              (the symbol extractors' tag version and the facts generation, which a golden test
+              pins to a digest of the facts read over a fixture set, so an unbumped change fails)
   seq         the snapshot's sequence number
 ```
 
@@ -326,7 +333,7 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | section table: [u16 kind | u64 offset | u64 length | u32 crc32] x count       |
  +-------------------------------------------------------------------------------+
  | STRINGS    the pool                                                           |
- | FILES      path, blob, lang, half, scope, then [start, end) into each of      |
+ | FILES      path, blob, lang, half, scope, partial, then [start, end) into each of      |
  |            DEFS, MENTIONS, MODULES, DOC, WORKFLOW        (rows sorted by path) |
  | DEFS       local, leaf, kind, line, end_line, parent, flags   (one run a file) |
  | MENTIONS   enclosing, name, leaf, kind, line, flags            (one run a file) |
@@ -561,7 +568,7 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
-| call / plain reference | Mention `Call` or `Plain` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
+| call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
 | down-hop | a placeholder | one candidate | a hop to it |
 | | | several candidates | a frontier |
@@ -570,7 +577,7 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |
 | module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file |
-| proof | Mention `Call` or `Plain` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
+| proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
 | test-ness | an entity | section 8.1 | `test` attribute; drives the filter |
@@ -1065,6 +1072,8 @@ a reader holding one open (or mapped) never blocks a writer.
   on a branch one commit ahead: the stamp stays on the operator checkout's HEAD, and the reader's
   label counts the differing file.
 - `a_fingerprint_change_advances_from_empty`.
+- `a_change_to_the_facts_ships_with_a_generation_bump`: the facts generation is pinned to a digest
+  of the facts read over the golden fixtures.
 - `a_corrupt_snapshot_is_treated_as_absent`.
 - `a_reader_never_sees_a_partial_snapshot`, and
   `a_crash_between_renames_leaves_the_old_stamp_current`, both using a fault-injecting publish.

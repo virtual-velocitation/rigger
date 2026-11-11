@@ -5,6 +5,10 @@
 //! domain; the root `rigger` crate re-exports them under their historical `rigger::grounder` and
 //! `rigger::ingest` paths.
 
+/// Extraction to facts: a file's path and bytes read into the facts the code store holds, over the
+/// symbol, design and workflow extractors.
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
+pub mod facts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
 /// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
