@@ -1305,8 +1305,14 @@ impl ReleaseEraStore {
     /// The store, with its durable identity `minted` already or still named after its directory
     /// (which `rigger setup` then mints, moving the log to it).
     fn with_identity(minted: bool) -> Self {
+        Self::with_identity_logging(minted, &[])
+    }
+
+    /// [`Self::with_identity`]'s store whose log also holds `records` after its own events.
+    fn with_identity_logging(minted: bool, records: &[Event]) -> Self {
         let mut log = two_generations_dropping_facts();
         log.push(fresh_test_reference("alpha", 3, 30));
+        log.extend_from_slice(records);
         let store = Self::logging(minted, &log);
         let (project, appended) = (store.project(), store.log());
         let graph_db = &store.graph_db;
@@ -1625,13 +1631,17 @@ fn rigger_setup_names_the_older_rule_alone_beside_an_owed_mark_and_its_rebuild_d
 /// folded from a namespace the history has not reached yet.
 #[test]
 fn rigger_setup_rebuilds_from_the_log_under_the_identity_it_mints() {
-    let store = ReleaseEraStore::with_identity(false);
+    let era_decision = Event::new(
+        rigger::contextgraph::TYPE_DECISION_MADE,
+        br#"{"id":"d-era","summary":"s","governs":["src/f.rs"],"supersedes":""}"#.to_vec(),
+    );
+    let store = ReleaseEraStore::with_identity_logging(false, &[era_decision]);
     let legacy = store.project();
     setup_ok(store.root(), &[]);
     assert_ne!(store.project(), legacy, "setup minted the durable identity");
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
     assert!(
-        graph.0.contains("src/f.rs::alpha"),
+        graph.0.contains("\"d-era\""),
         "the rebuild read the moved history; graph: {}",
         graph.0
     );
@@ -1708,12 +1718,11 @@ fn rigger_setup_rebuilds_a_rule_1_graph_db_and_its_shared_node_takes_its_precede
 /// shadow of a rebuild that release began and was interrupted in - past both definitions of the
 /// shared leaf, the node holding the one folded last, and no fold rule recorded, as a rule-1
 /// binary left one - when the operator runs `rigger setup`, then the shadow is never resumed:
-/// setup folds the log again from its start, both events, the node holds its precedence winner,
-/// the fn at the fn's line, the file records the current rule and is exactly the graph a fresh
-/// fold of the log reaches, and the shadow is gone.
+/// setup folds the log again from its start, both events, the shadow's derived node is not
+/// carried over, the file records the current rule and is exactly the graph a fresh fold of the
+/// log reaches, and the shadow is gone.
 #[test]
 fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_log_again() {
-    use common::fixtures::{attrs_of, definition};
     use rigger::contextgraph::sqlite::Projector;
     let store = ReleaseEraStore::folded_at_rule_1();
     let (log, shadow) = (store.log(), rigger_file(store.root(), "graph.db.rebuild"));
@@ -1735,12 +1744,18 @@ fn rigger_setup_discards_the_rebuild_shadow_a_rule_1_binary_left_and_folds_the_l
     let graph = Projector::open(store.graph_db.to_str().unwrap(), &store.project()).unwrap();
     assert_eq!(
         (
-            attrs_of(&graph, "src/f.rs::x"),
+            graph
+                .whole()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|n| n.id == "src/f.rs::x"),
             user_version(&store.graph_db),
             shadow.exists()
         ),
-        (definition("x", "function", 3), PROJECTION_VERSION, false),
-        "the node holds the fn at the fn's line, under the current rule, and the shadow is gone"
+        (false, PROJECTION_VERSION, false),
+        "the shadow's derived node is not resumed, the file records the current rule, and the \
+         shadow is gone"
     );
     drop(graph);
     let (graph, fresh) = store.graph_and_a_fresh_fold_of_the_log();
@@ -2956,7 +2971,8 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
 /// serves it as it stands: `rigger_graph` (both selectors) and `rigger_ground` refuse at once
 /// naming `rigger setup`, while `rigger_emit` appends and writes nothing to `graph.db`. When
 /// `rigger setup` pays the rebuild while that session runs, its next `rigger_graph` answers from
-/// the rebuilt graph - the superseded link gone - and its next emit folds live, so the graph stays
+/// the rebuilt graph - the first emit folded, the superseded link gone - and its next emit folds
+/// live, so the graph stays
 /// exactly the whole log's.
 #[test]
 fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_it_serves() {
@@ -3005,11 +3021,11 @@ fn an_mcp_session_refuses_the_fold_dependent_tools_until_setup_pays_the_rebuild_
     );
 
     setup_ok(store.root(), &[]);
-    let around = mcp.tool_call("rigger_graph", serde_json::json!({"around": "docs/f.md"}));
+    let around = mcp.tool_call("rigger_graph", serde_json::json!({"around": "d-owed"}));
     let answer = around["result"].to_string();
     assert!(
         around.get("error").is_none()
-            && answer.contains("src/a.rs")
+            && answer.contains("src/f.rs::alpha")
             && !answer.contains("src/old.rs"),
         "the same session answers from the rebuilt graph; got: {around}"
     );
