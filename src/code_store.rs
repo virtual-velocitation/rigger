@@ -1,14 +1,15 @@
 //! The code store as the composition root wires it: the store at a project's root, read from the
 //! repository's objects (or from the directory, for a project with no git), extracted by
-//! [`FactsExtractor`] and grouped by [`ProductionGroupings`]. Every caller opens it through
+//! [`FactsExtractor`] and grouped by the production groupings. Every caller opens it through
 //! [`CodeStore::open`], which is `open_current`: the conductor after a landed merge, `graph build`
 //! and `setup` as writers, and every reader.
 
 use rigger_domain::code_facts::Stamp;
-use rigger_domain::code_view::{AdvanceCodeStore, CodeView, Extract, TreeSource, WorktreeDiff};
-use rigger_domain::groupings::ProductionGroupings;
-use rigger_grounder::facts::FactsExtractor;
-use rigger_store::code::{open_current, DirTreeSource, Mode, Opened, Store};
+use rigger_domain::code_view::{
+    AdvanceCodeStore, CodeView, Extract, Head, OpenCodeView, TreeSource, WorktreeDiff,
+};
+use rigger_grounder::facts::{open_store, FactsExtractor};
+use rigger_store::code::{DirTreeSource, Mode, Opened, Store};
 use rigger_worktree_git::tree_source::GitTreeSource;
 use std::path::{Path, PathBuf};
 
@@ -43,13 +44,7 @@ impl CodeStore {
 
     /// The view of the head, advancing the store first when it describes another tip or none.
     pub fn open(&self, mode: Mode) -> Result<Opened, String> {
-        open_current(
-            &self.root,
-            self.source.as_ref(),
-            &FactsExtractor,
-            &ProductionGroupings,
-            mode,
-        )
+        open_store(&self.root, self.source.as_ref(), mode)
     }
 
     /// The stamp of the snapshot in force, read without advancing; none for an empty store.
@@ -87,6 +82,19 @@ impl CodeStore {
             Err(e) => line.push_str(&format!("; {worktree_name} cannot be compared ({e})")),
         }
         line
+    }
+}
+
+/// A reader in `worktree` reads the head's view without waiting on a writer, compared with its
+/// own tree.
+impl OpenCodeView for CodeStore {
+    fn head(&self, worktree: &Path) -> Result<Head, String> {
+        let opened = self.open(Mode::Read)?;
+        let diff = self.differing(&opened, worktree);
+        Ok(Head {
+            view: Box::new(opened.view),
+            diff,
+        })
     }
 }
 

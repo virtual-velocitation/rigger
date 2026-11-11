@@ -360,11 +360,7 @@ impl<'r> Composed<'r> {
         let tip = &view.stamp().tip;
         let (compared, stale) = match honesty.diff {
             Ok(diff) => {
-                // A file out of the tree's scope (rigger's own state among them) holds no fact.
-                let files: BTreeSet<String> = (diff.changed.into_iter())
-                    .chain(diff.untracked)
-                    .filter(|f| crate::code_view::in_scope(f))
-                    .collect();
+                let files = diff.files_in_scope();
                 (Compared::Differ(files.len()), Stale::Files(files))
             }
             // A worktree that cannot be compared fails closed: no code hit is known fresh.

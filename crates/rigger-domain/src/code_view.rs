@@ -5,7 +5,7 @@
 
 use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp, Tip};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 /// A file in a view, without its facts.
@@ -91,6 +91,32 @@ pub struct WorktreeDiff {
     pub changed: Vec<String>,
     /// Paths the worktree holds that the tree does not.
     pub untracked: Vec<String>,
+}
+
+impl WorktreeDiff {
+    /// The files that differ, less those outside the tree's scope ([`in_scope`]): rigger's own
+    /// state holds no fact, so it never counts as a difference.
+    pub fn files_in_scope(self) -> BTreeSet<String> {
+        (self.changed.into_iter())
+            .chain(self.untracked)
+            .filter(|f| in_scope(f))
+            .collect()
+    }
+}
+
+/// The code view of the head a reader in a worktree reads, and how that worktree differs from it.
+pub struct Head {
+    pub view: Box<dyn CodeView>,
+    /// How the worktree differs from the view's tree, or why it cannot be compared.
+    pub diff: Result<WorktreeDiff, String>,
+}
+
+/// Opens the code view of the head for a reader (7.3). The composition root implements it. A
+/// reader that lives across merges opens once per read, so each answer describes the store as it
+/// stands then.
+pub trait OpenCodeView: Send + Sync {
+    /// The view of the head as it stands now, compared with `worktree`, or why it cannot be read.
+    fn head(&self, worktree: &Path) -> Result<Head, String>;
 }
 
 /// One tree's facts, stamped with the tree they describe.
@@ -390,6 +416,45 @@ mod tests {
                 .collect();
             assert_eq!(&found_defs, defs, "defs named {leaf}");
             assert_eq!(&found_mentions, mentions, "mentions named {leaf}");
+        }
+    }
+
+    /// Each row: how a worktree differs and the files that count as differing.
+    #[test]
+    fn a_diff_counts_only_the_files_the_tree_covers() {
+        let diff = |changed: &[&str], untracked: &[&str]| WorktreeDiff {
+            changed: changed.iter().map(|f| f.to_string()).collect(),
+            untracked: untracked.iter().map(|f| f.to_string()).collect(),
+        };
+        let cases = [
+            ("no difference", diff(&[], &[]), vec![]),
+            (
+                "changed and untracked together",
+                diff(&["src/b.rs"], &["src/a.rs"]),
+                vec!["src/a.rs", "src/b.rs"],
+            ),
+            (
+                "a file in both lists counts once",
+                diff(&["src/a.rs"], &["src/a.rs"]),
+                vec!["src/a.rs"],
+            ),
+            (
+                "rigger's own state is out of scope",
+                diff(
+                    &[".rigger/events.db"],
+                    &[".rigger/store/code/CURRENT", "README.md"],
+                ),
+                vec!["README.md"],
+            ),
+            (
+                "the workflow definition is in scope",
+                diff(&[".rigger/workflow.yml"], &[]),
+                vec![".rigger/workflow.yml"],
+            ),
+        ];
+        for (name, diff, expected) in cases {
+            let files: Vec<String> = diff.files_in_scope().into_iter().collect();
+            assert_eq!(files, expected, "{name}");
         }
     }
 

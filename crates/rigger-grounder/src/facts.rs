@@ -5,14 +5,17 @@
 //! files, so a file's facts are a pure function of its path and bytes.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
-use rigger_domain::code_view::{Entry, Extract};
+use rigger_domain::code_view::{CodeView, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
+use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
+use rigger_store::code::{open_current, DirTreeSource, Mode, Opened};
 
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
@@ -33,6 +36,38 @@ const FACTS_GENERATION: &str = "facts-v2";
 /// stores it and a later process compares against it.
 fn fingerprint_of(grammar_generation: &str, facts_generation: &str) -> u64 {
     fnv1a_64(format!("{grammar_generation}\n{facts_generation}").as_bytes())
+}
+
+/// The code store at `root` opened as `mode` says over `source`: its facts read by
+/// [`FactsExtractor`] and grouped by [`ProductionGroupings`]. Every opener of the store composes it
+/// here.
+pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Opened, String> {
+    open_current(root, source, &FactsExtractor, &ProductionGroupings, mode)
+}
+
+/// The code store of a project with no git, read from the directory at its root.
+pub struct DirectoryHead {
+    root: PathBuf,
+}
+
+impl DirectoryHead {
+    pub fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+}
+
+impl OpenCodeView for DirectoryHead {
+    fn head(&self, worktree: &Path) -> Result<Head, String> {
+        let source = DirTreeSource::new(&self.root);
+        let opened = open_store(&self.root, &source, Mode::Read)?;
+        let diff = source.changed_against_worktree(&opened.view.stamp().tip.tree, worktree);
+        Ok(Head {
+            view: Box::new(opened.view),
+            diff,
+        })
+    }
 }
 
 /// Reads a file's facts over the existing symbol, design and workflow extractors.
