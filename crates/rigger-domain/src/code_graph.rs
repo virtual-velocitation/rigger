@@ -98,7 +98,7 @@ impl Builder {
                 self.index.insert(id.to_string(), self.nodes.len());
                 self.nodes.push(Node {
                     id: id.to_string(),
-                    kind: KIND_ARTIFACT.to_string(),
+                    kind: kind.to_string(),
                     attrs: BTreeMap::new(),
                 });
                 self.product.push(false);
