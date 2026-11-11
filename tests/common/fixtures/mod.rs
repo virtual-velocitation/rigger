@@ -35,6 +35,8 @@ mod python_definition_sources;
 mod read_fault;
 mod rust_definition_sources;
 mod scratch;
+#[cfg(any(feature = "store", not(feature = "core")))]
+mod shown;
 mod spawn;
 pub use caller_sources::*;
 pub use config::*;
@@ -59,6 +61,8 @@ pub use python_definition_sources::*;
 pub use read_fault::*;
 pub use rust_definition_sources::*;
 pub use scratch::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use shown::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]

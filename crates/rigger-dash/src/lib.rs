@@ -86,13 +86,21 @@ mod graph_fixtures;
 mod page_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/shown.rs"]
+mod shown_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
+// The planted tree fixtures the shown tree is built from, named through `super::`.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use graph_fixtures::{planted_file, PlantedTree};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::graph_fixtures::*;
     pub use crate::page_fixtures::*;
+    pub use crate::shown_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }
