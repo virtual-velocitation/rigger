@@ -7703,8 +7703,8 @@ rigger::test_cases! {
     );
 }
 
-/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] with its one stage under `autonomy: manual`: the unit's gate
-/// passes and the run pauses it for a human, so the run ends with the unit awaiting review.
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] with its one stage under `autonomy: manual`: the run pauses the
+/// unit for a human's review before driving it, so the run ends with the unit awaiting review.
 const MANUAL_REVIEW_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
     body: r#"defaults:
@@ -7800,6 +7800,12 @@ fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keep
             (ok, out.contains(case.tells) || err.contains(case.tells)),
             (case.ok, true),
             "{}: how the run ended; stderr: {err}\nstdout: {out}",
+            case.name
+        );
+        assert_eq!(
+            common::cli::run_payloads(root, "ManualReview").is_empty(),
+            case.reclaimed,
+            "{}: a run keeps its scratch exactly when it ends awaiting a human's review",
             case.name
         );
         if case.reclaimed {
