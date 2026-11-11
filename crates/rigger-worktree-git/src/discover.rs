@@ -380,17 +380,25 @@ fn asked(
 /// `HEAD` naming a ref outside the branches, a branch name another ref also spells (which git
 /// would not shorten), or a symbolic branch ref.
 pub fn read_head(start: &Path) -> Option<(String, Option<String>)> {
+    read_head_with(start, &mut |path| std::fs::read_to_string(path))
+}
+
+/// [`read_head`], reading each of git's files through `read`.
+fn read_head_with(
+    start: &Path,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Option<(String, Option<String>)> {
     let repo = read_repository(start)??;
     if repo.common_dir.join("reftable").exists() {
         return None;
     }
-    let head = std::fs::read_to_string(repo.git_dir.join("HEAD")).ok()?;
+    let head = read(&repo.git_dir.join("HEAD")).ok()?;
     let head = head.trim_end_matches(['\n', '\r']);
     let Some(full) = head.strip_prefix("ref: ") else {
         return is_object_id(head).then(|| ("HEAD".to_owned(), Some(head.to_owned())));
     };
     let name = full.strip_prefix("refs/heads/")?;
-    let packed = match std::fs::read_to_string(repo.common_dir.join("packed-refs")) {
+    let packed = match read(&repo.common_dir.join("packed-refs")) {
         Ok(packed) => packed,
         Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
         Err(_) => return None,
@@ -407,7 +415,7 @@ pub fn read_head(start: &Path) -> Option<(String, Option<String>)> {
     if spelled_elsewhere {
         return None;
     }
-    let commit = match std::fs::read_to_string(repo.common_dir.join(full)) {
+    let commit = match read(&repo.common_dir.join(full)) {
         Ok(loose) => {
             let loose = loose.trim_end_matches(['\n', '\r']);
             Some(is_object_id(loose).then(|| loose.to_owned())?)
@@ -693,5 +701,49 @@ mod tests {
         if let Some(head) = empty {
             assert_eq!(head, git_head(Path::new("")), "an empty start");
         }
+    }
+
+    /// Where a `git pack-refs --all`, which packs every loose ref and deletes it, lands among
+    /// [`read_head_with`]'s reads.
+    #[derive(Clone, Copy)]
+    enum Pack {
+        /// Just before the branch's loose ref is read.
+        BeforeTheLooseBranch,
+        /// Just after `packed-refs` is read.
+        AfterPackedRefs,
+    }
+
+    /// A checkout's head read while a `git pack-refs --all` lands at `pack`, with a tag spelling
+    /// its branch when `tagged`. A ref is read loose first and only then from a `packed-refs`
+    /// read after it, as git reads it, so a pack between the reads hides no ref: the branch keeps
+    /// the commit git names, and a tag spelling it still leaves the read to git.
+    fn a_pack_between_the_reads_hides_no_ref(pack: Pack, tagged: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        init_repo(repo);
+        let (branch, commit) = git_head(repo);
+        if tagged {
+            git_ok(repo, &["tag", &branch]);
+        }
+        let loose = Path::new("refs/heads").join(&branch);
+        let mut read = |path: &Path| {
+            if matches!(pack, Pack::BeforeTheLooseBranch) && path.ends_with(&loose) {
+                git_ok(repo, &["pack-refs", "--all"]);
+            }
+            let text = std::fs::read_to_string(path);
+            if matches!(pack, Pack::AfterPackedRefs) && path.ends_with("packed-refs") {
+                git_ok(repo, &["pack-refs", "--all"]);
+            }
+            text
+        };
+        let expected = (!tagged).then_some((branch, commit));
+        assert_eq!(read_head_with(repo, &mut read), expected);
+    }
+
+    crate::test_cases! {
+        a_pack_before_the_loose_branch_is_read_leaves_it_at_its_commit:
+            a_pack_between_the_reads_hides_no_ref(Pack::BeforeTheLooseBranch, false);
+        a_pack_after_packed_refs_is_read_still_sees_a_tag_spelling_the_branch:
+            a_pack_between_the_reads_hides_no_ref(Pack::AfterPackedRefs, true);
     }
 }
