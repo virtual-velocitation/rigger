@@ -1,6 +1,6 @@
 //! The bi-temporal context graph: the read model projected from the event log
 //! that answers relationship questions vector search cannot ("what decisions
-//! govern this file? what lessons apply?"). `Projection` is the port; `sqlite` is
+//! govern this file? what lessons apply?"). `RecordFold` is the interface; `sqlite` is
 //! the adapter. A superseded edge is invalidated (its valid_to set), never
 //! deleted, so retrieval returns the current decision and never the stale one.
 //!

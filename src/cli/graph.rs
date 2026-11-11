@@ -59,16 +59,20 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
             "graph: --lookup <term>..., --around <id> or --show <entity> is required".into(),
         );
     }
-    let gp = owning_graph_to_read()?;
+    let records = owning_graph_to_read()?;
+    let read = ReadGraph::new(&records, caller_tree());
+    let graph = read.open(Default::default())?;
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
-    // the port, an alias to its canonical id, else the query as typed. Its one site read answers
-    // the queried node's unresolved leaves.
-    let queried = Projection::resolve(&gp, &around)?.unwrap_or(around.clone());
-    let g = contextgraph::around(&gp, std::slice::from_ref(&queried), depth)?;
-    let unresolved = match gp.locate(&queried)? {
+    // the interface, an alias to its canonical id, else the query as typed. Its one site read
+    // answers the queried node's unresolved leaves.
+    let queried = graph.resolve(&around)?.unwrap_or(around.clone());
+    let g = contextgraph::around(graph.as_ref(), std::slice::from_ref(&queried), depth)?;
+    let unresolved = match graph.locate(&queried)? {
         Located::One(site) => site.unresolved,
         _ => Vec::new(),
     };
+    // The label heads the answer (6.1), counting what the reads above withheld.
+    println!("{}", graph.stamp_label());
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &queried, &unresolved);
     Ok(())
@@ -232,20 +236,30 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 /// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
 fn cmd_graph_lookup(terms: &[String]) -> Res {
     use rigger::lookup::Lookup as _;
-    let graph =
-        owning_graph_to_read().map_err(|e| format!("the context graph could not be opened: {e}"));
     let lookup = rigger::lookup::TreeLookup::new(caller_tree());
-    let graph = graph
-        .as_ref()
-        .map(|g| g as &dyn Projection)
-        .map_err(Clone::clone);
-    print!("{}", lookup.lookup(terms, graph)?);
+    let reply = match owning_graph_to_read() {
+        Ok(records) => {
+            let read = ReadGraph::new(&records, caller_tree());
+            let graph = contextgraph::open_unowed(&records, &read, Default::default());
+            lookup.lookup(terms, graph.as_deref().map_err(|e| e.0.clone()))?
+        }
+        Err(e) => lookup.lookup(
+            terms,
+            Err(format!("the context graph could not be opened: {e}")),
+        )?,
+    };
+    print!("{reply}");
     Ok(())
 }
 
 fn cmd_graph_show(entity: &str) -> Res {
-    let gp = owning_graph_to_read()?;
-    match gp.locate(entity)? {
+    let records = owning_graph_to_read()?;
+    let read = ReadGraph::new(&records, caller_tree());
+    let graph = read.open(Default::default())?;
+    let located = graph.locate(entity)?;
+    // The label heads the answer (6.1), counting what the locate withheld.
+    println!("{}", graph.stamp_label());
+    match located {
         Located::None => match logged_site(entity)? {
             Some(site) => {
                 print_entity_site(&site);
@@ -693,7 +707,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 ///
 /// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
 /// this each batch identity exactly once - each identity the graph holds a generation for
-/// ([`Projection::held_identities`]) whose file is gone included - and each batch is recorded by
+/// ([`RecordFold::held_identities`]) whose file is gone included - and each batch is recorded by
 /// [`record_batch`], which asks the store one group lookup for it. A batch that records nothing
 /// counts nothing.
 ///
@@ -712,7 +726,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
 /// text, a store's refusal as the store's.
 fn ingest_tree(
     store: &dyn EventStore,
-    graph: &dyn Projection,
+    graph: &dyn RecordFold,
     root: &str,
 ) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
     let mut counted = 0usize;
@@ -751,7 +765,7 @@ fn ingest_tree(
 /// constructor and carries no run id, there being no run, and it is appended and folded with its
 /// extraction through the ledger form of the folding store, in ONE store append, the entry and its
 /// extraction committing in the transaction
-/// [`Projection::apply_generation`](rigger::contextgraph::Projection::apply_generation) states. A
+/// [`RecordFold::apply_generation`](rigger::contextgraph::RecordFold::apply_generation) states. A
 /// batch whose key names no identity, and a failed read of either side, of the bytes or of the
 /// hash, fails with that failure's text and records nothing, as a refused append does. A lost
 /// fold is answered, never said here: the build's line names it.
@@ -760,7 +774,7 @@ fn ingest_tree(
 #[cfg(feature = "symbols")]
 fn record_batch(
     store: &dyn EventStore,
-    graph: &dyn Projection,
+    graph: &dyn RecordFold,
     root: &str,
     hash: &rigger::ingest::HashBlob,
     keyed: &[(String, &Event)],
@@ -797,7 +811,7 @@ fn record_batch(
 #[cfg(not(feature = "symbols"))]
 fn record_batch(
     _store: &dyn EventStore,
-    _graph: &dyn Projection,
+    _graph: &dyn RecordFold,
     _root: &str,
     _hash: &(dyn Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync),
     _keyed: &[(String, &Event)],
@@ -857,7 +871,7 @@ fn cmd_graph_communities(args: &[String]) -> Res {
 /// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
 /// turns it into the pass's events plus its summary line; the events are appended in ONE store
 /// append and folded through the shared batched append-and-fold authority, at the transaction
-/// cadence [`Projection::apply_batch`](rigger::contextgraph::Projection::apply_batch) states,
+/// cadence [`RecordFold::apply_batch`](rigger::contextgraph::RecordFold::apply_batch) states,
 /// then the summary is printed.
 fn run_graph_pass(
     verb: &str,
@@ -1211,7 +1225,7 @@ mod tests {
             handed_by_the_walk, held_generations, one_lookup_each, owe_a_rebuild,
             planted_extraction_tree, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
             source_with, walked_generations, walked_identities, write_file, EntryRecord,
-            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, PreLedgerStore,
+            FailAppendMetaContaining, GroupLookupOnly, MinimalFold, PreLedgerStore,
             ReadCountingStore, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
         };
         use rigger::contextgraph::Fold;
@@ -1284,7 +1298,7 @@ mod tests {
             folds: std::sync::atomic::AtomicUsize,
         }
 
-        impl Projection for LosesEveryFold {
+        impl RecordFold for LosesEveryFold {
             fn apply(
                 &self,
                 _e: &Event,
@@ -1292,9 +1306,8 @@ mod tests {
             ) -> Result<(), contextgraph::Error> {
                 Ok(())
             }
-            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
-                MinimalProjection.rebuild_owed()
+                MinimalFold.rebuild_owed()
             }
             fn current_generation(
                 &self,
@@ -1302,11 +1315,11 @@ mod tests {
             ) -> Result<Option<String>, contextgraph::Error> {
                 match self.unread {
                     Some(why) => Err(contextgraph::Error(why.to_string())),
-                    None => MinimalProjection.current_generation(identity),
+                    None => MinimalFold.current_generation(identity),
                 }
             }
             fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
-                MinimalProjection.held_identities()
+                MinimalFold.held_identities()
             }
             fn apply_generation(
                 &self,
@@ -1605,7 +1618,7 @@ mod tests {
             .unwrap();
             let store = GroupLookupOnly::new(Err("group index unreadable".into()));
             let failure =
-                ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()).unwrap_err();
+                ingest_tree(&store, &MinimalFold, tree.path().to_str().unwrap()).unwrap_err();
             assert_eq!(
                 failure.to_string(),
                 "the log's latest generation of gc/src/lib.rs could not be read: \

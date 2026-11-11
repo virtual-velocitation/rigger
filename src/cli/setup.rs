@@ -1349,7 +1349,7 @@ fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
 /// holds every latest recording reads no file and asks git nothing.
 fn identities_behind_their_recording<'t>(
     log: &dyn EventStore,
-    graph: &dyn contextgraph::Projection,
+    graph: &dyn contextgraph::RecordFold,
     tree: &dyn Fn() -> &'t Path,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     let mut behind = 0;

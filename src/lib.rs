@@ -38,7 +38,10 @@ pub use rigger_config_files::config_store;
 pub use rigger_console::console;
 pub use rigger_domain::blocker;
 pub use rigger_domain::canary;
+pub use rigger_domain::code_facts;
+pub use rigger_domain::code_view;
 pub use rigger_domain::community;
+pub use rigger_domain::composed;
 pub use rigger_domain::concepts;
 /// The one reader of `claude auth status --json` (spec 105): the login the hold probe reads and
 /// the auth method `rigger validate` reports.

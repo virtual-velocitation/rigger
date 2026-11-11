@@ -16,7 +16,7 @@ use rigger::console;
 use rigger::contextgraph::{
     self, fold_clause, fold_loss_clause, not_folded,
     sqlite::{Projector, PruneStats, RebuildLock},
-    Located, Projection,
+    ContextGraph, Located, OpenGraph, RecordFold,
 };
 use rigger::dash;
 use rigger::driver::cli;
@@ -1239,7 +1239,7 @@ fn migrate_project_identity(
             let emitted = mcpserver::emit_event(
                 &store,
                 conductor::STREAM,
-                || contextgraph::wired(graph.map(|g| g as &dyn Projection)),
+                || contextgraph::wired(graph.map(|g| g as &dyn RecordFold)),
                 &args,
             )
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -1584,9 +1584,9 @@ impl StoreLocation {
     fn graph(
         &self,
         selection: &StoreSelection,
-    ) -> Result<Box<dyn Projection>, contextgraph::Error> {
+    ) -> Result<Box<dyn RecordFold>, contextgraph::Error> {
         open_graph_for_write(&self.file("graph.db"), &self.identity(), selection)
-            .map(|(g, _)| Box::new(g) as Box<dyn Projection>)
+            .map(|(g, _)| Box::new(g) as Box<dyn RecordFold>)
     }
 
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
@@ -1824,6 +1824,94 @@ fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
         },
     };
     open_graph_to_read(&loc.file("graph.db"), &loc.identity())
+}
+
+/// The context graph a reader reads (7.3): the record graph `records` composed with the code
+/// view of the operator checkout's head, compared with the caller's `worktree`. A reader in a
+/// unit worktree reads the operator checkout's store, which owns `.rigger/`.
+pub(crate) struct ReadGraph<'r> {
+    records: &'r Projector,
+    worktree: PathBuf,
+}
+
+impl<'r> ReadGraph<'r> {
+    pub(crate) fn new(records: &'r Projector, worktree: PathBuf) -> Self {
+        Self { records, worktree }
+    }
+}
+
+impl OpenGraph for ReadGraph<'_> {
+    fn open(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+    ) -> Result<Box<dyn ContextGraph + '_>, contextgraph::Error> {
+        let composed = head_view(&self.worktree, |view, diff, behind| {
+            rigger_domain::composed::Composed::new(
+                self.records,
+                view,
+                filter,
+                rigger_domain::composed::Honesty {
+                    worktree: self.worktree.display().to_string(),
+                    diff,
+                    behind,
+                },
+            )
+            .map_err(|e| e.0)
+        })
+        .map_err(contextgraph::Error)?;
+        Ok(Box::new(composed))
+    }
+}
+
+/// Hands `compose` the code store's view of the head of the project `worktree` lies in, how
+/// `worktree` differs from it, and why it is behind the head when it is.
+#[cfg(feature = "symbols")]
+fn head_view<T>(
+    worktree: &Path,
+    compose: impl FnOnce(
+        &dyn rigger_domain::code_view::CodeView,
+        Result<rigger_domain::code_view::WorktreeDiff, String>,
+        Option<String>,
+    ) -> Result<T, String>,
+) -> Result<T, String> {
+    let store = project_code_store(worktree);
+    let opened = store.open(rigger_store::code::Mode::Read)?;
+    let diff = store.differing(&opened, worktree);
+    compose(
+        &opened.view,
+        diff,
+        opened.behind.as_ref().map(ToString::to_string),
+    )
+}
+
+/// Light-lane [`head_view`]: no extractor is compiled in, so the head's tree is read with no code
+/// facts.
+#[cfg(not(feature = "symbols"))]
+fn head_view<T>(
+    worktree: &Path,
+    compose: impl FnOnce(
+        &dyn rigger_domain::code_view::CodeView,
+        Result<rigger_domain::code_view::WorktreeDiff, String>,
+        Option<String>,
+    ) -> Result<T, String>,
+) -> Result<T, String> {
+    use rigger_domain::code_view::TreeSource;
+    let source: Box<dyn TreeSource> = match main_repo_root(worktree) {
+        Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(&root)),
+        None => Box::new(rigger_store::code::DirTreeSource::new(worktree)),
+    };
+    let tip = source.head()?;
+    let diff = source.changed_against_worktree(&tip.tree, worktree);
+    let stamp = rigger_domain::code_facts::Stamp {
+        tip,
+        fingerprint: 0,
+        seq: 0,
+    };
+    compose(
+        &rigger_domain::code_view::FactsView::new(stamp, Vec::new()),
+        diff,
+        None,
+    )
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -2671,6 +2759,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host,
             code_store: None,
+            context: None,
         };
         let drive = conductor::run(&candidate_cfg, &deps);
 
@@ -5394,6 +5483,7 @@ mod tests {
     use crate::test_support::run_git;
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
+    use crate::test_support::RecordsRead;
     use rigger::spawn::SpawnEvent;
     use std::process::Command;
 

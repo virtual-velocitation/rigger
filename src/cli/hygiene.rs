@@ -1101,6 +1101,7 @@ fn landed_units(
 mod tests {
     use super::*;
     use crate::test_support::ev;
+    use crate::test_support::RecordsRead;
     use rigger::registry::{Writer, DEFAULT_IDLE_MS};
 
     /// Spec 21, unit 2: the drop-set derivation `rigger reset --runs` hands to the prune. It
@@ -1209,7 +1210,7 @@ mod tests {
     ///
     ///   * `metrics::project` folds the EVENT LOG. The de-noise removed the graph NODES for
     ///     `GateVerdict` / `UnitStarted` / `UnitIntegrated`, but those EVENTS still stand in the
-    ///     log, and metrics reads them from there (it never receives a `Projection`), so its counts
+    ///     log, and metrics reads them from there (it never receives a `RecordFold`), so its counts
     ///     are unmoved.
     ///   * run pruning (`superseded_graph_nodes` -> `Projector::prune`) derives its drop set from
     ///     the EVENT LOG through the one `run::run_attribution` authority, which attributes ONLY

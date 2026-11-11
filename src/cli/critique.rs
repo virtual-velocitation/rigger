@@ -429,7 +429,7 @@ fn remove_critique_scratch(scratch_root: &str) {
 /// peers <spec>` shows them. Each copy passes the one emit guard first.
 fn copy_findings(
     store: &dyn EventStore,
-    graph: &dyn contextgraph::Projection,
+    graph: &dyn contextgraph::RecordFold,
     critique: &Critique,
     spec: &str,
 ) -> Res {

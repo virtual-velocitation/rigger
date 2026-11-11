@@ -57,7 +57,7 @@ fn print_claude_login() {
 /// alone is compared.
 fn read_graph_index_lag(
     store: &dyn EventStore,
-    graph: Option<&dyn contextgraph::Projection>,
+    graph: Option<&dyn contextgraph::RecordFold>,
     root: &Path,
 ) -> Result<Vec<String>, rigger::eventstore::Error> {
     let latest = rigger::ingest::perceived_generations(store, conductor::STREAM)?;
@@ -339,7 +339,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
                 store,
                 graph
                     .as_ref()
-                    .map(|graph| graph as &dyn contextgraph::Projection),
+                    .map(|graph| graph as &dyn contextgraph::RecordFold),
                 &tree_root(&cwd().join(RIGGER_DIR)),
             )
         })
@@ -622,7 +622,7 @@ fn retired_entities_advisory(n: usize) -> Option<String> {
 /// [`rigger::contextgraph::sqlite::Projector::retired_code_entity_count`] - the ONE counting
 /// authority the migration's supersession backs (never a second, shadow count). The context graph
 /// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
-/// the shape of, `Projector` is the only [`Projection`] this binary ever opens), so this needs no
+/// the shape of, `Projector` is the only [`RecordFold`] this binary ever opens), so this needs no
 /// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
 /// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
 /// error after that point, exactly like the log-bloat and index-staleness advisories above

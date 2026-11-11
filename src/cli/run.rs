@@ -967,6 +967,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let hash_blob = hash_blob_in(&root);
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at.
     let code_store = run_code_store(&repo);
+    // The grounding reads compare with the operator checkout the run lands its merges on.
+    let read_graph = ReadGraph::new(&graph, PathBuf::from(&repo));
     let deps = Deps {
         store: &store,
         driver: &held,
@@ -980,6 +982,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host,
         code_store: code_store.as_deref(),
+        context: Some(&read_graph),
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the

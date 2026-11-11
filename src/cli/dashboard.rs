@@ -161,7 +161,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
 
     // The DIRECTED-CALL provider for `/api/graph?view=calls` (spec 52, criterion 4): the SAME lazy
     // direct-projection provider the whole-graph views use, but running the store-side directed
-    // traversal `Projection::calls` (the execution path / call sites of a seed) instead of reading
+    // traversal `ContextGraph::calls` (the execution path / call sites of a seed) instead of reading
     // the whole graph. Opened only on a call request, never on the state poll; per-request-open and
     // best-effort like `graph_provider`, so an absent / empty graph or a seed with no calls degrades
     // to an empty `CallGraph`, never an error. Chooses WHICH store to walk from the same spec-50
@@ -496,17 +496,30 @@ fn dash_read_run(
 /// run never builds one) or any query error yields an empty graph, so the rest of the dash
 /// still serves.
 fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextgraph::Graph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::Graph::default();
-    }
     let seeds = dash::graph_seeds(events);
     if seeds.is_empty() {
         return contextgraph::Graph::default();
     }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
-        Err(_) => contextgraph::Graph::default(),
+    dash_read(graph_db, identity, |g| g.subgraph(&seeds, 2)).unwrap_or_default()
+}
+
+/// What `read` answers of the context graph (7.3) over the record graph at `graph_db`, compared
+/// with the checkout whose `.rigger/` holds it; `None` when no such file stands or the graph cannot
+/// be opened or read, so the dash still serves.
+fn dash_read<T>(
+    graph_db: &str,
+    identity: &str,
+    read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
+) -> Option<T> {
+    let path = Path::new(graph_db);
+    if !path.exists() {
+        return None;
     }
+    let records = Projector::open(graph_db, identity).ok()?;
+    let checkout = path.parent()?.parent()?.to_path_buf();
+    let read_graph = ReadGraph::new(&records, checkout);
+    let graph = read_graph.open(Default::default()).ok()?;
+    read(graph.as_ref()).ok()
 }
 
 /// The WHOLE projection for the `/api/graph` provider (spec 45, criterion 2): the direct-projection
@@ -519,17 +532,11 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
 fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::Graph::default();
-    }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p.whole().unwrap_or_default(),
-        Err(_) => contextgraph::Graph::default(),
-    }
+    dash_read(graph_db, identity, |g| g.whole()).unwrap_or_default()
 }
 
 /// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
-/// store-side `Projection::calls` traversal (the seed's execution path or call sites) read through
+/// store-side `ContextGraph::calls` traversal (the seed's execution path or call sites) read through
 /// the SAME lazy direct-projection open as [`dash_read_whole_graph`], never the polled read. Opens
 /// the projection per request and runs the walk `direction`/`depth`/`tier_floor` select. Best-effort
 /// exactly like the whole-graph read: an absent graph (a grep-only run never builds one), an open
@@ -543,15 +550,10 @@ fn dash_read_calls(
     depth: i64,
     tier_floor: &str,
 ) -> contextgraph::CallGraph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::CallGraph::default();
-    }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p
-            .calls(seed, direction, depth, tier_floor)
-            .unwrap_or_default(),
-        Err(_) => contextgraph::CallGraph::default(),
-    }
+    dash_read(graph_db, identity, |g| {
+        g.calls(seed, direction, depth, tier_floor)
+    })
+    .unwrap_or_default()
 }
 
 /// The directed-call walk over an ATTACHED instance's graph store (spec 52 c4 + spec 50 c3): the
@@ -813,7 +815,9 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let graph = loc.graph(selection)?;
+        let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
+        // `rigger_graph` reads the graph composed for the caller's own tree.
+        let context = ReadGraph::new(&graph, caller_tree());
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -838,7 +842,8 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
 
         let lookup = rigger::lookup::TreeLookup::new(caller_tree());
         let mut server = mcpserver::Server::new(store, conductor::STREAM)
-            .with_graph(graph.as_ref())
+            .with_graph(&graph)
+            .with_context(&context)
             .with_lookup(&lookup);
         server = server.with_grounder(match &grounder {
             Ok(g) => Ok(g.as_ref()),
