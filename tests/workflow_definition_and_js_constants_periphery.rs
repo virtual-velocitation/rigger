@@ -61,6 +61,7 @@
 use crate::common::fixtures::RecordsRead;
 #[cfg(feature = "symbols")]
 use rigger::contextgraph::sqlite::Projector;
+#[cfg(feature = "symbols")]
 use rigger::contextgraph::{KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;

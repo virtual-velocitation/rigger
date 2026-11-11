@@ -94,6 +94,7 @@ fn contains_lines(edges: &[(&str, &str)]) -> Vec<(String, String, String)> {
 
 /// [`contains_lines`] with the one community the tree's grouping puts every node of `edges` in,
 /// joined at read, each as its `IN_COMMUNITY` line, all sorted as `--around` prints them.
+#[cfg(feature = "symbols")]
 fn contains_and_community_lines(edges: &[(&str, &str)]) -> Vec<(String, String, String)> {
     let community = |id: &str| {
         (
