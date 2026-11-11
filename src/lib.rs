@@ -50,6 +50,9 @@ pub use rigger_driver::claude_auth;
 /// slots bound builds, never agents.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::budget;
+/// The code store as the composition root wires it: one opener for every writer and reader.
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
+pub mod code_store;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_dash::dash;

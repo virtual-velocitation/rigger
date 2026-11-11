@@ -177,6 +177,7 @@ impl Files {
             hash_blob: &hash_blob,
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run(cfg, &deps).unwrap()
     }

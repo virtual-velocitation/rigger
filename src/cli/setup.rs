@@ -1,5 +1,6 @@
 use super::*;
 use rigger::contextgraph::sqlite::CatchUp;
+use rigger_domain::code_view::AdvanceCodeStore;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
 /// provenance, so any agent can identify the exact binary without guessing.
@@ -680,6 +681,85 @@ const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed
      pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
      rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
 
+/// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
+/// operator checkout git's common directory names, read from that checkout's HEAD whichever
+/// worktree `start` is in; at `start` itself for a project with no git.
+#[cfg(feature = "symbols")]
+pub(crate) fn project_code_store(start: &Path) -> rigger::code_store::CodeStore {
+    match main_repo_root(start) {
+        Some(root) => rigger::code_store::CodeStore::in_repository(&root),
+        None => rigger::code_store::CodeStore::in_directory(start),
+    }
+}
+
+/// The code store the conductor advances after each merge a run on `repo` lands; `repo` is the
+/// operator checkout, since a run refuses a linked worktree. None for a project with no
+/// repository, where no merge lands, and in a build with no extractor.
+#[cfg(feature = "symbols")]
+pub(crate) fn run_code_store(repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    if repo.is_empty() {
+        return None;
+    }
+    Some(Box::new(rigger::code_store::CodeStore::in_repository(
+        Path::new(repo),
+    )))
+}
+
+/// Light-lane [`run_code_store`]: no extractor is compiled in, so there is no store to advance.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn run_code_store(_repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    None
+}
+
+/// What opening the project's code store from the caller's tree left.
+pub(crate) struct CodeStoreOpened {
+    /// Whether the open moved the stamp in force: an advance, or a first snapshot.
+    pub(crate) moved: bool,
+    /// Why the store still describes another tip than the head, when it does.
+    behind: Option<String>,
+    stamp_line: Box<dyn Fn() -> String>,
+}
+
+impl CodeStoreOpened {
+    /// The stamp line ([`rigger::code_store::CodeStore::stamp_line`]) for the caller's tree,
+    /// compared with the snapshot only when it is asked for.
+    pub(crate) fn line(&self) -> String {
+        (self.stamp_line)()
+    }
+
+    /// Say on stderr that a writer left the store behind the head, and why; silent when it is not.
+    pub(crate) fn warn_if_behind(&self) {
+        if let Some(behind) = &self.behind {
+            eprintln!("warning: the code store was not advanced to the head ({behind})");
+        }
+    }
+}
+
+/// Opens the code store of the project the cwd lies in as `mode` says, advancing it to the
+/// operator checkout's head; none in a build with no extractor, which keeps no code store.
+#[cfg(feature = "symbols")]
+pub(crate) fn open_project_code_store(
+    mode: rigger_store::code::Mode,
+) -> Result<Option<CodeStoreOpened>, String> {
+    use rigger_domain::code_view::CodeView;
+    let store = project_code_store(&cwd());
+    let before = store.in_force();
+    let opened = store.open(mode)?;
+    Ok(Some(CodeStoreOpened {
+        moved: before.as_ref() != Some(opened.view.stamp()),
+        behind: opened.behind.as_ref().map(ToString::to_string),
+        stamp_line: Box::new(move || store.stamp_line(&opened, &caller_tree())),
+    }))
+}
+
+/// Light-lane [`open_project_code_store`]: no extractor is compiled in, so there is no store.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn open_project_code_store(
+    _mode: rigger_store::code::Mode,
+) -> Result<Option<CodeStoreOpened>, String> {
+    Ok(None)
+}
+
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
 /// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
@@ -728,6 +808,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // 5: THE STATUSLINE COMMAND) - so the line under the person's conversation and the
     // console's own bottom line are one text. Drift-aware like every install above.
     let status_line = install_status_line(root)?;
+    // Advance the code store to the head last, so the snapshot describes the tree every install
+    // above left.
+    let code_store = open_project_code_store(rigger_store::code::Mode::Write)?;
+    if let Some(opened) = &code_store {
+        opened.warn_if_behind();
+    }
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
     // before the silent-no-op check and always reports its outcome, so an import onto
@@ -771,6 +857,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
+    let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
     if !scaffold.changed()
         && !graph_rebuilt
         && retired.is_empty()
@@ -780,6 +867,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         && !mcp_changed
         && !lookup_hook_changed
         && !status_line_changed
+        && !code_store_moved
     {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
@@ -857,6 +945,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
              this rigger build"
         ),
         InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
+    }
+    if let Some(opened) = code_store.filter(|opened| opened.moved) {
+        println!("{}", opened.line());
     }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`

@@ -34,6 +34,7 @@ use crate::spawn::{
 use crate::spawn_store;
 use crate::verdict_mac::{VerdictFields, VerdictKey};
 use crate::worktree::{self, Worktree};
+use rigger_domain::code_view::AdvanceCodeStore;
 pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
 use rigger_domain::review::{
@@ -2798,6 +2799,10 @@ pub struct Deps<'a> {
     /// The host values every spawn of the run carries, resolved once by the command that built
     /// these deps (`rigger_driver::hooks::resolve_spawn_host`) and only read here.
     pub spawn_host: SpawnHost,
+    /// The project's code store, advanced to the landed tip right after every landed merge;
+    /// None advances nothing. Injected because the store is an adapter the conductor may not
+    /// name: the composition root binds it to the run's operator checkout.
+    pub code_store: Option<&'a dyn AdvanceCodeStore>,
 }
 
 /// The emit guard's shape ([`Deps::check_emit`]): the store an event would land in, the stream,
@@ -11123,6 +11128,7 @@ impl RunCtx<'_> {
             // walk - right alongside the grounder's own (already-existing) reindex above, so the
             // two stay in lockstep from every integration on.
             self.ingest_files_into_graph(&landed)?;
+            self.advance_code_store();
         }
         for f in &landed {
             self.emit(
@@ -12534,6 +12540,20 @@ impl RunCtx<'_> {
     #[cfg(not(feature = "symbols"))]
     fn ingest_files_into_graph(&self, _files: &[String]) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Advance the code store to the tip this integration just landed (addendum 5.3), so every
+    /// later spawn, lookup and dash view describes it. The store lists the landed tree itself, so
+    /// a file the unit touched but did not name is re-extracted too. A failed advance is said
+    /// through [`Deps::log`] and fails nothing: the merge has landed, and the next reader to open
+    /// the store finds it behind the head and advances it.
+    fn advance_code_store(&self) {
+        if let Some(Err(e)) = self.deps.code_store.map(|c| c.advance_to_head()) {
+            (self.deps.log)(&format!(
+                "the code store was not advanced to the landed merge ({e}); the next reader \
+                 advances it"
+            ));
+        }
     }
 
     /// Record a `LessonLearned` about `unit_name`, answering its append's outcome. `about` names
@@ -15913,6 +15933,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             }
         }
 
@@ -18159,6 +18180,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -18756,6 +18778,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -21694,6 +21717,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -21768,6 +21792,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -21909,6 +21934,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -21994,6 +22020,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -22590,6 +22617,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -22772,6 +22800,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -22953,6 +22982,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23057,6 +23087,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23165,6 +23196,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23278,6 +23310,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -25430,6 +25463,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -25551,6 +25585,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
@@ -25589,6 +25624,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -25778,6 +25814,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
 
         // Run one records generation A of both files and the design doc.
@@ -25932,6 +25969,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -26240,6 +26278,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -26375,6 +26414,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -28316,6 +28356,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
         };
@@ -28376,6 +28417,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -29475,6 +29517,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -29978,6 +30021,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -30255,6 +30299,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -30657,6 +30702,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -30924,6 +30970,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -31263,6 +31310,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -32820,6 +32868,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -36056,6 +36105,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -37053,6 +37103,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -39261,6 +39312,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39439,6 +39491,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -40385,6 +40438,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -41030,6 +41084,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -41152,6 +41207,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -41835,6 +41891,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -42068,6 +42125,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
         // rerun to give, the first one halts the step.
@@ -42151,6 +42209,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             // An infra outage halts the step (F3) and a flaky failure escalates: either way the
             // run ends, and only the gate runs and the ratchet are under test here.
@@ -44067,6 +44126,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
 
         let rs = run_isolated(&cfg, &deps).unwrap();
@@ -44194,6 +44254,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -44477,6 +44538,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -44527,6 +44589,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -44769,6 +44832,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -44792,6 +44856,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -45231,6 +45296,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -45324,6 +45390,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         assert_eq!(ctx.grounded_seed(&st), vec!["named.rs".to_string()]);
@@ -45746,6 +45813,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -45783,6 +45851,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -45916,6 +45985,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -46077,6 +46147,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -46743,6 +46814,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49364,6 +49436,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49415,6 +49488,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49449,6 +49523,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49524,6 +49599,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49638,6 +49714,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49778,6 +49855,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -49818,6 +49896,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49892,6 +49971,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -50085,6 +50165,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -52041,6 +52122,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -52066,6 +52148,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -53507,6 +53590,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
 

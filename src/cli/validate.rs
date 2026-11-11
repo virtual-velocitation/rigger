@@ -214,6 +214,14 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
+    // The stamp line: the tip the code store describes, advanced to the operator checkout's head
+    // first, and how many files the caller's tree differs from it by. A store that cannot be
+    // opened is said, never a refusal: the config is what validate judges.
+    match open_project_code_store(rigger_store::code::Mode::Read) {
+        Ok(Some(opened)) => println!("{}", opened.line()),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: the code store cannot be opened: {e}"),
+    }
     // NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): warn when a fan-out
     // implement template declares no gates at all - the author-time half of the runtime
     // invariant `conductor::run` enforces once a spec actually decomposes against the

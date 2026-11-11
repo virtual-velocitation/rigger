@@ -79,6 +79,7 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     let result = run(&cfg, &deps);
     assert!(

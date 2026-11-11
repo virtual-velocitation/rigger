@@ -264,6 +264,7 @@ fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> 
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
@@ -673,6 +674,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -754,6 +756,7 @@ fn run_and_capture_review_spawns(
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.

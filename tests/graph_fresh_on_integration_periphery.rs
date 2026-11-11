@@ -141,6 +141,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
 
     let rs = run(&cfg, &deps).unwrap();

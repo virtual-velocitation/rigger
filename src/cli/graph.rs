@@ -681,6 +681,9 @@ fn cmd_graph_build(_args: &[String]) -> Res {
         db_path("graph.db"),
         fold_loss_clause(&fold)
     );
+    if let Some(opened) = open_project_code_store(rigger_store::code::Mode::Write)? {
+        opened.warn_if_behind();
+    }
     Ok(())
 }
 

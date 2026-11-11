@@ -138,6 +138,7 @@ fn run_over(
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     run(cfg, &deps).unwrap()
 }

@@ -135,6 +135,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     let rs = run(&cfg, &deps).unwrap();
 
