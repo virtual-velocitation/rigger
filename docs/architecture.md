@@ -843,16 +843,15 @@ is recorded under can never drift between them. Four properties define it:
   authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
   diverges from it; what follows names some of them and is not a closed enumeration.
 
-  In these three, **no batch is folded for the file at all**. Read "the walk no longer sees it"
-  strictly, because the two halves differ: the design half
-  reads the LIVE tree (`walk_guarded` + a file read per path), so a path that is gone is gone to it,
-  while the code half lowers from a PERSISTED symbols index when the project has one (the last bullet
-  below). A path the tree has deleted that such an index still lists IS handed over as a batch, DOES
-  reach a suppression decision, and is outside these three:
+  The first of these three is retired by the walk itself; in the other two **no batch is folded
+  for the file at all**:
 
   - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
-    batch (`supersede_file_edges` runs inside the fold of the batch), and the walk emits no batch for
-    a path it no longer holds - so nothing on the ingest path retires that file's nodes or edges.
+    batch, so a whole-project walk hands every `gc`, `gd` or `gw` identity the graph holds whose
+    path the tree no longer holds one batch more: the boundary batch for no bytes. Its fold advances
+    the identity's generation and retires the file's nodes and edges. The walk asks the tree before
+    the persisted symbols index (the last bullet below), so a deleted path that index still lists
+    gets the retirement batch, never the index's stale one.
   - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
     last definition and reference. Both halves drop a file whose extraction is empty, so again no
     batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
@@ -876,8 +875,8 @@ is recorded under can never drift between them. Four properties define it:
     event from the INDEXED symbols with no read of the file itself. On such a project the batches -
     and therefore the content the suppression decision is made against - describe what that index
     holds rather than what the tree currently holds, so a suppression decision IS made and it is made
-    against stale content. This is also why the three above are stated walk-relative: a path the tree
-    no longer holds, or one an edit emptied, still yields a NON-empty batch while the index lists it.
+    against stale content. This is also why the three above are stated walk-relative: a file an edit
+    emptied still yields a NON-empty batch while the index lists it.
     Refreshing the index is `rigger reindex`'s job, not this rule's.
 
   On the INGEST path the projection deletes nothing, so shedding a removed file's facts is a
