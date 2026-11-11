@@ -10032,6 +10032,50 @@ fn a_relaunched_run_serves_the_one_dash_its_dead_predecessor_left_none_beside() 
     std::fs::write(marks.join("released"), "").unwrap();
 }
 
+/// A run's dash started at a port another dash already serves binds the next free port itself
+/// and reports where it serves, rather than deferring to that other dash: the dash that binds is
+/// the one that chooses the port, so two runs starting together never record one address.
+#[test]
+fn a_run_dash_started_where_another_dash_serves_binds_the_next_free_port_and_reports_it() {
+    use std::process::Stdio;
+    let dir = temp_store_project();
+    let root = dir.path();
+    let held = free_loopback_port();
+    let _other = rigger::dash::ReapedChild::new(serving_dash(root, held));
+    let child = common::rigger_courier()
+        .args([
+            "dash",
+            "--port-from",
+            &held.to_string(),
+            "--exit-on-stdin-close",
+        ])
+        .current_dir(root)
+        .env_remove("RIGGER_NO_DASH")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a run's dash");
+    let mut owned = rigger::dash::ReapedChild::new(child);
+    let mut reported = None;
+    owned.read_lines_until(Instant::now() + Duration::from_secs(10), |line| {
+        reported = Some(line.to_string());
+        std::ops::ControlFlow::Break(())
+    });
+    let url = reported.expect("the run's dash reports the address it serves at");
+    let serves = |url: &str| matches!(http_get(url), Some(body) if body.contains("rigger dash"));
+    assert_eq!(
+        (
+            rigger::dash::url_port(&url).is_some_and(|port| port > held),
+            serves(&url),
+            serves(&format!("http://127.0.0.1:{held}/")),
+        ),
+        (true, true, true),
+        "beside the dash serving port {held}, the run's dash serves at the higher port it \
+         reported ({url})"
+    );
+}
+
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
