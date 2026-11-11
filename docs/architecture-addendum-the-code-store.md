@@ -563,11 +563,10 @@ Freshness has this one mechanism, the label; no hit carries its own. A reader th
 whether a code hit is stale does not serve it, and the combined lookup's text half still answers
 for the code.
 
-`rigger graph --show` keeps its drift heal: a definition whose recorded line no longer holds it
-is found again by name and kind in W's file, and noted missing or ambiguous when it cannot be.
-Since a differing file's nodes are withheld, and every code-half node is when W cannot be
-compared, the heal is reached only for a node only the record half holds. The write-path lane
-deletes that path and its tests, with the code records the fold wrote.
+`rigger graph --show` has no drift heal and no stale note: it bounds a shown body at the node's
+own line. A differing file's nodes are withheld, and every code-half node is when W cannot be
+compared, so a code node it shows is one the snapshot describes exactly, and the log holds no
+code record a heal could have been reached through.
 
 ### 6.2 The resolver
 
@@ -956,7 +955,9 @@ is idempotent.
 - **Rebuild lock.** Step 6 reuses the existing verb, its rebuild lock and its refusal while a
   live writer holds the log. Its rewrite-to-ledger-entry step is removed, because nothing derived
   is kept.
-- **Order.** Step 6 runs only after step 5 succeeds.
+- **Order.** Step 6 runs only after step 5 succeeds. `rigger setup` runs it itself, under the
+  rebuild lock it already holds, once the swap has succeeded; while the run is live it deletes
+  nothing, says so, and leaves the rows for `rigger reset --derived`.
 
 ---
 
