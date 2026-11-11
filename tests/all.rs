@@ -117,6 +117,8 @@ mod gitsemver_worktree_periphery;
 mod go_definitions_are_nodes_periphery;
 mod graph_additive_indexes_persist;
 mod graph_around_governance_boundaries;
+#[cfg(feature = "symbols")]
+mod graph_build_retires_deleted_files_periphery;
 mod graph_click_to_seed_repoint;
 mod graph_collision_body_and_tiebreak;
 mod graph_denoise_content_survives;

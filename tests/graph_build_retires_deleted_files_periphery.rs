@@ -1,0 +1,225 @@
+//! Periphery for the whole-project walk's retirement of deleted files: a file the tree no longer
+//! holds stops answering in the graph after one `rigger graph build`, whatever the persisted
+//! symbols index says of it, and a second build records nothing.
+//!
+//! Each row plants the extraction tree (one file of each prefix the walk keys: `gc` code, `gd`
+//! design, `gw` workflow definition) in a repository, builds, deletes one file, optionally moves
+//! the symbols index around the deletion, and builds again through the shipped binary. The
+//! reader's view is `rigger graph --show`: every id the deleted file held answers before the
+//! deletion and none answers after it, while the kept files still answer. A cold row deletes
+//! `graph.db` after the repairing build, so the rebuild `rigger setup` makes folds the retirement
+//! from the log alone.
+
+use crate::common;
+
+use common::cli::{ingested_count, read_run_events, run_rigger};
+use common::fixtures::{
+    git_init_quiet, planted_extraction_tree, recorded_entry_keys, write_file, DOCUMENT_PATH,
+    SOURCE_PATH, WORKFLOW_PATH,
+};
+use std::path::Path;
+
+/// An id `rigger graph --show` answers and the kind it shows the id as.
+type Shown = (&'static str, &'static str);
+
+/// What a kept file still answers after any row's deletion, beside the file: the code half's
+/// entity, the design doc and the workflow definition's stage, minus whatever the row deleted.
+const KEPT: [(&str, Shown); 3] = [
+    (SOURCE_PATH, ("src/lib.rs::product", "function")),
+    (DOCUMENT_PATH, (DOCUMENT_PATH, "design-doc")),
+    (WORKFLOW_PATH, ("stage:implement", "stage")),
+];
+
+/// What the code file answers while the tree holds it. Its path alone is no row of it: the kept
+/// design doc cites the path, so the path still answers, as that citation's artifact.
+const CODE_FILE: &[Shown] = &[
+    (SOURCE_PATH, "file"),
+    ("src/lib.rs::product", "function"),
+    ("src/lib.rs::helper", "function"),
+];
+
+/// What the design doc answers while the tree holds it.
+const DESIGN_DOC: &[Shown] = &[
+    (DOCUMENT_PATH, "design-doc"),
+    ("docs/architecture.md#the-walk", "design-doc"),
+];
+
+/// What the workflow definition answers while the tree holds it.
+const WORKFLOW_DEFINITION: &[Shown] = &[("stage:implement", "stage"), ("gate:fmt", "gate")];
+
+/// One row: the file deleted, the `rigger` commands run before the first build and after the
+/// deletion (the symbols index's state), whether the graph is rebuilt cold from the log after the
+/// repairing build, and what the deleted file answered.
+struct Deletion {
+    deleted: &'static str,
+    before: &'static [&'static [&'static str]],
+    after: &'static [&'static [&'static str]],
+    cold: bool,
+    held: &'static [Shown],
+}
+
+/// Run `rigger <args>` at `root` and fail loudly on a non-zero exit.
+fn rigger(root: &Path, args: &[&str]) -> String {
+    let (out, err, ok) = run_rigger(root, args);
+    assert!(
+        ok,
+        "rigger {} must succeed; stderr: {err}; stdout: {out}",
+        args.join(" ")
+    );
+    out
+}
+
+/// Whether `rigger graph --show <id>` at `root` answers the id as `kind`, read from the kind its
+/// header line shows.
+fn answers(root: &Path, (id, kind): Shown) -> bool {
+    let out = rigger(root, &["graph", "--show", id]);
+    let mut lines = out.lines();
+    lines.next() == Some(&format!("show {id}"))
+        && lines.next().is_some_and(|header| {
+            header
+                .split_whitespace()
+                .skip_while(|word| *word != "kind")
+                .nth(1)
+                == Some(kind)
+        })
+}
+
+/// The ledger entries the log at `root` records.
+fn entries(root: &Path) -> Vec<String> {
+    recorded_entry_keys(&read_run_events(root))
+}
+
+/// GIVEN the extraction tree built into the graph, with the row's index state,
+/// WHEN the row's file is deleted and `rigger graph build` runs (and, for a cold row, `rigger setup`
+/// rebuilds the graph from the log over no `graph.db`),
+/// THEN no id the file held answers `--show`, every kept id still does, and one more build
+/// records nothing.
+fn assert_a_build_retires(row: Deletion) {
+    let dir = planted_extraction_tree(write_file);
+    let root = dir.path();
+    git_init_quiet(root);
+    for args in row.before {
+        rigger(root, args);
+    }
+    rigger(root, &["graph", "build"]);
+    for &shown in row.held {
+        assert!(
+            answers(root, shown),
+            "sanity: {shown:?} answers before {} is deleted",
+            row.deleted
+        );
+    }
+
+    std::fs::remove_file(root.join(row.deleted)).unwrap();
+    for args in row.after {
+        rigger(root, args);
+    }
+    rigger(root, &["graph", "build"]);
+    if row.cold {
+        for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
+            let _ = std::fs::remove_file(root.join(".rigger").join(file));
+        }
+        rigger(root, &["setup"]);
+    }
+
+    let still: Vec<Shown> = row
+        .held
+        .iter()
+        .copied()
+        .filter(|&shown| answers(root, shown))
+        .collect();
+    assert!(
+        still.is_empty(),
+        "{} is deleted, yet --show still answers {still:?}",
+        row.deleted
+    );
+    for (file, shown) in KEPT.iter().filter(|(file, _)| *file != row.deleted) {
+        assert!(
+            answers(root, *shown),
+            "{file} is kept, so {shown:?} still answers"
+        );
+    }
+
+    let recorded = entries(root);
+    let repeat = rigger(root, &["graph", "build"]);
+    assert_eq!(
+        (ingested_count(&repeat), entries(root)),
+        (0, recorded),
+        "a repeat build over the same tree records nothing"
+    );
+}
+
+rigger::test_cases! {
+    /// A code file deleted from a tree with no persisted symbols index.
+    a_build_retires_a_deleted_code_file_with_no_persisted_index:
+        assert_a_build_retires(Deletion {
+            deleted: SOURCE_PATH,
+            before: &[],
+            after: &[],
+            cold: false,
+            held: CODE_FILE,
+        });
+    /// A code file deleted while the persisted symbols index still lists it.
+    a_build_retires_a_deleted_code_file_the_index_still_lists:
+        assert_a_build_retires(Deletion {
+            deleted: SOURCE_PATH,
+            before: &[&["symbols-index"]],
+            after: &[],
+            cold: false,
+            held: CODE_FILE,
+        });
+    /// A code file deleted and then reindexed, so the persisted index no longer lists it.
+    a_build_retires_a_deleted_code_file_the_index_no_longer_lists:
+        assert_a_build_retires(Deletion {
+            deleted: SOURCE_PATH,
+            before: &[&["symbols-index"]],
+            after: &[&["reindex", SOURCE_PATH]],
+            cold: false,
+            held: CODE_FILE,
+        });
+    /// A design doc deleted.
+    a_build_retires_a_deleted_design_doc:
+        assert_a_build_retires(Deletion {
+            deleted: DOCUMENT_PATH,
+            before: &[],
+            after: &[],
+            cold: false,
+            held: DESIGN_DOC,
+        });
+    /// The workflow definition deleted.
+    a_build_retires_a_deleted_workflow_definition:
+        assert_a_build_retires(Deletion {
+            deleted: WORKFLOW_PATH,
+            before: &[],
+            after: &[],
+            cold: false,
+            held: WORKFLOW_DEFINITION,
+        });
+    /// A deleted code file's retirement, folded again by a cold rebuild from the log.
+    a_cold_rebuild_keeps_a_deleted_code_file_retired:
+        assert_a_build_retires(Deletion {
+            deleted: SOURCE_PATH,
+            before: &[&["symbols-index"]],
+            after: &[&["reindex", SOURCE_PATH]],
+            cold: true,
+            held: CODE_FILE,
+        });
+    /// A deleted design doc's retirement, folded again by a cold rebuild from the log.
+    a_cold_rebuild_keeps_a_deleted_design_doc_retired:
+        assert_a_build_retires(Deletion {
+            deleted: DOCUMENT_PATH,
+            before: &[],
+            after: &[],
+            cold: true,
+            held: DESIGN_DOC,
+        });
+    /// A deleted workflow definition's retirement, folded again by a cold rebuild from the log.
+    a_cold_rebuild_keeps_a_deleted_workflow_definition_retired:
+        assert_a_build_retires(Deletion {
+            deleted: WORKFLOW_PATH,
+            before: &[],
+            after: &[],
+            cold: true,
+            held: WORKFLOW_DEFINITION,
+        });
+}
