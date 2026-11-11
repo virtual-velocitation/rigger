@@ -480,15 +480,32 @@ pub enum SnapshotBytes {
 
 impl SnapshotBytes {
     /// The published snapshot at `path`, mapped rather than copied: an open touches the file's
-    /// cached pages where a copy would fault in a fresh buffer of the file's size.
+    /// cached pages where a copy would fault in a fresh buffer of the file's size. memmap2 maps
+    /// on Unix and on Windows; a file it cannot map (another OS, or a filesystem that does not
+    /// map) is read instead.
     pub fn mapped(path: &Path) -> std::io::Result<Self> {
-        let file = std::fs::File::open(path)?;
         // SAFETY: a snapshot file is immutable once published. The writer writes a temp file and
         // renames it to a sequence number never used before; the reaper unlinks; nothing writes,
         // truncates or renames over a `.snap` in place. An unlinked file stays mapped whole, and
         // an OS that refuses to unlink a mapped file leaves it to the next reap.
-        let map = unsafe { memmap2::Mmap::map(&file) }?;
-        Ok(Self::Mapped(map))
+        Self::mapped_with(path, |file| unsafe { memmap2::Mmap::map(file) })
+    }
+
+    /// [`Self::mapped`], mapping the opened file through `map`; the file is read when `map`
+    /// fails.
+    fn mapped_with(
+        path: &Path,
+        map: impl FnOnce(&std::fs::File) -> std::io::Result<memmap2::Mmap>,
+    ) -> std::io::Result<Self> {
+        let mut file = std::fs::File::open(path)?;
+        match map(&file) {
+            Ok(map) => Ok(Self::Mapped(map)),
+            Err(_) => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut file, &mut bytes)?;
+                Ok(Self::Owned(bytes))
+            }
+        }
     }
 }
 
@@ -1106,6 +1123,30 @@ mod tests {
         WfRelation,
     };
     use rigger_domain::code_view::{Cluster, FactsView};
+
+    /// Each row: whether the file can be mapped. A file that can is mapped; one that cannot is
+    /// read; either way the bytes are the file's.
+    #[test]
+    fn a_snapshot_file_that_cannot_be_mapped_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("000001.snap");
+        std::fs::write(&path, b"the published bytes").unwrap();
+        let cases: [(&str, bool); 2] = [("a file that maps", true), ("one that cannot", false)];
+        for (name, maps) in cases {
+            let bytes = SnapshotBytes::mapped_with(&path, |file| match maps {
+                // SAFETY: the file is this test's own and nothing writes it while mapped.
+                true => unsafe { memmap2::Mmap::map(file) },
+                false => Err(std::io::Error::other("this filesystem does not map")),
+            })
+            .unwrap();
+            assert_eq!(
+                matches!(bytes, SnapshotBytes::Mapped(_)),
+                maps,
+                "{name}: mapped"
+            );
+            assert_eq!(&*bytes, b"the published bytes", "{name}: the bytes");
+        }
+    }
 
     fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
         Stamp {
