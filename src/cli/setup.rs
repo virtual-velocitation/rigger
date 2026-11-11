@@ -607,9 +607,74 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     })
 }
 
+/// The workflow file an earlier `rigger setup` installed for the in-session workflow driver,
+/// relative to the project root. That driver is removed, so setup deletes it, but only when
+/// [`RETIRED_PROVENANCE`] beside it shows rigger installed it ([`remove_retired_driver_files`]).
+const RETIRED_WORKFLOW: &str = ".claude/workflows/rigger.js";
+
+/// The build-provenance sidecar an earlier `rigger setup` wrote beside [`RETIRED_WORKFLOW`],
+/// relative to the project root: its presence is how setup knows rigger installed that workflow.
+const RETIRED_PROVENANCE: &str = ".claude/workflows/.rigger-workflow-provenance";
+
+/// The directory an earlier `rigger setup` provisioned the in-session workflow driver's Node
+/// runtime into, relative to the project root, with its `node_modules`. Setup deletes it whole
+/// ([`remove_retired_driver_files`]).
+const RETIRED_DRIVER_DIR: &str = ".rigger/shim";
+
+/// Delete what an earlier `rigger setup` installed for the in-session workflow driver, returning
+/// one line to print per entry it removed or left, in order. [`RETIRED_WORKFLOW`] and
+/// [`RETIRED_PROVENANCE`] go only together: with no provenance the workflow is not rigger's, so it
+/// is left in place and named as left. The [`RETIRED_DRIVER_DIR`] tree goes whole, and
+/// `.claude/workflows/` goes when the removals leave it empty. A project that never held them gets
+/// no line and nothing is touched, so a `rigger setup` rerun stays a silent no-op. Rooted at `root`
+/// so it is testable against a temp dir.
+fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut removed = Vec::new();
+    let mut left = Vec::new();
+    let workflow = root.join(RETIRED_WORKFLOW);
+    let provenance = root.join(RETIRED_PROVENANCE);
+    if provenance.is_file() {
+        for (rel, path) in [
+            (RETIRED_WORKFLOW, &workflow),
+            (RETIRED_PROVENANCE, &provenance),
+        ] {
+            if path.is_file() {
+                std::fs::remove_file(path)?;
+                removed.push(rel.to_string());
+            }
+        }
+    } else if workflow.is_file() {
+        left.push(format!(
+            "left {RETIRED_WORKFLOW}: rigger did not install it (no {RETIRED_PROVENANCE} beside it)"
+        ));
+    }
+    let dir = root.join(RETIRED_DRIVER_DIR);
+    if dir.is_dir() {
+        reap_then_remove_dir(&dir, &root.join(rigger::config::RIGGER_DIR));
+        if !dir.exists() {
+            removed.push(format!("{RETIRED_DRIVER_DIR}/"));
+        }
+    }
+    let workflows = root.join(".claude").join("workflows");
+    if !removed.is_empty() && std::fs::read_dir(&workflows).is_ok_and(|mut d| d.next().is_none()) {
+        std::fs::remove_dir(&workflows)?;
+        removed.push(".claude/workflows/".to_string());
+    }
+    Ok(removed
+        .iter()
+        .map(|path| {
+            format!(
+                "removed {path}: the in-session workflow driver is gone; `rigger run` drives runs"
+            )
+        })
+        .chain(left)
+        .collect())
+}
+
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
-/// pre-commit hook, the operator MCP entry and the session settings. After it runs the user
+/// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
+/// earlier setup installed for the removed in-session workflow driver. After it runs the user
 /// drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
@@ -628,6 +693,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
+    let retired = remove_retired_driver_files(root)?;
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door, with this repo's project overlay (base branch, specs location,
     // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
@@ -698,6 +764,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !graph_rebuilt
+        && retired.is_empty()
         && !skill_changed
         && !hook_changed
         && !imported
@@ -718,6 +785,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Narrate ONLY the scaffold artifacts this run actually (re)wrote - never a blanket
     // claim, so a gitignore-only repair reports the gitignore change alone.
     for line in scaffold_summary_lines(&scaffold) {
+        println!("{line}");
+    }
+    for line in &retired {
         println!("{line}");
     }
     for (name, outcome) in &skills.outcomes {
@@ -2098,6 +2168,100 @@ mod tests {
         ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
+
+    rigger::test_cases! {
+        /// `rigger setup` deletes what an earlier setup installed for the removed in-session
+        /// driver - the workflow with its provenance under `.claude/workflows/`, the `.rigger/shim`
+        /// tree, and the directory those files leave empty - naming each, and touches nothing else.
+        retired_driver_files_are_all_removed: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".rigger/shim/node_modules/pkg/index.js",
+            ],
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".rigger/shim/",
+                ".claude/workflows/",
+            ],
+            &[],
+            &[],
+        );
+        /// A file of the operator's own beside them keeps `.claude/workflows/` in place.
+        an_operator_file_keeps_the_workflows_dir: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".claude/workflows/mine.js",
+            ],
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+            ],
+            &[],
+            &[".claude/workflows/mine.js"],
+        );
+        /// A `rigger.js` with no provenance beside it is not rigger's: it is left in place and
+        /// named as left, while the shim tree still goes.
+        a_workflow_without_provenance_is_left: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".rigger/shim/node_modules/pkg/index.js",
+            ],
+            &[".rigger/shim/"],
+            &[
+                "left .claude/workflows/rigger.js: rigger did not install it (no \
+                 .claude/workflows/.rigger-workflow-provenance beside it)",
+            ],
+            &[".claude/workflows/rigger.js"],
+        );
+        /// A project that never held them gets no line, so a rerun stays silent.
+        a_project_without_them_is_untouched: assert_retired_driver_removal(
+            &[".claude/settings.json"],
+            &[],
+            &[],
+            &[".claude/settings.json"],
+        );
+    }
+
+    /// In a temp project holding `present`, [`remove_retired_driver_files`] prints a `removed`
+    /// line for each of `removed`, in order, then each of `left` verbatim; every path in `kept`
+    /// still exists afterwards while none of `removed` does.
+    fn assert_retired_driver_removal(
+        present: &[&str],
+        removed: &[&str],
+        left: &[&str],
+        kept: &[&str],
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for rel in present {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        let got = remove_retired_driver_files(root).unwrap();
+        let want: Vec<String> = removed
+            .iter()
+            .map(|path| {
+                format!(
+                    "removed {path}: the in-session workflow driver is gone; `rigger run` drives runs"
+                )
+            })
+            .chain(left.iter().map(|line| line.to_string()))
+            .collect();
+        assert_eq!(
+            got, want,
+            "the reaper names each entry it removed or left, in order"
+        );
+        for rel in kept {
+            assert!(root.join(rel).exists(), "{rel} is left in place");
+        }
+        for rel in removed {
+            assert!(!root.join(rel).exists(), "{rel} is gone");
+        }
+    }
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
     /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
