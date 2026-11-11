@@ -24,7 +24,9 @@ use crate::grounder::{text_of, workflow_doc, workflowdef};
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
 /// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the fingerprint.
+/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the fingerprint. A golden
+/// test pins it beside the digest of the facts read over a fixture set, so a change that is not
+/// bumped fails there.
 const FACTS_GENERATION: &str = "facts-v1";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
@@ -685,6 +687,95 @@ mod tests {
             );
             assert_eq!(!facts.defs.is_empty(), has_defs, "{path}: definitions");
         }
+    }
+
+    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP: the golden fixtures - the symbol golden's source
+    /// for each registered grammar, a design document, a source file's rationale and a workflow
+    /// definition - read into facts whose digest is pinned beside the two generations the
+    /// fingerprint is made of, so a change to the design extractor, the workflow extractor or the
+    /// conversion fails here until the generation is bumped and the triple re-pinned.
+    #[test]
+    fn a_change_to_the_facts_ships_with_a_generation_bump() {
+        use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
+        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v1", "3a4a86c7c00c9a15");
+        let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
+            .iter()
+            .enumerate()
+            .map(|(i, (ext, source))| (format!("golden/{i}.{ext}"), *source))
+            .collect();
+        fixtures.extend(
+            [
+                ("tests/it.rs", "fn works() { helper(); }\n"),
+                (
+                    "docs/widget-design.md",
+                    "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
+                ),
+                ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
+                (
+                    ".rigger/workflow.yml",
+                    "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
+                ),
+            ]
+            .map(|(path, source)| (path.to_string(), source)),
+        );
+        let facts: Vec<FileFacts> = fixtures
+            .iter()
+            .map(|(path, source)| facts_of(path, source.as_bytes()))
+            .collect();
+        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(held);
+        for (part, covered) in [
+            (
+                "every half",
+                [Half::Code, Half::Design, Half::Workflow]
+                    .iter()
+                    .all(|h| any(&|f| f.half == *h)),
+            ),
+            (
+                "every language",
+                ["rust", "csharp", "js", "ts", "go", "python"]
+                    .iter()
+                    .all(|l| any(&|f| f.lang == *l)),
+            ),
+            ("a test scope", any(&|f| f.scope == Scope::Test)),
+            ("a partial file", any(&|f| f.partial)),
+            ("a test definition", any(&|f| f.defs.iter().any(|d| d.test))),
+            (
+                "a definition's parent",
+                any(&|f| f.defs.iter().any(|d| d.parent.is_some())),
+            ),
+            (
+                "a test mention",
+                any(&|f| f.mentions.iter().any(|m| m.test)),
+            ),
+            (
+                "a tagged mention",
+                any(&|f| {
+                    f.mentions
+                        .iter()
+                        .any(|m| matches!(m.kind, MentionKind::Tagged(_)))
+                }),
+            ),
+            (
+                "a mention's caller",
+                any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
+            ),
+            ("a module declaration", any(&|f| !f.modules.is_empty())),
+            ("a design concept", any(&|f| !f.doc_concepts.is_empty())),
+            ("a design link", any(&|f| !f.doc_links.is_empty())),
+            ("a workflow node", any(&|f| !f.wf_nodes.is_empty())),
+            ("a workflow relation", any(&|f| !f.wf_relations.is_empty())),
+        ] {
+            assert!(covered, "the golden fixtures hold {part}");
+        }
+        let digest = format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()));
+        assert_eq!(
+            (GRAMMAR_TAGS_VERSION, FACTS_GENERATION, digest.as_str()),
+            PINNED,
+            "this build's generations and the digest of the golden facts (left) differ from the \
+             pinned triple: a change to what the facts hold ships with a bump, so bump \
+             `FACTS_GENERATION` (or `GRAMMAR_TAGS_VERSION` for a symbol extraction change) and \
+             re-pin the triple to this build's values together"
+        );
     }
 
     #[test]
