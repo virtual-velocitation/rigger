@@ -17170,6 +17170,110 @@ fn a_dash_graph_reply_states_what_it_describes() {
     }
 }
 
+/// GIVEN a committed, built project of two files, one of them edited after the build, WHEN every
+/// surface reads it - `rigger graph --around / --show / --lookup`, `rigger ground`, the MCP graph
+/// and ground tools, the dash's overview - THEN each label counts as withheld exactly the hits of
+/// its own answer that the differing file withheld (spec 6.1): the nodes a graph read would have
+/// answered, the locations a grounding would have shown, never the differing file's whole count.
+#[cfg(feature = "symbols")]
+#[test]
+fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    std::fs::write(root.join("src/other.rs"), "pub fn beta() {}\n").unwrap();
+    common::fixtures::git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap();
+    let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
+    let worktree = root.canonicalize().unwrap().display().to_string();
+    let label = |withheld: usize| {
+        format!("describes {head}; 1 file in {worktree} differs; {withheld} withheld")
+    };
+    let first_label = |text: &str| {
+        (text.lines())
+            .find(|l| l.starts_with("describes "))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cli = |args: &[&str], on_stderr: bool| {
+        let (out, err, ok) = run_rigger(root, args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        first_label(if on_stderr { &err } else { &out })
+    };
+
+    let mut mcp = common::mcp::McpSession::start(root);
+    let mut tool = |name: &str, arguments: serde_json::Value| {
+        // A structured answer carries its label as a field; a text answer (the lookup) heads its
+        // graph section with it.
+        let result = mcp.tool_call(name, arguments)["result"].clone();
+        match result["structuredContent"]["label"].as_str() {
+            Some(label) => label.to_string(),
+            None => first_label(result["content"][0]["text"].as_str().unwrap_or_default()),
+        }
+    };
+    // (surface, its label)
+    let mut labels: Vec<(&str, String)> = vec![
+        (
+            "--around the file",
+            cli(&["graph", "--around", "src/lib.rs", "--depth", "1"], false),
+        ),
+        ("--show alpha", cli(&["graph", "--show", "alpha"], false)),
+        (
+            "--lookup alpha",
+            cli(&["graph", "--lookup", "alpha"], false),
+        ),
+        ("ground alpha", cli(&["ground", "alpha"], true)),
+        (
+            "MCP around the file",
+            tool(
+                "rigger_graph",
+                serde_json::json!({"around": "src/lib.rs", "depth": 1}),
+            ),
+        ),
+        (
+            "MCP show alpha",
+            tool("rigger_graph", serde_json::json!({"show": "alpha"})),
+        ),
+        (
+            "MCP lookup alpha",
+            tool("rigger_graph", serde_json::json!({"lookup": "alpha"})),
+        ),
+        (
+            "MCP ground alpha",
+            tool("rigger_ground", serde_json::json!({"query": "alpha"})),
+        ),
+    ];
+    mcp.finish_cleanly();
+    let port = free_loopback_port();
+    let mut dash = serving_dash(root, port);
+    let reply = http_get_path(port, "/api/graph");
+    let _ = dash.kill();
+    let _ = dash.wait();
+    let reply = reply.expect("the dash never served /api/graph");
+    let overview = (reply.lines())
+        .find_map(|l| l.strip_prefix("X-Rigger-Graph-Label: "))
+        .map(percent_decoded)
+        .unwrap_or_default();
+    labels.push(("the dash's overview", overview));
+
+    // The file's node and its fn's; the fn alone; its one definition line; and for the overview
+    // the community the two alone make up besides.
+    let expected = [
+        ("--around the file", label(2)),
+        ("--show alpha", label(1)),
+        ("--lookup alpha", label(1)),
+        ("ground alpha", label(1)),
+        ("MCP around the file", label(2)),
+        ("MCP show alpha", label(1)),
+        ("MCP lookup alpha", label(1)),
+        ("MCP ground alpha", label(1)),
+        ("the dash's overview", label(3)),
+    ];
+    assert_eq!(labels, expected.to_vec());
+}
+
 /// `line` with each `%XX` escape the dash's graph headers carry read back as its byte.
 fn percent_decoded(line: &str) -> String {
     let bytes = line.as_bytes();
