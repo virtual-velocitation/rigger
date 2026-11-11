@@ -4,8 +4,8 @@
 //! the adapter. A superseded edge is invalidated (its valid_to set), never
 //! deleted, so retrieval returns the current decision and never the stale one.
 //!
-//! The model, the port and the query engine live in `rigger-domain`; the sqlite projector lives
-//! in `rigger-graph-sqlite`. This module re-exports both under the historical
+//! The model, the interface and the query engine live in `rigger-domain`; the sqlite projector
+//! lives in `rigger-graph-sqlite`. This module re-exports both under the historical
 //! `rigger::contextgraph` path.
 
 pub use rigger_domain::contextgraph::*;
