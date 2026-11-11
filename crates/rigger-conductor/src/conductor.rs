@@ -44609,10 +44609,20 @@ mod tests {
         );
     }
 
-    /// A gate runner that changes the tree it gates while it runs: it writes a file, and
-    /// commits it when `commit` is set.
+    /// What a [`TreeChangingRunner`] does to the tree it gates while it runs.
+    #[derive(Debug, Clone, Copy)]
+    enum TreeChange {
+        /// Leaves the tree as it found it.
+        Nothing,
+        /// Writes a file and leaves it uncommitted.
+        Writes,
+        /// Writes a file and commits it.
+        Commits,
+    }
+
+    /// A gate runner that passes, doing `change` to the tree it gates while it runs.
     struct TreeChangingRunner {
-        commit: bool,
+        change: TreeChange,
     }
     impl gate::Runner for TreeChangingRunner {
         fn run(
@@ -44627,8 +44637,10 @@ mod tests {
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> Result<gate::GateResult, gate::ProbeFault> {
-            std::fs::write(Path::new(dir).join("written-by-the-gate.rs"), "x\n").unwrap();
-            if self.commit {
+            if !matches!(self.change, TreeChange::Nothing) {
+                std::fs::write(Path::new(dir).join("written-by-the-gate.rs"), "x\n").unwrap();
+            }
+            if matches!(self.change, TreeChange::Commits) {
                 run_git(dir, &["add", "-A"]);
                 run_git(dir, &["commit", "-q", "-m", "by the gate"]);
             }
@@ -44639,19 +44651,25 @@ mod tests {
         }
     }
 
-    /// A VERDICT ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a gate that changes the tree while the
-    /// driver answers a verb's request, THEN the recorded verdict carries no input digest, so it
-    /// can answer no later gate.
+    /// A PASS ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a passing gate the driver runs on a verb's
+    /// request, THEN a gate that left the tree as it found it records a pass with an input
+    /// digest, AND a gate that changed the tree while it ran (uncommitted or committed) records a
+    /// non-pass naming the change, with no digest, so it answers no later gate.
     #[test]
-    fn a_gate_that_changes_the_tree_while_the_verb_runs_it_records_a_verdict_with_no_digest() {
-        for commit in [false, true] {
+    fn a_gate_that_changes_the_tree_while_the_verb_runs_it_records_a_non_pass_with_no_digest() {
+        const CHANGED: &str = "the worktree changed while the gate ran";
+        for (change, passes) in [
+            (TreeChange::Nothing, true),
+            (TreeChange::Writes, false),
+            (TreeChange::Commits, false),
+        ] {
             let repo = temp_git_project_with_commit();
             let dir = repo.path().to_str().unwrap().to_string();
             let mut cfg = Config::default();
             cfg.workflow.gates.insert("g".into(), gate_def("true"));
             let store = Store::open(":memory:").unwrap();
             let driver = Stub::new();
-            let runner = TreeChangingRunner { commit };
+            let runner = TreeChangingRunner { change };
             let deps = Deps {
                 gates: &runner,
                 repo: dir.clone(),
@@ -44666,23 +44684,40 @@ mod tests {
             let GateReply::Ran {
                 pass,
                 digest,
+                evidence,
                 position,
                 ..
             } = reply
             else {
-                panic!("commit {commit}: the run gates the commit: {reply:?}");
+                panic!("{change:?}: the run gates the commit: {reply:?}");
             };
-            assert!(pass, "commit {commit}: the gate's result is recorded");
-            assert!(digest.is_empty(), "commit {commit}: no digest");
+            assert_eq!(pass, passes, "{change:?}: the recorded result");
+            assert_eq!(
+                !digest.is_empty(),
+                passes,
+                "{change:?}: a digest only on a pass"
+            );
+            assert_eq!(
+                evidence.contains(CHANGED),
+                !passes,
+                "{change:?}: the reason names the change: {evidence}"
+            );
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
             let verdict = events
                 .iter()
                 .find(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT)
                 .expect("the verdict is recorded");
             assert_eq!(verdict.position, position);
-            assert!(
-                !verdict.meta.contains_key(META_INPUT_DIGEST),
-                "commit {commit}: a changed tree is addressed by nothing"
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&verdict.data).unwrap()["pass"]
+                    .as_bool(),
+                Some(passes),
+                "{change:?}: the recorded verdict"
+            );
+            assert_eq!(
+                verdict.meta.contains_key(META_INPUT_DIGEST),
+                passes,
+                "{change:?}: only an unchanged tree is addressed"
             );
         }
     }
