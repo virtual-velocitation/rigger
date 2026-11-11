@@ -200,10 +200,8 @@ mod tests {
         root
     }
 
-    fn listed_paths(source: &DirTreeSource, tree: &str) -> Vec<String> {
-        let listing = source.list(tree).expect("the head's tree is remembered");
-        listing.into_iter().map(|e| e.path).collect()
-    }
+    /// The bytes of a file outside the tree, which no answer may hold.
+    const OUTSIDE: &[u8] = b"bytes outside the root\n";
 
     fn mkfifo(path: &Path) {
         let status = std::process::Command::new("mkfifo")
@@ -213,106 +211,136 @@ mod tests {
         assert!(status.success(), "test setup: mkfifo must succeed");
     }
 
-    #[test]
-    fn a_file_symlink_pointing_outside_the_root_is_never_listed_or_read() {
-        let outside = tempfile::tempdir().expect("tempdir");
-        let secret = outside.path().join("secret.rs");
-        std::fs::write(&secret, b"bytes outside the root\n").expect("write the outside file");
-        let root = tree_with_one_file();
-        symlink(&secret, root.path().join("src/escape.rs")).expect("link in the tree");
-        symlink(&secret, root.path().join(".rigger/workflow.yml")).expect("link the workflow");
-
-        let source = DirTreeSource::new(root.path());
-        let tip = source.head().expect("a tree with outside links lists");
-        assert_eq!(listed_paths(&source, &tip.tree), ["src/lib.rs"]);
-
-        let mut read = Vec::new();
-        let outside_blob = content_id(b"bytes outside the root\n");
-        let outcome = source.read_blobs(&[outside_blob], &mut |blob, _| read.push(blob.to_owned()));
-        assert!(
-            outcome.is_err(),
-            "the outside file's content is in no listing"
-        );
-        assert!(
-            read.is_empty(),
-            "no byte outside the root is read: {read:?}"
-        );
-
-        let diff = source
-            .changed_against_worktree(&tip.tree, root.path())
-            .expect("the worktree diff lists");
-        assert!(
-            diff.changed.is_empty() && diff.untracked.is_empty(),
-            "an outside link is neither changed nor untracked: {diff:?}"
-        );
+    /// What the directory source answers over a tree.
+    struct Answers {
+        /// The head's listing.
+        paths: Vec<String>,
+        /// The listed blobs, and the blobs a read of them gave.
+        blobs: Vec<String>,
+        read: Vec<String>,
+        /// Whether a read of the outside file's content was refused, and what it gave.
+        outside_refused: bool,
+        outside_read: Vec<String>,
+        diff: WorktreeDiff,
     }
 
-    #[test]
-    fn a_fifo_in_the_tree_is_skipped_and_never_blocks_the_listing_or_the_read() {
-        let root = tree_with_one_file();
-        mkfifo(&root.path().join("src/pipe.rs"));
-        mkfifo(&root.path().join(".rigger/workflow.yml"));
-
-        let at = root.path().to_path_buf();
+    /// The source's answers over `root`, run off the test's thread so a corner that blocks a read
+    /// fails the test instead of hanging it.
+    fn answers(root: &Path, outside_blob: String) -> Answers {
+        let at = root.to_path_buf();
         let (done, outcome) = mpsc::channel();
         std::thread::spawn(move || {
             let source = DirTreeSource::new(&at);
-            let run = || -> Result<_, String> {
+            let run = || -> Result<Answers, String> {
                 let tip = source.head()?;
                 let listing = source.list(&tip.tree)?;
                 let blobs: Vec<String> = listing.iter().map(|e| e.blob.clone()).collect();
                 let mut read = Vec::new();
                 source.read_blobs(&blobs, &mut |blob, _| read.push(blob.to_owned()))?;
+                let mut outside_read = Vec::new();
+                let outside_refused = source
+                    .read_blobs(&[outside_blob], &mut |blob, _| {
+                        outside_read.push(blob.to_owned())
+                    })
+                    .is_err();
                 let diff = source.changed_against_worktree(&tip.tree, &at)?;
-                let paths: Vec<String> = listing.into_iter().map(|e| e.path).collect();
-                Ok((paths, blobs, read, diff))
+                Ok(Answers {
+                    paths: listing.into_iter().map(|e| e.path).collect(),
+                    blobs,
+                    read,
+                    outside_refused,
+                    outside_read,
+                    diff,
+                })
             };
             let _ = done.send(run());
         });
-        let (paths, blobs, read, diff) = outcome
+        outcome
             .recv_timeout(Duration::from_secs(10))
-            .expect("the listing and the read return; a FIFO blocked them")
-            .expect("a tree holding FIFOs lists and reads");
-        assert_eq!(paths, ["src/lib.rs"]);
-        assert_eq!(read, blobs, "every listed blob is read");
-        assert!(
-            diff.changed.is_empty() && diff.untracked.is_empty(),
-            "a FIFO is neither changed nor untracked: {diff:?}"
-        );
+            .expect("the listing, the read and the diff return; a corner blocked them")
+            .expect("a tree holding a corner lists, reads and diffs")
     }
 
     #[test]
-    fn an_unreadable_file_is_skipped_never_a_failed_listing() {
-        let root = tree_with_one_file();
-        let locked = root.path().join("src/locked.rs");
-        let locked_workflow = root.path().join(".rigger/workflow.yml");
-        let mut locked_out = true;
-        for file in [&locked, &locked_workflow] {
-            std::fs::write(file, b"locked\n").expect("write the locked file");
-            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000))
-                .expect("strip the file's permission bits");
-            locked_out &= std::fs::read(file).is_err();
+    fn each_walk_corner_is_kept_out_of_the_listing_and_the_read_and_diffs_as_its_row_says() {
+        /// A corner planted at `src/corner.rs` and at the always-in-scope workflow path.
+        struct Corner {
+            name: &'static str,
+            /// Plants the corner at `file`, given a regular file outside the root; answers
+            /// whether it took for this user (root reads a file whatever its bits).
+            plant: fn(&Path, &Path) -> bool,
+            /// The paths the worktree diff calls changed when the corner took.
+            changed: &'static [&'static str],
         }
+        let corners = [
+            Corner {
+                name: "a file symlink pointing outside the root",
+                plant: |file, outside| {
+                    symlink(outside, file).expect("link the corner outside the root");
+                    true
+                },
+                changed: &[],
+            },
+            Corner {
+                name: "a FIFO",
+                plant: |file, _| {
+                    mkfifo(file);
+                    true
+                },
+                changed: &[],
+            },
+            Corner {
+                name: "an unreadable file: withheld as changed, since its content is unknown",
+                plant: |file, _| {
+                    std::fs::write(file, b"locked\n").expect("write the locked file");
+                    std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000))
+                        .expect("strip the file's permission bits");
+                    std::fs::read(file).is_err()
+                },
+                changed: &[".rigger/workflow.yml", "src/corner.rs"],
+            },
+        ];
+        for corner in corners {
+            let outside = tempfile::tempdir().expect("tempdir");
+            let secret = outside.path().join("secret.rs");
+            std::fs::write(&secret, OUTSIDE).expect("write the outside file");
+            let root = tree_with_one_file();
+            let mut took = true;
+            for file in ["src/corner.rs", ".rigger/workflow.yml"] {
+                took &= (corner.plant)(&root.path().join(file), &secret);
+            }
 
-        let source = DirTreeSource::new(root.path());
-        let tip = source
-            .head()
-            .expect("an unreadable file never fails the listing");
-        // A user who reads every file regardless of its bits (root) still reads the locked ones,
-        // and then they are listed like any other file.
-        let expected: &[&str] = if locked_out {
-            &["src/lib.rs"]
-        } else {
-            &[".rigger/workflow.yml", "src/lib.rs", "src/locked.rs"]
-        };
-        assert_eq!(listed_paths(&source, &tip.tree), expected);
-
-        let diff = source
-            .changed_against_worktree(&tip.tree, root.path())
-            .expect("an unreadable file never fails the worktree diff");
-        assert!(
-            diff.changed.is_empty() && diff.untracked.is_empty(),
-            "an unreadable file is neither changed nor untracked: {diff:?}"
-        );
+            let got = answers(root.path(), content_id(OUTSIDE));
+            // A corner that did not take is a plain file, listed and unchanged like any other.
+            let (listed, changed): (&[&str], &[&str]) = if took {
+                (&["src/lib.rs"], corner.changed)
+            } else {
+                (
+                    &[".rigger/workflow.yml", "src/corner.rs", "src/lib.rs"],
+                    &[],
+                )
+            };
+            assert_eq!(got.paths, listed, "{}: listing", corner.name);
+            assert_eq!(
+                got.read, got.blobs,
+                "{}: every listed blob is read",
+                corner.name
+            );
+            assert!(
+                got.outside_refused && got.outside_read.is_empty(),
+                "{}: no byte outside the root is read: {:?}",
+                corner.name,
+                got.outside_read
+            );
+            assert_eq!(
+                got.diff,
+                WorktreeDiff {
+                    changed: changed.iter().map(|p| (*p).to_owned()).collect(),
+                    untracked: Vec::new(),
+                },
+                "{}: worktree diff",
+                corner.name
+            );
+        }
     }
 }
