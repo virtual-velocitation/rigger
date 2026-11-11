@@ -132,6 +132,8 @@ mod graph_fold_dedup_live_edge;
 mod graph_fold_dedup_live_only_scoping;
 #[cfg(feature = "symbols")]
 mod graph_fresh_on_integration_periphery;
+#[cfg(feature = "symbols")]
+mod graph_honesty_label_cli;
 mod graph_query_engine_relocation_periphery;
 mod graph_rebuild_collapses_dupes;
 mod graph_seeds_repoint_denoise;
