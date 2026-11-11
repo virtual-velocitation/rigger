@@ -240,14 +240,25 @@ pub fn path_leaf(path: &str) -> &str {
 /// `S.field`, a file-level definition's own name), a caller's path, or a placeholder's sigiled
 /// leaf ([`placeholder_id`]).
 pub fn entity_id(file: &str, rest: &str) -> String {
-    format!("{file}::{rest}")
+    joined_id(file, &[rest])
+}
+
+/// `<file>::` then `rest`, in one allocation of the exact size.
+fn joined_id(file: &str, rest: &[&str]) -> String {
+    let len = file.len() + 2 + rest.iter().map(|r| r.len()).sum::<usize>();
+    let mut id = String::with_capacity(len);
+    id.push_str(file);
+    id.push_str("::");
+    rest.iter().for_each(|r| id.push_str(r));
+    id
 }
 
 /// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
 /// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
 /// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
 pub fn placeholder_id(file: &str, leaf: &str) -> String {
-    entity_id(file, &format!("{PLACEHOLDER_SIGIL}{leaf}"))
+    let mut sigil = [0; 4];
+    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), leaf])
 }
 
 /// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one

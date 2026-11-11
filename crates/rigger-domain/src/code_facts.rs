@@ -163,3 +163,13 @@ pub struct FileFacts {
     pub wf_nodes: Vec<WfNode>,
     pub wf_relations: Vec<WfRelation>,
 }
+
+impl FileFacts {
+    /// Whether the file holds design or workflow facts: concepts, links, nodes or relations.
+    pub fn holds_intent(&self) -> bool {
+        !(self.doc_concepts.is_empty()
+            && self.doc_links.is_empty()
+            && self.wf_nodes.is_empty()
+            && self.wf_relations.is_empty())
+    }
+}

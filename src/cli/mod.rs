@@ -41,6 +41,7 @@ use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
+use rigger_worktree_git::discover::{rev_parse, Location};
 
 use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
 
@@ -455,8 +456,12 @@ fn standing_graph(graph_db: &str, project: &str) -> Option<Projector> {
 /// and names the command that pays the rebuild. `None` when there is no file (never creating
 /// one), when it owes nothing, or when it cannot be read.
 fn graph_rebuild_owed_note(graph_db: &str, project: &str) -> Option<String> {
-    let owed = standing_graph(graph_db, project)?.rebuild_owed().ok()?;
-    owed.then(|| {
+    rebuild_owed_note_of(&standing_graph(graph_db, project)?)
+}
+
+/// [`graph_rebuild_owed_note`] for a `graph.db` already open.
+fn rebuild_owed_note_of(graph: &Projector) -> Option<String> {
+    graph.rebuild_owed().ok()?.then(|| {
         format!(
             "note: {} - until then the context graph answers as it stands",
             contextgraph::REBUILD_OWED
@@ -492,15 +497,18 @@ const PASSED_OVER_RETRIED: &str = "a rebuild under a later fold rule retries the
 
 /// Open this project's `graph.db` for a read-only inspection: it answers from the projection as
 /// it stands, saying on stderr first when that projection owes its rebuild
-/// ([`graph_rebuild_owed_note`]). The open writes nothing to such a file.
+/// ([`graph_rebuild_owed_note`]), from the one open it answers with. The open writes nothing to
+/// such a file.
 fn open_graph_to_read(
     graph_db: &str,
     project: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    if let Some(note) = graph_rebuild_owed_note(graph_db, project) {
+    let existed = Path::new(graph_db).exists();
+    let graph = Projector::open(graph_db, project)?;
+    if let Some(note) = existed.then(|| rebuild_owed_note_of(&graph)).flatten() {
         eprintln!("{note}");
     }
-    Ok(Projector::open(graph_db, project)?)
+    Ok(graph)
 }
 
 /// The environment variable carrying the server's full connection string (§48 rung 2).
@@ -1399,14 +1407,7 @@ fn project_root(start: &Path) -> PathBuf {
 /// this resolves to the main checkout's root - exactly the outermost directory the
 /// store walk-up is sanctioned to reach. `None` when `start` is not inside any git repo.
 fn main_repo_root(start: &Path) -> Option<PathBuf> {
-    let out = subprocess::git_in(start)
-        .args(["rev-parse", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let common = rev_parse(start, Location::CommonDir)?;
     if common.is_empty() {
         return None;
     }
@@ -1768,6 +1769,30 @@ impl OpenGraph for ReadGraph<'_> {
         })
         .map_err(contextgraph::Error)?;
         Ok(Box::new(composed))
+    }
+
+    /// The graph whose code half resolves near the ids `ask` reads (spec 6.3), over the one view
+    /// of the head this answer opens.
+    fn answer(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+        ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), contextgraph::Error>,
+    ) -> Result<(), contextgraph::Error> {
+        head_view(&self.worktree, |view, diff, behind| {
+            let composed = rigger_domain::composed::Composed::near(
+                self.records,
+                view,
+                filter,
+                rigger_domain::composed::Honesty {
+                    worktree: self.worktree.display().to_string(),
+                    diff,
+                    behind,
+                },
+            )
+            .map_err(|e| e.0)?;
+            ask(&composed).map_err(|e| e.0)
+        })
+        .map_err(contextgraph::Error)
     }
 }
 
@@ -5327,13 +5352,7 @@ fn caller_tree() -> PathBuf {
 /// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
 /// worktree path) - see [`project_identity_at`].
 fn git_repo_at(root: &Path) -> String {
-    subprocess::git_in(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    rev_parse(root, Location::Toplevel).unwrap_or_default()
 }
 
 /// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a

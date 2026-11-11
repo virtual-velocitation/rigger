@@ -997,6 +997,71 @@ pub trait ContextGraph: Send + Sync {
 pub trait OpenGraph: Send + Sync {
     /// The graph as it stands now under `filter`, or why it cannot be read.
     fn open(&self, filter: ViewFilter) -> Result<Box<dyn ContextGraph + '_>, Error>;
+
+    /// Hands `ask` the graph as it stands now under `filter` for one answer, or answers why it
+    /// cannot be read. The graph lives only while `ask` runs, so the composition root may resolve
+    /// its code half near the ids `ask` reads (spec 6.3) rather than whole; by default it is the
+    /// graph [`open`](OpenGraph::open) answers.
+    fn answer(
+        &self,
+        filter: ViewFilter,
+        ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        ask(self.open(filter)?.as_ref())
+    }
+}
+
+/// What `ask` answers from the graph `read` hands it under `filter` ([`OpenGraph::answer`]), or
+/// why the graph cannot be read.
+pub fn answered<T, E: From<Error>>(
+    read: &dyn OpenGraph,
+    filter: ViewFilter,
+    ask: impl FnOnce(&dyn ContextGraph) -> Result<T, E>,
+) -> Result<T, E> {
+    answered_or_why(read, filter, |graph| match graph {
+        Ok(graph) => ask(graph),
+        Err(e) => Err(e.into()),
+    })
+}
+
+/// What `ask` answers from the graph `read` hands it under `filter`, or from why there is none:
+/// `ask` runs once either way, so a reader with other halves still answers when the graph cannot
+/// be read.
+pub fn answered_or_why<T>(
+    read: &dyn OpenGraph,
+    filter: ViewFilter,
+    ask: impl FnOnce(Result<&dyn ContextGraph, Error>) -> T,
+) -> T {
+    let mut ask = Some(ask);
+    let mut out = None;
+    let read = read.answer(filter, &mut |graph| {
+        if let Some(ask) = ask.take() {
+            out = Some(ask(Ok(graph)));
+        }
+        Ok(())
+    });
+    match (out, ask) {
+        (Some(out), _) => out,
+        (None, Some(ask)) => ask(Err(read
+            .err()
+            .unwrap_or_else(|| Error("the graph answered without reading".to_string())))),
+        (None, None) => unreachable!("an ask that ran stored its answer"),
+    }
+}
+
+/// [`answered_or_why`] for a reader whose answer depends on the fold: `ask` reads why there is no
+/// graph when `fold` owes its rebuild ([`REBUILD_OWED`]), as [`open_unowed`] refuses.
+pub fn answer_unowed<T>(
+    fold: &dyn RecordFold,
+    read: &dyn OpenGraph,
+    filter: ViewFilter,
+    ask: impl FnOnce(Result<&dyn ContextGraph, Error>) -> T,
+) -> T {
+    match fold.rebuild_owed() {
+        Ok(false) => answered_or_why(read, filter, ask),
+        Ok(true) => ask(Err(Error(REBUILD_OWED.to_string()))),
+        Err(e) => ask(Err(e)),
+    }
 }
 
 /// The graph `read` opens for a reader whose answer depends on the fold, or why there is none:

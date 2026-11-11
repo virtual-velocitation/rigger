@@ -15,6 +15,10 @@ pub struct FileRef<'a> {
     pub lang: &'a str,
     pub half: Half,
     pub scope: Scope,
+    /// Whether the file holds design or workflow facts: concepts, links, nodes or relations.
+    pub intent: bool,
+    /// Whether the file declares a module held in another file.
+    pub modules: bool,
 }
 
 /// A definition in a view, with the file it sits in.
@@ -179,6 +183,12 @@ pub trait CodeView: Send + Sync {
 pub trait TreeSource {
     /// The checked-out commit and its tree.
     fn head(&self) -> Result<Tip, String>;
+    /// Whether the checkout is still at `tip`'s branch and commit, when the source can tell
+    /// without the work [`Self::head`] does; false when it cannot tell, which sends the caller to
+    /// [`Self::head`].
+    fn still_at(&self, _tip: &Tip) -> bool {
+        false
+    }
     /// Every file of `tree`.
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;
     /// How `worktree` differs from `tree`.
@@ -309,6 +319,8 @@ impl FactsView {
             lang: &file.lang,
             half: file.half,
             scope: file.scope,
+            intent: file.holds_intent(),
+            modules: !file.modules.is_empty(),
         }
     }
 }

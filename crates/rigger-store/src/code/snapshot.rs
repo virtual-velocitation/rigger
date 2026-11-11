@@ -37,6 +37,7 @@ use rigger_domain::code_view::{Cluster, CodeView, DefRef, FileRef, Groupings, Me
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
+use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
 pub(crate) const VERSION: u16 = 2;
@@ -78,6 +79,8 @@ const LISTS: [u16; 7] = [
 const L_DEFS: usize = 0;
 const L_MENTIONS: usize = 1;
 const L_MODULES: usize = 2;
+/// The lists a file's design and workflow facts sit in.
+const L_INTENT: [usize; 4] = [3, 4, 5, 6];
 const FILE_ROW: usize = F_LISTS + LISTS.len() * 8;
 
 /// DEFS row.
@@ -429,6 +432,8 @@ pub struct Snapshot {
     tables: BTreeMap<u16, Table>,
     leaf: Index,
     name: Index,
+    /// Each file row's facts, decoded the first time this open reads them.
+    decoded: Vec<OnceLock<FileFacts>>,
 }
 
 impl Snapshot {
@@ -531,6 +536,7 @@ impl Snapshot {
             return Err("the groupings have trailing bytes".into());
         }
         drop(container);
+        let files = tables.get(&FILES).map_or(0, |t| t.rows);
         let snapshot = Self {
             stamp,
             groupings,
@@ -539,6 +545,7 @@ impl Snapshot {
             tables,
             leaf,
             name,
+            decoded: (0..files).map(|_| OnceLock::new()).collect(),
         };
         snapshot.validate()?;
         Ok(snapshot)
@@ -682,6 +689,10 @@ impl Snapshot {
             lang: self.text(row, 2 * STR),
             half: half_of(byte(row, F_HALF)).unwrap_or_default(),
             scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
+            intent: L_INTENT
+                .into_iter()
+                .any(|list| !self.list(row, list).is_empty()),
+            modules: !self.list(row, L_MODULES).is_empty(),
         }
     }
 
@@ -840,7 +851,8 @@ impl CodeView for Snapshot {
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
                 std::cmp::Ordering::Equal => {
-                    return Some(Cow::Owned(self.facts(self.row(files, mid))))
+                    let facts = self.decoded[mid].get_or_init(|| self.facts(self.row(files, mid)));
+                    return Some(Cow::Borrowed(facts));
                 }
             }
         }

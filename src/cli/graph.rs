@@ -72,12 +72,19 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     }
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(ViewFilter { tests })?;
+    contextgraph::answered(&read, ViewFilter { tests }, |graph| {
+        print_around(graph, &around, depth)
+    })
+}
+
+/// `rigger graph --around`'s answer from `graph`: the label, then the subgraph within `depth`
+/// hops of `around`.
+fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
     // the interface, an alias to its canonical id, else the query as typed. Its one site read
     // answers the queried node's unresolved leaves.
-    let queried = graph.resolve(&around)?.unwrap_or(around.clone());
-    let g = contextgraph::around(graph.as_ref(), std::slice::from_ref(&queried), depth)?;
+    let queried = graph.resolve(around)?.unwrap_or(around.to_string());
+    let g = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
     let unresolved = match graph.locate(&queried)? {
         Located::One(site) => site.unresolved,
         _ => Vec::new(),
@@ -251,8 +258,9 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     let reply = match owning_graph_to_read() {
         Ok(records) => {
             let read = ReadGraph::new(&records, caller_tree());
-            let graph = contextgraph::open_unowed(&records, &read, ViewFilter { tests });
-            lookup.lookup(terms, graph.as_deref().map_err(|e| e.0.clone()))?
+            contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
+                lookup.lookup(terms, graph.map_err(|e| e.0))
+            })?
         }
         Err(e) => lookup.lookup(
             terms,
@@ -266,7 +274,13 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(ViewFilter { tests })?;
+    contextgraph::answered(&read, ViewFilter { tests }, |graph| {
+        print_show(graph, entity)
+    })
+}
+
+/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined.
+fn print_show(graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());

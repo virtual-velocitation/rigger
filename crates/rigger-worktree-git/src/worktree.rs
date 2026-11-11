@@ -2666,9 +2666,30 @@ pub fn git_output(
     args: &[&str],
     output: GitOutput,
 ) -> Result<Vec<u8>, Vec<u8>> {
-    let out = crate::subprocess::git_in(dir)
+    finish_git(start_git(dir, args), output)
+}
+
+/// `git <args>` in `dir`, started with no input and its output streams piped, so several can
+/// run at once before [`finish_git`] waits for each.
+pub fn start_git(
+    dir: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+) -> std::io::Result<std::process::Child> {
+    crate::subprocess::git_in(dir)
         .args(args)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+}
+
+/// The answer of a git run [`start_git`] started, as [`git_output`] gives it.
+pub fn finish_git(
+    started: std::io::Result<std::process::Child>,
+    output: GitOutput,
+) -> Result<Vec<u8>, Vec<u8>> {
+    let out = started
+        .and_then(std::process::Child::wait_with_output)
         .map_err(|e| e.to_string().into_bytes())?;
     let answer = match (output, out.status.success()) {
         (GitOutput::Stdout, true) => out.stdout,

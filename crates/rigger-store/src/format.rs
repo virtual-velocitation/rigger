@@ -21,10 +21,12 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) of `bytes`.
+/// The CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) of `bytes`, read sixteen bytes a
+/// step: table `k` holds each byte's crc advanced by `k` further zero bytes, so one step folds
+/// sixteen table reads instead of sixteen dependent ones.
 pub fn crc32(bytes: &[u8]) -> u32 {
-    const TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
+    const TABLES: [[u32; 256]; 16] = {
+        let mut tables = [[0u32; 256]; 16];
         let mut n = 0;
         while n < 256 {
             let mut c = n as u32;
@@ -37,14 +39,38 @@ pub fn crc32(bytes: &[u8]) -> u32 {
                 };
                 k += 1;
             }
-            table[n] = c;
+            tables[0][n] = c;
             n += 1;
         }
-        table
+        let mut k = 1;
+        while k < 16 {
+            let mut n = 0;
+            while n < 256 {
+                let prev = tables[k - 1][n];
+                tables[k][n] = (prev >> 8) ^ tables[0][(prev & 0xFF) as usize];
+                n += 1;
+            }
+            k += 1;
+        }
+        tables
     };
-    !bytes.iter().fold(!0u32, |crc, &b| {
-        TABLE[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8)
-    })
+    let byte = |crc: u32, b: u8| TABLES[0][((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
+    let mut chunks = bytes.chunks_exact(16);
+    let mut crc = chunks.by_ref().fold(!0u32, |crc, chunk| {
+        let mut word = [0u8; 16];
+        word.copy_from_slice(chunk);
+        let head = crc.to_le_bytes();
+        for (w, h) in word.iter_mut().zip(head) {
+            *w ^= h;
+        }
+        word.iter()
+            .enumerate()
+            .fold(0, |acc, (i, &b)| acc ^ TABLES[15 - i][usize::from(b)])
+    });
+    for &b in chunks.remainder() {
+        crc = byte(crc, b);
+    }
+    !crc
 }
 
 pub fn put_u8(out: &mut Vec<u8>, v: u8) {
@@ -274,6 +300,16 @@ pub struct WriteLock {
     _file: File,
 }
 
+/// Releases the lock itself rather than leaving it to the descriptor's close: a child forked
+/// while the lock is held shares the descriptor until it execs, and would hold the lock past
+/// this drop.
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        // A failed unlock leaves the lock to the descriptor's close, the release there was before.
+        let _ = self._file.unlock();
+    }
+}
+
 impl WriteLock {
     fn open(path: &Path) -> Result<File, String> {
         if let Some(dir) = path.parent() {
@@ -323,11 +359,14 @@ mod tests {
     /// Each row: the input and its CRC-32 (IEEE) check value.
     #[test]
     fn crc32_matches_the_ieee_check_values() {
+        let ramp: Vec<u8> = (0..4099u32).map(|i| (i % 251) as u8).collect();
         let cases: &[(&[u8], u32)] = &[
             (b"", 0),
             (b"a", 0xE8B7_BE43),
             (b"123456789", 0xCBF4_3926),
             (b"The quick brown fox jumps over the lazy dog", 0x414F_A339),
+            (&[0xFF; 64], 0x0F61_87BA),
+            (&ramp, 0x48D1_721D),
         ];
         for (input, expected) in cases {
             assert_eq!(crc32(input), *expected, "{input:?}");
@@ -421,5 +460,18 @@ mod tests {
         drop(held);
         assert!(WriteLock::try_acquire(&path).expect("open").is_some());
         assert_eq!(with_write_lock(&path, || Ok::<_, String>(5)), Ok(5));
+    }
+
+    /// A child process forked while the lock is held keeps a duplicate of its descriptor until it
+    /// execs; dropping the lock frees it all the same.
+    #[test]
+    fn a_dropped_lock_is_free_while_a_duplicate_of_its_descriptor_lives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("LOCK");
+        let held = WriteLock::try_acquire(&path).expect("open").expect("free");
+        let forked_copy = held._file.try_clone().expect("duplicate");
+        drop(held);
+        assert!(WriteLock::try_acquire(&path).expect("open").is_some());
+        drop(forked_copy);
     }
 }

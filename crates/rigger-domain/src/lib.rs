@@ -49,6 +49,7 @@ pub mod ledger;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod lookup;
 pub mod metrics;
+mod near;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;

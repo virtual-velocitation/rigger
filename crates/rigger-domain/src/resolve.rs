@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef};
@@ -37,7 +37,7 @@ use crate::contextgraph::{
 };
 
 /// The node kinds a design concept or a workflow node may name.
-const INTENT_KINDS: [&str; 7] = [
+pub(crate) const INTENT_KINDS: [&str; 7] = [
     KIND_DESIGN_DOC,
     KIND_ARCH_DECISION,
     KIND_HANDBOOK_RULE,
@@ -106,6 +106,11 @@ impl Pool {
 
     fn admits(self, c: &Candidate) -> bool {
         self == Pool::All || !c.test
+    }
+
+    /// Whether a call from this pool may land on `c`: the pool admits it and it is a call target.
+    fn calls(self, c: &Candidate) -> bool {
+        self.admits(c) && is_call_target(Some(c.kind))
     }
 }
 
@@ -202,6 +207,17 @@ fn one_here_else_one_anywhere<'c, 'v>(
     }
 }
 
+/// `calls` in proof order: by the definition proved, then the calling file, then the evidence
+/// `file:line` as text, then the caller.
+fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
+    fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
+        let file = c.evidence.rsplit_once(':').map_or("", |(file, _)| file);
+        (&c.target, file, &c.evidence, &c.caller)
+    }
+    calls.sort_by(|a, b| key(a).cmp(&key(b)));
+    calls
+}
+
 /// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
 /// so far, joins it.
 fn grow<'v>(
@@ -229,7 +245,7 @@ pub struct Resolver<'v> {
     /// Every test file: Test-scope by path, or in the test-module closure.
     test_files: BTreeSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
-    candidates: RefCell<HashMap<String, Rc<Vec<Candidate<'v>>>>>,
+    candidates: RefCell<HashMap<String, Arc<Vec<Candidate<'v>>>>>,
     /// The test calls that prove a product definition, walked once per resolver.
     proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
@@ -308,9 +324,9 @@ impl<'v> Resolver<'v> {
     /// Every entity id the leaf `leaf` names in the view's code, in id order. An id a product
     /// definition holds is product, settled over its product definitions; one only test
     /// definitions hold is test.
-    pub fn candidates(&self, leaf: &str) -> Rc<Vec<Candidate<'v>>> {
+    pub fn candidates(&self, leaf: &str) -> Arc<Vec<Candidate<'v>>> {
         if let Some(held) = self.candidates.borrow().get(leaf) {
-            return Rc::clone(held);
+            return Arc::clone(held);
         }
         let mut by_id: BTreeMap<(&'v str, &'v str), Vec<(DefRef<'v>, bool)>> = BTreeMap::new();
         for d in self.view.defs_named(leaf) {
@@ -337,10 +353,10 @@ impl<'v> Resolver<'v> {
                 })
             })
             .collect();
-        let found = Rc::new(found);
+        let found = Arc::new(found);
         self.candidates
             .borrow_mut()
-            .insert(leaf.to_string(), Rc::clone(&found));
+            .insert(leaf.to_string(), Arc::clone(&found));
         found
     }
 
@@ -348,21 +364,30 @@ impl<'v> Resolver<'v> {
     fn call_targets(&self, leaf: &str, pool: Pool) -> Vec<Candidate<'v>> {
         self.candidates(leaf)
             .iter()
-            .filter(|c| pool.admits(c) && is_call_target(Some(c.kind)))
+            .filter(|c| pool.calls(c))
             .cloned()
             .collect()
     }
 
     /// The call rule: the target and tier of a call to `leaf` from `file`.
     fn call(&self, file: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
-        let targets = self.call_targets(leaf, pool);
-        let here: Vec<&Candidate> = targets.iter().filter(|c| c.file == file).collect();
-        if let [one] = here.as_slice() {
+        let candidates = self.candidates(leaf);
+        let (mut targets, mut here, mut one_here) = (0, 0, None);
+        for c in candidates.iter().filter(|c| pool.calls(c)) {
+            targets += 1;
+            if c.file == file {
+                here += 1;
+                one_here = Some(c);
+            }
+        }
+        if let (1, Some(one)) = (here, one_here) {
             return (one.id.clone(), TIER_EXTRACTED);
         }
-        let tier = match hop(targets) {
-            Hop::Terminal => TIER_AMBIGUOUS,
-            Hop::One(_) | Hop::Frontier(_) => TIER_INFERRED,
+        // No target is terminal ([`hop`]); one or more is a hop onward.
+        let tier = if targets == 0 {
+            TIER_AMBIGUOUS
+        } else {
+            TIER_INFERRED
         };
         (placeholder_id(file, leaf), tier)
     }
@@ -390,14 +415,17 @@ impl<'v> Resolver<'v> {
     }
 
     /// The proof rule: the product definition a test call to `leaf` from `file` proves.
-    fn proof(&self, file: &str, leaf: &str) -> Option<String> {
-        let targets = self.call_targets(leaf, Pool::Product);
-        let targets: Vec<&Candidate> = targets.iter().collect();
+    pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
+        let candidates = self.candidates(leaf);
+        let targets: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|c| Pool::Product.calls(c))
+            .collect();
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
     /// Whether `m`, a mention in `facts`, is test code.
-    fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
+    pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
         m.test || self.is_test_file(&facts.path)
     }
 
@@ -445,48 +473,77 @@ impl<'v> Resolver<'v> {
     /// declarations, and each id's one `CONTAINS`, from the parent (or the file) of the definition
     /// that settles it ([`Self::winners`]); test code's edges only when `tests`.
     pub fn links(&self, facts: &FileFacts, tests: bool) -> Vec<Link> {
-        let file = facts.path.as_str();
-        let file_test = self.is_test_file(file);
-        let entity = |i: u32| {
-            facts
-                .defs
-                .get(i as usize)
-                .map(|d| entity_id(file, &d.local))
-        };
-        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or_else(|| file.to_string());
         let mut links = Vec::new();
-        for m in &facts.mentions {
+        self.each_link(facts, tests, |from, rel, to, tier, test| {
+            links.push(Link {
+                from: from.to_string(),
+                rel,
+                to: to.to_string(),
+                tier,
+                test,
+            })
+        });
+        links
+    }
+
+    /// [`Self::links`] handed to `sink` one at a time as (from, relation, to, tier, test), in
+    /// the same order, without holding them: the mentions' edges
+    /// ([`Self::each_mention_link`]), then the declarations' ([`Self::each_declared_link`]).
+    pub fn each_link(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
+        self.each_mention_link(facts, facts.mentions.iter(), tests, &mut sink);
+        self.each_declared_link(facts, tests, sink);
+    }
+
+    /// The call and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
+    /// to `sink` in [`Self::each_link`] order. A tagged reference a call holds stays held when
+    /// `mentions` hold every call whose leaf a file-level tagged reference among them names.
+    pub fn each_mention_link<'f>(
+        &self,
+        facts: &'f FileFacts,
+        mentions: impl Iterator<Item = &'f Mention> + Clone,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
+        let file = facts.path.as_str();
+        let ids: Vec<std::cell::OnceCell<String>> = vec![Default::default(); facts.defs.len()];
+        let entity = |i: u32| {
+            let held = ids.get(i as usize)?;
+            Some(
+                held.get_or_init(|| entity_id(file, &facts.defs[i as usize].local))
+                    .as_str(),
+            )
+        };
+        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
+        // A product reference is held only by a product edge, so showing tests changes no
+        // product edge. A call's reference runs from the file, so only one from the file is held;
+        // each target maps to whether a product call references it.
+        let mut referenced: HashMap<String, bool> = HashMap::new();
+        for m in mentions.clone() {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
             }
             let (to, tier) = self.call(file, &m.leaf, Pool::of(test));
             if let Some(caller) = m.enclosing.and_then(entity) {
-                links.push(Link {
-                    from: caller,
-                    rel: REL_CALLS,
-                    to: to.clone(),
-                    tier,
-                    test,
-                });
+                sink(caller, REL_CALLS, &to, tier, test);
             }
-            links.push(Link {
-                from: file.to_string(),
-                rel: REL_REFERENCES,
-                to,
-                tier,
-                test,
-            });
+            sink(file, REL_REFERENCES, &to, tier, test);
+            match referenced.get_mut(&to) {
+                Some(product) => *product |= !test,
+                None => {
+                    referenced.insert(to, !test);
+                }
+            }
         }
-        // A product reference is held only by a product edge, so showing tests changes no
-        // product edge.
         let held = |from: &str, to: &str, test: bool| {
-            links.iter().any(|l: &Link| {
-                l.rel == REL_REFERENCES && l.from == from && l.to == to && (test || !l.test)
-            })
+            from == file && referenced.get(to).is_some_and(|&product| test || product)
         };
-        let mut tagged = Vec::new();
-        for m in &facts.mentions {
+        for m in mentions {
             let MentionKind::Tagged(tag) = &m.kind else {
                 continue;
             };
@@ -499,41 +556,44 @@ impl<'v> Resolver<'v> {
                 continue;
             };
             let from = from_of(m.enclosing);
-            if held(&from, &to, test) || held(&from, &placeholder_id(&from, &m.leaf), test) {
+            if held(from, &to, test) || held(from, &placeholder_id(from, &m.leaf), test) {
                 continue;
             }
-            tagged.push(Link {
-                from,
-                rel: REL_REFERENCES,
-                to,
-                tier,
-                test,
-            });
+            sink(from, REL_REFERENCES, &to, tier, test);
         }
-        links.extend(tagged);
+    }
+
+    /// The module declarations' and the definitions' `CONTAINS` edges of `facts`, handed to
+    /// `sink` in [`Self::each_link`] order.
+    pub fn each_declared_link(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
+    ) {
+        let file = facts.path.as_str();
+        let file_test = self.is_test_file(file);
+        let from_of = |i: Option<u32>| match i.and_then(|i| facts.defs.get(i as usize)) {
+            Some(d) => entity_id(file, &d.local),
+            None => file.to_string(),
+        };
         for decl in &facts.modules {
             let test = decl.test || file_test;
             let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
                 continue;
             };
-            links.push(Link {
-                from: from_of(Some(decl.def)),
-                rel: REL_CONTAINS,
-                to: target.to_string(),
-                tier: TIER_EXTRACTED,
+            sink(
+                &from_of(Some(decl.def)),
+                REL_CONTAINS,
+                target,
+                TIER_EXTRACTED,
                 test,
-            });
+            );
         }
         for (local, d, test) in self.winners(facts, tests) {
-            links.push(Link {
-                from: from_of(d.parent),
-                rel: REL_CONTAINS,
-                to: entity_id(file, local),
-                tier: TIER_EXTRACTED,
-                test,
-            });
+            let to = entity_id(file, local);
+            sink(&from_of(d.parent), REL_CONTAINS, &to, TIER_EXTRACTED, test);
         }
-        links
     }
 
     /// Every test call that proves a product definition, ordered by the definition proved, then
@@ -547,32 +607,65 @@ impl<'v> Resolver<'v> {
     }
 
     fn walk_proof_calls(&self) -> Vec<ProofCall> {
-        let mut rows: Vec<(String, &str, String, String)> = Vec::new();
+        let mut rows = Vec::new();
         for &path in &self.code_files {
-            let Some(facts) = self.view.file(path) else {
-                continue;
-            };
-            for m in &facts.mentions {
-                if m.kind != MentionKind::Call || !self.mention_is_test(&facts, m) {
+            if let Some(facts) = self.view.file(path) {
+                rows.extend(self.file_proofs(&facts));
+            }
+        }
+        proof_order(rows)
+    }
+
+    /// The proofs of the test calls in `facts`, a code file, unordered.
+    pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
+        let path = facts.path.as_str();
+        facts
+            .mentions
+            .iter()
+            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+            .filter_map(|m| {
+                let target = self.proof(path, &m.leaf)?;
+                let caller = m
+                    .enclosing
+                    .and_then(|i| facts.defs.get(i as usize))
+                    .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
+                Some(ProofCall {
+                    target,
+                    caller,
+                    evidence: format!("{path}:{}", m.line),
+                })
+            })
+            .collect()
+    }
+
+    /// The evidence of the proofs landing on the definition `id`, whose definitions are named
+    /// `leaves`, in [`Self::proofs`] order: each test call of one of `leaves` in a code file that
+    /// the proof rule resolves onto `id`, read from the mentions of those leaves alone.
+    pub fn proof_evidence(&self, id: &str, leaves: &[&str]) -> Vec<String> {
+        let mut calls = Vec::new();
+        for &leaf in leaves {
+            for m in self.view.mentions_named(leaf) {
+                let path = m.file.path;
+                let test = m.test || self.is_test_file(path);
+                if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
                     continue;
                 }
-                if let Some(target) = self.proof(path, &m.leaf) {
-                    let caller = m
-                        .enclosing
-                        .and_then(|i| facts.defs.get(i as usize))
-                        .map_or_else(|| path.to_string(), |d| entity_id(path, &d.local));
-                    rows.push((target, path, format!("{path}:{}", m.line), caller));
+                if self.proof(path, leaf).as_deref() == Some(id) {
+                    calls.push(ProofCall {
+                        target: id.to_string(),
+                        caller: String::new(),
+                        evidence: format!("{path}:{}", m.line),
+                    });
                 }
             }
         }
-        rows.sort();
-        rows.into_iter()
-            .map(|(target, _, evidence, caller)| ProofCall {
-                target,
-                caller,
-                evidence,
-            })
-            .collect()
+        proof_order(calls).into_iter().map(|c| c.evidence).collect()
+    }
+
+    /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls
+    /// unless it already holds them.
+    pub fn settle_proofs(&self, calls: Vec<ProofCall>) {
+        let _ = self.proof_calls.set(proof_order(calls));
     }
 
     /// Every product definition a test call proves, with its evidence `file:line`s in file then
