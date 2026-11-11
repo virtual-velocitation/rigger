@@ -20373,12 +20373,13 @@ rigger::test_cases! {
             "a rendered fact this worktree's code added\n",
             "add a rendered fact",
         );
-    /// The hook checks with the MOST RECENTLY MODIFIED tree-built binary, not the first in
-    /// candidate order: a newer debug build beside an older, stale release build passes the
-    /// commit, though the release build is tried first and would report the fresh docs drifted.
+    /// Within one target dir the hook checks with the MORE RECENTLY MODIFIED of its two builds,
+    /// not the first in candidate order: a newer debug build beside an older, stale release
+    /// build passes the commit, though the release build is tried first and would report the
+    /// fresh docs drifted.
     setup_precommit_hook_checks_with_a_newer_debug_build_over_an_older_release_build:
         assert_the_hook_passes_a_matching_render_untouched(
-            |root| stage_the_tree_build_newer_than_a_stale_build(root, "debug", "release"),
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/debug", "target/release", false),
             "a rendered fact this worktree's debug build added\n",
             "add a rendered fact",
         );
@@ -20386,8 +20387,17 @@ rigger::test_cases! {
     /// so the choice follows modification time, not the last candidate that exists.
     setup_precommit_hook_checks_with_a_newer_release_build_over_an_older_debug_build:
         assert_the_hook_passes_a_matching_render_untouched(
-            |root| stage_the_tree_build_newer_than_a_stale_build(root, "release", "debug"),
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/release", "target/debug", false),
             "a rendered fact this worktree's release build added\n",
+            "add a rendered fact",
+        );
+    /// Across target dirs the authority order stands: the worktree's own older build passes the
+    /// commit over a newer, stale build in the run's shared build cache, which may have been
+    /// built from another worktree's tree.
+    setup_precommit_hook_checks_with_the_worktrees_older_build_over_a_newer_shared_cache_build:
+        assert_the_hook_passes_a_matching_render_untouched(
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/debug", ".rigger/tmp/cargo-target/debug", true),
+            "a rendered fact this worktree's own build added\n",
             "add a rendered fact",
         );
 }
@@ -20802,31 +20812,37 @@ exit 0\n\
 esac\n\
 exit 1\n";
 
-/// Stage the tree's own build in `root`'s local target under the `current` profile beside an
-/// OLDER build under the `stale` profile - [`STALE_RIGGER_SCRIPT`], last modified an hour before
-/// the current build - and return a `PATH` whose `rigger` is that same stale script. Only a hook
-/// that checks with the most recently modified tree-built binary, whatever its place in the
-/// candidate order, sees the current render.
-fn stage_the_tree_build_newer_than_a_stale_build(
+/// Stage the tree's own build at `current/rigger` under `root` beside a stale build at
+/// `stale/rigger` - [`STALE_RIGGER_SCRIPT`], last modified an hour before the tree's build, or an
+/// hour after it when `stale_is_newer` - and return a `PATH` whose `rigger` is that same stale
+/// script. The commit passes only when the hook checks with the tree's build.
+fn stage_the_tree_build_beside_a_stale_build(
     root: &Path,
     current: &str,
     stale: &str,
+    stale_is_newer: bool,
 ) -> String {
-    let current_dir = root.join("target").join(current);
+    let current_dir = root.join(current);
     copy_the_built_binary_into(&current_dir);
-    let stale_dir = root.join("target").join(stale);
+    let stale_dir = root.join(stale);
     std::fs::create_dir_all(&stale_dir).unwrap();
     let stale_build = stale_dir.join("rigger");
     std::fs::write(&stale_build, STALE_RIGGER_SCRIPT).unwrap();
     make_executable(&stale_build);
     let current_built = std::fs::metadata(current_dir.join("rigger"))
         .and_then(|m| m.modified())
-        .expect("the current build's modification time");
+        .expect("the tree build's modification time");
+    let hour = std::time::Duration::from_secs(3600);
+    let stale_built = if stale_is_newer {
+        current_built + hour
+    } else {
+        current_built - hour
+    };
     std::fs::File::options()
         .write(true)
         .open(&stale_build)
-        .and_then(|f| f.set_modified(current_built - std::time::Duration::from_secs(3600)))
-        .expect("age the stale build an hour behind the current build");
+        .and_then(|f| f.set_modified(stale_built))
+        .expect("set the stale build an hour from the tree build");
     stage_stale_rigger_shim(root)
 }
 
