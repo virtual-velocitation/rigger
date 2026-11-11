@@ -1079,13 +1079,18 @@ fn a_located_term_is_answered_with_its_direct_callers() {
     assert!(section(&reply, "graph").contains(expected), "{reply}");
 }
 
+/// One test-hit case: the term, the product entities and the hidden test entities the graph
+/// holds, and the lines the graph half must hold.
+#[cfg(feature = "symbols")]
+type TestHitCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
+
 /// A lookup answers the product hits it shows and the test hits its filter hides as a separate
 /// count, naming the filter that shows them. Each row: the term, the product entities and the
 /// hidden test entities the graph holds, and the lines the graph half must hold.
 #[cfg(feature = "symbols")]
 #[test]
 fn lookup_reports_test_hits_as_a_separate_count() {
-    let cases: [(&str, &[&str], &[&str], &[&str]); 4] = [
+    let cases: [TestHitCase; 4] = [
         (
             "widget",
             &["widget"],
