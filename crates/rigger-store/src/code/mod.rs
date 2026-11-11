@@ -8,6 +8,8 @@ mod dir_source;
 pub mod doubles;
 mod snapshot;
 
-pub use advance::{fingerprint, open_current, AtomicPublish, Behind, Mode, Opened, Publish, Store};
+pub use advance::{
+    fingerprint, open_compared, open_current, AtomicPublish, Behind, Mode, Opened, Publish, Store,
+};
 pub use dir_source::{content_id, tree_id, DirTreeSource, DIRECTORY_HEAD};
 pub use snapshot::{encode, Snapshot};

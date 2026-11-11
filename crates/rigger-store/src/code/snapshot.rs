@@ -536,41 +536,20 @@ impl Snapshot {
             })
         };
         let (leaf, name) = (index(IDX_LEAF)?, index(IDX_NAME)?);
-        let text = |cur: &mut Cursor<'_>| -> Result<Option<String>, String> {
-            let (off, len) = (cur.u32()?, cur.u32()?);
-            if off == NONE {
-                return Ok(None);
-            }
-            pool_text(&pool, off, len)
-                .map(|s| Some(s.to_owned()))
-                .ok_or_else(|| "a string lies outside the pool".to_string())
-        };
-        let required = |cur: &mut Cursor<'_>| -> Result<String, String> {
-            text(cur)?.ok_or_else(|| "a required string is absent".to_string())
-        };
-        let mut cur = Cursor::new(container.payload);
-        let fingerprint = cur.u64()?;
-        let tip = Tip {
-            head: required(&mut cur)?,
-            commit: text(&mut cur)?,
-            tree: required(&mut cur)?,
-        };
-        let stamp = Stamp {
-            tip,
-            fingerprint,
-            seq: cur.u64()?,
-        };
+        let in_pool = |off, len| pool_text(&pool, off, len);
+        let pooled = |cur: &mut Cursor<'_>| required(cur, &in_pool);
+        let stamp = read_stamp(container.payload, &in_pool)?;
         let mut cur = Cursor::new(container.section(GROUPINGS)?);
         let mut clusters = || -> Result<Vec<Cluster>, String> {
             let mut out = Vec::new();
             for _ in 0..cur.u32()? {
-                let id = required(&mut cur)?;
-                let label = required(&mut cur)?;
+                let id = pooled(&mut cur)?;
+                let label = pooled(&mut cur)?;
                 let resolution = f64::from_bits(cur.u64()?);
-                let hash = required(&mut cur)?;
+                let hash = pooled(&mut cur)?;
                 let mut members = Vec::new();
                 for _ in 0..cur.u32()? {
-                    members.push(required(&mut cur)?);
+                    members.push(pooled(&mut cur)?);
                 }
                 out.push(Cluster {
                     id,
@@ -1008,6 +987,61 @@ impl Settled for Snapshot {
 fn pool_text(pool: &str, off: u32, len: u32) -> Option<&str> {
     let start = off as usize;
     pool.get(start..start.checked_add(len as usize)?)
+}
+
+/// The string `cur` refers to next, as an offset and length read through `text`; none when it
+/// refers to none.
+fn optional<'p>(
+    cur: &mut Cursor<'_>,
+    text: &dyn Fn(u32, u32) -> Option<&'p str>,
+) -> Result<Option<String>, String> {
+    let (off, len) = (cur.u32()?, cur.u32()?);
+    if off == NONE {
+        return Ok(None);
+    }
+    text(off, len)
+        .map(|s| Some(s.to_owned()))
+        .ok_or_else(|| "a string lies outside the pool".to_string())
+}
+
+/// The string `cur` refers to next, which must be one ([`optional`]).
+fn required<'p>(
+    cur: &mut Cursor<'_>,
+    text: &dyn Fn(u32, u32) -> Option<&'p str>,
+) -> Result<String, String> {
+    optional(cur, text)?.ok_or_else(|| "a required string is absent".to_string())
+}
+
+/// The stamp a snapshot's header payload records, its strings read through `text`.
+fn read_stamp<'p>(
+    payload: &[u8],
+    text: &dyn Fn(u32, u32) -> Option<&'p str>,
+) -> Result<Stamp, String> {
+    let mut cur = Cursor::new(payload);
+    let fingerprint = cur.u64()?;
+    let tip = Tip {
+        head: required(&mut cur, text)?,
+        commit: optional(&mut cur, text)?,
+        tree: required(&mut cur, text)?,
+    };
+    Ok(Stamp {
+        tip,
+        fingerprint,
+        seq: cur.u64()?,
+    })
+}
+
+/// The stamp the snapshot `bytes` hold records, read from their header without checking their
+/// sections: a guess at what the snapshot describes, for work that overlaps the read of it, which
+/// its caller confirms against the snapshot [`Snapshot::decode`] returns from the same file.
+pub(crate) fn stamp_unchecked(bytes: &[u8]) -> Option<Stamp> {
+    let container = Container::unchecked(bytes, MAGIC, VERSION).ok()?;
+    let pool = container.section(STRINGS).ok()?;
+    let in_pool = |off: u32, len: u32| {
+        let start = off as usize;
+        std::str::from_utf8(pool.get(start..start.checked_add(len as usize)?)?).ok()
+    };
+    read_stamp(container.payload, &in_pool).ok()
 }
 
 impl CodeView for Snapshot {

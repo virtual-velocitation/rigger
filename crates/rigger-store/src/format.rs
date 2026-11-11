@@ -146,7 +146,8 @@ pub fn write_container(
     Ok(out)
 }
 
-/// A parsed container whose header and every section passed their crc.
+/// A parsed container: its header passed its crc, and so did every section unless it was read
+/// [`Container::unchecked`].
 #[derive(Debug)]
 pub struct Container<'a> {
     pub payload: &'a [u8],
@@ -157,6 +158,24 @@ pub struct Container<'a> {
 impl<'a> Container<'a> {
     /// Parses `bytes`, which must carry `magic` and `version`, verifying every crc.
     pub fn parse(bytes: &'a [u8], magic: &[u8; 4], version: u16) -> Result<Self, String> {
+        let (container, crcs) = Self::headed(bytes, magic, version)?;
+        for ((kind, range), crc) in container.sections.iter().zip(crcs) {
+            if crc32(&bytes[range.clone()]) != crc {
+                return Err(format!("section {kind}'s crc differs"));
+            }
+        }
+        Ok(container)
+    }
+
+    /// [`Self::parse`] checking the header alone: no section's bytes are read, so none is known
+    /// whole. For a guess its caller confirms against a parse of the same file.
+    pub fn unchecked(bytes: &'a [u8], magic: &[u8; 4], version: u16) -> Result<Self, String> {
+        Self::headed(bytes, magic, version).map(|(container, _)| container)
+    }
+
+    /// The container `bytes`' header describes, its crc verified, with the crc each section's
+    /// table row records.
+    fn headed(bytes: &'a [u8], magic: &[u8; 4], version: u16) -> Result<(Self, Vec<u32>), String> {
         let mut cur = Cursor::new(bytes);
         if cur.take(4)? != magic {
             return Err("not this kind of file: the magic differs".into());
@@ -173,6 +192,7 @@ impl<'a> Container<'a> {
             return Err("the header crc differs".into());
         }
         let mut sections: Vec<(u16, Range<usize>)> = Vec::with_capacity(usize::from(count));
+        let mut crcs = Vec::with_capacity(usize::from(count));
         for _ in 0..count {
             let kind = cur.u16()?;
             let offset = usize::try_from(cur.u64()?).map_err(|e| e.to_string())?;
@@ -183,19 +203,18 @@ impl<'a> Container<'a> {
                 .filter(|&end| end <= bytes.len())
                 .map(|end| offset..end)
                 .ok_or_else(|| format!("section {kind} lies outside the file"))?;
-            if crc32(&bytes[range.clone()]) != crc {
-                return Err(format!("section {kind}'s crc differs"));
-            }
             if sections.iter().any(|(k, _)| *k == kind) {
                 return Err(format!("section {kind} appears twice"));
             }
             sections.push((kind, range));
+            crcs.push(crc);
         }
-        Ok(Self {
+        let container = Self {
             payload,
             bytes,
             sections,
-        })
+        };
+        Ok((container, crcs))
     }
 
     /// Where section `kind` lies in the file.
@@ -349,7 +368,9 @@ mod tests {
         assert!(parsed.section(1).is_err());
     }
 
-    /// Each row: how the bytes are damaged; every damage is refused, never a panic.
+    /// Each row: how the bytes are damaged, and whether a read of the header alone
+    /// ([`Container::unchecked`]) refuses them too; a full parse refuses every damage, and
+    /// neither read panics.
     #[test]
     fn a_damaged_container_is_refused() {
         let good =
@@ -360,19 +381,24 @@ mod tests {
             b
         };
         let last = good.len() - 1;
-        let cases: Vec<(&str, Vec<u8>)> = vec![
-            ("empty", Vec::new()),
-            ("truncated", good[..good.len() / 2].to_vec()),
-            ("magic", flip(0)),
-            ("version", flip(4)),
-            ("payload", flip(12)),
-            ("table offset", flip(good.len() - 7 - 4 - 4 - 8)),
-            ("section byte", flip(last)),
+        let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+            ("empty", Vec::new(), true),
+            ("truncated", good[..good.len() / 2].to_vec(), true),
+            ("magic", flip(0), true),
+            ("version", flip(4), true),
+            ("payload", flip(12), true),
+            ("table offset", flip(good.len() - 7 - 4 - 4 - 8), true),
+            ("section byte", flip(last), false),
         ];
-        for (name, bytes) in cases {
+        for (name, bytes, header_refuses) in cases {
             assert!(
                 Container::parse(&bytes, b"TEST", 1).is_err(),
                 "{name} damage must be refused"
+            );
+            assert_eq!(
+                Container::unchecked(&bytes, b"TEST", 1).is_err(),
+                header_refuses,
+                "{name} damage refused by the header alone"
             );
         }
     }

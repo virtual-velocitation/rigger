@@ -9,7 +9,7 @@ use rigger_domain::code_view::{
     AdvanceCodeStore, CodeView, Head, OpenCodeView, TreeSource, Withheld, WorktreeDiff,
 };
 use rigger_domain::composed::Label;
-use rigger_grounder::facts::{open_store, store_fingerprint};
+use rigger_grounder::facts::{open_store, read_head, store_fingerprint};
 use rigger_store::code::{DirTreeSource, Mode, Opened, Store};
 use rigger_worktree_git::tree_source::GitTreeSource;
 use std::path::{Path, PathBuf};
@@ -77,13 +77,7 @@ impl CodeStore {
 /// own tree.
 impl OpenCodeView for CodeStore {
     fn head(&self, worktree: &Path) -> Result<Head, String> {
-        let opened = self.open(Mode::Read)?;
-        let diff = self.differing(&opened, worktree);
-        Ok(Head {
-            diff,
-            behind: opened.behind.as_ref().map(ToString::to_string),
-            view: Box::new(opened.view),
-        })
+        read_head(&self.root, self.source.as_ref(), worktree)
     }
 }
 

@@ -8,11 +8,13 @@
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
 //! snapshots, so two binaries sharing a store each keep theirs.
 
-use crate::code::snapshot::{encode, Snapshot};
+use crate::code::snapshot::{encode, stamp_unchecked, Snapshot};
 use crate::format::{write_atomic, WriteLock};
 use crate::published::Published;
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
-use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
+use rigger_domain::code_view::{
+    in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource, WorktreeDiff,
+};
 use rigger_domain::config::RIGGER_DIR;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_domain::resolve::SETTLED_GENERATION;
@@ -70,6 +72,16 @@ fn snap_name(seq: u64) -> String {
 /// The pointer file naming the snapshot in force under `fingerprint`.
 fn pointer_name(fingerprint: u64) -> String {
     format!("{CURRENT}{fingerprint:016x}")
+}
+
+/// The bytes a read of the store file at `path` answered: none when the file is absent, and an
+/// error naming the file when it could not be read for another reason.
+fn readable<B>(path: &Path, bytes: std::io::Result<B>) -> Result<Option<B>, String> {
+    match bytes {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read {}: {e}", path.display())),
+    }
 }
 
 /// Whether `name` is a pointer file's.
@@ -132,24 +144,10 @@ impl Store {
         fingerprint: u64,
         read: &dyn Fn(&Path) -> std::io::Result<Published>,
     ) -> Result<Option<Snapshot>, String> {
-        fn readable<B>(path: &Path, bytes: std::io::Result<B>) -> Result<Option<B>, String> {
-            match bytes {
-                Ok(bytes) => Ok(Some(bytes)),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(e) => Err(format!("read {}: {e}", path.display())),
-            }
-        }
         for _ in 0..READ_ATTEMPTS {
-            let current = self.dir.join(pointer_name(fingerprint));
-            let Some(pointer) = readable(&current, std::fs::read(&current))? else {
+            let Some((path, seq)) = self.named(fingerprint)? else {
                 return Ok(None);
             };
-            let pointer = String::from_utf8_lossy(&pointer);
-            let name = pointer.trim();
-            let Some(seq) = seq_of(name) else {
-                return Ok(None);
-            };
-            let path = self.dir.join(name);
             let Some(bytes) = readable(&path, read(&path))? else {
                 continue;
             };
@@ -158,6 +156,27 @@ impl Store {
             }));
         }
         Ok(None)
+    }
+
+    /// The snapshot file `fingerprint`'s pointer names, with its sequence number; none when there
+    /// is no pointer or it names no snapshot file.
+    fn named(&self, fingerprint: u64) -> Result<Option<(PathBuf, u64)>, String> {
+        let current = self.dir.join(pointer_name(fingerprint));
+        let Some(pointer) = readable(&current, std::fs::read(&current))? else {
+            return Ok(None);
+        };
+        let pointer = String::from_utf8_lossy(&pointer);
+        let name = pointer.trim();
+        Ok(seq_of(name).map(|seq| (self.dir.join(name), seq)))
+    }
+
+    /// The tree the snapshot `fingerprint`'s pointer names describes, read from that snapshot's
+    /// header without checking the rest: a guess, which [`open_compared`] confirms against the
+    /// snapshot it opens.
+    fn named_tree(&self, fingerprint: u64) -> Option<String> {
+        let (path, _) = self.named(fingerprint).ok()??;
+        let bytes = Published::open(&path).ok()?;
+        stamp_unchecked(&bytes).map(|stamp| stamp.tip.tree)
     }
 
     /// Advances the store to `target`, waiting for the lock, and returns the snapshot in force.
@@ -386,6 +405,39 @@ pub fn open_current(
     mode: Mode,
 ) -> Result<Opened, String> {
     open_current_in(&Store::new(root), source, extract, group, mode)
+}
+
+/// [`open_current`] for a reader in `worktree`: the view of the head, with how `worktree`
+/// differs from the tree that view describes.
+///
+/// The two overlap: `worktree` is compared with the tree the pointer names (read from that
+/// snapshot's header alone) while the snapshot is read and checked whole. That comparison is the
+/// answer only when it succeeded against the very tree the opened view describes; when the view
+/// describes another (the store advanced, or the pointer moved on) or the comparison failed,
+/// `worktree` is compared again with the view's tree.
+pub fn open_compared(
+    root: &Path,
+    source: &(dyn TreeSource + Sync),
+    extract: &dyn Extract,
+    group: &dyn Group,
+    worktree: &Path,
+) -> Result<(Opened, Result<WorktreeDiff, String>), String> {
+    let store = Store::new(root);
+    let named = fingerprint(extract, group);
+    std::thread::scope(|scope| {
+        let early = scope.spawn(|| {
+            let tree = store.named_tree(named)?;
+            let diff = source.changed_against_worktree(&tree, worktree).ok()?;
+            Some((tree, diff))
+        });
+        let opened = open_current_in(&store, source, extract, group, Mode::Read)?;
+        let tree = &opened.view.stamp().tip.tree;
+        let diff = match early.join() {
+            Ok(Some((compared, diff))) if compared == *tree => Ok(diff),
+            _ => source.changed_against_worktree(tree, worktree),
+        };
+        Ok((opened, diff))
+    })
 }
 
 pub(crate) fn open_current_in(
@@ -1389,6 +1441,144 @@ mod tests {
             (moved.view.stamp().tip.clone(), source.heads_asked()),
             (second, 2)
         );
+    }
+
+    /// A source over a [`MemSource`] that answers a comparison with a worktree by naming the tree
+    /// it compared against, and refuses its first comparison when `refuse_first`. Asked whether
+    /// the checkout is still at a tip, which an open asks once it has read the snapshot, it first
+    /// waits a bounded time for a comparison to start, and records whether one had.
+    struct Comparing {
+        inner: MemSource,
+        refuse_first: std::sync::atomic::AtomicBool,
+        compared: Mutex<Vec<String>>,
+        started: std::sync::Condvar,
+        overlapped: Mutex<Option<bool>>,
+    }
+
+    impl TreeSource for Comparing {
+        fn head(&self) -> Result<Tip, String> {
+            self.inner.head()
+        }
+
+        fn still_at(&self, tip: &Tip) -> bool {
+            let compared = self.compared.lock().unwrap();
+            let wait = std::time::Duration::from_secs(2);
+            let (compared, _) = self
+                .started
+                .wait_timeout_while(compared, wait, |c| c.is_empty())
+                .unwrap();
+            let overlapped = !compared.is_empty();
+            drop(compared);
+            self.overlapped.lock().unwrap().get_or_insert(overlapped);
+            self.inner.still_at(tip)
+        }
+
+        fn list(&self, tree: &str) -> Result<Vec<Entry>, String> {
+            self.inner.list(tree)
+        }
+
+        fn changed_against_worktree(&self, tree: &str, _: &Path) -> Result<WorktreeDiff, String> {
+            self.compared.lock().unwrap().push(tree.to_owned());
+            self.started.notify_all();
+            if self
+                .refuse_first
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("refused".into());
+            }
+            Ok(WorktreeDiff {
+                changed: vec![tree.to_owned()],
+                untracked: Vec::new(),
+            })
+        }
+
+        fn read_blobs(
+            &self,
+            blobs: &[String],
+            sink: &mut dyn FnMut(&str, &[u8]),
+        ) -> Result<(), String> {
+            self.inner.read_blobs(blobs, sink)
+        }
+    }
+
+    /// Each row: whether the head moves past the snapshot in force and whether the first
+    /// comparison is refused. The worktree is compared while the snapshot is read, and the answer
+    /// is the comparison with the tree the opened view describes: the early one when it answered
+    /// for that tree, else one made after.
+    #[test]
+    fn a_reader_compares_its_worktree_while_the_snapshot_is_read() {
+        let cases = [
+            (
+                "the head the store describes",
+                false,
+                false,
+                "c1",
+                &["c1"][..],
+            ),
+            (
+                "a head the store advances to",
+                true,
+                false,
+                "c2",
+                &["c1", "c2"][..],
+            ),
+            (
+                "a refused early comparison",
+                false,
+                true,
+                "c1",
+                &["c1", "c1"][..],
+            ),
+        ];
+        for (name, moves, refuse_first, answered, compared) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let source = Comparing {
+                inner: MemSource::default(),
+                refuse_first: refuse_first.into(),
+                compared: Mutex::default(),
+                started: std::sync::Condvar::new(),
+                overlapped: Mutex::default(),
+            };
+            let group = CountingGroup::default();
+            let extract = ToyExtract::new(FP);
+            let mut trees = HashMap::from([("c1", source.inner.commit("c1", A).tree)]);
+            Store::new(root.path())
+                .advance(
+                    &source.inner,
+                    &extract,
+                    &group,
+                    &source.inner.head().unwrap(),
+                )
+                .unwrap();
+            if moves {
+                trees.insert("c2", source.inner.commit("c2", B).tree);
+            }
+            let (opened, diff) = open_compared(
+                root.path(),
+                &source,
+                &extract,
+                &group,
+                Path::new("worktree"),
+            )
+            .unwrap();
+            assert_eq!(
+                opened.view.stamp().tip.tree,
+                trees[answered],
+                "{name}: view"
+            );
+            assert_eq!(
+                diff.map(|d| d.changed),
+                Ok(vec![trees[answered].clone()]),
+                "{name}: the comparison answered"
+            );
+            let asked: Vec<String> = compared.iter().map(|c| trees[c].clone()).collect();
+            assert_eq!(*source.compared.lock().unwrap(), asked, "{name}: compared");
+            assert_eq!(
+                *source.overlapped.lock().unwrap(),
+                Some(true),
+                "{name}: a comparison started while the snapshot was read"
+            );
+        }
     }
 
     /// Each row: the mode, whether another writer holds the lock, whether writes fail, and the

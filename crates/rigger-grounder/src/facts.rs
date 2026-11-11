@@ -11,11 +11,11 @@ use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
-use rigger_domain::code_view::{CodeView, Entry, Extract, Head, OpenCodeView, TreeSource};
+use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
-use rigger_store::code::{fingerprint, open_current, DirTreeSource, Mode, Opened};
+use rigger_store::code::{fingerprint, open_compared, open_current, DirTreeSource, Mode, Opened};
 
 use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
@@ -54,6 +54,27 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
     open_current(root, source, &FactsExtractor, &ProductionGroupings, mode)
 }
 
+/// The head of the code store at `root` read for a reader in `worktree` ([`open_compared`]),
+/// composed as [`open_store`] composes it.
+pub fn read_head(
+    root: &Path,
+    source: &(dyn TreeSource + Sync),
+    worktree: &Path,
+) -> Result<Head, String> {
+    let (opened, diff) = open_compared(
+        root,
+        source,
+        &FactsExtractor,
+        &ProductionGroupings,
+        worktree,
+    )?;
+    Ok(Head {
+        diff,
+        behind: opened.behind.as_ref().map(ToString::to_string),
+        view: Box::new(opened.view),
+    })
+}
+
 /// The code store of a project with no git, read from the directory at its root.
 pub struct DirectoryHead {
     root: PathBuf,
@@ -69,14 +90,7 @@ impl DirectoryHead {
 
 impl OpenCodeView for DirectoryHead {
     fn head(&self, worktree: &Path) -> Result<Head, String> {
-        let source = DirTreeSource::new(&self.root);
-        let opened = open_store(&self.root, &source, Mode::Read)?;
-        let diff = source.changed_against_worktree(&opened.view.stamp().tip.tree, worktree);
-        Ok(Head {
-            diff,
-            behind: opened.behind.as_ref().map(ToString::to_string),
-            view: Box::new(opened.view),
-        })
+        read_head(&self.root, &DirTreeSource::new(&self.root), worktree)
     }
 }
 
