@@ -8,8 +8,9 @@
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
 //! snapshots, so two binaries sharing a store each keep theirs.
 
-use crate::code::snapshot::{encode, Snapshot, SnapshotBytes};
+use crate::code::snapshot::{encode, Snapshot};
 use crate::format::{write_atomic, WriteLock};
+use crate::published::Published;
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
@@ -120,7 +121,7 @@ impl Store {
     /// which callers treat as an empty store. A store file that cannot be read for a reason other
     /// than its absence is an error.
     pub fn current(&self, fingerprint: u64) -> Result<Option<Snapshot>, String> {
-        self.current_with(fingerprint, &SnapshotBytes::mapped)
+        self.current_with(fingerprint, &Published::open)
     }
 
     /// [`Store::current`], reading snapshot files through `read`. When the file the pointer named
@@ -129,7 +130,7 @@ impl Store {
     pub(crate) fn current_with(
         &self,
         fingerprint: u64,
-        read: &dyn Fn(&Path) -> std::io::Result<SnapshotBytes>,
+        read: &dyn Fn(&Path) -> std::io::Result<Published>,
     ) -> Result<Option<Snapshot>, String> {
         fn readable<B>(path: &Path, bytes: std::io::Result<B>) -> Result<Option<B>, String> {
             match bytes {
@@ -1283,7 +1284,7 @@ mod tests {
                 .unwrap();
             let target = source.commit("c2", B);
             let reads = Mutex::new(0usize);
-            let read = |path: &Path| -> std::io::Result<SnapshotBytes> {
+            let read = |path: &Path| -> std::io::Result<Published> {
                 let mut n = reads.lock().unwrap();
                 *n += 1;
                 if *n == 1 {
@@ -1294,7 +1295,7 @@ mod tests {
                 if *n <= wins {
                     return Err(std::io::ErrorKind::NotFound.into());
                 }
-                SnapshotBytes::mapped(path)
+                Published::open(path)
             };
             let snap = store.current_with(stamped(FP), &read).unwrap();
             assert_eq!(

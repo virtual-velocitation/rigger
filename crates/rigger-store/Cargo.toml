@@ -16,7 +16,10 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # walk (`walk`, store-lane only) honours a project's committed `.gitignore` through `ignore`.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ignore = "0.4"
-# The code store maps a published snapshot read-only rather than copying it.
+
+# The store maps a published file read-only on the OSes that map files (`published`); every
+# other target reads it.
+[target.'cfg(any(unix, windows))'.dependencies]
 memmap2 = "0.9"
 
 [dev-dependencies]

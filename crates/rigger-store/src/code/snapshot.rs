@@ -35,6 +35,7 @@
 //! always give the same bytes.
 
 use crate::format::{narrow, put_u32, put_u64, put_u8, write_container, Container, Cursor};
+use crate::published::Published;
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, Stamp, Tip,
     WfNode, WfRelation,
@@ -45,8 +46,7 @@ use rigger_domain::code_view::{
 use rigger_domain::resolve::{ProofCall, Resolver};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::ops::{Deref, Range};
-use std::path::Path;
+use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
@@ -472,65 +472,12 @@ fn scope_of(b: u8) -> Option<Scope> {
         .find(|s| *s as u8 == b)
 }
 
-/// A snapshot's bytes: built in memory by the writer, or a published file mapped read-only.
-pub enum SnapshotBytes {
-    Owned(Vec<u8>),
-    Mapped(memmap2::Mmap),
-}
-
-impl SnapshotBytes {
-    /// The published snapshot at `path`, mapped rather than copied: an open touches the file's
-    /// cached pages where a copy would fault in a fresh buffer of the file's size. memmap2 maps
-    /// on Unix and on Windows; a file it cannot map (another OS, or a filesystem that does not
-    /// map) is read instead.
-    pub fn mapped(path: &Path) -> std::io::Result<Self> {
-        // SAFETY: a snapshot file is immutable once published. The writer writes a temp file and
-        // renames it to a sequence number never used before; the reaper unlinks; nothing writes,
-        // truncates or renames over a `.snap` in place. An unlinked file stays mapped whole, and
-        // an OS that refuses to unlink a mapped file leaves it to the next reap.
-        Self::mapped_with(path, |file| unsafe { memmap2::Mmap::map(file) })
-    }
-
-    /// [`Self::mapped`], mapping the opened file through `map`; the file is read when `map`
-    /// fails.
-    fn mapped_with(
-        path: &Path,
-        map: impl FnOnce(&std::fs::File) -> std::io::Result<memmap2::Mmap>,
-    ) -> std::io::Result<Self> {
-        let mut file = std::fs::File::open(path)?;
-        match map(&file) {
-            Ok(map) => Ok(Self::Mapped(map)),
-            Err(_) => {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut file, &mut bytes)?;
-                Ok(Self::Owned(bytes))
-            }
-        }
-    }
-}
-
-impl From<Vec<u8>> for SnapshotBytes {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self::Owned(bytes)
-    }
-}
-
-impl Deref for SnapshotBytes {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            Self::Owned(bytes) => bytes,
-            Self::Mapped(map) => map,
-        }
-    }
-}
-
 /// A [`CodeView`] over one snapshot's bytes. Every reference in the bytes is checked when the
 /// snapshot is opened, so reading it later never fails.
 pub struct Snapshot {
     stamp: Stamp,
     groupings: Groupings,
-    bytes: SnapshotBytes,
+    bytes: Published,
     pool: String,
     tables: BTreeMap<u16, Table>,
     leaf: Index,
@@ -542,7 +489,7 @@ pub struct Snapshot {
 impl Snapshot {
     /// Reads `bytes`, verifying every crc and every reference; a damaged snapshot is an error,
     /// never a panic.
-    pub fn decode(bytes: impl Into<SnapshotBytes>) -> Result<Self, String> {
+    pub fn decode(bytes: impl Into<Published>) -> Result<Self, String> {
         let bytes = bytes.into();
         let container = Container::parse(&bytes, MAGIC, VERSION)?;
         let pool = String::from_utf8(container.section(STRINGS)?.to_vec())
@@ -838,7 +785,7 @@ impl Snapshot {
     /// Whether this snapshot reads a mapped file rather than bytes of its own.
     #[cfg(test)]
     pub(crate) fn is_mapped(&self) -> bool {
-        matches!(self.bytes, SnapshotBytes::Mapped(_))
+        self.bytes.is_mapped()
     }
 
     fn facts(&self, row: &[u8]) -> FileFacts {
@@ -1123,30 +1070,6 @@ mod tests {
         WfRelation,
     };
     use rigger_domain::code_view::{Cluster, FactsView};
-
-    /// Each row: whether the file can be mapped. A file that can is mapped; one that cannot is
-    /// read; either way the bytes are the file's.
-    #[test]
-    fn a_snapshot_file_that_cannot_be_mapped_is_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("000001.snap");
-        std::fs::write(&path, b"the published bytes").unwrap();
-        let cases: [(&str, bool); 2] = [("a file that maps", true), ("one that cannot", false)];
-        for (name, maps) in cases {
-            let bytes = SnapshotBytes::mapped_with(&path, |file| match maps {
-                // SAFETY: the file is this test's own and nothing writes it while mapped.
-                true => unsafe { memmap2::Mmap::map(file) },
-                false => Err(std::io::Error::other("this filesystem does not map")),
-            })
-            .unwrap();
-            assert_eq!(
-                matches!(bytes, SnapshotBytes::Mapped(_)),
-                maps,
-                "{name}: mapped"
-            );
-            assert_eq!(&*bytes, b"the published bytes", "{name}: the bytes");
-        }
-    }
 
     fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
         Stamp {
