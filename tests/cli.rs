@@ -7740,7 +7740,10 @@ fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keep
     fn nothing(_: &Path, _: &Path) {}
     fn a_pinned_run_then_a_prompt_edit(root: &Path, scratch: &Path) {
         let (out, err, _ok, _fake) = run_recording(root, &["run"], scratch);
-        assert!(out.contains("halted: budget exhausted"), "stderr: {err}\nstdout: {out}");
+        assert!(
+            out.contains("halted: budget exhausted"),
+            "stderr: {err}\nstdout: {out}"
+        );
         edit_worker_prompt(root, "Do the unit, but differently now.");
     }
     let cases = [
@@ -10388,6 +10391,100 @@ const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
     body: "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
+
+/// The body of `run_cli` within `src/cli/run.rs` (its declaration up to the next top-level `fn`),
+/// so a source-order pin on the run's lifecycle stays pointed at that seam.
+fn run_cli_source(run_rs: &str) -> &str {
+    let at = run_rs
+        .find("fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {")
+        .expect("src/cli/run.rs must still define run_cli, the `rigger run` lifecycle");
+    let end = run_rs[at..]
+        .find("\nfn ")
+        .map(|off| at + off)
+        .expect("run_cli must be followed by another top-level fn");
+    &run_rs[at..end]
+}
+
+/// RUN-START SWEEPS, their order: `rigger run` takes the step lock, sweeps the terminal worktrees,
+/// settles `--fresh` and the definition pin, reclaims the orphaned scratch, and only then drives
+/// the conductor, the first code that adds a unit worktree. So no sweep runs outside the lock, a
+/// halted-on-drift run still sweeps its terminal worktrees, a superseded run's scratch reads as
+/// dead to the orphan sweep, and no removal races an add on the shared `.git/worktrees` area.
+/// A source-text pin: the conductor's adds are deep inside `conductor::run_serving`.
+#[test]
+fn run_start_sweeps_run_under_the_lock_and_complete_before_any_worktree_add() {
+    let src = repo_text("src/cli/run.rs");
+    let run_cli = run_cli_source(&src);
+    let anchors = [
+        "acquire_step_lock(",
+        "sweep_terminal_at_start(",
+        "fresh_run_if_requested(",
+        "reclaim_orphans_at_start(",
+        "conductor::run_serving(",
+    ];
+    let offsets: Vec<usize> = anchors
+        .iter()
+        .map(|anchor| {
+            assert_eq!(
+                run_cli.matches(anchor).count(),
+                1,
+                "run_cli must call {anchor} exactly once"
+            );
+            run_cli.find(anchor).unwrap()
+        })
+        .collect();
+    assert!(
+        offsets.windows(2).all(|pair| pair[0] < pair[1]),
+        "run_cli must call {anchors:?} in that order; found offsets {offsets:?}"
+    );
+}
+
+/// RUN-START SWEEPS, end to end: given a scratch root holding what a killed earlier run left - a
+/// worktree on a branch no unit of this run owns and a dead unit's build cache - `rigger run`
+/// reclaims both at start, deregistering the worktree from git too, and reports each sweep.
+#[cfg(unix)]
+#[test]
+fn rigger_run_reclaims_an_earlier_runs_leftover_worktree_and_cache_at_start() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let scratch = scratch.path();
+    git_ok(root, &["branch", "rigger-run"]);
+    let leftover = scratch.join("rigger-wt-leftover-orphan");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            leftover.to_str().unwrap(),
+            "-b",
+            "rigger/u/leftover-orphan",
+            "rigger-run",
+        ],
+    );
+    let dead_cache = scratch.join("cargo-target-ghost");
+    std::fs::create_dir_all(&dead_cache).unwrap();
+    std::fs::write(dead_cache.join("incremental.bin"), [0u8; 64]).unwrap();
+
+    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch);
+    assert!(ok, "the run must succeed\nstderr: {err}\nstdout: {out}");
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    assert_eq!(
+        (
+            leftover.exists(),
+            list.contains("rigger/u/leftover-orphan"),
+            dead_cache.exists(),
+        ),
+        (false, false, false),
+        "(leftover dir, leftover registered, dead cache)\nworktrees: {list}\nstderr: {err}"
+    );
+    assert!(
+        err.contains("rigger run: swept 1 terminal worktree(s)")
+            && err.contains("rigger run: reclaimed 1 orphaned scratch entry"),
+        "both run-start sweeps report what they reclaimed; stderr: {err}"
+    );
+}
 
 /// Plant the run-LEVEL shared scratch areas the terminal-state teardown (spec 34 c3) owns under
 /// `scratch`: the SHARED build cache (`cargo-target` + `target` directly under the root - the
@@ -14153,17 +14250,17 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
         err.contains("per-unit caches is 96% dead (300B of 310B reclaimable)"),
         "the per-unit-caches dead share must reflect ONLY the dead unit's cache; stderr:\n{err}"
     );
-    // Each flagged category names its own reclaim path: dead worktrees are removed by hand, dead
-    // per-unit caches by the operator verb.
+    // Both flagged categories name the next run's start sweeps, which reach them; dead per-unit
+    // caches also name the operator verb that reclaims them now.
     assert!(
         err.contains(
-            "remove the listed dirs directly, then `git worktree prune` drops their registrations"
+            "reclaimed automatically by the next `rigger run`, or remove the listed dirs directly"
         ),
-        "the worktrees advisory must name the manual reclaim path; stderr:\n{err}"
+        "the worktrees advisory must name the run-start sweep and the manual path; stderr:\n{err}"
     );
     assert!(
-        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable) - `rigger reset --build-cache` reclaims it now"),
-        "the per-unit-caches advisory must name the verb that reclaims it; stderr:\n{err}"
+        err.contains("per-unit caches is 96% dead (300B of 310B reclaimable) - `rigger reset --build-cache` reclaims it now (the next `rigger run` also does)"),
+        "the per-unit-caches advisory must name the verb and the run-start sweep; stderr:\n{err}"
     );
 }
 

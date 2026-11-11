@@ -894,6 +894,13 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         scratch: scratch.as_deref(),
         store: &store,
     };
+    // RUN-START SWEEPS: leftovers of earlier runs are reclaimed under the step lock, before the
+    // conductor adds any unit worktree. The terminal sweep runs ahead of the definition pin, so a
+    // run that halts on drift still reclaims its integrated worktrees.
+    let sweep_root = scratch.as_deref().filter(|_| !repo.is_empty());
+    if let Some(root) = sweep_root {
+        sweep_terminal_at_start(&repo, root, &cfg.workflow, &store);
+    }
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -913,6 +920,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             text: &text,
         },
     )?;
+    // The orphan sweep runs behind `--fresh`'s mint, so a superseded run's scratch reads as dead.
+    if let Some(root) = sweep_root {
+        reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
+    }
     let driver = claude_code::Driver {
         bin: String::new(),
         rigger_bin: running_executable(),
@@ -1029,6 +1040,81 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         }
     }
     Ok(())
+}
+
+/// The unit branches `workflow` declares: config, never the event log, so it is populated even
+/// before a project's first run records an event. Both run-start sweeps spare a dirty candidate
+/// only when it is one of these.
+fn declared_unit_branches(workflow: &config::Workflow) -> std::collections::HashSet<String> {
+    workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect()
+}
+
+/// Remove the terminal worktrees under `root` (integrated units, review scaffolding) that an
+/// earlier run left, sparing every unit still live in the current run and any branch whose latest
+/// spawn is still in flight ([`rigger::worktree::sweep_terminal`]). An unreadable stream skips
+/// the sweep ([`live_branches_for_sweep`]), since liveness may be under- but never over-determined.
+/// Best-effort: a failure warns and never blocks the run.
+fn sweep_terminal_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    let Some(live_branches) =
+        live_branches_for_sweep(runscope::read::read_run(store, conductor::STREAM))
+    else {
+        return;
+    };
+    let fence_events = runscope::read::read_current_run(store, conductor::STREAM)
+        .map(|(run, _)| run)
+        .unwrap_or_default();
+    match rigger::worktree::sweep_terminal(
+        repo,
+        root,
+        RUN_BRANCH,
+        &live_branches,
+        &declared_unit_branches(workflow),
+        &fence_events,
+    ) {
+        Ok(0) => {}
+        Ok(n) => stderr_line(&format!(
+            "rigger run: swept {n} terminal worktree(s) from {root}"
+        )),
+        Err(e) => stderr_line(&format!("rigger run: scratch sweep skipped: {e}")),
+    }
+}
+
+/// Reclaim the scratch under `root` no live unit of the current run owns: an earlier run's
+/// stranded worktree or build cache, or a cache an agent wrote outside its assigned path
+/// ([`reclaim_orphan_scratch`]). The shared areas a running spawn may write into are spared.
+/// Best-effort: a failure warns and never blocks the run.
+fn reclaim_orphans_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    match runscope::read::read_run(store, conductor::STREAM) {
+        Ok(events) => {
+            let removed = reclaim_orphan_scratch(
+                repo,
+                root,
+                &current_run_units(&events),
+                &declared_unit_branches(workflow),
+            );
+            if removed > 0 {
+                stderr_line(&format!(
+                    "rigger run: reclaimed {removed} orphaned scratch entr{} under {root}",
+                    if removed == 1 { "y" } else { "ies" }
+                ));
+            }
+        }
+        Err(e) => stderr_line(&format!("rigger run: orphan sweep skipped: {e}")),
+    }
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).

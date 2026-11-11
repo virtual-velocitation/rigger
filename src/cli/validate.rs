@@ -276,7 +276,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
-    // deletes anything.
+    // deletes anything (cleanup stays with the run-start sweeps and the run teardown).
     // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
     // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
     // degrading to a wrong-store read that would misreport live worktrees/branches as residue
@@ -899,7 +899,7 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
             format!(
                 "warning: process rooted under the scratch root (surfaced only - validate \
                  never reaps it): {named} - its cwd is under {}; it outlives a dir rigger owns \
-                 until the next teardown reaps it.",
+                 until the next teardown or run start reaps it.",
                 scratch_root.display()
             )
         })
