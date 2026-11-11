@@ -611,6 +611,28 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     })
 }
 
+/// What an earlier build wrote for the symbols index and its `rigger-reindex` skill, relative to
+/// the project root: the derived index directory and the installed skill. The code store serves
+/// grounding now, so [`remove_retired_symbols_index`] deletes both.
+const RETIRED_SYMBOLS_INDEX: [&str; 2] = [".rigger/symbols", ".claude/skills/rigger-reindex"];
+
+/// Delete the [`RETIRED_SYMBOLS_INDEX`] entries under `root`, returning one line per entry it
+/// removed. A project that never held them gets no line, so a `rigger setup` rerun stays a silent
+/// no-op.
+fn remove_retired_symbols_index(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut lines = Vec::new();
+    for rel in RETIRED_SYMBOLS_INDEX {
+        let path = root.join(rel);
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+            lines.push(format!(
+                "removed {rel}/: the symbols index is gone; the code store serves grounding"
+            ));
+        }
+    }
+    Ok(lines)
+}
+
 /// The workflow file an earlier `rigger setup` installed for an in-session workflow driver
 /// rigger does not ship, relative to the project root. Setup deletes it, but only when
 /// [`RETIRED_PROVENANCE`] beside it shows rigger installed it ([`remove_retired_driver_files`]).
@@ -782,7 +804,11 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
-    let retired = remove_retired_driver_files(root)?;
+    let retired = [
+        remove_retired_driver_files(root)?,
+        remove_retired_symbols_index(root)?,
+    ]
+    .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door, with this repo's project overlay (base branch, specs location,
     // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
@@ -2357,6 +2383,55 @@ mod tests {
         }
         for rel in removed {
             assert!(!root.join(rel).exists(), "{rel} is gone");
+        }
+    }
+
+    rigger::test_cases! {
+        /// Both retired symbols-index entries go, each named in order.
+        the_retired_symbols_index_and_its_skill_are_removed: assert_retired_symbols_removal(
+            &[".rigger/symbols/index.json", ".claude/skills/rigger-reindex/SKILL.md"],
+            &[".rigger/symbols", ".claude/skills/rigger-reindex"],
+        );
+        /// Another skill beside the retired one stays.
+        a_neighbouring_skill_is_kept: assert_retired_symbols_removal(
+            &[".rigger/symbols/index.json", ".claude/skills/using-rigger/SKILL.md"],
+            &[".rigger/symbols"],
+        );
+        /// A project that never held them gets no line.
+        a_project_without_a_symbols_index_is_untouched: assert_retired_symbols_removal(
+            &[".claude/settings.json"],
+            &[],
+        );
+    }
+
+    /// In a temp project holding `present`, [`remove_retired_symbols_index`] names exactly the
+    /// `removed` directories, in order, and leaves every other path in place.
+    fn assert_retired_symbols_removal(present: &[&str], removed: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for rel in present {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        let got = remove_retired_symbols_index(root).unwrap();
+        let want: Vec<String> = removed
+            .iter()
+            .map(|rel| {
+                format!(
+                    "removed {rel}/: the symbols index is gone; the code store serves grounding"
+                )
+            })
+            .collect();
+        assert_eq!(got, want, "the reaper names each directory it removed");
+        for rel in removed {
+            assert!(!root.join(rel).exists(), "{rel} is gone");
+        }
+        for rel in present
+            .iter()
+            .filter(|rel| !removed.iter().any(|r| rel.starts_with(r)))
+        {
+            assert!(root.join(rel).exists(), "{rel} is left in place");
         }
     }
 
