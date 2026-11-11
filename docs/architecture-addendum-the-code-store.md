@@ -670,13 +670,19 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff --name-status`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff --name-status`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
-The store crate depends only on `rigger-domain` and std. Extraction and grouping are passed into
-it, so it holds no language knowledge. A file's scope (Product or Test by path) is set by
-`Extract`, next to the per-language rules it comes from.
+The store crate depends only on `rigger-domain`, std and the `ignore` gitignore engine.
+Extraction and grouping are passed into it, so it holds no language knowledge. A file's scope
+(Product or Test by path) is set by `Extract`, next to the per-language rules it comes from.
+
+Which files a tree's facts cover is one rule, `rigger_domain::code_view::in_scope`: a path with
+no hidden component, or one of `ALWAYS_IN_SCOPE` (the workflow file `.rigger/workflow.yml`).
+Advance reads every source's listing through it, and the directory walk honours the committed
+`.gitignore` and adds each `ALWAYS_IN_SCOPE` path that exists, so `GitTreeSource` and
+`DirTreeSource` list the same files for the same tree.
 
 ### 7.2 Splitting `Projection`
 

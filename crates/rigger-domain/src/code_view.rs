@@ -66,6 +66,17 @@ pub struct Groupings {
     pub concepts: Vec<Cluster>,
 }
 
+/// The hidden paths a tree's facts still cover: the workflow definition rigger reads.
+pub const ALWAYS_IN_SCOPE: &[&str] = &[".rigger/workflow.yml"];
+
+/// Whether the file at `path` (relative to the tree root, `/`-separated) is one a tree's facts
+/// cover: no component of it is hidden (a dot-name), or it is one of [`ALWAYS_IN_SCOPE`]. Every
+/// tree source's listing is read through this, so a repository and a plain directory holding the
+/// same tree yield the same files.
+pub fn in_scope(path: &str) -> bool {
+    !path.split('/').any(|part| part.starts_with('.')) || ALWAYS_IN_SCOPE.contains(&path)
+}
+
 /// One tree entry: a file and its content id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -251,6 +262,29 @@ impl CodeView for FactsView {
 mod tests {
     use super::*;
     use crate::code_facts::{Def, Mention};
+
+    #[test]
+    fn in_scope_skips_hidden_paths_but_the_workflow_definition() {
+        let workflow = format!(
+            "{}/{}",
+            crate::config::RIGGER_DIR,
+            crate::config::WORKFLOW_FILE
+        );
+        assert_eq!(ALWAYS_IN_SCOPE, [workflow.as_str()]);
+        for (path, scoped) in [
+            ("src/a.rs", true),
+            ("README.md", true),
+            (".gitignore", false),
+            (".github/workflows/ci.yml", false),
+            ("src/.cache/x.rs", false),
+            (".rigger/workflow.yml", true),
+            (".rigger/store/CURRENT", false),
+            ("docs/.rigger/workflow.yml", false),
+            ("a.b/c.rs", true),
+        ] {
+            assert_eq!(in_scope(path), scoped, "{path}");
+        }
+    }
 
     fn def(local: &str, leaf: &str, test: bool) -> Def {
         Def {

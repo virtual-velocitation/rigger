@@ -2,10 +2,12 @@
 //! of its bytes, and the tree id is the hash over the sorted (path, content id) pairs, so the same
 //! content always names the same tree.
 
+use crate::walk::walk_scoped;
 use rigger_domain::code_facts::Tip;
-use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
+use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff, ALWAYS_IN_SCOPE};
 use rigger_domain::playbooks::fnv1a_64;
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -29,41 +31,49 @@ pub fn tree_id(entries: &[Entry]) -> String {
     content_id(&listing)
 }
 
-/// Every regular file under `root`, path-sorted, with its content id. Hidden entries (`.git`,
-/// `.rigger` and every other dot-name) and symlinks are skipped; a path that is not UTF-8 is
-/// skipped too, since the facts hold paths as text.
+/// Every file under `root` a tree's facts cover, path-sorted, with its content id: the files
+/// the one scoped walk visits (committed `.gitignore` honoured, hidden entries and symlinks
+/// skipped), plus each [`ALWAYS_IN_SCOPE`] path that is a regular file. A path that is not UTF-8
+/// is skipped, since the facts hold paths as text.
 fn walk(root: &Path) -> Result<Vec<Entry>, String> {
-    let mut entries = Vec::new();
-    let mut dirs = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, prefix)) = dirs.pop() {
-        let listing =
-            std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
-        for item in listing {
-            let item = item.map_err(|e| format!("read {}: {e}", dir.display()))?;
-            let Some(name) = item.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if name.starts_with('.') {
-                continue;
-            }
-            let kind = item
-                .file_type()
-                .map_err(|e| format!("stat {}: {e}", item.path().display()))?;
-            let path = format!("{prefix}{name}");
-            if kind.is_dir() {
-                dirs.push((item.path(), format!("{path}/")));
-            } else if kind.is_file() {
-                let bytes = std::fs::read(item.path())
-                    .map_err(|e| format!("read {}: {e}", item.path().display()))?;
-                entries.push(Entry {
-                    path,
-                    blob: content_id(&bytes),
-                });
-            }
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let _ = walk_scoped(root, None, &mut |file| {
+        if let Some(path) = tree_path(root, file) {
+            files.push((path, file.to_path_buf()));
+        }
+        ControlFlow::Continue(())
+    });
+    for path in ALWAYS_IN_SCOPE {
+        let file = root.join(path);
+        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+            files.push(((*path).to_owned(), file));
         }
     }
+    let mut entries = files
+        .into_iter()
+        .map(|(path, file)| {
+            let bytes =
+                std::fs::read(&file).map_err(|e| format!("read {}: {e}", file.display()))?;
+            Ok(Entry {
+                path,
+                blob: content_id(&bytes),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries.dedup_by(|a, b| a.path == b.path);
     Ok(entries)
+}
+
+/// The `/`-separated path of `file` under `root`, or none when a component is not UTF-8.
+fn tree_path(root: &Path, file: &Path) -> Option<String> {
+    let parts: Option<Vec<&str>> = file
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect();
+    Some(parts?.join("/"))
 }
 
 /// The tree of a directory with no git. A tree id names a listing this source has seen, since a

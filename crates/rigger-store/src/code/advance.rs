@@ -9,7 +9,7 @@
 use crate::code::snapshot::{encode, Snapshot};
 use crate::format::{write_atomic, WriteLock};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
-use rigger_domain::code_view::{CodeView, Entry, Extract, FactsView, Group, TreeSource};
+use rigger_domain::code_view::{in_scope, CodeView, Entry, Extract, FactsView, Group, TreeSource};
 use rigger_domain::config::RIGGER_DIR;
 use std::collections::HashMap;
 use std::fmt;
@@ -122,8 +122,8 @@ impl Store {
         self.advance_locked(source, extract, group, target)
     }
 
-    /// The advance proper, run holding the lock. The tree is listed and compared with the
-    /// snapshot's own (path, blob) pairs: a file whose pair is unchanged keeps its facts, every
+    /// The advance proper, run holding the lock. The tree's in-scope files are listed and
+    /// compared with the snapshot's own (path, blob) pairs: a file whose pair is unchanged keeps its facts, every
     /// other file is extracted from the blob the source reads.
     fn advance_locked(
         &self,
@@ -141,6 +141,7 @@ impl Store {
             other => other,
         };
         let mut entries = source.list(&target.tree)?;
+        entries.retain(|e| in_scope(&e.path));
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         entries.dedup_by(|a, b| a.path == b.path);
         let mut files = Vec::with_capacity(entries.len());

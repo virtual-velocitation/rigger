@@ -410,6 +410,55 @@ mod tests {
     }
 
     #[test]
+    fn the_git_and_directory_sources_list_the_same_paths_for_one_tree() {
+        let tree: Files = &[
+            (".gitignore", "target/\n"),
+            (".hidden/h.toy", "def hidden\n"),
+            (".rigger/workflow.yml", "stages: []\n"),
+            ("target/out.toy", "def built\n"),
+            ("src/a.toy", "def a\n"),
+        ];
+        let checkout = repo(tree);
+        let copy = tempfile::tempdir().unwrap();
+        write(copy.path(), tree);
+        let rows: [(&str, &Path, fn(&Path) -> Box<dyn TreeSource>); 3] = [
+            (
+                "the git source over the checkout",
+                checkout.path(),
+                |root| Box::new(GitTreeSource::new(root)),
+            ),
+            (
+                "the directory source over the checkout",
+                checkout.path(),
+                |root| Box::new(DirTreeSource::new(root)),
+            ),
+            (
+                "the directory source over a plain copy",
+                copy.path(),
+                |root| Box::new(DirTreeSource::new(root)),
+            ),
+        ];
+        for (name, root, source) in rows {
+            let source = source(root);
+            let extract = ToyExtract::new(1);
+            let store = tempfile::tempdir().unwrap();
+            Store::new(store.path())
+                .advance(
+                    source.as_ref(),
+                    &extract,
+                    &CountingGroup::default(),
+                    &source.head().expect(name),
+                )
+                .expect(name);
+            assert_eq!(
+                extract.paths(),
+                [".rigger/workflow.yml", "src/a.toy"],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn changed_against_worktree_lists_modified_deleted_and_untracked() {
         struct Row {
             name: &'static str,
