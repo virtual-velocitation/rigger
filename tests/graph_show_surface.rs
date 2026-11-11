@@ -172,9 +172,12 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
-    fold_path_def_rows(
-        &open_graph(root),
-        &[T_NEW, U_NEW, ("b.rs", "new", "T::new", "method")],
+    plant_sources(
+        root,
+        &[
+            ("a.rs", "impl T { fn new() {} }\nimpl U { fn new() {} }\n"),
+            ("b.rs", "impl T { fn new() {} }\n"),
+        ],
     );
 
     assert_eq!(
@@ -196,17 +199,20 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 /// Spec 119, A BARE SHOW FINDS A LEAF OR PATH: GIVEN a project graph whose `a.rs` holds the method
 /// `T::new` and a decision holding the pre-spec flat id `a.rs::new`, WHEN the operator runs `rigger
 /// graph --show a.rs::new`, THEN it shows `a.rs::T::new` at its site, never the decision's bare
-/// node.
+/// node. (Its degree counts the view's containment edge beside the decision's.)
 #[test]
 fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
-    let dir = held_flat_id_project(&[T_NEW]);
+    let dir = temp_project();
     let root = dir.path();
+    seed_rigger_dir(root);
+    hold(&open_graph(root), 1, &[FLAT_LEAF_ID]);
+    plant_sources(root, &[("a.rs", "impl T { fn new() {} }\n")]);
 
     assert_eq!(
         show_head(root, "a.rs::new"),
         [
             "show a.rs::T::new",
-            "  site: a.rs:1   kind method   degree 1"
+            "  site: a.rs:1   kind method   degree 2"
         ],
         "a held flat id shows the definition its file holds at its leaf"
     );
@@ -240,4 +246,13 @@ fn held_flat_id_project(defs: &[PathDef]) -> tempfile::TempDir {
     let next = fold_path_def_rows(&p, defs);
     hold(&p, next, &[FLAT_LEAF_ID]);
     dir
+}
+
+/// Write each `(path, source)` of `files` into the tree at `root` and commit it, so the code
+/// store describes exactly these files.
+fn plant_sources(root: &std::path::Path, files: &[(&str, &str)]) {
+    for (path, source) in files {
+        std::fs::write(root.join(path), source).unwrap();
+    }
+    common::fixtures::commit_tree(root);
 }
