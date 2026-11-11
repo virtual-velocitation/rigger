@@ -1082,7 +1082,7 @@ The code store lands first for three reasons:
 |---|---|---|---|---|
 | exclusive lock | `with_write_lock` (std `File::lock` / `File::try_lock`) | `flock` | `LockFileEx` | `flock` |
 | atomic replace | `rename` (std) | `rename(2)` | `MoveFileExW` replace-existing (std) | `rename(2)` |
-| make a rename durable | `sync_dir(dir)` | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves CURRENT at the old, still-true stamp (section 12) | open the directory + `fsync` |
+| make a rename durable | `sync_dir(dir)`; a filesystem that cannot sync a directory (InvalidInput, Unsupported) leaves the rename standing and is not an error, as in SQLite | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves CURRENT at the old, still-true stamp (section 12) | open the directory + `fsync` |
 | delete a file another process has open | reaper | unlink | std opens with share-delete, so the delete succeeds; a mapped file's delete fails and is retried at the next advance | unlink |
 | read the tree | `TreeSource` | git or the directory | git or the directory | git or the directory |
 

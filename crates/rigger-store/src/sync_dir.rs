@@ -8,9 +8,21 @@ pub fn sync_dir(dir: &Path) -> std::io::Result<()> {
     settled(imp::sync_dir(dir))
 }
 
-/// What a directory sync that answered `synced` means for the rename before it.
+/// What a directory sync that answered `synced` means for the rename before it. A filesystem that
+/// cannot sync a directory answers InvalidInput or Unsupported; the rename stands, so, as in
+/// SQLite, that is not an error. Every other failure is.
 fn settled(synced: std::io::Result<()>) -> std::io::Result<()> {
-    synced
+    match synced {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::InvalidInput | std::io::ErrorKind::Unsupported
+            ) =>
+        {
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Unix: a directory opens like a file, and its fsync flushes its entries.
