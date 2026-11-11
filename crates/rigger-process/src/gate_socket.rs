@@ -7,10 +7,11 @@
 //! answer an `Unsupported` error naming the named pipe it would take, which the verb reports as
 //! its error.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
+use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
 
 /// How many hex digits of the canonical repo root's SHA-256 name its socket.
 #[cfg(unix)]
@@ -25,6 +26,20 @@ pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
         .filter(|dir| dir.is_absolute())
         .unwrap_or_else(std::env::temp_dir);
     socket_path_under(&runtime, repo_root)
+}
+
+/// The gate socket `rigger gate` asks for the project rooted at `repo_root`:
+/// [`addressed_or_derived`] over [`GATE_SOCKET_ENV`].
+pub fn socket_to_ask(repo_root: &Path) -> io::Result<PathBuf> {
+    addressed_or_derived(std::env::var_os(GATE_SOCKET_ENV), repo_root)
+}
+
+/// The socket at `addressed`, the value of [`GATE_SOCKET_ENV`] a serving driver hands its spawns,
+/// when it is set; [`socket_path`] for `repo_root` when it is unset or empty, the operator's own
+/// shell. A relative value is refused.
+pub fn addressed_or_derived(addressed: Option<OsString>, repo_root: &Path) -> io::Result<PathBuf> {
+    let _ = addressed;
+    socket_path(repo_root)
 }
 
 /// The gate socket path for the project rooted at `repo_root` under the runtime directory
@@ -206,6 +221,10 @@ impl GateChannel for GateSocket {
         // Wake the accept the serving loop blocks in, so it sees the flag.
         let _ = std::os::unix::net::UnixStream::connect(&self.path);
     }
+
+    fn address(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Read one request line from `stream`, answer it, and write the reply line back. A request that
@@ -298,6 +317,9 @@ impl GateChannel for GateSocket {
         Err(unsupported())
     }
     fn close(&self) {}
+    fn address(&self) -> Option<String> {
+        None
+    }
 }
 
 /// No adapter on this OS: always the `Unsupported` error.
@@ -462,5 +484,52 @@ mod tests {
                 "{end}: the error names the path and the cause: {said}"
             );
         }
+    }
+
+    /// THE DRIVER'S ADDRESS WINS: GIVEN `RIGGER_GATE_SOCKET` set to an absolute path, THEN the
+    /// verb asks there whatever the runtime directory derives; unset or empty, it derives the
+    /// path as the operator's own shell does; set to a relative path, it is refused naming the
+    /// variable, and the refusal is never the over-long kind the verb runs for information on.
+    #[test]
+    fn an_absolute_address_wins_over_the_derivation_unset_derives_and_a_relative_one_is_refused() {
+        let repo = tempfile::tempdir().unwrap();
+        let derived = socket_path(repo.path()).unwrap();
+        let addressed = Path::new("/elsewhere/gate.sock");
+        for (why, value, want) in [
+            (
+                "absolute",
+                Some(addressed.into()),
+                Ok(addressed.to_path_buf()),
+            ),
+            ("unset", None, Ok(derived.clone())),
+            ("empty", Some(OsString::new()), Ok(derived.clone())),
+            ("relative", Some("run/gate.sock".into()), Err(())),
+        ] {
+            let got = addressed_or_derived(value, repo.path());
+            match (got, want) {
+                (Ok(path), Ok(want)) => assert_eq!(path, want, "{why}"),
+                (Err(e), Err(())) => {
+                    assert_ne!(e.kind(), io::ErrorKind::InvalidInput, "{why}: {e}");
+                    let said = e.to_string();
+                    assert!(
+                        said.contains(GATE_SOCKET_ENV)
+                            && said.contains("run/gate.sock")
+                            && said.contains("absolute"),
+                        "{why}: the refusal names the variable, its value and the rule: {said}"
+                    );
+                }
+                (got, want) => panic!("{why}: got {got:?}, want {want:?}"),
+            }
+        }
+    }
+
+    /// A BOUND SOCKET NAMES ITSELF: the address a socket hands the run's spawns is the absolute
+    /// path it is bound at.
+    #[test]
+    fn a_bound_socket_addresses_the_path_it_is_bound_at() {
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+        let socket = GateSocket::bind(&path).unwrap();
+        assert_eq!(socket.address(), path.to_str().map(str::to_owned));
     }
 }

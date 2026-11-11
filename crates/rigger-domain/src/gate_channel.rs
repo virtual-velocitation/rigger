@@ -8,6 +8,12 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// The environment variable a serving driver sets in every spawn's environment to the absolute
+/// address of its gate channel, so `rigger gate` run in that spawn asks there: the
+/// `SSH_AUTH_SOCK` convention. A host that rewrites the temp directory for its tools then never
+/// splits the two ends.
+pub const GATE_SOCKET_ENV: &str = "RIGGER_GATE_SOCKET";
+
 /// One request: gate `gate` on the committed checkout at `dir`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateRequest {
@@ -42,6 +48,9 @@ pub trait GateChannel: Sync {
     fn serve(&self, answer: &(dyn Fn(GateRequest) -> GateReply + Sync)) -> std::io::Result<()>;
     /// End [`GateChannel::serve`]; safe to call from another thread and more than once.
     fn close(&self);
+    /// The absolute address a request reaches this channel at, which the driver hands every
+    /// spawn as [`GATE_SOCKET_ENV`]; `None` when it has none a child process can name.
+    fn address(&self) -> Option<String>;
 }
 
 /// `message` as the one JSON line an adapter writes for it, newline included.

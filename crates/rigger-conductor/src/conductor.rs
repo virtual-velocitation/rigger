@@ -43902,7 +43902,13 @@ mod tests {
         fn close(&self) {
             let _ = self.tx.lock().unwrap().send(None);
         }
+        fn address(&self) -> Option<String> {
+            Some(TEST_CHANNEL_ADDRESS.to_string())
+        }
     }
+
+    /// The address the in-process channel names, which the run hands every spawn.
+    const TEST_CHANNEL_ADDRESS: &str = "/run/rigger-test/gate.sock";
 
     /// The GateVerdict recorded under `key`, the latest when several are.
     fn verdict_under<'a>(events: &'a [Event], key: &str) -> Option<&'a Event> {
@@ -44604,6 +44610,23 @@ mod tests {
             }
         }
         out
+    }
+
+    /// EVERY SPAWN IS HANDED THE CHANNEL'S ADDRESS: GIVEN a run serving a channel that names an
+    /// address, THEN every spawn's env carries it as `RIGGER_GATE_SOCKET` exactly once, so
+    /// `rigger gate` run there asks the driver that spawned it, never a path it derives itself.
+    #[test]
+    fn every_spawn_of_a_serving_run_carries_the_channel_address_as_the_gate_socket_variable() {
+        let run = run_asking(Ask::Gate, 0);
+        assert!(!run.envs.is_empty(), "the run spawned");
+        for env in &run.envs {
+            let carried: Vec<&str> = env
+                .iter()
+                .filter(|(name, _)| name == rigger_domain::gate_channel::GATE_SOCKET_ENV)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(carried, [TEST_CHANNEL_ADDRESS], "{env:?}");
+        }
     }
 
     /// THE KEY NEVER LEAVES THE DRIVER'S MEMORY: GIVEN a run that signed a verb's verdict and its

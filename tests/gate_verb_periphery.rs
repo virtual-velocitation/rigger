@@ -3,8 +3,9 @@
 //!
 //! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
 //! information only, prints the result, says it recorded nothing and records nothing, a stale
-//! socket file included); its refusals of an uncommitted tree and of an undeclared gate; and
-//! `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
+//! socket file included); the socket it asks, the one its driver addresses or else the one the
+//! shared path rule names; its refusals of an uncommitted tree, an undeclared gate and a relative
+//! address; and `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
 //!
 //! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
 //! and the refusals the driver makes), which `rigger-conductor`'s own tests drive through the run's
@@ -128,6 +129,53 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
     assert!(
         err.contains("the driver heard gate g"),
         "the verb reports the served answer: {err}"
+    );
+}
+
+/// THE VERB ASKS WHERE ITS DRIVER SAYS: GIVEN a socket served at a path the runtime directory
+/// does not derive, WHEN an agent runs `rigger gate g` with `RIGGER_GATE_SOCKET` naming it, THEN
+/// the answer served there is what the verb reports; WHEN the variable names a relative path, THEN
+/// the verb refuses naming it, runs no gate and records nothing.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_address() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
+    let (root, scratch) = committed_project();
+    let path = scratch.path().join("addressed").join("gate.sock");
+    let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
+    let answer = |request: GateRequest| GateReply::Refused {
+        reason: format!("the addressed driver heard gate {}", request.gate),
+    };
+    let ask_with = |address: &str| {
+        run_rigger_envs(
+            root.path(),
+            &["gate", "g"],
+            &[
+                ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+                ("XDG_RUNTIME_DIR", scratch.path().to_str().unwrap()),
+                (GATE_SOCKET_ENV, address),
+            ],
+        )
+    };
+    let (addressed, relative) = std::thread::scope(|s| {
+        let serving = s.spawn(|| socket.serve(&answer));
+        let addressed = ask_with(path.to_str().unwrap());
+        let relative = ask_with("addressed/gate.sock");
+        socket.close();
+        serving.join().unwrap().unwrap();
+        (addressed, relative)
+    });
+    for (why, (out, err, ok), said) in [
+        ("absolute", addressed, "the addressed driver heard gate g"),
+        ("relative", relative, "addressed/gate.sock"),
+    ] {
+        assert!(!ok, "{why}: the verb fails; stdout:\n{out}");
+        assert!(err.contains(said), "{why}: {err}");
+        assert!(!out.contains("gate g on"), "{why}: no gate ran: {out}");
+    }
+    assert!(
+        gate_verdicts(root.path()).is_empty(),
+        "nothing was recorded"
     );
 }
 
