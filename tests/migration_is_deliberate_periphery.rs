@@ -33,7 +33,7 @@
 //!    its siblings) calls the gathering functions directly, in-process, never spawning
 //!    `rigger validate` itself. Mirrors `tests/validate_advisories.rs`'s own convention for spec
 //!    68's two advisories (a DIFFERENT file - that one's own doc scopes itself to criterion 4's
-//!    index-staleness and log-bloat checks only, so this criterion's advisory gets its own file
+//!    log-bloat check only, so this criterion's advisory gets its own file
 //!    rather than widening that one's stated ownership).
 //!
 //! NOT OWNED here:

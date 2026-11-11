@@ -583,8 +583,7 @@ fn retired_entities_advisory(n: usize) -> Option<String> {
 /// the shape of, `Projector` is the only [`RecordFold`] this binary ever opens), so this needs no
 /// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
 /// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
-/// error after that point, exactly like the log-bloat and index-staleness advisories above
-/// swallow one.
+/// error after that point, exactly like the log-bloat advisory above swallows one.
 fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
     let graph = standing_graph(graph_db, project)?;
     retired_entities_advisory(graph.retired_code_entity_count().ok()?)

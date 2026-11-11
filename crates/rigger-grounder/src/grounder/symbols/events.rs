@@ -50,9 +50,7 @@ fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
 /// Extract the WHOLE project tree at `root` into per-file event batches (spec 29c criterion 5):
 /// the production entry point that lowers the ACTUAL project source into the code half of the
 /// unified graph, so a live run populates the graph 29a built the machinery for but left with no
-/// caller. Reuses the `symbols` grounder's PERSISTED index when one is on disk (a live run's
-/// grounder built and persisted it, so this is a cheap read, not a second whole-tree parse) and
-/// falls back to a fresh [`build_index`](crate::grounder::symbols::build_index) otherwise. Each
+/// caller. Builds the index fresh with [`build_index`](crate::grounder::symbols::build_index). Each
 /// file is lowered through the shared [`extract_events`] authority - the SAME per-file emit the
 /// fold tests and the incremental path use, so the whole-project ingest can never drift from a
 /// single file's. Returns `(file, events, excluded)` per file in the index's sorted path order,
@@ -2403,8 +2401,8 @@ fn an_integration_test() {
     fn file_batches_retires_a_file_absent_from_the_index_via_the_boundary_sentinel() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
-        // "deleted.rs" is named but was never written to disk, so a fresh build of `root` (there is
-        // no persisted index here) never indexes it - the same shape as a file the tree no longer holds.
+        // "deleted.rs" is named but was never written to disk, so a fresh build of `root` (a fresh
+        // build of the tree) never indexes it - the same shape as a file the tree no longer holds.
         let batches = super::file_batches(root, &["deleted.rs".to_string()]);
         assert_eq!(
             batches.len(),

@@ -26,7 +26,7 @@ workspace = true
 [features]
 # Mirrors the root crate's lane features (see the root manifest): the code store, gated
 # `any(feature = "store", not(feature = "core"))`, names domain items only the `store` lane
-# compiles; the format compiles in every lane, since the symbols index persists through it.
+# compiles; the format compiles in every lane.
 default = ["store"]
 store = ["rigger-domain/store"]
 core = ["rigger-domain/core"]

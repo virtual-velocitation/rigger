@@ -737,7 +737,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
 /// sink's comment in `src/conductor.rs`, and `cmd_graph_build`'s rustdoc in `src/main.rs`) is
 /// LOG-relative and has two halves: after any mix of skipping and re-ingest, the log holds each
 /// file's LATEST content generation AS THE WALK LOWERED IT in full, and only what changed is ever
-/// re-emitted. The fixture below has no persisted symbols index, so the walk's view IS the tree's
+/// re-emitted. The fixture below is built fresh, so the walk's view IS the tree's
 /// here and the qualifier is satisfied trivially - it is carried because the three sites state it,
 /// not because this test distinguishes the two.
 /// Every other test here sees a single content generation per file - a fresh build, a re-build over

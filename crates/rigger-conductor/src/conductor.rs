@@ -12488,12 +12488,12 @@ impl RunCtx<'_> {
         // 107): an unchanged file, whose generation the log and the graph both hold, records
         // nothing, on this run and on every later one; any other records one ledger entry of the
         // bytes the sink reads, a file reverted to content it held earlier included, because that
-        // content is no longer the generation both sides hold. The code half lowers from the
-        // PERSISTED symbols index when the project has one, so a batch the walk hands can lag the
-        // file's bytes: the sink records the bytes' generation, never the walk's. A file the walk
+        // content is no longer the generation both sides hold. The code half lowers from a
+        // fresh build of the tree, so a batch the walk hands can lag the file's bytes: the sink
+        // records the bytes' generation, never the walk's. A file the walk
         // lowers to nothing hands no batch and reaches no decision, while every identity the graph
         // holds a generation for whose file the tree no longer holds arrives as the batch its
-        // prefix extracts from no bytes, whatever that index lists, so its nodes retire once -
+        // prefix extracts from no bytes, so its nodes retire once -
         // read from the graph, never the log, so the step's reads stay those of one that does
         // not ingest. Whether a recorded entry then FOLDS is the folding store's best-effort
         // contract - a lost fold leaves the log right and the graph behind.
@@ -12518,7 +12518,7 @@ impl RunCtx<'_> {
     /// Reindex the CONTEXT GRAPH for exactly `files` (spec 92 criterion 1, FRESH ON EVERY
     /// INTEGRATION): the scoped counterpart to [`ingest_project_batches`](RunCtx::
     /// ingest_project_batches), called from [`integrate_and_emit`](RunCtx::integrate_and_emit)
-    /// right after every landed merge, right alongside the grounder's own (pre-existing) reindex.
+    /// right after every landed merge.
     /// Bounded by `files` - the merge's OWN touched-file list - never a whole-project walk, so an
     /// integration that touches hundreds of files stays bounded by that count, not the project's.
     /// Reuses the SAME scoped extraction and the SAME ingest sink `ingest_project_batches` uses for
@@ -45025,7 +45025,7 @@ mod tests {
     }
 
     /// MEASUREMENT, run explicitly over a real tree, every radius taken through
-    /// [`RunCtx::grounded_blast_radius_at`] with the tree's symbols index and its `.rigger/graph.db`
+    /// [`RunCtx::grounded_blast_radius_at`] with the tree's code store and its `.rigger/graph.db`
     /// present (`RIGGER_MEASURE_ROOT`), exactly as a run grounds a unit.
     ///
     /// With `RIGGER_MEASURE_LANDED` (a JSON list of `{id, criteria, edited}`: landed units, their

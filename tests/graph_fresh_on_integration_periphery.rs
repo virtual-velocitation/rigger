@@ -1,7 +1,6 @@
 //! Periphery (real-git, real-worktree, cross-module) test for spec 92 criterion 1, FRESH ON
 //! EVERY INTEGRATION: the cross-module seam `RunCtx::integrate_and_emit` -> `RunCtx::
-//! ingest_files_into_graph` -> `rigger::ingest::ingest_files_batched` (src/conductor.rs), added
-//! right alongside the grounder's own pre-existing post-integrate reindex.
+//! ingest_files_into_graph` -> `rigger::ingest::ingest_files_batched` (src/conductor.rs).
 //!
 //! WHAT THE IMPLEMENTER'S OWN TESTS ALREADY COVER (not re-proven here). `src/ingest.rs`'s own
 //! `scoped_reindex_tests` proves `ingest_files_batched`/`graph_index_lag`'s extraction, keying,

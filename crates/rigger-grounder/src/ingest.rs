@@ -372,14 +372,13 @@ pub struct IngestStats {
 /// cold-build throughput was transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
-/// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
-/// grounder's PERSISTED index when the project has one (see [`walk_batches`]) and derives its events
-/// from the indexed symbols without reading the file. So on such a project the keys track that
-/// index's view of each file the walk sees. A file the walk no longer sees is never lowered from
-/// the index: every identity of `held` - the identities the graph holds a generation for
-/// ([`RecordFold::held_identities`]) - whose file the walk no longer sees is handed the batch a
-/// sink extracts from no bytes, whatever the index lists, so its fold retires what the file
-/// asserted (see [`walk_batches`]).
+/// halves differ: the design half reads the live tree, while the code half derives its events
+/// from the symbols a fresh build of the tree indexed (see [`walk_batches`]), so a file edited
+/// between that build and the sink's own read lowers to bytes the sink does not record. A file the
+/// walk no longer sees is never lowered: every identity of `held` - the identities the graph holds a
+/// generation for ([`RecordFold::held_identities`]) - whose file the walk no longer sees is handed
+/// the batch a sink extracts from no bytes, so its fold retires what the file asserted (see
+/// [`walk_batches`]).
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
@@ -435,9 +434,7 @@ fn walk_batches(
     let mut batches_emitted = 0usize;
     let walked = crate::grounder::walked_paths(std::path::Path::new(root));
     let sees = |prefix: &str, path: &str| walk_sees(root, &walked, prefix, path);
-    // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
-    // grounder's persisted index when present (no re-parse), so in a live run this is a cheap read of
-    // what the grounder already built - not a second whole-tree parse.
+    // The code half (spec 29a): parallel parse feeds this ordered emit.
     let (code_batches, workers_engaged) =
         crate::grounder::symbols::events::project_batches_paced(root, workers);
     for (file, batch, excluded) in code_batches.iter().filter(|(file, ..)| sees("gc", file)) {
@@ -568,8 +565,8 @@ pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl Batc
 /// its rebuild - and when its read fails, the log's side alone decides. A file `latest` holds no
 /// generation for lags: a `gc` batch is never empty.
 ///
-/// The exclusions are loaded once, and only when there is a file to compare, since a tree with
-/// no persisted index pays a whole-tree parse for them.
+/// The exclusions are loaded once, and only when there is a file to compare, since they cost a
+/// whole-tree parse.
 #[cfg(feature = "symbols")]
 pub fn graph_index_lag(
     root: &std::path::Path,

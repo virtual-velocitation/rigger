@@ -652,11 +652,11 @@ fn locate_definition_extent(
 /// generation the log still carries, and it records precisely because that generation is no
 /// longer the file's latest - and one a rebuild of `graph.db` left behind, which the log holds
 /// and the graph does not. What an entry records is the extraction of the bytes this command
-/// READS, hashed by git, never the batch the walk handed: the code half lowers from the
-/// PERSISTED symbols index when the project has one, so a lowering that lags the file records
-/// the generation of the file's bytes. An identity the graph holds a generation for whose file
+/// READS, hashed by git, never the batch the walk handed: the code half lowers
+/// from a fresh build of the tree, so a lowering that lags the file records the generation of the
+/// file's bytes. An identity the graph holds a generation for whose file
 /// the tree no longer holds is handed over as the batch its prefix extracts from no bytes,
-/// whatever the persisted index says of the path, so one build retires the deleted file's nodes
+/// so one build retires the deleted file's nodes
 /// and a later build, the log and the graph both holding that retirement, records nothing for
 /// it. A file whose extraction the walk lowered to nothing reaches no decision here. An entry
 /// whose append lands but whose fold does not leaves the log right and the graph behind, and
