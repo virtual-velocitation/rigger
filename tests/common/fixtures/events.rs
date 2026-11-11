@@ -55,9 +55,8 @@ pub fn naming(type_: &str) -> (String, String) {
     (
         type_.to_string(),
         format!(
-            "event store: append refused: {type_} is a derived event, which the tree re-derives - \
-             the log keeps the ledger entry of its generation and no event of this batch was \
-             written"
+            "event store: append refused: {type_} is a derived event, which the code store \
+             re-derives from the tree - no event of this batch was written"
         ),
     )
 }
@@ -1152,7 +1151,7 @@ pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
     pub boundary: Revision,
     /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
-    /// its finding and its two notes (never the ledger entries appended during it).
+    /// its finding and its two notes.
     pub run_events: usize,
     /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
     pub carry_over: usize,
@@ -1229,26 +1228,14 @@ pub fn entry_of_a_batch(
     .event(n)
 }
 
-/// `n` ledger entries of perception, each a generation of its own of one of four files.
+/// `n` notes of a superseded run, the bulk of a long-lived log that no one-shot read carries.
 #[cfg(any(feature = "store", not(feature = "core")))]
-fn flood_entries(n: usize) -> Vec<Event> {
-    (0..n)
-        .map(|i| {
-            entry_of_a_batch(
-                "gc",
-                &format!("src/f{}.rs", i % 4),
-                &format!("h{i}"),
-                1,
-                "",
-                false,
-            )
-        })
-        .collect()
+fn flood_notes(n: usize) -> Vec<Event> {
+    (0..n).map(|_| ev("RunNote", "{}")).collect()
 }
 
-/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 ledger entries
-/// of perception before the current run's boundary, then the current run (started over
-/// `criteria`) with entries of its own appended during it. Each prior run left a decision, a lesson or a
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 notes before
+/// the current run's boundary, then the current run (started over `criteria`). Each prior run left a decision, a lesson or a
 /// finding the current run carries over, and a note of its own no one-shot read carries; the
 /// current run holds a decision and a finding of its own plus two notes.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -1279,7 +1266,7 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&flood_entries(10_000));
+        append(&flood_notes(10_000));
     }
     append(&[
         run_started("run-b", &["another prior campaign"]),
@@ -1291,14 +1278,13 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&flood_entries(10_000));
+        append(&flood_notes(10_000));
     }
     append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
     let boundary = store
         .last_position(stream, "RunStarted")
         .expect("the fixture's boundary reads")
         .expect("the fixture started a run");
-    append(&flood_entries(50));
     append(&[
         decision("d-c", "c.rs"),
         ev(
@@ -1307,7 +1293,6 @@ pub fn seed_one_shot_fixture(
         ),
         ev("RunNote", "{}"),
     ]);
-    append(&flood_entries(50));
     OneShotFixture {
         boundary,
         run_events: 5,

@@ -168,7 +168,7 @@ fn records(reply: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Given a spawn-bound MCP server over the 200,000-entry log, when an agent calls
+/// Given a spawn-bound MCP server over the 200,000-note log, when an agent calls
 /// `rigger_peers` scoped to a file, a peer then records a decision about that file, and the agent
 /// calls `rigger_peers` again and reports progress, then every call is exactly one read of the
 /// run from its boundary plus the typed carry-over - the second peers call sees the new decision
@@ -397,8 +397,8 @@ fn seed_poisoned_project(
     let poisoned = poison(root, &format!("type IN ({perception})"));
     assert_eq!(
         poisoned,
-        200_100 + pre_ledger_rows.len(),
-        "every ledger entry of the flood and every pre-ledger derived row is poisoned"
+        pre_ledger_rows.len(),
+        "every pre-ledger derived row is poisoned"
     );
     poison(
         root,
@@ -410,7 +410,7 @@ fn seed_poisoned_project(
     )
 }
 
-/// Given a project whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// Given a project whose `events.db` holds two superseded runs and 200,000 notes before
 /// the current run's boundary, with each perception event and every superseded run's own event made
 /// undecodable, when the operator runs the one-shot commands, then each answers from the current
 /// run and every run's carried-over knowledge - a command that read past its slice would have
@@ -422,8 +422,8 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
     let root = dir.path();
     assert_eq!(
         seed_poisoned_project(root, &["the current campaign"], &CARRY_OVER, |_| {}),
-        6,
-        "both superseded runs' RunStarted, UnitStarted and note are poisoned"
+        200_006,
+        "both superseded runs' RunStarted, UnitStarted and notes are poisoned"
     );
 
     // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE and
@@ -582,7 +582,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
 }
 
 /// Given a project that is NOT a git repo (so the run walks no tree and ingests nothing) whose
-/// `events.db` holds two superseded runs and 200,000 ledger entries before the current run's
+/// `events.db` holds two superseded runs and 200,000 notes before the current run's
 /// boundary, with each perception event and every superseded run's own event made undecodable, when
 /// the operator runs `rigger run`, then the run adopts the current run, requests the stage's spawn
 /// in it and finishes on its answer - a run that read past the run's slice, or took the ingest
@@ -622,7 +622,7 @@ fn a_run_that_does_not_ingest_advances_the_run_without_materializing_a_derived_o
     );
 }
 
-/// Given a git repo whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// Given a git repo whose `events.db` holds two superseded runs and 200,000 notes before
 /// the current run's boundary, with each perception event and every superseded run's event outside
 /// the carried-over and criterion-adoption types made undecodable, when the operator runs `rigger
 /// run --spec` over the current run's criterion, then the run starts the criterion's unit and
@@ -668,7 +668,7 @@ fn a_repo_run_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and
     scaffold(root);
     assert_eq!(
         seed_poisoned_project(root, &[criterion], &CARRY_OVER_AND_ADOPTION, |_| {}),
-        2,
+        200_002,
         "both superseded runs' notes are poisoned"
     );
 

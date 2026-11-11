@@ -37,8 +37,6 @@ pub fn assert_contract(store: &dyn EventStore) {
     batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(store);
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
-    latest_generation_answers_what_the_reference_answers_on_the_same_log(store);
-    the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store);
     an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothing(store);
 }
 
@@ -62,37 +60,6 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     }
-}
-
-/// The ledger entry of `<prefix>/<file>` at `generation`, its batch holding `n` events, as the
-/// entry's one constructor builds it: under its group and its replay key.
-fn identity_entry(prefix: &str, file: &str, generation: &str, n: usize) -> Event {
-    crate::test_support::entry_of_a_batch(prefix, file, generation, n, "b10b", false)
-}
-
-/// Each of `identities` with its latest generation on `stream`, twice over: as the domain reader
-/// answers it through the group lookup, and as the whole-stream reference answers it.
-fn answered_and_referenced(
-    store: &dyn EventStore,
-    stream: &str,
-    identities: &[&str],
-) -> [Vec<(String, Option<String>)>; 2] {
-    let reference = rigger_domain::ingest::project_scoped_latest_generations(
-        &store.read_stream(stream, 0, Direction::Forward).unwrap(),
-    );
-    let answered = identities
-        .iter()
-        .map(|identity| {
-            let generation = rigger_domain::ingest::latest_generation(store, stream, identity)
-                .unwrap_or_else(|e| panic!("the lookup of {identity} must succeed: {e}"));
-            (identity.to_string(), generation)
-        })
-        .collect();
-    let referenced = identities
-        .iter()
-        .map(|identity| (identity.to_string(), reference.get(*identity).cloned()))
-        .collect();
-    [answered, referenced]
 }
 
 /// THE GROUP LOOKUP (spec 101): `latest_in_group` answers the NEWEST event of THAT stream stamped
@@ -223,139 +190,20 @@ fn a_grouped_append_under_an_unmet_expectation_records_nothing(store: &dyn Event
     assert_eq!(tag.as_deref(), Some("met"), "a met expectation records");
 }
 
-/// THE REFERENCE (spec 101, spec 107): over one log of ledger entries - three identities, a
-/// change, a revert to an earlier generation and a re-recording of the same generation, among
-/// events that record no perception - the domain reader over the group lookup answers, for every
-/// identity, exactly the generation the whole-stream reference
-/// `project_scoped_latest_generations` answers, and a never-recorded identity answers none.
-fn latest_generation_answers_what_the_reference_answers_on_the_same_log(store: &dyn EventStore) {
-    let stream = "c-generations";
-    let noise = || Event::new("RunNote", b"{}".to_vec());
-    for event in [
-        identity_entry("gc", "a.rs", "h1", 2),
-        identity_entry("gc", "b.rs", "h1", 2),
-        noise(),
-        identity_entry("gd", "a.rs", "h1", 2),
-        identity_entry("gc", "a.rs", "h2", 2),
-        identity_entry("gc", "b.rs", "h2", 2),
-        noise(),
-        identity_entry("gc", "b.rs", "h1", 2),
-        identity_entry("gd", "a.rs", "h1", 2),
-    ] {
-        store
-            .append(stream, ExpectedRevision::Any, &[event])
-            .expect("the generations log appends");
-    }
-    let [answered, expected] =
-        answered_and_referenced(store, stream, &["gc/a.rs", "gc/b.rs", "gd/a.rs", "gc/c.rs"]);
-    assert_eq!(
-        answered, expected,
-        "the lookup answers what the reference answers"
-    );
-    assert_eq!(
-        answered,
-        [
-            ("gc/a.rs".to_string(), Some("h2".to_string())),
-            ("gc/b.rs".to_string(), Some("h1".to_string())),
-            ("gd/a.rs".to_string(), Some("h1".to_string())),
-            ("gc/c.rs".to_string(), None),
-        ],
-        "the change moves a.rs to h2, the revert moves b.rs back to h1, and a never-recorded \
-         identity answers none"
-    );
-}
-
-/// THE GROUP LOOKUP ANSWERS A LEDGER ENTRY (spec 107): a hand-built `GenerationIngested` recorded
-/// under its group is its identity's newest member like any grouped event - `latest_in_group`
-/// answers its position, type and metadata - and the domain reader answers the generation its
-/// replay key names. Three identities on one stream: one whose entry follows an earlier entry of
-/// another generation, one whose only recording is an entry, and one recorded last, whose later
-/// entry answers in place of its first. Every answer is the one the whole-stream reference gives
-/// over the perception types.
-fn the_group_lookup_answers_a_ledger_entry_recorded_under_its_group(store: &dyn EventStore) {
-    use rigger_domain::ingest::META_REPLAY_KEY;
-    use rigger_domain::retention::TYPE_GENERATION_INGESTED;
-    let stream = "c-ledger";
-    let entry = identity_entry;
-    let appended = store
-        .append(
-            stream,
-            ExpectedRevision::NoStream,
-            &[
-                entry("gc", "a.rs", "h1", 1),
-                entry("gc", "b.rs", "h1", 1),
-                entry("gc", "a.rs", "h2", 2),
-                entry("gd", "c.md", "h4", 5),
-                entry("gc", "b.rs", "h3", 1),
-            ],
-        )
-        .expect("the ledger stream appends");
-    let at = crate::event_fixtures::placed_positions(&appended);
-
-    let head = |position: u64, group: &str, key: &str| {
-        group_head(
-            position,
-            TYPE_GENERATION_INGESTED,
-            group,
-            META_REPLAY_KEY,
-            key,
-        )
-    };
-    let heads: Vec<Option<GroupHead>> = ["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"]
-        .iter()
-        .map(|group| {
-            store
-                .latest_in_group(stream, group)
-                .unwrap_or_else(|e| panic!("the group lookup of {group} must succeed: {e}"))
-        })
-        .collect();
-    assert_eq!(
-        heads,
-        [
-            Some(head(at[2], "gc/a.rs", "gc/a.rs@h2#2")),
-            Some(head(at[3], "gd/c.md", "gd/c.md@h4#5")),
-            Some(head(at[4], "gc/b.rs", "gc/b.rs@h3#1")),
-            None,
-        ],
-        "an entry is its group's newest member until a later recording of the identity follows it"
-    );
-
-    let [answered, referenced] = answered_and_referenced(
-        store,
-        stream,
-        &["gc/a.rs", "gd/c.md", "gc/b.rs", "gc/never.rs"],
-    );
-    assert_eq!(
-        answered,
-        [
-            ("gc/a.rs".to_string(), Some("h2".to_string())),
-            ("gd/c.md".to_string(), Some("h4".to_string())),
-            ("gc/b.rs".to_string(), Some("h3".to_string())),
-            ("gc/never.rs".to_string(), None),
-        ],
-        "an entry answers its own generation, the later of two entries answers for its identity, \
-         and a never-recorded identity answers none"
-    );
-    assert_eq!(
-        answered, referenced,
-        "the lookup answers what the reference answers"
-    );
-}
-
-/// THE STORE REFUSES A DERIVED APPEND (spec 107): an append whose batch holds an event of a
-/// derived type - alone, or anywhere among events the store keeps - is refused with the named
-/// error carrying the first derived type of the batch, and writes NO event of it:
-/// not the knowledge event ahead of the derived one, not the grouped ledger entry beside it, whose
-/// group stays without a member. A batch of a knowledge event, a ledger entry and a type no class
-/// list names is accepted whole, on a stream the refused batches left unborn, and a derived batch
-/// refused after it, under an expectation the stream meets, leaves that stream as it stood.
+/// THE STORE REFUSES A DERIVED APPEND: an append whose batch holds an event of a derived type -
+/// alone, or anywhere among events the store keeps - is refused with the named error carrying
+/// the first derived type of the batch, and writes NO event of it: not the knowledge event ahead
+/// of the derived one, not the grouped event beside it, whose group stays without a member. A
+/// batch of a knowledge event, a grouped knowledge event and a type no class list names is
+/// accepted whole, on a stream the refused batches left unborn, and a derived batch refused
+/// after it, under an expectation the stream meets, leaves that stream as it stood.
 fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothing(
     store: &dyn EventStore,
 ) {
-    use rigger_domain::ingest::DERIVED_INDEX_TYPES;
-    use rigger_domain::retention::TYPE_GENERATION_INGESTED;
+    use rigger_domain::retention::DERIVED_TYPES;
     let stream = "c-derived";
     let of = |t: &str| Event::new(t, b"{}".to_vec());
+    let grouped = |tag: &str| grouped("DecisionMade", Some("gc/a.rs"), tag);
     use crate::test_support::naming;
     let refused = |expected: ExpectedRevision, events: &[Event]| {
         crate::test_support::refused(store.append(stream, expected, events))
@@ -368,24 +216,28 @@ fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothi
             .map(|e| e.type_)
             .collect()
     };
-    let head_of_the_entry = || {
+    let head_of_the_group = || {
         store
             .latest_in_group(stream, "gc/a.rs")
             .expect("the group lookup must succeed")
-            .map(|h| h.meta.get(rigger_domain::ingest::META_REPLAY_KEY).cloned())
+            .map(|h| h.meta.get("tag").cloned())
     };
 
     assert_eq!(
-        DERIVED_INDEX_TYPES,
+        DERIVED_TYPES,
         [
             "CodeEntityExtracted",
             "EdgeInferred",
             "DocConceptExtracted",
-            "DocLinkExtracted"
+            "DocLinkExtracted",
+            "GenerationIngested",
+            "CommunityAssigned",
+            "ConceptDerived",
+            "ConceptRealized"
         ],
-        "the four derived types the refusal is pinned over"
+        "the eight derived types the refusal is pinned over"
     );
-    for derived in DERIVED_INDEX_TYPES {
+    for derived in DERIVED_TYPES {
         assert_eq!(
             refused(ExpectedRevision::Any, &[of(derived)]),
             naming(derived),
@@ -397,7 +249,7 @@ fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothi
             ExpectedRevision::NoStream,
             &[
                 of("DecisionMade"),
-                identity_entry("gc", "a.rs", "h1", 1),
+                grouped("k1"),
                 of("DocLinkExtracted"),
                 of("CodeEntityExtracted"),
             ],
@@ -406,40 +258,36 @@ fn an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothi
         "the first derived type in batch order is named, wherever it stands in the batch"
     );
     assert_eq!(
-        (held(), head_of_the_entry()),
+        (held(), head_of_the_group()),
         (Vec::new(), None),
-        "a refused batch writes none of its events, and its grouped entry joins no group"
+        "a refused batch writes none of its events, and its grouped event joins no group"
     );
 
-    let kept = [
-        of("DecisionMade"),
-        identity_entry("gc", "a.rs", "h1", 1),
-        of("ReviewVerdict"),
-    ];
+    let kept = [of("DecisionMade"), grouped("k1"), of("ReviewVerdict")];
     let appended = store
         .append(stream, ExpectedRevision::NoStream, &kept)
-        .expect("knowledge, a ledger entry and a type no list names are accepted on a stream the refused batches never created");
+        .expect("knowledge, a grouped event and a type no list names are accepted on a stream the refused batches never created");
     assert_eq!(appended.written(), 3, "every kept event is written");
     let stood = (
         vec![
             "DecisionMade".to_string(),
-            TYPE_GENERATION_INGESTED.to_string(),
+            "DecisionMade".to_string(),
             "ReviewVerdict".to_string(),
         ],
-        Some(Some("gc/a.rs@h1#1".to_string())),
+        Some(Some("k1".to_string())),
     );
-    assert_eq!((held(), head_of_the_entry()), stood);
+    assert_eq!((held(), head_of_the_group()), stood);
 
     assert_eq!(
         refused(
             ExpectedRevision::Exact(2),
-            &[identity_entry("gc", "a.rs", "h2", 1), of("EdgeInferred")],
+            &[grouped("k2"), of("GenerationIngested")],
         ),
-        naming("EdgeInferred"),
+        naming("GenerationIngested"),
         "a derived batch is refused under an expectation the stream meets"
     );
     assert_eq!(
-        (held(), head_of_the_entry()),
+        (held(), head_of_the_group()),
         stood,
         "the stream and the group stand as they stood before the refused batch"
     );

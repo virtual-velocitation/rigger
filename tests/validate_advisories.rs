@@ -41,7 +41,7 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
 use common::cli::validate_after_init;
-use rigger::eventstore::{Event, ExpectedRevision};
+use rigger::eventstore::Event;
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
 use rigger::grounder::symbols::store as symstore;
 use std::path::Path;
@@ -313,32 +313,6 @@ rigger::test_cases! {
         2,
         0,
         "two derived events naming no identity are two derived events of no file identity",
-    );
-}
-
-/// A log whose perception is recorded as ledger entries alone holds no derived event: the state
-/// `rigger reset --derived` leaves a store in, which draws no bloat warning.
-#[test]
-fn validate_is_silent_on_log_bloat_when_the_log_holds_ledger_entries_and_no_derived_event() {
-    let err = validate_stderr_after(|root| {
-        common::cli::seed_run_events(root, &[("RunStarted", "{}")]);
-        common::cli::with_run_store(root, |store| {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[
-                        common::fixtures::generation_ingested("gc", "src/a.rs", "h1", "", false)
-                            .event(1),
-                    ],
-                )
-                .unwrap();
-        });
-    });
-    assert_eq!(
-        common::cli::bloat_lines(&err),
-        [""; 0],
-        "a ledger entry is no derived event; stderr:\n{err}"
     );
 }
 
