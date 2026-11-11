@@ -6,36 +6,38 @@
 //!
 //!  - the wire form: the kind strings a code entity event carries, which a graph folded before
 //!    the constants existed already holds, and the three of them that are no call target;
-//!  - the public projection: `Projector::apply` of hand-built entity events, then
-//!    `ContextGraph::calls` in both directions, `Projector::locate`, the tiers the whole graph
-//!    serves and the nodes a test proves, over each of the three kinds;
-//!  - the binary: `rigger graph --show` over a project graph holding a field, and a second
+//!  - the composed graph: the code store's view of planted file facts, then
+//!    `ContextGraph::calls` in both directions, `locate`, the tiers the whole graph serves and the
+//!    nodes a test proves, over each of the three kinds;
+//!  - the binary: `rigger graph --show` over a project holding a field, and a second
 //!    `rigger graph build` retiring a fn beside a member of its leaf;
 //!  - the files lens, whole-graph and re-projected, in process and through the served route;
 //!  - the coupling layer the code lens detects communities over.
 //!
-//! The rebuild test extracts each member from real source, so it runs on the `symbols` lane
-//! alone; both lanes run every other test, entering each kind as the entity event the fold reads.
+//! The binary tests extract each member from real source, so they run on the `symbols` lane
+//! alone; both lanes run every other test, planting each kind as the fact an extractor reads.
 
 use crate::common;
 #[cfg(feature = "symbols")]
 use crate::symbol_index;
 
-use crate::common::fixtures::RecordsRead;
-use common::cli::{ambiguous_show, open_graph, seed_rigger_dir, show_head, temp_project};
+#[cfg(feature = "symbols")]
+use common::cli::{ambiguous_show, seed_rigger_dir, show_head, temp_project};
 use common::fixtures::{
-    apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
-    call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
-    node_with_optional_attrs, plain,
+    call_edge_pairs, call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node,
+    located_many, node_with_optional_attrs, plain, planted_file, view_graph,
 };
 use common::lens::{files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES_ROUTE};
 use common::served::served_json;
+use rigger::code_facts::FileFacts;
+use rigger::code_view::FactsView;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    is_call_target, CallGraph, Direction, Graph, CODE_KIND_CONSTANT, CODE_KIND_FIELD,
-    CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
-    CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE, KIND_CODE_ENTITY, KIND_CONCEPT,
-    NON_TARGET_KINDS, REL_CALLS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    is_call_target, CallGraph, ContextGraph, Direction, Graph, Neighbors, CODE_KIND_CONSTANT,
+    CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_MODULE,
+    CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE, KIND_CODE_ENTITY,
+    KIND_CONCEPT, NON_TARGET_KINDS, REL_CALLS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED,
 };
 
 /// The three kind strings no call resolves onto, as an entity event spells them.
@@ -133,23 +135,33 @@ fn tiers_onto(p: &(impl rigger::contextgraph::Neighbors + ?Sized), target: &str)
     tiers
 }
 
-/// A projection where `src/a.rs` holds `fn caller` calling `open`: each `(file, kind)` of
-/// `early` is a definition of `open` folded before the call, each of `late` one folded after.
-fn caller_of_open(early: &[(&str, &str)], late: &[(&str, &str)]) -> Projector {
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "caller", 1, true);
-    let mut pos = 1;
-    for (file, kind) in early {
-        pos += 1;
-        apply_code_entity(&p, pos, file, "open", kind, 2, "rust");
+/// The records (none) and the code store's view of a tree holding exactly `files`.
+fn tree(files: Vec<FileFacts>) -> (Projector, FactsView) {
+    (
+        Projector::open(":memory:", "test").unwrap(),
+        common::fixtures::facts_view(files),
+    )
+}
+
+/// A tree where `src/a.rs` holds `fn caller` calling `open`, and each `(file, kind)` of `members`
+/// is a definition of `open` of that kind.
+fn caller_of_open(members: &[(&str, &str)]) -> (Projector, FactsView) {
+    let mut caller_file = vec![("caller", CODE_KIND_FUNCTION)];
+    let mut files = Vec::new();
+    for (file, kind) in members {
+        if *file == "src/a.rs" {
+            caller_file.push(("open", kind));
+        } else {
+            files.push(planted_file(file, &[("open", kind)], &[], &[]));
+        }
     }
-    pos += 1;
-    apply_call(&p, pos, "src/a.rs", "open", "caller");
-    for (file, kind) in late {
-        pos += 1;
-        apply_code_entity(&p, pos, file, "open", kind, 2, "rust");
-    }
-    p
+    files.push(planted_file(
+        "src/a.rs",
+        &caller_file,
+        &[("caller", "open")],
+        &[],
+    ));
+    tree(files)
 }
 
 /// The one call of [`caller_of_open`] landed on `src/b.rs`'s fn.
@@ -164,13 +176,10 @@ fn the_call_onto_the_fn() -> Vec<(String, String)> {
 #[test]
 fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions() {
     for kind in NON_TARGETS {
-        let p = caller_of_open(&[("src/b.rs", "function"), ("src/a.rs", kind)], &[]);
+        let (records, view) = caller_of_open(&[("src/b.rs", "function"), ("src/a.rs", kind)]);
+        let p = view_graph(&records, &view);
 
-        let down = call_walk(
-            &common::fixtures::records_graph(&p),
-            "src/a.rs::caller",
-            Direction::Down,
-        );
+        let down = call_walk(&p, "src/a.rs::caller", Direction::Down);
         assert_eq!(
             call_node_ids(&down),
             ["src/a.rs::caller", "src/b.rs::open"],
@@ -192,11 +201,7 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
             "{kind}: one call target of the leaf is no frontier"
         );
 
-        let up = call_walk(
-            &common::fixtures::records_graph(&p),
-            "src/b.rs::open",
-            Direction::Up,
-        );
+        let up = call_walk(&p, "src/b.rs::open", Direction::Up);
         assert_eq!(
             call_node_ids(&up),
             ["src/a.rs::caller", "src/b.rs::open"],
@@ -213,11 +218,7 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
             "{kind}: the caller sits one hop above the fn"
         );
 
-        let at_member = call_walk(
-            &common::fixtures::records_graph(&p),
-            "src/a.rs::open",
-            Direction::Up,
-        );
+        let at_member = call_walk(&p, "src/a.rs::open", Direction::Up);
         assert_eq!(
             call_node_ids(&at_member),
             ["src/a.rs::open"],
@@ -240,17 +241,19 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
     }
 }
 
-/// The call and its reference are tiered beside a member of the called leaf as with no member
+/// GIVEN a same-file call naming the leaf of a field, a property or a declaration, WHEN the
+/// whole graph is read, THEN the call's edges carry the tier they carry with no member
 /// present: inferred, onto the caller's placeholder `src/a.rs::%open`, the member's own node
 /// keeping its `CONTAINS` edge alone. A fn of the leaf in the caller's own file is what tiers
 /// them extracted, onto that fn.
 #[test]
 fn a_member_of_the_called_leaf_changes_no_tier_of_the_call() {
+    let tiers = |members: &[(&str, &str)], target: &str| {
+        let (records, view) = caller_of_open(members);
+        tiers_onto(&view_graph(&records, &view), target)
+    };
     assert_eq!(
-        tiers_onto(
-            &caller_of_open(&[("src/a.rs", "function")], &[]),
-            "src/a.rs::open"
-        ),
+        tiers(&[("src/a.rs", "function")], "src/a.rs::open"),
         [
             "CALLS extracted",
             "CONTAINS extracted",
@@ -259,56 +262,62 @@ fn a_member_of_the_called_leaf_changes_no_tier_of_the_call() {
         "a same-file fn of the leaf is the resolved local call"
     );
     assert_eq!(
-        tiers_onto(
-            &caller_of_open(&[("src/b.rs", "function")], &[]),
-            "src/a.rs::%open"
-        ),
+        tiers(&[("src/b.rs", "function")], "src/a.rs::%open"),
         ["CALLS inferred", "REFERENCES inferred"],
         "with no member the call is the inferred cross-file call"
     );
     for kind in NON_TARGETS {
-        let p = caller_of_open(&[("src/b.rs", "function"), ("src/a.rs", kind)], &[]);
+        let members = [("src/b.rs", "function"), ("src/a.rs", kind)];
         assert_eq!(
-            tiers_onto(&p, "src/a.rs::%open"),
+            tiers(&members, "src/a.rs::%open"),
             ["CALLS inferred", "REFERENCES inferred"],
             "{kind}: the call keeps the tier it has with no member"
         );
         assert_eq!(
-            tiers_onto(&p, "src/a.rs::open"),
+            tiers(&members, "src/a.rs::open"),
             ["CONTAINS extracted"],
             "{kind}: the member keeps its own CONTAINS edge alone"
         );
     }
 }
 
-/// The node ids the DOWN walk from the caller reaches at the ambiguous floor.
-fn reached_at_the_ambiguous_floor(p: &Projector) -> Vec<String> {
+/// The node ids the DOWN walk from the caller of [`caller_of_open`] with `members` reaches at
+/// the ambiguous floor.
+fn reached_at_the_ambiguous_floor(members: &[(&str, &str)]) -> Vec<String> {
+    let (records, view) = caller_of_open(members);
     call_node_ids(
-        &p.calls(
-            &["src/a.rs::caller".to_string()],
-            Direction::Down,
-            5,
-            TIER_AMBIGUOUS,
-        )
-        .unwrap(),
+        &view_graph(&records, &view)
+            .calls(
+                &["src/a.rs::caller".to_string()],
+                Direction::Down,
+                5,
+                TIER_AMBIGUOUS,
+            )
+            .unwrap(),
     )
 }
 
-/// GIVEN a call already folded onto a name nothing defines, WHEN a field, a property or a
-/// declaration of that name folds in another file, THEN the call keeps the tier it had and the
-/// walk still ends at the placeholder; a fn folding there instead upgrades it and is reached.
+/// The tiers onto the placeholder of the call of [`caller_of_open`] with `members`.
+fn tiers_onto_the_placeholder(members: &[(&str, &str)]) -> Vec<String> {
+    let (records, view) = caller_of_open(members);
+    tiers_onto(&view_graph(&records, &view), "src/a.rs::%open")
+}
+
+/// GIVEN a call onto a name no call target defines, WHEN a field, a property or a declaration of
+/// that name stands in another file, THEN the call keeps the tier it has with nothing there and
+/// the walk still ends at the placeholder; a fn there instead upgrades it and is reached.
 #[test]
-fn a_member_folding_after_a_call_upgrades_no_tier_and_adds_no_callee() {
+fn a_member_elsewhere_upgrades_no_tier_and_adds_no_callee() {
     assert_eq!(
-        tiers_onto(&caller_of_open(&[], &[]), "src/a.rs::%open"),
+        tiers_onto_the_placeholder(&[]),
         ["CALLS ambiguous", "REFERENCES ambiguous"],
         "a call onto a name nothing defines is ambiguous"
     );
-    let defined = caller_of_open(&[], &[("src/c.rs", "function")]);
+    let defined = [("src/c.rs", "function")];
     assert_eq!(
-        tiers_onto(&defined, "src/a.rs::%open"),
+        tiers_onto_the_placeholder(&defined),
         ["CALLS inferred", "REFERENCES inferred"],
-        "a fn of the name folding later upgrades the call"
+        "a fn of the name elsewhere upgrades the call"
     );
     assert_eq!(
         reached_at_the_ambiguous_floor(&defined),
@@ -316,14 +325,14 @@ fn a_member_folding_after_a_call_upgrades_no_tier_and_adds_no_callee() {
         "a fn of the name is the callee"
     );
     for kind in NON_TARGETS {
-        let p = caller_of_open(&[], &[("src/c.rs", kind)]);
+        let members = [("src/c.rs", kind)];
         assert_eq!(
-            tiers_onto(&p, "src/a.rs::%open"),
+            tiers_onto_the_placeholder(&members),
             ["CALLS ambiguous", "REFERENCES ambiguous"],
             "{kind}: the member upgrades no tier"
         );
         assert_eq!(
-            reached_at_the_ambiguous_floor(&p),
+            reached_at_the_ambiguous_floor(&members),
             ["src/a.rs::%open", "src/a.rs::caller"],
             "{kind}: the walk ends at the placeholder, never at the member"
         );
@@ -336,13 +345,14 @@ fn a_member_folding_after_a_call_upgrades_no_tier_and_adds_no_callee() {
 #[test]
 fn a_member_adds_no_candidate_to_a_frontier_a_constant_of_the_leaf_stays_in() {
     for kind in NON_TARGETS {
-        let p = caller_of_open(
-            &[("src/b.rs", "function"), ("src/a.rs", kind)],
-            &[("src/c.rs", "constant"), ("src/d.rs", kind)],
-        );
-
+        let (records, view) = caller_of_open(&[
+            ("src/b.rs", "function"),
+            ("src/a.rs", kind),
+            ("src/c.rs", "constant"),
+            ("src/d.rs", kind),
+        ]);
         let down = call_walk(
-            &common::fixtures::records_graph(&p),
+            &view_graph(&records, &view),
             "src/a.rs::caller",
             Direction::Down,
         );
@@ -362,17 +372,25 @@ fn a_member_adds_no_candidate_to_a_frontier_a_constant_of_the_leaf_stays_in() {
     }
 }
 
-/// The UP walk from `src/a.rs::helper` over a projection where `src/a.rs::slot`, of `kind`,
-/// calls `helper`, and `src/d.rs::user` calls `slot` across the file boundary.
+/// The UP walk from `src/a.rs::helper` over a tree where `src/a.rs::slot`, of `kind`, calls
+/// `helper`, and `src/d.rs::user` calls `slot` across the file boundary.
 fn up_through_a_caller_of(kind: &str) -> CallGraph {
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "helper", 1, true);
-    apply_code_entity(&p, 2, "src/a.rs", "slot", kind, 2, "rust");
-    apply_call(&p, 3, "src/a.rs", "helper", "slot");
-    apply_def(&p, 4, "src/d.rs", "user", 1, true);
-    apply_call(&p, 5, "src/d.rs", "slot", "user");
+    let (records, view) = tree(vec![
+        planted_file(
+            "src/a.rs",
+            &[("helper", CODE_KIND_FUNCTION), ("slot", kind)],
+            &[("slot", "helper")],
+            &[],
+        ),
+        planted_file(
+            "src/d.rs",
+            &[("user", CODE_KIND_FUNCTION)],
+            &[("user", "slot")],
+            &[],
+        ),
+    ]);
     call_walk(
-        &common::fixtures::records_graph(&p),
+        &view_graph(&records, &view),
         "src/a.rs::helper",
         Direction::Up,
     )
@@ -408,10 +426,17 @@ fn a_member_the_up_walk_reaches_has_no_caller() {
     }
 }
 
-/// The `<id> <proven_by>` of each node of `p` a test proves, sorted.
-fn proven(p: &Projector) -> Vec<String> {
-    let mut proven: Vec<String> = p
-        .whole()
+/// The `<id> <proven_by>` of each node a test proves in a tree holding `files` beside
+/// `tests/t.rs`, whose test `t` calls `open`, sorted.
+fn proven(mut files: Vec<FileFacts>) -> Vec<String> {
+    files.push(planted_file(
+        "tests/t.rs",
+        &[("t", CODE_KIND_FUNCTION)],
+        &[("t", "open")],
+        &[],
+    ));
+    let (records, view) = tree(files);
+    let mut proven: Vec<String> = Neighbors::whole(&view_graph(&records, &view))
         .unwrap()
         .nodes
         .iter()
@@ -421,76 +446,62 @@ fn proven(p: &Projector) -> Vec<String> {
     proven
 }
 
-/// Fold one test-origin reference to `open` from `tests/t.rs` line 3 at `pos`.
-fn apply_test_reference(p: &Projector, pos: u64) {
-    apply_edge_inferred_evidence(p, pos, "tests/t.rs", "open", 3);
-}
-
-/// GIVEN a test referencing `open`, WHEN the one fn `open` stands beside a field, a property or
-/// a declaration of that leaf, THEN the proof lands on the fn as its one definition; and WHEN
-/// the member is the only `open`, folded before or after the reference, THEN no node is proven.
+/// GIVEN a test calling `open`, WHEN the one fn `open` stands beside a field, a property or a
+/// declaration of that leaf, THEN the proof lands on the fn as its one definition; and WHEN the
+/// member is the only `open`, THEN no node is proven, where a lone fn takes the proof.
 #[test]
 fn a_test_proof_lands_on_the_fn_and_never_on_a_member_of_its_leaf() {
+    let open_of = |file: &str, kind: &str| planted_file(file, &[("open", kind)], &[], &[]);
     for kind in NON_TARGETS {
-        let beside_a_fn = Projector::open(":memory:", "test").unwrap();
-        apply_def(&beside_a_fn, 1, "src/b.rs", "open", 1, true);
-        apply_code_entity(&beside_a_fn, 2, "src/a.rs", "open", kind, 2, "rust");
-        apply_test_reference(&beside_a_fn, 3);
         assert_eq!(
-            proven(&beside_a_fn),
+            proven(vec![
+                open_of("src/b.rs", CODE_KIND_FUNCTION),
+                open_of("src/a.rs", kind)
+            ]),
             ["src/b.rs::open 1"],
             "{kind}: the fn is the one definition the proof resolves onto"
         );
-
-        let member_first = Projector::open(":memory:", "test").unwrap();
-        apply_code_entity(&member_first, 1, "src/a.rs", "open", kind, 2, "rust");
-        apply_test_reference(&member_first, 2);
         assert_eq!(
-            proven(&member_first),
+            proven(vec![open_of("src/a.rs", kind)]),
             Vec::<String>::new(),
-            "{kind}: a reference folding after the member proves nothing"
-        );
-
-        let member_last = Projector::open(":memory:", "test").unwrap();
-        apply_test_reference(&member_last, 1);
-        apply_code_entity(&member_last, 2, "src/a.rs", "open", kind, 2, "rust");
-        assert_eq!(
-            proven(&member_last),
-            Vec::<String>::new(),
-            "{kind}: a member folding after the reference takes no waiting proof"
+            "{kind}: a member alone takes no proof"
         );
     }
-    let fn_last = Projector::open(":memory:", "test").unwrap();
-    apply_test_reference(&fn_last, 1);
-    apply_def(&fn_last, 2, "src/a.rs", "open", 2, true);
     assert_eq!(
-        proven(&fn_last),
+        proven(vec![open_of("src/a.rs", CODE_KIND_FUNCTION)]),
         ["src/a.rs::open 1"],
-        "a fn folding after the reference takes the waiting proof"
+        "a lone fn takes the proof"
     );
 }
 
-/// GIVEN a project graph where `src/a.rs` holds a field `open` and `src/b.rs` a fn `open`, and
-/// a field `state` no fn shares, WHEN the operator runs `rigger graph --show` on each leaf, THEN
-/// the shared leaf lists the field beside the fn and the lone field is shown at its own site.
+/// GIVEN a project whose `src/a.rs` holds a struct with a field `open` and a field `state`, and
+/// whose `src/b.rs` holds a fn `open`, WHEN the operator runs `rigger graph --show` on each leaf,
+/// THEN the shared leaf lists the field beside the fn and the lone field is shown at its own
+/// site.
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_answers_a_fields_leaf() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
-    {
-        let p = open_graph(root);
-        apply_def(&p, 1, "src/b.rs", "open", 1, true);
-        apply_code_entity(&p, 2, "src/a.rs", "open", "field", 2, "rust");
-        apply_code_entity(&p, 3, "src/a.rs", "state", "field", 3, "rust");
-    }
+    common::fixtures::write_files(
+        root,
+        &[
+            ("src/b.rs", "pub fn open() {}\n"),
+            (
+                "src/a.rs",
+                "pub struct S {\n    open: u8,\n    state: u8,\n}\n",
+            ),
+        ],
+    );
+    common::fixtures::commit_tree(root);
 
     assert_eq!(
         common::cli::graph_ok(root, &["graph", "--show", "open"]),
         ambiguous_show(
             "open",
             &[
-                ("src/a.rs::open", "src/a.rs"),
+                ("src/a.rs::S.open", "src/a.rs"),
                 ("src/b.rs::open", "src/b.rs")
             ]
         ),
@@ -499,10 +510,11 @@ fn graph_show_answers_a_fields_leaf() {
     assert_eq!(
         show_head(root, "state"),
         [
-            "show src/a.rs::state",
-            "  site: src/a.rs:3   kind field   degree 1"
+            "show src/a.rs::S.state",
+            "  site: src/a.rs:3   kind field   degree 2"
         ],
-        "a lone field's leaf is located at the field's own site"
+        "a lone field's leaf is located at the field's own site, its edges the struct's CONTAINS \
+         and its community"
     );
 }
 

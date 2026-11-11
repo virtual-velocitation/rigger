@@ -39,18 +39,15 @@ use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
 use common::fixtures::apply_code_entity;
 
+#[cfg(feature = "symbols")]
 #[test]
 fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or_findings() {
     let dir = temp_store_project();
     let root = dir.path();
     let file = "lonely.rs";
 
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
-    }
+    std::fs::write(root.join(file), "fn solo() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
 
     let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");

@@ -17,7 +17,6 @@ mod config;
 mod csharp_definition_sources;
 mod docs_overlay;
 mod events;
-mod extent_sources;
 mod extraction_tree;
 mod git;
 mod go_definition_sources;
@@ -36,13 +35,14 @@ mod python_definition_sources;
 mod read_fault;
 mod rust_definition_sources;
 mod scratch;
+#[cfg(any(feature = "store", not(feature = "core")))]
+mod shown;
 mod spawn;
 pub use caller_sources::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
 pub use docs_overlay::*;
 pub use events::*;
-pub use extent_sources::*;
 pub use extraction_tree::*;
 pub use git::*;
 pub use go_definition_sources::*;
@@ -61,6 +61,8 @@ pub use python_definition_sources::*;
 pub use read_fault::*;
 pub use rust_definition_sources::*;
 pub use scratch::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use shown::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]

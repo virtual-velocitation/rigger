@@ -120,41 +120,14 @@ pub fn pair_map(pairs: &[(String, String)]) -> BTreeMap<String, String> {
     pairs.iter().cloned().collect()
 }
 
-/// The ledger half of a `RecordFold` double that folds no ledger entry: it holds no generation
-/// and refuses the ledger fold. Expanded inside that double's `impl RecordFold` block.
-#[macro_export]
-macro_rules! record_fold_folds_no_entry {
-    () => {
-        fn current_generation(
-            &self,
-            _identity: &str,
-        ) -> Result<Option<String>, rigger::contextgraph::Error> {
-            Ok(None)
-        }
-        fn held_identities(&self) -> Result<Vec<String>, rigger::contextgraph::Error> {
-            Ok(Vec::new())
-        }
-        fn apply_generation(
-            &self,
-            _entry: &rigger::eventstore::Event,
-            _batch: rigger::contextgraph::EntryBatch<'_>,
-        ) -> Result<rigger::contextgraph::EntryFold, rigger::contextgraph::Error> {
-            Err(rigger::contextgraph::Error(
-                "this double folds no ledger entry".to_string(),
-            ))
-        }
-    };
-}
-
-/// A `RecordFold` double that owes no rebuild, with the ledger half of a double that folds no
-/// entry (`record_fold_folds_no_entry`), expanded inside that double's `impl RecordFold` block.
+/// A `RecordFold` double that owes no rebuild, expanded inside that double's `impl RecordFold`
+/// block.
 #[macro_export]
 macro_rules! record_fold_owes_nothing {
     () => {
         fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
             Ok(false)
         }
-        $crate::record_fold_folds_no_entry!();
     };
 }
 
@@ -231,19 +204,23 @@ impl rigger::contextgraph::ContextGraph for MinimalGraph {
 pub fn records_graph(
     records: &dyn rigger::contextgraph::Neighbors,
 ) -> rigger::composed::Composed<'_> {
-    let stamp = rigger::code_facts::Stamp {
+    view_graph(
+        records,
+        &rigger::code_view::FactsView::new(view_stamp("empty", 0, 0), Vec::new()),
+    )
+}
+
+/// The stamp of a test's code view of the tree `tree`, read by an extractor of `fingerprint`.
+fn view_stamp(tree: &str, fingerprint: u64, seq: u64) -> rigger::code_facts::Stamp {
+    rigger::code_facts::Stamp {
         tip: rigger::code_facts::Tip {
             head: "main".to_string(),
             commit: None,
-            tree: "empty".to_string(),
+            tree: tree.to_string(),
         },
-        fingerprint: 0,
-        seq: 0,
-    };
-    view_graph(
-        records,
-        &rigger::code_view::FactsView::new(stamp, Vec::new()),
-    )
+        fingerprint,
+        seq,
+    }
 }
 
 /// The record half `records` composed with `view`, read from a worktree that matches its tree.
@@ -263,6 +240,204 @@ pub fn view_graph<'r>(
         honesty,
     )
     .expect("a view composes")
+}
+
+/// The code view of a tree holding exactly `files`, each `(path, source text)` pair read into its
+/// facts by `extract` as the code store reads a file.
+pub fn files_view(
+    extract: &impl rigger::code_view::Extract,
+    files: &[(&str, &str)],
+) -> rigger::code_view::FactsView {
+    let facts = files
+        .iter()
+        .map(|(path, text)| {
+            let entry = rigger::code_view::Entry {
+                path: path.to_string(),
+                blob: String::new(),
+            };
+            extract.extract(&entry, text.as_bytes())
+        })
+        .collect();
+    rigger::code_view::FactsView::new(view_stamp("files", extract.fingerprint(), 1), facts)
+}
+
+/// The subgraph `depth` hops around `seeds` that `records` composed with the code view of a tree
+/// holding exactly `files` ([`files_view`], read by `extract`) serves: the extractor and
+/// composition an end-to-end test drives.
+pub fn files_subgraph(
+    records: &dyn rigger::contextgraph::Neighbors,
+    extract: &impl rigger::code_view::Extract,
+    files: &[(&str, &str)],
+    seeds: &[&str],
+    depth: i64,
+) -> Graph {
+    let view = files_view(extract, files);
+    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
+    ContextGraph::subgraph(&view_graph(records, &view), &seeds, depth).unwrap()
+}
+
+/// The code view of a tree whose files hold exactly `facts`, planted as an extractor would read
+/// them: the facts a reader's rule is exercised over without a language's extractor.
+pub fn facts_view(facts: Vec<rigger::code_facts::FileFacts>) -> rigger::code_view::FactsView {
+    rigger::code_view::FactsView::new(view_stamp("facts", 0, 1), facts)
+}
+
+/// A planted Rust file at `path`, as its extractor would read it: each `(leaf, kind)` of `defs` a
+/// file-level definition on its own line from line 1, each `(caller, callee)` of `calls` a call to
+/// `callee` inside the definition named `caller` on that definition's line, and each of `refs` a
+/// caller-less reference to the name on line 1. A file under `tests/` is test scope, as the registry's
+/// path rule reads it.
+pub fn planted_file(
+    path: &str,
+    defs: &[(&str, &str)],
+    calls: &[(&str, &str)],
+    refs: &[&str],
+) -> rigger::code_facts::FileFacts {
+    use rigger::code_facts::{Def, FileFacts, Mention, MentionKind, Scope};
+    let index_of = |leaf: &str| {
+        defs.iter()
+            .position(|(name, _)| *name == leaf)
+            .unwrap_or_else(|| panic!("{path}: no definition {leaf} holds a call"))
+    };
+    let mention = |enclosing: Option<u32>, leaf: &str, kind: MentionKind, line: u32| Mention {
+        enclosing,
+        name: leaf.to_string(),
+        leaf: leaf.to_string(),
+        kind,
+        line,
+        test: false,
+    };
+    let calls = calls.iter().map(|(caller, callee)| {
+        let at = index_of(caller) as u32;
+        mention(Some(at), callee, MentionKind::Call, at + 1)
+    });
+    let refs = refs
+        .iter()
+        .map(|leaf| mention(None, leaf, MentionKind::Call, 1));
+    FileFacts {
+        path: path.to_string(),
+        lang: "rust".to_string(),
+        scope: if path.starts_with("tests/") {
+            Scope::Test
+        } else {
+            Scope::Product
+        },
+        defs: defs
+            .iter()
+            .zip(1u32..)
+            .map(|((leaf, kind), line)| Def {
+                local: leaf.to_string(),
+                leaf: leaf.to_string(),
+                kind: kind.to_string(),
+                line,
+                end_line: line,
+                parent: None,
+                test: false,
+            })
+            .collect(),
+        mentions: calls.chain(refs).collect(),
+        ..Default::default()
+    }
+}
+
+/// A planted tree: the files a test's code view holds, each built up as its extractor would read
+/// it - a design doc for a `.md` path, a Rust file ([`planted_file`]) otherwise.
+#[derive(Default)]
+pub struct PlantedTree {
+    pub files: Vec<rigger::code_facts::FileFacts>,
+}
+
+impl PlantedTree {
+    /// The planted file at `path`, added empty when the tree holds none.
+    pub fn file(&mut self, path: &str) -> &mut rigger::code_facts::FileFacts {
+        if let Some(i) = self.files.iter().position(|f| f.path == path) {
+            return &mut self.files[i];
+        }
+        let mut file = planted_file(path, &[], &[], &[]);
+        if path.ends_with(".md") {
+            file.lang = "markdown".to_string();
+            file.half = rigger::code_facts::Half::Design;
+        }
+        self.files.push(file);
+        self.files.last_mut().unwrap()
+    }
+
+    /// Define the file-level `leaf` of `kind` at `line` of `path`.
+    pub fn define(&mut self, path: &str, leaf: &str, kind: &str, line: u32) {
+        self.file(path).defs.push(rigger::code_facts::Def {
+            local: leaf.to_string(),
+            leaf: leaf.to_string(),
+            kind: kind.to_string(),
+            line,
+            end_line: line,
+            parent: None,
+            test: false,
+        });
+    }
+
+    /// The design-intent concept `id` of `kind` titled `title`, yielded by the document `id`
+    /// names (its text before any `#`).
+    pub fn concept(&mut self, kind: &str, id: &str, title: &str) {
+        let doc = id.split('#').next().unwrap();
+        self.file(doc)
+            .doc_concepts
+            .push(rigger::code_facts::DocConcept {
+                kind: kind.to_string(),
+                id: id.to_string(),
+                title: title.to_string(),
+            });
+    }
+
+    /// A design-intent link of `rel` from the concept `from` to the tree file `to`, yielded by
+    /// the document `from` names.
+    pub fn link(&mut self, from: &str, rel: &str, to: &str) {
+        self.file(to);
+        let doc = from.split('#').next().unwrap();
+        self.file(doc).doc_links.push(rigger::code_facts::DocLink {
+            from: from.to_string(),
+            rel: rel.to_string(),
+            to: to.to_string(),
+        });
+    }
+
+    /// A design-intent concept plus a typed code-binding link of `rel` to the tree file `to`, so
+    /// a traversal seeded on `to` reaches the concept.
+    pub fn design_intent(&mut self, kind: &str, id: &str, title: &str, rel: &str, to: &str) {
+        self.concept(kind, id, title);
+        self.link(id, rel, to);
+    }
+
+    /// The code view of the planted tree.
+    pub fn view(&self) -> rigger::code_view::FactsView {
+        facts_view(self.files.clone())
+    }
+
+    /// The subgraph `depth` hops around `seeds` that `records` composed with the planted tree
+    /// serves.
+    pub fn subgraph(
+        &self,
+        records: &dyn rigger::contextgraph::Neighbors,
+        seeds: &[String],
+        depth: i64,
+    ) -> Graph {
+        ContextGraph::subgraph(&view_graph(records, &self.view()), seeds, depth).unwrap()
+    }
+}
+
+/// An opener of the record half composed with the code view it holds ([`view_graph`]), whatever
+/// the filter: the context a test wires where the composition root wires the code store's.
+pub struct ViewedRecords<'a> {
+    pub records: &'a dyn rigger::contextgraph::Neighbors,
+    pub view: rigger::code_view::FactsView,
+}
+
+impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
+    fn open(
+        &self,
+        _filter: rigger::code_view::ViewFilter,
+    ) -> Result<Box<dyn ContextGraph + '_>, rigger::contextgraph::Error> {
+        Ok(Box::new(view_graph(self.records, &self.view)))
+    }
 }
 
 /// An opener of the record half it holds read as [`records_graph`], whatever the filter: the

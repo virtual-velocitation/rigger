@@ -7,7 +7,7 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
-///   - `--derived` (spec 107, criterion 16) migrates the EVENT LOG: see [`reset_derived`].
+///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`].
 ///
 /// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
 /// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
@@ -82,9 +82,9 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         reset_scratch_orphans()?;
     }
     if modes.derived {
-        // Decided up front, before migrating: rewriting and deleting rows and reclaiming the
-        // file are mechanics of the embedded log, not port operations, so `--derived` names the
-        // backend it needs rather than quietly doing nothing on one the migration does not run on.
+        // Decided up front, before deleting: deleting rows and reclaiming the file are mechanics
+        // of the embedded log, not port operations, so `--derived` names the backend it needs
+        // rather than quietly doing nothing on one the delete does not run on.
         // Checked HERE (inside this mode's own block), not as an early top-level return
         // before `--runs`/`--build-cache` even run - both those modes complete regardless
         // of what `--derived` decides, matching the SAME "each mode sheds only its own
@@ -92,21 +92,21 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // refusal" honesty the live-writer guard just below already commits to.
         if !selection.is_sqlite() {
             return Err(format!(
-                "reset --derived: the migration rewrites and deletes rows of the event log and \
-                 vacuums the file, which is a mechanic of the embedded {RIGGER_DIR}/events.db \
-                 store; this project is configured for the server-backed store, where the \
-                 migration does not run. Re-run it against a project on the sqlite backend. \
-                 Refusing rather than reporting a migration that did not happen."
+                "reset --derived: the delete removes rows of the event log and vacuums the \
+                 file, which is a mechanic of the embedded {RIGGER_DIR}/events.db store; this \
+                 project is configured for the server-backed store, where the delete does not \
+                 run. Re-run it against a project on the sqlite backend. Refusing rather than \
+                 reporting a delete that did not happen."
             )
             .into());
         }
-        // THE MIGRATION REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
-        // gaps by design, and a writer built before this migration ran can reissue one of those
+        // THE DELETE REFUSES LIVE WRITERS (spec 71, criterion 2): `--derived` leaves revision
+        // gaps by design, and a writer built before this delete ran can reissue one of those
         // gaps and reorder the log (the incident spec 71 records) if the log changes under it.
         // `--force-live` is the explicit, named escape hatch that skips this check entirely (it
         // verifies nothing - the operator owns that risk once they pass it).
         //
-        // The step lock the guard took is held until the migration returns, so its verdict that
+        // The step lock the guard took is held until the delete returns, so its verdict that
         // no `rigger run` is running stays true while the log is rewritten: a run started
         // meanwhile refuses on the held lock.
         let _step_lock = if modes.force_live {
@@ -114,10 +114,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         } else {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
-        reset_derived(&loc, &|root| {
-            let hasher = rigger::worktree::BlobHasher::new(root);
-            Box::new(move |bytes| Ok(hasher.hash(bytes)?))
-        })?;
+        reset_derived(&loc)?;
     }
     Ok(())
 }
@@ -190,8 +187,9 @@ impl ResetEnv {
 /// prunable accumulation `--runs` / `--derived` would act on, each with a MEASURED count and the
 /// flag that acts on it, then exits 0. Read-only by construction - every number here comes from a
 /// `SELECT`, never from running a prune, so invoking the bare command is always safe to do "just
-/// to look". The `--derived` line reads [`Store::count_derived`] over the project's run stream, the
-/// read the migration itself acts on, so what it names never drifts from what `--derived` sheds.
+/// to look". The `--derived` line reads [`Store::count_derived`] over the project's run stream,
+/// the predicate the delete itself acts on, so what it names never drifts from what `--derived`
+/// deletes.
 ///
 /// WHY A COUNT, NOT A DISK-BYTE FORECAST. The flagged reports name bytes RECLAIMED
 /// ([`reclamation_lines`], `reset_runs`'s own line) because they measure a real before/after
@@ -225,12 +223,12 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
         );
     }
 
-    // --derived: the migration is a mechanic of the embedded sqlite store (see `reset_derived`'s
+    // --derived: the delete is a mechanic of the embedded sqlite store (see `reset_derived`'s
     // own doc) - honest per backend rather than a count of a store it does not run on.
     if selection.is_sqlite() {
         let es = open_sqlite_store(&loc.file("events.db"))?;
         let counted = es.count_derived(&loc.run_stream())?;
-        println!("{}", derived_menu_line(selection, Some(&counted)));
+        println!("{}", derived_menu_line(selection, Some(counted)));
     } else {
         println!("{}", derived_menu_line(selection, None));
     }
@@ -249,43 +247,28 @@ fn runs_menu_line(stats: &PruneStats) -> String {
 
 /// What a store holding no derived event is told of it, by the menu's `--derived` line and by
 /// `rigger reset --derived` itself.
-const NO_DERIVED_EVENT_TO_SHED: &str = "no derived event to shed";
+const NO_DERIVED_EVENT_TO_DELETE: &str = "no derived event to delete";
 
-/// How the operator is told what the derived index of a log holds (spec 107): `events` derived
-/// events of `identities` file identities, the two numbers [`Store::count_derived`] answers as
-/// its count of events shed and the size of its set of identities.
-fn derived_count_phrase(events: usize, identities: usize) -> String {
-    format!("{events} derived events of {identities} file identities")
-}
-
-/// THE ONE READING of a [`DerivedCount`] (spec 107): a store holds a derived event when the
-/// count's events shed is not zero, and what it holds is told as those events of the size of
-/// its identity set ([`derived_count_phrase`]). `None` for a count holding no derived event -
-/// decided by the events alone, so a store whose derived rows all name no identity still holds
-/// what `--derived` sheds. The menu's `--derived` line, `rigger validate`'s log-bloat advisory
-/// and `rigger reset --derived` itself each ask this whether the store holds a derived event,
-/// never the count's fields; the migration then reads the count's identity set for the entries
-/// it writes ([`tree_entries`]).
-pub(crate) fn derived_events_held(counted: &DerivedCount) -> Option<String> {
-    match counted.shed {
+/// THE ONE READING of a count of derived events ([`Store::count_derived`]): `None` for none, and
+/// otherwise how the operator is told of them. The menu's `--derived` line and `rigger
+/// validate`'s log-bloat advisory each ask this whether the store holds a derived event.
+pub(crate) fn derived_events_held(counted: usize) -> Option<String> {
+    match counted {
         0 => None,
-        events => Some(derived_count_phrase(events, counted.identities.len())),
+        events => Some(format!("{events} derived event(s)")),
     }
 }
 
 /// The `--derived` line of [`reset_menu`], pure over the already-read count (or its absence, on
-/// a backend the migration does not run on) so every branch is unit-testable without a store or
-/// a live server: `counted` is `Some` on the sqlite backend (`selection.is_sqlite()`) and `None`
-/// on any other, and this reads `selection` only to name the backend it is honest about.
-///
-/// A count holding no derived event says there is none to shed; any other names what it holds
-/// and the flag - the one reading of a count, [`derived_events_held`].
-fn derived_menu_line(selection: &StoreSelection, counted: Option<&DerivedCount>) -> String {
+/// a backend the delete does not run on) so every branch is unit-testable without a store or a
+/// live server: `counted` is `Some` on the sqlite backend (`selection.is_sqlite()`) and `None` on
+/// any other, and this reads `selection` only to name the backend it is honest about.
+fn derived_menu_line(selection: &StoreSelection, counted: Option<usize>) -> String {
     match counted.map(derived_events_held) {
-        Some(None) => format!("--derived: {NO_DERIVED_EVENT_TO_SHED}"),
+        Some(None) => format!("--derived: {NO_DERIVED_EVENT_TO_DELETE}"),
         Some(Some(held)) => format!(
-            "--derived: {held} to shed from the event log; rerun `rigger reset --derived` to \
-             migrate them"
+            "--derived: {held} to delete from the event log; rerun `rigger reset --derived` to \
+             delete them"
         ),
         None => {
             debug_assert!(
@@ -293,10 +276,9 @@ fn derived_menu_line(selection: &StoreSelection, counted: Option<&DerivedCount>)
                 "derived_menu_line: a `None` count on the sqlite backend would hide a real \
                  measurement the caller could have taken"
             );
-            "--derived: unavailable on this backend - the migration rewrites and deletes rows of \
-             the event log and vacuums the file, a mechanic of the embedded sqlite events.db \
-             store; this project is configured for the server-backed store, where the migration \
-             does not run"
+            "--derived: unavailable on this backend - the delete removes rows of the event log \
+             and vacuums the file, a mechanic of the embedded sqlite events.db store; this \
+             project is configured for the server-backed store, where the delete does not run"
                 .to_string()
         }
     }
@@ -372,8 +354,8 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
     if !modes.runs && !modes.derived && !modes.build_cache && !modes.scratch_orphans {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph), rigger reset --derived (migrate the event log's derived events into ledger \
-                    entries), rigger reset \
+                    graph), rigger reset --derived (delete the event log's derived events), rigger \
+                    reset \
                     --build-cache (reclaim the shared gate build cache), and/or rigger reset \
                     --scratch-orphans (reclaim cache-home scratch roots whose repo is gone)"
                 .into(),
@@ -471,39 +453,27 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
     }
 }
 
-/// `rigger reset --derived` (spec 107) - THE ONE-TIME MIGRATION of an event log recorded before
-/// the ledger: it converts each file's latest derived batch into a ledger entry, in place, and
-/// leaves no derived event behind.
+/// `rigger reset --derived`: delete every derived event of the event log, the step that ends the
+/// migration to the records-only fold, since the code store re-derives each of them from the tree
+/// and no fold reads one.
 ///
-/// It is orchestration over ONE store transaction
-/// ([`rigger::eventstore::sqlite::Store::shed_derived`]) on the project's run stream, the one
-/// stream a sink ever appended a derived event to, named through the SAME stream-prefix spelling
-/// every namespaced read and write of this project uses (`StoreLocation::run_stream`). Before that
-/// transaction opens it reads what the stream holds ([`Store::count_derived`]) and answers, for
-/// every identity holding a derived event, the blob and the flag its entry records
-/// ([`tree_entries`]) under THE ONE ROOT ([`tree_root`]); `hash` is the one hash function
-/// ([`HashBlob`]), handed in by the composition root, which writes the object it hashes when the
-/// root is inside a repository, and a hash that fails fails the command before any row changes.
-/// A store holding no derived event has nothing to shed and says so.
-///
-/// Either way it then reclaims the space the log's file holds free
-/// ([`Store::reclaim_space`]) against the size the log had on disk before the transaction, and
-/// prints what that did ([`reclamation_lines`]), so a rerun after a reclamation that failed
-/// reclaims what it left.
+/// It is orchestration over [`delete_derived_events`] on the project's run stream, the one stream
+/// a sink ever appended a derived event to, named through the SAME stream-prefix spelling every
+/// namespaced read and write of this project uses (`StoreLocation::run_stream`).
 ///
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
 /// store for a maintenance operation the port does not carry.
 ///
 /// It refuses, in this order and before it changes anything: a rebuild lock another holds
-/// ([`Projector::lock_rebuild`]), which it takes first and holds across the migration; a rebuild
+/// ([`Projector::lock_rebuild`]), which it takes first and holds until it returns; a rebuild
 /// left unfinished ([`Projector::rebuild_unfinished`]), naming `rigger setup`; and a standing
-/// `graph.db` that owes its rebuild. It appends nothing, folds nothing and writes no projection
-/// or ledger row to `graph.db`.
-fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
-    // The rebuild lock first, before anything more is read, and held until this returns (spec
-    // 107): no rebuild starts under the migration, and another already holding it - a `rigger
-    // setup` or a `rigger reset` - refuses this at once.
+/// `graph.db` that owes its rebuild. It appends nothing, folds nothing and writes nothing to
+/// `graph.db`.
+fn reset_derived(loc: &StoreLocation) -> Res {
+    // The rebuild lock first, before anything more is read, and held until this returns: no
+    // rebuild starts under the delete, and another already holding it - a `rigger setup` or a
+    // `rigger reset` - refuses this at once.
     let graph_db = loc.file("graph.db");
     let held = Projector::lock_rebuild(&graph_db)?;
     // A rebuild left unfinished is `rigger setup`'s to finish. The check opens no graph file that
@@ -516,7 +486,8 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
         );
     }
     // A `graph.db` that owes its rebuild is refused here as every command that depends on the
-    // fold refuses it (spec 101): the migration runs once `rigger setup` has paid the rebuild.
+    // fold refuses it (spec 101): the delete runs once `rigger setup` has paid the rebuild, so
+    // the records-only fold has proven it loses nothing before a derived row goes.
     if Path::new(&graph_db).exists() {
         open_graph(
             &graph_db,
@@ -526,71 +497,32 @@ fn reset_derived(loc: &StoreLocation, hash: &HashBlob) -> Res {
         )?;
     }
     let store = open_sqlite_store(&loc.file("events.db"))?;
-    // THE OPERATOR'S BEFORE, taken before the migration's transaction opens: what the
-    // reclamation reports is the space the log lost on disk across the whole command.
-    let on_disk_before = store.bytes_on_disk();
-    let stream = loc.run_stream();
-    let counted = store.count_derived(&stream)?;
-    if derived_events_held(&counted).is_none() {
-        println!("reset --derived: {NO_DERIVED_EVENT_TO_SHED}");
-    } else {
-        let entries = tree_entries(&tree_root(&loc.dir), &counted.identities, hash)?;
-        // A TOTAL function: an identity the read above did not count - one recorded since - gets
-        // no blob and a clear flag.
-        let shed = store.shed_derived(&stream, &|identity| {
-            entries.get(identity).cloned().unwrap_or_default()
-        })?;
-        println!(
-            "reset --derived: converted {} latest batch(es) into ledger entries and shed {} \
-             derived event(s) from the event log",
-            shed.converted, shed.shed
-        );
-        println!(
-            "reset --derived: {} of the derived event(s) shed named no file identity (no replay \
-             key, or one that does not parse)",
-            shed.unkeyed
-        );
-    }
-    for line in reclamation_lines(&store.reclaim_space(on_disk_before)) {
+    for line in delete_derived_events(&store, &loc.run_stream())? {
         println!("{line}");
     }
     Ok(())
 }
 
-/// The one hash function as [`reset_derived`] takes it: bound to a root, the object id of `bytes`
-/// under it, which the composition root binds through [`rigger::worktree::BlobHasher`], so the
-/// binding detects the root's repository once, and inside a repository the hash writes the object
-/// it hashes into that repository's object database (spec 124, THE BLOB IS WRITTEN) and outside
-/// one hashes without writing; or the failure of the hash, a failed write included.
-type HashBlob<'h> = dyn Fn(&Path) -> Box<BoundHash<'h>> + 'h;
-
-/// [`HashBlob`] bound to one root: the object id of `bytes` under it, or the failure of the hash.
-type BoundHash<'h> = dyn Fn(&[u8]) -> Result<String, Box<dyn std::error::Error>> + 'h;
-
-/// What the ledger entry of each of `identities` records of the tree at `root` (spec 107): the
-/// blob `hash`, bound to `root` once, gives the bytes the tree's one read rule ([`rigger::grounder::tree_bytes`]) hands
-/// for the identity's path - none for a path it hands no bytes for - and whether the walk
-/// excludes the identity as an out-of-line test module's ([`rigger::ingest::walk_exclusions`]).
-/// A hash that fails fails the whole answer.
-fn tree_entries(
-    root: &Path,
-    identities: &std::collections::BTreeSet<String>,
-    hash: &HashBlob,
-) -> Result<std::collections::BTreeMap<String, (String, bool)>, Box<dyn std::error::Error>> {
-    let (_, excluded) = rigger::ingest::walk_exclusions(&root.to_string_lossy());
-    let hash = hash(root);
-    identities
-        .iter()
-        .map(|identity| {
-            let bytes = rigger::retention::GenerationIngested::identity_parts(identity)
-                .and_then(|(prefix, file)| rigger::grounder::tree_bytes(root, prefix, file));
-            let blob = match bytes {
-                Some(bytes) => hash(&bytes)?,
-                None => String::new(),
-            };
-            Ok((identity.clone(), (blob, excluded.contains(identity))))
-        })
-        .collect()
+/// Delete every derived event `stream` holds in one transaction ([`Store::delete_derived`]),
+/// then reclaim the space the log's file holds free ([`Store::reclaim_space`]) against the size
+/// the log had on disk before the transaction, and answer the lines that say what each did
+/// ([`reclamation_lines`]), so a rerun after a reclamation that failed reclaims what it left. The
+/// one body of `rigger reset --derived` and of the delete `rigger setup` runs after a migration;
+/// each caller holds the rebuild lock and has refused a live run first.
+pub(super) fn delete_derived_events(
+    store: &rigger::eventstore::sqlite::Store,
+    stream: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    // THE OPERATOR'S BEFORE, taken before the transaction opens: what the reclamation reports is
+    // the space the log lost on disk across the whole delete.
+    let on_disk_before = store.bytes_on_disk();
+    let deleted = match store.delete_derived(stream)? {
+        0 => format!("reset --derived: {NO_DERIVED_EVENT_TO_DELETE}"),
+        n => format!("reset --derived: deleted {n} derived event(s) from the event log"),
+    };
+    Ok(std::iter::once(deleted)
+        .chain(reclamation_lines(&store.reclaim_space(on_disk_before)))
+        .collect())
 }
 
 /// The lines `rigger reset --derived` prints for what reclaiming the log's space did, a pure
@@ -732,14 +664,13 @@ fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
 /// sentence wherever they meet the flag.
 fn live_writer_refusal(reasons: &str) -> String {
     format!(
-        "reset --derived: refusing to migrate the event log while the run is live - {reasons}. The \
-         migration rewrites each file's latest derived batch into a ledger entry and deletes \
-         every other derived event, which leaves REVISION GAPS by design; a writer whose append \
-         cursor was built before this migration ran can reissue one of those gap revisions, and \
+        "reset --derived: refusing to delete the event log's derived events while the run is live \
+         - {reasons}. The delete leaves REVISION GAPS by design; a writer whose append \
+         cursor was built before this delete ran can reissue one of those gap revisions, and \
          every later event then sorts BELOW it in revision order - the incident this guard \
          exists to prevent, and the corruption forcing past a genuinely live writer would risk. \
          Stop the run machinery named above and retry, or pass \
-         --force-live to migrate anyway if you are certain no writer is using this store \
+         --force-live to delete them anyway if you are certain no writer is using this store \
          (--force-live checks nothing; it trusts you with that risk)."
     )
 }
@@ -1500,7 +1431,7 @@ mod tests {
         })
     }
 
-    /// A compaction that failed AFTER the migration committed is reported, not swallowed into an
+    /// A compaction that failed AFTER the delete committed is reported, not swallowed into an
     /// error: the failure by name on one line, and on the next the two things that follow from
     /// the ordering - what the run changed is durable and a re-run is safe and retries.
     #[test]
@@ -1563,112 +1494,6 @@ mod tests {
                 ],
             )
         );
-    }
-
-    /// A git project in `dir` holding the regular file `src/a.rs`, whose store's run stream holds
-    /// one derived row naming it: the store `reset_derived` migrates.
-    fn store_holding_one_derived_row_of_a_tree_file(dir: &Path) -> StoreLocation {
-        crate::test_support::git_init_quiet(dir);
-        let rigger_dir = dir.join(RIGGER_DIR);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::create_dir_all(&rigger_dir).unwrap();
-        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
-        let loc = StoreLocation { dir: rigger_dir };
-        let db = loc.file("events.db");
-        let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
-        let pre_ledger = crate::test_support::PreLedgerStore {
-            db: std::path::Path::new(&db),
-            inner: &backend,
-        };
-        Namespaced::new(&pre_ledger, &loc.identity())
-            .append(
-                conductor::STREAM,
-                ExpectedRevision::Any,
-                &[
-                    Event::new(contextgraph::TYPE_CODE_ENTITY_EXTRACTED, b"{}".to_vec())
-                        .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
-                ],
-            )
-            .unwrap();
-        loc
-    }
-
-    /// Given a store whose run stream holds a derived row naming a regular file of the tree, when
-    /// the migration is handed a hash function that fails, then it fails with that function's own
-    /// error, having handed it the tree's root and the file's bytes, before any row changes.
-    #[test]
-    fn reset_derived_handed_a_failing_hash_function_fails_before_any_row_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        let loc = store_holding_one_derived_row_of_a_tree_file(dir.path());
-        let db = loc.file("events.db");
-        let rows = || {
-            let backend = rigger::eventstore::sqlite::Store::open(&db).unwrap();
-            Namespaced::new(&backend, &loc.identity())
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .unwrap()
-                .into_iter()
-                .map(|event| (event.position, event.type_, event.data, event.meta))
-                .collect::<Vec<_>>()
-        };
-        let before = rows();
-        let asked = std::cell::RefCell::new(Vec::new());
-
-        let failed = reset_derived(&loc, &|root| {
-            let (asked, root) = (&asked, root.canonicalize().unwrap());
-            Box::new(move |bytes| {
-                asked.borrow_mut().push((root.clone(), bytes.to_vec()));
-                Err("no hash today".into())
-            })
-        })
-        .expect_err("a failed hash fails the migration");
-
-        assert_eq!(
-            (
-                failed.to_string(),
-                asked.into_inner(),
-                rows() == before,
-                before.len(),
-            ),
-            (
-                "no hash today".to_string(),
-                vec![(dir.path().canonicalize().unwrap(), b"fn a() {}\n".to_vec())],
-                true,
-                1,
-            )
-        );
-    }
-
-    /// THE REBUILD LOCK IS HELD WHILE THE MIGRATION RUNS: given a store holding a derived row of
-    /// a tree file, when the migration hashes that file - past both refusals, before its one
-    /// transaction - a second take of `graph.db.lock` is refused with the lock line, so no
-    /// `rigger setup` or `rigger reset` starts a rebuild under it.
-    #[test]
-    fn a_second_rebuild_lock_taken_while_the_migration_runs_is_refused_with_the_lock_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let loc = store_holding_one_derived_row_of_a_tree_file(dir.path());
-        let graph_db = loc.file("graph.db");
-        let second = std::cell::RefCell::new(Vec::new());
-
-        reset_derived(&loc, &|_| {
-            let (second, graph_db) = (&second, &graph_db);
-            Box::new(move |_| {
-                second.borrow_mut().push(
-                    Projector::lock_rebuild(graph_db)
-                        .map(drop)
-                        .map_err(|e| e.to_string()),
-                );
-                Ok("blob".to_string())
-            })
-        })
-        .expect("the migration runs");
-
-        assert_eq!(
-            second.into_inner(),
-            [Err(crate::test_support::graph_error(
-                rigger::contextgraph::sqlite::REBUILD_IN_PROGRESS
-            ))]
-        );
-        assert_eq!(Projector::lock_rebuild(&graph_db).map(drop).ok(), Some(()));
     }
 
     // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS (spec 101: it reads liveness) ---
@@ -2122,83 +1947,28 @@ mod tests {
         );
     }
 
-    /// A count of `events` derived events, `unkeyed` of them naming no file identity, held by
-    /// `identities`.
-    fn derived_count(events: usize, unkeyed: usize, identities: &[&str]) -> DerivedCount {
-        DerivedCount {
-            shed: events,
-            unkeyed,
-            identities: identities.iter().map(|i| i.to_string()).collect(),
-        }
-    }
-
-    #[test]
-    fn derived_count_phrase_names_the_events_first_and_the_file_identities_second() {
-        assert_eq!(
-            derived_count_phrase(7, 2),
-            "7 derived events of 2 file identities"
-        );
-        assert_eq!(
-            derived_count_phrase(1, 0),
-            "1 derived events of 0 file identities"
-        );
-    }
-
-    /// A count holding no derived event has no phrase; any other is phrased by its events and
-    /// the size of its identity set, decided by the events alone, so rows that all name no
-    /// identity are still held.
+    /// A count of no derived event has no phrase; any other is phrased by its events.
     #[test]
     fn derived_events_held_phrases_a_count_holding_a_derived_event_and_answers_none_for_zero() {
-        assert_eq!(derived_events_held(&DerivedCount::default()), None);
         assert_eq!(
-            derived_events_held(&derived_count(0, 0, &["gc/src/a.rs"])),
-            None,
-            "the events decide, never the identities"
-        );
-        assert_eq!(
-            derived_events_held(&derived_count(1, 0, &["gc/src/a.rs"])).as_deref(),
-            Some("1 derived events of 1 file identities")
-        );
-        assert_eq!(
-            derived_events_held(&derived_count(7, 1, &["gc/src/a.rs", "gd/src/a.rs"])).as_deref(),
-            Some("7 derived events of 2 file identities")
-        );
-        assert_eq!(
-            derived_events_held(&derived_count(2, 2, &[])).as_deref(),
-            Some("2 derived events of 0 file identities")
+            [0, 1, 7].map(derived_events_held),
+            [
+                None,
+                Some("1 derived event(s)".to_string()),
+                Some("7 derived event(s)".to_string()),
+            ]
         );
     }
 
     #[test]
-    fn derived_menu_line_names_the_events_the_file_identities_holding_them_and_the_flag() {
+    fn derived_menu_line_names_the_events_held_and_the_flag_or_none_to_delete() {
         assert_eq!(
-            derived_menu_line(
-                &StoreSelection::Sqlite,
-                Some(&derived_count(7, 1, &["gc/src/a.rs", "gd/src/a.rs"]))
-            ),
-            "--derived: 7 derived events of 2 file identities to shed from the event log; rerun \
-             `rigger reset --derived` to migrate them",
-            "the events are every derived event counted, the unkeyed one among them, and the \
-             identities the size of the set"
-        );
-    }
-
-    /// A store whose derived rows all name no file identity still holds events `--derived`
-    /// sheds: the line is decided by the events, never by the identities.
-    #[test]
-    fn derived_menu_line_names_the_events_of_a_store_whose_rows_are_all_unkeyed() {
-        assert_eq!(
-            derived_menu_line(&StoreSelection::Sqlite, Some(&derived_count(2, 2, &[]))),
-            "--derived: 2 derived events of 0 file identities to shed from the event log; rerun \
-             `rigger reset --derived` to migrate them"
-        );
-    }
-
-    #[test]
-    fn derived_menu_line_says_a_store_holding_no_derived_event_has_none_to_shed() {
-        assert_eq!(
-            derived_menu_line(&StoreSelection::Sqlite, Some(&DerivedCount::default())),
-            "--derived: no derived event to shed"
+            [Some(7), Some(0)].map(|counted| derived_menu_line(&StoreSelection::Sqlite, counted)),
+            [
+                "--derived: 7 derived event(s) to delete from the event log; rerun `rigger reset \
+                 --derived` to delete them",
+                "--derived: no derived event to delete",
+            ]
         );
     }
 
@@ -2207,14 +1977,13 @@ mod tests {
     /// place able to construct `Server(..)` directly and prove the wording without a live
     /// server - `derived_menu_line` never opens a connection either way.
     #[test]
-    fn derived_menu_line_on_a_server_backend_says_the_migration_does_not_run_there() {
+    fn derived_menu_line_on_a_server_backend_says_the_delete_does_not_run_there() {
         let server = StoreSelection::Server("esdb://127.0.0.1:2113?tls=false".to_string());
         assert_eq!(
             derived_menu_line(&server, None),
-            "--derived: unavailable on this backend - the migration rewrites and deletes rows of \
-             the event log and vacuums the file, a mechanic of the embedded sqlite events.db \
-             store; this project is configured for the server-backed store, where the migration \
-             does not run"
+            "--derived: unavailable on this backend - the delete removes rows of the event log \
+             and vacuums the file, a mechanic of the embedded sqlite events.db store; this \
+             project is configured for the server-backed store, where the delete does not run"
         );
     }
 }

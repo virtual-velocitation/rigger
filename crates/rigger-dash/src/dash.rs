@@ -3673,10 +3673,9 @@ fn serve_console_stream<F>(
     // reconnecting client's `since=`/`Last-Event-ID` names a position it has ALREADY
     // applied; if the store's own current floor - the smallest [`Position`] any row (of
     // ANY type, not just a console one) still occupies - has moved PAST that position,
-    // something that once sat between them is gone (the `rigger reset --derived`
-    // migration, [`crate::eventstore::sqlite::Store::shed_derived`], deletes every derived
-    // row it does not rewrite into a ledger entry; a later hygiene operation may cover more
-    // ground than the four derived-index types), and resuming with `since` as though nothing had changed would
+    // something that once sat between them is gone (`rigger reset --derived` deletes every
+    // derived row of the run stream; a later hygiene operation may cover more ground), and
+    // resuming with `since` as though nothing had changed would
     // silently miss whatever stood there. `since == 0` is the "from the very start"
     // sentinel a fresh tab's first-ever connect always carries, never a stale cursor, so
     // it is exempt; an empty store (`floor` is `None` - no row anywhere yet) exempts
@@ -9240,11 +9239,10 @@ mod tests {
     mod calls_route_c4 {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{CallGraph, CallNode, Direction};
+        use crate::contextgraph::{CallGraph, CallNode, ContextGraph, Direction};
         use crate::test_support::calls_edge;
         use crate::test_support::plain;
-        use crate::test_support::RecordsRead;
-        use crate::test_support::{apply_call, apply_def};
+        use crate::test_support::{facts_view, planted_file, view_graph};
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
         /// multi-candidate `frontier`, as the traversal returns it.
@@ -9476,9 +9474,15 @@ mod tests {
         #[test]
         fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-            apply_def(&p, 2, "src/c.rs", "caller", 1, true);
-            apply_call(&p, 3, "src/c.rs", "callee", "caller");
+            let view = facts_view(vec![
+                planted_file("src/a.rs", &[("callee", "function")], &[], &[]),
+                planted_file(
+                    "src/c.rs",
+                    &[("caller", "function")],
+                    &[("caller", "callee")],
+                    &[],
+                ),
+            ]);
             let cp = |_inst: Option<&str>,
                       seed: &[String],
                       dir: Direction,
@@ -9486,7 +9490,8 @@ mod tests {
                       floor: &str,
                       _tests: Tests|
              -> CallGraph {
-                p.calls(seed, dir, depth, floor).unwrap_or_default()
+                ContextGraph::calls(&view_graph(&p, &view), seed, dir, depth, floor)
+                    .unwrap_or_default()
             };
 
             // No view=calls: the dispatch declines so the neighborhood path runs unchanged.

@@ -781,15 +781,12 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
-    "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
     "crates/rigger-store-sqlite/src/run_store.rs:append_at_head",
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
     "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
     "src/cli/critique.rs:copy_findings",
     "src/cli/graph.rs:cmd_emit",
-    "src/cli/graph.rs:record_batch",
-    "src/cli/graph.rs:run_graph_pass",
     "src/cli/hygiene.rs:close_landed_units",
     "src/cli/mod.rs:cmd_replay",
     "src/cli/mod.rs:migrate_project_identity",
@@ -804,7 +801,6 @@ const GRAPH_OPENS: &[&str] = &[
     "src/cli/dashboard.rs:dash_read",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:cmd_graph_build",
-    "src/cli/graph.rs:run_graph_pass",
     "src/cli/hygiene.rs:reset_derived",
     "src/cli/hygiene.rs:reset_menu",
     "src/cli/hygiene.rs:reset_runs",

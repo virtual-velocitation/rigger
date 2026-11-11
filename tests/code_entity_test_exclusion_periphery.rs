@@ -6,7 +6,7 @@
 //! These run OUTSIDE the crate, over the library's public surface, and guard these boundaries:
 //!
 //!  - the exclusion rule's Done-when, driven end to end through the crate's PUBLIC API
-//!    (`project_batches` -> `Projector`) from OUTSIDE the crate: after ingesting a
+//!    (the code store's view of a tree) from OUTSIDE the crate: after ingesting a
 //!    fixture with product code, a `tests/` file, a `#[cfg(test)]` module and `#[test]`
 //!    functions, the graph holds a code-entity node for every product item and none for any test
 //!    item, and the `tests/` file carries no file container node at all - the concrete mechanism
@@ -24,7 +24,7 @@
 //!    product code-entity nodes. The implementer's own `extract.rs` unit test
 //!    (`negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test`) proves this at the
 //!    `FileSymbols` level, inside the crate; this test proves the SAME contract at the periphery,
-//!    end to end through `project_batches` -> `Projector`, so the guarantee that a
+//!    end to end through the code store's view, so the guarantee that a
 //!    dual-cfg mock's product half is never dropped does not rest on the author's own judgment.
 //!  - the round-3 fix for round 2's own recurrence (review REJECT `adj-u86c1-verdict-reject`
 //!    round 2, findings `arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test` /
@@ -53,7 +53,7 @@
 //!    implementer's own `extract.rs` unit test
 //!    (`an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children`)
 //!    proves this at the `FileSymbols` level; this test proves the SAME contract at the
-//!    periphery, end to end through `project_batches` -> `Projector`.
+//!    periphery, end to end through the code store's view.
 //!  - the rest of `op-u86c1-r5-close-every-remaining-test-shape` (amending
 //!    `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`), which mandates round 5 close
 //!    every remaining test-shape item in one round, not one per round. Item 1 (the inner-attribute
@@ -79,7 +79,7 @@
 //!    the SAME public API, over a real tree in every registered language: a file at each pattern
 //!    is no node and proves the production definition it calls, each production control keeps
 //!    its definitions, and a pattern-named file an out-of-line `#[cfg(test)] mod` declares
-//!    proves nothing
+//!    proves what it calls, as a file in the test-module closure
 //!    (`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`);
 //!    and a design doc's mention of such a path mints no node
 //!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`), the
@@ -133,28 +133,23 @@ mod tests {
 }
 ";
 
-/// Writes each `(path, source)` pair (parent directories created) under a fresh temp root,
-/// folds that tree's whole-project ingest onto a fresh projector and returns the subgraph
-/// `depth` hops around `seeds` - the public `project_batches` -> `Projector` path every
-/// end-to-end test below drives.
+/// The subgraph `depth` hops around `seeds` the code store's view of a tree holding each
+/// `(path, source)` pair serves, composed beside an empty record half - the production
+/// extractor and composition every end-to-end test below drives.
 #[cfg(feature = "symbols")]
 fn ingested_subgraph(
     files: &[(&str, &str)],
     seeds: &[&str],
     depth: i64,
 ) -> rigger::contextgraph::Graph {
-    use crate::common::fixtures::RecordsRead;
-
-    let root = tempfile::tempdir().unwrap();
-    for (path, source) in files {
-        let path = root.path().join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, source).unwrap();
-    }
-    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
-    common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()))
-        .subgraph(&seeds, depth)
-        .unwrap()
+    let records = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+    common::fixtures::files_subgraph(
+        &records,
+        &rigger_grounder::facts::FactsExtractor,
+        files,
+        seeds,
+        depth,
+    )
 }
 
 /// One expectation on the ingested subgraph's nodes, each naming an id and the rule it pins.
@@ -1462,21 +1457,16 @@ rigger::test_cases! {
     );
 }
 
-/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, has gone
-/// through the REAL `extract_concepts`/`extract_links` pass, `concept_events`/`link_events` and
-/// the always-compiled fold. Seeded from the doc alone: an excluded target must not exist to
-/// seed from.
+/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, is the one
+/// file of a tree the code store's view reads through the REAL extractor ([`ingested_subgraph`]).
+/// Seeded from the doc alone: an excluded target must not exist to seed from.
 #[cfg(feature = "symbols")]
 fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
-    use crate::common::fixtures::RecordsRead;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
-
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    common::fixtures::fold_events(events)
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap()
+    ingested_subgraph(
+        &[("docs/architecture.md", md)],
+        &["docs/architecture.md"],
+        3,
+    )
 }
 
 /// Every edge of `g` that `keep` holds, as `(from, rel, to)`, sorted: the one edge projection
@@ -1725,12 +1715,13 @@ const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the public
-/// `project_batches` -> `Projector` path over a real tree in every registered language: a file
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the code
+/// store's view of a real tree in every registered language: a file
 /// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
 /// is the one proof on the production definition it names; each production control is a file
-/// node holding its definitions, each contained by its parent, and proves nothing; and `src/tests/mod.rs`, which a pattern
-/// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
+/// node holding its definitions, each contained by its parent, and proves nothing; and
+/// `src/tests/mod.rs`, which a pattern names and `#[cfg(test)] mod tests;` declares, is no node
+/// and, as a file in the test-module closure, proves the product definition it calls.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls() {
@@ -1813,8 +1804,8 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     assert_eq!(leaked_edges, Vec::<(&str, &str, &str)>::new());
 
     let product_prefix = format!("{PRODUCT}::");
-    // Each pattern's file proves the one definition it calls; the out-of-line module's call and
-    // the controls' calls prove nothing.
+    // Each pattern's file, the out-of-line test module's included, proves the one definition it
+    // calls; the controls' calls prove nothing.
     let proofs: BTreeMap<String, Vec<String>> = g
         .nodes
         .iter()
@@ -1832,7 +1823,10 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
         .iter()
         .map(|&(path, _, name, line)| (name.to_string(), vec![format!("{path}:{line}")]))
         .collect();
-    expected_proofs.insert("by_out_of_line_module".to_string(), vec![]);
+    expected_proofs.insert(
+        "by_out_of_line_module".to_string(),
+        vec![format!("{OUT_OF_LINE}:2")],
+    );
     expected_proofs.insert("by_production_only".to_string(), vec![]);
     assert_eq!(proofs, expected_proofs);
 }
@@ -1889,7 +1883,7 @@ extern \"C\" {
 ];
 
 /// Spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), end to end through the
-/// public `project_batches` -> `Projector` path: a `#[cfg(test)] const _` the name filter drops,
+/// code store's view: a `#[cfg(test)] const _` the name filter drops,
 /// a `#[cfg(test)] extern` block and a file opening `#![cfg(test)]` each make what they hold
 /// test, so none of it is a node or ends an edge, and the file a `mod` in that opened file
 /// declares is test code whole; a file opening an outer `#[cfg(test)] use` or
@@ -1904,7 +1898,8 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
     let seeds: Vec<&str> = TEST_REGION_FILES.iter().map(|&(path, _)| path).collect();
     let g = ingested_subgraph(TEST_REGION_FILES, &seeds, 3);
 
-    // Every production definition, and only those, is contained by its file.
+    // Every production definition, and only those, is contained by its file, and the production
+    // module `kept` contains the file it declares.
     assert_eq!(
         edges_where(&g, |e| e.rel == REL_CONTAINS),
         [
@@ -1913,6 +1908,7 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
             ("src/gated.rs", "src/gated.rs::gated_a"),
             ("src/gated.rs", "src/gated.rs::gated_b"),
             ("src/gated.rs", "src/gated.rs::kept"),
+            ("src/gated.rs::kept", "src/gated/kept.rs"),
             ("src/gated/kept.rs", "src/gated/kept.rs::in_kept"),
             ("src/regions.rs", "src/regions.rs::called_from_production"),
             ("src/regions.rs", "src/regions.rs::called_from_test"),

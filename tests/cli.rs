@@ -23,7 +23,6 @@ use common::cli::graph_node_ids;
 use common::cli::path_without;
 use common::cli::pin_identity;
 use common::cli::read_run_events;
-#[cfg(feature = "symbols")]
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_around;
 use common::cli::run_rigger;
@@ -26986,53 +26985,59 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
     mcp.finish_cleanly();
 }
 
-/// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
-/// `kind` attr is empty, `Makefile::all`, a finding, an architecture decision and a doc section,
-/// WHEN the operator runs `rigger graph --show` on each exact id, THEN a node with a file prints
-/// today's `site:` header line, one line per remaining `site_fields` entry (a `doc` holding a
-/// newline on one line with spaces; an empty `lang` and the `proven_by` attr printing nothing)
-/// and its body note, while the finding prints its kind, degree, `by`, `unit` and `summary` with
-/// no `site:`, no body and no note; and each output's header and entry lines, read back as
-/// ordered entry and value pairs, equal `site_fields` of the located site after the CLI's newline
-/// transform.
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a committed tree holding a const, a field, a function,
+/// an architecture decision and a design-doc section, and a finding in the record half, WHEN the
+/// operator runs `rigger graph --show` on each exact id, THEN a node with a file prints today's
+/// `site:` header line, one line per remaining `site_fields` entry and its body or note, while
+/// the finding prints its kind, degree, `by`, `unit` and `summary` with no `site:`, no body and
+/// no note; and each output's header and entry lines, read back as ordered entry and value
+/// pairs, equal `site_fields` of the located site after the CLI's newline transform. The cases the
+/// fold seeded that no extractor produces (an empty kind, a `Makefile` definition, a field with no
+/// language, stale notes for source not in the tree, a document holding a newline) are not
+/// exercised; the newline transform is covered by the domain unit test of `site_fields` in
+/// `crates/rigger-domain/src/contextgraph.rs`.
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_prints_each_node_through_the_one_site_renderer() {
-    use common::fixtures::{seed_shown_nodes, SHOWN_IDS};
+    use common::fixtures::{
+        assert_shown_tree_function_carries_proven_by, fold_shown_tree_finding, shown_tree_sites,
+        SHOWN_TREE_IDS, SHOWN_TREE_SOURCES,
+    };
 
     let dir = temp_project();
     let root = dir.path();
     common::cli::seed_rigger_dir(root);
-    seed_shown_nodes(&common::cli::open_graph(root));
+    for (path, text) in SHOWN_TREE_SOURCES {
+        common::fixtures::write_text(root, path, text);
+    }
+    common::fixtures::commit_tree(root);
+    let graph = common::cli::open_graph(root);
+    fold_shown_tree_finding(&graph);
 
-    let shown = SHOWN_IDS.map(|id| common::cli::graph_ok(root, &["graph", "--show", id]));
+    let shown = SHOWN_TREE_IDS.map(|id| common::cli::graph_ok(root, &["graph", "--show", id]));
     let stale =
         |at: &str| format!("  (source unavailable at {at}; the recorded location may be stale)\n");
     assert_eq!(
         shown,
         [
             "show src/limits.rs::LIMIT\n\
-             \x20 site: src/limits.rs:3   kind constant   degree 1\n\
+             \x20 site: src/limits.rs:2   kind constant   degree 2\n\
              \x20 name LIMIT\n\
-             \x20 lang rust\n"
-                .to_string()
-                + &stale("src/limits.rs:3"),
-            "show src/limits.rs::width\n\
-             \x20 site: src/limits.rs:5   kind field   degree 1\n\
-             \x20 name width\n"
-                .to_string()
-                + &stale("src/limits.rs:5"),
+             \x20 lang rust\n\
+             \x20      2 | pub const LIMIT: u32 = 3;\n"
+                .to_string(),
+            "show src/limits.rs::Bounds\n\
+             \x20 site: src/limits.rs:4   kind type   degree 2\n\
+             \x20 name Bounds\n\
+             \x20 lang rust\n\
+             \x20      4 | pub struct Bounds;\n"
+                .to_string(),
             "show src/limits.rs::blank\n\
-             \x20 site: src/limits.rs:7   kind code-entity   degree 1\n\
+             \x20 site: src/limits.rs:6   kind function   degree 2\n\
              \x20 name blank\n\
-             \x20 lang rust\n"
-                .to_string()
-                + &stale("src/limits.rs:7"),
-            "show Makefile::all\n\
-             \x20 site: Makefile:1   kind function   degree 1\n\
-             \x20 name all\n\
-             \x20 lang make\n"
-                .to_string()
-                + &stale("Makefile:1"),
+             \x20 lang rust\n\
+             \x20      6 | pub fn blank() {}\n"
+                .to_string(),
             "show f-shown\n\
              \x20 kind finding   degree 2\n\
              \x20 by lens:sdet\n\
@@ -27042,7 +27047,7 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
             "show docs/decisions/one-renderer.md\n\
              \x20 site: docs/decisions/one-renderer.md:0   kind arch-decision   degree 0\n\
              \x20 title One renderer\n\
-             \x20 doc the decision log its second line\n"
+             \x20 doc docs/decisions/one-renderer.md\n"
                 .to_string()
                 + &stale("docs/decisions/one-renderer.md:0"),
             "show docs/x.md#sec\n\
@@ -27055,200 +27060,55 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
         "each node's show output"
     );
 
-    let graph = common::cli::open_graph(root);
-    common::fixtures::assert_the_shown_const_carries_proven_by(&graph);
-    for ((id, site), out) in common::fixtures::shown_sites(&graph).iter().zip(&shown) {
+    let view =
+        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
+    let composed = common::fixtures::view_graph(&graph, &view);
+    assert_shown_tree_function_carries_proven_by(&composed);
+    for ((id, site), out) in shown_tree_sites(&composed).iter().zip(&shown) {
+        // The degree is the production composition's, which adds the community edges the
+        // oracle's composition does not hold; the literals above pin it.
+        let without_degree = |pairs: Vec<(String, String)>| {
+            pairs
+                .into_iter()
+                .filter(|(key, _)| key != "degree")
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            common::cli::printed_site_entries(out),
-            common::cli::site_entries_as_printed(site, site.line),
+            without_degree(common::cli::printed_site_entries(out)),
+            without_degree(common::cli::site_entries_as_printed(site)),
             "{id}: the CLI prints site_fields"
         );
     }
 }
 
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN a graph whose file `src/reader.rs`, a partial
-/// parse, stages rows of four leaves that resolve to nothing and whose file `src/definer.rs`
-/// stages none, WHEN the operator runs `rigger graph --show` on each file, THEN `src/reader.rs`
-/// prints its sorted distinct unresolved leaves joined by `contextgraph::LIST_SEP` on one
-/// `unresolved` line after its `partial` entry, and `src/definer.rs` prints no `unresolved` line.
-#[test]
-fn graph_show_prints_a_files_unresolved_leaves_after_its_partial_entry() {
-    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE, UNRESOLVED_LEAVES};
-    use rigger::contextgraph::LIST_SEP;
-
-    let dir = common::cli::unresolved_project();
-    let [reader, definer] =
-        [UNRESOLVED_FILE, RESOLVING_FILE].map(|file| common::cli::show_lines(dir.path(), file));
-    assert_eq!(
-        reader[3..5],
-        [
-            "  partial true".to_string(),
-            format!("  unresolved {}", UNRESOLVED_LEAVES.join(LIST_SEP))
-        ],
-        "the file's unresolved leaves print on the line after its partial entry"
-    );
-    assert_eq!(
-        definer
-            .iter()
-            .filter(|line| line.starts_with("  unresolved"))
-            .count(),
-        0,
-        "a file listing none prints no unresolved line"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN the operator runs `rigger
-/// graph --around src/reader.rs --depth 1`, THEN the queried file's node line is followed by
-/// `unresolved 4`, the count of its leaves, and no other node prints one; WHEN they run `--around
-/// src/definer.rs --depth 3`, whose subgraph reaches `src/reader.rs`, THEN no `unresolved` line
-/// prints, `src/definer.rs` listing none and `src/reader.rs` a neighbour.
-#[test]
-fn graph_around_prints_the_queried_files_unresolved_count_alone() {
-    use common::fixtures::{RESOLVING_FILE, UNRESOLVED_FILE};
-
-    let dir = common::cli::unresolved_project();
-    assert_eq!(
-        [(UNRESOLVED_FILE, 1), (RESOLVING_FILE, 3)].map(|(seed, depth)| run_around(
-            dir.path(),
-            seed,
-            depth
-        )
-        .0),
-        [
-            "subgraph around \"src/reader.rs\" (depth 1):\n\
-             \x20 node src/reader.rs            file\n\
-             \x20 unresolved 4\n\
-             \x20 node src/reader.rs::glance    code-entity\n\
-             \x20 node src/reader.rs::scan      code-entity\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::glance\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n",
-            "subgraph around \"src/definer.rs\" (depth 3):\n\
-             \x20 node src/definer.rs           file\n\
-             \x20 node src/definer.rs::CEILING  code-entity\n\
-             \x20 node src/definer.rs::Halved   code-entity\n\
-             \x20 node src/definer.rs::Hinted   code-entity\n\
-             \x20 node src/reader.rs            file\n\
-             \x20 node src/reader.rs::scan      code-entity\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::CEILING\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Halved\n\
-             \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Hinted\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::CEILING\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Halved\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Hinted\n",
-        ],
-        "the queried file alone prints its count, and an empty list prints none"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph with `src/aka.rs` an alias of
-/// `src/reader.rs`, WHEN the operator runs `rigger graph --around src/aka.rs --depth 1`, THEN it
-/// prints the canonical `src/reader.rs`'s subgraph, its node line followed by its `unresolved`
-/// line, under a header naming the query as typed.
-#[test]
-fn graph_around_an_alias_prints_the_canonical_files_node_and_unresolved_lines() {
-    use common::cli::UNRESOLVED_ALIAS;
-    use common::fixtures::UNRESOLVED_FILE;
-
-    let dir = common::cli::unresolved_project();
-    common::fixtures::apply_json(
-        &common::cli::open_graph(dir.path()),
-        4,
-        rigger::contextgraph::TYPE_ALIAS_DEFINED,
-        common::fixtures::alias_json(UNRESOLVED_ALIAS, UNRESOLVED_FILE),
-    );
-    let [aliased, canonical] =
-        [UNRESOLVED_ALIAS, UNRESOLVED_FILE].map(|seed| run_around(dir.path(), seed, 1).0);
-    assert_eq!(
-        aliased.lines().next(),
-        Some("subgraph around \"src/aka.rs\" (depth 1):"),
-        "the header names the query as typed"
-    );
-    assert!(
-        aliased.lines().skip(1).eq(canonical.lines().skip(1)),
-        "the alias answers the canonical file's subgraph, its node and unresolved lines among it"
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN a `refs` row's leaf
-/// cannot be read and the operator runs `rigger graph --around src/reader.rs`, THEN the command
-/// fails naming the unreadable column, never printing the subgraph without the file's count.
-#[test]
-fn graph_around_fails_on_an_unreadable_unresolved_read() {
-    use common::fixtures::{UNREADABLE_LEAF, UNREADABLE_LEAVES, UNRESOLVED_FILE};
-    assert_eq!(
-        common::cli::around_unresolved_fails_after(UNREADABLE_LEAVES, UNRESOLVED_FILE),
-        UNREADABLE_LEAF
-    );
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph whose alias `src/aka.rs` names
-/// a canonical id that cannot be read, WHEN the operator runs `rigger graph --around src/aka.rs`,
+/// GIVEN a graph holding a decision governing `src/reader.rs`, whose alias `src/aka.rs` names a
+/// canonical id that cannot be read, WHEN the operator runs `rigger graph --around src/aka.rs`,
 /// THEN the command fails naming the unreadable column, never answering the alias as a raw query.
 #[test]
 fn graph_around_fails_on_an_unreadable_alias() {
-    use common::cli::UNRESOLVED_ALIAS;
+    use common::cli::GOVERNED_ALIAS;
     assert_eq!(
-        common::cli::around_unresolved_fails_after(
+        common::cli::around_fails_after(
             &format!(
-                "INSERT INTO aliases (alias, canonical_id) VALUES ('{UNRESOLVED_ALIAS}', x'00')"
+                "INSERT INTO aliases (alias, canonical_id) VALUES ('{GOVERNED_ALIAS}', x'00')"
             ),
-            UNRESOLVED_ALIAS
+            GOVERNED_ALIAS
         ),
         "Invalid column type Blob at index: 0, name: canonical_id"
     );
 }
 
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ: GIVEN the same graph, WHEN an edge's tier cannot be
-/// read and the operator runs `rigger graph --around src/reader.rs`, THEN the command fails naming
-/// the unreadable column, never printing an empty subgraph.
+/// GIVEN a graph holding a decision governing `src/reader.rs`, WHEN an edge's tier cannot be read
+/// and the operator runs `rigger graph --around src/reader.rs`, THEN the command fails naming the
+/// unreadable column, never printing an empty subgraph.
 #[test]
 fn graph_around_fails_on_an_unreadable_subgraph() {
     assert_eq!(
-        common::cli::around_unresolved_fails_after(
+        common::cli::around_fails_after(
             "UPDATE edges SET tier = CAST(tier AS BLOB)",
-            common::fixtures::UNRESOLVED_FILE
+            common::cli::GOVERNED_FILE
         ),
         "Invalid column type Blob at index: 5, name: tier"
-    );
-}
-
-/// Spec 119, SHOW IS ONE RENDERER: GIVEN a definition the graph records at line 1 of a file whose
-/// working tree now holds it at line 3, WHEN the operator runs `rigger graph --show` on its id,
-/// THEN it prints `show <id>`, the healed `site:` header with its `(recorded line 1, now 3)` note,
-/// its `name` and `lang` entry lines, then the body from the live line; and the header and entry
-/// lines read back equal `site_fields` after both CLI transforms, the live line among them.
-#[cfg(feature = "symbols")]
-#[test]
-fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
-    let dir = temp_project();
-    let root = dir.path();
-    let out = common::cli::show_record_only(
-        root,
-        "src/heal.rs",
-        "\n\nfn healed() -> u8 {\n    1\n}\n",
-        "healed",
-        "function",
-        1,
-        "rust",
-    );
-    assert_eq!(
-        out.lines().take(5).collect::<Vec<_>>(),
-        [
-            "show src/heal.rs::healed",
-            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
-            "  name healed",
-            "  lang rust",
-            "       3 | fn healed() -> u8 {",
-        ],
-        "the entry lines sit between the healed header and the body"
-    );
-    let site =
-        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
-    assert_eq!(
-        common::cli::printed_site_entries(&out),
-        common::cli::site_entries_as_printed(&site, 3),
-        "the healed show prints site_fields at the live line"
     );
 }
 
@@ -27262,20 +27122,18 @@ fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
 fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     let dir = temp_project();
     let root = dir.path();
-    let out = common::cli::show_recorded(
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(
         root,
         "src/App.tsx",
         "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
-        "App::v",
-        "constant",
-        2,
-        "ts",
     );
+    common::fixtures::commit_tree(root);
     assert_eq!(
-        out.lines().collect::<Vec<_>>(),
+        common::cli::show_lines(root, "src/App.tsx::App::v"),
         [
             "show src/App.tsx::App::v",
-            "  site: src/App.tsx:2   kind constant   degree 3",
+            "  site: src/App.tsx:2   kind constant   degree 2",
             "  name v",
             "  lang ts",
             "       2 |   const v = <b>x</b>;",
@@ -27293,72 +27151,52 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     );
 }
 
-/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
-/// of a file the head does not hold, whose `impl T` and `impl U` each define `new`, WHEN the
-/// working tree holds both two lines further down and the operator runs `rigger graph --show` on
-/// `T::new`'s exact id, THEN its body heals to `T::new`'s live lines alone, the path telling it
-/// from `U::new`, which shares its name and kind.
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a committed tree whose `src/pair.rs` holds the
+/// method `T::new` at line 4 and whose `src/other.rs` holds a same-named `U::new`, and a working
+/// tree that has deleted `T::new`, WHEN the operator runs `rigger graph --show` on `T::new`'s id,
+/// THEN the changed file's hit is withheld and the label counts it, never serving the deleted
+/// method as current; and `U::new`, in the unchanged file, still shows at its own path.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
+fn graph_show_withholds_a_deleted_method_beside_a_same_named_one_in_an_unchanged_file() {
     let dir = temp_project();
     let root = dir.path();
-    let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
-                  impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
-    assert_eq!(
-        common::cli::show_record_only(
-            root,
-            "src/pair.rs",
-            &format!("// one\n// two\n{source}"),
-            "T::new",
-            "method",
-            4,
-            "rust",
-        )
-        .lines()
-        .collect::<Vec<_>>(),
-        [
-            "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
-            "  name new",
-            "  lang rust",
-            "       6 |     fn new() -> T {",
-            "       7 |         T",
-            "       8 |     }",
-        ],
-        "the drifted T::new heals to its own body, never U::new's"
-    );
-}
-
-/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
-/// of a file whose working tree has deleted it while `U::new`, of the same name and kind, sits at
-/// that line, WHEN the operator runs `rigger graph --show` on `T::new`'s id, THEN no body is
-/// printed and the note names the path it was sought at, `U::new` never bounding it.
-#[cfg(feature = "symbols")]
-#[test]
-fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
-    let dir = temp_project();
-    let out = common::cli::show_recorded(
-        dir.path(),
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(
+        root,
         "src/pair.rs",
-        "struct T;\nstruct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
-        "T::new",
-        "method",
-        4,
-        "rust",
+        "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n",
+    );
+    common::fixtures::write_text(
+        root,
+        "src/other.rs",
+        "struct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
+    );
+    common::fixtures::commit_tree(root);
+    common::fixtures::write_text(root, "src/pair.rs", "struct T;\nstruct U;\n");
+
+    let (deleted, err, ok) =
+        common::cli::run_rigger(root, &["graph", "--show", "src/pair.rs::T::new"]);
+    assert!(ok, "the show of a deleted method exits 0; stderr: {err}");
+    let label = deleted.lines().next().unwrap_or_default();
+    assert!(
+        label.contains("1 file in ") && label.contains(" differs; 1 withheld"),
+        "the label counts the differing file and the withheld hit; got:\n{deleted}"
+    );
+    assert!(
+        deleted.contains("no such entity") && !deleted.contains("pair.rs:4"),
+        "a deleted T::new is withheld, never served at its old line; got:\n{deleted}"
     );
     assert_eq!(
-        out.lines().collect::<Vec<_>>(),
+        common::cli::show_lines(root, "src/other.rs::U::new")
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>(),
         [
-            "show src/pair.rs::T::new",
-            "  site: src/pair.rs:4   kind method   degree 1",
-            "  name new",
-            "  lang rust",
-            "  (no production definition named \"new\" at path \"T::new\" of kind method at line 4 \
-             or elsewhere in src/pair.rs in the current working tree; the recorded location may be \
-             stale)",
+            "show src/other.rs::U::new",
+            "  site: src/other.rs:3   kind method   degree 3",
         ],
-        "a deleted T::new is noted at its path, never bounded by U::new at its line"
+        "the same-named method in the unchanged file shows at its own path"
     );
 }
 
@@ -27387,71 +27225,6 @@ fn graph_show_answers_a_struct_field_by_its_path() {
             "       2 |     pub field: u8,",
         ],
         "the path form shows Struct's field alone"
-    );
-}
-
-/// Spec 119, AN OLDER GRAPH IS REBUILT: GIVEN a log holding one hand-built extraction batch of
-/// `src/f.rs` whose method `new` sits at the path `T::new`, folded into a `graph.db` then stamped
-/// with fold rule 2 and holding a row at the flat id `src/f.rs::new` carrying `name`, as a binary
-/// folding before path ids left it, WHEN the operator runs `rigger setup`, THEN the file owed its
-/// rebuild, records the current fold rule after it, no row at the flat id carries `name`, and the
-/// path id `src/f.rs::T::new` does.
-#[test]
-fn rigger_setup_rebuilds_a_rule_2_graph_db_leaving_no_flat_nested_id_named() {
-    use common::cli::{
-        exists, insert_node, open_graph, read_run_events, rigger_db, rigger_file,
-        run_stream_identity, temp_store_project, user_version, version_and_owed,
-    };
-    let dir = temp_store_project();
-    let root = dir.path();
-    let batch = [common::fixtures::f_rs_batch_def(
-        1,
-        "h1",
-        0,
-        ("new", "method", 3),
-        Some("T::new"),
-        10,
-    )];
-    common::cli::seed_pre_ledger_events(root, &batch);
-    common::fixtures::folds(&open_graph(root), &read_run_events(root));
-    let graph_db = rigger_file(root, "graph.db");
-    let project = run_stream_identity(root);
-    insert_node(
-        &rigger_db(root, "graph.db"),
-        &project,
-        "src/f.rs::new",
-        rigger::contextgraph::KIND_CODE_ENTITY,
-        Some(r#"{"name":"new"}"#),
-    );
-    common::fixtures::stamp_user_version(&graph_db, 2);
-    let named = |id: &str| {
-        exists(
-            &graph_db,
-            "SELECT EXISTS (SELECT 1 FROM nodes
-              WHERE id = ?1 AND json_extract(attrs, '$.name') IS NOT NULL)",
-            id,
-        )
-    };
-    assert_eq!(
-        (
-            version_and_owed(&graph_db, &project),
-            named("src/f.rs::new"),
-            named("src/f.rs::T::new")
-        ),
-        ((2, true), true, true),
-        "the rule-2 file owes its rebuild and names both the flat and the path id"
-    );
-
-    setup_ok(root, &[]);
-    assert_eq!(
-        (
-            user_version(&graph_db),
-            named("src/f.rs::new"),
-            named("src/f.rs::T::new")
-        ),
-        (rigger::contextgraph::sqlite::PROJECTION_VERSION, false, true),
-        "the rebuilt file records the current fold rule, no row at the flat nested id carries name \
-         and the path id does"
     );
 }
 
@@ -27558,66 +27331,21 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
     );
 }
 
-/// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
-/// recorded alone (the head does not hold its file), beside a definition of its leaf in the working
-/// tree, WHEN the operator runs `rigger graph --show` on its id, THEN it prints the "no production
-/// definition named" note with its id in place of the name and no body, on every lane, never
-/// bounding a body by a cut of the id.
-#[test]
-fn graph_show_notes_a_nameless_node_by_its_id() {
-    let dir = temp_project();
-    let root = dir.path();
-    common::cli::write_ignored(root, &[("src/x.rs", "fn thing() {}\n")]);
-    let nameless = common::fixtures::node_with_attrs(
-        "src/x.rs::thing",
-        "code-entity",
-        &[("kind", "function"), ("line", "1")],
-    );
-    drop(common::cli::planted_graph(
-        root,
-        &rigger::contextgraph::Graph {
-            nodes: vec![nameless],
-            edges: Vec::new(),
-        },
-    ));
-
-    assert_eq!(
-        common::cli::graph_ok(root, &["graph", "--show", "src/x.rs::thing"]),
-        "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
-         definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
-         in the current working tree; the recorded location may be stale)\n",
-        "a nameless node at a line is noted by its id"
-    );
-}
-
 /// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
 /// site object built from `site_fields`) on a bare-name resolution, where the happy-path test above
 /// only ever tries `around` on an unknown entity (the show-renderer test below drives every
-/// exact id and a resolving `around`). Seeds one real code-entity definition into
-/// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
-/// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
+/// exact id and a resolving `around`). Commits one real code-entity definition into
+/// the tree the code store describes and proves a SUCCESSFUL resolution
 /// serializes its site fields correctly over the wire, and an unresolved `show` still answers
 /// honestly `"none"` rather than erroring.
+#[cfg(feature = "symbols")]
 #[test]
 fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknown_one() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-    use rigger::eventstore::Event;
-
     let dir = temp_store_project();
     let root = dir.path();
 
-    let id = run_stream_identity(root);
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    {
-        let p = Projector::open(rigger_dir.join("graph.db").to_str().unwrap(), &id).unwrap();
-        let payload =
-            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
-        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
-        e.position = 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&e));
-    }
+    common::fixtures::write_text(root, "src/widget.rs", "\n\n\n\n\n\nfn frobnicate() {}\n");
+    common::fixtures::commit_tree(root);
 
     let mut mcp = McpSession::start(root);
 
@@ -27633,7 +27361,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
     assert_eq!(structured["site"]["file"], "src/widget.rs");
     assert_eq!(structured["site"]["line"], 7);
-    assert_eq!(structured["site"]["kind"], "fn");
+    assert_eq!(structured["site"]["kind"], "function");
 
     let missing = mcp.call(
         "tools/call",
@@ -27647,29 +27375,34 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     mcp.finish_cleanly();
 }
 
-/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
-/// folded into the project's `graph.db`, WHEN an MCP client calls `rigger_graph` with `show` on
-/// each exact id and with `around` on the seed file at depth 1, THEN each `show` site is the
-/// node's `id` beside the `site_fields` entries of the site the graph locates, and every `around`
-/// node is `entity_site` over the `Node` the merged graph loads, less its `summary`, at its edge
-/// count there - the file at 4, each definition and the finding at 1 - so the finding, at the
-/// depth bound, shows one edge fewer than the 2 `show` gives it and no summary, which `show`
-/// keeps.
+/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer tree
+/// committed and its finding folded into the project's `graph.db`, WHEN an MCP client calls
+/// `rigger_graph` with `show` on each exact id and with `around` on the seed file at depth 1,
+/// THEN each `show` site is the node's `id` beside the `site_fields` entries of the site the graph
+/// locates, and every `around` node is `entity_site` over the `Node` the merged graph loads, less
+/// its `summary`, at its edge count there, so the finding, at the depth bound, shows one edge
+/// fewer than the 2 `show` gives it and no summary, which `show` keeps. The cases no extractor
+/// produces (see the fixture) are not exercised.
+#[cfg(feature = "symbols")]
 #[test]
 fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     use common::fixtures::{
-        around_nodes, assert_around_is_entity_sites, assert_finding_shows_past_the_depth_bound,
-        assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE, SHOWN_IDS,
+        assert_shown_tree_finding_shows_past_the_depth_bound, fold_shown_tree_finding,
+        shown_tree_around_nodes, SHOWN_TREE_FILE, SHOWN_TREE_IDS, SHOWN_TREE_SOURCES,
     };
 
     let dir = temp_store_project();
     let root = dir.path();
-    common::cli::seed_rigger_dir(root);
-    seed_shown_nodes(&common::cli::open_graph(root));
+    for (path, text) in SHOWN_TREE_SOURCES {
+        common::fixtures::write_text(root, path, text);
+    }
+    common::fixtures::commit_tree(root);
+    let graph = common::cli::open_graph(root);
+    fold_shown_tree_finding(&graph);
 
     let mut mcp = McpSession::start(root);
-    let sites = SHOWN_IDS.map(|id| mcp.shown_site(id));
-    let nodes = around_nodes(&mcp.around_answer(SHOWN_FILE));
+    let sites = SHOWN_TREE_IDS.map(|id| mcp.shown_site(id));
+    let nodes = shown_tree_around_nodes(&mcp.around_answer(SHOWN_TREE_FILE));
     mcp.finish_cleanly();
 
     assert_eq!(
@@ -27681,43 +27414,25 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
             ))
             .collect::<Vec<_>>(),
         [
+            ("community/1/0", 4),
             ("f-shown", 1),
-            ("src/limits.rs", 4),
-            ("src/limits.rs::LIMIT", 1),
-            ("src/limits.rs::blank", 1),
-            ("src/limits.rs::width", 1),
+            ("src/limits.rs", 5),
+            ("src/limits.rs::Bounds", 2),
+            ("src/limits.rs::LIMIT", 2),
+            ("src/limits.rs::blank", 2),
         ],
         "every loaded node at its edge count in the merged graph"
     );
-    let finding = SHOWN_IDS.iter().position(|id| *id == "f-shown").unwrap();
-    assert_finding_shows_past_the_depth_bound(&sites[finding]);
-    let graph = common::cli::open_graph(root);
-    assert_shows_are_site_fields(&graph, &sites);
-    assert_around_is_entity_sites(&common::fixtures::records_graph(&graph), &nodes);
-}
-
-/// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own
-/// `graph.db` holding the rows `seed_unresolved_references` stages, WHEN an MCP client calls
-/// `rigger_graph` with `show` on `src/reader.rs` and on `src/definer.rs` and with `around` on
-/// `src/reader.rs` at depth 1, THEN the reader's site carries its leaves joined by
-/// `contextgraph::LIST_SEP` as one `unresolved` key beside its `partial`, the definer's carries no
-/// `unresolved` key, and no node of the `around` carries one.
-#[test]
-fn mcp_rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-    use common::fixtures::{
-        assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, RESOLVING_FILE,
-        UNRESOLVED_FILE,
-    };
-
-    let dir = common::cli::unresolved_project();
-    common::cli::seed_store(dir.path());
-    let mut mcp = McpSession::start(dir.path());
-    let [reader, definer] = [UNRESOLVED_FILE, RESOLVING_FILE].map(|id| mcp.shown_site(id));
-    let around = mcp.around_answer(UNRESOLVED_FILE);
-    mcp.finish_cleanly();
-
-    assert_show_lists_unresolved_leaves(&reader, &definer);
-    assert_around_lists_no_unresolved(&around);
+    let finding = SHOWN_TREE_IDS
+        .iter()
+        .position(|id| *id == "f-shown")
+        .unwrap();
+    assert_shown_tree_finding_shows_past_the_depth_bound(&sites[finding]);
+    let view =
+        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
+    let composed = common::fixtures::view_graph(&graph, &view);
+    common::fixtures::assert_shown_tree_sites_are_site_fields(&composed, &sites);
+    common::fixtures::assert_shown_tree_around_is_entity_sites(&composed, &nodes);
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader
@@ -28458,7 +28173,7 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
 /// `rigger reset --derived` runs while another holder has the rebuild lock, then it is refused at
 /// the lock, in the one text naming every holder; once the lock is free it is refused for the
 /// unfinished rebuild, naming `rigger setup`; each refusal prints nothing else and leaves the event
-/// log and every `graph.db` file byte for byte. With the shadow gone the same command sheds the
+/// log and every `graph.db` file byte for byte. With the shadow gone the same command deletes the
 /// duplicates, and `graph.db.lock` stands free behind it.
 #[test]
 fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_changes_nothing() {
@@ -28511,21 +28226,21 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             ),
             (
                 true,
-                common::cli::migrated_lines(1, 3, 0).lines().next(),
+                common::cli::deleted_line(3).lines().next(),
                 vec!["graph.db", "graph.db.lock"]
             ),
         ),
         "the held lock refuses first and the unfinished rebuild second, neither changing the log \
-         or a graph file, and the reset sheds once the shadow is gone; its stderr: {shed_err}"
+         or a graph file, and the reset deletes once the shadow is gone; its stderr: {shed_err}"
     );
     drop(lock_free);
 }
 
-/// Seed `root`'s run stream as a store recorded before the ledger left it, holding six derived
-/// events of three file identities: a superseded and a latest generation of one source file
-/// (`gc/src/a.rs`), a design batch of that same file (`gd/src/a.rs`), a second source file whose
-/// latest recording is already a ledger entry (`gc/src/b.rs`), and one event naming no identity.
-fn seed_six_derived_events_of_three_file_identities(root: &Path) {
+/// Seed `root`'s run stream as a store recorded before the ledger left it, holding seven derived
+/// events: a superseded and a latest generation of one source file (`gc/src/a.rs`), a design batch
+/// of that same file (`gd/src/a.rs`), a second source file and its ledger entry (`gc/src/b.rs`),
+/// and one event naming no file identity.
+fn seed_seven_derived_events(root: &Path) {
     use common::cli::{keyed, pre_ledger_batch};
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
     use rigger::eventstore::Event;
@@ -28545,45 +28260,36 @@ fn seed_six_derived_events_of_three_file_identities(root: &Path) {
     common::cli::seed_pre_ledger_events(root, &seeded);
 }
 
-/// Given a store recorded before the ledger holding six derived events of three file identities
-/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs bare `rigger
-/// reset`, then its `--derived` line names those
-/// six events and three identities and the log stands as it stood; when `rigger reset --derived`
-/// then runs it sheds exactly those six events, the three identities holding none after it; and
-/// bare `rigger reset` then says no derived event is left to shed.
+/// How many derived events `root`'s run stream holds, read from its rows and never from the
+/// command.
+fn derived_events_held(root: &Path) -> usize {
+    read_run_events(root)
+        .iter()
+        .filter(|event| rigger::retention::DERIVED_TYPES.contains(&event.type_.as_str()))
+        .count()
+}
+
+/// Given a store recorded before the ledger holding seven derived events
+/// ([`seed_seven_derived_events`]), when the operator runs bare `rigger reset`, then its
+/// `--derived` line names those seven events and the log stands as it stood; when `rigger reset
+/// --derived` then runs it deletes exactly those seven, none being left after it; and bare `rigger
+/// reset` then says no derived event is left to delete.
 #[test]
 fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
     use common::cli::{
-        derived_menu_line_naming, derived_menu_lines, migrated_lines, stream_shape,
-        NOTHING_TO_SHED_MENU_LINE,
+        deleted_line, derived_menu_line_naming, derived_menu_lines, stream_shape,
+        NOTHING_TO_DELETE_MENU_LINE,
     };
 
     let dir = temp_project();
     let root = dir.path();
     common::cli::init_event_log(root);
     setup_ok(root, &[]);
-    seed_six_derived_events_of_three_file_identities(root);
-
-    // What the log holds of the derived index, read from its rows and never from the command:
-    // how many derived events, and the file identities their replay keys name.
-    let held = || {
-        let derived: Vec<_> = read_run_events(root)
-            .into_iter()
-            .filter(|event| rigger::ingest::DERIVED_INDEX_TYPES.contains(&event.type_.as_str()))
-            .collect();
-        let identities: std::collections::BTreeSet<String> = derived
-            .iter()
-            .filter_map(|event| event.meta.get(rigger::ingest::META_REPLAY_KEY))
-            .filter_map(|key| rigger::ingest::derived_key_parts(key))
-            .map(|(identity, _)| identity.to_string())
-            .collect();
-        (derived.len(), identities)
-    };
-    let identities = ["gc/src/a.rs", "gc/src/b.rs", "gd/src/a.rs"].map(str::to_string);
+    seed_seven_derived_events(root);
     assert_eq!(
-        held(),
-        (6, identities.into_iter().collect()),
-        "premise: the log holds six derived events of three file identities"
+        derived_events_held(root),
+        7,
+        "premise: the log holds seven derived events"
     );
     let shape = stream_shape(root);
 
@@ -28591,56 +28297,51 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
     assert!(menu_ok, "bare reset exits 0: {menu_err}");
     assert_eq!(
         derived_menu_lines(&menu),
-        [derived_menu_line_naming(6, 3)],
-        "the menu names the six derived events and the three file identities the log holds"
+        [derived_menu_line_naming(7)],
+        "the menu names the seven derived events the log holds"
     );
     assert_eq!(stream_shape(root), shape, "the menu changes no row");
 
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(shed_ok, "the derived reset runs: {shed_err}");
     assert_eq!(
-        shed.get(..migrated_lines(2, 6, 1).len()),
-        Some(migrated_lines(2, 6, 1).as_str()),
-        "the derived reset sheds the six events the menu named, converting the two identities \
-         whose latest recording was derived"
+        shed.get(..deleted_line(7).len()),
+        Some(deleted_line(7).as_str()),
+        "the derived reset deletes the seven events the menu named"
     );
-    assert_eq!(
-        held(),
-        (0, std::collections::BTreeSet::new()),
-        "no derived event of any of the three identities is left"
-    );
+    assert_eq!(derived_events_held(root), 0, "no derived event is left");
 
     let (after, after_err, after_ok) = run_rigger(root, &["reset"]);
-    assert!(after_ok, "bare reset exits 0 once migrated: {after_err}");
+    assert!(after_ok, "bare reset exits 0 once deleted: {after_err}");
     assert_eq!(
         derived_menu_lines(&after),
-        [NOTHING_TO_SHED_MENU_LINE],
-        "the menu says none is left to shed"
+        [NOTHING_TO_DELETE_MENU_LINE],
+        "the menu says none is left to delete"
     );
 }
 
-/// Given a store recorded before the ledger holding six derived events of three file identities
-/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs `rigger
-/// validate`, then it exits 0 and warns once, on standard error, naming those six events and
-/// three identities left and `rigger reset --derived`, and the log stands as it stood; and once
-/// `rigger reset --derived` has migrated the store, `rigger validate` prints no such warning.
+/// Given a store recorded before the ledger holding seven derived events
+/// ([`seed_seven_derived_events`]), when the operator runs `rigger validate`, then it exits 0 and
+/// warns once, on standard error, naming those seven events left and `rigger reset --derived`,
+/// and the log stands as it stood; and once `rigger reset --derived` has deleted them, `rigger
+/// validate` prints no such warning.
 #[test]
-fn validate_warns_of_the_derived_events_left_and_names_the_migration_until_it_has_run() {
-    use common::cli::{bloat_advisory_naming, bloat_lines, migrated_lines, stream_shape};
+fn validate_warns_of_the_derived_events_left_and_names_the_delete_until_it_has_run() {
+    use common::cli::{bloat_advisory_naming, bloat_lines, deleted_line, stream_shape};
 
     let dir = temp_project();
     let root = dir.path();
     let (_, init_err, inited) = run_rigger(root, &["init"]);
     assert!(inited, "premise: init scaffolds the project: {init_err}");
-    seed_six_derived_events_of_three_file_identities(root);
+    seed_seven_derived_events(root);
     let shape = stream_shape(root);
 
     let (out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "an advisory never fails validate: {err}");
     assert_eq!(
         bloat_lines(&err),
-        [bloat_advisory_naming(6, 3)],
-        "validate warns once, naming the six derived events and three file identities left"
+        [bloat_advisory_naming(7)],
+        "validate warns once, naming the seven derived events left"
     );
     assert_eq!(
         bloat_lines(&out),
@@ -28652,16 +28353,16 @@ fn validate_warns_of_the_derived_events_left_and_names_the_migration_until_it_ha
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(shed_ok, "the derived reset runs: {shed_err}");
     assert_eq!(
-        shed.get(..migrated_lines(2, 6, 1).len()),
-        Some(migrated_lines(2, 6, 1).as_str()),
-        "premise: the migration sheds the six events the advisory named"
+        shed.get(..deleted_line(7).len()),
+        Some(deleted_line(7).as_str()),
+        "premise: the delete removes the seven events the advisory named"
     );
 
     let (_, after_err, after_ok) = run_rigger(root, &["validate"]);
-    assert!(after_ok, "validate exits 0 once migrated: {after_err}");
+    assert!(after_ok, "validate exits 0 once deleted: {after_err}");
     assert_eq!(
         bloat_lines(&after_err),
         [""; 0],
-        "a migrated store draws no warning"
+        "a store whose derived events are deleted draws no warning"
     );
 }

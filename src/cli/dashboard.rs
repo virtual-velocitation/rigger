@@ -837,7 +837,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let (graph, _) = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
+        let graph = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
         let context = ReadGraph::new(&graph, caller_tree());
 
@@ -892,39 +892,30 @@ mod tests {
     /// decisions/findings, hence an EMPTY `graph_seeds` - a seed naming a real node still returns
     /// its neighborhood and the whole-graph overview still returns its clusters, instead of the
     /// `Graph::default()` dead-end the run-seeded read produced.
+    #[cfg(feature = "symbols")]
     #[test]
     fn dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty() {
         use std::collections::HashMap;
 
         let dir = tempfile::tempdir().unwrap();
-        let graph_path = dir.path().join("graph.db");
+        let root = dir.path();
+        crate::test_support::git_ok_with_identity(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join(".rigger")).unwrap();
+        let graph_path = root.join(".rigger").join("graph.db");
         let graph_path = graph_path.to_str().unwrap();
         let identity = "reachtest";
 
-        // A projection built from CODE INGEST alone (spec 29a: CodeEntityExtracted + EdgeInferred),
-        // exactly what a cold-checkout `graph build` folds. No decision, no finding - so nothing a
-        // run would seed a subgraph from.
-        {
-            let p = Projector::open(graph_path, identity).unwrap();
-            let def = serde_json::json!({
-                "file": "src/combat.rs", "name": "apply_damage",
-                "kind": "function", "line": 7, "lang": "rust",
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&def).unwrap(),
-            );
-            e.position = 1;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-            let refr =
-                serde_json::json!({ "file": "src/combat.rs", "name": "clamp", "lang": "rust" });
-            let mut e2 = Event::new(
-                contextgraph::TYPE_EDGE_INFERRED,
-                serde_json::to_vec(&refr).unwrap(),
-            );
-            e2.position = 2;
-            crate::test_support::folds(&p, std::slice::from_ref(&e2));
-        }
+        // A tree holding CODE INGEST alone: the code store's view of the committed `src/combat.rs`,
+        // one definition and one reference, beside a record half with no record. No decision, no
+        // finding - so nothing a run would seed a subgraph from.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src").join("combat.rs"),
+            "pub fn apply_damage() { clamp(); }\n",
+        )
+        .unwrap();
+        crate::test_support::commit_tree(root);
+        Projector::open(graph_path, identity).unwrap();
 
         // Precondition = the never-built dead-end. The run log carries no content events, so
         // `graph_seeds` is EMPTY and the OLD run-seeded read collapses to `Graph::default()`.

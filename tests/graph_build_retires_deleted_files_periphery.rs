@@ -1,6 +1,6 @@
 //! Periphery for the whole-project walk's retirement of deleted files: a file the tree no longer
-//! holds stops answering in the graph after one `rigger graph build`, and a second build records
-//! nothing.
+//! holds stops answering in the graph after one `rigger graph build`, and a second build appends
+//! nothing to the log.
 //!
 //! Each row plants the extraction tree (one file of each prefix the walk keys: `gc` code, `gd`
 //! design, `gw` workflow definition) in a repository, builds, deletes one file, and builds again through the shipped binary. The
@@ -80,7 +80,7 @@ fn answers(root: &Path, (id, kind): Shown) -> bool {
         })
 }
 
-/// GIVEN the extraction tree built into the graph,
+/// GIVEN the extraction tree built into the graph, with the row's index state,
 /// WHEN the row's file is deleted and `rigger graph build` runs (and, for a cold row, `rigger setup`
 /// rebuilds the graph from the log over no `graph.db`),
 /// THEN no id the file held answers `--show`, every kept id still does, and one more build

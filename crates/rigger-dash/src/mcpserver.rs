@@ -2159,7 +2159,6 @@ mod tests {
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::record_fold_folds_no_entry!();
         }
 
         let tree = tempfile::tempdir().unwrap();
@@ -2432,29 +2431,26 @@ mod tests {
         );
     }
 
-    /// `rigger_graph`'s `show` selector on the lookup surface: seeds one real code-entity
-    /// definition into a `Projector` (the same `CodeEntityExtracted` fold a real extraction
-    /// pass produces) and drives it through `Server::call_tool`, proving the trait's new
-    /// [`ContextGraph::locate`] reaches a real caller holding only `&dyn RecordFold` - the DI
-    /// extension this fix round adds, reusing the SAME `graph` port `with_graph` already wires
-    /// for the event fold, rather than a second implementation reaching for the concrete
+    /// `rigger_graph`'s `show` selector on the lookup surface: plants one code-entity
+    /// definition in the code view beside a `Projector` and drives it through
+    /// `Server::call_tool`, proving [`ContextGraph::locate`] reaches a real caller holding only the
+    /// context the server was given, rather than a second implementation reaching for the concrete
     /// `sqlite::Projector` from outside the crate.
     #[test]
     fn lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        let payload =
-            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
-        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
-        e.position = 1;
-        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.define("src/widget.rs", "frobnicate", "function", 7);
 
-        let context = crate::test_support::RecordsOnly(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let server = Server::new(&store, "run")
             .with_graph(&graph)
             .with_context(&context)
@@ -2469,35 +2465,24 @@ mod tests {
         assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
         assert_eq!(structured["site"]["file"], "src/widget.rs");
         assert_eq!(structured["site"]["line"], 7);
-        assert_eq!(structured["site"]["kind"], "fn");
+        assert_eq!(structured["site"]["kind"], "function");
     }
 
-    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`: the
-    /// structured content the show-renderer tests read (spec 119, SHOW IS ONE RENDERER).
-    fn shown_graph_answer(
+    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`, reading it
+    /// through `context`: the structured content the show-renderer tests read (spec 119, SHOW IS
+    /// ONE RENDERER).
+    fn shown_graph_answer_over(
         graph: &crate::contextgraph::sqlite::Projector,
+        context: &dyn crate::contextgraph::OpenGraph,
         arguments: Value,
     ) -> Value {
         let store = Store::open(":memory:").unwrap();
         let grounder = crate::grounder::Nop;
-        let context = crate::test_support::RecordsOnly(graph);
         let server = Server::new(&store, "run")
             .with_graph(graph)
-            .with_context(&context)
+            .with_context(context)
             .with_grounder(Ok(&grounder));
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
-    }
-
-    /// The site object the `rigger_graph` `show` of `id` answers over `graph`
-    /// ([`shown_graph_answer`]).
-    fn shown_site(graph: &crate::contextgraph::sqlite::Projector, id: &str) -> Value {
-        shown_graph_answer(graph, json!({"show": id}))["site"].clone()
-    }
-
-    /// The `rigger_graph` `around` answer of `seed` at depth 1 over `graph`
-    /// ([`shown_graph_answer`]).
-    fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
-        shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
     }
 
     /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens
@@ -2618,42 +2603,50 @@ mod tests {
     }
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
-    /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
-    /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
-    /// attr giving the graph kind, and the finding its `by`, `unit` and `summary` with no `file`
-    /// and no `line` - each object equal, without order, to `site_fields` of the located site.
+    /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, the `doc` of a
+    /// document node, and the finding its `by`, `unit` and `summary` with no `file` and no `line` -
+    /// each object equal, without order, to `site_fields` of the located site. The cases no
+    /// extractor produces (see the fixture) are not exercised.
     #[test]
     fn rigger_graph_show_gives_each_node_its_id_and_its_site_fields_as_keys() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::test_support::{seed_shown_nodes, SHOWN_IDS};
+        use crate::test_support::{
+            assert_shown_tree_function_carries_proven_by, assert_shown_tree_sites_are_site_fields,
+            fold_shown_tree_finding, shown_tree_planted_view, SHOWN_TREE_IDS,
+        };
 
         let graph = Projector::open(":memory:", "test").unwrap();
-        seed_shown_nodes(&graph);
-        let sites = SHOWN_IDS.map(|id| shown_site(&graph, id));
+        fold_shown_tree_finding(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        let sites = SHOWN_TREE_IDS.map(|id| {
+            shown_graph_answer_over(&graph, &context, json!({"show": id}))["site"].clone()
+        });
         assert_eq!(
             sites,
             [
-                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 3,
+                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 2,
                        "kind": "constant", "degree": 1, "name": "LIMIT", "lang": "rust"}),
-                json!({"id": "src/limits.rs::width", "file": "src/limits.rs", "line": 5,
-                       "kind": "field", "degree": 1, "name": "width"}),
-                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 7,
-                       "kind": "code-entity", "degree": 1, "name": "blank", "lang": "rust"}),
-                json!({"id": "Makefile::all", "file": "Makefile", "line": 1,
-                       "kind": "function", "degree": 1, "name": "all", "lang": "make"}),
+                json!({"id": "src/limits.rs::Bounds", "file": "src/limits.rs", "line": 4,
+                       "kind": "type", "degree": 1, "name": "Bounds", "lang": "rust"}),
+                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 6,
+                       "kind": "function", "degree": 1, "name": "blank", "lang": "rust"}),
                 json!({"id": "f-shown", "kind": "finding", "degree": 2, "by": "lens:sdet",
                        "unit": "u7", "summary": "the width overflows"}),
                 json!({"id": "docs/decisions/one-renderer.md",
                        "file": "docs/decisions/one-renderer.md", "line": 0,
                        "kind": "arch-decision", "degree": 0, "title": "One renderer",
-                       "doc": "the decision log\nits second line"}),
+                       "doc": "docs/decisions/one-renderer.md"}),
                 json!({"id": "docs/x.md#sec", "file": "docs/x.md", "line": 0,
                        "kind": "design-doc", "degree": 0, "title": "Sec", "doc": "docs/x.md"}),
             ],
             "each node's site object"
         );
-        crate::test_support::assert_the_shown_const_carries_proven_by(&graph);
-        crate::test_support::assert_shows_are_site_fields(&graph, &sites);
+        let composed = crate::test_support::view_graph(&graph, &context.view);
+        assert_shown_tree_function_carries_proven_by(&composed);
+        assert_shown_tree_sites_are_site_fields(&composed, &sites);
     }
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `around` renders every node of the `Graph` it
@@ -2665,13 +2658,26 @@ mod tests {
     #[test]
     fn rigger_graph_around_renders_each_loaded_node_with_its_degree_in_the_merged_graph() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::test_support::{seed_shown_nodes, SHOWN_FILE};
+        use crate::test_support::{
+            assert_shown_tree_around_is_entity_sites, fold_shown_tree_finding,
+            shown_tree_around_nodes, shown_tree_planted_view, SHOWN_TREE_FILE,
+        };
 
         let graph = Projector::open(":memory:", "test").unwrap();
-        seed_shown_nodes(&graph);
-        let answer = around_answer(&graph, SHOWN_FILE);
-        let shown = |id: &str| shown_site(&graph, id);
-        let nodes = crate::test_support::around_nodes(&answer);
+        fold_shown_tree_finding(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        let answer = shown_graph_answer_over(
+            &graph,
+            &context,
+            json!({"around": SHOWN_TREE_FILE, "depth": 1}),
+        );
+        let shown = |id: &str| {
+            shown_graph_answer_over(&graph, &context, json!({"show": id}))["site"].clone()
+        };
+        let nodes = shown_tree_around_nodes(&answer);
         assert_eq!(
             nodes,
             [
@@ -2679,38 +2685,16 @@ mod tests {
                        "unit": "u7"}),
                 json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
                        "kind": "file", "degree": 4, "lang": "rust"}),
+                shown("src/limits.rs::Bounds"),
                 shown("src/limits.rs::LIMIT"),
                 shown("src/limits.rs::blank"),
-                shown("src/limits.rs::width"),
             ],
             "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
-        crate::test_support::assert_around_is_entity_sites(
-            &crate::test_support::records_graph(&graph),
+        assert_shown_tree_around_is_entity_sites(
+            &crate::test_support::view_graph(&graph, &context.view),
             &nodes,
         );
-        crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
-    }
-
-    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: the MCP `show` of a file node carries its
-    /// unresolved leaves as one `unresolved` key, joined by `LIST_SEP`, beside its `partial`; a
-    /// file listing none carries no `unresolved` key; and the MCP `around` of the file carries
-    /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
-    #[test]
-    fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-        use crate::test_support::{
-            assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, fold_events,
-            seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
-        };
-
-        let graph = fold_events([]);
-        seed_unresolved_references(&graph);
-        let (reader, definer) = (
-            shown_site(&graph, UNRESOLVED_FILE),
-            shown_site(&graph, RESOLVING_FILE),
-        );
-        assert_show_lists_unresolved_leaves(&reader, &definer);
-        assert_around_lists_no_unresolved(&around_answer(&graph, UNRESOLVED_FILE));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
@@ -2734,7 +2718,6 @@ mod tests {
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::record_fold_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();
@@ -2800,22 +2783,20 @@ mod tests {
     #[test]
     fn lookup_surface_rigger_graph_show_lists_ambiguous_candidates() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
-            let payload = format!(
-                r#"{{"file":"{file}","name":"shared","kind":"fn","line":1,"lang":"rust"}}"#
-            );
-            let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        for file in ["src/a.rs", "src/b.rs"] {
+            tree.define(file, "shared", "function", 1);
         }
 
-        let context = crate::test_support::RecordsOnly(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let server = Server::new(&store, "run")
             .with_graph(&graph)
             .with_context(&context)

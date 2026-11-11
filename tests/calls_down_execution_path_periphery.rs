@@ -1,6 +1,6 @@
 //! Periphery (contract / API / integration) tests for spec 52 criterion 1: the DOWN direction of
 //! `ContextGraph::calls` - the layered execution-path DAG. These run OUTSIDE the crate, over the
-//! library's PUBLIC surface (`Projector::open` -> `RecordFold::apply` -> `ContextGraph::calls`), so
+//! library's PUBLIC surface (source files -> the code store's view -> `ContextGraph::calls`), so
 //! they guard the boundary the implementer's inside-out unit test is structurally blind to.
 //!
 //! The implementer's inside-out unit test
@@ -21,13 +21,11 @@
 //!    the caller back onto the seed's definition through its bare placeholder (the reverse
 //!    name-match), where DOWN reaches the callee - the two directions are genuine mirror walks;
 //!  - the DEGENERATE edges: a missing seed, and a seed with no calls, each degrade to an empty /
-//!    seed-only view rather than erroring;
-//!  - PROJECT SCOPING: a walk scoped to one project never surfaces another project's `CALLS` edges
-//!    even when both share a graph.db file and the seed id (the new reads all filter on `project`).
+//!    seed-only view rather than erroring.
 //!
 //! The UP direction (spec 52 criterion 3) carries public boundaries the DOWN layer and the crate's
 //! inside-out UP unit tests leave untested at the public surface; this layer adds them, over the SAME
-//! `Projector::open` -> `apply` -> `calls(Direction::Up)` surface:
+//! source files -> view -> `calls(Direction::Up)` surface:
 //!
 //!  - the `referenced_not_called` PUBLIC FIELD: an UP walk reports, beside the traversed caller DAG,
 //!    the FILE nodes that import / use the seed's name at file level (or, a staged reference, from a
@@ -37,33 +35,59 @@
 //!  - the UP FRONTIER: a cross-file caller whose call name has MULTIPLE definitions comes back a
 //!    marked `frontier` carrying its SORTED candidate ids and is NOT ascended (the reverse of the DOWN
 //!    conservative-resolution policy; the crate's UP unit test exercises it only inside the crate);
-//!  - UP PROJECT SCOPING across the THREE project-filtered reads the UP walk adds (direct callers,
-//!    callers through bare placeholders, and the referenced-but-not-called file scan) - a
-//!    leak in any one is a bug the DOWN scoping test cannot catch;
 //!  - the UP DEPTH clamp and the DETERMINISTIC emitted order: a caller tree walked at a depth bound
 //!    returns its in-bound layers in the production `(layer, id)` order, asserted on the raw node Vec
 //!    (not a re-sorted copy) so the ordering itself is pinned;
 //!  - the SAME-LAYER BACK edge: two sibling callers at one layer where one calls the other, pinning
 //!    the `<=` boundary that marks a non-deepening caller edge back rather than ascending it twice.
 //!
-//! Events are built from raw on-log JSON (deliberately NOT the in-crate payload struct) so the tests
-//! pin the JSON contract the fold reads, exactly as the sibling graph-fold periphery tests do. No
-//! reference to any external tool or project; hyphens, never em dashes.
+//! Each scenario plants the facts an extractor reads off its files and walks the code store's view
+//! of them, so the walk is proven in every lane, whichever extractors it links. No reference to any external tool or
+//! project; hyphens, never em dashes.
 
 use crate::common;
 
-use crate::common::fixtures::RecordsRead;
-use common::fixtures::{apply_call, apply_def, apply_ref};
-use common::fixtures::{call_edge_pairs, call_layer, call_node_ids};
+use common::fixtures::{call_edge_pairs, call_layer, call_node_ids, planted_file};
+use rigger::code_facts::FileFacts;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    CallGraph, Direction, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
+    CallGraph, ContextGraph, Direction, CODE_KIND_FUNCTION, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS,
+    TIER_INFERRED,
 };
 
+/// The `direction` walk to `depth` from each of `seeds`, at the tier `floor`, over a tree holding
+/// exactly `files` (path, Rust source) and no records.
+fn walk(
+    files: Vec<FileFacts>,
+    seeds: &[&str],
+    direction: Direction,
+    depth: i64,
+    floor: &str,
+) -> CallGraph {
+    let (records, view) = tree(files);
+    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
+    common::fixtures::view_graph(&records, &view)
+        .calls(&seeds, direction, depth, floor)
+        .unwrap()
+}
+
+/// The records (none) and the code store's view of a tree holding exactly `files`.
+fn tree(files: Vec<FileFacts>) -> (Projector, rigger::code_view::FactsView) {
+    (
+        Projector::open(":memory:", "test").unwrap(),
+        common::fixtures::facts_view(files),
+    )
+}
+
+/// The facts of the file `path` defining each of `defs`, a function, one per line in order,
+/// where each `(caller, callee)` of `calls` is a call inside the caller's body.
+fn fns(path: &str, defs: &[&str], calls: &[(&str, &str)]) -> FileFacts {
+    let defs: Vec<(&str, &str)> = defs.iter().map(|d| (*d, CODE_KIND_FUNCTION)).collect();
+    planted_file(path, &defs, calls, &[])
+}
+
 /// The `direction` walk to `depth` from `src/a.rs::<seed>` over one file, `src/a.rs`, that defines
-/// each of `defs` in fold order (the first opening the extraction batch, each at its fold position
-/// as its line) and in which each `(caller, callee)` of `calls` is a same-file call, folded after
-/// the definitions.
+/// each of `defs` in order and in which each `(caller, callee)` of `calls` is a same-file call.
 fn walk_one_file(
     defs: &[&str],
     calls: &[(&str, &str)],
@@ -71,23 +95,13 @@ fn walk_one_file(
     direction: Direction,
     depth: i64,
 ) -> CallGraph {
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for (i, name) in defs.iter().enumerate() {
-        pos += 1;
-        apply_def(&p, pos, "src/a.rs", name, pos, i == 0);
-    }
-    for (caller, callee) in calls {
-        pos += 1;
-        apply_call(&p, pos, "src/a.rs", callee, caller);
-    }
-    p.calls(
-        &[format!("src/a.rs::{seed}")],
+    walk(
+        vec![fns("src/a.rs", defs, calls)],
+        &[&format!("src/a.rs::{seed}")],
         direction,
         depth,
         TIER_INFERRED,
     )
-    .unwrap()
 }
 
 /// Backend-agnostic contract for the `ContextGraph::calls` trait DEFAULT (spec 52). The default body
@@ -125,15 +139,16 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
     // construction (the view may be INCOMPLETE but never confidently wrong; the human re-seeds on a
     // chosen candidate). The implementer's unit test uses only single-candidate hops, so this
     // `frontier`-bearing branch of `resolve_down_hop` / `calls_down` is untouched by it.
-    let p = Projector::open(":memory:", "test").unwrap();
 
     // `target` is defined in TWO files (a.rs and b.rs) - two candidates. c.rs's `caller` calls it as
     // a bare cross-file reference. Definitions are folded FIRST so the CALLS edge tiers INFERRED
     // (a cross-file definition exists), placing it at/above the default floor.
-    apply_def(&p, 1, "src/a.rs", "target", 1, true);
-    apply_def(&p, 2, "src/b.rs", "target", 1, true);
-    apply_def(&p, 3, "src/c.rs", "caller", 1, true);
-    apply_call(&p, 4, "src/c.rs", "target", "caller");
+    let (records, view) = tree(vec![
+        fns("src/a.rs", &["target"], &[]),
+        fns("src/b.rs", &["target"], &[]),
+        fns("src/c.rs", &["caller"], &[("caller", "target")]),
+    ]);
+    let p = common::fixtures::view_graph(&records, &view);
 
     let cg = p
         .calls(
@@ -208,13 +223,17 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
     // must EXCLUDE it - a directed walk defaults to the resolvable tiers; passing `ambiguous` opts
     // the unresolved tier in. The implementer's unit test always passes `inferred` over resolvable
     // edges, so it never exercises either side of the floor.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/c.rs", "caller", 1, true);
     // `nowheredef` is defined in no file: the CALLS edge tiers `ambiguous` (grep-visible only).
-    apply_call(&p, 2, "src/c.rs", "nowheredef", "caller");
 
     // Default floor (inferred): the ambiguous edge is below the floor and is NOT followed - the walk
     // is just the seed, no edges.
+    let (records, view) = tree(vec![fns(
+        "src/c.rs",
+        &["caller"],
+        &[("caller", "nowheredef")],
+    )]);
+    let p = common::fixtures::view_graph(&records, &view);
+
     let default_floor = p
         .calls(
             &["src/c.rs::caller".to_string()],
@@ -309,13 +328,15 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
     // from the caller resolves that placeholder FORWARD onto the definition; UP from the definition
     // resolves it in REVERSE back onto the caller (the reverse name-match). A naive reverse walk that
     // only matched the literal edge target would connect neither direction across the file boundary.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-    apply_def(&p, 2, "src/b.rs", "caller", 1, true);
-    apply_call(&p, 3, "src/b.rs", "callee", "caller");
 
     // Control / DOWN: from the caller the walk resolves the bare placeholder forward onto
     // the real definition `a.rs::callee`.
+    let (records, view) = tree(vec![
+        fns("src/a.rs", &["callee"], &[]),
+        fns("src/b.rs", &["caller"], &[("caller", "callee")]),
+    ]);
+    let p = common::fixtures::view_graph(&records, &view);
+
     let down = p
         .calls(
             &["src/b.rs::caller".to_string()],
@@ -372,10 +393,11 @@ fn a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_a
     // Spec 52's degenerate boundary: "an empty graph or a seed with no calls degrades to an empty
     // view, never an error." A seed id that is not a node in the project yields a fully empty
     // CallGraph; a seed that exists but calls nothing yields just itself at layer 0.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "lonely", 1, true);
 
     // A seed that does not exist as a node: empty view, no error.
+    let (records, view) = tree(vec![fns("src/a.rs", &["lonely"], &[])]);
+    let p = common::fixtures::view_graph(&records, &view);
+
     let missing = p
         .calls(
             &["src/a.rs::ghost".to_string()],
@@ -417,72 +439,6 @@ fn a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_a
 }
 
 #[test]
-fn the_walk_is_project_scoped_and_never_surfaces_another_projects_calls_from_a_shared_graph_db() {
-    // Spec 28 / spec 52 read isolation, proven across the module seam on a REAL shared graph.db. Two
-    // projects live in ONE file. BOTH define `caller` in the same file (so the seed id exists in
-    // each), but ONLY `other` records the call `caller -> callee`. A DOWN walk scoped to `test` must
-    // seed on its own `caller` yet surface NONE of `other`'s CALLS edges - which exercises the
-    // project filter on `calls_out` itself, not merely the seed lookup. The `applied(position)`
-    // watermark is shared per file, so every event carries a globally-distinct position.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("graph.db");
-    let path = path.to_str().unwrap();
-
-    let test_p = Projector::open(path, "test").unwrap();
-    let other_p = Projector::open(path, "other").unwrap();
-
-    // `test` knows only the definition of `caller`; `other` knows caller, callee, and the call.
-    apply_def(&test_p, 1, "src/x.rs", "caller", 1, true);
-    apply_def(&other_p, 2, "src/x.rs", "caller", 1, true);
-    apply_def(&other_p, 3, "src/x.rs", "callee", 2, false);
-    apply_call(&other_p, 4, "src/x.rs", "callee", "caller");
-
-    // The `test` walk seeds on its own `caller`, but `other`'s call edge is invisible to it.
-    let scoped = test_p
-        .calls(
-            &["src/x.rs::caller".to_string()],
-            Direction::Down,
-            5,
-            TIER_INFERRED,
-        )
-        .unwrap();
-    assert_eq!(
-        call_node_ids(&scoped),
-        vec!["src/x.rs::caller"],
-        "the project-scoped walk sees its own seed but NONE of another project's callees",
-    );
-    assert!(
-        scoped.edges.is_empty(),
-        "another project's CALLS edge never leaks into this walk; edges were {:?}",
-        call_edge_pairs(&scoped),
-    );
-
-    // Control: in `other`, the SAME seed walks to the callee - proving the isolation above is scope,
-    // not an empty graph.
-    let control = other_p
-        .calls(
-            &["src/x.rs::caller".to_string()],
-            Direction::Down,
-            5,
-            TIER_INFERRED,
-        )
-        .unwrap();
-    assert_eq!(
-        call_node_ids(&control),
-        vec!["src/x.rs::callee", "src/x.rs::caller"],
-        "control: the same seed in `other` reaches its callee",
-    );
-    assert_eq!(
-        call_edge_pairs(&control),
-        vec![(
-            "src/x.rs::caller".to_string(),
-            "src/x.rs::callee".to_string()
-        )],
-        "control: `other`'s call edge is present in its own scope",
-    );
-}
-
-#[test]
 fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_excludes_callers() {
     // Spec 52 criterion 3, the UP direction's distinctive PUBLIC field `CallGraph.referenced_not_called`
     // (new in this unit). Beside the traversed caller DAG, an UP walk reports the FILE nodes that
@@ -490,21 +446,21 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
     // definition within them is listed too, spec 117) but call it from NO function
     // within them - the who-uses-this sites the caller DAG deliberately excludes. Proven over the
     // library's PUBLIC surface; the implementer's inside-out unit test asserts it inside the crate.
-    let p = Projector::open(":memory:", "test").unwrap();
     // Definitions first, so cross-file calls tier INFERRED (a definition exists) at/above the floor.
-    apply_def(&p, 1, "src/a.rs", "target", 1, true); // the SEED
-    apply_def(&p, 2, "src/a.rs", "local", 2, false);
-    apply_def(&p, 3, "src/b.rs", "mid", 1, true);
     // Two CALLERS. A caller-attributed reference folds BOTH a file-level REFERENCES edge AND a
     // `<file>::<caller> --CALLS--> target` edge, so its file is a CALLER (in the DAG) - never a
     // "referenced but not called" site.
-    apply_call(&p, 4, "src/a.rs", "target", "local"); // same-file caller
-    apply_call(&p, 5, "src/b.rs", "target", "mid"); // cross-file caller
-                                                    // Two IMPORT-ONLY files: a top-level reference with NO enclosing caller folds ONLY the file-level
-                                                    // REFERENCES edge (no CALLS twin) - exactly the "referenced but not called" site. e.rs is folded
-                                                    // BEFORE d.rs so the natural row order would be [e, d]; only the builder's sort yields [d, e].
-    apply_ref(&p, 6, "src/e.rs", "target");
-    apply_ref(&p, 7, "src/d.rs", "target");
+    // Two IMPORT-ONLY files: a top-level reference with NO enclosing caller folds ONLY the file-level
+    // REFERENCES edge (no CALLS twin) - exactly the "referenced but not called" site. e.rs is folded
+    // BEFORE d.rs so the natural row order would be [e, d]; only the builder's sort yields [d, e].
+    let (records, view) = tree(vec![
+        // the SEED, and its same-file caller
+        fns("src/a.rs", &["target", "local"], &[("local", "target")]),
+        fns("src/b.rs", &["mid"], &[("mid", "target")]), // cross-file caller
+        planted_file("src/e.rs", &[], &[], &["target"]), // a caller-less reference
+        planted_file("src/d.rs", &[], &[], &["target"]), // a caller-less reference
+    ]);
+    let p = common::fixtures::view_graph(&records, &view);
 
     let up = p
         .calls(
@@ -596,16 +552,18 @@ fn the_up_walk_surfaces_a_multi_candidate_caller_as_a_marked_frontier_and_never_
     // cross-file caller whose call name has MORE THAN ONE definition cannot be confidently attributed
     // to THIS seed: it comes back a marked FRONTIER carrying its SORTED candidate definition ids and
     // is NOT ascended - the walk never guesses; nothing reachable only by ascending past it appears.
-    let p = Projector::open(":memory:", "test").unwrap();
     // `target` is defined in TWO files, so a cross-file call to it is multi-candidate. Fold e.rs BEFORE
     // a.rs so the natural (rowid) candidate order would be [e, a]; only the builder's ORDER BY id
     // yields the asserted [a, e] - the candidate sort has teeth.
-    apply_def(&p, 1, "src/e.rs", "target", 1, true);
-    apply_def(&p, 2, "src/a.rs", "target", 1, true); // the SEED
-    apply_def(&p, 3, "src/f.rs", "amb", 1, true); // the ambiguous caller
-    apply_def(&p, 4, "src/g.rs", "over", 1, true); // amb's own caller - must NOT be reached
-    apply_call(&p, 5, "src/f.rs", "target", "amb"); // multi-candidate cross-file call
-    apply_call(&p, 6, "src/g.rs", "amb", "over"); // reachable only by ascending past the frontier
+    let (records, view) = tree(vec![
+        fns("src/e.rs", &["target"], &[]),
+        fns("src/a.rs", &["target"], &[]), // the SEED
+        // the ambiguous caller: a multi-candidate cross-file call
+        fns("src/f.rs", &["amb"], &[("amb", "target")]),
+        // amb's own caller, reachable only by ascending past the frontier - must NOT be reached
+        fns("src/g.rs", &["over"], &[("over", "amb")]),
+    ]);
+    let p = common::fixtures::view_graph(&records, &view);
 
     let up = p
         .calls(
@@ -656,87 +614,6 @@ fn the_up_walk_surfaces_a_multi_candidate_caller_as_a_marked_frontier_and_never_
         call_edge_pairs(&up),
         vec![("src/f.rs::amb".to_string(), "src/a.rs::target".to_string())],
         "one caller edge, onto the seed definition, marking the frontier",
-    );
-}
-
-#[test]
-fn the_up_walk_is_project_scoped_across_a_shared_graph_db_including_the_referenced_not_called_reads(
-) {
-    // Spec 28 / spec 52 read isolation for the UP direction, on a REAL shared graph.db. The UP walk
-    // issues THREE project-filtered reads a DOWN walk does not - direct callers, callers
-    // through bare placeholders, and the referenced-but-not-called file scan - so a leak in ANY of the
-    // three is a bug the DOWN scoping test cannot catch. Two projects share ONE file; both define the
-    // seed `target` (so the seed id exists in each), but only `other` records callers and an import.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("graph.db");
-    let path = path.to_str().unwrap();
-    let test_p = Projector::open(path, "test").unwrap();
-    let other_p = Projector::open(path, "other").unwrap();
-
-    // `test` knows only the seed definition. `other` knows the seed, a same-file caller, a cross-file
-    // caller, and an import-only file - all three UP read sources populated. The per-file `applied`
-    // watermark is shared, so every event carries a globally-distinct position.
-    apply_def(&test_p, 1, "src/a.rs", "target", 1, true);
-    apply_def(&other_p, 2, "src/a.rs", "target", 1, true);
-    apply_def(&other_p, 3, "src/a.rs", "local", 2, false);
-    apply_def(&other_p, 4, "src/b.rs", "mid", 1, true);
-    apply_call(&other_p, 5, "src/a.rs", "target", "local"); // same-file caller (callers_direct)
-    apply_call(&other_p, 6, "src/b.rs", "target", "mid"); // cross-file caller (callers_via_bare)
-    apply_ref(&other_p, 7, "src/d.rs", "target"); // import-only (referenced_not_called)
-
-    // The `test` UP walk seeds on its own `target` but sees NONE of `other`'s callers or imports.
-    let scoped = test_p
-        .calls(
-            &["src/a.rs::target".to_string()],
-            Direction::Up,
-            5,
-            TIER_INFERRED,
-        )
-        .unwrap();
-    assert_eq!(
-        call_node_ids(&scoped),
-        vec!["src/a.rs::target"],
-        "the project-scoped UP walk sees its own seed but NONE of another project's callers",
-    );
-    assert!(
-        scoped.edges.is_empty(),
-        "another project's caller edge never leaks into this walk; edges were {:?}",
-        call_edge_pairs(&scoped),
-    );
-    assert!(
-        scoped.referenced_not_called.is_empty(),
-        "another project's file-level reference never leaks into the sidecar; got {:?}",
-        scoped
-            .referenced_not_called
-            .iter()
-            .map(|n| n.id.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    // Control: in `other` the SAME seed reaches BOTH callers and the import-only file - proving the
-    // isolation above is scope, not an empty graph.
-    let control = other_p
-        .calls(
-            &["src/a.rs::target".to_string()],
-            Direction::Up,
-            5,
-            TIER_INFERRED,
-        )
-        .unwrap();
-    assert_eq!(
-        call_node_ids(&control),
-        vec!["src/a.rs::local", "src/a.rs::target", "src/b.rs::mid"],
-        "control: `other`'s seed reaches both its same-file and cross-file callers",
-    );
-    let refd: Vec<String> = control
-        .referenced_not_called
-        .iter()
-        .map(|n| n.id.clone())
-        .collect();
-    assert_eq!(
-        refd,
-        vec!["src/d.rs".to_string()],
-        "control: `other`'s import-only file is in its own sidecar",
     );
 }
 
@@ -816,13 +693,13 @@ fn the_up_walk_marks_a_same_layer_caller_edge_as_a_back_edge() {
     // time - the boundary is `<=`, so a SAME-LAYER caller edge must be marked back. Two sibling callers
     // both call the seed (both land at layer 1) and one ALSO calls the other: that same-layer edge is
     // the case a `<` boundary would miss. Proven over the public surface.
-    let p = Projector::open(":memory:", "test").unwrap();
-    apply_def(&p, 1, "src/a.rs", "t0", 1, true); // the SEED
-    apply_def(&p, 2, "src/a.rs", "c1", 2, false);
-    apply_def(&p, 3, "src/a.rs", "c2", 3, false);
-    apply_call(&p, 4, "src/a.rs", "t0", "c1"); // c1 -> t0 : layer 1
-    apply_call(&p, 5, "src/a.rs", "t0", "c2"); // c2 -> t0 : layer 1
-    apply_call(&p, 6, "src/a.rs", "c2", "c1"); // c1 -> c2 : a SAME-LAYER (1 -> 1) edge
+    let (records, view) = tree(vec![fns(
+        "src/a.rs",
+        &["t0", "c1", "c2"],
+        // c1 -> t0 and c2 -> t0 at layer 1, and c1 -> c2 a SAME-LAYER (1 -> 1) edge
+        &[("c1", "t0"), ("c2", "t0"), ("c1", "c2")],
+    )]);
+    let p = common::fixtures::view_graph(&records, &view);
 
     let up = p
         .calls(

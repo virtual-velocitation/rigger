@@ -598,8 +598,9 @@ Two orders coexist on every event: **position**, the store's own global append o
 (assigned once, never reused, never itself disordered), and **revision**, an event's place
 within its own stream (also store-assigned, as `MAX(revision) + 1` at append time). On a
 stream that has only ever been appended to, the two always agree - whichever event lands at
-a later position also holds a higher revision. The derived-index compaction (`rigger reset
---derived`) is the one thing that deletes rows from a live stream, and deleting rows opens
+a later position also holds a higher revision. The delete of the derived events (`rigger reset
+--derived`, which `rigger setup` also runs once its migrated graph is in place) is the one thing
+that deletes rows from a live stream, and deleting rows opens
 **revision holes**: numbers a surviving row no longer occupies. A write that computes its
 next revision from something other than the stream's current maximum (a build predating the
 `MAX(revision)` cursor, for example) can land in one of those holes - the insert satisfies
@@ -685,24 +686,28 @@ includes), not a capability removal: every excluded fact remains in the event lo
 *content* stays (only the builder-agent attribution drops), so the rationale overlay (section
 5.4) is unaffected. The graph-inspector addendum linked above gives the full treatment.
 
-### 5.3 The derivations: coupling communities and intent concepts  **[AS-BUILT]**
+### 5.3 The groupings: coupling communities and intent concepts  **[AS-BUILT]**
 
-Two higher-altitude views of the graph are **offline derivations** - not request-time
-computations, which would jitter the view on every poll. Each is a deterministic pass computed
-when the code store advances (section 5.5) and stored in the snapshot with the facts it
-groups, so a rebuild reproduces it byte-identically; readers join the stored groupings to the
-graph per read, and no event records them:
+Two higher-altitude views of the code are **groupings computed once per code-store advance**
+(section 5.5) and stored in the snapshot beside the facts they group - not request-time
+computations, which would cost ~2 s per query, and not recorded events, which would go stale at
+every merge. Each is a pure function of the tree at the snapshot's commit, so the same commit
+always groups the same way:
 
-- **Coupling communities** (`rigger graph communities`, `crates/rigger-domain/src/community.rs`) - community
-  detection over the call/reference edges, seeded over a deterministic edge ordering, yielding
-  `IN_COMMUNITY` membership at a chosen resolution grain. This is "which functions
-  actually work together", a different grouping from the directory tree.
-- **Intent concepts** (`rigger graph concepts`, `crates/rigger-domain/src/concepts.rs`) - a grouping over the
-  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), yielding
-  concept nodes and `REALIZES` membership, labelled deterministically with a
-  model-assisted refinement that has a deterministic fallback.
+- **Coupling communities** (`crates/rigger-domain/src/community.rs`) - community detection over
+  the resolved production view's CALLS, REFERENCES and CONTAINS edges, seeded over a deterministic
+  edge ordering and numbered by smallest member id, so `community/<res>/<n>` is itself a function
+  of the tree. This is "which functions actually work together", a different grouping from the
+  directory tree.
+- **Intent concepts** (`crates/rigger-domain/src/concepts.rs`) - a grouping over the tree's
+  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), labelled
+  deterministically. Concepts cluster the tree alone; a decision shows under the concept of the
+  document it governs, attached at read by the composed view.
 
-A test attaches to the community or concept whose products it proves most (ties to the
+`rigger graph communities` and `rigger graph concepts` are read-only reports over the current
+snapshot; nothing else writes a grouping (`crates/rigger-domain/src/groupings.rs` is the one
+place it is computed). A grain other than the default is computed on demand at read and not
+stored. A test attaches to the community or concept whose products it proves most (ties to the
 earliest), as a `tests` edge and a count on that cluster; tests are never members. The
 concept-graph addendum linked above covers the concept derivation in depth.
 
@@ -767,32 +772,52 @@ projection or running a traversal on that cadence would be a quarter-million-edg
 poll on a large repo. The full design is the graph-inspector addendum linked at the top of
 this document.
 
-### 5.5 The code store: commit-stamped facts, composed per read  **[AS-BUILT]**
+### 5.5 Code facts and records: the code store and a log of records only  **[AS-BUILT]**
 
-The code half of the graph is a **code store**, not a projection of the log: a snapshot of
-per-file facts (definitions, references, design links) stamped with the commit it describes.
-The `CodeView` interface exposes it; a resolver turns name-references into edges at read time.
+The graph has two halves with two owners, joined at read. The code store addendum linked at the
+top of this document gives the full design; this is its shape.
 
-- **Advance.** The store advances from the operator checkout's HEAD in three places: the
-  conductor after each landed merge, `rigger graph build`, and `rigger setup`. An advance
-  parses only the files that differ from the stamped commit (in parallel, merged in sorted
-  path order so the snapshot is deterministic), recomputes the groupings (section 5.3), and
-  publishes the new snapshot atomically under the store's own lock.
-- **Compose.** A reader opens the current snapshot and joins it to the record graph per
-  read (`Composed`); the tree's kind wins for a record target the tree holds.
-- **One honesty label.** Each open compares the stamped commit to the caller's worktree.
-  Equal: the answer describes the worktree. Differing files: their nodes, and every edge to
-  them, are withheld and the label counts them. A worktree that cannot be compared (the
-  commit is absent, the index unreadable) withholds every code-half answer, fail-closed;
-  the record half still answers. The label travels with every answer (CLI, MCP, dash).
-- **Tests.** Test code is held in the snapshot and filtered by one `tests` option on every
-  reader: `exclude` (the default), `include`, `only`. A read that hides tests reports how
-  many it hid.
-- **Records only in the log.** The event log refuses the eight derived types (`CodeEntityExtracted`,
-  `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`, `GenerationIngested`,
-  `CommunityAssigned`, `ConceptDerived`, `ConceptRealized`); `graph.db` is rebuilt as a record-only refold, and
-  `rigger reset --derived` only deletes stores, never rewrites them. Because the store is
-  derived from a commit, losing it costs one advance.
+- **The code half: the code store.** `.rigger/store/code/<seq>.snap` holds each file's facts as
+  written, for ONE named commit, stamped with the HEAD ref, the commit, its tree id and the
+  extractor's fingerprint. `advance` moves it to a commit: it lists the target tree, copies the
+  facts of every file whose blob is unchanged, extracts only the others in parallel from git
+  objects (never the worktree's bytes), computes the groupings (section 5.3), and writes the new
+  snapshot and the `CURRENT` pointer atomically under one lock, reaping the old snapshot - git
+  holds every earlier tree. `rigger setup`, `rigger graph build` and the conductor after a landed
+  merge advance it. Nothing is resolved at advance: every cross-file rule runs at read, so a file
+  changing never rewrites another file's facts and the order of advances never changes an answer.
+- **The record half: the event log and `graph.db`.** The log holds only what cannot be
+  re-derived from the tree: decisions, findings, lessons and the run's own events. It refuses
+  every derived type at append (`retention::DERIVED_TYPES`: the four extraction types
+  `CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted` and `DocLinkExtracted`, and
+  `GenerationIngested`, `CommunityAssigned`, `ConceptDerived` and `ConceptRealized`). `graph.db`
+  folds the record events alone and skips a derived type by its type, so a log written before the
+  code store refolds to the graph its records alone fold to.
+- **Reads compose the two.** `Composed` joins the record graph and the code view, and an honesty
+  check runs once per view: it compares the snapshot's tree with the caller's worktree, withholds
+  every code node in a file that differs (and every code node when the worktree cannot be
+  compared), and labels every answer with the commit it describes and what it withheld. The CLI
+  prints the label, the MCP tools return it, the dash shows it.
+- **Test views.** Test code is held in the snapshot and filtered by one `tests` option on every
+  reader (CLI `--tests`, MCP `tests`, dash `tests=`): `exclude` (the default), `include`, `only`.
+  A read that hides tests reports how many it hid.
+- **The project walk** (`crates/rigger-grounder/src/ingest.rs`) still lowers the tree into
+  per-file batches keyed `<prefix>/<file>@<hash>#<i>` (`gc` code, `gd` design, `gw` workflow) for
+  the offline passes that read them; the log records none of it.
+
+**Moving an older store to this shape** is fold rule 7. `rigger setup` advances the code store,
+then refolds `graph.db` from the record events alone into a shadow beside it and compares the
+two: every live decision, finding and lesson node with its attributes, every live and retired
+record edge, every record assertion and every alias must survive, and no record may name a
+`community/` or `concept/` id. Otherwise setup refuses, keeps the old file and prints what is
+missing; when the comparison holds it swaps the shadow in. Once the migrated graph stands, setup
+deletes every derived event of the project's run stream in one transaction under the rebuild
+lock, then reclaims the file's free space. While the run is live it deletes nothing, says so,
+and leaves the delete to `rigger reset --derived`, which runs the same transaction: it refuses
+while another holds the rebuild lock, while a rebuild is unfinished, while `graph.db` owes its
+rebuild and while a writer is live (`--force-live` overrides only the last), and a rerun after a
+crash deletes what is left. A delete leaves revision holes in the stream and never reuses a
+position (section 5.1.3).
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
@@ -1055,8 +1080,8 @@ github.com/virtual-velocitation/rigger
 |   |   |-- namespace.rs         per-project segregation decorator (Namespaced)
 |   |   |-- contract.rs          the shared contract suite (assert_contract)
 |   |-- contextgraph/            the Projection trait + bi-temporal sqlite projector + calls traversal
-|   |-- community.rs concepts.rs the offline derivations (coupling communities, intent concepts)
-|   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
+|   |-- community.rs concepts.rs the groupings computed at each code-store advance
+|   |-- ingest.rs                the project walk and its per-file content key
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
 |   |-- driver/                  claude_code.rs (headless sessions) + cli.rs (canary)
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
@@ -1075,9 +1100,9 @@ cd my-project
 rigger init                         # scaffold .rigger/workflow.yml + .rigger/agents/
 rigger run specs/feature.md         # run the producing loop on a spec
 rigger dash                         # the fixed-address observability dashboard (127.0.0.1:7420)
-rigger graph build                  # fold the project's source into the graph from a cold checkout
-rigger graph communities            # derive the code lens's coupling communities (offline)
-rigger graph concepts               # derive the concepts lens's intent grouping (offline)
+rigger graph build                  # advance the code store to the checkout's commit
+rigger graph communities            # report the code store's coupling communities (read-only)
+rigger graph concepts               # report the code store's intent concepts (read-only)
 rigger graph --around modifier.rs   # inspect the knowledge graph (subgraph query)
 rigger ground <query> [k]           # the configured grounder's top-k references
 rigger validate                     # load + validate the workflow + agents

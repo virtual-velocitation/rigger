@@ -1,15 +1,14 @@
-//! Periphery (CLI) test of `rigger reset --derived` on a backend the migration does not run on.
+//! Periphery (CLI) test of `rigger reset --derived` on a backend the delete does not run on.
 //!
-//! The migration rewrites and deletes rows of the embedded `.rigger/events.db` and vacuums the
-//! file, which no server-backed store offers. This test drives the COMPILED binary against a
-//! project configured for the server-backed store and holds the refusal to its wording and to
-//! leaving the local log as it stands, then the same project without that configuration to
-//! migrating.
+//! The delete removes rows of the embedded `.rigger/events.db` and vacuums the file, which no
+//! server-backed store offers. This test drives the COMPILED binary against a project configured
+//! for the server-backed store and holds the refusal to its wording and to leaving the local log
+//! as it stands, then the same project without that configuration to deleting.
 
 use crate::common;
 
+use common::cli::deleted_line;
 use common::cli::log_and_graph_files;
-use common::cli::migrated_lines;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
@@ -17,7 +16,6 @@ use common::cli::seed_derived_duplicates;
 use common::cli::stream_shape;
 use common::cli::temp_rigger_project;
 use common::cli::{server_backed_derived_refusal, LOG_LEFT_AS_IT_STANDS_LINE};
-use rigger::retention::TYPE_GENERATION_INGESTED;
 
 #[test]
 fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backend_it_needs() {
@@ -27,9 +25,9 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
     let db_before = read_run_events(root).len();
     let found = log_and_graph_files(root);
 
-    // Rewriting and deleting rows and reclaiming the file is a mechanic of the embedded log.
-    // Configured for the server-backed store, `--derived` must FAIL - never silently report a
-    // migration that did not happen, which is the one outcome an operator cannot detect.
+    // Deleting rows and reclaiming the file is a mechanic of the embedded log. Configured for the
+    // server-backed store, `--derived` must FAIL - never silently report a delete that did not
+    // happen, which is the one outcome an operator cannot detect.
     let (out, err, ok) = run_rigger_envs(
         root,
         &["reset", "--derived"],
@@ -43,16 +41,16 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
             log_and_graph_files(root) == found
         ),
         (false, "", server_backed_derived_refusal().as_str(), true),
-        "the refusal names the mode, the backend the migration needs, the backend the project is \
+        "the refusal names the mode, the backend the delete needs, the backend the project is \
          configured for and what to do instead, advises no pruning of the server store, and \
          leaves the local log and graph files byte for byte"
     );
 
-    // And it must be a REFUSAL, not a half-done migration: the local log is untouched.
+    // And it must be a REFUSAL, not a half-done delete: the local log is untouched.
     assert_eq!(
         (read_run_events(root).len(), db_before),
         (common::cli::DUP_ROUNDS, common::cli::DUP_ROUNDS),
-        "a refused migration must leave the log exactly as it was"
+        "a refused delete must leave the log exactly as it was"
     );
 
     // The refusal is decided BEFORE any pruning, so a composed invocation does not half-succeed.
@@ -70,16 +68,16 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
         "the composed reset must refuse BEFORE running the --runs prune; got: {out:?}"
     );
 
-    // WITHOUT THE VARIABLE the same project is on the sqlite backend, and the same log migrates:
-    // the one batch's latest recording, the stream's last row, becomes its entry.
+    // WITHOUT THE VARIABLE the same project is on the sqlite backend, and the delete empties the
+    // stream of its derived rows.
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (ok, out, stream_shape(root),),
         (
             true,
-            migrated_lines(1, common::cli::DUP_ROUNDS, 0) + LOG_LEFT_AS_IT_STANDS_LINE,
-            vec![(3, 2, TYPE_GENERATION_INGESTED.to_string())],
+            deleted_line(common::cli::DUP_ROUNDS) + LOG_LEFT_AS_IT_STANDS_LINE,
+            vec![],
         ),
-        "on the sqlite backend the same log migrates; its stderr: {err}"
+        "on the sqlite backend the same log's derived rows are deleted; its stderr: {err}"
     );
 }

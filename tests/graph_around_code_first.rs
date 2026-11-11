@@ -9,15 +9,11 @@
 //! `driver.spawn` call sites the graph already held as `CALLS` edges, because the decisions
 //! crowded every code entity off the page.
 //!
-//! The fixture seeds two code-entity definitions directly into `graph.db` (the always-compiled
-//! `CodeEntityExtracted` fold, exactly as `graph_show_surface.rs` seeds) at a position range far
-//! above anything the real store below issues, so the two seeding paths can never collide on the
-//! graph's own per-position `applied` idempotency ledger. It then drives THIRTEEN decisions and
-//! findings about the SAME file through the REAL `rigger emit` CLI path (the same one a loop
-//! agent uses) in a known order, so the store's own monotonic event position is the "newest"
-//! signal under test - never a wall clock, which no node carries.
-
-use rigger::contextgraph::sqlite::Projector;
+//! The fixture commits a file holding two definitions, which the code store extracts at the
+//! head, as `graph_around_governance_boundaries.rs` seeds its code. It then drives THIRTEEN
+//! decisions and findings about the SAME file through the REAL `rigger emit` CLI path (the same
+//! one a loop agent uses) in a known order, so the store's own monotonic event position is the
+//! "newest" signal under test - never a wall clock, which no node carries.
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
@@ -25,13 +21,12 @@ mod common;
 
 use common::cli::run_around;
 use common::cli::run_rigger;
-use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
-use common::fixtures::apply_code_entity;
 
 /// The `node <id> <kind>` lines of a `rigger graph --around` transcript, in the ORDER they
 /// printed (their 0-based line index) - parsed exactly, never substring-matched, so "code first,
 /// never interleaved" is a claim about POSITION in the output, not merely membership.
+#[cfg(feature = "symbols")]
 fn node_lines(out: &str) -> Vec<(usize, String)> {
     out.lines()
         .enumerate()
@@ -44,6 +39,7 @@ fn node_lines(out: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+#[cfg(feature = "symbols")]
 #[test]
 fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() {
     let dir = temp_store_project();
@@ -51,16 +47,10 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
 
     let file = "big.rs";
 
-    // Code structure: two definitions in the file under test, seeded directly at a position
-    // range (100_000+) the real store below never reaches, so the two seeding paths never
-    // collide on graph.db's own per-position applied ledger.
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "alpha", "function", 1, "rust");
-        apply_code_entity(&p, 100_002, file, "beta", "function", 5, "rust");
-    }
+    // Code structure: two definitions in the file under test, committed so the code store
+    // extracts them at the head.
+    std::fs::write(root.join(file), "fn alpha() {}\n\n\n\nfn beta() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
 
     // THIRTEEN governing decisions/findings about the same file, through the REAL `rigger emit`
     // CLI path, in emission order n0..n12 (even indices DecisionMade, odd ReviewFinding) - so the

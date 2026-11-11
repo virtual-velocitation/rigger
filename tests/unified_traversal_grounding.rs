@@ -29,16 +29,16 @@ use crate::source_audit;
 use common::git::temp_git_project_with_commit;
 use source_audit::gate_name_in;
 
+use rigger::code_facts::{Def, FileFacts};
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, REVIEWER_DISCIPLINE,
 };
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CALLS,
-    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_INFERRED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
+    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TYPE_DECISION_MADE,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
@@ -48,7 +48,6 @@ use rigger::spawn::ROLE_SDET_AUTHOR;
 use rigger::wave::normalize_ws;
 use serde_json::{json, Value};
 
-use common::cli::{planted_graph, temp_project};
 use common::fixtures::apply_next_json;
 use common::fixtures::assert_carries_each;
 use common::fixtures::assert_system_prompt_carries_the_review_method_once;
@@ -56,9 +55,7 @@ use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::declare_test_author;
 use common::fixtures::language_marker_hits;
 use common::fixtures::test_spawn_host;
-use common::fixtures::{
-    edge, file_half, member_graph, BARE_PARENT, LEAF_PLACEHOLDER, NESTED_METHOD, RANGE_ARTIFACT,
-};
+use common::fixtures::{file_half, NESTED_METHOD, RANGE_ARTIFACT};
 use common::fixtures::{
     CHECK_THE_PEERS, GROUNDING_METHOD, LOOKUP_METHOD, LOOKUP_POINTER, RECORD_EACH_DECISION,
     RECORD_EACH_FINDING, SUPERSEDE_A_PEER,
@@ -220,7 +217,7 @@ impl Grounder for SeedGrounder {
 /// stub `SeedGrounder`; criterion 4 drives the REAL `Turbovec` so the seed is what the vector index
 /// resolves an NL query to.
 fn run_and_capture_prompts_grounded(
-    graph: &Projector,
+    tree: &Tree,
     grounder: &dyn Grounder,
     coverage: &str,
 ) -> Vec<String> {
@@ -230,7 +227,7 @@ fn run_and_capture_prompts_grounded(
         coverage: coverage.into(),
         ..Default::default()
     });
-    capture_prompts(&cfg, graph, grounder)
+    capture_prompts(&cfg, tree, grounder)
 }
 
 /// A config of the one stage `stage`, run by an agent whose id is the stage's own `agent`.
@@ -247,12 +244,13 @@ fn single_stage_cfg(stage: Stage) -> Config {
     cfg
 }
 
-/// Drive `conductor::run` over `cfg`, grounded by `grounder` over `graph`, and return every prompt
+/// Drive `conductor::run` over `cfg`, grounded by `grounder` over `tree`, and return every prompt
 /// the driver was asked to spawn: the one run every capturing helper here shares.
-fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> Vec<String> {
+fn capture_prompts(cfg: &Config, tree: &Tree, grounder: &dyn Grounder) -> Vec<String> {
     let store = Store::open(":memory:").unwrap();
     let driver = CapturingDriver::default();
-    let context = common::fixtures::RecordsOnly(graph);
+    let context = tree.context();
+    let graph = &tree.records;
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -278,11 +276,11 @@ fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> 
 /// `SeedGrounder`), and return every prompt the driver was asked to spawn. The fixed-seed form the
 /// criterion 1/3 tests use; criterion 4 uses [`run_and_capture_prompts_grounded`] with the real
 /// `Turbovec` so the seed is what the vector index resolves.
-fn run_and_capture_prompts(graph: &Projector) -> Vec<String> {
+fn run_and_capture_prompts(tree: &Tree) -> Vec<String> {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
-    run_and_capture_prompts_grounded(graph, &grounder, "core")
+    run_and_capture_prompts_grounded(tree, &grounder, "core")
 }
 
 /// Drive `conductor::run` over a single PRODUCER (planner) stage - grounding seeded on `core.rs` via
@@ -290,7 +288,7 @@ fn run_and_capture_prompts(graph: &Projector) -> Vec<String> {
 /// the implementer spawn block but is NOT an implement stage, so spec 36 keeps its FULL grounding
 /// context (the trim is implement-only): this is the observation channel for the producer-not-trimmed
 /// guarantee, the exact regression a naive "trim everything that is not review" predicate would break.
-fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
+fn run_and_capture_producer_prompts(tree: &Tree) -> Vec<String> {
     let grounder = SeedGrounder {
         file: "core.rs".into(),
     };
@@ -301,24 +299,67 @@ fn run_and_capture_producer_prompts(graph: &Projector) -> Vec<String> {
         produces: "unit".into(),
         ..Default::default()
     });
-    capture_prompts(&cfg, graph, &grounder)
+    capture_prompts(&cfg, tree, &grounder)
 }
 
-/// A fresh in-memory unified graph, the fixture every prompt-boundary test folds its seed into.
-fn fresh_graph() -> (Projector, u64) {
-    (Projector::open(":memory:", "test").unwrap(), 0)
+/// The record half and the planted tree one prompt-boundary test grounds over: records fold
+/// through the log's public event API, and the code and design halves are the code store's view
+/// of `files`, planted as their extractors read them.
+struct Tree {
+    records: Projector,
+    pos: u64,
+    planted: common::fixtures::PlantedTree,
 }
 
-/// Fold the one code definition the touched file `core.rs` carries in most fixtures: `run_unit`
-/// at `core.rs:42`, a name that appears NOWHERE the grounder returns, so its presence in a prompt
-/// proves it was sourced from the graph traversal.
-fn fold_run_unit_definition(graph: &Projector, pos: &mut u64) {
-    apply_next_json(
-        graph,
-        pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-    );
+impl Tree {
+    /// An empty record half beside an empty tree.
+    fn new() -> Self {
+        Tree {
+            records: Projector::open(":memory:", "test").unwrap(),
+            pos: 0,
+            planted: Default::default(),
+        }
+    }
+
+    /// Fold one record event of `type_` carrying `payload`.
+    fn record(&mut self, type_: &str, payload: Value) {
+        apply_next_json(&self.records, &mut self.pos, type_, payload);
+    }
+
+    /// The planted file at `path`, added empty when the tree holds none.
+    fn file(&mut self, path: &str) -> &mut FileFacts {
+        self.planted.file(path)
+    }
+
+    /// Define the file-level `leaf` of `kind` at `line` of `path`.
+    fn define(&mut self, path: &str, leaf: &str, kind: &str, line: u32) {
+        self.planted.define(path, leaf, kind, line);
+    }
+
+    /// Define the one code definition the touched file `core.rs` carries in most fixtures:
+    /// `run_unit` at `core.rs:42`, a name that appears NOWHERE the grounder returns, so its
+    /// presence in a prompt proves it was sourced from the graph traversal.
+    fn define_run_unit(&mut self) {
+        self.define("core.rs", "run_unit", "function", 42);
+    }
+
+    /// A design-intent link of `rel` from the concept `from` to the tree file `to`.
+    fn link(&mut self, from: &str, rel: &str, to: &str) {
+        self.planted.link(from, rel, to);
+    }
+
+    /// A design-intent concept bound by `rel` to the tree file `to`.
+    fn design_intent(&mut self, kind: &str, id: &str, title: &str, rel: &str, to: &str) {
+        self.planted.design_intent(kind, id, title, rel, to);
+    }
+
+    /// The context a run grounds through: the record half composed with the tree's code view.
+    fn context(&self) -> common::fixtures::ViewedRecords<'_> {
+        common::fixtures::ViewedRecords {
+            records: &self.records,
+            view: self.planted.view(),
+        }
+    }
 }
 
 /// The first prompt of `prompts`, which must not be empty (`spawned_why`).
@@ -352,12 +393,12 @@ fn assert_prompt(prompt: &str, has: &[(&str, &str)], lacks: &[(&str, &str)]) {
 /// seeded traversal now sources the code neighborhood.
 #[test]
 fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_structural_stitch() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
     // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file.
-    fold_run_unit_definition(&graph, &mut pos);
+    tree.define_run_unit();
 
     let prompt = first_prompt(
-        run_and_capture_prompts(&graph),
+        run_and_capture_prompts(&tree),
         "the stage's agent must have been spawned with a prompt",
     );
     let neighborhood =
@@ -386,16 +427,14 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
 /// the capped decisions / lessons / findings sections - proven by section header AND by the unique
 /// per-section marker, so neither the header nor the bulk body can slip through.
 fn assert_receives_the_trimmed_implement_slice(
-    capture: fn(&Projector) -> Vec<String>,
+    capture: fn(&Tree) -> Vec<String>,
     marker: &str,
     who: &str,
     spawned_why: &str,
 ) {
-    let (graph, mut pos) = fresh_graph();
-    fold_run_unit_definition(&graph, &mut pos);
-    fold_design_intent(
-        &graph,
-        &mut pos,
+    let mut tree = Tree::new();
+    tree.define_run_unit();
+    tree.design_intent(
         KIND_HANDBOOK_RULE,
         "docs/handbook/loops.md",
         "the loop discipline rule governing core",
@@ -405,26 +444,20 @@ fn assert_receives_the_trimmed_implement_slice(
     let decision = format!("{marker}_DECISION_MARKER");
     let lesson = format!("{marker}_LESSON_MARKER");
     let finding = format!("{marker}_FINDING_MARKER");
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": format!("{decision} the decision governing core"), "governs": ["core.rs"] }),
     );
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_LESSON_LEARNED,
         json!({ "id": "l_core", "summary": format!("{lesson} the lesson about core"), "about": ["core.rs"] }),
     );
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_REVIEW_FINDING,
         json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": format!("{finding} the finding about core"), "about": ["core.rs"] }),
     );
 
-    let prompt = first_prompt(capture(&graph), spawned_why);
+    let prompt = first_prompt(capture(&tree), spawned_why);
     let keep_code = format!("{who} must KEEP the code-neighborhood section");
     let keep_intent = format!("{who} must KEEP the design-intent section");
     let peers =
@@ -524,25 +557,21 @@ rigger::test_cases! {
 /// not-review trim) drops both and reddens this test while leaving the implement-trim test green.
 #[test]
 fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
 
     // A decision and a finding about the seed file the producer grounds to: on the FULL slice both
     // render; on the (wrong) implement slice both would be dropped for a pointer.
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": "PRODUCER_DECISION_MARKER the decomposition decision governing core", "governs": ["core.rs"] }),
     );
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_REVIEW_FINDING,
         json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "PRODUCER_FINDING_MARKER the finding about core", "about": ["core.rs"] }),
     );
 
     let prompt = first_prompt(
-        run_and_capture_producer_prompts(&graph),
+        run_and_capture_producer_prompts(&tree),
         "the producer stage's agent must have been spawned with a prompt",
     );
     // FULL: the decisions and findings bulk reaches the planner, so it is not blinded to the prior
@@ -581,12 +610,12 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
 /// implement/sdet-author trim tests (which exercise the peers-pointer path) stay green.
 #[test]
 fn the_producer_prompt_carries_the_three_verb_lookup_pointer() {
-    let graph = Projector::open(":memory:", "test").unwrap();
+    let tree = Tree::new();
 
     // No graph seed is needed: the lookup pointer is a fixed note the Full slice appends
     // UNCONDITIONALLY, so every spawn's grounding names the graph's verbs even over an empty
     // neighborhood.
-    let prompts = run_and_capture_producer_prompts(&graph);
+    let prompts = run_and_capture_producer_prompts(&tree);
     assert!(
         !prompts.is_empty(),
         "the producer stage's agent must have been spawned with a prompt"
@@ -618,7 +647,7 @@ fn assert_carries_only_the_lookup_pointer(what: &str, prompt: &str) {
 /// call site's grounding slice: the inside-out lifecycle tests run `graph: None` and cannot observe a
 /// slice at all. Seeded on `core.rs` via the stub `SeedGrounder`, exactly like the implement/producer
 /// trim tests, so the sdet-author's slice is compared against the SAME neighborhood.
-fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
+fn run_and_capture_sdet_author_prompts(tree: &Tree) -> Vec<String> {
     let repo = temp_git_project_with_commit();
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: this is the one worktree-isolated run in this file
@@ -663,7 +692,8 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         implementer: "worker".into(),
         prompts: Mutex::new(Vec::new()),
     };
-    let context = common::fixtures::RecordsOnly(graph);
+    let context = tree.context();
+    let graph = &tree.records;
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -1044,21 +1074,13 @@ fn a_prompt_line_leading_with_the_gate_yaml_key_is_reported() {
 }
 
 /// The prompt a run spawns over a graph whose one touched file `core.rs` carries 40 extracted
-/// definitions - more than the code-neighborhood cap keeps verbatim, so its remainder elides. Only
-/// the FIRST event of the file's extraction batch carries `fresh` (29a's supersede-on-re-extract
-/// retires the file's prior edges once, at the batch head); the rest accrete, exactly as a real
-/// extraction pass emits them.
+/// definitions - more than the code-neighborhood cap keeps verbatim, so its remainder elides.
 fn over_cap_code_neighborhood_prompt() -> String {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
     for i in 1..=40u32 {
-        apply_next_json(
-            &graph,
-            &mut pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": format!("definition_{i:03}"), "kind": "function", "line": i, "lang": "rust", "fresh": i == 1 }),
-        );
+        tree.define("core.rs", &format!("definition_{i:03}"), "function", i);
     }
-    first_prompt(run_and_capture_prompts(&graph), SPAWNED)
+    first_prompt(run_and_capture_prompts(&tree), SPAWNED)
 }
 
 rigger::test_cases! {
@@ -1147,15 +1169,12 @@ rigger::test_cases! {
 /// early return) would flip the header-absence assertion while the design-intent assertion still held.
 #[test]
 fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_header() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let mut tree = Tree::new();
 
     // A DESIGN-INTENT node bound to the touched file but NO code entity for it: the seeded traversal
     // reaches the file (a handbook rule GOVERNS it) yet has zero definitions to render as a code
     // neighborhood. Design intent stays on the trimmed implement prompt, so it is the reach signal.
-    fold_design_intent(
-        &graph,
-        &mut pos,
+    tree.design_intent(
         KIND_HANDBOOK_RULE,
         "docs/handbook/loops.md",
         "the loop rule that governs core",
@@ -1163,7 +1182,7 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
         "core.rs",
     );
 
-    let prompts = run_and_capture_prompts(&graph);
+    let prompts = run_and_capture_prompts(&tree);
     assert!(!prompts.is_empty(), "{SPAWNED}");
     let prompt = &prompts[0];
 
@@ -1178,33 +1197,6 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
     assert!(
         !prompt.contains(CODE_NEIGHBORHOOD),
         "an empty code neighborhood must render no bare header; prompt was:\n{prompt}"
-    );
-}
-
-/// Fold a design-intent NODE plus a typed code-binding EDGE to `to` - the two public `contextgraph`
-/// events (a `DocConceptExtracted` node of `kind`, then a `DocLinkExtracted` edge of `rel`) a real
-/// 29b ingestion pass emits - so the one seeded traversal reaches the node and the design-intent
-/// section can render it.
-fn fold_design_intent(
-    g: &Projector,
-    pos: &mut u64,
-    kind: &str,
-    id: &str,
-    title: &str,
-    rel: &str,
-    to: &str,
-) {
-    apply_next_json(
-        g,
-        pos,
-        TYPE_DOC_CONCEPT_EXTRACTED,
-        json!({ "kind": kind, "id": id, "title": title, "doc": id }),
-    );
-    apply_next_json(
-        g,
-        pos,
-        TYPE_DOC_LINK_EXTRACTED,
-        json!({ "from": id, "to": to, "rel": rel }),
     );
 }
 
@@ -1232,7 +1224,7 @@ fn fold_design_intent(
 /// the seed scoping would surface decoy A, flipping the negative assertion.
 #[test]
 fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
 
     // DESIGN INTENT that BINDS the touched file `core.rs` (29b): one design-intent node per code-
     // binding relation the section surfaces. Each title is a string the grounder never returns, so
@@ -1263,44 +1255,32 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
             REL_EXPLAINS,
         ),
     ] {
-        fold_design_intent(&graph, &mut pos, kind, id, title, rel, "core.rs");
+        tree.design_intent(kind, id, title, rel, "core.rs");
     }
 
     // DECOY A (file-scope): a design-doc whose code-binding SPECIFIES edge targets a NON-seed file
     // (`other.rs`), yet is reachable in the subgraph because it also CITES `core.rs` (a `references`
     // edge). "Of these files" scoping must keep it out.
-    fold_design_intent(
-        &graph,
-        &mut pos,
+    tree.design_intent(
         KIND_DESIGN_DOC,
         "specs/other.md#other",
         "the RA section specifying OTHER not core",
         REL_SPECIFIES,
         "other.rs",
     );
-    apply_next_json(
-        &graph,
-        &mut pos,
-        TYPE_DOC_LINK_EXTRACTED,
-        json!({ "from": "specs/other.md#other", "to": "core.rs", "rel": REL_DOC_REFERENCES }),
-    );
+    tree.link("specs/other.md#other", REL_DOC_REFERENCES, "core.rs");
     // DECOY B (relation-scope): a design-doc that only CITES `core.rs` (a `references` edge) with NO
     // code-binding SPECIFIES / GOVERNS edge. A mere citation is not intent that governs the file.
-    apply_next_json(
-        &graph,
-        &mut pos,
-        TYPE_DOC_CONCEPT_EXTRACTED,
-        json!({ "kind": KIND_DESIGN_DOC, "id": "docs/misc.md", "title": "a mere doc citation of core", "doc": "docs/misc.md" }),
-    );
-    apply_next_json(
-        &graph,
-        &mut pos,
-        TYPE_DOC_LINK_EXTRACTED,
-        json!({ "from": "docs/misc.md", "to": "core.rs", "rel": REL_DOC_REFERENCES }),
+    tree.design_intent(
+        KIND_DESIGN_DOC,
+        "docs/misc.md",
+        "a mere doc citation of core",
+        REL_DOC_REFERENCES,
+        "core.rs",
     );
 
     let prompt = first_prompt(
-        run_and_capture_prompts(&graph),
+        run_and_capture_prompts(&tree),
         "the stage's agent must have been spawned with a prompt",
     );
     let governs = format!("{REL_GOVERNS} core.rs");
@@ -1358,17 +1338,15 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
     );
 }
 
-/// The prompt a run spawns over a graph folding 40 handbook rules that each GOVERN the one seed file
-/// `core.rs` - more than the design-intent cap keeps verbatim, so the remainder elides - in
-/// ascending order, so rule_040's binding edge carries the HIGHEST log position (newest recorded)
-/// and rule_001's the lowest (oldest). The single-seed traversal reaches every one of them.
+/// The prompt a run spawns over a tree holding 40 handbook rules that each GOVERN the one seed file
+/// `core.rs` - more than the design-intent cap keeps verbatim, so the remainder elides - planted in
+/// DESCENDING id order, so a section keeping the tree's own order would render rule_040 first. The
+/// single-seed traversal reaches every one of them.
 fn over_cap_design_intent_prompt() -> String {
-    let (graph, mut pos) = fresh_graph();
-    for i in 1..=40u32 {
+    let mut tree = Tree::new();
+    for i in (1..=40u32).rev() {
         let id = format!("docs/handbook/rule_{i:03}.md");
-        fold_design_intent(
-            &graph,
-            &mut pos,
+        tree.design_intent(
             KIND_HANDBOOK_RULE,
             &id,
             &format!("the governing rule {i:03}"),
@@ -1376,7 +1354,7 @@ fn over_cap_design_intent_prompt() -> String {
             "core.rs",
         );
     }
-    first_prompt(run_and_capture_prompts(&graph), SPAWNED)
+    first_prompt(run_and_capture_prompts(&tree), SPAWNED)
 }
 
 rigger::test_cases! {
@@ -1418,25 +1396,22 @@ rigger::test_cases! {
             )],
         );
     };
-    /// The design-intent section renders the most-recently-recorded bindings verbatim and elides the
-    /// oldest past the cap - the newest-renders / oldest-elided pair the sibling c1 code-neighborhood cap
-    /// test set the standard for. `write_design_intent` orders candidates by each node's highest
-    /// binding-edge event-log position (a deterministic total order, NOT authored priority), so over a
-    /// footprint larger than the verbatim cap the latest-recorded binding survives and the earliest is
-    /// collapsed into the elision note.
+    /// The design-intent section renders the first bindings by id verbatim and elides the last past
+    /// the cap. `write_design_intent` orders candidates by id (a deterministic total order, NOT
+    /// authored priority), so over a footprint larger than the verbatim cap the first id survives
+    /// and the last is collapsed into the elision note.
     ///
-    /// The existing budget-cap test asserts only that the note appears, never WHICH nodes survive; this
-    /// pins the ordering itself at the public prompt boundary. Mutation-proven: reversing the comparator
-    /// (`rc.cmp(&ra)` -> `ra.cmp(&rc)`) ships the OLDEST binding verbatim and elides the NEWEST, flipping
-    /// both the "newest renders" and "oldest elided" assertions.
-    the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest: {
+    /// The budget-cap test asserts only that the note appears, never WHICH nodes survive; this pins
+    /// the ordering itself at the public prompt boundary. Reversing the comparator ships rule_040
+    /// verbatim and elides rule_001, flipping both assertions.
+    the_spawn_prompt_design_intent_section_renders_the_first_binding_by_id_and_elides_the_last: {
         assert_prompt(
             &over_cap_design_intent_prompt(),
             &[
-                // The newest-recorded binding renders verbatim.
+                // The first binding by id renders verbatim.
                 (
-                    "the governing rule 040",
-                    "the newest-recorded design-intent binding must render verbatim",
+                    "the governing rule 001",
+                    "the first design-intent binding by id must render verbatim",
                 ),
                 // The over-budget remainder collapses into ONE visible elision note.
                 (
@@ -1444,10 +1419,10 @@ rigger::test_cases! {
                     "the over-budget remainder must collapse into a visible elision note",
                 ),
             ],
-            // The oldest-recorded binding is past the verbatim cap, so it is elided, not rendered.
+            // The last binding by id is past the verbatim cap, so it is elided, not rendered.
             &[(
-                "the governing rule 001",
-                "the oldest-recorded design-intent binding must be elided past the cap, not rendered",
+                "the governing rule 040",
+                "the last design-intent binding by id must be elided past the cap, not rendered",
             )],
         );
     };
@@ -1472,15 +1447,13 @@ rigger::test_cases! {
 /// design-intent section, flipping the negative assertion.
 #[test]
 fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
 
     // A genuine handbook rule that GOVERNS the file - a design-intent node bound by the shared
     // GOVERNS relation, so the design-intent section renders and the discriminator is KIND, not
     // relation. Its title is a string the grounder never returns, so it can only reach the prompt by
     // graph traversal.
-    fold_design_intent(
-        &graph,
-        &mut pos,
+    tree.design_intent(
         KIND_HANDBOOK_RULE,
         "docs/handbook/loops.md",
         "the loop rule that governs core",
@@ -1488,15 +1461,13 @@ fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section(
         "core.rs",
     );
     // A DECISION that GOVERNS the SAME file through the SHARED GOVERNS relation - the leak vector.
-    apply_next_json(
-        &graph,
-        &mut pos,
+    tree.record(
         TYPE_DECISION_MADE,
         json!({ "id": "d_leak_decision", "summary": "a governing decision that is not design intent", "governs": ["core.rs"] }),
     );
 
     let prompt = first_prompt(
-        run_and_capture_prompts(&graph),
+        run_and_capture_prompts(&tree),
         "the stage's agent must have been spawned with a prompt",
     );
     let governs = format!("{REL_GOVERNS} core.rs");
@@ -1545,19 +1516,19 @@ fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section(
 /// return) would flip the header-absence assertion while the code-neighborhood assertion still held.
 /// The section is empty because NO design-intent edge binds the seed at all (not because a guard
 /// filtered one out), so this isolates the empty-candidate suppression itself: it stays green under
-/// the kind-guard and recency-order mutations the sibling design-intent tests pin.
+/// the kind-guard and order mutations the sibling design-intent tests pin.
 #[test]
 fn a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_header() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
     // A code definition of the touched file - the seeded traversal reaches `core.rs` and renders its
     // code neighborhood - but NO design-intent node (handbook rule / RA section / arch decision /
     // rationale) and NO design-intent edge bound to it, so the design-intent section has zero
     // candidates for a reason independent of the kind guard.
-    fold_run_unit_definition(&graph, &mut pos);
+    tree.define_run_unit();
 
     let neighborhood = "the one traversal must still surface the file's code neighborhood";
     assert_prompt(
-        &first_prompt(run_and_capture_prompts(&graph), SPAWNED),
+        &first_prompt(run_and_capture_prompts(&tree), SPAWNED),
         // The one traversal ran and reached the file: its code neighborhood is surfaced.
         &[("run_unit", neighborhood), ("core.rs:42", neighborhood)],
         // With no governing design intent, the design-intent section is suppressed entirely - no
@@ -1609,20 +1580,17 @@ impl Grounder for MultiSeedGrounder {
 /// any single-seed test in either layer, so this is the only guard over the multi-file render seam.
 #[test]
 fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_multi_seed_recovery() {
-    let graph = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
+    let mut tree = Tree::new();
 
-    // Enough governing rules bound across the two touched files to overflow the verbatim cap, folded
-    // FIRST so they carry the OLDEST bindings - the over-budget remainder that collapses into the
+    // Enough governing rules bound across the two touched files to overflow the verbatim cap, each
+    // id sorting after the rule below - the over-budget remainder that collapses into the
     // recovery note. Each GOVERNS one seed file, so every one is a candidate the two-file traversal
     // reaches.
     let count = 40u32;
     for i in 1..=count {
         let id = format!("docs/handbook/extra_{i:03}.md");
         let to = if i % 2 == 0 { "core.rs" } else { "util.rs" };
-        fold_design_intent(
-            &graph,
-            &mut pos,
+        tree.design_intent(
             KIND_HANDBOOK_RULE,
             &id,
             &format!("extra governing rule {i:03}"),
@@ -1630,30 +1598,23 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
             to,
         );
     }
-    // ONE handbook rule that GOVERNS BOTH touched files, folded LAST so its binding is the
-    // NEWEST-recorded and it survives the verbatim cap - its rendered line must name BOTH files.
-    fold_design_intent(
-        &graph,
-        &mut pos,
+    // ONE handbook rule that GOVERNS BOTH touched files, its id sorting first so it survives the
+    // verbatim cap - its rendered line must name BOTH files.
+    tree.design_intent(
         KIND_HANDBOOK_RULE,
-        "docs/handbook/loops.md",
+        "docs/handbook/both_files.md",
         "the loop rule governing both core and util",
         REL_GOVERNS,
         "core.rs",
     );
-    apply_next_json(
-        &graph,
-        &mut pos,
-        TYPE_DOC_LINK_EXTRACTED,
-        json!({ "from": "docs/handbook/loops.md", "to": "util.rs", "rel": REL_GOVERNS }),
-    );
+    tree.link("docs/handbook/both_files.md", REL_GOVERNS, "util.rs");
 
     // A real blast radius that touches TWO files, in a fixed order so the derived seed is
     // `core.rs util.rs`.
     let grounder = MultiSeedGrounder {
         files: vec!["core.rs".into(), "util.rs".into()],
     };
-    let prompts = run_and_capture_prompts_grounded(&graph, &grounder, "core");
+    let prompts = run_and_capture_prompts_grounded(&tree, &grounder, "core");
     assert!(!prompts.is_empty(), "{SPAWNED}");
     let prompt = &prompts[0];
 
@@ -1666,7 +1627,7 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
     );
     assert!(
         prompt.contains("the loop rule governing both core and util"),
-        "the newest-recorded governing rule must render verbatim in the design-intent section; \
+        "the first governing rule by id must render verbatim in the design-intent section; \
          prompt was:\n{prompt}"
     );
     // (2) The over-budget remainder collapses into a note naming the MULTI-SEED recovery: `rigger
@@ -1749,44 +1710,32 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
     // call, so two calls prove the delivery is deterministic for a given SEED, across independent
     // assembly - not merely stable within one graph handle.
     let build = || {
-        let graph = Projector::open(":memory:", "test").unwrap();
-        let mut pos = 0u64;
+        let mut tree = Tree::new();
         // CODE NEIGHBORHOOD (the other half of the kept intent layer): a definition of the touched
         // file, so the traversal reaches a realistic neighborhood.
-        apply_next_json(
-            &graph,
-            &mut pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-        );
+        tree.define_run_unit();
         // The four design-intent bindings the trim must PRESERVE, one per code-binding relation.
         for (kind, id, title, rel) in &bindings {
-            fold_design_intent(&graph, &mut pos, kind, id, title, rel, "core.rs");
+            tree.design_intent(kind, id, title, rel, "core.rs");
         }
         // The capped dev-loop bulk the trim DROPS - a decision, a lesson, and a finding about the SAME
         // touched file - seeded so the traversal reaches a genuinely bulk-carrying neighborhood and the
         // intent layer surviving is proven where the trim is ACTIVE. This unit does NOT assert their
         // omission (criterion 1 owns the trim); they establish the trimmed context, nothing more.
-        apply_next_json(
-            &graph,
-            &mut pos,
+        tree.record(
             TYPE_DECISION_MADE,
             json!({ "id": "d_core", "summary": "a decision the trim drops from the implement prompt", "governs": ["core.rs"] }),
         );
-        apply_next_json(
-            &graph,
-            &mut pos,
+        tree.record(
             TYPE_LESSON_LEARNED,
             json!({ "id": "l_core", "summary": "a lesson the trim drops from the implement prompt", "about": ["core.rs"] }),
         );
-        apply_next_json(
-            &graph,
-            &mut pos,
+        tree.record(
             TYPE_REVIEW_FINDING,
             json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "a finding the trim drops from the implement prompt", "about": ["core.rs"] }),
         );
 
-        let prompts = run_and_capture_prompts(&graph);
+        let prompts = run_and_capture_prompts(&tree);
         assert!(
             !prompts.is_empty(),
             "the implement-stage agent must have been spawned with a prompt"
@@ -1817,8 +1766,8 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
     // bindings in the IDENTICAL order (each title's position, sorted, yields the same sequence). The
     // intent layer is delivered by the ordered traversal, not by the recency luck the trimmed-away
     // bulk depended on, so its delivery is stable for a given seed. (This asserts the delivery is
-    // STABLE, not any particular permutation - the recency ORDER itself is owned by
-    // `the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest`.)
+    // STABLE, not any particular permutation - the ORDER itself is owned by
+    // `the_spawn_prompt_design_intent_section_renders_the_first_binding_by_id_and_elides_the_last`.)
     let prompt2 = build();
     let delivered_order = |p: &str| -> Vec<&'static str> {
         let mut titles: Vec<&'static str> = bindings.iter().map(|(_, _, t, _)| *t).collect();
@@ -1856,34 +1805,46 @@ fn code_neighborhood_section(prompt: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Spec 119, THE MEMBER RULE at the prompt boundary. GIVEN a project graph store holding
-/// [`member_graph`]'s nodes, no `CONTAINS` reaching the touched file's definitions, and a `CALLS`
-/// from the nested method to each of the placeholder, the bare parent and the `artifact` its id
-/// range holds, so the store's walk loads those three one hop past the method, WHEN the stage's
-/// agent is spawned on that file, THEN its code neighborhood lists the nested method and the
-/// file-mate, the members the walk loads one hop from the file, and no line for any of the three:
-/// a loaded node of the file's range renders only as a member.
+/// Spec 119, THE MEMBER RULE at the prompt boundary. GIVEN a touched file whose method `new`
+/// nests in the type `T` beside the file-level fn `mate`, and a finding about the `artifact`
+/// `a.rs::x` that lies in the file's id range but names no definition, WHEN the stage's agent is
+/// spawned on that file, THEN its code neighborhood lists the type, the nested method and the
+/// file-mate, and no line for the artifact: a record node of the file's range is no definition.
 #[test]
 fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
-    let mut planted = member_graph();
-    for to in [LEAF_PLACEHOLDER, BARE_PARENT, RANGE_ARTIFACT] {
-        planted
-            .edges
-            .push(edge(NESTED_METHOD, to, REL_CALLS, TIER_INFERRED));
-    }
-    let dir = temp_project();
-    let graph = planted_graph(dir.path(), &planted);
-    let file = file_half(NESTED_METHOD);
-    let grounder = SeedGrounder { file: file.into() };
+    let mut tree = Tree::new();
+    tree.define(file_half(NESTED_METHOD), "T", "struct", 1);
+    tree.file(file_half(NESTED_METHOD)).defs.push(Def {
+        local: "T::new".to_string(),
+        leaf: "new".to_string(),
+        kind: "method".to_string(),
+        line: 2,
+        end_line: 2,
+        parent: Some(0),
+        test: false,
+    });
+    tree.define(file_half(NESTED_METHOD), "mate", "function", 3);
+    tree.record(
+        TYPE_REVIEW_FINDING,
+        json!({ "id": "f_x", "by": "arch", "unit": "u1", "summary": "a finding about x", "about": [RANGE_ARTIFACT] }),
+    );
+    let grounder = SeedGrounder {
+        file: file_half(NESTED_METHOD).into(),
+    };
 
     let prompt = first_prompt(
-        run_and_capture_prompts_grounded(&graph, &grounder, "core"),
+        run_and_capture_prompts_grounded(&tree, &grounder, "core"),
         SPAWNED,
     );
     assert_eq!(
         code_neighborhood_section(&prompt),
-        ["- a.rs:0   new", "- a.rs:0   mate"],
-        "the touched file's members are listed, nested or not; prompt was:\n{prompt}"
+        [
+            "- a.rs:1  struct T",
+            "- a.rs:2  method new",
+            "- a.rs:3  function mate"
+        ],
+        "the touched file's definitions are listed, nested or not, and the artifact is not; \
+         prompt was:\n{prompt}"
     );
 }
 
@@ -1893,7 +1854,7 @@ fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
 /// and no line for the field, the property or the declaration.
 #[test]
 fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborhood() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
     for (line, (name, kind)) in [
         ("run", "function"),
         ("state", "field"),
@@ -1904,15 +1865,10 @@ fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborho
     .into_iter()
     .enumerate()
     {
-        apply_next_json(
-            &graph,
-            &mut pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": name, "kind": kind, "line": line + 1, "lang": "rust", "fresh": line == 0 }),
-        );
+        tree.define("core.rs", name, kind, line as u32 + 1);
     }
 
-    let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
+    let prompt = first_prompt(run_and_capture_prompts(&tree), SPAWNED);
     assert_eq!(
         core_neighborhood_lines(&prompt),
         ["- core.rs:1  function run", "- core.rs:5  constant LIMIT"],
@@ -1925,23 +1881,13 @@ fn a_spawn_prompt_lists_no_data_member_and_no_declaration_in_its_code_neighborho
 /// THEN the fn is the one line listed and nothing is elided.
 #[test]
 fn a_field_takes_no_slot_of_the_capped_code_neighborhood() {
-    let (graph, mut pos) = fresh_graph();
+    let mut tree = Tree::new();
     for i in 1..=40u32 {
-        apply_next_json(
-            &graph,
-            &mut pos,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": format!("member_{i:03}"), "kind": "field", "line": i, "lang": "rust", "fresh": i == 1 }),
-        );
+        tree.define("core.rs", &format!("member_{i:03}"), "field", i);
     }
-    apply_next_json(
-        &graph,
-        &mut pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        json!({ "file": "core.rs", "name": "run", "kind": "function", "line": 41, "lang": "rust" }),
-    );
+    tree.define("core.rs", "run", "function", 41);
 
-    let prompt = first_prompt(run_and_capture_prompts(&graph), SPAWNED);
+    let prompt = first_prompt(run_and_capture_prompts(&tree), SPAWNED);
     assert_eq!(
         core_neighborhood_lines(&prompt),
         ["- core.rs:41  function run"],

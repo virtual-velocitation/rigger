@@ -31,7 +31,6 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use common::fixtures::around_nodes;
 use common::fixtures::chain_graph;
 use common::fixtures::edge;
 use common::fixtures::star_graph;
@@ -48,6 +47,13 @@ use rigger::contextgraph::{
 };
 use rigger::dash::{self, DashInputs};
 use serde_json::json;
+
+/// The node objects of a `rigger_graph` `around` answer, sorted by id.
+fn around_nodes(answer: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    nodes
+}
 
 /// A tier-tagged fixture neighborhood: a unit `u1`, the decision `d1` that DECIDED it (extracted),
 /// and a code entity `c1` the decision REFERENCES (inferred). A depth-2 walk from `u1` reaches all

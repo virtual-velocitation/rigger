@@ -85,7 +85,7 @@ fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the
     );
     assert_eq!(
         derived_menu_lines(&out),
-        [derived_menu_line_naming(DUP_ROUNDS, 1)],
+        [derived_menu_line_naming(DUP_ROUNDS)],
         "the bare menu must name the migrated store's derived events, every recording of the one \
          file identity, not none from an unmigrated identity mismatch"
     );
