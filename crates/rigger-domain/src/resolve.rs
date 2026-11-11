@@ -14,7 +14,7 @@
 //! | structure | each definition's `CONTAINS` from its parent, else from its file |
 //! | proof | a test call: one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind and line by [`definition_precedence`] |
-//! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure |
+//! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure; any node in such a file, whatever fact names it, and any link onto one |
 //! | design link, workflow relation | the node kinds and relations an intent fact may name |
 //!
 //! A product mention resolves against product candidates only, so test definitions never change a
@@ -27,7 +27,7 @@ use std::rc::Rc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef};
-use crate::contextgraph::query::{entity_id, leaf_of, placeholder_id};
+use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id};
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
     KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE,
@@ -150,6 +150,8 @@ pub struct IntentNode {
     pub title: String,
     /// The file it is read from.
     pub doc: String,
+    /// Whether its path is test code.
+    pub test: bool,
 }
 
 /// The one of `defs` sharing an id that gives the id its kind and line: the first by
@@ -246,6 +248,11 @@ impl<'v> Resolver<'v> {
     /// Whether `path` is test code by its scope or the test-module closure.
     pub fn is_test_file(&self, path: &str) -> bool {
         self.test_files.contains(path)
+    }
+
+    /// Whether the node `id` is test code: it lies in a test file, whatever fact names it.
+    pub fn is_test_id(&self, id: &str) -> bool {
+        file_of(id).is_some_and(|file| self.is_test_file(file))
     }
 
     /// Whether `path` is a code-half file of the view.
@@ -538,7 +545,7 @@ impl<'v> Resolver<'v> {
     }
 
     /// The design and workflow nodes and edges of `facts`, of the kinds and relations they may
-    /// name; a link's ends are as written.
+    /// name; a link's ends are as written, and a node or link is test code by its paths.
     pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<Link>) {
         let kind_of = |k: &str| INTENT_KINDS.into_iter().find(|known| *known == k);
         let rel_of = |r: &str| INTENT_RELS.into_iter().find(|known| *known == r);
@@ -554,6 +561,7 @@ impl<'v> Resolver<'v> {
                     kind: kind_of(kind)?,
                     title: title.clone(),
                     doc: facts.path.clone(),
+                    test: self.is_test_id(id),
                 })
             })
             .collect();
@@ -569,7 +577,7 @@ impl<'v> Resolver<'v> {
                     rel: rel_of(rel)?,
                     to: to.clone(),
                     tier: TIER_EXTRACTED,
-                    test: false,
+                    test: self.is_test_id(from) || self.is_test_id(to),
                 })
             })
             .collect();
@@ -752,7 +760,7 @@ pub(crate) mod tests {
             vec![def("deep_helper", "function", 1, None, false)],
             vec![call("draw", Some(0), 2, false)],
         );
-        let it = code(
+        let mut it = code(
             "tests/it.rs",
             "rust",
             Scope::Test,
@@ -766,6 +774,11 @@ pub(crate) mod tests {
                 call("compute", Some(0), 3, true),
             ],
         );
+        it.doc_concepts = vec![DocConcept {
+            kind: KIND_RATIONALE.into(),
+            id: "tests/it.rs#why".into(),
+            title: "Why".into(),
+        }];
         let py = code(
             "scripts/t.py",
             "python",
@@ -802,6 +815,16 @@ pub(crate) mod tests {
                     from: "docs/d.md".into(),
                     rel: "bogus".into(),
                     to: "src/c.rs".into(),
+                },
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: REL_SPECIFIES.into(),
+                    to: "tests/it.rs".into(),
+                },
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: REL_SPECIFIES.into(),
+                    to: "src/a_tests.rs".into(),
                 },
             ],
             ..Default::default()
@@ -885,11 +908,15 @@ pub(crate) mod tests {
                 .collect(),
             Ask::Intent(path) => {
                 let (nodes, links) = r.intent(&view.file(path).unwrap());
-                nodes
+                let mark = |test: bool| if test { " test" } else { "" };
+                let nodes = nodes.iter().map(|n| {
+                    let test = mark(n.test);
+                    format!("node {} [{}] {} {}{test}", n.id, n.kind, n.title, n.doc)
+                });
+                let links = links
                     .iter()
-                    .map(|n| format!("node {} [{}] {} {}", n.id, n.kind, n.title, n.doc))
-                    .chain(links.iter().map(render_link))
-                    .collect()
+                    .map(|l| format!("{}{}", render_link(l), mark(l.test)));
+                nodes.chain(links).collect()
             }
         }
     }
@@ -1157,6 +1184,22 @@ pub(crate) mod tests {
                 Ask::Links("src/a_tests/deeper.rs", false),
                 &[],
                 &["deeper"],
+            ),
+            (
+                "a design link's end by its path",
+                Ask::Intent("docs/d.md"),
+                &[
+                    "docs/d.md -SPECIFIES/extracted-> tests/it.rs test",
+                    "docs/d.md -SPECIFIES/extracted-> src/a_tests.rs test",
+                    "docs/d.md -SPECIFIES/extracted-> src/b.rs",
+                ],
+                &[],
+            ),
+            (
+                "an intent node in a test file",
+                Ask::Intent("tests/it.rs"),
+                &["node tests/it.rs#why [rationale] Why tests/it.rs test"],
+                &[],
             ),
         ]);
     }

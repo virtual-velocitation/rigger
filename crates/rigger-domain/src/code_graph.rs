@@ -6,7 +6,8 @@
 //! specific kind takes it over `artifact`, whatever order the files are read in.
 //!
 //! The view filter decides test code: excluded by default, shown beside product code, or shown
-//! alone with the nodes its edges reach. A node only test code asserts carries `test=true`.
+//! alone with the nodes its edges reach. A node only test code asserts carries `test=true`, and a
+//! node in a test file is test code whatever fact names it.
 //! Product edges are the same under every filter.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,9 +71,10 @@ impl Builder {
         }
     }
 
-    /// The graph: every node and edge, a node no product fact asserts marked `test=true`; with
-    /// `only`, the test edges and the nodes test code asserts or those edges reach.
-    fn graph(self, only: bool) -> Graph {
+    /// The graph under `tests`: a node no product fact asserts is marked `test=true`. Excluded,
+    /// test nodes and edges are dropped; included, all are kept; only, the test edges and the
+    /// nodes test code asserts or those edges reach.
+    fn graph(self, tests: Tests) -> Graph {
         let Builder {
             nodes,
             product,
@@ -80,7 +82,11 @@ impl Builder {
         } = self;
         let edges: Vec<_> = edges
             .into_iter()
-            .filter(|(_, (_, test))| !only || *test)
+            .filter(|(_, (_, test))| match tests {
+                Tests::Exclude => !test,
+                Tests::Include => true,
+                Tests::Only => *test,
+            })
             .collect();
         let reached: BTreeSet<&str> = edges
             .iter()
@@ -88,7 +94,11 @@ impl Builder {
             .collect();
         let nodes = nodes
             .into_values()
-            .filter(|n| !only || !product.contains(&n.id) || reached.contains(n.id.as_str()))
+            .filter(|n| match tests {
+                Tests::Exclude => product.contains(&n.id),
+                Tests::Include => true,
+                Tests::Only => !product.contains(&n.id) || reached.contains(n.id.as_str()),
+            })
             .map(|mut n| {
                 if !product.contains(&n.id) {
                     n.attrs.insert("test".to_string(), "true".to_string());
@@ -140,7 +150,7 @@ impl<'v> CodeGraph<'v> {
             }
             let (nodes, links) = self.resolver.intent(&facts);
             for n in nodes {
-                b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], false);
+                b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
             }
             links.into_iter().for_each(|l| b.link(l));
         }
@@ -152,7 +162,7 @@ impl<'v> CodeGraph<'v> {
                 n.attrs.insert("proof_evidence".to_string(), evidence);
             }
         }
-        b.graph(self.filter.tests == Tests::Only)
+        b.graph(self.filter.tests)
     }
 
     /// The file node, entities, placeholders and edges of the code file `facts`.
@@ -236,8 +246,11 @@ mod tests {
                     "node src/a.rs::run",
                     "node tests/it.rs test",
                     "node src/a.rs::tests::checks test",
+                    "node tests/it.rs#why test",
+                    "node src/a_tests.rs test",
                     "edge src/a.rs::tests::checks -CALLS/extracted-> src/a.rs::run",
                     "edge src/a.rs::run -CALLS/extracted-> src/a.rs::helper",
+                    "edge docs/d.md -SPECIFIES/extracted-> tests/it.rs",
                 ],
                 &[],
             ),
@@ -247,8 +260,9 @@ mod tests {
                     "node tests/it.rs test",
                     "node src/a.rs::run",
                     "edge src/a.rs::tests::checks -CALLS/extracted-> src/a.rs::run",
+                    "edge docs/d.md -SPECIFIES/extracted-> tests/it.rs",
                 ],
-                &["edge src/a.rs::run -", "node src/c.rs", "docs/d.md"],
+                &["edge src/a.rs::run -", "node src/c.rs", "-> src/b.rs"],
             ),
         ];
         for (tests, present, absent) in cases {
