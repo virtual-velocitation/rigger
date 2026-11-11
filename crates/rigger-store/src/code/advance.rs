@@ -300,9 +300,10 @@ pub struct Opened {
 }
 
 /// The view of the head of the project at `root`, advancing the store first when the snapshot
-/// in force describes another tip or none. A reader never blocks on a writer while a snapshot
-/// exists: it answers from it, saying why ([`Behind`]). With no snapshot it waits, since it has
-/// nothing else to answer from.
+/// in force describes another tip or none. A snapshot the source says the checkout is still at
+/// answers without asking the source for its head. A reader never blocks on a writer while a
+/// snapshot exists: it answers from it, saying why ([`Behind`]). With no snapshot it waits, since
+/// it has nothing else to answer from.
 pub fn open_current(
     root: &Path,
     source: &dyn TreeSource,
@@ -320,8 +321,19 @@ pub(crate) fn open_current_in(
     group: &dyn Group,
     mode: Mode,
 ) -> Result<Opened, String> {
-    let head = source.head()?;
     let current = match store.current(extract.fingerprint()) {
+        Some(view) if source.still_at(&view.stamp().tip) => {
+            let head = view.stamp().tip.clone();
+            return Ok(Opened {
+                view,
+                head,
+                behind: None,
+            });
+        }
+        other => other,
+    };
+    let head = source.head()?;
+    let current = match current {
         Some(view) if view.stamp().tip == head => {
             return Ok(Opened {
                 view,
@@ -938,6 +950,36 @@ mod tests {
         fn publish(&self, path: &Path, _: &[u8]) -> Result<(), String> {
             Err(format!("{} is read-only", path.display()))
         }
+    }
+
+    /// A snapshot the source says the checkout is still at answers without the source being
+    /// asked for its head; once the checkout moves, the head is asked and the store advances.
+    #[test]
+    fn a_snapshot_the_checkout_is_still_at_answers_without_asking_the_head() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path());
+        let source = MemSource::default();
+        let (extract, group) = (ToyExtract::new(FP), CountingGroup::default());
+        let first = source.commit("c1", A);
+        let opened = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
+        assert_eq!((opened.head, source.heads_asked()), (first.clone(), 1));
+        let again = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
+        assert_eq!(
+            (&again.head, again.view.stamp().tip.clone()),
+            (&first, first.clone())
+        );
+        assert!(again.behind.is_none());
+        assert_eq!(
+            source.heads_asked(),
+            1,
+            "the head is not asked while still at it"
+        );
+        let second = source.commit("c2", B);
+        let moved = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
+        assert_eq!(
+            (moved.view.stamp().tip.clone(), source.heads_asked()),
+            (second, 2)
+        );
     }
 
     /// Each row: the mode, whether another writer holds the lock, whether writes fail, and the

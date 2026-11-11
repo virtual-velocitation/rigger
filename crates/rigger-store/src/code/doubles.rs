@@ -154,14 +154,15 @@ impl Group for CountingGroup {
     }
 }
 
-/// A tree source held in memory: each commit names a tree of (path, text) files, and the blobs
-/// it hands out are counted.
+/// A tree source held in memory: each commit names a tree of (path, text) files, and the heads
+/// asked of it and the blobs it hands out are counted.
 #[derive(Default)]
 pub struct MemSource {
     head: Mutex<Option<Tip>>,
     trees: Mutex<HashMap<String, Vec<Entry>>>,
     blobs: Mutex<HashMap<String, Vec<u8>>>,
     blobs_read: AtomicUsize,
+    heads_asked: AtomicUsize,
 }
 
 impl MemSource {
@@ -199,15 +200,27 @@ impl MemSource {
     pub fn blobs_read(&self) -> usize {
         self.blobs_read.load(Ordering::SeqCst)
     }
+
+    /// How many times its head was asked for.
+    pub fn heads_asked(&self) -> usize {
+        self.heads_asked.load(Ordering::SeqCst)
+    }
 }
 
 impl TreeSource for MemSource {
     fn head(&self) -> Result<Tip, String> {
+        self.heads_asked.fetch_add(1, Ordering::SeqCst);
         self.head
             .lock()
             .map_err(|e| e.to_string())?
             .clone()
             .ok_or_else(|| "nothing committed".to_string())
+    }
+
+    fn still_at(&self, tip: &Tip) -> bool {
+        self.head
+            .lock()
+            .is_ok_and(|head| head.as_ref() == Some(tip))
     }
 
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String> {

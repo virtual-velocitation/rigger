@@ -2,6 +2,7 @@
 //! from git's objects - the checked-out commit's tree, its listing and the blobs themselves - so
 //! a tree's facts never depend on what the worktree holds.
 
+use crate::discover::read_head;
 use crate::worktree::{git_output, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
@@ -70,6 +71,12 @@ impl TreeSource for GitTreeSource {
             commit,
             tree,
         })
+    }
+
+    /// Read from git's files ([`read_head`]): the checkout is at `tip` when its branch and
+    /// commit are `tip`'s, since a commit names one tree.
+    fn still_at(&self, tip: &Tip) -> bool {
+        read_head(&self.root).is_some_and(|(head, commit)| head == tip.head && commit == tip.commit)
     }
 
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String> {
@@ -277,6 +284,11 @@ mod tests {
             }
             let listed = source.list(&tip.tree).expect(row.name);
             assert_eq!(paths(&listed), row.files, "{}", row.name);
+            #[cfg(unix)]
+            assert!(source.still_at(&tip), "{}: still at its head", row.name);
+            write(dir.path(), &[("moved.txt", "m\n")]);
+            git_commit_all(dir.path(), "moved");
+            assert!(!source.still_at(&tip), "{}: moved past its head", row.name);
         }
     }
 
