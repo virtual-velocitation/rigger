@@ -27,12 +27,16 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_COMMUNITY_ASSIGNED,
+    KIND_COMMUNITY, REL_IN_COMMUNITY, REL_REALIZES, TIER_INFERRED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_REALIZED,
 };
 
 use crate::common;
 use common::fixtures::ONE_COMMUNITY;
-use common::fixtures::{apply_call, apply_json, community_snapshot, def, live_targets};
+use common::fixtures::{
+    apply_call, apply_json, community_snapshot, def, definition_event, entry_asked, entry_at, hold,
+    live_of, live_targets, no_bytes_batch,
+};
 
 /// The canonical spec-53 coupling graph: an `apply_damage` hub that CALLS three symbols (degree-4
 /// highest-degree member), a `clamp` and a `send` in DIFFERENT directories (`src/combat`,
@@ -287,4 +291,111 @@ fn the_community_derivation_is_a_pure_function_of_the_assignment_set_not_arrival
         forward, reversed,
         "the same assignment SET in a different arrival order re-derives byte-identical community rows"
     );
+}
+
+/// One fold the attachment table drives onto `src/a.rs`, whose one definition is `foo`.
+#[derive(Clone, Copy)]
+enum Step {
+    /// The `gc` entry of `src/a.rs` at this generation, its batch the definition of `foo`.
+    Code(&'static str),
+    /// The `gc` entry of `src/a.rs` at this generation, its batch the one for no bytes: the file
+    /// is gone from the tree.
+    Gone(&'static str),
+    /// A decision naming the file and its definition: knowledge that outlives the code.
+    Cite,
+    /// A community pass and a concept pass, each hanging their attachment off both nodes.
+    Pass,
+}
+
+/// The two nodes `src/a.rs`'s code asserts, each a community member and a concept realizer.
+const ATTACHED: [&str; 2] = ["src/a.rs", "src/a.rs::foo"];
+
+/// Fold `steps` in order onto a fresh graph and insist `src/a.rs` and `src/a.rs::foo` keep a live
+/// `IN_COMMUNITY` edge exactly when `in_community` says and a live `REALIZES` edge exactly when
+/// `realizes` says: membership is derived from code coupling, so it lives only while code holds
+/// the node, while a concept, derived from the intent links that cite it, lives while anything
+/// holds it.
+fn attachments_follow_what_holds_the_node(steps: &[Step], in_community: bool, realizes: bool) {
+    let p = Projector::open(":memory:", "test").unwrap();
+    for (i, step) in steps.iter().enumerate() {
+        let pos = 10 * (i as u64 + 1);
+        match *step {
+            Step::Code(generation) => entry_asked(
+                &p,
+                &entry_at("gc", "src/a.rs", generation, pos, pos),
+                vec![definition_event("src/a.rs", "foo", "function", 1, true)],
+            ),
+            Step::Gone(generation) => entry_asked(
+                &p,
+                &entry_at("gc", "src/a.rs", generation, pos, pos),
+                no_bytes_batch("src/a.rs"),
+            ),
+            Step::Cite => hold(&p, pos, &ATTACHED),
+            Step::Pass => {
+                for (j, node) in ATTACHED.iter().enumerate() {
+                    apply_json(
+                        &p,
+                        pos + j as u64,
+                        TYPE_COMMUNITY_ASSIGNED,
+                        serde_json::json!({
+                            "node": node, "community": ONE_COMMUNITY, "resolution": 1.0,
+                            "hash": "h", "fresh": j == 0
+                        }),
+                    );
+                    apply_json(
+                        &p,
+                        pos + 5 + j as u64,
+                        TYPE_CONCEPT_REALIZED,
+                        serde_json::json!({
+                            "node": node, "concept": "concept/1/0", "resolution": 1.0, "hash": "h"
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    let attached_to = |live: bool, to: &str| -> Vec<(String, String)> {
+        ATTACHED
+            .iter()
+            .filter(|_| live)
+            .map(|node| (node.to_string(), to.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        (live_of(&p, REL_IN_COMMUNITY), live_of(&p, REL_REALIZES)),
+        (
+            attached_to(in_community, ONE_COMMUNITY),
+            attached_to(realizes, "concept/1/0")
+        ),
+        "(IN_COMMUNITY, REALIZES) after the folds"
+    );
+}
+
+use Step::{Cite, Code, Gone, Pass};
+
+rigger::test_cases! {
+    /// Control: code holds the nodes, so both attachments are live.
+    attachments_on_live_code_are_live:
+        attachments_follow_what_holds_the_node(&[Code("g1"), Cite, Pass], true, true);
+    /// Control: a deleted file nothing cites retires, detaching both attachments.
+    a_deleted_uncited_file_detaches_both_attachments:
+        attachments_follow_what_holds_the_node(&[Code("g1"), Pass, Gone("g2")], false, false);
+    /// A deleted file a decision still cites stays held, by knowledge only: it leaves its
+    /// community and keeps its concept.
+    a_deleted_cited_file_leaves_its_community_and_keeps_its_concept:
+        attachments_follow_what_holds_the_node(&[Code("g1"), Cite, Pass, Gone("g2")], false, true);
+    /// A pass that runs after the code retired makes no member of a node only knowledge holds.
+    a_pass_after_the_code_retired_makes_no_member:
+        attachments_follow_what_holds_the_node(&[Code("g1"), Cite, Gone("g2"), Pass], false, true);
+    /// A further citation of the retired code revives no membership.
+    a_further_citation_revives_no_membership:
+        attachments_follow_what_holds_the_node(
+            &[Code("g1"), Cite, Pass, Gone("g2"), Cite], false, true);
+    /// A node fully retired and then held by a citation alone gets back its concept only.
+    a_citation_of_a_fully_retired_node_revives_its_concept_only:
+        attachments_follow_what_holds_the_node(&[Code("g1"), Pass, Gone("g2"), Cite], false, true);
+    /// The code coming back revives the membership it detached.
+    the_code_returning_revives_its_membership:
+        attachments_follow_what_holds_the_node(
+            &[Code("g1"), Cite, Pass, Gone("g2"), Code("g3")], true, true);
 }
