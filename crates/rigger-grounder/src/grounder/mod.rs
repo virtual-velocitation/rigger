@@ -34,36 +34,13 @@ use std::path::Path;
 /// The ONE scoped directory-walk skeleton EVERY walk shares: grep's `ground` (this module), the
 /// code-ingest `build_index`, and the design-ingest `project_batches`. They differ ONLY in the
 /// per-file LEAF ACTION they pass as `on_file` - grep searches lines, the ingests extract
-/// symbols / design intent. Factoring the walk here (always compiled, in `mod.rs`) means the
-/// scope can never drift between them, so ingest and grounding cover exactly the same file set.
+/// symbols / design intent. The walk itself is the store's [`rigger_store::walk::walk_scoped`],
+/// which the code store's directory source walks with too, so the scope can never drift between
+/// ingest, grounding and the code store.
 ///
-/// The walk is SCOPED to the project's own sources (spec 49, section 3), three ways:
-///
-/// - **The project's own ignore rules.** It honors the repository's committed `.gitignore`
-///   files (root and nested), so whatever the project already declared as not-source - build
-///   outputs, caches, vendored artifacts - is skipped. Only committed `.gitignore` is honored:
-///   the user's GLOBAL gitignore and the per-clone `.git/info/exclude` are DISABLED, so the
-///   scope is a pure function of the tree (the same tree yields a byte-identical graph on any
-///   machine). `require_git(false)` applies those rules even when the tree is not a checked-out
-///   repository (a cold-checkout build), and `parents(false)` confines rule-reading to the root
-///   so a `.gitignore` ABOVE the project never bleeds in.
-/// - **The always-excluded set.** Hidden entries are skipped, which covers the two the spec
-///   names as never-source regardless of any ignore file - the VCS metadata directory `.git`
-///   and rigger's own runtime directory `.rigger` (both dotdirs) - and additionally de-noises
-///   the other tooling dotdirs (`.github`/`.cargo`/`.claude`/`.fastembed_cache`, none of which
-///   is first-party source), replacing the old hardcoded skip-list with the actual declared
-///   rules plus this convention.
-/// - **Root confinement.** Symlinks are NOT followed (`follow_links(false)`), so a link that
-///   escapes the root - or a link cycle - is simply never traversed: the walk can never grow a
-///   cluster for paths outside the canonicalized project, and a cycle cannot form (there is no
-///   visited-set to maintain because there is nothing to loop).
-///
-/// Entries are visited in sorted file-name order, so the walk is deterministic; an unreadable
-/// entry (a permissions race, a broken link) is skipped rather than crashing the walk.
-///
-/// `on_file` receives each regular file (never a directory, never an unfollowed symlink) and
-/// returns [`ControlFlow`]: `Break(())` stops the whole walk immediately (grep uses this to stop
-/// once it has collected its `k` hits), `Continue(())` walks on.
+/// `on_file` receives each regular file and returns [`ControlFlow`]: `Break(())` stops the whole
+/// walk immediately (grep uses this to stop once it has collected its `k` hits), `Continue(())`
+/// walks on.
 pub(crate) fn walk_guarded<F>(root: &Path, on_file: &mut F) -> ControlFlow<()>
 where
     F: FnMut(&Path) -> ControlFlow<()>,
@@ -83,40 +60,7 @@ pub(crate) fn walk_guarded_within<F>(
 where
     F: FnMut(&Path) -> ControlFlow<()>,
 {
-    let mut walker = ignore::WalkBuilder::new(root);
-    walker
-        // Skip hidden entries: this is the always-excluded set - the VCS metadata dir `.git` and
-        // rigger's runtime dir `.rigger` (both dotdirs) - plus the other never-source tooling
-        // dotdirs, independent of any ignore file.
-        .hidden(true)
-        // Honor the project's OWN committed ignore rules only, so the scope is a pure function of
-        // the tree (machine-independent, byte-identical rebuilds).
-        .git_ignore(true)
-        .git_global(false)
-        .git_exclude(false)
-        .ignore(false)
-        // Apply committed `.gitignore` even when the tree is not a git checkout (cold build), and
-        // never read ignore files above the root.
-        .require_git(false)
-        .parents(false)
-        // Root confinement: never follow a symlink, so nothing escapes the root and no cycle forms.
-        .follow_links(false)
-        // Deterministic traversal order.
-        .sort_by_file_name(|a, b| a.cmp(b));
-    if let Some(named) = named {
-        let wanted: Vec<std::path::PathBuf> = named.iter().map(|n| root.join(n)).collect();
-        walker.filter_entry(move |entry| wanted.iter().any(|w| w.starts_with(entry.path())));
-    }
-    for dent in walker.build() {
-        // An entry we cannot read (a permissions race, a broken link) is skipped, never a panic.
-        let Ok(entry) = dent else { continue };
-        // Only regular files reach the leaf action: directories are descended by the walker, and
-        // an unfollowed symlink (its `file_type` is the link, not a file) is skipped - confinement.
-        if entry.file_type().is_some_and(|ft| ft.is_file()) {
-            on_file(entry.path())?;
-        }
-    }
-    ControlFlow::Continue(())
+    rigger_store::walk::walk_scoped(root, named, on_file)
 }
 
 /// The path of `file`, a file a walk under `root` visited, relative to `root`: the ONE spelling

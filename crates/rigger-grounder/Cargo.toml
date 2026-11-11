@@ -64,15 +64,6 @@ tree-sitter-python = { version = "0.23", optional = true }
 
 # Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
-# project's own sources by honoring the repository's OWN version-control ignore rules
-# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine,
-# used only by `store`-gated code (the ingest/grounding walk) - see the target-cfg note
-# above for why it lives in this table rather than the unconditional `[dependencies]`.
-# We use only its committed-`.gitignore` matching (global + `.git/info/exclude`
-# disabled) so the scoping is machine-independent and the same tree yields a
-# byte-identical graph.
-ignore = "0.4"
 # The combined lookup (`lookup`): fst's Levenshtein automaton resolves a term against the graph's
 # entity names, the ripgrep libraries scan the caller's working tree live, and tantivy ranks the
 # prose in an in-memory index (its RAM directory only, so its default mmap/compression features

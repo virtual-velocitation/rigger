@@ -2535,7 +2535,6 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
- "ignore",
  "rigger-config-files",
  "rigger-domain",
  "rigger-graph-sqlite",
@@ -2573,6 +2572,7 @@ dependencies = [
 name = "rigger-store"
 version = "0.1.0"
 dependencies = [
+ "ignore",
  "rigger-domain",
  "tempfile",
 ]
