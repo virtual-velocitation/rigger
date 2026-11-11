@@ -297,13 +297,19 @@ definition a thousand mentions resolve to.
 ### 4.4 The stamp
 
 ```
-Stamp
+Tip                                  (what a TreeSource names: the tree to describe)
   head        the ref the operator checkout has checked out ("rigger-run"), for display
   commit      the commit id the snapshot describes (none for a Dir source)
   tree        the root tree id (Dir source: FNV over sorted (path, content hash))
+
+Stamp                                (a Tip plus what only advance knows)
+  tip         the Tip the snapshot describes
   fingerprint the extractor fingerprint: changes when any extractor's output can change
   seq         the snapshot's sequence number
 ```
+
+A source returns a `Tip`. Only `advance` builds a `Stamp`, from a `Tip`, the extractor's
+fingerprint and the sequence number it assigns, so no stamp ever holds a placeholder.
 
 ### 4.5 Snapshot layout
 
@@ -356,14 +362,14 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 ### 5.1 advance
 
 ```
-advance(store, source: TreeSource, extract: Extract, group: Group, target) -> Stamp
+advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) -> Stamp
 
   take LOCK (exclusive: a writer blocks; a reader tries once and, if the lock is held, answers
        from CURRENT with the label "advance in flight")
   S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
        differs from extract.fingerprint()
-  if S.stamp.tree == target.tree:          release LOCK; return S.stamp      (no-op)
-  changes <- source.changed(S.stamp.tree, target.tree)      [(path, old blob?, new blob?)]
+  if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
+  changes <- source.changed(S.stamp.tip.tree, target.tree)      [(path, old blob?, new blob?)]
   keep    <- S.files without the changed paths              (facts copied, never re-extracted)
   fresh   <- extract each new blob, in parallel             (std::thread::scope, one chunk per
                                                             available core; bytes from
@@ -408,7 +414,7 @@ Only `advance` writes a snapshot, and it is reached through one function:
 code::open_current(root) -> CodeView
   tip <- source.head()                                   (operator checkout's HEAD commit)
   S   <- snapshot named by CURRENT
-  if S is absent, unreadable, of another fingerprint, or S.stamp.commit != tip:
+  if S is absent, unreadable, of another fingerprint, or S.stamp.tip.commit != tip.commit:
       advance(..., target = tip)           (on a lock or write failure: answer from S, labelled)
   return the view of CURRENT
 ```
@@ -441,11 +447,11 @@ fails because of, a writer.
                                              |
                                  code::open_current(root)
                                              |
-                       diff-tree stamp.tree C'^{tree}  -> the merged unit's changed files
+                       diff-tree stamp.tip.tree C'^{tree}  -> the merged unit's changed files
                                              |
                                     advance(target = C')
                                              |
-                        CURRENT -> <seq+1>.snap, stamp.commit = C'
+                        CURRENT -> <seq+1>.snap, stamp.tip.commit = C'
                                              |
        every later spawn, lookup and dash view answers "describes C'"
 ```
@@ -512,7 +518,7 @@ Grouping before and after:
 open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT, read snap,
                                                                    verify crc: ~ 10 ms)
-  diff  <- source.changed_against_worktree(view.stamp.tree, W)    (git diff --name-only + the
+  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-only + the
                                                                    untracked list: < 20 ms)
   diff empty      -> answers describe W exactly; label "describes <commit>"
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ";
@@ -626,17 +632,17 @@ afterwards pays one advance first (<= 3 s for a small change, section 5.5).
 ### 7.1 The code-side interfaces (`rigger-domain/src/code_view.rs`)
 
 ```rust
-pub trait CodeView {
+pub trait CodeView: Send + Sync {
     fn stamp(&self) -> &Stamp;
     fn files(&self) -> Box<dyn Iterator<Item = FileRef<'_>> + '_>;   // path, half, scope
-    fn file(&self, path: &str) -> Option<FileFacts<'_>>;
+    fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>>;
     fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_>;
     fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_>;
     fn groupings(&self) -> &Groupings;
 }
 
 pub trait TreeSource {
-    fn head(&self) -> Result<Stamp, String>;                       // HEAD commit + tree
+    fn head(&self) -> Result<Tip, String>;                         // HEAD commit + tree
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;      // path, blob
     fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String>;
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
@@ -644,7 +650,10 @@ pub trait TreeSource {
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;
 }
 
-pub trait Extract { fn fingerprint(&self) -> u64; fn extract(&self, path: &str, bytes: &[u8]) -> FileFacts; }
+pub trait Extract: Send + Sync {
+    fn fingerprint(&self) -> u64;
+    fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;   // path and blob set from the entry
+}
 pub trait Group   { fn group(&self, view: &dyn CodeView) -> Groupings; }
 
 pub enum Tests { Exclude, Include, Only }
@@ -931,7 +940,7 @@ decorator over `CodeView`, and it reads through one more method of an existing i
 Overlay { base: &dyn CodeView, changed: FactsView, masked: set of paths }
 
   open(base, W):
-    diff    <- source.changed_against_worktree(base.stamp.tree, W)
+    diff    <- source.changed_against_worktree(base.stamp.tip.tree, W)
     masked  <- diff.modified + diff.deleted
     changed <- extract(read W/<p>) for p in diff.modified + diff.added + diff.untracked
                (memoised per (path, content hash) for the life of the process)
