@@ -530,13 +530,18 @@ open(caller worktree W, filter)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
                                                                    untracked list: < 20 ms)
   diff empty      -> answers describe W exactly; label "describes <commit>"
-  diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ";
-                     every node in a differing file, and every edge with such an endpoint, is
-                     withheld and counted
+  diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
+                     K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
+                     own state never differs; every node in a differing file, and every edge
+                     with such an endpoint, is withheld, and K counts the nodes withheld so far
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
-  stamp commit not in W's object store -> label "describes <commit>; W cannot be compared"
+  diff fails (the stamp commit is not in W's object store, or W's index cannot be read)
+                  -> label "describes <commit>; W cannot be compared"; nothing is withheld
 ```
+
+A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
+until W commits.
 
 This check replaces the per-hit generation comparison. It runs once per view, not once per hit,
 and the label travels with every answer:
@@ -544,6 +549,11 @@ and the label travels with every answer:
 - the CLI prints it;
 - the MCP tools return it as a field;
 - the dash shows it in the header.
+
+`rigger graph --show` keeps its drift heal: a definition whose recorded line no longer holds it
+is found again by name and kind in W's file, and noted missing or ambiguous when it cannot be.
+Since a differing file's nodes are withheld, the heal is reached only when W cannot be compared,
+or for a node only the record half holds.
 
 ### 6.2 The resolver
 
@@ -716,7 +726,9 @@ It splits by role:
 `Composed` implements `ContextGraph` with:
 
 - **One traversal.** Breadth-first search over a `Neighbors` interface (`node(id)`, `out(id)`,
-  `in(id)`), which both halves implement. The search is written once.
+  `incoming(id)`), which both halves implement. The search is written once. The same interface
+  answers the lookups a reader starts from: a file's members, the nodes a leaf binds, the nodes
+  of a kind, a file's unresolved references, the recorded aliases and the whole half.
 - **One identity.** The same id in both halves is one node. The tree half's kind wins, and the
   record half's attributes are merged in. A record endpoint that is in neither half (an ABOUT
   edge to a file the tree no longer holds) is a bare `artifact` node, as it is today.
@@ -724,12 +736,17 @@ It splits by role:
 - **Groupings joined at read.** IN_COMMUNITY and REALIZES come from the snapshot's GROUPINGS. A
   decision attaches to the concept of the document it governs.
 - **The label.** `stamp_label()` returns the honesty label from section 6.1.
+- **Opened per read.** A reader holds an `OpenGraph`, whose `open(filter)` composes the record
+  graph with the code view of the head as it stands then, so a reader that lives across merges
+  (the conductor's grounding, the MCP server, the dash) follows the store as merges advance it.
+  `open_unowed(fold, read, filter)` refuses with REBUILD_OWED first when the record fold owes
+  its rebuild.
 
 ### 7.3 How today's readers move
 
 | Reader | Today | Target |
 |---|---|---|
-| conductor grounding, reviewer and author context (13 `dyn Projection` sites) | `subgraph`, `calls`, `locate` on graph.db | the same calls on `&dyn ContextGraph` |
+| conductor grounding, reviewer and author context (13 `dyn Projection` sites) | `subgraph`, `calls`, `locate` on graph.db | the same calls on `&dyn ContextGraph`, opened per read through `Deps.context` (an `OpenGraph`); `Deps.graph` is the `RecordFold` |
 | conductor ingest after merge | `ingest_files_into_graph`, `ingest_project_into_graph`, `apply_generation`, `current_generation` (24 sites) | `code::open_current(root)` |
 | `rigger graph --around / --show / --lookup` (`src/cli/graph.rs`) | `dyn Projection` (5 sites), generation reads (9 sites) | `&dyn ContextGraph`; the label printed first |
 | `rigger graph build / communities / concepts` | fold, then write groupings as events | `open_current`; read-only reports |
