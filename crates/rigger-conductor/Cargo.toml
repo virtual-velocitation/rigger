@@ -24,7 +24,6 @@ store = [
     "rigger-driver/store",
     "rigger-grounder/store",
     "rigger-config-files/store",
-    "rigger-store/store",
 ]
 core = [
     "rigger-domain/core",
@@ -36,7 +35,6 @@ core = [
     "rigger-grounder/core",
     "rigger-config-files/core",
     "rigger-graph-sqlite/core",
-    "rigger-store/core",
 ]
 symbols = ["rigger-grounder/symbols"]
 
@@ -52,8 +50,6 @@ rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false 
 rigger-driver = { path = "../rigger-driver", default-features = false }
 rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
-# The code store the conductor advances after a landed merge.
-rigger-store = { path = "../rigger-store", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The canary corpus items are YAML-frontmatter files.

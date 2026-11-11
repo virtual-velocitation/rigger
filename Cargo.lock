@@ -2419,7 +2419,6 @@ dependencies = [
  "rigger-graph-sqlite",
  "rigger-grounder",
  "rigger-process",
- "rigger-store",
  "rigger-store-sqlite",
  "rigger-worktree-git",
  "ring",

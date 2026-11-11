@@ -64,6 +64,7 @@ const RINGS: &[(&str, u8)] = &[
     ("rigger-process", 3),
     ("rigger-gates-shell", 3),
     ("rigger-grounder", 3),
+    ("rigger-store", 3),
     ("rigger-config-files", 3),
     ("rigger-dash", 4),
     ("rigger-console", 4),
