@@ -1,8 +1,8 @@
 # 114 - Episodes are archived: a finished run's mechanics move to git
 
 **Goal:** rigger is a hive mind: its graph holds the project's whole understanding and serves each
-persona the slice it needs, and the append-only log is only the persistence underneath. Once spec
-107 has made the log stop holding what the hive merely perceived, it still holds how every finished
+persona the slice it needs, and the append-only log is only the persistence underneath. Once the
+code store has taken what the hive merely perceived out of the log, it still holds how every finished
 run spent itself (its episodes). This spec moves a finished run's episodes to git, readable on
 demand, so the live log keeps what the hive decided, learned and did and the current run's
 mechanics. Measured on the 2026-10-05 store (288,636 events, 430 MB of payload, a 580 MB file):
@@ -181,11 +181,8 @@ right after its `RunStarted` when a step began the run with `--fresh` or a re-pi
 first pass after the conductor minted it, or at any later pass that archives a span an earlier
 trigger failed on; the watch's last-event time and the event feed then show that driver action,
 accepted; the conductor seeds its replay key into `ReplayKeys` with the run's other keys, where it
-matches no key a keyed emit makes (none is under `archive/`), and `derived_key_parts` parses its
-shape but every reader of that parser asks the type first (`derived_generation` and so the graph
-fold's `Asserter::of`, `latest_generation`, `project_scoped_latest_generations` and so
-`read_graph_index_lag`); and its `archive/...` group is disjoint from every derived identity
-(`<prefix>/<file>`), so only the archive's own group lookup reads it; it carries no other meta key,
+matches no key a keyed emit makes (none is under `archive/`), and its `archive/...` group is its
+own, so only the archive's own group lookup reads it; it carries no other meta key,
 so `metrics::model_drift`, the one reader of `META_RUN_ID`, passes it over. ONE DIRECTORY:
 everything the archive touches derives from the store's `.rigger` directory: the step lock is taken
 there, each command resolves the root, spec 107's `tree_root(store_dir)` in the binary, and hands it
@@ -345,7 +342,7 @@ aggregate on standard output, names each lost span (its position, ref and blob) 
 and exits 0, the state validate's not-held line reports (VALIDATE), and fails naming the error on
 any other read failure. An error of `read_history`'s one store read is the command's error, as a
 failed read is today. A missing or repointed ref whose blob git still holds changes nothing either
-command prints. Neither command folds a `RunArchived` or a `GenerationIngested`: `metrics::project`
+command prints. Neither command folds a `RunArchived`: `metrics::project`
 (`crates/rigger-domain/src/metrics.rs`), which both fold, ignores every type it does not name, and
 `replay_trajectory` keeps only `SpawnResult` and `GateVerdict`, so the `RunArchived` an archive
 appends to the current run changes no line of their output. No step, one-shot command or rebuild
@@ -537,8 +534,7 @@ prelude, which no run owns; `ref` is `refs/rigger/archive/<store>/run/<position>
 `refs/rigger/archive/<store>/prelude`, where `<store>` is the 16-hex-digit digest of the event id of
 the store's first `RunStarted`; `events` and `bytes` count what the blob holds; `first` and `last`
 are the lowest and highest archived positions. It carries `META_GROUP` `archive/run/<position>` or
-`archive/prelude` and the replay key `<group>@<blob>#<events>`, the key form of spec 107's ledger
-entry. `<position>` is the global position (`Position`, a `u64`) of the span's `RunStarted`, written
+`archive/prelude` and the replay key `<group>@<blob>#<events>`. `<position>` is the global position (`Position`, a `u64`) of the span's `RunStarted`, written
 in decimal zero-padded to 20 digits, the width of the largest `u64`, in the ref, the group and the
 replay key alike.
 
