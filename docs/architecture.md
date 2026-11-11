@@ -61,6 +61,9 @@
 >   sequence of sealed per-run segments, the graph is a memory-mapped queryable file, and a
 >   project is mounted only while it has workloads, admitted against a measured machine-wide
 >   memory budget.
+> - [The Code Store](architecture-addendum-the-code-store.md) - the code-derived half of the
+>   graph, held as stamped per-commit snapshots of each file's facts with every cross-file
+>   rule resolved at read, and joined at read with the record graph the event log folds.
 
 ---
 
