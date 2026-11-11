@@ -866,13 +866,8 @@ is recorded under can never drift between them. Four properties define it:
     the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
     it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
 
-  These two sit outside those three for other reasons:
+  This one sits outside those three for another reason:
 
-  - **The design half retires through its generation, not a `fresh` head.** The fold's design arms
-    only ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms
-    alone. Deleting a section from a design doc re-emits that doc's whole batch as a newer generation
-    of its `gd` identity, and `advance_generation` (spec 101) retires the `SPECIFIES` and reference
-    edges the earlier generation asserted and the newer one does not.
   - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
     when the project has one and only builds a fresh one when it does not, and it derives every
     event from the INDEXED symbols with no read of the file itself. On such a project the batches -
