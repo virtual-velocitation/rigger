@@ -82,11 +82,7 @@ impl Builder {
         } = self;
         let edges: Vec<_> = edges
             .into_iter()
-            .filter(|(_, (_, test))| match tests {
-                Tests::Exclude => !test,
-                Tests::Include => true,
-                Tests::Only => *test,
-            })
+            .filter(|(_, (_, test))| tests.admits(*test))
             .collect();
         let reached: BTreeSet<&str> = edges
             .iter()

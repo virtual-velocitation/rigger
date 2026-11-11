@@ -522,6 +522,7 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
             .ok_or("rigger_ground: missing query")?;
         let k = args.get("k").and_then(Value::as_u64).unwrap_or(8) as usize;
+        let tests = tests_arg("rigger_ground", args.get("tests"))?;
         self.refuse_if_rebuild_owed("rigger_ground")?;
         if let Some(reason) = &self.grounder_unavailable {
             // Honest, lazy failure (spec 57's never-silently-degrade contract) - exactly what
@@ -535,7 +536,7 @@ impl<'a> Server<'a> {
             .grounder
             .ok_or("rigger_ground: no grounder is wired on this server")?;
         // The rows and their honesty label (6.1) come from one read of the code store.
-        let (rows, label) = grounder.ground_labelled(query, k);
+        let (rows, label) = grounder.ground_labelled(query, k, tests);
         let results: Vec<Value> = rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
@@ -575,7 +576,9 @@ impl<'a> Server<'a> {
         if terms.is_empty() && show.is_empty() && around.is_empty() {
             return Err(GRAPH_ARGUMENTS_MISSING.into());
         }
-        let filter = tests_filter(args.get("tests"))?;
+        let filter = ViewFilter {
+            tests: tests_arg("rigger_graph", args.get("tests"))?,
+        };
         if !terms.is_empty() {
             let lookup = self
                 .lookup
@@ -652,14 +655,14 @@ impl<'a> Server<'a> {
             Surface::SpawnBound => json!([
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: your own unit's records, then this run's, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
-                {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
+                ground_tool(),
                 graph_tool(),
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or build cache you create must live under, never /tmp or a session scratchpad. Reaped once your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: this run's records, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
-                {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
+                ground_tool(),
                 graph_tool(),
             ]),
         }
@@ -695,6 +698,20 @@ const GRAPH_ARGUMENTS_MISSING: &str =
 /// Why a server with no context graph wired answers no graph lookup.
 const NO_GRAPH_WIRED: &str = "no context graph is wired on this server";
 
+/// The `rigger_ground` entry of a tool list, the same on every surface.
+fn ground_tool() -> Value {
+    json!({"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {
+        "query": {"type": "string", "description": "the natural-language query"},
+        "k": {"type": "integer", "description": "how many results (default 8)"},
+        "tests": tests_property(),
+    }, "required": ["query"]}})
+}
+
+/// The `tests` property both lookup tools take, the same on every surface.
+fn tests_property() -> Value {
+    json!({"type": "string", "enum": ["exclude", "include", "only"], "description": RIGGER_GRAPH_TESTS})
+}
+
 /// The `rigger_graph` entry of a tool list, the same on every surface.
 fn graph_tool() -> Value {
     json!({"name": "rigger_graph", "description": RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {
@@ -702,7 +719,7 @@ fn graph_tool() -> Value {
         "show": {"type": "string"},
         "around": {"type": "string"},
         "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"},
-        "tests": {"type": "string", "enum": ["exclude", "include", "only"], "description": RIGGER_GRAPH_TESTS},
+        "tests": tests_property(),
     }}})
 }
 
@@ -710,16 +727,16 @@ fn graph_tool() -> Value {
 pub const RIGGER_GRAPH_TESTS: &str =
     "whether test code is shown: `exclude` (the default), `include` or `only`";
 
-/// The view filter a `tests` argument names: `exclude` when it is absent.
-pub fn tests_filter(arg: Option<&Value>) -> Result<ViewFilter, String> {
-    let tests = match arg {
-        None => Tests::Exclude,
+/// The `tests` setting `tool`'s `tests` argument names: `exclude` when it is absent, else the one
+/// [`Tests`] parser's reading, a refusal naming `tool`.
+fn tests_arg(tool: &str, arg: Option<&Value>) -> Result<Tests, String> {
+    match arg {
+        None => Ok(Tests::Exclude),
         Some(v) => {
             let spelled = v.as_str().map_or_else(|| v.to_string(), str::to_string);
-            spelled.parse().map_err(|e| format!("rigger_graph: {e}"))?
+            spelled.parse().map_err(|e| format!("{tool}: {e}"))
         }
-    };
-    Ok(ViewFilter { tests })
+    }
 }
 
 /// The terms of a `lookup` argument: an array of strings, or one string, each term trimmed and
@@ -2227,6 +2244,64 @@ mod tests {
         );
     }
 
+    /// `rigger_ground` takes the same `tests` argument `rigger_graph` does, through the one parser,
+    /// and hands it to the grounder; a spelling that is none of the three is refused before any
+    /// read. Each row: the argument, and the filter the grounder was asked under or the refusal.
+    #[test]
+    fn mcp_ground_tool_accepts_tests() {
+        use crate::grounder::{Grounder, Ref};
+        use std::sync::Mutex;
+
+        struct Spy(Mutex<Vec<Tests>>);
+        impl Grounder for Spy {
+            fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
+                Vec::new()
+            }
+            fn ground_labelled(
+                &self,
+                _query: &str,
+                _k: usize,
+                tests: Tests,
+            ) -> (Vec<Ref>, Option<crate::composed::Label>) {
+                self.0.lock().unwrap().push(tests);
+                (Vec::new(), None)
+            }
+        }
+
+        let ground = ground_tool();
+        assert_eq!(
+            ground["inputSchema"]["properties"]["tests"]["enum"],
+            json!(["exclude", "include", "only"])
+        );
+        let store = Store::open(":memory:").unwrap();
+        let cases = [
+            (None, Ok(Tests::Exclude)),
+            (Some(json!("include")), Ok(Tests::Include)),
+            (Some(json!("only")), Ok(Tests::Only)),
+            (
+                Some(json!("all")),
+                Err("rigger_ground: `tests` is one of exclude, include or only, not \"all\""),
+            ),
+        ];
+        for (tests, expected) in cases {
+            let spy = Spy(Mutex::new(Vec::new()));
+            let server = Server::new(&store, "run").with_grounder(Ok(&spy));
+            let mut args = json!({"query": "anything"});
+            if let Some(tests) = &tests {
+                args["tests"] = tests.clone();
+            }
+            let reply = call(&server, &tools_call("rigger_ground", args));
+            let seen = spy.0.lock().unwrap().clone();
+            match expected {
+                Ok(want) => assert_eq!(seen, [want], "{tests:?}: {reply}"),
+                Err(message) => {
+                    assert!(seen.is_empty(), "{tests:?} must be refused before a read");
+                    assert_eq!(reply["error"]["message"], message, "{tests:?}");
+                }
+            }
+        }
+    }
+
     /// `rigger_ground` returns the grounder's honesty label (6.1) as a field when it has one and
     /// `null` when it does not (a grounder that reads the worktree itself).
     #[test]
@@ -2239,7 +2314,12 @@ mod tests {
             fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
                 Vec::new()
             }
-            fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<Label>) {
+            fn ground_labelled(
+                &self,
+                query: &str,
+                k: usize,
+                _tests: Tests,
+            ) -> (Vec<Ref>, Option<Label>) {
                 (
                     self.ground(query, k),
                     Some(Label::unopened("W".to_string(), "locked")),

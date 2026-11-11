@@ -14,7 +14,7 @@ use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
 use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
 use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
 use rigger_domain::code_view::{
-    CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Withheld,
+    CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Tests, Withheld,
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
@@ -573,10 +573,10 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
 
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
-        self.ground_labelled(query, k).0
+        self.ground_labelled(query, k, Tests::Include).0
     }
 
-    fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<Label>) {
+    fn ground_labelled(&self, query: &str, k: usize, tests: Tests) -> (Vec<Ref>, Option<Label>) {
         if query.is_empty() || k == 0 {
             return (Vec::new(), None);
         }
@@ -594,6 +594,7 @@ impl Grounder for Symbols {
         let (hits, label) = self.read_labelled(|sight| {
             scored_hits(sight, &terms)
                 .into_iter()
+                .filter(|h| tests.admits(h.test))
                 .take(k)
                 .map(|h| Ref {
                     file: h.file,
@@ -1023,7 +1024,7 @@ mod tests {
     use crate::facts::FactsExtractor;
     use crate::grounder::Grounder;
     use rigger_domain::code_facts::{Def, FileFacts, Mention, Stamp, Tip};
-    use rigger_domain::code_view::{Entry, Extract, Head, WorktreeDiff};
+    use rigger_domain::code_view::{Entry, Extract, Head, Tests, WorktreeDiff};
     use rigger_domain::composed::Compared;
 
     /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
@@ -2643,7 +2644,7 @@ mod tests {
         .unwrap();
         let g = Symbols::over(worktree.path().to_str().unwrap(), Box::new(Unopenable));
 
-        let (hits, label) = g.ground_labelled("apply_damage", 8);
+        let (hits, label) = g.ground_labelled("apply_damage", 8, Tests::Include);
         assert!(hits.is_empty(), "nothing is served");
         let radius = g.blast_radius("`apply_damage`", 8);
         assert!(radius.precise.is_empty(), "no structural view");
@@ -2660,6 +2661,48 @@ mod tests {
             label.to_string().contains("the code store is locked"),
             "the label names why: {label}"
         );
+    }
+
+    /// Grounding rows follow the `tests` filter: `exclude` keeps product rows, `include` ranks
+    /// every row (product first), `only` keeps the tests. Each row: the filter and the files of
+    /// the rows it answers for `widget`, defined in `src/w.rs` and called by a test in
+    /// `tests/t.rs`.
+    #[test]
+    fn grounding_rows_follow_the_tests_filter() {
+        let worktree = tempfile::tempdir().unwrap();
+        let files = vec![
+            code_file(
+                "src/w.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("widget", 1)],
+                Vec::new(),
+            ),
+            code_file(
+                "tests/t.rs",
+                "rust",
+                Scope::Test,
+                vec![hand_def("widget_works", 1)],
+                Vec::new(),
+            ),
+        ];
+        let g = Symbols::over(
+            worktree.path().to_str().unwrap(),
+            Box::new(Fixed {
+                files,
+                diff: Ok(WorktreeDiff::default()),
+            }),
+        );
+        let cases: [(Tests, &[&str]); 3] = [
+            (Tests::Exclude, &["src/w.rs"]),
+            (Tests::Include, &["src/w.rs", "tests/t.rs"]),
+            (Tests::Only, &["tests/t.rs"]),
+        ];
+        for (tests, expected) in cases {
+            let rows = g.ground_labelled("widget", 8, tests).0;
+            let found: Vec<&str> = rows.iter().map(|r| r.file.as_str()).collect();
+            assert_eq!(found, expected, "{tests:?}");
+        }
     }
 
     /// A labelled answer comes from ONE open of the store: the label describes the tree the rows
@@ -2693,7 +2736,7 @@ mod tests {
         }
         type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>);
         let ground: Answer = |g| {
-            let (rows, label) = g.ground_labelled("apply_damage", 8);
+            let (rows, label) = g.ground_labelled("apply_damage", 8, Tests::Include);
             (rows.into_iter().map(|r| r.file).collect(), label)
         };
         let ranked: Answer = |g| {
@@ -2765,7 +2808,7 @@ mod tests {
                 }),
             );
             let label = g
-                .ground_labelled("alpha", 8)
+                .ground_labelled("alpha", 8, Tests::Include)
                 .1
                 .expect("labelled")
                 .to_string();

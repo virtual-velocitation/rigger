@@ -221,6 +221,17 @@ pub enum Tests {
     Only,
 }
 
+impl Tests {
+    /// Whether code that is test code (`test`) or product code is shown under this setting.
+    pub fn admits(self, test: bool) -> bool {
+        match self {
+            Tests::Exclude => !test,
+            Tests::Include => true,
+            Tests::Only => test,
+        }
+    }
+}
+
 /// The one parser of the `tests` setting every reader takes (the dash's `tests=`, the MCP tools'
 /// `tests`, the CLI's `--tests`): `exclude`, `include` or `only`.
 impl std::str::FromStr for Tests {

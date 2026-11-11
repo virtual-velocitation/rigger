@@ -97,7 +97,16 @@ pub trait Grounder: Send + Sync {
     /// A grounder that answers from the code store's view of the head overrides it to read that
     /// view ONCE, so the label describes exactly the tree the rows came from. The DEFAULT
     /// (grep / nop) reads the worktree itself, so it has nothing to state.
-    fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<crate::composed::Label>) {
+    ///
+    /// `tests` filters the rows by test-ness; a grounder that cannot tell test code from product
+    /// code (the DEFAULT) answers all rows whatever it is.
+    fn ground_labelled(
+        &self,
+        query: &str,
+        k: usize,
+        tests: crate::code_view::Tests,
+    ) -> (Vec<Ref>, Option<crate::composed::Label>) {
+        let _ = tests;
         (self.ground(query, k), None)
     }
 
