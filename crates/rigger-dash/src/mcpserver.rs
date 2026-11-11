@@ -14,6 +14,7 @@ use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Loc
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
 use crate::sidecar::{Peer, PeerDecision, PeerFinding, PeerLesson, RankedPeer, Sidecar};
+use rigger_domain::lookup::Lookup;
 
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
 /// failures are internal (`-32603`); a bad argument (e.g. an unknown spawn id)
@@ -81,6 +82,10 @@ pub struct Server<'a> {
     /// process-wide startup failure here would be a regression: it would take `rigger_peers`
     /// and `rigger_graph` down over a `rigger_ground`-only misconfiguration).
     grounder_unavailable: Option<String>,
+    /// The combined lookup `rigger_graph`'s `lookup` answers through, over the caller's own
+    /// working tree, wired via [`with_lookup`](Server::with_lookup). `None` when none is wired:
+    /// `lookup` then reports that as its own tool-call error.
+    lookup: Option<&'a dyn Lookup>,
     /// The SEPARATE progress store (spec 14) `rigger_progress` records the bound spawn's
     /// activity lines to. `None` on a server started without one - `rigger_progress` then
     /// reports that as its own tool-call error.
@@ -123,6 +128,7 @@ impl<'a> Server<'a> {
             graph: None,
             grounder: None,
             grounder_unavailable: None,
+            lookup: None,
             progress: None,
             scratch_root: String::new(),
             spawn: None,
@@ -159,6 +165,13 @@ impl<'a> Server<'a> {
             Ok(g) => self.grounder = Some(g),
             Err(reason) => self.grounder_unavailable = Some(reason),
         }
+        self
+    }
+
+    /// Wire the combined lookup `rigger_graph`'s `lookup` answers through: the one engine the
+    /// CLI's `rigger graph --lookup` answers through too, rooted at the caller's working tree.
+    pub fn with_lookup(mut self, lookup: &'a dyn Lookup) -> Self {
+        self.lookup = Some(lookup);
         self
     }
 
@@ -288,6 +301,14 @@ impl<'a> Server<'a> {
         // frame: an oversized result drops its structured copy and cuts its text, an oversized
         // error cuts its message, each with a marked tail.
         match result {
+            // A reply that is text, the combined lookup's, is the content's text alone: it has no
+            // structured form to carry.
+            Ok(Value::String(text)) => within_frame(&text, |text| {
+                ok(
+                    id.clone(),
+                    json!({"content": [{"type": "text", "text": text}]}),
+                )
+            }),
             Ok(structured) => {
                 let text = structured.to_string();
                 let whole = ok(
@@ -521,8 +542,11 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
-    /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
-    /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
+    /// `rigger_graph` (spec 92, criterion 4's fix round): the combined `lookup`, and the
+    /// STRUCTURE (`around`) and resolution (`show`) lookups. `lookup` answers through the wired
+    /// [`Lookup`], which states in its own graph section why the graph did not answer (none wired,
+    /// a rebuild owed), so it is never refused while its text and prose halves can answer, and it
+    /// answers as text. `around` and `show` read the SAME `graph` port `with_graph` already wires
     /// for the emit fold - `around` serves [`crate::contextgraph::around`] (the
     /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
     /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
@@ -530,11 +554,21 @@ impl<'a> Server<'a> {
     /// IS ONE RENDERER): `show` the located site whole, `around` every node of the loaded `Graph`
     /// by [`entity_site`] at its edge count there, less the [`AROUND_OMITTED`] `summary` entry.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
+        let terms = lookup_terms(args.get("lookup"));
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
         let around = args.get("around").and_then(Value::as_str).unwrap_or("");
         let depth = args.get("depth").and_then(Value::as_i64).unwrap_or(2);
-        if show.is_empty() && around.is_empty() {
-            return Err("rigger_graph: pass `show` <entity> or `around` <file|entity>".into());
+        if terms.is_empty() && show.is_empty() && around.is_empty() {
+            return Err(GRAPH_ARGUMENTS_MISSING.into());
+        }
+        if !terms.is_empty() {
+            let lookup = self
+                .lookup
+                .ok_or("rigger_graph: no lookup is wired on this server")?;
+            return lookup
+                .lookup(&terms, self.graph)
+                .map(Value::String)
+                .map_err(|e| format!("rigger_graph: {e}").into());
         }
         let graph = self
             .graph
@@ -593,17 +627,69 @@ impl<'a> Server<'a> {
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: your own unit's records, then this run's, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
-                {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`. Worked examples - who calls <name>: pass `around` <name>; where is <name> defined: pass `show` <name>.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
+                graph_tool(),
                 {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or build cache you create must live under, never /tmp or a session scratchpad. Reaped once your result records.", "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: this run's records, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
-                {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`. Worked examples - who calls <name>: pass `around` <name>; where is <name> defined: pass `show` <name>.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
+                graph_tool(),
             ]),
         }
     }
+}
+
+/// CONTRACT and FRAMING: the `rigger_graph` tool's description, the one text every surface lists.
+/// It names the tool's three forms and their arguments, the CLI form each is the same as, the
+/// sections a `lookup` reply carries and the tree it answers from.
+pub const RIGGER_GRAPH: &str =
+    "Three lookups in one tool; pass exactly one of `lookup`, `show` or \
+`around`. `lookup` <term>... answers each term from three sources in one reply, each section \
+labelled by its source: `graph` (each entity the term names, its definition site `file:line`, its \
+callers and callees; a term resolves exactly, by case or separator variant, by prefix or fuzzily, \
+and one that resolves to no entity is answered with the nearest names), `text` (every line of your \
+working tree holding the term, scanned live) and `prose:<kind>` (specs, their criteria, personas, \
+instructions, skills, docs, decisions, lessons and findings, ranked by relevance). Every section \
+answers from your own working tree: a graph hit whose file differs there from what the graph \
+ingested is withheld and its file named. Same as `rigger graph --lookup <term>...`. `show` \
+<entity> gives its definition site (same as `rigger graph --show <entity>`); `around` \
+<file|entity> (optionally `depth`) its structural neighborhood (same as `rigger graph --around \
+<file|entity> --depth <n>`). Worked examples - who calls <name>: pass `around` <name>; where is \
+<name> defined: pass `show` <name>.";
+
+/// CONTRACT: the `rigger_graph` `lookup` argument's description.
+pub const RIGGER_GRAPH_LOOKUP: &str =
+    "one or more terms: names, paths or words; each is answered in its own group of every section";
+
+/// What `rigger_graph` answers when it is passed none of its three forms.
+const GRAPH_ARGUMENTS_MISSING: &str =
+    "rigger_graph: pass `lookup` <term>..., `show` <entity> or `around` <file|entity>";
+
+/// The `rigger_graph` entry of a tool list, the same on every surface.
+fn graph_tool() -> Value {
+    json!({"name": "rigger_graph", "description": RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {
+        "lookup": {"type": "array", "items": {"type": "string"}, "description": RIGGER_GRAPH_LOOKUP},
+        "show": {"type": "string"},
+        "around": {"type": "string"},
+        "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"},
+    }}})
+}
+
+/// The terms of a `lookup` argument: an array of strings, or one string, each term trimmed and
+/// the empty ones left out.
+fn lookup_terms(arg: Option<&Value>) -> Vec<String> {
+    let terms: Vec<&str> = match arg {
+        Some(Value::String(term)) => vec![term.as_str()],
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    terms
+        .into_iter()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The shared core of `rigger_emit` (the MCP tool) and `rigger emit` (the CLI):
@@ -1968,6 +2054,81 @@ mod tests {
             ] {
                 assert!(text.contains(example), "{surface}: {example:?} in {text:?}");
             }
+            assert_eq!(text, RIGGER_GRAPH, "{surface} lists the one description");
+            let at = |form: &str| text.find(form).unwrap();
+            assert!(
+                at("`lookup`") < at("`show`") && at("`lookup`") < at("`around`"),
+                "{surface}: the description leads with the combined lookup"
+            );
+            assert_eq!(
+                graph["inputSchema"]["properties"]["lookup"]["description"], RIGGER_GRAPH_LOOKUP,
+                "{surface}: `lookup` is an argument"
+            );
+        }
+    }
+
+    /// The combined lookup answers as text, and a graph that owes its rebuild, or none wired,
+    /// leaves its text and prose halves answering, its graph section stating why: never the
+    /// refusal `show` and `around` give.
+    #[test]
+    fn the_combined_lookup_answers_text_and_prose_when_the_graph_cannot() {
+        use crate::contextgraph::{Error as GraphError, REBUILD_OWED};
+        use rigger_grounder::lookup::TreeLookup;
+
+        struct Owing;
+        impl Projection for Owing {
+            fn apply(
+                &self,
+                _: &Event,
+                _access: crate::contextgraph::FoldAccess,
+            ) -> Result<(), GraphError> {
+                Err(GraphError(REBUILD_OWED.to_string()))
+            }
+            crate::projection_is_never_read!();
+            fn rebuild_owed(&self) -> Result<bool, GraphError> {
+                Ok(true)
+            }
+            crate::projection_folds_no_entry!();
+        }
+
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("a.rs"), "fn gizmo() {}\n").unwrap();
+        std::fs::create_dir(tree.path().join("docs")).unwrap();
+        std::fs::write(tree.path().join("docs/a.md"), "# Gizmo\nthe gizmo\n").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let lookup = TreeLookup::new(tree.path());
+        let graph = Owing;
+        let cases: [(Option<&dyn Projection>, &str); 2] = [
+            (Some(&graph), REBUILD_OWED),
+            (None, "no context graph is wired to this lookup"),
+        ];
+        for (graph, reason) in cases {
+            let mut server = Server::new(&store, "run").with_lookup(&lookup);
+            if let Some(graph) = graph {
+                server = server.with_graph(graph);
+            }
+            let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"lookup":["gizmo"]}}}"#;
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let reply: Value =
+                serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            let text = reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{reply}"));
+            for part in [
+                format!("## graph\nnot answered: {reason}\n"),
+                "a.rs:1: fn gizmo() {}".to_string(),
+                "- prose:doc docs/a.md:1".to_string(),
+            ] {
+                assert!(
+                    text.contains(&part),
+                    "{reason}: the reply holds {part:?}:\n{text}"
+                );
+            }
+            assert!(
+                reply["result"].get("structuredContent").is_none(),
+                "the lookup answers as text alone"
+            );
         }
     }
 
