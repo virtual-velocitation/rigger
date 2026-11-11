@@ -134,13 +134,15 @@ fn files_lens_overview_buckets_code_entities_by_file_and_excludes_every_other_no
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
             Cluster {
                 key: FILE_B.to_string(),
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
         ],
         "each file becomes one counted Cluster keyed by its own path, sized by its contained-entity \
          count; the file nodes / decision / design-doc carry no cluster at all: {overview:?}"
@@ -326,13 +328,15 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
             Cluster {
                 key: "lib/b.rs".to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
-            },
+            tests: 0,
+},
         ],
         "same-file entities merge (count 2); a different file never merges, even in the same directory"
     );
@@ -396,24 +400,28 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
+                tests: 0,
             },
             Cluster {
                 key: "src/target.rs".to_string(),
                 count: 2,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
+                tests: 0,
             },
             Cluster {
                 key: "src/x.rs".to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
+                tests: 0,
             },
             Cluster {
                 key: "src/y.rs".to_string(),
                 count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
+                tests: 0,
             },
         ],
         "caller.rs keeps only its real `foo` (the resolved `helper` reference moves to target.rs, \

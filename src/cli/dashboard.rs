@@ -1,4 +1,5 @@
 use super::*;
+use rigger_domain::code_view::{Tests, ViewFilter};
 
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
@@ -150,10 +151,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
         // the dash's own project by default, an attached instance's LOCAL graph projection when
         // one is selected, or an empty graph for a since-gone selector - never an error.
-        move |instance: Option<&str>| -> contextgraph::Graph {
+        move |instance: Option<&str>, tests: Tests| -> contextgraph::Graph {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity),
-                DashAttach::Instance(inst) => dash_attach_graph(&inst),
+                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests),
+                DashAttach::Instance(inst) => dash_attach_graph(&inst, tests),
                 DashAttach::Empty => contextgraph::Graph::default(),
             }
         }
@@ -174,14 +175,15 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
               seed: &[String],
               direction: contextgraph::Direction,
               depth: i64,
-              tier_floor: &str|
+              tier_floor: &str,
+              tests: Tests|
               -> contextgraph::CallGraph {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => {
-                    dash_read_calls(&graph_db, &identity, seed, direction, depth, tier_floor)
-                }
+                DashAttach::Local => dash_read_calls(
+                    &graph_db, &identity, seed, direction, depth, tier_floor, tests,
+                ),
                 DashAttach::Instance(inst) => {
-                    dash_attach_calls(&inst, seed, direction, depth, tier_floor)
+                    dash_attach_calls(&inst, seed, direction, depth, tier_floor, tests)
                 }
                 DashAttach::Empty => contextgraph::CallGraph::default(),
             }
@@ -500,7 +502,10 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
     if seeds.is_empty() {
         return contextgraph::Graph::default();
     }
-    dash_read(graph_db, identity, |g| g.subgraph(&seeds, 2)).unwrap_or_default()
+    dash_read(graph_db, identity, Tests::default(), |g| {
+        g.subgraph(&seeds, 2)
+    })
+    .unwrap_or_default()
 }
 
 /// What `read` answers of the context graph (7.3) over the record graph at `graph_db`, compared
@@ -509,6 +514,7 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
 fn dash_read<T>(
     graph_db: &str,
     identity: &str,
+    tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
 ) -> Option<T> {
     let path = Path::new(graph_db);
@@ -518,7 +524,7 @@ fn dash_read<T>(
     let records = Projector::open(graph_db, identity).ok()?;
     let checkout = path.parent()?.parent()?.to_path_buf();
     let read_graph = ReadGraph::new(&records, checkout);
-    let graph = read_graph.open(Default::default()).ok()?;
+    let graph = read_graph.open(ViewFilter { tests }).ok()?;
     read(graph.as_ref()).ok()
 }
 
@@ -531,8 +537,8 @@ fn dash_read<T>(
 /// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
-fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph {
-    dash_read(graph_db, identity, |g| g.whole()).unwrap_or_default()
+fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> contextgraph::Graph {
+    dash_read(graph_db, identity, tests, |g| g.whole()).unwrap_or_default()
 }
 
 /// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
@@ -549,8 +555,9 @@ fn dash_read_calls(
     direction: contextgraph::Direction,
     depth: i64,
     tier_floor: &str,
+    tests: Tests,
 ) -> contextgraph::CallGraph {
-    dash_read(graph_db, identity, |g| {
+    dash_read(graph_db, identity, tests, |g| {
         g.calls(seed, direction, depth, tier_floor)
     })
     .unwrap_or_default()
@@ -566,12 +573,21 @@ fn dash_attach_calls(
     direction: contextgraph::Direction,
     depth: i64,
     tier_floor: &str,
+    tests: Tests,
 ) -> contextgraph::CallGraph {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_calls(&graph_db, &inst.project, seed, direction, depth, tier_floor)
+    dash_read_calls(
+        &graph_db,
+        &inst.project,
+        seed,
+        direction,
+        depth,
+        tier_floor,
+        tests,
+    )
 }
 
 /// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
@@ -747,12 +763,12 @@ fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
 /// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
 /// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
 /// run seeded none. Best-effort/empty-degrade like the local read.
-fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
+fn dash_attach_graph(inst: &rigger::registry::Instance, tests: Tests) -> contextgraph::Graph {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_whole_graph(&graph_db, &inst.project)
+    dash_read_whole_graph(&graph_db, &inst.project, tests)
 }
 
 /// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
@@ -919,7 +935,7 @@ mod tests {
 
         // The fix: the graph provider reads the whole projection directly, so a real code node is
         // reachable with no run seeds at all.
-        let whole = dash_read_whole_graph(graph_path, identity);
+        let whole = dash_read_whole_graph(graph_path, identity, Tests::Exclude);
         assert!(
             whole
                 .nodes
@@ -1002,7 +1018,7 @@ mod tests {
         );
 
         // (a) The read degrades to an EMPTY graph, never an error.
-        let whole = dash_read_whole_graph(graph_db, identity);
+        let whole = dash_read_whole_graph(graph_db, identity, Tests::Exclude);
         assert!(
             whole.nodes.is_empty() && whole.edges.is_empty(),
             "an absent projection reads as an empty graph, got {whole:?}"
@@ -1019,7 +1035,8 @@ mod tests {
         // The composed provider closure the dash consults on /api/graph (main.rs, the
         // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
         // absent path.
-        let provider = || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity) };
+        let provider =
+            || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity, Tests::Exclude) };
         let via_provider = provider();
         assert!(
             via_provider.nodes.is_empty() && via_provider.edges.is_empty(),

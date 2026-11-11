@@ -123,7 +123,9 @@ struct Probe {
 /// recording that it was consulted. Returns the raw response plus those observations.
 fn drive<P>(target: &str, graph: Graph, provider: P) -> Probe
 where
-    P: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph + Send + 'static,
+    P: Fn(Option<&str>, &[String], Direction, i64, &str, rigger::code_view::Tests) -> CallGraph
+        + Send
+        + 'static,
 {
     let calls_log: Arc<Mutex<Vec<CallArgs>>> = Arc::new(Mutex::new(Vec::new()));
     let graph_consulted = Arc::new(AtomicBool::new(false));
@@ -141,7 +143,7 @@ where
     // to bypass it (dispatch precedence) and a plain neighborhood request to use it.
     let graph_provider = {
         let consulted = graph_consulted.clone();
-        move |_instance: Option<&str>| -> Graph {
+        move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
             consulted.store(true, Ordering::SeqCst);
             graph.clone()
         }
@@ -154,7 +156,8 @@ where
               seeds: &[String],
               direction: Direction,
               depth: i64,
-              floor: &str|
+              floor: &str,
+              _tests: rigger::code_view::Tests|
               -> CallGraph {
             log.lock().unwrap().push(CallArgs {
                 instance: instance.map(|s| s.to_string()),
@@ -163,7 +166,14 @@ where
                 depth,
                 floor: floor.to_string(),
             });
-            provider(instance, seeds, direction, depth, floor)
+            provider(
+                instance,
+                seeds,
+                direction,
+                depth,
+                floor,
+                rigger::code_view::Tests::Exclude,
+            )
         }
     };
     let instances_provider = Vec::new;
@@ -211,8 +221,10 @@ where
 /// A `view=calls` provider whose walk is `standard_calls` regardless of the request path, so a single
 /// `drive` returns the layered view for whichever direction(s) the route asks.
 fn standard_provider(
-) -> impl Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph + Send + 'static {
-    |_instance, _seeds, direction, _depth, _floor| standard_calls(direction)
+) -> impl Fn(Option<&str>, &[String], Direction, i64, &str, rigger::code_view::Tests) -> CallGraph
+       + Send
+       + 'static {
+    |_instance, _seeds, direction, _depth, _floor, _tests| standard_calls(direction)
 }
 
 /// The parsed JSON body of a raw HTTP response (everything past the header terminator).
@@ -522,7 +534,12 @@ fn the_route_percent_decodes_the_seed_and_threads_the_instance_selector_to_the_p
 #[test]
 fn the_back_recursion_marker_and_the_multi_candidate_frontier_ride_through_to_the_json() {
     // A DOWN walk carrying a recursion (b calls a again) and a multi-candidate cross-file hop.
-    let provider = |_i: Option<&str>, _s: &[String], _d: Direction, _depth: i64, _f: &str| {
+    let provider = |_i: Option<&str>,
+                    _s: &[String],
+                    _d: Direction,
+                    _depth: i64,
+                    _f: &str,
+                    _t: rigger::code_view::Tests| {
         CallGraph {
             nodes: vec![
                 call_node("src/c.rs::a", 0, None),
@@ -622,9 +639,12 @@ fn a_plain_neighborhood_request_gains_no_call_fields_and_never_runs_the_directed
         }],
     };
     // The calls provider must exist for `serve_on` but must never be called by a plain request.
-    let never = |_i: Option<&str>, _s: &[String], _d: Direction, _depth: i64, _f: &str| {
-        CallGraph::default()
-    };
+    let never = |_i: Option<&str>,
+                 _s: &[String],
+                 _d: Direction,
+                 _depth: i64,
+                 _f: &str,
+                 _t: rigger::code_view::Tests| { CallGraph::default() };
     let probe = drive("/api/graph?seed=src%2Fp.rs%3A%3An1&depth=2", graph, never);
     let body = ok_json(&probe);
 
@@ -734,7 +754,8 @@ fn the_served_calls_route_walks_the_real_projection_over_the_wire() {
               seeds: &[String],
               direction: Direction,
               depth: i64,
-              floor: &str|
+              floor: &str,
+              _tests: rigger::code_view::Tests|
               -> CallGraph {
             match Projector::open(&db, &id) {
                 Ok(p) => p.calls(seeds, direction, depth, floor).unwrap_or_default(),
@@ -833,7 +854,8 @@ fn the_served_calls_route_never_lands_a_call_on_a_field_of_the_called_name() {
                              seeds: &[String],
                              direction: Direction,
                              depth: i64,
-                             floor: &str|
+                             floor: &str,
+                             _tests: rigger::code_view::Tests|
               -> CallGraph {
             Projector::open(&db, &id)
                 .and_then(|p| p.calls(seeds, direction, depth, floor))

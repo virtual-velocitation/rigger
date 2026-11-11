@@ -182,13 +182,15 @@ rigger::test_cases! {
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("foo".to_string()),
-                },
+                tests: 0,
+},
                 Cluster {
                     key: C1.to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("baz".to_string()),
-                },
+                tests: 0,
+},
                 // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
                 // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
             ],
@@ -278,6 +280,7 @@ fn code_lens_excludes_a_file_node_even_when_it_carries_a_live_community_membersh
             count: 2,
             kind: KIND_CODE_ENTITY.to_string(),
             label: Some("foo".to_string()),
+            tests: 0,
         }],
         "the community's member count stays 2 (foo, bar) - the file member never inflates it, and \
          no separate file cluster ever appears: {overview:?}"
@@ -340,7 +343,8 @@ fn code_lens_excludes_a_membership_less_code_entity_entirely() {
             count: 2,
             kind: KIND_CODE_ENTITY.to_string(),
             label: Some("foo".to_string()),
-        }],
+        tests: 0,
+}],
         "the loner never spawns its own code-entity KIND bucket, and never inflates community/1/0's \
          member count either - the ONLY cluster is the real community: {overview:?}"
     );
