@@ -99,7 +99,7 @@ fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
                 unread,
                 withheld,
             } => {
-                let _ = writeln!(out, "{tier} match: {reached} entities");
+                let _ = writeln!(out, "{tier} match: {}", entities_counted(*reached));
                 let mut used = 0;
                 let mut shown = 0;
                 for block in entities.iter().map(entity_block) {
@@ -113,14 +113,15 @@ fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
                 if shown < entities.len() {
                     let _ = writeln!(
                         out,
-                        "truncated: {} entities dropped to the graph section's size bound",
-                        entities.len() - shown
+                        "truncated: {} dropped to the graph section's size bound",
+                        entities_counted(entities.len() - shown)
                     );
                 }
                 if *unread > 0 {
                     let _ = writeln!(
                         out,
-                        "truncated: {unread} entities not read past the first {GRAPH_ENTITIES} shown; pass a fuller name or path to narrow"
+                        "truncated: {} not read past the first {GRAPH_ENTITIES} shown; pass a fuller name or path to narrow",
+                        entities_counted(*unread)
                     );
                 }
                 if !withheld.is_empty() {
@@ -131,6 +132,12 @@ fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
             }
         }
     }
+}
+
+/// `n entity` or `n entities`.
+fn entities_counted(n: usize) -> String {
+    let noun = if n == 1 { "entity" } else { "entities" };
+    format!("{n} {noun}")
 }
 
 /// One entity's lines: its site, then its callers, callees and referencing files.
