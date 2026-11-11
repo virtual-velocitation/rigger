@@ -546,7 +546,8 @@ open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
-                                                                   untracked list: < 20 ms)
+                                                                   untracked list: < 20 ms over a
+                                                                   refreshed index)
   diff empty      -> answers describe W exactly; label "describes <commit>"
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
                      K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
@@ -584,8 +585,9 @@ private copy of W's index instead: the index in W's own git dir (a linked worktr
 copied into a directory of its own in the OS temp directory with the index's mtime kept, so git
 judges a racily clean entry as it would over the index itself. The directory goes when the read
 ends; one a hard stop leaves is the OS temp cleaner's. A W with no index reads as git reads it:
-every tracked file deleted. Until W's own git refreshes a stat-dirty index, each check re-hashes
-the files whose stat alone changed.
+every tracked file deleted. Until W's own git refreshes its index, each check re-hashes every
+file the index cannot vouch for by stat: one whose stat alone changed, or one racily clean, as a
+fresh clone's files are.
 
 A head with no commit (an unborn branch, which git answers by its quiet no that `HEAD` names no
 object) reads as the empty tree, so every file in W differs until W commits. A head git fails to
@@ -1068,8 +1070,8 @@ Groupings still describe the stamp: a new entity shows no community until the ne
 the label says so.
 
 The overlay is about 300 lines plus tests. Its cost is extraction for each changed file (~25 ms,
-in parallel) plus the git diff (< 20 ms). With it, the honesty label in 6.1 becomes
-"describes W", and withholding is no longer used.
+in parallel) plus the git diff (< 20 ms over a refreshed index, 6.1). With it, the honesty label
+in 6.1 becomes "describes W", and withholding is no longer used.
 
 ---
 
