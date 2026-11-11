@@ -117,6 +117,7 @@ pub(crate) fn words(term: &str) -> Vec<String> {
 
 /// The normalised form of a name: its [`words`] run together, so every spelling of one name
 /// across snake, camel, kebab and letter case is one key.
+#[cfg(feature = "symbols")]
 pub(crate) fn normalise(term: &str) -> String {
     words(term).concat()
 }

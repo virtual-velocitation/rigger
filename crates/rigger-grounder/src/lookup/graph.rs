@@ -45,8 +45,16 @@ pub(crate) struct Entity {
     pub referenced_in: Vec<String>,
 }
 
-/// How a term resolved against the graph.
+/// How a term resolved against the graph. A build without code extraction refuses the graph half
+/// before any term resolves, so it constructs neither variant.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(feature = "symbols"),
+    expect(
+        dead_code,
+        reason = "only the symbols build resolves a term against the graph"
+    )
+)]
 pub(crate) enum TermGraph {
     /// The term reached entities: the first [`GRAPH_ENTITIES`] it reached whose files the caller's
     /// tree holds as the graph does, how many it reached in all, how many of those were never read

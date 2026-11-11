@@ -5,14 +5,20 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::budget::{self, REPLY_LIMIT, TEXT_TOTAL, WITHHELD};
+#[cfg(feature = "symbols")]
+use super::budget::WITHHELD;
+use super::budget::{self, REPLY_LIMIT, TEXT_TOTAL};
 use super::graph::{Entity, Site, TermGraph};
+#[cfg(feature = "symbols")]
+use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
-use super::{normalise, words, Lookup, TreeLookup};
+use super::{words, Lookup, TreeLookup};
+#[cfg(feature = "symbols")]
+use crate::contextgraph::KIND_CODE_ENTITY;
 use crate::contextgraph::{
     CallGraph, CallNode, Direction, EntryBatch, EntryFold, Error, FoldAccess, Graph, Node,
-    Projection, KIND_CODE_ENTITY, KIND_DECISION, REBUILD_OWED,
+    Projection, KIND_DECISION, REBUILD_OWED,
 };
 use rigger_domain::eventstore::Event;
 
@@ -84,6 +90,7 @@ impl Projection for Held {
 }
 
 /// The code entity `<file>::<name>`, a function at `line`.
+#[cfg(feature = "symbols")]
 fn entity(file: &str, name: &str, line: u32) -> Node {
     let attrs = [
         ("name", name),
@@ -141,6 +148,7 @@ fn section<'a>(reply: &'a str, section: &str) -> &'a str {
 
 fn words_are(term: &str, expected: &[&str]) {
     assert_eq!(words(term), expected, "the words of {term:?}");
+    #[cfg(feature = "symbols")]
     assert_eq!(normalise(term), expected.concat(), "{term:?} normalised");
 }
 
