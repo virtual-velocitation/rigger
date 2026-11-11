@@ -79,6 +79,8 @@ const LISTS: [u16; 7] = [
 const L_DEFS: usize = 0;
 const L_MENTIONS: usize = 1;
 const L_MODULES: usize = 2;
+/// The lists a file's design and workflow facts sit in.
+const L_INTENT: [usize; 4] = [3, 4, 5, 6];
 const FILE_ROW: usize = F_LISTS + LISTS.len() * 8;
 
 /// DEFS row.
@@ -662,6 +664,10 @@ impl Snapshot {
             lang: self.text(row, 2 * STR),
             half: half_of(byte(row, F_HALF)).unwrap_or_default(),
             scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
+            intent: L_INTENT
+                .into_iter()
+                .any(|list| !self.list(row, list).is_empty()),
+            modules: !self.list(row, L_MODULES).is_empty(),
         }
     }
 

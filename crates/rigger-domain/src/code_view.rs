@@ -15,6 +15,10 @@ pub struct FileRef<'a> {
     pub lang: &'a str,
     pub half: Half,
     pub scope: Scope,
+    /// Whether the file holds design or workflow facts: concepts, links, nodes or relations.
+    pub intent: bool,
+    /// Whether the file declares a module held in another file.
+    pub modules: bool,
 }
 
 /// A definition in a view, with the file it sits in.
@@ -312,6 +316,8 @@ impl FactsView {
             lang: &file.lang,
             half: file.half,
             scope: file.scope,
+            intent: file.holds_intent(),
+            modules: !file.modules.is_empty(),
         }
     }
 }
