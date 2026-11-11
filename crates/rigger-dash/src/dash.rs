@@ -6202,6 +6202,7 @@ mod tests {
     #[test]
     fn lenses_report_the_hidden_test_count() {
         use rigger_domain::contextgraph::REL_TESTS;
+        use rigger_domain::test_view::{HIDDEN_ID, HIDDEN_KIND};
 
         let node = |id: &str, kind: &str, tests: Option<&str>| Node {
             id: id.to_string(),
@@ -6239,6 +6240,10 @@ mod tests {
                     graph.nodes.push(node(t, KIND_CODE_ENTITY, None));
                     graph.edges.push(edge(t, "community/1/0", REL_TESTS));
                 }
+            } else {
+                // Three tests are hidden: the two attached to community 0 and one that proves
+                // nothing grouped.
+                graph.nodes.push(node(HIDDEN_ID, HIDDEN_KIND, Some("3")));
             }
             graph
         };
@@ -6246,9 +6251,9 @@ mod tests {
             resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
         };
         let cases = [
-            ("exclude", false, &code, 2, vec![("community/1/0", 2)]),
+            ("exclude", false, &code, 3, vec![("community/1/0", 2)]),
             ("include", true, &code, 0, vec![("community/1/0", 2)]),
-            ("exclude, files lens", false, &Lens::Files, 2, vec![]),
+            ("exclude, files lens", false, &Lens::Files, 3, vec![]),
             ("include, files lens", true, &Lens::Files, 0, vec![]),
         ];
         for (name, drawn, lens, hidden, counted) in cases {

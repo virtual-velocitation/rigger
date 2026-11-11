@@ -27,7 +27,7 @@ use crate::contextgraph::{
     TIER_INFERRED,
 };
 use crate::resolve::ProofCall;
-use crate::test_view::{join_tests, TestAttachment};
+use crate::test_view::{join_tests, mark_hidden, TestAttachment};
 
 /// How the caller's worktree compares with the tree a view describes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -376,10 +376,9 @@ impl<'r> Composed<'r> {
         } else {
             Vec::new()
         };
-        let code = Indexed::new(
-            joined(code_graph.whole(), groupings, &proofs, filter.tests),
-            Vec::new(),
-        );
+        let mut drawn = joined(code_graph.whole(), groupings, proofs, filter.tests);
+        mark_hidden(&mut drawn, hidden_tests.len());
+        let code = Indexed::new(drawn, Vec::new());
         let mut canonical = BTreeMap::new();
         let mut aliased: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (alias, id) in records.aliases()? {

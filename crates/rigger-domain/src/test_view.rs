@@ -6,8 +6,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_view::{Cluster, Tests};
-use crate::contextgraph::{Edge, Graph, REL_TESTS, TIER_INFERRED};
+use crate::contextgraph::{Edge, Graph, Node, REL_TESTS, TIER_INFERRED};
 use crate::resolve::ProofCall;
+
+/// The kind and id of the one node an excluding read adds to its graph to carry how many test
+/// entities the filter removed from what the read draws, attached to a cluster or not: its
+/// [`TESTS_ATTR`] attribute. Absent when none is hidden. [`hidden_tests`](crate::contextgraph::ContextGraph::hidden_tests)
+/// lists the same entities, so every reader counts one set.
+pub const HIDDEN_KIND: &str = "tests-hidden";
+pub const HIDDEN_ID: &str = "tests-hidden";
+
+/// Adds the [`HIDDEN_KIND`] node carrying `hidden` to `graph` when any test is hidden.
+pub fn mark_hidden(graph: &mut Graph, hidden: usize) {
+    if hidden > 0 {
+        graph.nodes.push(Node {
+            id: HIDDEN_ID.to_string(),
+            kind: HIDDEN_KIND.to_string(),
+            attrs: [(TESTS_ATTR.to_string(), hidden.to_string())].into(),
+        });
+    }
+}
 
 /// The graph attribute of a cluster node that carries its attached test count, whatever tests a
 /// reader shows.
@@ -437,5 +455,22 @@ mod tests {
             after_first,
             "no second walk: {again:?}"
         );
+    }
+
+    /// A read that excludes tests carries the count of every test it removed, attached or not;
+    /// a read that shows them carries none.
+    #[test]
+    fn an_excluding_read_counts_every_hidden_test() {
+        let view = view();
+        let carried = |tests: Tests| {
+            read(&view, tests)
+                .nodes
+                .into_iter()
+                .find(|n| n.kind == HIDDEN_KIND)
+                .and_then(|n| n.attrs.get(TESTS_ATTR).cloned())
+        };
+        assert_eq!(carried(Tests::Exclude).as_deref(), Some("5"));
+        assert_eq!(carried(Tests::Include), None);
+        assert_eq!(carried(Tests::Only), None);
     }
 }

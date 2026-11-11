@@ -30,10 +30,10 @@ use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
     KIND_HANDBOOK_RULE, KIND_LESSON, KIND_RATIONALE, PLACEHOLDER_SIGIL, REL_ABOUT, REL_GOVERNS,
-    REL_IN_COMMUNITY, REL_REALIZES, REL_TESTS,
+    REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
-use crate::test_view::TESTS_ATTR;
+use crate::test_view::{HIDDEN_KIND, TESTS_ATTR};
 
 /// The default hop bound for a seeded [`neighborhood`] walk (spec 30 c5) - the same breadth an
 /// agent's own blast-radius grounding walk uses (`subgraph` calls it, and `rigger graph --around`
@@ -758,29 +758,15 @@ pub fn count_tests(clusters: &mut [Cluster], graph: &Graph, buckets: &Buckets) {
     }
 }
 
-/// How many attached tests `graph` hides: the tests its communities carry, less the tests drawn
-/// beside a community ([`REL_TESTS`] edges to one).
+/// How many test entities `graph`'s read hid: the count the read's [`HIDDEN_KIND`] node carries,
+/// none when it carries none.
 pub fn tests_hidden(graph: &Graph) -> usize {
-    let communities: BTreeSet<&str> = graph
+    graph
         .nodes
         .iter()
-        .filter(|n| n.kind == KIND_COMMUNITY)
-        .map(|n| n.id.as_str())
-        .collect();
-    let attached: usize = graph
-        .nodes
-        .iter()
-        .filter(|n| n.kind == KIND_COMMUNITY)
-        .filter_map(|n| n.attrs.get(TESTS_ATTR)?.parse::<usize>().ok())
-        .sum();
-    let drawn = graph
-        .edges
-        .iter()
-        .filter(|e| {
-            e.rel == REL_TESTS && e.valid_to.is_none() && communities.contains(e.to.as_str())
-        })
-        .count();
-    attached.saturating_sub(drawn)
+        .find(|n| n.kind == HIDDEN_KIND)
+        .and_then(|n| n.attrs.get(TESTS_ATTR)?.parse().ok())
+        .unwrap_or(0)
 }
 
 /// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and `dash.rs`'s
@@ -1818,8 +1804,8 @@ pub struct ClusterOverview {
     /// derived code grain, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
-    /// How many attached tests the view hides: the tests the communities carry, less those drawn
-    /// beside them. Skipped in JSON when none is hidden.
+    /// How many test entities the read hid, attached to a cluster or not. Skipped in JSON when
+    /// none is hidden.
     #[serde(skip_serializing_if = "is_zero")]
     pub tests_hidden: usize,
 }
