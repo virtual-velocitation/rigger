@@ -2134,6 +2134,20 @@ mod tests {
         }
     }
 
+    /// The terms `rigger_graph`'s `lookup` argument holds: an array of strings or one string, each
+    /// trimmed, the empty ones and anything not a string left out.
+    fn lookup_terms_are(arg: Option<Value>, expected: &[&str]) {
+        assert_eq!(lookup_terms(arg.as_ref()), expected, "{arg:?}");
+    }
+
+    crate::test_cases! {
+        an_array_of_terms_is_each_term: lookup_terms_are(Some(json!(["a", "b"])), &["a", "b"]);
+        one_string_is_one_term: lookup_terms_are(Some(json!(" gizmo ")), &["gizmo"]);
+        empty_and_non_string_items_are_left_out: lookup_terms_are(Some(json!(["", " ", 3, "a"])), &["a"]);
+        a_non_string_argument_is_no_term: lookup_terms_are(Some(json!(3)), &[]);
+        no_argument_is_no_term: lookup_terms_are(None, &[]);
+    }
+
     /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
     /// REJECTS the spawn-bound `rigger_emit` as unknown - it is not merely unadvertised, it
     /// is genuinely undispatchable on this surface, so an operator session can never emit onto
