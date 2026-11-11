@@ -18,10 +18,17 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     }
     let mut around = String::new();
     let mut show = String::new();
+    let mut lookup = Vec::new();
     let mut depth: i64 = 2;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--lookup" => {
+                while args.get(i + 1).is_some_and(|a| !a.starts_with("--")) {
+                    i += 1;
+                    lookup.push(args[i].clone());
+                }
+            }
             "--around" => {
                 i += 1;
                 around = args.get(i).cloned().unwrap_or_default();
@@ -44,8 +51,13 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     if !show.is_empty() {
         return cmd_graph_show(&show);
     }
+    if !lookup.is_empty() {
+        return cmd_graph_lookup(&lookup);
+    }
     if around.is_empty() {
-        return Err("graph: --around <id> or --show <entity> is required".into());
+        return Err(
+            "graph: --lookup <term>..., --around <id> or --show <entity> is required".into(),
+        );
     }
     let gp = owning_graph_to_read()?;
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
@@ -214,6 +226,21 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
     over_the_run_store_at(&loc, &selection, |store| {
         Ok(Sidecar::read(store, conductor::STREAM)?.site_of(id))
     })
+}
+
+/// `rigger graph --lookup <term>...`: the combined lookup, the same reply `rigger_graph`'s
+/// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
+fn cmd_graph_lookup(terms: &[String]) -> Res {
+    use rigger::lookup::Lookup as _;
+    let graph =
+        owning_graph_to_read().map_err(|e| format!("the context graph could not be opened: {e}"));
+    let lookup = rigger::lookup::TreeLookup::new(caller_tree());
+    let graph = graph
+        .as_ref()
+        .map(|g| g as &dyn Projection)
+        .map_err(Clone::clone);
+    print!("{}", lookup.lookup(terms, graph)?);
+    Ok(())
 }
 
 fn cmd_graph_show(entity: &str) -> Res {

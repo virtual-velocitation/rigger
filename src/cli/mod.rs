@@ -5115,6 +5115,16 @@ fn git_repo() -> String {
     git_repo_at(&cwd())
 }
 
+/// The working tree a combined lookup answers from, the caller's own: the cwd's git top-level,
+/// else the cwd. A spawn's host starts the spawn's server in the spawn's worktree, so a spawn's
+/// lookup answers from that worktree by the same rule.
+fn caller_tree() -> PathBuf {
+    match git_repo() {
+        top if top.is_empty() => cwd(),
+        top => PathBuf::from(top),
+    }
+}
+
 /// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
 /// answer is anchored at `root` rather than the process cwd - empty when `root` is not in
 /// a git repo. Running git anchored at an explicit directory is what lets the couriers

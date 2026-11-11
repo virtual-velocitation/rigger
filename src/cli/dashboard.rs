@@ -836,8 +836,10 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let mut server =
-            mcpserver::Server::new(store, conductor::STREAM).with_graph(graph.as_ref());
+        let lookup = rigger::lookup::TreeLookup::new(caller_tree());
+        let mut server = mcpserver::Server::new(store, conductor::STREAM)
+            .with_graph(graph.as_ref())
+            .with_lookup(&lookup);
         server = server.with_grounder(match &grounder {
             Ok(g) => Ok(g.as_ref()),
             Err(e) => Err(e.to_string()),
