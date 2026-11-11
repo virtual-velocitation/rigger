@@ -19,10 +19,12 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
     // (spec 39, criterion 3) - never passed by the guard-bound `rigger run` dash (which keeps
-    // its `ReapedChild`).
+    // its `ReapedChild`). `--exit-on-stdin-close` makes this dash exit once its stdin reaches
+    // its end: the `rigger run` dash passes it, so the run's pipe bounds the dash's life.
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
     let mut reap_on_idle = false;
+    let mut exit_on_stdin_close = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -42,6 +44,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     .ok_or("dash: --port expects a port number (1-65535)")?;
             }
             "--reap-on-idle" => reap_on_idle = true,
+            "--exit-on-stdin-close" => exit_on_stdin_close = true,
             other => return Err(format!("dash: unknown argument {other:?}").into()),
         }
         i += 1;
@@ -304,6 +307,9 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // omits the flag and keeps its `ReapedChild` reaping
                     // instead. Started ONLY on the branch that actually binds and serves - a
                     // short-circuited singleton invocation serves nothing and starts no watcher.
+                    if exit_on_stdin_close {
+                        std::thread::spawn(exit_once_stdin_closes);
+                    }
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();
                         let idle_window = dash_reap_idle_window();
@@ -469,6 +475,14 @@ fn watch_and_self_reap_on_idle(
             std::process::exit(0);
         }
     }
+}
+
+/// Read this process's stdin to its end, then exit the process: a dash started with
+/// `--exit-on-stdin-close` lives exactly as long as the pipe its starter holds open, which the
+/// system closes however that starter ends, its own teardown or none.
+fn exit_once_stdin_closes() {
+    let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+    std::process::exit(0);
 }
 
 /// Read this project's CURRENT-run events and run id from `events_db` under `identity` through

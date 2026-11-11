@@ -959,7 +959,9 @@ private view, not the machine singleton.
   documented `dash: off` workflow key (or its `false`/`no` synonyms), resolved through the
   single `Workflow::dash_enabled` authority, or with the `RIGGER_NO_DASH` environment
   variable (`dash_opted_out`) - either suppresses the start entirely, so the run proceeds
-  with no dash and no port bind. The `rigger dash` singleton self-reaps only once TWO independent
+  with no dash and no port bind. The per-run dash lives exactly as long as its run: the run
+  holds the dash's stdin pipe open and the dash (`--exit-on-stdin-close`) exits once it
+  closes, however the run ends. The `rigger dash` singleton self-reaps only once TWO independent
   signals both go quiet: the instance registry holds no live entry for any registered
   project (an entry whose heartbeat has aged past the idle window is pruned before this
   check runs), AND no in-flight agent's own liveness marker is still fresh. That

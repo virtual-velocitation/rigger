@@ -1470,8 +1470,10 @@ fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Opt
 /// record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
 /// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The child's stdout
 /// is silenced (the parent's stdout is the run's own report, which the dash child must never
-/// write to) and its stdin is closed; the dash
-/// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
+/// write to); the dash logs only to its own stderr. Its stdin is a pipe whose write end the
+/// guard's child handle holds for the whole run, and the dash runs with
+/// `--exit-on-stdin-close`, so however the run ends, the closed pipe ends the dash with it.
+/// Returns the guard plus the URL for the run-start pointer.
 fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
     let port = dash::free_port_from(dash::DEFAULT_PORT)?;
     let exe = std::env::current_exe()?;
@@ -1479,7 +1481,8 @@ fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>
         .arg("dash")
         .arg("--port")
         .arg(port.to_string())
-        .stdin(Stdio::null())
+        .arg("--exit-on-stdin-close")
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .spawn()?;
     let url = format!("http://127.0.0.1:{port}/");
@@ -1505,7 +1508,8 @@ fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>
 /// The dash `rigger run` started, held for the whole run: dropping it reaps the dash child
 /// ([`dash::ReapedChild`]) and then removes the [`DASH_MARKER_FILE`] it recorded, unless the
 /// file by then names another dash, so a marker on disk names a dash a run still holds or one
-/// whose run never reached its teardown.
+/// whose run never reached its teardown. A run that never reaches its teardown still takes its
+/// dash with it: the child handle holds the dash's stdin pipe, which closes when the run ends.
 struct RunDash {
     child: Option<dash::ReapedChild>,
     marker: dash::DashMarker,
