@@ -279,10 +279,10 @@ fn test_closure<'v>(
 ) -> BTreeSet<&'v str> {
     let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
     for &path in declaring {
-        let Some(facts) = view.file(path) else {
+        let Some(modules) = view.modules(path) else {
             continue;
         };
-        for decl in &facts.modules {
+        for decl in modules.iter() {
             if let Some(target) = module_target(decl, |p| code_files.contains(p))
                 .and_then(|target| code_files.get(target))
             {

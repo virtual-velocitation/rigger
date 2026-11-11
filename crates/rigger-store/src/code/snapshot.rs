@@ -771,8 +771,6 @@ impl Snapshot {
     fn facts(&self, row: &[u8]) -> FileFacts {
         let defs = self.table(DEFS);
         let mentions = self.table(MENTIONS);
-        let modules = self.table(MODULES);
-        let candidates = self.table(CANDIDATES);
         FileFacts {
             defs: self
                 .list(row, L_DEFS)
@@ -803,22 +801,28 @@ impl Snapshot {
                     }
                 })
                 .collect(),
-            modules: self
-                .list(row, L_MODULES)
-                .map(|m| {
-                    let r = self.row(modules, m);
-                    ModuleDecl {
-                        name: self.text(r, 0).to_owned(),
-                        def: le32(r, MOD_DEF),
-                        test: byte(r, MOD_FLAGS) & FLAG_SET != 0,
-                        candidates: (le32(r, MOD_CANDS) as usize..le32(r, MOD_CANDS + 4) as usize)
-                            .map(|c| self.text(self.row(candidates, c), 0).to_owned())
-                            .collect(),
-                    }
-                })
-                .collect(),
+            modules: self.modules_of(row),
             ..self.intent_of(row)
         }
+    }
+
+    /// The modules the file `row` declares ([`CodeView::modules`]).
+    fn modules_of(&self, row: &[u8]) -> Vec<ModuleDecl> {
+        let modules = self.table(MODULES);
+        let candidates = self.table(CANDIDATES);
+        self.list(row, L_MODULES)
+            .map(|m| {
+                let r = self.row(modules, m);
+                ModuleDecl {
+                    name: self.text(r, 0).to_owned(),
+                    def: le32(r, MOD_DEF),
+                    test: byte(r, MOD_FLAGS) & FLAG_SET != 0,
+                    candidates: (le32(r, MOD_CANDS) as usize..le32(r, MOD_CANDS + 4) as usize)
+                        .map(|c| self.text(self.row(candidates, c), 0).to_owned())
+                        .collect(),
+                }
+            })
+            .collect()
     }
 
     /// The facts of the file `row` without its definitions, mentions and modules: what a read of
@@ -1066,6 +1070,15 @@ impl CodeView for Snapshot {
         Some(match self.decoded[at].get() {
             Some(facts) => Cow::Borrowed(facts),
             None => Cow::Owned(self.intent_of(self.row(self.table(FILES), at))),
+        })
+    }
+
+    /// The modules of the whole facts when this open has decoded them, else decoded alone.
+    fn modules(&self, path: &str) -> Option<Cow<'_, [ModuleDecl]>> {
+        let at = self.file_at(path)?;
+        Some(match self.decoded[at].get() {
+            Some(facts) => Cow::Borrowed(&facts.modules[..]),
+            None => Cow::Owned(self.modules_of(self.row(self.table(FILES), at))),
         })
     }
 
@@ -1419,6 +1432,13 @@ mod tests {
                 "{name}: file list"
             );
             for file in &files {
+                // Decoding a file's modules alone reads none of its other facts.
+                assert_eq!(
+                    snap.modules(&file.path).as_deref(),
+                    Some(&file.modules[..]),
+                    "{name}: modules of {}",
+                    file.path
+                );
                 // Before the whole facts are read, the intent facts leave the code lists out.
                 let intent = FileFacts {
                     defs: Vec::new(),
@@ -1444,6 +1464,12 @@ mod tests {
                     "{name}: intent facts of {} once its facts are read",
                     file.path
                 );
+                assert_eq!(
+                    snap.modules(&file.path).as_deref(),
+                    Some(&file.modules[..]),
+                    "{name}: modules of {} once its facts are read",
+                    file.path
+                );
                 for leaf in file.defs.iter().map(|d| &d.leaf) {
                     assert_eq!(
                         snap.defs_named(leaf).collect::<Vec<_>>(),
@@ -1464,6 +1490,7 @@ mod tests {
                 snap.intent_facts("absent").is_none(),
                 "{name}: absent intent"
             );
+            assert!(snap.modules("absent").is_none(), "{name}: absent modules");
             assert_eq!(snap.defs_named("absent").count(), 0, "{name}: absent leaf");
             assert_eq!(
                 encode(&snap, snap.groupings()),

@@ -3,7 +3,7 @@
 //! ([`Extract`], [`Group`]), the filter a reader applies ([`ViewFilter`]) and the in-memory view
 //! ([`FactsView`]). A store holds no language knowledge: extraction and grouping are passed in.
 
-use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp, Tip};
+use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, Tip};
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
@@ -179,6 +179,14 @@ pub trait CodeView: Send + Sync {
     /// reads facts from bytes decodes these alone.
     fn intent_facts(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
         self.file(path)
+    }
+    /// The modules the file at `path` declares. By default read off the file's whole facts; a
+    /// view that reads facts from bytes decodes these alone.
+    fn modules(&self, path: &str) -> Option<Cow<'_, [ModuleDecl]>> {
+        Some(match self.file(path)? {
+            Cow::Borrowed(facts) => Cow::Borrowed(&facts.modules[..]),
+            Cow::Owned(facts) => Cow::Owned(facts.modules),
+        })
     }
     /// Every definition whose leaf is `leaf`, in path then source order.
     fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_>;

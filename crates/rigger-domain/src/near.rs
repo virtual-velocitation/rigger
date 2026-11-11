@@ -474,11 +474,11 @@ impl<'v> State<'v> {
                 if f.half != Half::Code || !f.modules {
                     continue;
                 }
-                let Some(facts) = self.view.file(f.path) else {
+                let Some(declared) = self.view.modules(f.path) else {
                     continue;
                 };
                 let resolver = self.graph.resolver();
-                for decl in &facts.modules {
+                for decl in declared.iter() {
                     if let Some(target) = resolver.module_target(decl) {
                         let held = modules.entry(target.to_string()).or_default();
                         if held.last() != Some(&(place as u32)) {
@@ -1424,6 +1424,10 @@ mod tests {
             self.reads.lock().unwrap().push(format!("intent {path}"));
             self.view.intent_facts(path)
         }
+        fn modules(&self, path: &str) -> Option<Cow<'_, [ModuleDecl]>> {
+            self.reads.lock().unwrap().push(format!("modules {path}"));
+            self.view.modules(path)
+        }
         fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
             self.reads.lock().unwrap().push(format!("defs {leaf}"));
             self.view.defs_named(leaf)
@@ -1450,10 +1454,10 @@ mod tests {
     #[test]
     fn a_neighbourhood_reads_one_ids_file_and_its_leaf_only() {
         let opened = [
-            // The files declaring a module held elsewhere, which the resolver reads.
-            "file src/a.rs",
-            "file src/a_tests.rs",
-            "file src/b.rs",
+            // The modules of the files declaring one held elsewhere, which the resolver reads.
+            "modules src/a.rs",
+            "modules src/a_tests.rs",
+            "modules src/b.rs",
             // The design and workflow facts of the files holding them, which every read reads.
             "intent .rigger/workflow.yml",
             "intent docs/d.md",
@@ -1479,19 +1483,16 @@ mod tests {
                     "defs helper",
                     "defs run",
                     "file src/a.rs",
-                    // A test there calls run.
+                    // Tests there call run.
+                    "file src/a_tests.rs",
                     "file tests/it.rs",
                     "mentions run",
                 ],
             ),
             (
                 "src/sub.rs",
-                &[
-                    "file src/a.rs",
-                    "file src/a_tests.rs",
-                    "file src/b.rs",
-                    "file src/sub.rs",
-                ],
+                // The file declaring it, whose declaration's edge it folds, and itself.
+                &["file src/a.rs", "file src/sub.rs"],
             ),
         ];
         for (id, want) in cases {
