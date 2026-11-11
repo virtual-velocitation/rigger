@@ -6092,6 +6092,68 @@ mod tests {
         );
     }
 
+    /// Addendum section 11, steps 3 and 4, by the fold rule the old file records: a migration to
+    /// the records-only rule refuses a record fact it would lose only from a rule whose record
+    /// fold is that rule's, while a rebuild at that rule refolds whatever log it is handed, and
+    /// every refold refuses a record naming a grouping id. Each row: the old file's rule and
+    /// whether a record fact the log lacks refuses the swap.
+    #[test]
+    fn a_migration_to_the_records_only_rule_compares_records_from_the_rules_folding_them_alike() {
+        let cases: [(i64, bool); 8] = [
+            (0, false),
+            (1, false),
+            (2, false),
+            (3, false),
+            (4, false),
+            (5, true),
+            (6, true),
+            (7, false),
+        ];
+        // Whether a rebuild from `log` of a file holding `folded`, recorded at `rule`, is refused
+        // naming `named`.
+        let refused = |rule: i64, folded: &[Event], log: &[Event], named: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db");
+            let path = path.to_str().unwrap();
+            crate::test_support::folds(&Projector::open(path, "test").unwrap(), folded);
+            crate::test_support::stamp_user_version(Path::new(path), rule);
+            match rebuild_in_batches(path, log, 2, &mut Vec::new()) {
+                Ok(_) => false,
+                Err(e) if e.0.contains(named) => true,
+                Err(e) => panic!(
+                    "rule {rule}: a refusal naming {named} or none, not: {}",
+                    e.0
+                ),
+            }
+        };
+        let kept = decision_at("d-keep", "a.rs", 1);
+        let got: Vec<(i64, bool, bool)> = cases
+            .iter()
+            .map(|&(rule, _)| {
+                let lost = refused(
+                    rule,
+                    &[decision_at("d-gone", "a.rs", 1)],
+                    std::slice::from_ref(&kept),
+                    "node d-gone (decision)",
+                );
+                let grouping = refused(
+                    rule,
+                    std::slice::from_ref(&kept),
+                    &[kept.clone(), decision_at("d-group", "community/1/0", 2)],
+                    "edge d-group -GOVERNS-> community/1/0",
+                );
+                (rule, lost, grouping)
+            })
+            .collect();
+        assert_eq!(
+            got,
+            cases
+                .map(|(rule, compared)| (rule, compared, true))
+                .to_vec(),
+            "(the old file's rule, a lost record fact refused, a record naming a grouping refused)"
+        );
+    }
+
     /// A `DecisionMade` `id` governing `file` at log position `position`.
     fn decision_at(id: &str, file: &str, position: u64) -> Event {
         let payload = serde_json::json!({
