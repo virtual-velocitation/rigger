@@ -619,18 +619,20 @@ const RETIRED_SYMBOLS_INDEX: [&str; 2] = [".rigger/symbols", ".claude/skills/rig
 /// Delete the [`RETIRED_SYMBOLS_INDEX`] entries under `root`, returning one line per entry it
 /// removed. A project that never held them gets no line, so a `rigger setup` rerun stays a silent
 /// no-op.
-fn remove_retired_symbols_index(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn remove_retired_symbols_index(root: &Path) -> Vec<String> {
     let mut lines = Vec::new();
     for rel in RETIRED_SYMBOLS_INDEX {
         let path = root.join(rel);
         if path.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-            lines.push(format!(
-                "removed {rel}/: the symbols index is gone; the code store serves grounding"
-            ));
+            reap_then_remove_dir(&path, root);
+            if !path.exists() {
+                lines.push(format!(
+                    "removed {rel}/: the symbols index is gone; the code store serves grounding"
+                ));
+            }
         }
     }
-    Ok(lines)
+    lines
 }
 
 /// The workflow file an earlier `rigger setup` installed for an in-session workflow driver
@@ -809,7 +811,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let graph_rebuilt = rebuild_owed_graph()?;
     let retired = [
         remove_retired_driver_files(root)?,
-        remove_retired_symbols_index(root)?,
+        remove_retired_symbols_index(root),
     ]
     .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
@@ -2417,7 +2419,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "x").unwrap();
         }
-        let got = remove_retired_symbols_index(root).unwrap();
+        let got = remove_retired_symbols_index(root);
         let want: Vec<String> = removed
             .iter()
             .map(|rel| {
