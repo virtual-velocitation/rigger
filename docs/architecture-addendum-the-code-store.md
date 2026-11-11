@@ -566,7 +566,9 @@ and the label travels with every answer:
 
 - the CLI prints it;
 - the MCP tools return it as a field;
-- the dash shows it in the header.
+- the dash sends it beside every graph reply (`X-Rigger-Graph-Label`, from the same open as the
+  body) and shows it in the explorer's header; a graph it cannot read (none built, a store that
+  cannot be opened) is a stated error (`X-Rigger-Graph-Error`) shown there, never an empty graph.
 
 The symbols grounder carries the label too (`Grounder::ground_labelled`, one open of the store for the rows and the label; the CLI prints it on stderr, beside
 the rows). It applies the same withholding rule (`Withheld`, shared with the composed view). A store
@@ -786,7 +788,7 @@ It splits by role:
 | `rigger graph build / communities / concepts` | fold, then write groupings as events | `open_current`; read-only reports |
 | MCP `rigger_graph`, `rigger_ground` (`mcpserver.rs`, 7 sites) | `dyn Projection` | `&dyn ContextGraph` + a `tests` argument + the label field |
 | combined lookup (`lookup/graph.rs`, `names.rs`, `prose.rs`, `text.rs`) | `Result<&dyn Projection, String>` and the per-hit freshness check | `Result<&dyn ContextGraph, String>`; freshness removed; withheld hits counted |
-| dash `/api/graph`, explorer, lenses (`dash.rs`) | `whole()` on graph.db | `whole()` on `Composed` with `tests=exclude\|include\|only` |
+| dash `/api/graph`, explorer, lenses (`dash.rs`) | `whole()` on graph.db | `whole()` on `Composed` with `tests=exclude\|include\|only`; the label of the same open in the header, a graph it cannot read a stated error |
 | symbols grounding (`SymbolGrounder`, registry, `staleness`) | `.rigger/symbols/index.json` | `CodeView::defs_named` / `file` |
 | console map (`console/map.rs`) | CommunityAssigned folded | GROUPINGS through `ContextGraph` |
 | record fold (`sqlite.rs`) | `impl Projection` | `impl RecordFold + Neighbors` (records only) |

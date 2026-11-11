@@ -5355,8 +5355,19 @@ fn git_repo() -> String {
 /// else the cwd. A spawn's host starts the spawn's server in the spawn's worktree, so a spawn's
 /// lookup answers from that worktree by the same rule.
 fn caller_tree() -> PathBuf {
-    match git_repo() {
-        top if top.is_empty() => cwd(),
+    tree_of(Path::new(""))
+}
+
+/// The working tree `dir` lies in, named by the one rule every reader names its worktree by: its
+/// git top-level, else `dir` itself; an empty `dir` is the cwd.
+fn tree_of(dir: &Path) -> PathBuf {
+    let dir = if dir.as_os_str().is_empty() {
+        cwd()
+    } else {
+        dir.to_path_buf()
+    };
+    match git_repo_at(&dir) {
+        top if top.is_empty() => dir,
         top => PathBuf::from(top),
     }
 }

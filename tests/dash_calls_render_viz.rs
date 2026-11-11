@@ -281,9 +281,9 @@ const fetch = function(url){
   if (s.indexOf("/api/graph") !== -1) {
     __fetched.push(s);
     if (s.indexOf("view=calls") !== -1) {
-      return Promise.resolve({ json: function(){ return Promise.resolve(__callsView(s)); } });
+      return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__callsView(s)); } });
     }
-    return Promise.resolve({ json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };

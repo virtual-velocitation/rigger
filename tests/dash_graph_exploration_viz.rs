@@ -232,7 +232,7 @@ let __graphView = __view;
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetched.push(String(url));
-    return Promise.resolve({ json: function(){ return Promise.resolve(__graphView(url)); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__graphView(url)); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };

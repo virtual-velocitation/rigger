@@ -17077,6 +17077,122 @@ fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
     );
 }
 
+/// GIVEN a committed project, WHEN `rigger dash` serves its graph route from the project's own
+/// directory over a graph built and read from a clean worktree, an edited file, an unreadable git
+/// index, a code store that cannot be opened, and no graph built at all, THEN the reply states
+/// what it describes in one graph header: the label of the read that answered (spec 6.1),
+/// naming the worktree by its top-level and counting what the overview withheld, or why no graph
+/// could be read, never an empty graph with no reason.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_graph_reply_states_what_it_describes() {
+    // (case, whether the graph is built, what is done to the project after, the header line with
+    // `{head}` and `{w}` for the commit and the worktree; one ending `: ` is followed by a reason)
+    type Spoil = fn(&Path);
+    let cases: [(&str, bool, Spoil, &str); 5] = [
+        (
+            "a clean worktree",
+            true,
+            |_| {},
+            "X-Rigger-Graph-Label: describes {head}",
+        ),
+        (
+            // The file's node, its fn's and the community the two alone make up.
+            "an edited file the overview holds",
+            true,
+            |root| std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap(),
+            "X-Rigger-Graph-Label: describes {head}; 1 file in {w} differs; 3 withheld",
+        ),
+        (
+            "an unreadable git index",
+            true,
+            |root| std::fs::write(root.join(".git").join("index"), "unreadable").unwrap(),
+            "X-Rigger-Graph-Label: describes {head}; {w} cannot be compared; 3 withheld",
+        ),
+        (
+            "a code store that cannot be opened",
+            true,
+            |root| {
+                let store = root.join(".rigger").join("store").join("code");
+                std::fs::remove_dir_all(&store).unwrap();
+                std::fs::write(&store, "not a store").unwrap();
+            },
+            "X-Rigger-Graph-Error: the graph cannot be opened: ",
+        ),
+        (
+            "no graph built",
+            false,
+            |_| {},
+            "X-Rigger-Graph-Error: no graph has been built at .rigger/graph.db",
+        ),
+    ];
+    for (case, built, spoil, expected) in cases {
+        let dir = temp_project();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+        common::fixtures::git_commit_all(root, "source");
+        if built {
+            run_rigger_ok(root, &["graph", "build"]);
+        }
+        spoil(root);
+        let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
+        let worktree = root.canonicalize().unwrap().display().to_string();
+        let expected = expected.replace("{head}", &head).replace("{w}", &worktree);
+        let port = free_loopback_port();
+        let mut dash = serving_dash(root, port);
+        let reply = http_get_path(port, "/api/graph");
+        let _ = dash.kill();
+        let _ = dash.wait();
+
+        let reply = reply.unwrap_or_else(|| panic!("{case}: the dash never served /api/graph"));
+        let head_end = reply.find("\r\n\r\n").unwrap_or(reply.len());
+        let stated: Vec<String> = reply[..head_end]
+            .lines()
+            .filter(|l| l.starts_with("X-Rigger-Graph-"))
+            .map(percent_decoded)
+            .collect();
+        assert!(
+            matches!(stated.as_slice(), [line] if line.starts_with(&expected)),
+            "{case}: the reply states {expected:?}; got {stated:?} in:\n{reply}"
+        );
+        if expected.ends_with(": ") {
+            assert!(
+                stated[0].len() > expected.len(),
+                "{case}: the error names its reason; got {stated:?}"
+            );
+        } else {
+            assert_eq!(
+                stated[0], expected,
+                "{case}: the header is exactly the label"
+            );
+        }
+    }
+}
+
+/// `line` with each `%XX` escape the dash's graph headers carry read back as its byte.
+fn percent_decoded(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes.get(i + 1..i + 3))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], escaped) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Record the dash breadcrumbs a dash-starting path leaves under `root`'s `.rigger/`: the
 /// `dash.url` it serves at and the `dash.marker` naming `marker_port` and `pid` (the on-disk
 /// marker format is `port\npid\n`, `dash::DashMarker::serialize`).
