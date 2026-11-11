@@ -1776,7 +1776,8 @@ mod tests {
     }
 
     /// Spec 58, criterion 3 (the habit half): the shared discipline body carries the same
-    /// three-verb lookup guidance the grounding pointer does - `rigger graph --around` (structure),
+    /// lookup guidance the grounding pointer does - `rigger graph --lookup` (graph, tree and prose
+    /// at once) first, then `rigger graph --around` (structure),
     /// `rigger graph --show` (text), `rigger peers` (memory) - states the rule plainly (the graph
     /// is the lookup surface; grep on the project's sources is a fallback worth reporting, not a
     /// habit), and names the fallback-reporting instruction (`grep-fallback:` via `rigger

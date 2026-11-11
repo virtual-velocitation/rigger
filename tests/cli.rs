@@ -18074,8 +18074,9 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
 /// path (docs_context -> render -> write) the real `rigger docs` binary drives, so it reaches the two
 /// consumer-facing files an author commits and ships. Driving the built binary and reading the
 /// WRITTEN skill and handbook proves the "Looking things up" guidance actually LANDS in what
-/// consumers get: the knowledge graph is the lookup surface, its three verbs each carry their
-/// one-line job (`rigger graph --around` structure, `rigger graph --show` text, `rigger peers`
+/// consumers get: the knowledge graph is the lookup surface, the combined lookup (`rigger graph
+/// --lookup`) leads it, its three narrower verbs each carry their one-line job (`rigger graph
+/// --around` structure, `rigger graph --show` text, `rigger peers`
 /// memory), and grep over the project's sources is a fallback worth REPORTING via a `grep-fallback:`
 /// progress line. The implementer's in-process `discipline_carries_three_verb_lookup_guidance` unit
 /// test pins the render output; this periphery layer pins that the write path in the built binary
@@ -18085,8 +18086,8 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
 fn docs_ships_three_verb_lookup_guidance_to_consumers() {
     let [skill, handbook] = consumer_docs_written_by_the_binary();
 
-    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: all
-    // three verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
+    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: the
+    // combined lookup and all three narrower verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
     // from the single `discipline_body` authority, so the skill and the handbook chapter ship the
     // guidance identically.
     for (label, out) in [("skill", &skill), ("handbook", &handbook)] {

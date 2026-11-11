@@ -14847,7 +14847,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
 
 /// The note the TRIMMED implement slice renders IN PLACE OF the capped decisions/lessons/findings
 /// sections (spec 36): the implement prompt stops PUSHING the large, ~85%-truncated reference blob
-/// and says the history is retrievable, not inlined. The three verbs that retrieve it are named by
+/// and says the history is retrievable, not inlined. The verbs that retrieve it are named by
 /// the shared [`write_lookup_pointer`] appended right after (spec 58), so this note and the pointer
 /// stay one story - `rigger peers` is the memory verb that returns the newest omitted decisions /
 /// lessons / findings scoped to the files, and `rigger graph --show` reads any one by id. A fixed
