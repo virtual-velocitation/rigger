@@ -2571,6 +2571,7 @@ dependencies = [
 name = "rigger-store"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "ignore",
  "memmap2",
  "rigger-domain",

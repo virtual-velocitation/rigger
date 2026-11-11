@@ -1118,7 +1118,7 @@ rigger's own segment log (109), a resolved graph held in memory and loaded from 
 - **Format.** `rigger-store/src/format.rs` is written once and used by the code snapshot, the
   segment log and the record base snapshot. It holds:
   - the magic plus version header;
-  - the crc32 table;
+  - the crc32 check;
   - the section table;
   - the atomic publish (temp, fsync, rename, `sync_dir`);
   - the lock (`with_write_lock`, on std `File::lock`).

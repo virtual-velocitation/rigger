@@ -21,56 +21,11 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) of `bytes`, read sixteen bytes a
-/// step: table `k` holds each byte's crc advanced by `k` further zero bytes, so one step folds
-/// sixteen table reads instead of sixteen dependent ones.
+/// The CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320) of `bytes`: folded with the CPU's
+/// carry-less multiply or crc instructions where it has them, else read through tables
+/// (`crc32fast` chooses at run time), so a large file's check costs a fraction of a table walk.
 pub fn crc32(bytes: &[u8]) -> u32 {
-    const TABLES: [[u32; 256]; 16] = {
-        let mut tables = [[0u32; 256]; 16];
-        let mut n = 0;
-        while n < 256 {
-            let mut c = n as u32;
-            let mut k = 0;
-            while k < 8 {
-                c = if c & 1 == 1 {
-                    0xEDB8_8320 ^ (c >> 1)
-                } else {
-                    c >> 1
-                };
-                k += 1;
-            }
-            tables[0][n] = c;
-            n += 1;
-        }
-        let mut k = 1;
-        while k < 16 {
-            let mut n = 0;
-            while n < 256 {
-                let prev = tables[k - 1][n];
-                tables[k][n] = (prev >> 8) ^ tables[0][(prev & 0xFF) as usize];
-                n += 1;
-            }
-            k += 1;
-        }
-        tables
-    };
-    let byte = |crc: u32, b: u8| TABLES[0][((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
-    let mut chunks = bytes.chunks_exact(16);
-    let mut crc = chunks.by_ref().fold(!0u32, |crc, chunk| {
-        let mut word = [0u8; 16];
-        word.copy_from_slice(chunk);
-        let head = crc.to_le_bytes();
-        for (w, h) in word.iter_mut().zip(head) {
-            *w ^= h;
-        }
-        word.iter()
-            .enumerate()
-            .fold(0, |acc, (i, &b)| acc ^ TABLES[15 - i][usize::from(b)])
-    });
-    for &b in chunks.remainder() {
-        crc = byte(crc, b);
-    }
-    !crc
+    crc32fast::hash(bytes)
 }
 
 pub fn put_u8(out: &mut Vec<u8>, v: u8) {
