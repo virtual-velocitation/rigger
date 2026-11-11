@@ -41,22 +41,24 @@
 //!  - the SAME-LAYER BACK edge: two sibling callers at one layer where one calls the other, pinning
 //!    the `<=` boundary that marks a non-deepening caller edge back rather than ascending it twice.
 //!
-//! Each scenario is written as Rust source and read through the code store's view, so the calls the
-//! walk follows are the ones the extractor finds in the text. No reference to any external tool or
+//! Each scenario plants the facts an extractor reads off its files and walks the code store's view
+//! of them, so the walk is proven in every lane, whichever extractors it links. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
 use crate::common;
 
-use common::fixtures::{call_edge_pairs, call_layer, call_node_ids};
+use common::fixtures::{call_edge_pairs, call_layer, call_node_ids, planted_file};
+use rigger::code_facts::FileFacts;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    CallGraph, ContextGraph, Direction, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
+    CallGraph, ContextGraph, Direction, CODE_KIND_FUNCTION, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS,
+    TIER_INFERRED,
 };
 
 /// The `direction` walk to `depth` from each of `seeds`, at the tier `floor`, over a tree holding
 /// exactly `files` (path, Rust source) and no records.
 fn walk(
-    files: &[(&str, &str)],
+    files: Vec<FileFacts>,
     seeds: &[&str],
     direction: Direction,
     depth: i64,
@@ -70,26 +72,18 @@ fn walk(
 }
 
 /// The records (none) and the code store's view of a tree holding exactly `files`.
-fn tree(files: &[(&str, &str)]) -> (Projector, rigger::code_view::FactsView) {
+fn tree(files: Vec<FileFacts>) -> (Projector, rigger::code_view::FactsView) {
     (
         Projector::open(":memory:", "test").unwrap(),
-        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, files),
+        common::fixtures::facts_view(files),
     )
 }
 
-/// The source of one file defining each of `defs`, one per line in order, where each `(caller,
-/// callee)` of `calls` is a call inside the caller's body.
-fn source(defs: &[&str], calls: &[(&str, &str)]) -> String {
-    defs.iter()
-        .map(|name| {
-            let body: String = calls
-                .iter()
-                .filter(|(caller, _)| caller == name)
-                .map(|(_, callee)| format!(" {callee}();"))
-                .collect();
-            format!("pub fn {name}() {{{body} }}\n")
-        })
-        .collect()
+/// The facts of the file `path` defining each of `defs`, a function, one per line in order,
+/// where each `(caller, callee)` of `calls` is a call inside the caller's body.
+fn fns(path: &str, defs: &[&str], calls: &[(&str, &str)]) -> FileFacts {
+    let defs: Vec<(&str, &str)> = defs.iter().map(|d| (*d, CODE_KIND_FUNCTION)).collect();
+    planted_file(path, &defs, calls, &[])
 }
 
 /// The `direction` walk to `depth` from `src/a.rs::<seed>` over one file, `src/a.rs`, that defines
@@ -102,7 +96,7 @@ fn walk_one_file(
     depth: i64,
 ) -> CallGraph {
     walk(
-        &[("src/a.rs", &source(defs, calls))],
+        vec![fns("src/a.rs", defs, calls)],
         &[&format!("src/a.rs::{seed}")],
         direction,
         depth,
@@ -149,10 +143,10 @@ fn calls_down_surfaces_a_multi_candidate_hop_as_a_marked_frontier_and_never_desc
     // `target` is defined in TWO files (a.rs and b.rs) - two candidates. c.rs's `caller` calls it as
     // a bare cross-file reference. Definitions are folded FIRST so the CALLS edge tiers INFERRED
     // (a cross-file definition exists), placing it at/above the default floor.
-    let (records, view) = tree(&[
-        ("src/a.rs", "pub fn target() {}\n"),
-        ("src/b.rs", "pub fn target() {}\n"),
-        ("src/c.rs", "pub fn caller() { target(); }\n"),
+    let (records, view) = tree(vec![
+        fns("src/a.rs", &["target"], &[]),
+        fns("src/b.rs", &["target"], &[]),
+        fns("src/c.rs", &["caller"], &[("caller", "target")]),
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 
@@ -233,7 +227,11 @@ fn the_tier_floor_excludes_an_ambiguous_call_by_default_and_includes_it_only_whe
 
     // Default floor (inferred): the ambiguous edge is below the floor and is NOT followed - the walk
     // is just the seed, no edges.
-    let (records, view) = tree(&[("src/c.rs", "pub fn caller() { nowheredef(); }\n")]);
+    let (records, view) = tree(vec![fns(
+        "src/c.rs",
+        &["caller"],
+        &[("caller", "nowheredef")],
+    )]);
     let p = common::fixtures::view_graph(&records, &view);
 
     let default_floor = p
@@ -333,9 +331,9 @@ fn the_up_direction_mirrors_the_down_walk_resolving_the_caller_through_its_bare_
 
     // Control / DOWN: from the caller the walk resolves the bare placeholder forward onto
     // the real definition `a.rs::callee`.
-    let (records, view) = tree(&[
-        ("src/a.rs", "pub fn callee() {}\n"),
-        ("src/b.rs", "pub fn caller() { callee(); }\n"),
+    let (records, view) = tree(vec![
+        fns("src/a.rs", &["callee"], &[]),
+        fns("src/b.rs", &["caller"], &[("caller", "callee")]),
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 
@@ -397,7 +395,7 @@ fn a_missing_seed_and_a_seed_with_no_calls_each_degrade_to_an_empty_view_never_a
     // CallGraph; a seed that exists but calls nothing yields just itself at layer 0.
 
     // A seed that does not exist as a node: empty view, no error.
-    let (records, view) = tree(&[("src/a.rs", "pub fn lonely() {}\n")]);
+    let (records, view) = tree(vec![fns("src/a.rs", &["lonely"], &[])]);
     let p = common::fixtures::view_graph(&records, &view);
 
     let missing = p
@@ -455,15 +453,12 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
     // Two IMPORT-ONLY files: a top-level reference with NO enclosing caller folds ONLY the file-level
     // REFERENCES edge (no CALLS twin) - exactly the "referenced but not called" site. e.rs is folded
     // BEFORE d.rs so the natural row order would be [e, d]; only the builder's sort yields [d, e].
-    let (records, view) = tree(&[
+    let (records, view) = tree(vec![
         // the SEED, and its same-file caller
-        (
-            "src/a.rs",
-            "pub fn target() {}\npub fn local() { target(); }\n",
-        ),
-        ("src/b.rs", "pub fn mid() { target(); }\n"), // cross-file caller
-        ("src/e.rs", "use crate::a::target;\n"),
-        ("src/d.rs", "use crate::a::target;\n"),
+        fns("src/a.rs", &["target", "local"], &[("local", "target")]),
+        fns("src/b.rs", &["mid"], &[("mid", "target")]), // cross-file caller
+        planted_file("src/e.rs", &[], &[], &["target"]), // import-only
+        planted_file("src/d.rs", &[], &[], &["target"]), // import-only
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 
@@ -560,13 +555,13 @@ fn the_up_walk_surfaces_a_multi_candidate_caller_as_a_marked_frontier_and_never_
     // `target` is defined in TWO files, so a cross-file call to it is multi-candidate. Fold e.rs BEFORE
     // a.rs so the natural (rowid) candidate order would be [e, a]; only the builder's ORDER BY id
     // yields the asserted [a, e] - the candidate sort has teeth.
-    let (records, view) = tree(&[
-        ("src/e.rs", "pub fn target() {}\n"),
-        ("src/a.rs", "pub fn target() {}\n"), // the SEED
+    let (records, view) = tree(vec![
+        fns("src/e.rs", &["target"], &[]),
+        fns("src/a.rs", &["target"], &[]), // the SEED
         // the ambiguous caller: a multi-candidate cross-file call
-        ("src/f.rs", "pub fn amb() { target(); }\n"),
+        fns("src/f.rs", &["amb"], &[("amb", "target")]),
         // amb's own caller, reachable only by ascending past the frontier - must NOT be reached
-        ("src/g.rs", "pub fn over() { amb(); }\n"),
+        fns("src/g.rs", &["over"], &[("over", "amb")]),
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 
@@ -698,13 +693,11 @@ fn the_up_walk_marks_a_same_layer_caller_edge_as_a_back_edge() {
     // time - the boundary is `<=`, so a SAME-LAYER caller edge must be marked back. Two sibling callers
     // both call the seed (both land at layer 1) and one ALSO calls the other: that same-layer edge is
     // the case a `<` boundary would miss. Proven over the public surface.
-    let (records, view) = tree(&[(
+    let (records, view) = tree(vec![fns(
         "src/a.rs",
-        &source(
-            &["t0", "c1", "c2"],
-            // c1 -> t0 and c2 -> t0 at layer 1, and c1 -> c2 a SAME-LAYER (1 -> 1) edge
-            &[("c1", "t0"), ("c2", "t0"), ("c1", "c2")],
-        ),
+        &["t0", "c1", "c2"],
+        // c1 -> t0 and c2 -> t0 at layer 1, and c1 -> c2 a SAME-LAYER (1 -> 1) edge
+        &[("c1", "t0"), ("c2", "t0"), ("c1", "c2")],
     )]);
     let p = common::fixtures::view_graph(&records, &view);
 

@@ -231,19 +231,23 @@ impl rigger::contextgraph::ContextGraph for MinimalGraph {
 pub fn records_graph(
     records: &dyn rigger::contextgraph::Neighbors,
 ) -> rigger::composed::Composed<'_> {
-    let stamp = rigger::code_facts::Stamp {
+    view_graph(
+        records,
+        &rigger::code_view::FactsView::new(view_stamp("empty", 0, 0), Vec::new()),
+    )
+}
+
+/// The stamp of a test's code view of the tree `tree`, read by an extractor of `fingerprint`.
+fn view_stamp(tree: &str, fingerprint: u64, seq: u64) -> rigger::code_facts::Stamp {
+    rigger::code_facts::Stamp {
         tip: rigger::code_facts::Tip {
             head: "main".to_string(),
             commit: None,
-            tree: "empty".to_string(),
+            tree: tree.to_string(),
         },
-        fingerprint: 0,
-        seq: 0,
-    };
-    view_graph(
-        records,
-        &rigger::code_view::FactsView::new(stamp, Vec::new()),
-    )
+        fingerprint,
+        seq,
+    }
 }
 
 /// The record half `records` composed with `view`, read from a worktree that matches its tree.
@@ -281,16 +285,76 @@ pub fn files_view(
             extract.extract(&entry, text.as_bytes())
         })
         .collect();
-    let stamp = rigger::code_facts::Stamp {
-        tip: rigger::code_facts::Tip {
-            head: "main".to_string(),
-            commit: None,
-            tree: "files".to_string(),
-        },
-        fingerprint: extract.fingerprint(),
-        seq: 1,
+    rigger::code_view::FactsView::new(view_stamp("files", extract.fingerprint(), 1), facts)
+}
+
+/// The code view of a tree whose files hold exactly `facts`, planted as an extractor would read
+/// them: the facts a reader's rule is exercised over without a language's extractor.
+pub fn facts_view(facts: Vec<rigger::code_facts::FileFacts>) -> rigger::code_view::FactsView {
+    rigger::code_view::FactsView::new(view_stamp("facts", 0, 1), facts)
+}
+
+/// A planted Rust file at `path`, as its extractor would read it: each `(leaf, kind)` of `defs` a
+/// file-level definition on its own line from line 1, each `(caller, callee)` of `calls` a call to
+/// `callee` inside the definition named `caller` on that definition's line, and each of `uses` a
+/// file-level `use` of the name on line 1. A file under `tests/` is test scope, as the registry's
+/// path rule reads it.
+pub fn planted_file(
+    path: &str,
+    defs: &[(&str, &str)],
+    calls: &[(&str, &str)],
+    uses: &[&str],
+) -> rigger::code_facts::FileFacts {
+    use rigger::code_facts::{Def, FileFacts, Mention, MentionKind, Scope};
+    let index_of = |leaf: &str| {
+        defs.iter()
+            .position(|(name, _)| *name == leaf)
+            .unwrap_or_else(|| panic!("{path}: no definition {leaf} holds a call"))
     };
-    rigger::code_view::FactsView::new(stamp, facts)
+    let mention = |enclosing: Option<u32>, leaf: &str, kind: MentionKind, line: u32| Mention {
+        enclosing,
+        name: leaf.to_string(),
+        leaf: leaf.to_string(),
+        kind,
+        line,
+        test: false,
+    };
+    let calls = calls.iter().map(|(caller, callee)| {
+        let at = index_of(caller) as u32;
+        mention(Some(at), callee, MentionKind::Call, at + 1)
+    });
+    let uses = uses.iter().map(|leaf| {
+        mention(
+            None,
+            leaf,
+            MentionKind::Tagged(rigger::contextgraph::REF_KIND_USE.to_string()),
+            1,
+        )
+    });
+    FileFacts {
+        path: path.to_string(),
+        lang: "rust".to_string(),
+        scope: if path.starts_with("tests/") {
+            Scope::Test
+        } else {
+            Scope::Product
+        },
+        defs: defs
+            .iter()
+            .zip(1u32..)
+            .map(|((leaf, kind), line)| Def {
+                local: leaf.to_string(),
+                leaf: leaf.to_string(),
+                kind: kind.to_string(),
+                line,
+                end_line: line,
+                parent: None,
+                test: false,
+            })
+            .collect(),
+        mentions: calls.chain(uses).collect(),
+        ..Default::default()
+    }
 }
 
 /// An opener of the record half composed with the code view it holds ([`view_graph`]), whatever
