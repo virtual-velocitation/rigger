@@ -324,7 +324,7 @@ fn width_of(kind: u16) -> usize {
 }
 
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
-pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Vec<u8> {
+pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
     let mut enc = Encoder::default();
     let stamp = view.stamp();
     let mut header = Vec::new();
@@ -1033,7 +1033,7 @@ mod tests {
         ];
         for (name, stamp, files, groupings) in cases {
             let view = FactsView::new(stamp.clone(), files.clone());
-            let bytes = encode(&view, &groupings);
+            let bytes = encode(&view, &groupings).expect("encodes");
             let snap = Snapshot::decode(bytes.clone())
                 .unwrap_or_else(|e| panic!("{name}: decode failed: {e}"));
             assert_eq!(snap.stamp(), &stamp, "{name}: stamp");
@@ -1067,7 +1067,11 @@ mod tests {
             }
             assert!(snap.file("absent").is_none(), "{name}: absent file");
             assert_eq!(snap.defs_named("absent").count(), 0, "{name}: absent leaf");
-            assert_eq!(encode(&snap, snap.groupings()), bytes, "{name}: re-encode");
+            assert_eq!(
+                encode(&snap, snap.groupings()),
+                Ok(bytes),
+                "{name}: re-encode"
+            );
         }
     }
 }

@@ -128,7 +128,7 @@ pub fn write_container(
     version: u16,
     payload: &[u8],
     sections: &[(u16, Vec<u8>)],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     out.extend_from_slice(magic);
     put_u16(&mut out, version);
@@ -148,7 +148,7 @@ pub fn write_container(
     for (_, bytes) in sections {
         out.extend_from_slice(bytes);
     }
-    out
+    Ok(out)
 }
 
 /// A parsed container whose header and every section passed their crc.
@@ -331,7 +331,8 @@ mod tests {
                 (2, Vec::new()),
                 (9, b"nine".to_vec()),
             ],
-        );
+        )
+        .expect("writes");
         let parsed = Container::parse(&bytes, b"TEST", 3).expect("parses");
         assert_eq!(parsed.payload, b"payload");
         assert_eq!(parsed.section(7), Ok(&b"seven"[..]));
@@ -343,7 +344,8 @@ mod tests {
     /// Each row: how the bytes are damaged; every damage is refused, never a panic.
     #[test]
     fn a_damaged_container_is_refused() {
-        let good = write_container(b"TEST", 1, b"payload", &[(1, b"section".to_vec())]);
+        let good =
+            write_container(b"TEST", 1, b"payload", &[(1, b"section".to_vec())]).expect("writes");
         let flip = |at: usize| {
             let mut b = good.clone();
             b[at] ^= 0x40;
@@ -363,6 +365,21 @@ mod tests {
             assert!(
                 Container::parse(&bytes, b"TEST", 1).is_err(),
                 "{name} damage must be refused"
+            );
+        }
+    }
+
+    /// Each row: how many sections, and whether their count fits the header's u16 field. A count
+    /// that does not fit is an error, never a header that wraps to a smaller one.
+    #[test]
+    fn a_section_count_that_overflows_its_field_is_an_error() {
+        let fits = usize::from(u16::MAX);
+        for (count, written) in [(fits, true), (fits + 1, false)] {
+            let sections = vec![(1, Vec::new()); count];
+            assert_eq!(
+                write_container(b"TEST", 1, b"", &sections).is_ok(),
+                written,
+                "{count} sections"
             );
         }
     }

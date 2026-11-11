@@ -167,7 +167,7 @@ impl Store {
             Some(b) => b.groupings().clone(),
             None => group.group(&view),
         };
-        let bytes = encode(&view, &groupings);
+        let bytes = encode(&view, &groupings)?;
         let name = snap_name(view.stamp().seq);
         self.publish.publish(&self.dir.join(&name), &bytes)?;
         self.publish
