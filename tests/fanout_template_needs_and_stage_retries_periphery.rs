@@ -524,6 +524,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     let rs = run(&cfg, &deps).unwrap();
 

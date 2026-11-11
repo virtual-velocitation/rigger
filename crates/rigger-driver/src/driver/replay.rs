@@ -828,6 +828,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -900,6 +901,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -992,6 +994,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
 
         let rs = run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure");
@@ -1029,6 +1032,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1057,6 +1061,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1098,6 +1103,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
 
         run_isolated(&cfg, &deps).expect("parking a whole wave is not a run failure");
@@ -1154,6 +1160,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
@@ -1208,6 +1215,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
         }
@@ -1272,6 +1280,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1303,6 +1312,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1377,6 +1387,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -1408,6 +1419,7 @@ mod tests {
                 hash_blob: &|_| Ok(String::new()),
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
+                code_store: None,
             };
             // The run HALTS cleanly - the review-tier refusal is not a run error.
             run_isolated(&cfg, &deps)
@@ -1492,6 +1504,7 @@ mod tests {
             hash_blob: &|_| Ok(String::new()),
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
+            code_store: None,
         };
         run_isolated(cfg, &deps).map(|_| ())
     }

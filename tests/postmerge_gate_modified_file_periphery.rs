@@ -145,6 +145,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
     };
     let rs = run(&cfg, &deps).unwrap();
     for u in ["unit-a", "unit-b"] {

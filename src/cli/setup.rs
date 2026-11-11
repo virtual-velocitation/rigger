@@ -1,5 +1,6 @@
 use super::*;
 use rigger::contextgraph::sqlite::CatchUp;
+use rigger_domain::code_view::AdvanceCodeStore;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
 /// provenance, so any agent can identify the exact binary without guessing.
@@ -679,6 +680,25 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
 const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
      pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
      rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+
+/// The code store the conductor advances after each merge a run on `repo` lands; `repo` is the
+/// operator checkout, since a run refuses a linked worktree. None for a project with no
+/// repository, where no merge lands, and in a build with no extractor.
+#[cfg(feature = "symbols")]
+pub(crate) fn run_code_store(repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    if repo.is_empty() {
+        return None;
+    }
+    Some(Box::new(rigger::code_store::CodeStore::in_repository(
+        Path::new(repo),
+    )))
+}
+
+/// Light-lane [`run_code_store`]: no extractor is compiled in, so there is no store to advance.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn run_code_store(_repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    None
+}
 
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
