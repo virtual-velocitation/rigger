@@ -27672,28 +27672,30 @@ fn graph_around_fails_on_an_unreadable_subgraph() {
 fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     let dir = temp_project();
     let root = dir.path();
-    let healed = "fn healed() -> u8 {\n    1\n}\n";
-    let out = common::cli::show_drifted(
+    let out = common::cli::show_record_only(
         root,
         "src/heal.rs",
-        healed,
-        Some(&format!("\n\n{healed}")),
-        "src/heal.rs::healed",
+        "\n\nfn healed() -> u8 {\n    1\n}\n",
+        "healed",
+        "function",
+        1,
+        "rust",
     );
     assert_eq!(
-        out[..5],
+        out.lines().take(5).collect::<Vec<_>>(),
         [
             "show src/heal.rs::healed",
-            "  site: src/heal.rs:3   kind function   degree 2   (recorded line 1, now 3)",
+            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
             "  name healed",
             "  lang rust",
             "       3 | fn healed() -> u8 {",
         ],
         "the entry lines sit between the healed header and the body"
     );
-    let site = common::cli::composed_site(root, "src/heal.rs::healed");
+    let site =
+        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
     assert_eq!(
-        common::cli::printed_site_entries(&out.join("\n")),
+        common::cli::printed_site_entries(&out),
         common::cli::site_entries_as_printed(&site, 3),
         "the healed show prints site_fields at the live line"
     );
@@ -27740,10 +27742,11 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     );
 }
 
-/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a built graph of a file whose `impl T` and
-/// `impl U` each define `new`, WHEN the working tree moves both down two lines and the operator
-/// runs `rigger graph --show` on `T::new`'s exact id, THEN its body heals to `T::new`'s live
-/// lines alone, the path telling it from `U::new`, which shares its name and kind.
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
+/// of a file the head does not hold, whose `impl T` and `impl U` each define `new`, WHEN the
+/// working tree holds both two lines further down and the operator runs `rigger graph --show` on
+/// `T::new`'s exact id, THEN its body heals to `T::new`'s live lines alone, the path telling it
+/// from `U::new`, which shares its name and kind.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
@@ -27752,16 +27755,20 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
     let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
                   impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
     assert_eq!(
-        common::cli::show_drifted(
+        common::cli::show_record_only(
             root,
             "src/pair.rs",
-            source,
-            Some(&format!("// one\n// two\n{source}")),
-            "src/pair.rs::T::new",
-        ),
+            &format!("// one\n// two\n{source}"),
+            "T::new",
+            "method",
+            4,
+            "rust",
+        )
+        .lines()
+        .collect::<Vec<_>>(),
         [
             "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 3   (recorded line 4, now 6)",
+            "  site: src/pair.rs:6   kind method   degree 1   (recorded line 4, now 6)",
             "  name new",
             "  lang rust",
             "       6 |     fn new() -> T {",
@@ -28001,19 +28008,15 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
 }
 
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
-/// recorded alone (the head defines no such id), beside a definition of its leaf in an
-/// uncomparable working tree, WHEN the operator runs `rigger graph --show` on its id, THEN it
-/// prints the "no production definition named" note with its id in place of the name and no body,
-/// on every lane, never bounding a body by a cut of the id.
+/// recorded alone (the head does not hold its file), beside a definition of its leaf in the working
+/// tree, WHEN the operator runs `rigger graph --show` on its id, THEN it prints the "no production
+/// definition named" note with its id in place of the name and no body, on every lane, never
+/// bounding a body by a cut of the id.
 #[test]
 fn graph_show_notes_a_nameless_node_by_its_id() {
     let dir = temp_project();
     let root = dir.path();
-    common::cli::drift_uncomparable(
-        root,
-        &[("src/x.rs", "// no definition yet\n")],
-        &[("src/x.rs", Some("fn thing() {}\n"))],
-    );
+    common::cli::write_ignored(root, &[("src/x.rs", "fn thing() {}\n")]);
     let nameless = common::fixtures::node_with_attrs(
         "src/x.rs::thing",
         "code-entity",
@@ -28028,10 +28031,7 @@ fn graph_show_notes_a_nameless_node_by_its_id() {
     ));
 
     assert_eq!(
-        common::cli::past_uncomparable_label(&run_rigger_ok(
-            root,
-            &["graph", "--show", "src/x.rs::thing"]
-        )),
+        common::cli::graph_ok(root, &["graph", "--show", "src/x.rs::thing"]),
         "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
          definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
          in the current working tree; the recorded location may be stale)\n",
