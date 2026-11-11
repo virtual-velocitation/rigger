@@ -286,6 +286,16 @@ pub struct WriteLock {
     _file: File,
 }
 
+/// Releases the lock itself rather than leaving it to the descriptor's close: a child forked
+/// while the lock is held shares the descriptor until it execs, and would hold the lock past
+/// this drop.
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        // A failed unlock leaves the lock to the descriptor's close, the release there was before.
+        let _ = self._file.unlock();
+    }
+}
+
 impl WriteLock {
     fn open(path: &Path) -> Result<File, String> {
         if let Some(dir) = path.parent() {
@@ -419,5 +429,18 @@ mod tests {
         drop(held);
         assert!(WriteLock::try_acquire(&path).expect("open").is_some());
         assert_eq!(with_write_lock(&path, || Ok::<_, String>(5)), Ok(5));
+    }
+
+    /// A child process forked while the lock is held keeps a duplicate of its descriptor until it
+    /// execs; dropping the lock frees it all the same.
+    #[test]
+    fn a_dropped_lock_is_free_while_a_duplicate_of_its_descriptor_lives() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("LOCK");
+        let held = WriteLock::try_acquire(&path).expect("open").expect("free");
+        let forked_copy = held._file.try_clone().expect("duplicate");
+        drop(held);
+        assert!(WriteLock::try_acquire(&path).expect("open").is_some());
+        drop(forked_copy);
     }
 }
