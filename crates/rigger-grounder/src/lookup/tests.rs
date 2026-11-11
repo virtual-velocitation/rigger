@@ -593,3 +593,149 @@ crate::test_cases! {
         &format!("truncated: the reply reached its {REPLY_LIMIT}-character bound"),
     ]);
 }
+
+/// `n` sites `<prefix>0 (fn)` .. with no file.
+fn sites(prefix: &str, n: usize) -> Vec<Site> {
+    (0..n)
+        .map(|i| Site {
+            id: format!("{prefix}{i}"),
+            kind: "fn".to_string(),
+            file: None,
+        })
+        .collect()
+}
+
+/// `n` items `<prefix>0<suffix>` .., the first ten joined by `sep`, then ` (+N more)` for the
+/// rest: an edge line's expected listing.
+fn listed(prefix: &str, suffix: &str, n: usize, sep: &str) -> String {
+    let shown: Vec<String> = (0..n.min(10))
+        .map(|i| format!("{prefix}{i}{suffix}"))
+        .collect();
+    let more = if n > 10 {
+        format!(" (+{} more)", n - 10)
+    } else {
+        String::new()
+    };
+    format!("{}{more}", shown.join(sep))
+}
+
+/// A reply every section of which fits its bounds is laid out whole, with no cut stated.
+#[test]
+fn a_reply_within_every_bound_is_laid_out_whole() {
+    let graph = vec![
+        TermGraph::Missing {
+            nearest: vec!["neat".to_string(), "nearby".to_string()],
+        },
+        TermGraph::Missing { nearest: vec![] },
+        TermGraph::Found {
+            tier: "prefix",
+            entities: vec![Entity {
+                site: Site {
+                    id: "a.rs::hit".to_string(),
+                    kind: "function".to_string(),
+                    file: Some(("a.rs".to_string(), 3)),
+                },
+                callers: sites("c", 12),
+                callees: vec![
+                    Site {
+                        id: "b.rs::x".to_string(),
+                        kind: "fn".to_string(),
+                        file: Some(("b.rs".to_string(), 0)),
+                    },
+                    Site {
+                        id: "b.rs::y".to_string(),
+                        kind: "fn".to_string(),
+                        file: Some(("b.rs".to_string(), 0)),
+                    },
+                ],
+                referenced_in: (0..12).map(|i| format!("r{i}.rs")).collect(),
+            }],
+            reached: 1,
+            unread: 0,
+            withheld: (0..12).map(|i| format!("w{i}.rs")).collect(),
+        },
+    ];
+    let hit = |file: &str, line: u64, text: &str| TextHit {
+        file: file.to_string(),
+        line,
+        text: text.to_string(),
+    };
+    let text = vec![
+        TermText {
+            hits: vec![],
+            matched: 0,
+        },
+        TermText {
+            hits: vec![hit("a.rs", 1, "far away")],
+            matched: 1,
+        },
+        TermText {
+            hits: vec![hit("a.rs", 3, "fn hit() {}"), hit("b.rs", 9, "hit()")],
+            matched: 2,
+        },
+    ];
+    let prose = Ranked {
+        hits: vec![
+            ProseHit {
+                kind: "doc".to_string(),
+                place: "docs/a.md:1".to_string(),
+                title: "Hit".to_string(),
+                snippet: "the hit".to_string(),
+            },
+            ProseHit {
+                kind: "decision".to_string(),
+                place: "d1".to_string(),
+                title: String::new(),
+                snippet: "keep hit".to_string(),
+            },
+        ],
+        matched: 2,
+        records_left_out: None,
+    };
+    let reply = budget::reply(&["near", "far", "hit"], Ok(graph), Ok(text), Ok(prose));
+    let expected = format!(
+        "# lookup: near, far, hit
+
+## graph
+{filtered}
+
+### near
+no entity named near; nearest: neat, nearby
+
+### far
+no entity named far; the graph holds no near name
+
+### hit
+prefix match: 1 entity
+- a.rs:3 a.rs::hit (function)
+  called by: {callers}
+  calls: b.rs b.rs::x (fn); b.rs b.rs::y (fn)
+  referenced in: {referenced}
+{withheld_note}: {withheld}
+
+## text
+A literal, smart-case scan of your working tree as it stands, .gitignore honoured.
+
+### near
+no line of your tree holds near
+
+### far
+a.rs:1: far away
+
+### hit
+a.rs:3: fn hit() {{}}
+b.rs:9: hit()
+
+## prose
+Prose and the graph's records ranked by relevance to all the terms together.
+- prose:doc docs/a.md:1 \"Hit\": the hit
+- prose:decision d1: keep hit
+",
+        filtered = budget::GRAPH_FILTERED,
+        callers = listed("c", " (fn)", 12, "; "),
+        referenced = listed("r", ".rs", 12, ", "),
+        withheld = listed("w", ".rs", 12, ", "),
+        withheld_note = budget::WITHHELD,
+    );
+    assert_eq!(reply, expected);
+}

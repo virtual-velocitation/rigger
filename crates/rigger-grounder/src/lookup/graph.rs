@@ -46,10 +46,10 @@ pub(crate) struct Entity {
 }
 
 /// How a term resolved against the graph. A build without code extraction refuses the graph half
-/// before any term resolves, so it constructs neither variant.
+/// before any term resolves, so outside its tests it constructs neither variant.
 #[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(
-    not(feature = "symbols"),
+    all(not(feature = "symbols"), not(test)),
     expect(
         dead_code,
         reason = "only the symbols build resolves a term against the graph"
