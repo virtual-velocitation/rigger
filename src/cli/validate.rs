@@ -314,18 +314,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // INDEX STALENESS advisory (spec 68, VALIDATE ADVISORIES): warn when the persisted
-    // `symbols` grounding index has drifted from the tree and name `rigger reindex`. Cost-
-    // bounded and ungated (Design) - see `grounder::symbols::staleness`'s own docs for the
-    // measurement itself. `None` when there is no persisted index (nothing to compare
-    // against) or no disagreement; this never fails validate.
-    if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
-        eprintln!("{}", index_staleness_message(&drift));
-    }
     // GRAPH INDEX LAG advisory (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY): warn when
     // a bounded sample of files the log has recorded extracts, from the bytes the tree holds
     // now, to a generation the log's latest recording and `graph.db` do not both hold -
-    // staleness the integration-time reindex is supposed to prevent, surfaced before it is felt
+    // staleness the integration-time graph ingest is supposed to prevent, surfaced before it is felt
     // rather than discovered by a stale `graph --show` line. The tree is read under the ONE
     // ROOT, the top level of the repository holding the store's `.rigger/`, which the entries'
     // paths are relative to. An absent store has recorded nothing, and a store-read failure
@@ -513,49 +505,15 @@ fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
     advisories
 }
 
-/// The INDEX STALENESS advisory line (spec 68, VALIDATE ADVISORIES), rendered from an already-
-/// computed [`rigger::grounder::symbols::IndexDrift`] (the pure formatting stays separate from
-/// the gathering in [`rigger::grounder::symbols::staleness`], exactly like
-/// [`build_environment_report`] above). Names counts per kind of disagreement - never just a
-/// bare "it drifted" - and the fix, `rigger reindex`.
-fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> String {
-    let mut parts = Vec::new();
-    if !drift.added.is_empty() {
-        parts.push(format!(
-            "{} file(s) on disk not yet in the index",
-            drift.added.len()
-        ));
-    }
-    if !drift.removed.is_empty() {
-        parts.push(format!(
-            "{} indexed file(s) no longer on disk",
-            drift.removed.len()
-        ));
-    }
-    if !drift.changed.is_empty() {
-        parts.push(format!(
-            "{} sampled file(s) whose content changed",
-            drift.changed.len()
-        ));
-    }
-    format!(
-        "warning: the symbols grounding index ({}) has drifted from the tree ({}). Run \
-         `rigger reindex <file>...` to refresh it.",
-        rigger::grounder::symbols::store::index_path(".").display(),
-        parts.join(", "),
-    )
-}
-
 /// The GRAPH INDEX LAG advisory line (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY),
 /// rendered from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`]
 /// named: each one's current bytes extract to a generation other than its latest ledger entry's
 /// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
 /// about, not merely nothing measured (the pure formatting stays separate from the gathering,
-/// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
+/// exactly like [`build_environment_report`] above). Names every lagging file (never just a bare
 /// count) and the command the line points the operator at, `rigger graph build`: the verb that
 /// re-perceives the tree, recording each lagging file's ledger entry and folding it through the
-/// one function the integration reindex also calls ([`rigger::ingest::entry_of_batch`]).
-/// `rigger reindex` refreshes the symbols index alone, so it moves neither side compared.
+/// one function the integration's ingest also calls ([`rigger::ingest::entry_of_batch`]).
 fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
     if lagging.is_empty() {
         return None;
@@ -1950,27 +1908,6 @@ mod tests {
         assert!(model_drift_advisory(&metrics::ModelDrift::default()).is_none());
     }
 
-    // --- Spec 68, VALIDATE ADVISORIES: the two pure formatters (INDEX STALENESS, LOG BLOAT) ---
-
-    #[test]
-    fn index_staleness_message_names_every_kind_of_disagreement_and_the_fix() {
-        let drift = rigger::grounder::symbols::IndexDrift {
-            added: vec!["new.rs".to_string()],
-            removed: vec!["gone.rs".to_string()],
-            changed: vec!["edited.rs".to_string()],
-        };
-        let msg = index_staleness_message(&drift);
-        assert!(msg.starts_with("warning:"), "advisory: {msg}");
-        assert!(
-            msg.contains('1'),
-            "the message must carry the per-kind counts: {msg}"
-        );
-        assert!(
-            msg.contains("rigger reindex"),
-            "the message must name the fix: {msg}"
-        );
-    }
-
     // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
     // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
     // own implementation) ---
@@ -1985,7 +1922,7 @@ mod tests {
             "the message must name every lagging file: {msg}"
         );
         assert!(
-            msg.contains("Run `rigger graph build` to refresh it.") && !msg.contains("reindex"),
+            msg.contains("Run `rigger graph build` to refresh it."),
             "the message must name the verb that records and folds the lagging entries: {msg}"
         );
     }

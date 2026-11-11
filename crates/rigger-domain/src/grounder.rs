@@ -56,11 +56,6 @@ pub struct BlastRadius {
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
-    /// Re-index the given files after a unit integrates, so the next agent grounds
-    /// on the accepted code (the `symbols` grounder freshens the changed files). The
-    /// default is a no-op - grep re-reads the tree each time and needs no index.
-    fn reindex(&self, _src_dir: &str, _files: &[String]) {}
-
     /// The prompt seed of `query`: at most `k` distinct files an agent is grounded on. The
     /// DEFAULT - the one a grep / nop grounder inherits - is the distinct files of its own
     /// `ground(query, k)`, in ground order. The `symbols` grounder overrides it to start from the
@@ -85,14 +80,14 @@ pub trait Grounder: Send + Sync {
     }
 
     /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
-    /// architecture 5.5.9): the index content-hash + grammar / tag-query version that
-    /// produced this grounder's radii, so a recorded radius reconstructs which index state
+    /// architecture 5.5.9): the tree id + grammar / tag-query version that
+    /// produced this grounder's radii, so a recorded radius reconstructs which tree
     /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
     /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
     /// nop - no structural cross-reference index) returns an EMPTY stamp, so the
     /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
     /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
-    /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
+    /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
     fn index_stamp(&self) -> String {
         String::new()
     }
