@@ -11,7 +11,7 @@
 //! The implementer's inside-out unit test reads the private `edges` TABLE directly (its own
 //! `p.conn.lock()` + a raw `SELECT ... FROM edges`), so it proves the ROW COUNT in the table. This
 //! layer instead drives the PUBLIC projection the grounding slice injected into every prompt is
-//! actually built from: `Projector::open` -> `Projection::apply` -> `Projection::subgraph`. The
+//! actually built from: `Projector::open` -> `RecordFold::apply` -> `ContextGraph::subgraph`. The
 //! `subgraph` edge fetch is its OWN SQL (`SELECT from_id, to_id, ... WHERE valid_to IS NULL AND
 //! from_id IN (...) AND to_id IN (...)`) with NO `SELECT DISTINCT`, so under the old bare-insert
 //! fold it returned one row per accreted duplicate. These tests pin that the public `Graph` a
@@ -25,11 +25,11 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use common::fixtures::apply_governs_at;
 use common::fixtures::governs;
 use common::fixtures::nanos;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 
 #[test]
 fn subgraph_collapses_repeated_governs_to_one_live_edge_keeping_latest_provenance() {

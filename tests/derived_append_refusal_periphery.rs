@@ -35,7 +35,7 @@ use common::fixtures::{
 };
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Fold, Projection, KIND_DECISION, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    Fold, RecordFold, KIND_DECISION, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::namespace::Namespaced;
@@ -88,7 +88,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
     let project = Namespaced::new(&backend, "project");
     let said = std::sync::Mutex::new(Vec::<String>::new());
     let log = |line: &str| said.lock().unwrap().push(line.to_string());
-    let folding = folding_into(&project, Some(&graph as &dyn Projection), &log);
+    let folding = folding_into(&project, Some(&graph as &dyn RecordFold), &log);
     let held = || {
         (
             rows_of_the_file(&events_db),

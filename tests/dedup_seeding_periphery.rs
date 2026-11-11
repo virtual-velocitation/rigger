@@ -665,6 +665,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
     let dir = temp_ingestable_project();
     let root = dir.path();
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         ok,
@@ -701,6 +702,7 @@ fn a_domain_events_replay_key_never_suppresses_the_shipped_builds_ingest() {
     seed_run_stream(root, &residue);
     let before = recorded_entry_keys(&read_run_events(root));
 
+    common::fixtures::commit_tree(root);
     let (out2, err2, ok2) = run_rigger(root, &["graph", "build"]);
     assert!(
         ok2,

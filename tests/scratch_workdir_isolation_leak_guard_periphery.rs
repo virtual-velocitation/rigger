@@ -113,6 +113,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
 
     let would_leak = rigger::worktree::cache_scratch_root_from(
@@ -167,6 +168,7 @@ fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drop
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert!(

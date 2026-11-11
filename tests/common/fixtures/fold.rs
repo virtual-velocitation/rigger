@@ -23,11 +23,11 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, Candidate, EntitySite, EntryFold, Graph, Located, Node,
-    Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION, CODE_KIND_TYPE,
-    KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, LIST_SEP,
-    META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS, REL_CONTAINS,
-    REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    around, entity_site, site_fields, Candidate, ContextGraph, EntitySite, EntryFold, Graph,
+    Located, Node, RecordFold, CODE_KIND_CONSTANT, CODE_KIND_FIELD, CODE_KIND_FUNCTION,
+    CODE_KIND_TYPE, KIND_ARCH_DECISION, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC,
+    KIND_FILE, LIST_SEP, META_ACTOR, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE, REL_CALLS,
+    REL_CONTAINS, REL_IN_COMMUNITY, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_DOC_CONCEPT_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
@@ -178,16 +178,16 @@ pub fn nanos(secs: u64) -> i64 {
     Duration::from_secs(secs).as_nanos() as i64
 }
 
-/// Fold `entry` onto `p` with `batch` as its batch, through `Projection::apply_generation` - the
+/// Fold `entry` onto `p` with `batch` as its batch, through `RecordFold::apply_generation` - the
 /// one fold that stages a tagged reference (spec 117) - answering which outcome it met.
-pub fn fold_entry_with(p: &dyn Projection, entry: &Event, batch: Vec<Event>) -> EntryFold {
+pub fn fold_entry_with(p: &dyn RecordFold, entry: &Event, batch: Vec<Event>) -> EntryFold {
     fold_entry_result(p, entry, batch).unwrap()
 }
 
 /// [`fold_entry_with`]'s fold, answering the outcome it met or the text of the error it failed
 /// with.
 pub fn fold_entry_result(
-    p: &dyn Projection,
+    p: &dyn RecordFold,
     entry: &Event,
     batch: Vec<Event>,
 ) -> Result<EntryFold, String> {
@@ -197,14 +197,14 @@ pub fn fold_entry_result(
 
 /// Fold `entry` onto `p` with `batch` as its batch ([`fold_entry_with`]) and insist the batch was
 /// asked for.
-pub fn entry_asked(p: &dyn Projection, entry: &Event, batch: Vec<Event>) {
+pub fn entry_asked(p: &dyn RecordFold, entry: &Event, batch: Vec<Event>) {
     assert_eq!(fold_entry_with(p, entry, batch), EntryFold::BatchAsked);
 }
 
 /// Fold `batch` as generation `generation` of `gc/<file>`, its entry at log position `pos` valid
 /// from `secs` ([`entry_at`]), and insist the batch was asked for ([`entry_asked`]).
 pub fn fold_asked(
-    p: &dyn Projection,
+    p: &dyn RecordFold,
     file: &str,
     generation: &str,
     pos: u64,
@@ -413,7 +413,7 @@ pub const UNFINISHED_REBUILD: &str = "graph.db holds an unfinished rebuild";
 
 /// What the generic fold answers a ledger entry, the reason of its refusal.
 pub const ENTRY_REFUSED: &str =
-    "a GenerationIngested entry folds only with its batch, through `Projection::apply_generation`";
+    "a GenerationIngested entry folds only with its batch, through `RecordFold::apply_generation`";
 
 /// What the public fold answers a batch holding a ledger entry the constructor built, naming no
 /// stream: the generic fold's refusal ([`ENTRY_REFUSED`]), with no tail, since no later fold
@@ -493,7 +493,7 @@ pub fn blob_unread() -> Result<Option<Vec<Event>>, rigger::contextgraph::Error> 
 }
 
 /// Fold `events` into `p` through the public fold, answering what became of them.
-pub fn fold_of(p: &dyn Projection, events: &[Event]) -> rigger::contextgraph::Fold {
+pub fn fold_of(p: &dyn RecordFold, events: &[Event]) -> rigger::contextgraph::Fold {
     rigger::contextgraph::Fold::of_batch(|| rigger::contextgraph::wired(Some(p)), events)
 }
 
@@ -510,7 +510,7 @@ pub fn rebuild_meeting_a_writer(
     graph_db: &str,
     owed: bool,
     source: &mut rigger::contextgraph::sqlite::RebuildSource,
-    writer: &(dyn Projection + Sync),
+    writer: &(dyn RecordFold + Sync),
     events: &[Event],
     batch: &[Event],
 ) -> rigger::contextgraph::Fold {
@@ -626,12 +626,12 @@ pub fn rebuild_clean(
 
 /// Fold `events` into `p` through the public fold ([`fold_of`]), and insist they landed: the one
 /// spelling of seeding a graph a test then reads.
-pub fn folds(p: &dyn Projection, events: &[Event]) {
+pub fn folds(p: &dyn RecordFold, events: &[Event]) {
     assert_eq!(fold_of(p, events), rigger::contextgraph::Fold::Folded);
 }
 
 /// Fold each of `events` into `p` alone, in order, each in a transaction of its own ([`folds`]).
-pub fn folds_each(p: &dyn Projection, events: &[Event]) {
+pub fn folds_each(p: &dyn RecordFold, events: &[Event]) {
     for e in events {
         folds(p, std::slice::from_ref(e));
     }
@@ -1084,7 +1084,7 @@ pub const UNREADABLE_LEAVES: &str = "UPDATE refs SET leaf = CAST(leaf AS BLOB)";
 /// The error a read of a `refs` row's leaf as text meets once [`UNREADABLE_LEAVES`] ran.
 pub const UNREADABLE_LEAF: &str = "Invalid column type Blob at index: 0, name: leaf";
 
-/// Fold, each through `Projection::apply_generation` (the one fold that stages a row; spec 117):
+/// Fold, each through `RecordFold::apply_generation` (the one fold that stages a row; spec 117):
 /// [`RESOLVING_FILE`] defining `CEILING`, `Halved` and `Hinted`; then [`UNRESOLVED_FILE`], its head
 /// carrying `partial`, whose file-level `use` of `Elsewhere`, whose fn `scan`'s `type` `Unbuilt`,
 /// `const` `CEILING`, `type` and `const` `Halved` and `type` `Hinted`, and whose fn `glance`'s
@@ -1093,7 +1093,7 @@ pub const UNREADABLE_LEAF: &str = "Invalid column type Blob at index: 0, name: l
 /// where its `const` row does not, and `Hinted` listed, its one resolving row read from `scan` and
 /// not from `glance`; then `src/bystander.rs`, whose file-level `type` of `Outlier` resolves to
 /// nothing.
-pub fn seed_unresolved_references(p: &dyn Projection) {
+pub fn seed_unresolved_references(p: &dyn RecordFold) {
     let fold = |file: &str, generation: &str, pos: u64, batch: Vec<Event>| {
         fold_asked(p, file, generation, pos, 10 * pos, batch);
     };
@@ -1444,8 +1444,8 @@ fn fields_of(site: &EntitySite) -> BTreeMap<String, serde_json::Value> {
 }
 
 /// The one site `graph` locates for `id`.
-pub fn located_site(graph: &Projector, id: &str) -> EntitySite {
-    let Located::One(site) = graph.locate(id).unwrap() else {
+pub fn located_site(graph: &dyn rigger::contextgraph::Neighbors, id: &str) -> EntitySite {
+    let Located::One(site) = rigger::composed::locate(graph, id).unwrap() else {
         panic!("{id} locates one node")
     };
     site
@@ -1557,7 +1557,7 @@ pub fn assert_around_lists_no_unresolved(answer: &serde_json::Value) {
 /// [`SHOWN_FILE`] at depth 1, carries no `summary` key and is [`entity_site`] over the `Node`
 /// [`around`] loads from `graph` at the degree the object carries less its `summary` entry,
 /// compared without order.
-pub fn assert_around_is_entity_sites(graph: &Projector, nodes: &[serde_json::Value]) {
+pub fn assert_around_is_entity_sites(graph: &dyn ContextGraph, nodes: &[serde_json::Value]) {
     let loaded = around(graph, &[SHOWN_FILE.to_string()], 1).unwrap();
     for node in nodes {
         let id = node["id"].as_str().unwrap();

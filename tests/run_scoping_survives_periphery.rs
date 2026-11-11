@@ -104,6 +104,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }

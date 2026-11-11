@@ -31,7 +31,7 @@ use std::path::Path;
 use rigger::conductor;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_CONCEPT, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_EXPLAINS,
+    RecordFold, KIND_CONCEPT, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_EXPLAINS,
     REL_GOVERNS, REL_REALIZES, REL_SPECIFIES, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
     TYPE_DOC_LINK_EXTRACTED,
 };
@@ -165,7 +165,7 @@ fn seed_intent(root: &Path) {
     // `decision` node is not an intent-doc, so the layer must EXCLUDE it.
     events.push(decision_noise("d-noise", "src/graph/store.rs"));
 
-    let done = folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
+    let done = folding_into(&store, Some(&graph as &dyn RecordFold), &|_| {})
         .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the intent layer through the real append-and-fold seam");
     assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);

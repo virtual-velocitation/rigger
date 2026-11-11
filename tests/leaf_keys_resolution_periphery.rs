@@ -16,6 +16,7 @@
 
 use crate::common;
 
+use common::fixtures::RecordsRead;
 use common::fixtures::{
     apply_code_entity, apply_def, def_node, definition, edge, empty_named_node, plain,
 };

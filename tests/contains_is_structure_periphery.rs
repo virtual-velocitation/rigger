@@ -92,6 +92,28 @@ fn contains_lines(edges: &[(&str, &str)]) -> Vec<(String, String, String)> {
         .collect()
 }
 
+/// [`contains_lines`] with the one community the tree's grouping puts every node of `edges` in,
+/// joined at read, each as its `IN_COMMUNITY` line, all sorted as `--around` prints them.
+fn contains_and_community_lines(edges: &[(&str, &str)]) -> Vec<(String, String, String)> {
+    let community = |id: &str| {
+        (
+            id.to_string(),
+            "IN_COMMUNITY".to_string(),
+            "community/1/0".to_string(),
+        )
+    };
+    let mut lines = contains_lines(edges);
+    let mut ids: Vec<&str> = edges
+        .iter()
+        .flat_map(|&(parent, child)| [parent, child])
+        .collect();
+    ids.sort();
+    ids.dedup();
+    lines.extend(ids.into_iter().map(community));
+    lines.sort();
+    lines
+}
+
 /// GIVEN a project whose `a.rs` defines the enum `E` holding the variants `A` and `B`, WHEN the
 /// operator runs `rigger graph build` and `rigger graph --around a.rs::E`, THEN the file contains
 /// `E` and `E` contains each variant; AND WHEN `B` is removed from the file and the operator
@@ -99,7 +121,7 @@ fn contains_lines(edges: &[(&str, &str)]) -> Vec<(String, String, String)> {
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_hangs_each_variant_off_its_enum_and_retires_a_removed_ones() {
-    use common::cli::{edge_lines, run_around, run_rigger_ok, temp_project};
+    use common::cli::{edge_lines, run_around, temp_project};
     use common::fixtures::{
         ENUM_E, ENUM_E_HOLDING_A, ENUM_E_HOLDING_A_AND_B, E_HOLDS_A, VARIANT_E_B,
     };
@@ -109,7 +131,7 @@ fn graph_build_hangs_each_variant_off_its_enum_and_retires_a_removed_ones() {
     let mut printed = Vec::new();
     for source in [ENUM_E_HOLDING_A_AND_B, ENUM_E_HOLDING_A] {
         common::fixtures::write_text(root, "a.rs", source);
-        run_rigger_ok(root, &["graph", "build"]);
+        common::cli::build_head(root);
         let (out, err, ok) = run_around(root, ENUM_E, 1);
         assert!(
             ok,
@@ -120,8 +142,8 @@ fn graph_build_hangs_each_variant_off_its_enum_and_retires_a_removed_ones() {
     assert_eq!(
         printed,
         [
-            contains_lines(&[E_HOLDS_A, &[(ENUM_E, VARIANT_E_B)]].concat()),
-            contains_lines(E_HOLDS_A),
+            contains_and_community_lines(&[E_HOLDS_A, &[(ENUM_E, VARIANT_E_B)]].concat()),
+            contains_and_community_lines(E_HOLDS_A),
         ],
         "each build's edges around the enum: each variant contained by it, the removed one retired"
     );

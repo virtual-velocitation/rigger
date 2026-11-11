@@ -1,6 +1,6 @@
 //! Periphery (contract / API / integration) tests for spec 52 criterion 4 - the DIRECTED-CALL
 //! ROUTE `/api/graph?view=calls&dir=down|up|both`. The unit adds a second seeded branch to the dash
-//! that dispatches to the store-side `Projection::calls` traversal through a lazy direct-projection
+//! that dispatches to the store-side `ContextGraph::calls` traversal through a lazy direct-projection
 //! provider, and reuses the `Neighborhood` shape with the additive `dir` / `layer` / `frontier` /
 //! `back` / `referenced_not_called` fields the layered left-to-right renderer draws.
 //!
@@ -44,13 +44,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::common::fixtures::RecordsRead;
 use common::fixtures::calls_edge;
 use common::fixtures::plain;
 use common::fixtures::{apply_call, apply_def};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    CallGraph, CallNode, Direction, Edge, Graph, Projection, KIND_CODE_ENTITY, KIND_FILE,
-    REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
+    CallGraph, CallNode, Direction, Edge, Graph, KIND_CODE_ENTITY, KIND_FILE, REL_CALLS,
+    TIER_AMBIGUOUS, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs, DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH};
 

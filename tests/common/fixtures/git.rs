@@ -122,6 +122,16 @@ pub fn git_hash_object(dir: impl AsRef<Path>, path: &str, write: bool) -> String
     git_out(dir, &[&["hash-object"], flag, &[path]].concat())
 }
 
+/// Stage everything in the repository at `dir` and commit it, even when nothing changed, so its
+/// head holds the tree the worktree does: the tree the code store describes.
+pub fn commit_tree(dir: impl AsRef<Path>) {
+    git_ok(dir.as_ref(), &["add", "-A"]);
+    git_ok_with_identity(
+        dir.as_ref(),
+        &["commit", "-q", "--allow-empty", "-m", "tree"],
+    );
+}
+
 /// Stage everything in the repository at `dir` and commit it as `msg`, asserting both succeed.
 pub fn git_commit_all(dir: impl AsRef<Path>, msg: &str) {
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {

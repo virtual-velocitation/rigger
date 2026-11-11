@@ -200,7 +200,7 @@ pub fn entry_records(events: &[Event]) -> Vec<EntryRecord> {
 pub fn seed_pre_ledger_rows_without_a_group(
     root: &std::path::Path,
     store: &dyn rigger::eventstore::EventStore,
-    graph: &dyn rigger::contextgraph::Projection,
+    graph: &dyn rigger::contextgraph::RecordFold,
 ) {
     let folding = rigger::ingest::folding_into(store, Some(graph), &|_| {});
     rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, _| {
@@ -233,7 +233,7 @@ pub fn seed_pre_ledger_rows_without_a_group(
 pub fn seed_generations_on_another_stream(
     root: &std::path::Path,
     store: &dyn rigger::eventstore::EventStore,
-    graph: &dyn rigger::contextgraph::Projection,
+    graph: &dyn rigger::contextgraph::RecordFold,
     stream: &str,
 ) {
     rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, excluded| {
@@ -251,7 +251,7 @@ pub fn seed_generations_on_another_stream(
 #[cfg(feature = "symbols")]
 pub fn record_folded_entry(
     store: &dyn rigger::eventstore::EventStore,
-    graph: &dyn rigger::contextgraph::Projection,
+    graph: &dyn rigger::contextgraph::RecordFold,
     stream: &str,
     entry: &GenerationIngested,
     batch: Vec<Event>,
@@ -264,7 +264,7 @@ pub fn record_folded_entry(
 
 /// The generation `graph` holds for each of `identities`, in order.
 pub fn held_generations(
-    graph: &dyn rigger::contextgraph::Projection,
+    graph: &dyn rigger::contextgraph::RecordFold,
     identities: &[impl AsRef<str>],
 ) -> Vec<Option<String>> {
     identities
@@ -366,7 +366,7 @@ pub fn rebuilt_graph_file(
 /// folds one decision, then the file records the rule before the current one, so every fold after
 /// it is refused for that debt. The rule is stamped through the store's own opener, the one sqlite
 /// connection every crate that mounts this fixture reaches.
-pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::Projection, graph_db: &std::path::Path) {
+pub fn owe_a_rebuild(graph: &dyn rigger::contextgraph::RecordFold, graph_db: &std::path::Path) {
     let decision = super::event_of("DecisionMade", super::decision_json("d-owed", "s", &[], ""));
     super::folds(graph, &[super::placed_at(decision, 1, 1)]);
     rigger_store_sqlite::sqlite::open_connection(graph_db.to_str().unwrap())

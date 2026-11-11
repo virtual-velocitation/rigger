@@ -252,6 +252,7 @@ fn single_stage_cfg(stage: Stage) -> Config {
 fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> Vec<String> {
     let store = Store::open(":memory:").unwrap();
     let driver = CapturingDriver::default();
+    let context = common::fixtures::RecordsOnly(graph);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -265,6 +266,7 @@ fn capture_prompts(cfg: &Config, graph: &Projector, grounder: &dyn Grounder) -> 
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: Some(&context),
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition
     // (integrate / not) is irrelevant to what this periphery layer observes.
@@ -662,6 +664,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         implementer: "worker".into(),
         prompts: Mutex::new(Vec::new()),
     };
+    let context = common::fixtures::RecordsOnly(graph);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -675,6 +678,7 @@ fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: Some(&context),
     };
     // The prompt is captured before the spawn returns, so the run's terminal disposition is
     // irrelevant to what this periphery layer observes.
@@ -740,6 +744,7 @@ fn run_and_capture_review_spawns(
         prompts: Mutex::new(Vec::new()),
         system_prompts: Mutex::new(Vec::new()),
     };
+    let context = common::fixtures::RecordsOnly(graph);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -757,6 +762,7 @@ fn run_and_capture_review_spawns(
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: Some(&context),
     };
     // Prompts are captured before each spawn returns, so the run's terminal disposition is irrelevant
     // to what this periphery layer observes.

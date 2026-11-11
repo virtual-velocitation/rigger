@@ -24,8 +24,8 @@
 //!   Dating a node off ANY edge touching it as either endpoint (rather than only its own
 //!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.

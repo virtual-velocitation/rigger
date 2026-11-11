@@ -18,7 +18,7 @@
 //!    `.rigger/events.db`, and folds into a real `.rigger/graph.db` that outlives it. Nothing
 //!    proved the sequence over persisted state.
 //! 3. THE READER'S VIEW. The criterion's consequence is not a key set, it is what a traversal
-//!    SEES. In-crate that is a `Projection` handle; the shipped read surface is
+//!    SEES. In-crate that is a `RecordFold` handle; the shipped read surface is
 //!    `rigger graph --around`, and the stranding this criterion forbids is only a defect because
 //!    it is what a reader gets. These tests assert on that surface.
 //!
@@ -61,6 +61,7 @@ use common::cli::run_rigger;
 /// Drive `graph build` in `root` and return what it reported ingesting, failing loudly rather than
 /// letting a non-zero exit read as a zero-ingest.
 fn build(root: &std::path::Path, stage: &str) -> usize {
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         ok,

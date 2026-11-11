@@ -144,6 +144,7 @@ fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).expect(

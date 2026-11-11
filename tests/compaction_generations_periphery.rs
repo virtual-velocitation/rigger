@@ -598,7 +598,7 @@ fn rebuild_through(
 /// paid rebuild never reads the log again.
 fn a_pre_rule_graph_db_is_rebuilt_from_the_log_once(ledgers: &str) {
     use rigger::contextgraph::sqlite::{Projector, RebuildProgress};
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     let dir = tempfile::tempdir().unwrap();
     let (backend, _) = store_with(
         dir.path(),
@@ -1518,7 +1518,7 @@ fn leave_a_shadow_with_no_rebuild_state(root: &Path) {
 #[test]
 fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule() {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     let store = ReleaseEraStore::new();
     let out = setup_ok(store.root(), &[]);
     let rebuild: Vec<&str> = out
@@ -2786,7 +2786,7 @@ fn a_fold_dependent_command_refuses_at_the_old_rule_and_an_inspection_answers_as
 #[test]
 fn opens_racing_the_rebuild_neither_wait_nor_undo_it() {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     use std::sync::mpsc::channel;
     use std::time::{Duration, Instant};
     let store = ReleaseEraStore::new();
@@ -3821,7 +3821,7 @@ fn an_emit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded() {
 /// resolves - no rebuild will ever re-derive an event a current graph missed.
 #[test]
 fn the_identity_migrations_decision_is_folded_into_the_graph_it_migrates() {
-    use rigger::contextgraph::Projection;
+    use crate::common::fixtures::RecordsRead;
 
     let dir = temp_store_project();
     let root = dir.path();
@@ -5168,7 +5168,7 @@ fn reset_runs_folds_the_integration_it_records_for_a_landed_unit_behind_a_held_l
 #[test]
 fn a_failed_fold_into_an_in_memory_graph_marks_nothing_owed_and_the_next_batch_folds() {
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     let mark = std::env::current_dir().unwrap().join(":memory:.owed");
     let mut poison = Event::new("DecisionMade", common::fixtures::POISON.to_vec());
     poison.position = 1;

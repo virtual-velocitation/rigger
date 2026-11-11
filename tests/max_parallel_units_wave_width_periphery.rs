@@ -176,6 +176,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
 
     run(&cfg, &deps)

@@ -12,8 +12,8 @@
 //! The implementer's inside-out unit test seeds the dirty on-disk pile with a raw
 //! `INSERT ... valid_to = NULL` through the private `Projector::conn` and reads the private `edges`
 //! table directly, so it proves the ROW COUNT the rebuild collapses. This layer instead drives the
-//! PUBLIC projection a grounding consumer actually reads - `Projector::open` -> `Projection::apply`
-//! -> `Projection::subgraph` - and cannot reach `conn`, exactly as an external caller cannot. It
+//! PUBLIC projection a grounding consumer actually reads - `Projector::open` -> `RecordFold::apply`
+//! -> `ContextGraph::subgraph` - and cannot reach `conn`, exactly as an external caller cannot. It
 //! pins that a fresh rebuild of a log that re-asserts one relationship N times surfaces exactly ONE
 //! live `GOVERNS` edge per `(from, rel, to)` in the public `Graph` (the collapse a consumer sees),
 //! and that TWO independent fresh rebuilds of the SAME log re-derive the IDENTICAL public subgraph.
@@ -27,11 +27,12 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use common::fixtures::apply_governs_at;
 use common::fixtures::governs;
 use common::fixtures::nanos;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Graph, Projection};
+use rigger::contextgraph::Graph;
 
 /// A REBUILD: fold the canonical criterion-3 log from scratch into a FRESH, empty projection and
 /// return the public `subgraph` over both governed files. Each call is an independent rebuild - a new

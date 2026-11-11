@@ -23,11 +23,12 @@
 //!   the crate to pin that every concept kind lowers onto the fold arm that matches it (no silent
 //!   drop) and that the full extract-emit-fold pipeline is a deterministic, reproducible rebuild.
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE,
-    KIND_RATIONALE, REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
-    TIER_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    Graph, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
+    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
+    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
 #[cfg(feature = "symbols")]
 use rigger::eventstore::Event;

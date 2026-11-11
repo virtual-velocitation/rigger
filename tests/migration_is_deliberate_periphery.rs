@@ -50,7 +50,7 @@
 //!    retires_its_middle_generation` is the only test that CAN reach this state, and it already
 //!    drives the real filesystem and the real fold rather than a hand-built sequence;
 //!  - whether a superseded row literally persists on disk ("never a store wipe"): no public
-//!    `Projection` method exposes a historical/superseded read - `subgraph`'s own doc says it
+//!    `RecordFold` method exposes a historical/superseded read - `subgraph`'s own doc says it
 //!    follows "only currently valid edges" - so this is provable only in-crate, where
 //!    `sqlite.rs::migration_c3` already reads the raw superseded edge directly.
 
@@ -75,8 +75,9 @@ use std::path::Path;
 #[test]
 fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_events_and_fold_seam()
 {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
+    use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
     use rigger::eventstore::Event;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
@@ -200,8 +201,8 @@ fn a_whole_tests_dir_files_legacy_entity_is_retired_through_the_real_extract_eve
 #[cfg(feature = "symbols")]
 #[test]
 fn a_lone_empty_structural_sentinel_through_the_real_pipeline_creates_nothing_at_all() {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
@@ -248,8 +249,8 @@ fn a_lone_empty_structural_sentinel_through_the_real_pipeline_creates_nothing_at
 #[test]
 fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_through_extract_events_own_end_of_function_boundary(
 ) {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::extract_events;
 
@@ -336,8 +337,8 @@ fn a_product_file_rewrapped_entirely_into_cfg_test_retires_its_prior_entity_thro
 fn assert_out_of_line_declaration_retires_through_the_real_fold_seam(
     entry: impl Fn(&str) -> Vec<(String, Vec<rigger::eventstore::Event>)>,
 ) {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
 
     let root = tempfile::tempdir().unwrap();
     let root_str = root.path().to_str().unwrap();

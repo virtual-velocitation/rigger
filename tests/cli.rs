@@ -122,7 +122,7 @@ fn emit_appends_and_folds_then_peers_shows_it() {
         "peers src/foo.rs must show the d1 decision governing it on one line"
     );
     let id = out.split_whitespace().nth(1).unwrap();
-    let shown = run_rigger_ok(root, &["graph", "--show", id]);
+    let shown = common::cli::graph_ok(root, &["graph", "--show", id]);
     assert!(
         shown.starts_with("show d1\n") && shown.contains("kind decision"),
         "the id a peers line carries resolves through `rigger graph --show`; got: {shown:?}"
@@ -441,7 +441,7 @@ fn a_record_citing_lines_of_a_file_is_about_that_file_in_peers_and_the_graph() {
             "peers tests/x.rs must list `{line}`; got: {out:?}"
         );
         let id = line.split_whitespace().nth(1).unwrap();
-        let shown = run_rigger_ok(root, &["graph", "--show", id]);
+        let shown = common::cli::graph_ok(root, &["graph", "--show", id]);
         assert!(
             shown.starts_with(&format!("show {id}\n")) && shown.contains(&format!("kind {kind}")),
             "the id on `{line}` resolves through `rigger graph --show`; got: {shown:?}"
@@ -2183,6 +2183,7 @@ fn graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run() {
     )
     .unwrap();
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
 
     let [recorded, walked] = recorded_and_walked(root);
@@ -2216,6 +2217,7 @@ fn graph_build_records_source_as_ledger_entries_and_folds_it_with_no_run() {
         "the CALLS edge the fold emits must be present in the built graph; got:\n{g}"
     );
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
 
     assert_eq!(
@@ -2374,13 +2376,14 @@ const OLDER_STORE_KINDS_BATCH: [(&str, &str); 5] = [
 #[cfg(feature = "symbols")]
 #[test]
 fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
+    use crate::common::fixtures::RecordsRead;
     use common::cli::{rigger_file, temp_rigger_project};
     use common::fixtures::{
         entry_records, events_of, generation_ingested, handed_by_the_walk, held_generations,
         record_folded_entry,
     };
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::{Direction, Projection, TIER_INFERRED};
+    use rigger::contextgraph::{Direction, TIER_INFERRED};
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::sqlite::Store;
 
@@ -2440,10 +2443,10 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
         &Projector::open(graph_db.to_str().unwrap(), &project).unwrap(),
         &identities,
     );
-    run_rigger_ok(root, &["graph", "build"]);
+    common::cli::build_head(root);
 
     let shown = |leaf: &str| {
-        let out = run_rigger_ok(root, &["graph", "--show", leaf]);
+        let out = common::cli::graph_ok(root, &["graph", "--show", leaf]);
         let mut lines = out.lines();
         let header = lines.next().unwrap_or_default().to_string();
         let kind = lines
@@ -2480,7 +2483,7 @@ fn the_new_kinds_reach_an_older_store_at_setup_and_the_next_build() {
         "each new kind's leaf is shown at its own site, its path id, with its kind"
     );
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "elapsed"]),
+        common::cli::graph_ok(root, &["graph", "--show", "elapsed"]),
         common::cli::ambiguous_show(
             "elapsed",
             &[
@@ -2828,6 +2831,7 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
     let sub = root.join("engine").join("nested");
     std::fs::create_dir_all(&sub).unwrap();
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(&sub, &["graph", "build"]);
     assert!(
         ok,
@@ -27449,7 +27453,7 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
     common::cli::seed_rigger_dir(root);
     seed_shown_nodes(&common::cli::open_graph(root));
 
-    let shown = SHOWN_IDS.map(|id| run_rigger_ok(root, &["graph", "--show", id]));
+    let shown = SHOWN_IDS.map(|id| common::cli::graph_ok(root, &["graph", "--show", id]));
     let stale =
         |at: &str| format!("  (source unavailable at {at}; the recorded location may be stale)\n");
     assert_eq!(
@@ -27575,12 +27579,12 @@ fn graph_around_prints_the_queried_files_unresolved_count_alone() {
              \x20 node src/reader.rs            file\n\
              \x20 node src/reader.rs::scan      code-entity\n\
              \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::CEILING\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::CEILING\n\
              \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Halved\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Halved\n\
              \x20 edge src/definer.rs -CONTAINS-> src/definer.rs::Hinted\n\
-             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Hinted\n\
-             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n",
+             \x20 edge src/reader.rs -CONTAINS-> src/reader.rs::scan\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::CEILING\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Halved\n\
+             \x20 edge src/reader.rs::scan -REFERENCES-> src/definer.rs::Hinted\n",
         ],
         "the queried file alone prints its count, and an empty list prints none"
     );
@@ -27668,30 +27672,28 @@ fn graph_around_fails_on_an_unreadable_subgraph() {
 fn graph_show_prints_the_entry_lines_between_a_healed_header_and_the_body() {
     let dir = temp_project();
     let root = dir.path();
-    let out = common::cli::show_recorded(
+    let healed = "fn healed() -> u8 {\n    1\n}\n";
+    let out = common::cli::show_drifted(
         root,
         "src/heal.rs",
-        "\n\nfn healed() -> u8 {\n    1\n}\n",
-        "healed",
-        "function",
-        1,
-        "rust",
+        healed,
+        Some(&format!("\n\n{healed}")),
+        "src/heal.rs::healed",
     );
     assert_eq!(
-        out.lines().take(5).collect::<Vec<_>>(),
+        out[..5],
         [
             "show src/heal.rs::healed",
-            "  site: src/heal.rs:3   kind function   degree 1   (recorded line 1, now 3)",
+            "  site: src/heal.rs:3   kind function   degree 2   (recorded line 1, now 3)",
             "  name healed",
             "  lang rust",
             "       3 | fn healed() -> u8 {",
         ],
         "the entry lines sit between the healed header and the body"
     );
-    let site =
-        common::fixtures::located_site(&common::cli::open_graph(root), "src/heal.rs::healed");
+    let site = common::cli::composed_site(root, "src/heal.rs::healed");
     assert_eq!(
-        common::cli::printed_site_entries(&out),
+        common::cli::printed_site_entries(&out.join("\n")),
         common::cli::site_entries_as_printed(&site, 3),
         "the healed show prints site_fields at the live line"
     );
@@ -27720,7 +27722,7 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
         out.lines().collect::<Vec<_>>(),
         [
             "show src/App.tsx::App::v",
-            "  site: src/App.tsx:2   kind constant   degree 1",
+            "  site: src/App.tsx:2   kind constant   degree 3",
             "  name v",
             "  lang ts",
             "       2 |   const v = <b>x</b>;",
@@ -27749,15 +27751,17 @@ fn graph_show_heals_a_drifted_method_by_its_path_beside_a_same_named_one() {
     let root = dir.path();
     let source = "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n\
                   impl U {\n    fn new() -> U {\n        U\n    }\n}\n";
-    common::fixtures::write_text(root, "src/pair.rs", source);
-    run_rigger_ok(root, &["graph", "build"]);
-    common::fixtures::write_text(root, "src/pair.rs", &format!("// one\n// two\n{source}"));
-
     assert_eq!(
-        common::cli::show_lines(root, "src/pair.rs::T::new"),
+        common::cli::show_drifted(
+            root,
+            "src/pair.rs",
+            source,
+            Some(&format!("// one\n// two\n{source}")),
+            "src/pair.rs::T::new",
+        ),
         [
             "show src/pair.rs::T::new",
-            "  site: src/pair.rs:6   kind method   degree 2   (recorded line 4, now 6)",
+            "  site: src/pair.rs:6   kind method   degree 3   (recorded line 4, now 6)",
             "  name new",
             "  lang rust",
             "       6 |     fn new() -> T {",
@@ -27814,12 +27818,12 @@ fn graph_show_answers_a_struct_field_by_its_path() {
         "src/shape.rs",
         "pub struct Struct {\n    pub field: u8,\n}\npub struct Other {\n    pub field: u8,\n}\n",
     );
-    run_rigger_ok(root, &["graph", "build"]);
+    common::cli::build_head(root);
     assert_eq!(
         common::cli::show_lines(root, "Struct.field"),
         [
             "show src/shape.rs::Struct.field",
-            "  site: src/shape.rs:2   kind field   degree 1",
+            "  site: src/shape.rs:2   kind field   degree 2",
             "  name field",
             "  lang rust",
             "       2 |     pub field: u8,",
@@ -27984,7 +27988,7 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
     let root = dir.path();
     common::cli::seed_rigger_dir(root);
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--around", "new"])
+        common::cli::graph_ok(root, &["graph", "--around", "new"])
             .lines()
             .collect::<Vec<_>>(),
         [
@@ -27997,14 +28001,19 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
 }
 
 /// Spec 119, ONE EXTENT: GIVEN a code entity with a file and a non-zero line but no `name` attr,
-/// beside a definition of its leaf in the working tree, WHEN the operator runs `rigger graph
-/// --show` on its id, THEN it prints the "no production definition named" note with its id in place of the
-/// name and no body, on every lane, never bounding a body by a cut of the id.
+/// recorded alone (the head defines no such id), beside a definition of its leaf in an
+/// uncomparable working tree, WHEN the operator runs `rigger graph --show` on its id, THEN it
+/// prints the "no production definition named" note with its id in place of the name and no body,
+/// on every lane, never bounding a body by a cut of the id.
 #[test]
 fn graph_show_notes_a_nameless_node_by_its_id() {
     let dir = temp_project();
     let root = dir.path();
-    common::fixtures::write_text(root, "src/x.rs", "fn thing() {}\n");
+    common::cli::drift_uncomparable(
+        root,
+        &[("src/x.rs", "// no definition yet\n")],
+        &[("src/x.rs", Some("fn thing() {}\n"))],
+    );
     let nameless = common::fixtures::node_with_attrs(
         "src/x.rs::thing",
         "code-entity",
@@ -28019,7 +28028,10 @@ fn graph_show_notes_a_nameless_node_by_its_id() {
     ));
 
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "src/x.rs::thing"]),
+        common::cli::past_uncomparable_label(&run_rigger_ok(
+            root,
+            &["graph", "--show", "src/x.rs::thing"]
+        )),
         "show src/x.rs::thing\n  site: src/x.rs:1   kind function   degree 0\n  (no production \
          definition named \"src/x.rs::thing\" of kind function at line 1 or elsewhere in src/x.rs \
          in the current working tree; the recorded location may be stale)\n",
@@ -28130,7 +28142,7 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     assert_finding_shows_past_the_depth_bound(&sites[finding]);
     let graph = common::cli::open_graph(root);
     assert_shows_are_site_fields(&graph, &sites);
-    assert_around_is_entity_sites(&graph, &nodes);
+    assert_around_is_entity_sites(&common::fixtures::records_graph(&graph), &nodes);
 }
 
 /// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own

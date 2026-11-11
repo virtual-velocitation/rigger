@@ -880,6 +880,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     let _ = run(&cfg, &deps);
 

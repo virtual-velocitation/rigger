@@ -73,7 +73,7 @@ fn rigger(root: &Path, args: &[&str]) -> String {
 /// Whether `rigger graph --show <id>` at `root` answers the id as `kind`, read from the kind its
 /// header line shows.
 fn answers(root: &Path, (id, kind): Shown) -> bool {
-    let out = rigger(root, &["graph", "--show", id]);
+    let out = crate::common::cli::past_label(&rigger(root, &["graph", "--show", id]));
     let mut lines = out.lines();
     lines.next() == Some(&format!("show {id}"))
         && lines.next().is_some_and(|header| {
@@ -102,7 +102,7 @@ fn assert_a_build_retires(row: Deletion) {
     for args in row.before {
         rigger(root, args);
     }
-    rigger(root, &["graph", "build"]);
+    crate::common::cli::build_head(root);
     for &shown in row.held {
         assert!(
             answers(root, shown),
@@ -115,7 +115,7 @@ fn assert_a_build_retires(row: Deletion) {
     for args in row.after {
         rigger(root, args);
     }
-    rigger(root, &["graph", "build"]);
+    crate::common::cli::build_head(root);
     if row.cold {
         for file in ["graph.db", "graph.db-wal", "graph.db-shm"] {
             let _ = std::fs::remove_file(root.join(".rigger").join(file));

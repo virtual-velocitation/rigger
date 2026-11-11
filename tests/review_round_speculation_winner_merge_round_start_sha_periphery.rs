@@ -77,6 +77,7 @@ fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_rev
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps).expect("the winning candidate must integrate cleanly");
 

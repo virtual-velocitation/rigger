@@ -460,7 +460,7 @@ fn ingested_subgraph(
     seeds: &[&str],
     depth: i64,
 ) -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::Projection;
+    use crate::common::fixtures::RecordsRead;
 
     let root = tempfile::tempdir().unwrap();
     for (path, source) in files {
@@ -1182,7 +1182,7 @@ rigger::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file() {
-    use rigger::contextgraph::Projection;
+    use crate::common::fixtures::RecordsRead;
     use rigger::grounder::symbols::events::project_batches;
     use std::collections::BTreeSet;
 
@@ -1327,7 +1327,7 @@ rigger::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exclusion() {
-    use rigger::contextgraph::Projection;
+    use crate::common::fixtures::RecordsRead;
     use rigger::grounder::symbols::model::SymbolIndex;
     use rigger::grounder::symbols::store;
 
@@ -1793,7 +1793,7 @@ rigger::test_cases! {
 /// seed from.
 #[cfg(feature = "symbols")]
 fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::Projection;
+    use crate::common::fixtures::RecordsRead;
     use rigger::grounder::design::events::{concept_events, link_events};
     use rigger::grounder::design::extract::{extract_concepts, extract_links};
 

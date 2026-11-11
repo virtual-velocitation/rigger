@@ -18,9 +18,10 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_EDGE_INFERRED,
 };
 

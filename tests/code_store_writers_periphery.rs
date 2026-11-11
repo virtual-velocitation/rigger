@@ -203,6 +203,7 @@ fn the_conductor_advances_the_store_after_a_landed_merge() {
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: Some(&recording),
+            context: None,
         };
         let rs = run(&merging_run(&repo, row.units, row.gate), &deps).unwrap();
         let integrated = rs

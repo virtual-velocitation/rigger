@@ -6,7 +6,7 @@
 //!
 //! The clock is the folding thread's own CPU time, read from `/proc/thread-self/schedstat`, so
 //! the bound measures the fold and not the load beside it; the window covers the entry's one
-//! `Projection::apply_generation` (`fold_asked`) alone, the seeding fold and both extractions
+//! `RecordFold::apply_generation` (`fold_asked`) alone, the seeding fold and both extractions
 //! outside it. It
 //! extracts real source, so it runs on the `symbols` lane alone, and only Linux has the clock.
 

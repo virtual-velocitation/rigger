@@ -92,8 +92,9 @@ fn an_outside_combat_test() {
 #[cfg(feature = "symbols")]
 #[test]
 fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_fixture() {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::query::card;
-    use rigger::contextgraph::{Projection, KIND_FILE};
+    use rigger::contextgraph::KIND_FILE;
 
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("combat.rs"), STRIKE_PRODUCT_SRC).unwrap();
@@ -192,8 +193,8 @@ fn checks_finisher() {
 #[test]
 fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_its_definition_later_folds(
 ) {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::query::card;
-    use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
 
     let root = tempfile::tempdir().unwrap();
@@ -349,7 +350,7 @@ impl Pipeline {
 
     /// The subgraph within two hops of `file`.
     fn around(&self, file: &str) -> rigger::contextgraph::Graph {
-        use rigger::contextgraph::Projection;
+        use crate::common::fixtures::RecordsRead;
         self.p.subgraph(&[file.to_string()], 2).unwrap()
     }
 
@@ -476,9 +477,9 @@ fn checks_right() {
 #[test]
 fn a_real_reextraction_of_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence()
 {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
 
     // One step of the walk below: `tests/duo_periphery.rs` is (re-)written to `src` and
     // re-extracted fresh, and `left`/`right` must land at exactly `want_left`/`want_right`
@@ -578,9 +579,9 @@ fn checks_shared() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path() {
+    use crate::common::fixtures::RecordsRead;
     use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::Projection;
     use rigger::grounder::symbols::build_index;
 
     let root = tempfile::tempdir().unwrap();

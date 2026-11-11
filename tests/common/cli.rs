@@ -315,12 +315,30 @@ pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path, envs: &[(&str, 
 }
 
 /// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
-/// (stdout, stderr, success).
+/// (stdout past the honesty label, stderr, success).
 pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) {
-    run_rigger(
+    let (out, err, ok) = run_rigger(
         cwd,
         &["graph", "--around", seed, "--depth", &depth.to_string()],
-    )
+    );
+    (if ok { past_label(&out) } else { out }, err, ok)
+}
+
+/// `rigger <args>` at `root`, a graph read asserted to succeed, as its answer past the honesty
+/// label that heads it.
+pub fn graph_ok(root: &Path, args: &[&str]) -> String {
+    past_label(&run_rigger_ok(root, args))
+}
+
+/// A graph answer's stdout past the honesty label that heads it (6.1), which
+/// `around_prints_the_label_first` pins.
+pub fn past_label(out: &str) -> String {
+    let (label, answer) = out.split_once('\n').unwrap_or((out, ""));
+    assert!(
+        label.starts_with("describes "),
+        "a graph answer opens with its honesty label; stdout:\n{out}"
+    );
+    answer.to_string()
 }
 
 /// Every printed `node <id> <kind>` line of a `rigger graph --around` transcript, parsed into its
@@ -920,7 +938,7 @@ pub fn user_version(db: &Path) -> i64 {
 
 /// Whether an open of the `graph.db` at `db` for `project` owes a rebuild.
 pub fn rebuild_owed(db: &Path, project: &str) -> bool {
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     Projector::open(db.to_str().unwrap(), project)
         .unwrap()
         .rebuild_owed()
@@ -1357,9 +1375,9 @@ pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
     out
 }
 
-/// Every line `rigger graph --show <query>` prints over `root`, in order.
+/// Every line `rigger graph --show <query>` prints over `root` past the honesty label, in order.
 pub fn show_lines(root: &Path, query: &str) -> Vec<String> {
-    run_rigger_ok(root, &["graph", "--show", query])
+    past_label(&run_rigger_ok(root, &["graph", "--show", query]))
         .lines()
         .map(str::to_string)
         .collect()
@@ -1373,7 +1391,7 @@ pub fn show_head(root: &Path, query: &str) -> Vec<String> {
     lines
 }
 
-/// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
+/// `rigger graph --show <file>::<path>`'s stdout past the honesty label over `root` seeded as a project whose working
 /// tree holds `source` at `file` and whose graph records the definition at the id path `path`
 /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of
 /// kind `kind` at `line` in `lang`.
@@ -1388,6 +1406,7 @@ pub fn show_recorded(
 ) -> String {
     seed_rigger_dir(root);
     super::fixtures::write_text(root, file, source);
+    super::fixtures::commit_tree(root);
     let name = super::last_path_segment(path);
     super::fixtures::apply_json(
         &open_graph(root),
@@ -1395,14 +1414,14 @@ pub fn show_recorded(
         rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
         super::fixtures::path_entity_json(file, name, path, kind, line, lang),
     );
-    run_rigger_ok(
+    past_label(&run_rigger_ok(
         root,
         &[
             "graph",
             "--show",
             &rigger::contextgraph::query::entity_id(file, path),
         ],
-    )
+    ))
 }
 
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
@@ -1701,8 +1720,86 @@ pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
 /// the files' next generation.
 pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
     super::fixtures::write_files(root, files);
-    run_rigger_ok(root, &["graph", "build"]);
+    build_head(root);
     open_graph(root)
+}
+
+/// `rigger graph build` over the project at `root` once its worktree is committed, so the code
+/// store's head holds the source the build reads.
+pub fn build_head(root: &Path) -> String {
+    super::fixtures::commit_tree(root);
+    run_rigger_ok(root, &["graph", "build"])
+}
+
+/// Commits each `committed` `(path, text)` at the head of the project at `root`, then leaves its
+/// worktree holding each `drifted` path's next text, or the path deleted at `None`, in a worktree
+/// the code store cannot compare with the head (6.1): the one way a drifted definition reaches a
+/// reader unwithheld. Git reads the index to compare the worktree, never to read the head's tree.
+pub fn drift_uncomparable(
+    root: &Path,
+    committed: &[(&str, &str)],
+    drifted: &[(&str, Option<&str>)],
+) {
+    super::fixtures::write_files(root, committed);
+    super::fixtures::commit_tree(root);
+    for (path, text) in drifted {
+        match text {
+            Some(text) => super::fixtures::write_text(root, path, text),
+            None => std::fs::remove_file(root.join(path)).unwrap(),
+        }
+    }
+    std::fs::write(root.join(".git").join("index"), "unreadable").unwrap();
+}
+
+/// A graph answer's stdout past its honesty label, which says the worktree cannot be compared
+/// ([`drift_uncomparable`]).
+pub fn past_uncomparable_label(out: &str) -> String {
+    let (label, answer) = out.split_once('\n').unwrap_or((out, ""));
+    assert!(
+        label.starts_with("describes ") && label.ends_with(" cannot be compared"),
+        "a graph answer over an uncomparable worktree says so in its label; stdout:\n{out}"
+    );
+    answer.to_string()
+}
+
+/// The stdout lines of `rigger graph --show <id>` past the label over `root` once `file` holding
+/// `committed` is the head and the worktree holds `drifted` there instead, deleted at `None`
+/// ([`drift_uncomparable`]).
+pub fn show_drifted(
+    root: &Path,
+    file: &str,
+    committed: &str,
+    drifted: Option<&str>,
+    id: &str,
+) -> Vec<String> {
+    seed_rigger_dir(root);
+    drift_uncomparable(root, &[(file, committed)], &[(file, drifted)]);
+    past_uncomparable_label(&run_rigger_ok(root, &["graph", "--show", id]))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The site the context graph a reader reads locates `id` at over the project at `root`: its
+/// records composed with the code store's view of the head (7.3).
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
+pub fn composed_site(root: &Path, id: &str) -> rigger::contextgraph::EntitySite {
+    let records = open_graph(root);
+    let opened = rigger::code_store::CodeStore::in_repository(root)
+        .open(rigger_store::code::Mode::Read)
+        .unwrap();
+    let composed = rigger::composed::Composed::new(
+        &records,
+        &opened.view,
+        rigger::code_view::ViewFilter::default(),
+        rigger::composed::Honesty {
+            worktree: root.display().to_string(),
+            diff: Err("not compared".to_string()),
+            behind: None,
+        },
+    )
+    .unwrap();
+    super::fixtures::located_site(&composed, id)
 }
 
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the

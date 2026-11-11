@@ -1,6 +1,6 @@
 //! Periphery (contract / API / integration) tests for spec 52 criterion 1: the DOWN direction of
-//! `Projection::calls` - the layered execution-path DAG. These run OUTSIDE the crate, over the
-//! library's PUBLIC surface (`Projector::open` -> `Projection::apply` -> `Projection::calls`), so
+//! `ContextGraph::calls` - the layered execution-path DAG. These run OUTSIDE the crate, over the
+//! library's PUBLIC surface (`Projector::open` -> `RecordFold::apply` -> `ContextGraph::calls`), so
 //! they guard the boundary the implementer's inside-out unit test is structurally blind to.
 //!
 //! The implementer's inside-out unit test
@@ -9,7 +9,7 @@
 //! the back-edge marker on a single small single-candidate graph. This layer deliberately does NOT
 //! re-prove those. It covers the public boundaries that unit test leaves untouched:
 //!
-//!  - the `Projection::calls` trait DEFAULT: a projection with no directed-walk support degrades to
+//!  - the `ContextGraph::calls` trait DEFAULT: a projection with no directed-walk support degrades to
 //!    an empty `CallGraph`, never an error (a backend-agnostic contract, in `mod contract`);
 //!  - the multi-candidate FRONTIER: a callee name with two definitions comes back as a marked
 //!    frontier carrying the SORTED candidate ids and is NOT descended (the public `frontier` field;
@@ -52,11 +52,12 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use common::fixtures::{apply_call, apply_def, apply_ref};
 use common::fixtures::{call_edge_pairs, call_layer, call_node_ids};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    CallGraph, Direction, Projection, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
+    CallGraph, Direction, KIND_FILE, REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
 };
 
 /// The `direction` walk to `depth` from `src/a.rs::<seed>` over one file, `src/a.rs`, that defines
@@ -89,18 +90,19 @@ fn walk_one_file(
     .unwrap()
 }
 
-/// Backend-agnostic contract for the `Projection::calls` trait DEFAULT (spec 52). The default body
+/// Backend-agnostic contract for the `ContextGraph::calls` trait DEFAULT (spec 52). The default body
 /// returns an empty `CallGraph`, so a projection with no directed-walk support - a test double, or a
 /// not-yet-overriding adapter - degrades to an empty view rather than erroring. This is proven
 /// WITHOUT the sqlite backend, so it guards the trait contract itself, independent of any one
 /// implementor.
 mod contract {
     use super::*;
-    use common::fixtures::MinimalProjection;
+    use common::fixtures::MinimalGraph;
+    use rigger::contextgraph::ContextGraph;
 
     #[test]
     fn a_projection_without_directed_walk_support_yields_an_empty_call_graph_in_either_direction() {
-        let p = MinimalProjection;
+        let p = MinimalGraph;
         for dir in [Direction::Down, Direction::Up] {
             let cg = p
                 .calls(&["any/file.rs::thing".to_string()], dir, 5, TIER_INFERRED)

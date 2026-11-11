@@ -143,8 +143,12 @@ fn graph_build_lists_a_staged_reference_s_file_never_its_fn_as_referenced_not_ca
     let (_project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
 
     assert_eq!(
-        [DEFINER_ENTITIES[0], DEFINER_ENTITIES[1]]
-            .map(|seed| common::fixtures::referenced_not_called_ids(&graph, seed)),
+        [DEFINER_ENTITIES[0], DEFINER_ENTITIES[1]].map(|seed| {
+            common::fixtures::referenced_not_called_ids(
+                &common::fixtures::records_graph(&graph),
+                seed,
+            )
+        }),
         [[USER], [USER]],
         "a fn-level row lists its file"
     );
@@ -178,7 +182,10 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
         "the const read's edge retires with its one definition"
     );
     assert_eq!(
-        common::fixtures::referenced_not_called_ids(&removed, DEFINER_ENTITIES[1]),
+        common::fixtures::referenced_not_called_ids(
+            &common::fixtures::records_graph(&removed),
+            DEFINER_ENTITIES[1]
+        ),
         Vec::<String>::new(),
         "nothing references a removed definition"
     );

@@ -45,7 +45,7 @@ fn the_callers_walk_reaches_a_caller_through_the_sigiled_leaf_and_never_a_longer
     apply_call(&p, 5, "src/b.rs", "%new", "go");
     apply_call(&p, 6, "src/c.rs", "%%new", "far");
     apply_def(&p, 7, "src/a.rs", "new", 1, true);
-    let up = call_walk(&p, SEED, Direction::Up);
+    let up = call_walk(&common::fixtures::records_graph(&p), SEED, Direction::Up);
     assert_eq!(
         call_node_ids(&up),
         [SEED, "src/b.rs::run"],
@@ -69,7 +69,11 @@ fn a_csharp_operator_percent_seed_reaches_its_double_percent_caller() {
     apply_call(&p, 3, "src/b.cs", "%%", "Run");
     apply_call(&p, 4, "src/b.cs", "%", "Go");
     apply_code_entity(&p, 5, "src/a.cs", "%", "method", 1, "csharp");
-    let up = call_walk(&p, "src/a.cs::%", Direction::Up);
+    let up = call_walk(
+        &common::fixtures::records_graph(&p),
+        "src/a.cs::%",
+        Direction::Up,
+    );
     assert_eq!(
         call_node_ids(&up),
         ["src/a.cs::%", "src/b.cs::Go"],
@@ -134,7 +138,7 @@ fn referenced_not_called_counts_a_file_level_reference_through_both_spellings() 
     apply_ref(&p, 6, "src/f.rs", "%new");
     apply_call(&p, 7, "src/g.rs", "new", "run");
     assert_eq!(
-        referenced_not_called_ids(&p, SEED),
+        referenced_not_called_ids(&common::fixtures::records_graph(&p), SEED),
         ["src/d.rs", "src/e.rs"],
         "both spellings count as a reference, and as a call"
     );
@@ -160,7 +164,7 @@ fn a_seed_with_no_leaf_names_nothing_referenced() {
         "the seed is a node with no name"
     );
     assert_eq!(
-        referenced_not_called_ids(&p, "src/x.rs"),
+        referenced_not_called_ids(&common::fixtures::records_graph(&p), "src/x.rs"),
         Vec::<String>::new(),
         "a leafless seed names nothing"
     );

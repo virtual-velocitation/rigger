@@ -186,6 +186,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     run(&cfg, &deps1).expect(
         "a same-chunk sibling park on a lenses-only panel must not fail the run - the round \
@@ -226,6 +227,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps2).expect("the resumed window must finish the round");
     assert_eq!(

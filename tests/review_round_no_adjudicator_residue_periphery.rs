@@ -130,6 +130,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).expect(

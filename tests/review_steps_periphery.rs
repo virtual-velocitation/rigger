@@ -1698,6 +1698,7 @@ fn assert_winner_reviewed_aliases(panel: ReviewPanel, expected: &[&str]) {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
     run(&cfg, &deps).unwrap();
 

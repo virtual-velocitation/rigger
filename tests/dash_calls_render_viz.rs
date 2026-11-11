@@ -1,6 +1,6 @@
 //! Periphery (integration) test for the dash's DIRECTED-CALL LAYERED RENDER (spec 52, criterion c5):
 //! the SERVED-PAGE render wiring for the execution-path / call-sites DAG. Spec 52 c1/c3 built the
-//! store-side `Projection::calls` traversal and c4 the `/api/graph?view=calls&dir=` route; this
+//! store-side `ContextGraph::calls` traversal and c4 the `/api/graph?view=calls&dir=` route; this
 //! criterion OWNS the served page's library-free layered viz that DRAWS the route's body - the
 //! server-`layer`-keyed left-to-right layout (barycenter within a layer), the SVG ARROWHEAD marker
 //! that makes direction legible, the DISTINCT curved BACK-edge arc for a recursion edge, and the

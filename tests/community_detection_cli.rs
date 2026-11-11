@@ -28,7 +28,7 @@ use std::path::Path;
 use rigger::conductor;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
+    RecordFold, KIND_COMMUNITY, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
 };
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -101,7 +101,7 @@ fn seed_coupling(root: &Path) {
         .into_iter()
         .chain(TWO_SUBSYSTEM_CALLS.map(|(file, name, caller)| call_event(file, name, caller)))
         .collect();
-    let done = folding_into(&store, Some(&graph as &dyn Projection), &|_| {})
+    let done = folding_into(&store, Some(&graph as &dyn RecordFold), &|_| {})
         .append_and_fold(conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the coupling graph through the real append-and-fold seam");
     assert_eq!(done.fold, rigger::contextgraph::Fold::Folded);

@@ -8,8 +8,8 @@
 //!
 //! The implementer's inside-out unit test reads the private `edges` table directly to count
 //! superseded rows before and after. This test runs OUTSIDE the crate, over the library's public
-//! surface only - `Projector::open` -> `Projection::apply` -> the extended `prune` -> the public
-//! `PruneStats` and `Projection::subgraph` - and cannot reach `conn`, exactly as an external caller
+//! surface only - `Projector::open` -> `RecordFold::apply` -> the extended `prune` -> the public
+//! `PruneStats` and `ContextGraph::subgraph` - and cannot reach `conn`, exactly as an external caller
 //! cannot. It pins that driving the extended prune at the active-run boundary (a) reclaims exactly
 //! the superseded edges retired BEFORE it, reported on `PruneStats::superseded_edges`, and (b)
 //! leaves the LIVE `subgraph` a grounding consumer reads byte-for-byte unchanged (the reclamation
@@ -22,10 +22,11 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use common::fixtures::apply_def_at;
 use common::fixtures::nanos;
 use rigger::contextgraph::sqlite::{Projector, PruneStats};
-use rigger::contextgraph::{Graph, Projection, REL_CONTAINS};
+use rigger::contextgraph::{Graph, REL_CONTAINS};
 
 /// The file's live CONTAINS targets in a public `subgraph` result, sorted - the exact live structure
 /// a grounding consumer reads. The prune must leave this identical (it reclaims only historical rows).

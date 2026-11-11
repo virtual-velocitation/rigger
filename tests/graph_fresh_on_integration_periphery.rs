@@ -40,10 +40,11 @@ use crate::common;
 use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 
+use crate::common::fixtures::RecordsRead;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Projection, KIND_CODE_ENTITY};
+use rigger::contextgraph::KIND_CODE_ENTITY;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger::Status;
@@ -142,6 +143,7 @@ fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
         code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).unwrap();

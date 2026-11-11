@@ -4,7 +4,7 @@
 //! and finding node and edge a graph consumer relies on.
 //!
 //! These run OUTSIDE the crate, over the library's public surface - `Projector::open` ->
-//! `Projection::apply` -> `Projection::subgraph` - so they pin the projection a real consumer (the
+//! `RecordFold::apply` -> `ContextGraph::subgraph` - so they pin the projection a real consumer (the
 //! dash inspector, grounding, blast-radius) actually reads. The inside-out unit tests exercise each
 //! fold arm in isolation through the crate-internal projector; this layer proves the arms COMPOSE:
 //! folding a whole run's mixed event stream leaks NO machinery from any arm, and the content the
@@ -20,10 +20,11 @@
 //!     `e.meta.get(META_ACTOR)` code once turned into a `KIND_AGENT` node and a `DECIDED`/`RAISED`
 //!     edge. If that attribution ever creeps back, the whole-run and the focused test both redden.
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_GATE, KIND_UNIT, REL_ABOUT,
-    REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_TOUCHES,
+    KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_GATE, KIND_UNIT, REL_ABOUT, REL_ASSIGNED_TO,
+    REL_BLOCKS, REL_DECIDED, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_TOUCHES,
     TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING,
     TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };

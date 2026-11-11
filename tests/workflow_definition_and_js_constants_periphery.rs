@@ -48,7 +48,7 @@
 //!    never through the CLI's actual cold-build entry point (`cmd_graph_build`) writing the REAL
 //!    persisted `graph.db` a reader's `--around` then queries. Proven here instead: a real
 //!    malformed `workflows/*.js` file run through a real `rigger graph build`, read back from the
-//!    SAME persisted store via the crate's own public `Projection::subgraph` - the identical read
+//!    SAME persisted store via the crate's own public `ContextGraph::subgraph` - the identical read
 //!    `--around` performs - carries the marker; a well-formed sibling never does; and the malformed
 //!    file's well-formed prefix is still indexed, never dropped.
 //!
@@ -58,9 +58,10 @@
 //! exercised here.
 
 #[cfg(feature = "symbols")]
-use rigger::contextgraph::sqlite::Projector;
+use crate::common::fixtures::RecordsRead;
 #[cfg(feature = "symbols")]
-use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, KIND_FILE};
+use rigger::contextgraph::sqlite::Projector;
+use rigger::contextgraph::{KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;
 
@@ -162,6 +163,7 @@ fn graph_build_wires_the_workflow_definition_and_javascript_indexers_into_one_sh
     seed_workflow_yml(root);
     seed_js_files(root);
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
     assert!(
@@ -487,6 +489,7 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
     let root = dir.path();
     seed_js_files(root);
 
+    common::fixtures::commit_tree(root);
     let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         build_ok,
@@ -562,7 +565,7 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
 /// grammar cannot fully parse must still be indexed as far as the parse reaches, with a `partial`
 /// marker stamped on its file node - proven here off a REAL `rigger graph build` (not a hand-built
 /// event fed to an in-memory store), reading back the SAME persisted `graph.db` the CLI wrote
-/// through the crate's own public `Projection::subgraph`, the identical read `--around` performs.
+/// through the crate's own public `ContextGraph::subgraph`, the identical read `--around` performs.
 /// A well-formed sibling file must never carry the marker, and the malformed file's well-formed
 /// prefix (a function ahead of its syntax error) must still be indexed, never dropped silently.
 #[cfg(feature = "symbols")]
@@ -618,7 +621,7 @@ fn a_real_malformed_js_file_carries_the_partial_marker_through_a_real_graph_buil
         broken.attrs.get("partial").map(String::as_str),
         Some("true"),
         "a real malformed JS file run through a REAL `rigger graph build` must carry the partial \
-         marker on its file node, read back through the same public Projection::subgraph the \
+         marker on its file node, read back through the same public ContextGraph::subgraph the \
          CLI's own --around uses; got attrs {:?}",
         broken.attrs
     );

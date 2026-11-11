@@ -255,6 +255,71 @@ pub fn records_graph(
     .expect("an empty view composes")
 }
 
+/// An opener of the record half it holds read as [`records_graph`], whatever the filter: the
+/// context a test wires where the composition root wires the code store's.
+pub struct RecordsOnly<'a>(pub &'a dyn rigger::contextgraph::Neighbors);
+
+impl rigger::contextgraph::OpenGraph for RecordsOnly<'_> {
+    fn open(
+        &self,
+        _filter: rigger::code_view::ViewFilter,
+    ) -> Result<Box<dyn ContextGraph + '_>, rigger::contextgraph::Error> {
+        Ok(Box::new(records_graph(self.0)))
+    }
+}
+
+/// The context graph's reads over a record half, read as [`records_graph`]: for a test that folds
+/// records and reads them back.
+pub trait RecordsRead {
+    fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, rigger::contextgraph::Error>;
+    fn calls(
+        &self,
+        seed: &[String],
+        direction: Direction,
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, rigger::contextgraph::Error>;
+    fn locate(
+        &self,
+        entity: &str,
+    ) -> Result<rigger::contextgraph::Located, rigger::contextgraph::Error>;
+    fn resolve(&self, mention: &str) -> Result<Option<String>, rigger::contextgraph::Error>;
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, rigger::contextgraph::Error>;
+}
+
+impl<T: rigger::contextgraph::Neighbors> RecordsRead for T {
+    fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, rigger::contextgraph::Error> {
+        rigger::contextgraph::ContextGraph::subgraph(&records_graph(self), seed, depth)
+    }
+    fn calls(
+        &self,
+        seed: &[String],
+        direction: Direction,
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, rigger::contextgraph::Error> {
+        rigger::contextgraph::ContextGraph::calls(
+            &records_graph(self),
+            seed,
+            direction,
+            depth,
+            tier_floor,
+        )
+    }
+    fn locate(
+        &self,
+        entity: &str,
+    ) -> Result<rigger::contextgraph::Located, rigger::contextgraph::Error> {
+        rigger::contextgraph::ContextGraph::locate(&records_graph(self), entity)
+    }
+    fn resolve(&self, mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
+        rigger::contextgraph::ContextGraph::resolve(&records_graph(self), mention)
+    }
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, rigger::contextgraph::Error> {
+        rigger::contextgraph::ContextGraph::nodes_of_kind(&records_graph(self), kind)
+    }
+}
+
 /// The id of spoke `i` of a many-spoke graph fixture: a code entity in `file`, zero-padded so the
 /// ids sort in spoke order.
 pub fn spoke_id(file: &str, i: usize) -> String {

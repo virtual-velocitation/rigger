@@ -3,7 +3,7 @@
 //! built binary, and guard the boundaries the in-crate fold tests are structurally blind to.
 //!
 //! The in-crate tests fold into a concrete projector they never reopen and read its private
-//! tables. Here every entry folds through the `Projection` port as a trait object, into a
+//! tables. Here every entry folds through the `RecordFold` port as a trait object, into a
 //! `graph.db` file a later open reads, so the generation an entry installs, and each of the three
 //! outcomes a later entry meets, are what the file holds and not what one connection remembers.
 //!
@@ -44,7 +44,7 @@ use common::fixtures::{
 };
 use rigger::contextgraph::sqlite::{Projector, RebuildSink};
 use rigger::contextgraph::{
-    wired, EntryFold, Error, Fold, Projection, KIND_DECISION, REBUILD_OWED, REL_CONTAINS,
+    wired, EntryFold, Error, Fold, RecordFold, KIND_DECISION, REBUILD_OWED, REL_CONTAINS,
     TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
 };
 use rigger::eventstore::sqlite::Store;
@@ -88,7 +88,7 @@ fn defines(file: &str, name: &str, line: u64, fresh: bool) -> Event {
 /// Fold `entry` through the port with a batch function answering `batch`: the outcome, or the
 /// error's text, and how many times the batch was asked for.
 fn fold_through_port(
-    p: &dyn Projection,
+    p: &dyn RecordFold,
     entry: &Event,
     batch: Result<Option<Vec<Event>>, Error>,
 ) -> (Result<EntryFold, String>, u32) {
@@ -107,7 +107,7 @@ fn fold_through_port(
 }
 
 /// The generation the port answers for `identity`.
-fn generation(p: &dyn Projection, identity: &str) -> Option<String> {
+fn generation(p: &dyn RecordFold, identity: &str) -> Option<String> {
     p.current_generation(identity).unwrap()
 }
 
@@ -159,7 +159,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
     );
     {
         let p = Projector::open(&path, "test").unwrap();
-        let port: &dyn Projection = &p;
+        let port: &dyn RecordFold = &p;
         assert_eq!(generation(port, IDENTITY), None);
         assert_eq!(
             fold_through_port(
@@ -173,7 +173,7 @@ fn an_entry_folded_through_the_port_is_held_by_the_file_and_each_outcome_is_name
 
     // A later open reads the generation and the batch's facts from the file.
     let p = Projector::open(&path, "test").unwrap();
-    let port: &dyn Projection = &p;
+    let port: &dyn RecordFold = &p;
     assert_eq!(generation(port, IDENTITY), Some("h1".to_string()));
     assert_eq!(
         live_edges(&p),
@@ -237,7 +237,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
     // MARKS), so the projection owes nothing after a failure and the same position can be folded
     // again. The constructor's entries name no stream, so each error is its bare cause.
     let p = Projector::open(":memory:", "test").unwrap();
-    let port: &dyn Projection = &p;
+    let port: &dyn RecordFold = &p;
 
     // The batch function fails.
     let first = entry(F, "h1", 7, 10);
@@ -318,7 +318,7 @@ fn a_position_whose_ledger_fold_failed_folds_afterwards_so_the_failure_wrote_no_
 fn a_ledger_entry_the_public_fold_refused_folds_afterwards_through_apply_generation() {
     let refused = common::fixtures::entry_refusal();
     let p = Projector::open(":memory:", "test").unwrap();
-    let port: &dyn Projection = &p;
+    let port: &dyn RecordFold = &p;
 
     // One entry alone.
     let alone = entry(F, "h1", 10, 40);
@@ -379,7 +379,7 @@ fn a_refused_public_fold_writes_no_mark_and_a_second_projector_folds_the_entry()
     );
     let refused = entry(F, "h2", 8, 20);
     assert_eq!(
-        Fold::of(wired(Some(&first as &dyn Projection)), &refused),
+        Fold::of(wired(Some(&first as &dyn RecordFold)), &refused),
         common::fixtures::entry_refusal()
     );
 
@@ -812,7 +812,7 @@ fn the_ledger_form_appends_each_entry_once_folds_it_with_its_batch_and_writes_on
     let p = Projector::open(graph_path.to_str().unwrap(), "test").unwrap();
     let said = Said::default();
     let log = |line: &str| said.say(line);
-    let folding = folding_into(&store, Some(&p as &dyn Projection), &log);
+    let folding = folding_into(&store, Some(&p as &dyn RecordFold), &log);
     let payload = |generation: &str, blob: &str| {
         format!(
             r#"{{"prefix":"gc","file":"src/f.rs","generation":"{generation}","blob":"{blob}","excluded":false}}"#
@@ -911,7 +911,7 @@ fn the_ledger_form_answers_a_fold_it_could_not_make_beside_an_entry_that_is_on_t
     let p = Projector::open(graph_path.to_str().unwrap(), "test").unwrap();
     let said = Said::default();
     let log = |line: &str| said.say(line);
-    let folding = folding_into(&store, Some(&p as &dyn Projection), &log);
+    let folding = folding_into(&store, Some(&p as &dyn RecordFold), &log);
 
     // A batch event the fold rejects: the fold fails, the entry stays on the log, and the graph
     // holds no applied row for it and writes no owed mark (spec 124, AN APPENDER WAITS UNDER THE
@@ -1029,7 +1029,7 @@ fn the_ledger_form_never_opens_the_graph_for_an_entry_the_store_did_not_place() 
         &common::fixtures::SilentStore,
         Some(|| {
             opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            wired(Some(&p as &dyn Projection))
+            wired(Some(&p as &dyn RecordFold))
         }),
         &log,
     );
@@ -1053,7 +1053,7 @@ fn the_ledger_form_never_opens_the_graph_for_an_entry_the_store_did_not_place() 
         &store,
         Some(|| {
             opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            wired(Some(&p as &dyn Projection))
+            wired(Some(&p as &dyn RecordFold))
         }),
         &log,
     );

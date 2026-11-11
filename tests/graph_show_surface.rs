@@ -38,7 +38,6 @@ use common::cli::ambiguous_show;
 use common::cli::open_graph;
 use common::cli::run_around;
 use common::cli::run_rigger;
-use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::show_head;
@@ -84,6 +83,7 @@ fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
 
     // (1) SHOW BY UNIQUE NAME: `alpha` has one definition -> its site + kind + degree + a
     //     line-numbered body.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "alpha"]);
     assert!(ok, "graph --show alpha must succeed; stderr: {err}");
     assert!(
@@ -179,8 +179,8 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 
     assert_eq!(
         [
-            run_rigger_ok(root, &["graph", "--show", "a.rs::new"]),
-            run_rigger_ok(root, &["graph", "--show", "T::new"]),
+            common::cli::graph_ok(root, &["graph", "--show", "a.rs::new"]),
+            common::cli::graph_ok(root, &["graph", "--show", "T::new"]),
         ],
         [
             ambiguous_show("a.rs::new", A_RS_NEWS),

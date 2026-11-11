@@ -6,7 +6,7 @@
 //! run-seeded read therefore collapses to `Graph::default()`.
 //!
 //! This layer runs OUTSIDE the crate, over the library's PUBLIC surface only (`Projector::open` ->
-//! `Projection::apply` -> the new `whole` -> `dash::graph_seeds` / `Projection::subgraph` /
+//! `RecordFold::apply` -> the new `whole` -> `dash::graph_seeds` / `ContextGraph::subgraph` /
 //! `dash::serve_on` + `/api/graph`), exactly as the real dash provider and any external caller reach it.
 //! It cannot touch the private `conn`, the crate-internal fold helpers, or the binary-private
 //! `dash_read_whole_graph` the implementer's in-binary test drives - so it guards what the two
@@ -27,11 +27,12 @@
 
 use crate::common;
 
+use crate::common::fixtures::RecordsRead;
 use common::served::body_of;
 use common::served::{fetch_with_retry, try_fetch_over};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
+    Graph, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
     TYPE_EDGE_INFERRED,
 };
 use rigger::dash::{self};

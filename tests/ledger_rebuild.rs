@@ -8,7 +8,7 @@
 //! incremental folds built.
 //!
 //! Every incremental side is folded from hand-built entries through
-//! `Projection::apply_generation` with batches written out here as literal payloads, so the
+//! `RecordFold::apply_generation` with batches written out here as literal payloads, so the
 //! rebuilt side equals it only when the re-extraction reproduces those payloads byte for byte. The
 //! comparison is spec 101's surface: the whole live projection and the fold state.
 //!
@@ -36,7 +36,7 @@ use common::fixtures::{
 use rigger::contextgraph::sqlite::{
     Projector, RebuildSink, FOLD_FAILED, PAYLOAD_REJECTED, RESOLVED_TO_NOTHING,
 };
-use rigger::contextgraph::{wired, EntryFold, Error, Fold, Projection, TYPE_CODE_ENTITY_EXTRACTED};
+use rigger::contextgraph::{wired, EntryFold, Error, Fold, RecordFold, TYPE_CODE_ENTITY_EXTRACTED};
 use rigger::eventstore::{Event, ExpectedRevision};
 use rigger::retention::{GenerationIngested, TYPE_GENERATION_INGESTED};
 
@@ -227,7 +227,7 @@ fn record(cwd: &Path, recordings: &[Recording]) -> Vec<u64> {
 
 /// Fold `cwd`'s whole run stream into the graph file `db` under `project` as the recording
 /// processes folded it, the projector reopened for every event: each ledger entry through
-/// `Projection::apply_generation` with the batch of its recording (`recordings` holds one per
+/// `RecordFold::apply_generation` with the batch of its recording (`recordings` holds one per
 /// entry, in log order), every other event through the public fold. Answers each entry's outcome.
 fn fold_incrementally(
     db: &Path,
@@ -241,7 +241,7 @@ fn fold_incrementally(
     for event in read_run_events(cwd) {
         if event.type_ == TYPE_GENERATION_INGESTED {
             let batch = batches.next().expect("one recording per entry of the log");
-            let port: &dyn Projection = &open();
+            let port: &dyn RecordFold = &open();
             outcomes.push(
                 port.apply_generation(&event, Box::new(move || Ok(batch)))
                     .unwrap(),
@@ -1144,7 +1144,7 @@ fn an_entry_the_generic_fold_refused_is_paid_by_setup_through_the_ledger_fold() 
     {
         let graph = Projector::open(graph_db.to_str().unwrap(), &project).unwrap();
         assert_eq!(
-            Fold::of(wired(Some(&graph as &dyn Projection)), &entry),
+            Fold::of(wired(Some(&graph as &dyn RecordFold)), &entry),
             common::fixtures::entry_refusal()
         );
     }

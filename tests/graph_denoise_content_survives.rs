@@ -8,7 +8,7 @@
 //! names, "only the agent attribution is absent", so the two criteria never share an authority.
 //!
 //! It runs OUTSIDE the crate, over the library's public surface - `Projector::open` ->
-//! `Projection::apply` -> `Projection::subgraph` - so it pins the projection a real consumer (the
+//! `RecordFold::apply` -> `ContextGraph::subgraph` - so it pins the projection a real consumer (the
 //! dash inspector, grounding, blast-radius, the rationale overlay) actually reads. Two facets are
 //! load-bearing and could regress if the de-noise ever over-reached:
 //!   * a LESSON and a design-intent `explains` link (spec 29b) fold in the SAME mixed stream as the
@@ -19,12 +19,13 @@
 //!     code once turned into a `KIND_AGENT` node and a `DECIDED` / `RAISED` edge. The content must
 //!     stand while that attribution stays gone.
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, REL_ABOUT,
-    REL_DECIDED, REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, REL_ABOUT, REL_DECIDED,
+    REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 
 use crate::common;

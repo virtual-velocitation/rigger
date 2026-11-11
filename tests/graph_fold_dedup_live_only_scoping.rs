@@ -9,7 +9,7 @@
 //! (dead) + one LIVE row survive in the table. That dead/live split is invisible through the public
 //! API - `subgraph`'s edge fetch filters `valid_to IS NULL`, so a consumer never sees the dead row.
 //! What a consumer DOES see is the projection this layer drives: `Projector::open` ->
-//! `Projection::apply` -> `Projection::subgraph`. So these tests pin the PUBLICLY OBSERVABLE
+//! `RecordFold::apply` -> `ContextGraph::subgraph`. So these tests pin the PUBLICLY OBSERVABLE
 //! contract of live-only scoping: a `GOVERNS` relationship that is invalidated by supersession and
 //! then re-asserted is LIVE AGAIN in the projection a grounding consumer reads - the re-assertion is
 //! not permanently swallowed by the (now dead) prior edge - and at most ONE live edge for the
@@ -27,8 +27,9 @@
 use crate::common;
 use common::fixtures::apply_decision;
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Edge, Projection, REL_GOVERNS};
+use rigger::contextgraph::{Edge, REL_GOVERNS};
 
 /// The `(from, to)` of every LIVE `GOVERNS` edge a public `subgraph` result exposes, sorted, so a
 /// test can COUNT the governance edges the projection actually surfaces to a grounding consumer.

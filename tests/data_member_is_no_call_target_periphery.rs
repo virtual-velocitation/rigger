@@ -7,7 +7,7 @@
 //!  - the wire form: the kind strings a code entity event carries, which a graph folded before
 //!    the constants existed already holds, and the three of them that are no call target;
 //!  - the public projection: `Projector::apply` of hand-built entity events, then
-//!    `Projection::calls` in both directions, `Projector::locate`, the tiers the whole graph
+//!    `ContextGraph::calls` in both directions, `Projector::locate`, the tiers the whole graph
 //!    serves and the nodes a test proves, over each of the three kinds;
 //!  - the binary: `rigger graph --show` over a project graph holding a field, and a second
 //!    `rigger graph build` retiring a fn beside a member of its leaf;
@@ -22,9 +22,8 @@ use crate::common;
 #[cfg(feature = "symbols")]
 use crate::symbol_index;
 
-use common::cli::{
-    ambiguous_show, open_graph, run_rigger_ok, seed_rigger_dir, show_head, temp_project,
-};
+use crate::common::fixtures::RecordsRead;
+use common::cli::{ambiguous_show, open_graph, seed_rigger_dir, show_head, temp_project};
 use common::fixtures::{
     apply_call, apply_code_entity, apply_def, apply_edge_inferred_evidence, call_edge_pairs,
     call_frontiers, call_layer, call_node_ids, call_walk, edge, kinded_def_node, located_many,
@@ -34,7 +33,7 @@ use common::lens::{coupling_rows, files_lens_rows, SUB_C as CONCEPT, SUB_C_FILES
 use common::served::served_json;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    is_call_target, CallGraph, Direction, Graph, Projection, CODE_KIND_CONSTANT, CODE_KIND_FIELD,
+    is_call_target, CallGraph, Direction, Graph, CODE_KIND_CONSTANT, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_MODULE, CODE_KIND_OTHER,
     CODE_KIND_PROPERTY, CODE_KIND_TRAIT, CODE_KIND_TYPE, KIND_CODE_ENTITY, KIND_CONCEPT,
     NON_TARGET_KINDS, REL_CALLS, REL_CONTAINS, REL_REALIZES, TIER_AMBIGUOUS, TIER_EXTRACTED,
@@ -169,7 +168,11 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
     for kind in NON_TARGETS {
         let p = caller_of_open(&[("src/b.rs", "function"), ("src/a.rs", kind)], &[]);
 
-        let down = call_walk(&p, "src/a.rs::caller", Direction::Down);
+        let down = call_walk(
+            &common::fixtures::records_graph(&p),
+            "src/a.rs::caller",
+            Direction::Down,
+        );
         assert_eq!(
             call_node_ids(&down),
             ["src/a.rs::caller", "src/b.rs::open"],
@@ -191,7 +194,11 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
             "{kind}: one call target of the leaf is no frontier"
         );
 
-        let up = call_walk(&p, "src/b.rs::open", Direction::Up);
+        let up = call_walk(
+            &common::fixtures::records_graph(&p),
+            "src/b.rs::open",
+            Direction::Up,
+        );
         assert_eq!(
             call_node_ids(&up),
             ["src/a.rs::caller", "src/b.rs::open"],
@@ -208,7 +215,11 @@ fn a_call_naming_a_members_leaf_walks_to_the_other_files_fn_in_both_directions()
             "{kind}: the caller sits one hop above the fn"
         );
 
-        let at_member = call_walk(&p, "src/a.rs::open", Direction::Up);
+        let at_member = call_walk(
+            &common::fixtures::records_graph(&p),
+            "src/a.rs::open",
+            Direction::Up,
+        );
         assert_eq!(
             call_node_ids(&at_member),
             ["src/a.rs::open"],
@@ -332,7 +343,11 @@ fn a_member_adds_no_candidate_to_a_frontier_a_constant_of_the_leaf_stays_in() {
             &[("src/c.rs", "constant"), ("src/d.rs", kind)],
         );
 
-        let down = call_walk(&p, "src/a.rs::caller", Direction::Down);
+        let down = call_walk(
+            &common::fixtures::records_graph(&p),
+            "src/a.rs::caller",
+            Direction::Down,
+        );
         assert_eq!(
             call_frontiers(&down),
             [(
@@ -358,7 +373,11 @@ fn up_through_a_caller_of(kind: &str) -> CallGraph {
     apply_call(&p, 3, "src/a.rs", "helper", "slot");
     apply_def(&p, 4, "src/d.rs", "user", 1, true);
     apply_call(&p, 5, "src/d.rs", "slot", "user");
-    call_walk(&p, "src/a.rs::helper", Direction::Up)
+    call_walk(
+        &common::fixtures::records_graph(&p),
+        "src/a.rs::helper",
+        Direction::Up,
+    )
 }
 
 /// A member the UP walk reaches as a caller has no caller of its own: the walk stops there,
@@ -469,7 +488,7 @@ fn graph_show_answers_a_fields_leaf() {
     }
 
     assert_eq!(
-        run_rigger_ok(root, &["graph", "--show", "open"]),
+        common::cli::graph_ok(root, &["graph", "--show", "open"]),
         ambiguous_show(
             "open",
             &[

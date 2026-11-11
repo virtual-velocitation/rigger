@@ -49,7 +49,7 @@ use common::fixtures::{
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{EntryFold, Fold, Projection, REBUILD_OWED};
+use rigger::contextgraph::{EntryFold, Fold, RecordFold, REBUILD_OWED};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::gate::ExecRunner;
@@ -178,6 +178,7 @@ impl Files {
             check_emit: &rigger::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run(cfg, &deps).unwrap()
     }
@@ -539,7 +540,7 @@ fn the_public_sink_answer_records_through_the_constructor_and_the_ledger_form_un
     assert_ne!(batch, Vec::new(), "sanity: the file extracts to a batch");
 
     let (store, graph) = (files.store(), files.graph());
-    let folding = folding_into(&store, Some(&graph as &dyn Projection), &|_| {});
+    let folding = folding_into(&store, Some(&graph as &dyn RecordFold), &|_| {});
     let events: Vec<Event> = handed.keyed.iter().map(|(_, e)| e.clone()).collect();
     let done = folding
         .append_entry_and_fold(STREAM, &entry.event(events.len()), events)
