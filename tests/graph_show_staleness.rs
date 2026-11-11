@@ -108,18 +108,23 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (carrying a distinctive token), and the
     // queried `moved` really sits at line 4 (its own distinctive token, and unambiguous - it occurs
-    // at exactly one line). The graph records `moved` at the STALE line 1 - the code was edited so
-    // the definition moved down since the graph was built.
-    std::fs::write(
-        root.join("drift.rs"),
-        "fn other() {\n\
-         \x20\x20\x20\x20let neighbour_body_never_shown = 1;\n\
-         }\n\
-         fn moved() {\n\
-         \x20\x20\x20\x20let the_real_moved_body = 2;\n\
-         }\n",
-    )
-    .unwrap();
+    // at exactly one line). The head and the graph record `moved` at the STALE line 1 - the code
+    // was edited so the definition moved down since, in a worktree the store cannot compare.
+    common::cli::drift_uncomparable(
+        root,
+        &[("drift.rs", "fn moved() {}\n")],
+        &[(
+            "drift.rs",
+            Some(
+                "fn other() {\n\
+                 \x20\x20\x20\x20let neighbour_body_never_shown = 1;\n\
+                 }\n\
+                 fn moved() {\n\
+                 \x20\x20\x20\x20let the_real_moved_body = 2;\n\
+                 }\n",
+            ),
+        )],
+    );
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "drift.rs", "moved", "function", 1, "rust");
@@ -133,6 +138,7 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
         "a line-drifted location degrades or heals gracefully (exit SUCCESS, never an error); \
          stderr: {err}"
     );
+    let out = common::cli::past_uncomparable_label(&out);
 
     // NEVER A NEIGHBOUR'S BODY (the criterion's permanent crux, LANE-INDEPENDENT): the neighbour
     // `other` that really occupies the recorded line is NEVER shown under the `moved` header - the

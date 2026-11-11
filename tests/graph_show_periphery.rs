@@ -202,9 +202,19 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
     let root = dir.path();
     seed_rigger_dir(root);
 
-    // (a) `ghost` is recorded at gone.rs:5, but gone.rs is never written to the working tree.
-    // (b) `beta` is recorded at short.rs:9, but short.rs holds only two lines.
-    std::fs::write(root.join("short.rs"), "fn beta() {}\n// eof\n").unwrap();
+    // (a) `ghost` is recorded at gone.rs:5, but the working tree has deleted gone.rs.
+    // (b) `beta` is recorded at short.rs:9, but short.rs now holds only two lines.
+    common::cli::drift_uncomparable(
+        root,
+        &[
+            ("gone.rs", "\n\n\n\nfn ghost() {}\n"),
+            ("short.rs", "\n\n\n\n\n\n\n\nfn beta() {}\n"),
+        ],
+        &[
+            ("gone.rs", None),
+            ("short.rs", Some("fn beta() {}\n// eof\n")),
+        ],
+    );
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "gone.rs", "ghost", "function", 5, "rust");
@@ -217,6 +227,7 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
         ok,
         "a missing working-tree file degrades gracefully (exit SUCCESS); stderr: {err}"
     );
+    let out = common::cli::past_uncomparable_label(&out);
     assert!(
         out.contains("gone.rs:5"),
         "the recorded site header survives a missing file; got:\n{out}"
@@ -240,6 +251,7 @@ fn graph_show_degrades_to_stale_note_when_location_drifted() {
         ok2,
         "a recorded line past end-of-file degrades gracefully (exit SUCCESS); stderr: {err2}"
     );
+    let out2 = common::cli::past_uncomparable_label(&out2);
     assert!(
         out2.contains("short.rs:9"),
         "the recorded site header survives a line past end-of-file; got:\n{out2}"
@@ -268,12 +280,17 @@ fn graph_show_degrades_to_stale_note_when_recorded_line_is_zero() {
     seed_rigger_dir(root);
 
     // The file is present with a real body at line 1, but the graph records line 0 for the entity -
-    // so site_of parses the "line" attr to 0 and definition_body is entered with start == 0.
-    std::fs::write(
-        root.join("ghost.rs"),
-        "fn ghost() {\n    let real_body_at_line_1 = 1;\n}\n",
-    )
-    .unwrap();
+    // so site_of parses the "line" attr to 0 and definition_body is entered with start == 0. The
+    // head holds no `ghost`, so the record alone names it, and the uncomparable worktree that
+    // defines it withholds nothing.
+    common::cli::drift_uncomparable(
+        root,
+        &[("ghost.rs", "// no definition yet\n")],
+        &[(
+            "ghost.rs",
+            Some("fn ghost() {\n    let real_body_at_line_1 = 1;\n}\n"),
+        )],
+    );
     {
         let p = open_graph(root);
         apply_code_entity(&p, 1, "ghost.rs", "ghost", "function", 0, "rust");
@@ -284,6 +301,7 @@ fn graph_show_degrades_to_stale_note_when_recorded_line_is_zero() {
         ok,
         "graph --show of a line-0 entity must succeed (a degrade, never an error); stderr: {err}"
     );
+    let out = common::cli::past_uncomparable_label(&out);
     // The graph facts survive: the located site header is still printed.
     assert!(
         out.contains("ghost"),
@@ -403,6 +421,7 @@ fn graph_show_bounds_body_at_the_definitions_own_extent() {
         apply_code_entity(&p, 2, "c.rs", "two", "function", 6, "rust");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "one"]);
     assert!(ok, "graph --show one must succeed; stderr: {err}");
     // The definition's own body is shown, line-numbered from its recorded line.
@@ -481,6 +500,7 @@ fn graph_show_shows_full_body_past_nested_definition() {
 
     // `--show outer`: the FULL body is shown, INCLUDING the nested `helper`, not truncated to the
     // `fn outer` signature line.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "outer"]);
     assert!(ok, "graph --show outer must succeed; stderr: {err}");
     assert!(
@@ -560,6 +580,7 @@ fn graph_show_shows_full_body_of_a_destructuring_signature() {
         apply_code_entity(&p, 2, "sig.rs", "sibling", "function", 6, "rust");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "config"]);
     assert!(ok, "graph --show config must succeed; stderr: {err}");
     assert!(
@@ -615,6 +636,7 @@ fn graph_show_extent_ignores_braces_in_strings_comments_and_chars() {
         apply_code_entity(&p, 2, "tricky.rs", "after", "function", 8, "rust");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "tricky"]);
     assert!(ok, "graph --show tricky must succeed; stderr: {err}");
     // The body spans PAST every false-close `}` to the real closing brace at line 6.
@@ -677,6 +699,7 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
 
     // `--show outer`: the FULL indented block is shown, INCLUDING the nested `inner`, then outer's
     // own body after it - never truncated at the nested child.
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "outer"]);
     assert!(
         ok,
@@ -750,6 +773,7 @@ fn graph_show_does_not_overread_a_js_single_quote_brace_body() {
         apply_code_entity(&p, 2, "widget.js", "next", "function", 5, "javascript");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "open"]);
     assert!(ok, "graph --show open (js) must succeed; stderr: {err}");
     assert!(
@@ -800,6 +824,7 @@ fn graph_show_clamps_body_to_the_max_window() {
         apply_code_entity(&p, 1, "big.rs", "big", "function", 1, "rust");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "big"]);
     assert!(ok, "graph --show big must succeed; stderr: {err}");
     // The line AT the cap is shown; the line just past it - and the real closing brace beyond it -
@@ -859,6 +884,7 @@ fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
         apply_code_entity(&p, 1, "notes.txt", "widget", "function", 1, "text");
     }
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "widget"]);
     assert!(
         ok,
@@ -911,33 +937,33 @@ fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     seed_rigger_dir(root);
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (with a distinctive body token), and the
-    // queried `moved` really sits at line 4. The graph records `moved` at line 1 (a stale site: the
-    // definition was edited downward since the graph was built). Every pre-extent guard passes -
-    // the file exists, line 1 is a real line, it is not 0 and not past EOF - so the recorded name
-    // and line hold no definition and the surface falls back to a search by name and kind: the
-    // function `moved` is UNAMBIGUOUS in this file (it occurs at exactly one line), so the fallback
-    // resolves it.
-    std::fs::write(
-        root.join("drift.rs"),
-        "fn other() {\n\
-         \x20\x20\x20\x20let neighbour_body_never_shown = 1;\n\
-         }\n\
-         fn moved() {\n\
-         \x20\x20\x20\x20let the_real_moved_body = 2;\n\
-         }\n",
-    )
-    .unwrap();
-    {
-        let p = open_graph(root);
-        // Record `moved` at the STALE line 1 (its real current site is line 4).
-        apply_code_entity(&p, 1, "drift.rs", "moved", "function", 1, "rust");
-    }
+    // queried `moved` really sits at line 4. The head defines `moved` at line 1 (a stale site: the
+    // definition was edited downward since). Every pre-extent guard passes - the file exists, line
+    // 1 is a real line, it is not 0 and not past EOF - so the recorded name and line hold no
+    // definition and the surface falls back to a search by name and kind: the function `moved` is
+    // UNAMBIGUOUS in this file (it occurs at exactly one line), so the fallback resolves it.
+    common::cli::drift_uncomparable(
+        root,
+        &[("drift.rs", "fn moved() {}\n")],
+        &[(
+            "drift.rs",
+            Some(
+                "fn other() {\n\
+                 \x20\x20\x20\x20let neighbour_body_never_shown = 1;\n\
+                 }\n\
+                 fn moved() {\n\
+                 \x20\x20\x20\x20let the_real_moved_body = 2;\n\
+                 }\n",
+            ),
+        )],
+    );
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);
     assert!(
         ok,
         "a healed name/line drift still exits SUCCESS; stderr: {err}"
     );
+    let out = common::cli::past_uncomparable_label(&out);
     // The LIVE line is the header's site now, with the recorded (stale) line noted alongside it -
     // never silently swapped with no trace of the drift.
     assert!(
@@ -980,33 +1006,35 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
     let root = dir.path();
     seed_rigger_dir(root);
 
-    // twins.rs: TWO live definitions named `dup` (lines 4 and 7), neither at the recorded line 1
-    // (where an unrelated `other` really sits). A fallback by name and kind with no tiebreak would
-    // have to guess between them - the surface must refuse instead.
-    std::fs::write(
-        root.join("twins.rs"),
-        "fn other() {\n\
-         \x20\x20\x20\x20let unrelated = 1;\n\
-         }\n\
-         fn dup() {\n\
-         \x20\x20\x20\x20let first_twin_body = 1;\n\
-         }\n\
-         fn dup() {\n\
-         \x20\x20\x20\x20let second_twin_body = 2;\n\
-         }\n",
-    )
-    .unwrap();
-    {
-        let p = open_graph(root);
-        // Record `dup` at the STALE line 1 (neither real `dup` is there).
-        apply_code_entity(&p, 1, "twins.rs", "dup", "function", 1, "rust");
-    }
+    // twins.rs: the head defines `dup` at line 1; the worktree now holds TWO live definitions named
+    // `dup` (lines 4 and 7), neither at the recorded line 1 (where an unrelated `other` really
+    // sits). A fallback by name and kind with no tiebreak would have to guess between them - the
+    // surface must refuse instead.
+    common::cli::drift_uncomparable(
+        root,
+        &[("twins.rs", "fn dup() {}\n")],
+        &[(
+            "twins.rs",
+            Some(
+                "fn other() {\n\
+                 \x20\x20\x20\x20let unrelated = 1;\n\
+                 }\n\
+                 fn dup() {\n\
+                 \x20\x20\x20\x20let first_twin_body = 1;\n\
+                 }\n\
+                 fn dup() {\n\
+                 \x20\x20\x20\x20let second_twin_body = 2;\n\
+                 }\n",
+            ),
+        )],
+    );
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "dup"]);
     assert!(
         ok,
         "an ambiguous drift still degrades gracefully (exit SUCCESS); stderr: {err}"
     );
+    let out = common::cli::past_uncomparable_label(&out);
     assert!(
         out.contains("twins.rs:1"),
         "the recorded (stale, unhealed) site header survives an ambiguous drift; got:\n{out}"
@@ -1029,16 +1057,19 @@ fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
     );
 }
 
-/// The stdout lines of `rigger graph --show` on the Rust function `name` the graph records at line 1
-/// of `file`, in a project whose working tree holds `source` there (spec 119, ONE EXTENT: the
-/// node's recorded kind reaches the extent search).
+/// The stdout lines of `rigger graph --show` on the Rust function `name` the head defines at line 1
+/// of `file`, in a project whose uncomparable working tree holds `source` there (spec 119, ONE
+/// EXTENT: the node's recorded kind reaches the extent search).
 #[cfg(feature = "symbols")]
 fn shown_function_recorded_at_line_1(file: &str, source: &str, name: &str) -> Vec<String> {
     let dir = temp_project();
-    common::cli::show_recorded(dir.path(), file, source, name, "function", 1, "rust")
-        .lines()
-        .map(String::from)
-        .collect()
+    common::cli::show_drifted(
+        dir.path(),
+        file,
+        &format!("fn {name}() {{}}\n"),
+        Some(source),
+        &format!("{file}::{name}"),
+    )
 }
 
 rigger::test_cases! {
@@ -1055,7 +1086,7 @@ rigger::test_cases! {
         ),
         [
             "show field.rs::h",
-            "  site: field.rs:5   kind function   degree 1   (recorded line 1, now 5)",
+            "  site: field.rs:5   kind function   degree 2   (recorded line 1, now 5)",
             "  name h",
             "  lang rust",
             "       5 | fn h() {",
@@ -1077,7 +1108,7 @@ rigger::test_cases! {
         ),
         [
             "show changed.rs::f",
-            "  site: changed.rs:1   kind function   degree 1",
+            "  site: changed.rs:1   kind function   degree 2",
             "  name f",
             "  lang rust",
             "       1 | const f: u8 =",
@@ -1099,7 +1130,7 @@ rigger::test_cases! {
         ),
         [
             "show twins.rs::dup",
-            "  site: twins.rs:1   kind function   degree 1",
+            "  site: twins.rs:1   kind function   degree 2",
             "  name dup",
             "  lang rust",
             "  (production definitions named \"dup\" at path \"dup\" of kind function sit at 2 \
@@ -1123,7 +1154,7 @@ rigger::test_cases! {
         ),
         [
             "show missing.rs::g",
-            "  site: missing.rs:1   kind function   degree 1",
+            "  site: missing.rs:1   kind function   degree 2",
             "  name g",
             "  lang rust",
             "  (no production definition named \"g\" at path \"g\" of kind function at line 1 or \
@@ -1145,7 +1176,7 @@ rigger::test_cases! {
         ),
         [
             "show tested.rs::t",
-            "  site: tested.rs:1   kind function   degree 1",
+            "  site: tested.rs:1   kind function   degree 2",
             "  name t",
             "  lang rust",
             "  (no production definition named \"t\" at path \"t\" of kind function at line 1 or \
