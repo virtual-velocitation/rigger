@@ -346,7 +346,7 @@ impl<'v> State<'v> {
                 if !f.intent {
                     continue;
                 }
-                let Some(facts) = self.view.file(f.path) else {
+                let Some(facts) = self.view.intent_facts(f.path) else {
                     continue;
                 };
                 let mut fragment = Fragment::default();
@@ -1385,6 +1385,10 @@ mod tests {
             self.reads.lock().unwrap().push(format!("file {path}"));
             self.view.file(path)
         }
+        fn intent_facts(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+            self.reads.lock().unwrap().push(format!("intent {path}"));
+            self.view.intent_facts(path)
+        }
         fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
             self.reads.lock().unwrap().push(format!("defs {leaf}"));
             self.view.defs_named(leaf)
@@ -1400,7 +1404,7 @@ mod tests {
 
     /// Each row: an id, and every file, definition and mention a read of its node and edges
     /// makes, counted from before the resolver is built: building it reads the files declaring a
-    /// module held elsewhere. A definition reads its own file, the design and workflow files, the
+    /// module held elsewhere. A definition reads its own file, the design and workflow facts, the
     /// files holding a tagged reference to its leaf, and the mentions of that leaf; it resolves
     /// only the mentions it encloses and those of its leaf, so the definitions read are those of
     /// the leaves it names and its own. A file reads itself, the design files and the files
@@ -1412,10 +1416,10 @@ mod tests {
             "file src/a.rs",
             "file src/a_tests.rs",
             "file src/b.rs",
-            // The design and workflow files every read reads.
-            "file .rigger/workflow.yml",
-            "file docs/d.md",
-            "file tests/it.rs",
+            // The design and workflow facts of the files holding them, which every read reads.
+            "intent .rigger/workflow.yml",
+            "intent docs/d.md",
+            "intent tests/it.rs",
         ];
         let cases: &[(&str, &[&str])] = &[
             (
@@ -1437,6 +1441,8 @@ mod tests {
                     "defs helper",
                     "defs run",
                     "file src/a.rs",
+                    // A test there calls run.
+                    "file tests/it.rs",
                     "mentions run",
                 ],
             ),

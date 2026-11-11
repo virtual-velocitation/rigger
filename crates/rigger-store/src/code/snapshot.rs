@@ -788,18 +788,13 @@ impl Snapshot {
         self.bytes.is_mapped()
     }
 
+    /// The whole facts of the file `row`.
     fn facts(&self, row: &[u8]) -> FileFacts {
         let defs = self.table(DEFS);
         let mentions = self.table(MENTIONS);
         let modules = self.table(MODULES);
         let candidates = self.table(CANDIDATES);
         FileFacts {
-            path: self.text(row, 0).to_owned(),
-            blob: self.text(row, STR).to_owned(),
-            lang: self.text(row, 2 * STR).to_owned(),
-            half: half_of(byte(row, F_HALF)).unwrap_or_default(),
-            scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
-            partial: byte(row, F_FLAGS) & FLAG_SET != 0,
             defs: self
                 .list(row, L_DEFS)
                 .map(|d| {
@@ -843,6 +838,23 @@ impl Snapshot {
                     }
                 })
                 .collect(),
+            ..self.intent_of(row)
+        }
+    }
+
+    /// The facts of the file `row` without its definitions, mentions and modules: what a read of
+    /// its design and workflow facts needs ([`CodeView::intent_facts`]).
+    fn intent_of(&self, row: &[u8]) -> FileFacts {
+        FileFacts {
+            path: self.text(row, 0).to_owned(),
+            blob: self.text(row, STR).to_owned(),
+            lang: self.text(row, 2 * STR).to_owned(),
+            half: half_of(byte(row, F_HALF)).unwrap_or_default(),
+            scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
+            partial: byte(row, F_FLAGS) & FLAG_SET != 0,
+            defs: Vec::new(),
+            mentions: Vec::new(),
+            modules: Vec::new(),
             doc_concepts: self
                 .triples(row, 3)
                 .map(|[kind, id, title]| DocConcept { kind, id, title })
@@ -860,6 +872,21 @@ impl Snapshot {
                 .map(|[from, rel, to]| WfRelation { from, rel, to })
                 .collect(),
         }
+    }
+
+    /// The row number of the file at `path`.
+    fn file_at(&self, path: &str) -> Option<usize> {
+        let files = self.table(FILES);
+        let (mut lo, mut hi) = (0, files.rows);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.text(self.row(files, mid), 0).cmp(path) {
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => hi = mid,
+                std::cmp::Ordering::Equal => return Some(mid),
+            }
+        }
+        None
     }
 
     fn mention_kind(&self, row: &[u8]) -> MentionKind {
@@ -994,20 +1021,18 @@ impl CodeView for Snapshot {
     }
 
     fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
-        let files = self.table(FILES);
-        let (mut lo, mut hi) = (0, files.rows);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match self.text(self.row(files, mid), 0).cmp(path) {
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-                std::cmp::Ordering::Equal => {
-                    let facts = self.decoded[mid].get_or_init(|| self.facts(self.row(files, mid)));
-                    return Some(Cow::Borrowed(facts));
-                }
-            }
-        }
-        None
+        let at = self.file_at(path)?;
+        let facts = self.decoded[at].get_or_init(|| self.facts(self.row(self.table(FILES), at)));
+        Some(Cow::Borrowed(facts))
+    }
+
+    /// The whole facts when this open has decoded them, else the intent lists alone.
+    fn intent_facts(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+        let at = self.file_at(path)?;
+        Some(match self.decoded[at].get() {
+            Some(facts) => Cow::Borrowed(facts),
+            None => Cow::Owned(self.intent_of(self.row(self.table(FILES), at))),
+        })
     }
 
     fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
@@ -1360,10 +1385,29 @@ mod tests {
                 "{name}: file list"
             );
             for file in &files {
+                // Before the whole facts are read, the intent facts leave the code lists out.
+                let intent = FileFacts {
+                    defs: Vec::new(),
+                    mentions: Vec::new(),
+                    modules: Vec::new(),
+                    ..file.clone()
+                };
+                assert_eq!(
+                    snap.intent_facts(&file.path).as_deref(),
+                    Some(&intent),
+                    "{name}: intent facts of {}",
+                    file.path
+                );
                 assert_eq!(
                     snap.file(&file.path).as_deref(),
                     Some(file),
                     "{name}: facts of {}",
+                    file.path
+                );
+                assert_eq!(
+                    snap.intent_facts(&file.path).as_deref(),
+                    Some(file),
+                    "{name}: intent facts of {} once its facts are read",
                     file.path
                 );
                 for leaf in file.defs.iter().map(|d| &d.leaf) {
@@ -1382,6 +1426,10 @@ mod tests {
                 }
             }
             assert!(snap.file("absent").is_none(), "{name}: absent file");
+            assert!(
+                snap.intent_facts("absent").is_none(),
+                "{name}: absent intent"
+            );
             assert_eq!(snap.defs_named("absent").count(), 0, "{name}: absent leaf");
             assert_eq!(
                 encode(&snap, snap.groupings()),

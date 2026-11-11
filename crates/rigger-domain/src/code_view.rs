@@ -173,6 +173,13 @@ pub trait CodeView: Send + Sync {
     /// The facts of the file at `path`; borrowed when the view holds them in memory, built when
     /// it reads them from bytes.
     fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>>;
+    /// The facts of the file at `path` as far as a read of its design and workflow facts needs:
+    /// its path, half, scope, concepts, links, nodes and relations are the file's, and its
+    /// definitions, mentions and modules may be left out. By default the whole facts; a view that
+    /// reads facts from bytes decodes these alone.
+    fn intent_facts(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+        self.file(path)
+    }
     /// Every definition whose leaf is `leaf`, in path then source order.
     fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_>;
     /// Every mention whose leaf is `leaf`, in path then source order.
