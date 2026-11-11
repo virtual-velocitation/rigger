@@ -92,6 +92,14 @@ pub trait Grounder: Send + Sync {
         String::new()
     }
 
+    /// The honesty label (spec 6.1) the grounder's answers travel with: the tree they describe
+    /// and what the caller's worktree puts in doubt, or why nothing could be read. The DEFAULT
+    /// (grep / nop) reads the worktree itself, so it has nothing to state; only the `symbols`
+    /// grounder, which answers from the code store's view of the head, overrides it.
+    fn label(&self) -> Option<crate::composed::Label> {
+        None
+    }
+
     /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by
     /// entity"): up to `k` DISTINCT entities for `query`, each the entity's best-ranked
     /// location plus its degree. The DEFAULT (grep / nop, and any grounder with no

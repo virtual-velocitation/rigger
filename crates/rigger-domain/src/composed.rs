@@ -13,8 +13,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
+use crate::code_facts::Tip;
 use crate::code_graph::CodeGraph;
-use crate::code_view::{CodeView, Groupings, ViewFilter, WorktreeDiff};
+use crate::code_view::{CodeView, Groupings, ViewFilter, Withheld, WorktreeDiff};
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
@@ -49,6 +50,40 @@ pub struct Label {
     pub behind: Option<String>,
     /// The nodes withheld so far because their file differs or the worktree cannot be compared.
     pub withheld: usize,
+}
+
+impl Label {
+    /// The label of answers drawn from the view at `tip`, read for `worktree` with `withheld` in
+    /// doubt, behind its tree for the reason `behind` gives when it is.
+    pub fn describing(
+        tip: &Tip,
+        worktree: String,
+        withheld: &Withheld,
+        behind: Option<String>,
+    ) -> Label {
+        Label {
+            describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
+            worktree,
+            compared: match withheld {
+                Withheld::Files(files) => Compared::Differ(files.len()),
+                Withheld::All => Compared::Uncomparable,
+            },
+            behind,
+            withheld: 0,
+        }
+    }
+
+    /// The label of answers drawn from no view because the store `reason` names could not be
+    /// opened: nothing was described, and nothing could be compared.
+    pub fn unopened(worktree: String, reason: &str) -> Label {
+        Label {
+            describes: "nothing".to_string(),
+            worktree,
+            compared: Compared::Uncomparable,
+            behind: Some(format!("the code store cannot be opened: {reason}")),
+            withheld: 0,
+        }
+    }
 }
 
 /// `describes <commit>`, then how many files differ (or that the worktree cannot be compared),
@@ -302,14 +337,6 @@ enum Way {
     In,
 }
 
-/// The code-half nodes a read withholds because the caller's worktree may not match them.
-enum Stale {
-    /// The nodes whose file is one of these, the worktree's files that differ from the tree.
-    Files(BTreeSet<String>),
-    /// Every node of the code half: the worktree cannot be compared with the tree.
-    CodeHalf,
-}
-
 /// The record half and a view's code half read as one context graph.
 pub struct Composed<'r> {
     records: &'r dyn Neighbors,
@@ -322,9 +349,9 @@ pub struct Composed<'r> {
     concept_members: BTreeMap<String, Vec<String>>,
     concepts_of: BTreeMap<String, Vec<String>>,
     /// The code-half nodes the caller's worktree may not match.
-    stale: Stale,
+    stale: Withheld,
     label: Label,
-    /// The ids withheld so far because they are [`Stale`].
+    /// The ids withheld so far because they are [`Withheld`].
     withheld: Mutex<BTreeSet<String>>,
 }
 
@@ -358,15 +385,9 @@ impl<'r> Composed<'r> {
                 concepts_of.entry(m.clone()).or_default().push(c.id.clone());
             }
         }
-        let tip = &view.stamp().tip;
-        let (compared, stale) = match honesty.diff {
-            Ok(diff) => {
-                let files = diff.files_in_scope();
-                (Compared::Differ(files.len()), Stale::Files(files))
-            }
-            // A worktree that cannot be compared fails closed: no code hit is known fresh.
-            Err(_) => (Compared::Uncomparable, Stale::CodeHalf),
-        };
+        // A worktree that cannot be compared fails closed: no code hit is known fresh.
+        let stale = Withheld::of(honesty.diff);
+        let label = Label::describing(&view.stamp().tip, honesty.worktree, &stale, honesty.behind);
         Ok(Composed {
             records,
             code,
@@ -375,13 +396,7 @@ impl<'r> Composed<'r> {
             concept_members,
             concepts_of,
             stale,
-            label: Label {
-                describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
-                worktree: honesty.worktree,
-                compared,
-                behind: honesty.behind,
-                withheld: 0,
-            },
+            label,
             withheld: Mutex::new(BTreeSet::new()),
         })
     }
@@ -409,13 +424,13 @@ impl<'r> Composed<'r> {
         )
     }
 
-    /// Whether `node` is withheld because it is [`Stale`], counting it when it is.
+    /// Whether `node` is withheld because it is [`Withheld`], counting it when it is.
     fn withholds(&self, node: &Node) -> bool {
         let stale = match &self.stale {
-            Stale::Files(files) => {
-                node_file(&node.kind, &node.id).is_some_and(|f| files.contains(f))
+            Withheld::Files(_) => {
+                node_file(&node.kind, &node.id).is_some_and(|f| self.stale.withholds_file(f))
             }
-            Stale::CodeHalf => self.code.nodes.contains_key(&node.id),
+            Withheld::All => self.code.nodes.contains_key(&node.id),
         };
         if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
@@ -431,10 +446,10 @@ impl<'r> Composed<'r> {
         Ok(merge(self.code.node(id)?, self.records.node(id)?))
     }
 
-    /// Whether an edge end `id` is answered: nothing is [`Stale`], or the node it reads as (an
+    /// Whether an edge end `id` is answered: nothing is [`Withheld`], or the node it reads as (an
     /// [`artifact`] when no half holds it) is not withheld.
     fn answers_end(&self, id: &str) -> Result<bool, Error> {
-        if matches!(&self.stale, Stale::Files(files) if files.is_empty()) {
+        if self.stale.withholds_nothing() {
             return Ok(true);
         }
         let node = self.merged(id)?.unwrap_or_else(|| artifact(id));

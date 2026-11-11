@@ -104,11 +104,52 @@ impl WorktreeDiff {
     }
 }
 
+/// The files of a view a reader does not serve because its worktree may not match them: the ONE
+/// withholding rule every reader of a view applies (invariant 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Withheld {
+    /// The worktree's files that differ from the view's tree.
+    Files(BTreeSet<String>),
+    /// Every file: the worktree cannot be compared with the tree, or the view cannot be read.
+    All,
+}
+
+impl Withheld {
+    /// What `diff` puts in doubt: the files that differ, or everything when the worktree cannot
+    /// be compared.
+    pub fn of(diff: Result<WorktreeDiff, String>) -> Self {
+        match diff {
+            Ok(diff) => Withheld::Files(diff.files_in_scope()),
+            Err(_) => Withheld::All,
+        }
+    }
+
+    /// Whether the file at `path` is withheld.
+    pub fn withholds_file(&self, path: &str) -> bool {
+        match self {
+            Withheld::All => true,
+            Withheld::Files(files) => files.contains(path),
+        }
+    }
+
+    /// Whether the worktree agrees with the view on every file: nothing is withheld.
+    pub fn withholds_nothing(&self) -> bool {
+        matches!(self, Withheld::Files(files) if files.is_empty())
+    }
+
+    /// Whether some files, but not all, are withheld because they differ.
+    pub fn has_differing_files(&self) -> bool {
+        matches!(self, Withheld::Files(files) if !files.is_empty())
+    }
+}
+
 /// The code view of the head a reader in a worktree reads, and how that worktree differs from it.
 pub struct Head {
     pub view: Box<dyn CodeView>,
     /// How the worktree differs from the view's tree, or why it cannot be compared.
     pub diff: Result<WorktreeDiff, String>,
+    /// Why the view is behind the tree it was opened for, when it is.
+    pub behind: Option<String>,
 }
 
 /// Opens the code view of the head for a reader (7.3). The composition root implements it. A
@@ -416,6 +457,48 @@ mod tests {
                 .collect();
             assert_eq!(&found_defs, defs, "defs named {leaf}");
             assert_eq!(&found_mentions, mentions, "mentions named {leaf}");
+        }
+    }
+
+    /// Each row: how a worktree differs, the files it withholds and whether it withholds the file
+    /// `src/a.rs`.
+    #[test]
+    fn a_diff_withholds_its_differing_files_or_all_when_uncomparable() {
+        let differing = |changed: &[&str]| {
+            Ok(WorktreeDiff {
+                changed: changed.iter().map(|f| f.to_string()).collect(),
+                untracked: vec![".rigger/events.db".to_string()],
+            })
+        };
+        let cases = [
+            ("agreeing", differing(&[]), false, true, false),
+            (
+                "another file differs",
+                differing(&["src/b.rs"]),
+                false,
+                false,
+                true,
+            ),
+            (
+                "this file differs",
+                differing(&["src/a.rs"]),
+                true,
+                false,
+                true,
+            ),
+            (
+                "uncomparable",
+                Err("no commit".to_string()),
+                true,
+                false,
+                false,
+            ),
+        ];
+        for (name, diff, withholds_a, nothing, differing_files) in cases {
+            let withheld = Withheld::of(diff);
+            assert_eq!(withheld.withholds_file("src/a.rs"), withholds_a, "{name}");
+            assert_eq!(withheld.withholds_nothing(), nothing, "{name}");
+            assert_eq!(withheld.has_differing_files(), differing_files, "{name}");
         }
     }
 

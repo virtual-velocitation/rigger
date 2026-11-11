@@ -92,8 +92,9 @@ impl OpenCodeView for CodeStore {
         let opened = self.open(Mode::Read)?;
         let diff = self.differing(&opened, worktree);
         Ok(Head {
-            view: Box::new(opened.view),
             diff,
+            behind: opened.behind.as_ref().map(ToString::to_string),
+            view: Box::new(opened.view),
         })
     }
 }

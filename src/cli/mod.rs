@@ -1874,14 +1874,9 @@ fn head_view<T>(
         Option<String>,
     ) -> Result<T, String>,
 ) -> Result<T, String> {
-    let store = project_code_store(worktree);
-    let opened = store.open(rigger_store::code::Mode::Read)?;
-    let diff = store.differing(&opened, worktree);
-    compose(
-        &opened.view,
-        diff,
-        opened.behind.as_ref().map(ToString::to_string),
-    )
+    use rigger_domain::code_view::OpenCodeView;
+    let head = project_code_store(worktree).head(worktree)?;
+    compose(&*head.view, head.diff, head.behind)
 }
 
 /// Light-lane [`head_view`]: no extractor is compiled in, so the head's tree is read with no code
@@ -1896,6 +1891,8 @@ fn head_view<T>(
     ) -> Result<T, String>,
 ) -> Result<T, String> {
     use rigger_domain::code_view::TreeSource;
+    // The light lane shares the symbols lane's `Head` shape without a store: the tree's own
+    // difference from the worktree over a view that holds no fact.
     let source: Box<dyn TreeSource> = match main_repo_root(worktree) {
         Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(&root)),
         None => Box::new(rigger_store::code::DirTreeSource::new(worktree)),

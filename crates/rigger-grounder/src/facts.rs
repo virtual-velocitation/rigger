@@ -64,8 +64,9 @@ impl OpenCodeView for DirectoryHead {
         let opened = open_store(&self.root, &source, Mode::Read)?;
         let diff = source.changed_against_worktree(&opened.view.stamp().tip.tree, worktree);
         Ok(Head {
-            view: Box::new(opened.view),
             diff,
+            behind: opened.behind.as_ref().map(ToString::to_string),
+            view: Box::new(opened.view),
         })
     }
 }
