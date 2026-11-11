@@ -258,6 +258,25 @@ mod tests {
             .expect("a tree holding a corner lists, reads and diffs")
     }
 
+    /// However often the directory changes between heads, the source holds the listing of the
+    /// last head only.
+    #[test]
+    fn the_source_holds_the_last_heads_listing_only() {
+        let root = tree_with_one_file();
+        let source = DirTreeSource::new(root.path());
+        let mut tree = String::new();
+        for round in 0..3 {
+            std::fs::write(
+                root.path().join("src/lib.rs"),
+                format!("fn f{round}() {{}}\n"),
+            )
+            .expect("rewrite lib.rs");
+            tree = source.head().expect("head").tree;
+        }
+        let held: Vec<String> = source.listings.lock().unwrap().keys().cloned().collect();
+        assert_eq!(held, [tree]);
+    }
+
     #[test]
     fn a_gitignored_workflow_definition_is_left_out_of_the_listing_like_any_ignored_file() {
         let root = tree_with_one_file();
