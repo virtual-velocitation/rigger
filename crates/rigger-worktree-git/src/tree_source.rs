@@ -469,17 +469,10 @@ mod tests {
             let dir = repo(base);
             let git = GitTreeSource::new(dir.path());
             let plain = DirTreeSource::new(dir.path());
-            let (git_old, dir_old) = (git.head().unwrap(), plain.head().unwrap());
-            write(dir.path(), row.write);
-            remove(dir.path(), row.delete);
-            git_ok(dir.path(), &["add", "-A"]);
-            if let Some(path) = row.executable {
-                git_ok(dir.path(), &["update-index", "--chmod=+x", path]);
-            }
-            git_ok(dir.path(), &["commit", "-q", "-m", row.name]);
-            let (git_new, dir_new) = (git.head().unwrap(), plain.head().unwrap());
-
-            for (g, d) in [(&git_old, &dir_old), (&git_new, &dir_new)] {
+            // Each source is asked about its head as it reads it, before the commit after it: the
+            // directory source answers only for the tree it read last.
+            let agree_at_their_heads = || {
+                let (g, d) = (git.head().unwrap(), plain.head().unwrap());
                 let (listed, walked) = (git.list(&g.tree).unwrap(), plain.list(&d.tree).unwrap());
                 assert_eq!(paths(&listed), paths(&walked), "{}: list", row.name);
                 let ids: Vec<String> = listed.iter().map(|e| e.blob.clone()).collect();
@@ -491,7 +484,16 @@ mod tests {
                 let hashed: Vec<String> = read.into_iter().map(|(_, h)| h).collect();
                 let expected: Vec<String> = walked.iter().map(|e| e.blob.clone()).collect();
                 assert_eq!(hashed, expected, "{}: blob bytes", row.name);
+            };
+            agree_at_their_heads();
+            write(dir.path(), row.write);
+            remove(dir.path(), row.delete);
+            git_ok(dir.path(), &["add", "-A"]);
+            if let Some(path) = row.executable {
+                git_ok(dir.path(), &["update-index", "--chmod=+x", path]);
             }
+            git_ok(dir.path(), &["commit", "-q", "-m", row.name]);
+            agree_at_their_heads();
         }
     }
 

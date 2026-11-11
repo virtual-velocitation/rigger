@@ -69,11 +69,12 @@ fn walk(root: &Path) -> Walked {
 }
 
 /// The tree of a directory with no git. A tree id names a listing this source has seen, since a
-/// directory keeps no history: `head` lists the directory and remembers the listing, and the other
-/// operations answer for trees it remembers.
+/// directory keeps no history: `head` lists the directory and holds that listing in place of the
+/// one before, and the other operations answer for the tree it holds and refuse any other. The
+/// source holds one listing however long it lives.
 pub struct DirTreeSource {
     root: PathBuf,
-    /// Tree id to its listing.
+    /// The last head's tree id to its listing: one entry at most.
     listings: Mutex<HashMap<String, Vec<Entry>>>,
 }
 
@@ -98,10 +99,8 @@ impl TreeSource for DirTreeSource {
     fn head(&self) -> Result<Tip, String> {
         let entries = walk(&self.root).entries;
         let tree = tree_id(&entries);
-        self.listings
-            .lock()
-            .map_err(|e| e.to_string())?
-            .insert(tree.clone(), entries);
+        *self.listings.lock().map_err(|e| e.to_string())? =
+            HashMap::from([(tree.clone(), entries)]);
         Ok(Tip {
             head: DIRECTORY_HEAD.into(),
             commit: None,
