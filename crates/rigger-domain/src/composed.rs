@@ -9,7 +9,7 @@
 //! withheld and counted. The searches every reader asks ([`subgraph`], [`calls`], [`locate`])
 //! are written once over [`Neighbors`], so they step through both halves alike.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
@@ -398,6 +398,14 @@ pub trait CodeHalf: Neighbors {
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
     fn summarised_files(&self, id: &str) -> Vec<String>;
+    /// The groupings of the view the half resolves.
+    fn groupings(&self) -> &Groupings;
+    /// The half's whole graph ([`Neighbors::whole`]), moved out of the half where it is held
+    /// rather than copied: afterwards the half answers only [`Self::concepts_of`] and
+    /// [`Self::groupings`].
+    fn take_whole(&mut self) -> Result<Graph, Error> {
+        self.whole()
+    }
 }
 
 /// The file `node`'s facts came from, the one rule withholding reads: a design or workflow node's
@@ -553,6 +561,13 @@ impl CodeHalf for Whole {
         let tests = self.attachments.iter().flat_map(|a| a.tests_of(id));
         cluster_files(members, tests, |m| self.code.node(m).ok().flatten())
     }
+    fn groupings(&self) -> &Groupings {
+        &self.groupings
+    }
+    fn take_whole(&mut self) -> Result<Graph, Error> {
+        let Indexed { nodes, edges, .. } = std::mem::take(&mut self.code);
+        Ok(Graph { nodes, edges })
+    }
 }
 
 /// One id's node from both halves: the code half's kind with the record half's attrs merged
@@ -696,20 +711,122 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     /// Whether `node`, a node of the code half shown or hidden, is withheld because it is
     /// [`Withheld`], counting it when it is.
     fn withholds_code(&self, node: &Node) -> bool {
-        let withheld = |f: &str| self.stale.withholds_file(f);
+        self.withholds_code_by(node, |id| self.summarises_withheld(id))
+    }
+
+    /// Whether the grouping `id` summarises a file the caller's worktree withholds.
+    fn summarises_withheld(&self, id: &str) -> bool {
+        (self.code.summarised_files(id).iter()).any(|f| self.stale.withholds_file(f))
+    }
+
+    /// [`Self::withholds_code`], reading whether a grouping summarises a withheld file by
+    /// `summarises`.
+    fn withholds_code_by(&self, node: &Node, summarises: impl Fn(&str) -> bool) -> bool {
         let stale = !self.stale.withholds_nothing()
             && if [KIND_COMMUNITY, KIND_CONCEPT].contains(&node.kind.as_str()) {
-                self.code
-                    .summarised_files(&node.id)
-                    .iter()
-                    .any(|f| withheld(f))
+                summarises(&node.id)
             } else {
-                fact_file(node).is_some_and(withheld)
+                fact_file(node).is_some_and(|f| self.stale.withholds_file(f))
             };
         if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
         }
         stale
+    }
+
+    /// The groupings of the code half that summarise a file the caller's worktree withholds:
+    /// what withholding the half's whole reads of it beside its graph.
+    fn withheld_groupings(&self) -> FxHashSet<String> {
+        if self.stale.withholds_nothing() {
+            return FxHashSet::default();
+        }
+        let groupings = self.code.groupings();
+        (groupings.communities.iter().chain(&groupings.concepts))
+            .map(|c| &c.id)
+            .filter(|id| self.code.holds(id) && self.summarises_withheld(id))
+            .cloned()
+            .collect()
+    }
+
+    /// Both halves whole over `code`, the code half's whole graph, `withheld` the groupings
+    /// that summarise a withheld file ([`Self::withheld_groupings`]): of the code half it reads
+    /// only [`CodeHalf::concepts_of`], so `code` may have been moved out of it.
+    fn whole_over(&self, code: Graph, withheld: &FxHashSet<String>) -> Result<Graph, Error> {
+        let records = self.records.whole()?;
+        let is_alias = |n: &Node| self.canonical.contains_key(&n.id);
+        // Each id's record nodes, in the order recorded, folded onto its code node in turn.
+        let mut recorded: BTreeMap<String, Vec<Node>> = BTreeMap::new();
+        for r in records.nodes.into_iter().filter(|n| !is_alias(n)) {
+            recorded.entry(r.id.clone()).or_default().push(r);
+        }
+        let fold = |code: Option<Node>, records: Vec<Node>| {
+            records.into_iter().fold(code, |acc, r| merge(acc, Some(r)))
+        };
+        let mut recorded = recorded.into_iter().peekable();
+        // A node of the code half is withheld as `withholds` withholds it.
+        let withholds = |n: &Node| self.withholds_code_by(n, |id| withheld.contains(id));
+        let record_only = |rs| fold(None, rs).map(|n| (n, true));
+        // Each held node with whether it is answered, and the code half's aliased ids.
+        let mut held: Vec<(Node, bool)> = Vec::new();
+        let mut aliased: FxHashSet<String> = FxHashSet::default();
+        for n in code.nodes {
+            if is_alias(&n) {
+                aliased.insert(n.id);
+                continue;
+            }
+            while let Some((_, rs)) = recorded.next_if(|(id, _)| *id < n.id) {
+                held.extend(record_only(rs));
+            }
+            let rs = recorded.next_if(|(id, _)| *id == n.id).map(|(_, rs)| rs);
+            let n = fold(Some(n), rs.unwrap_or_default());
+            held.extend(n.map(|n| {
+                let answered = !withholds(&n);
+                (n, answered)
+            }));
+        }
+        held.extend(recorded.flat_map(|(_, rs)| record_only(rs)));
+        let answers: FxHashMap<&str, bool> =
+            held.iter().map(|(n, a)| (n.id.as_str(), *a)).collect();
+        let mut edges = Vec::new();
+        for e in code.edges.into_iter().chain(records.edges) {
+            let e = self.canon_edge(e);
+            if e.rel == REL_GOVERNS {
+                for c in self.code.concepts_of(&e.to) {
+                    edges.push(attachment(&e, &c));
+                }
+            }
+            edges.push(e);
+        }
+        let answered = |id: &str| match answers.get(id) {
+            Some(&answered) => answered,
+            None => !(aliased.contains(id) && withholds(&artifact(id))),
+        };
+        // Nothing withheld answers every edge.
+        if !self.stale.withholds_nothing() {
+            edges.retain(|e| answered(&e.from) && answered(&e.to));
+        }
+        let mut ends: BTreeMap<&str, Node> = BTreeMap::new();
+        for e in &edges {
+            for end in [&e.from, &e.to] {
+                if !answers.contains_key(end.as_str()) {
+                    ends.entry(end).or_insert_with(|| artifact(end));
+                }
+            }
+        }
+        drop(answers);
+        let mut nodes: Vec<Node> = Vec::with_capacity(held.len() + ends.len());
+        let mut ends = ends.into_values().peekable();
+        for (n, answered) in held {
+            nodes.extend(std::iter::from_fn(|| ends.next_if(|a| a.id < n.id)));
+            if answered {
+                nodes.push(n);
+            }
+        }
+        nodes.extend(ends);
+        Ok(Graph {
+            nodes,
+            edges: ordered(edges),
+        })
     }
 
     /// The node `id` names in both halves, merged, before any is withheld; `None` for an alias.
@@ -849,77 +966,7 @@ impl<C: CodeHalf> Neighbors for Composed<'_, C> {
         self.records.aliases()
     }
     fn whole(&self) -> Result<Graph, Error> {
-        let code = self.code.whole()?;
-        let records = self.records.whole()?;
-        let is_alias = |n: &Node| self.canonical.contains_key(&n.id);
-        // Each id's record nodes, in the order recorded, folded onto its code node in turn.
-        let mut recorded: BTreeMap<String, Vec<Node>> = BTreeMap::new();
-        for r in records.nodes.into_iter().filter(|n| !is_alias(n)) {
-            recorded.entry(r.id.clone()).or_default().push(r);
-        }
-        let fold = |code: Option<Node>, records: Vec<Node>| {
-            records.into_iter().fold(code, |acc, r| merge(acc, Some(r)))
-        };
-        let mut recorded = recorded.into_iter().peekable();
-        let mut held: Vec<Node> = Vec::new();
-        for n in code.nodes.into_iter().filter(|n| !is_alias(n)) {
-            while let Some((_, rs)) = recorded.next_if(|(id, _)| *id < n.id) {
-                held.extend(fold(None, rs));
-            }
-            let rs = recorded.next_if(|(id, _)| *id == n.id).map(|(_, rs)| rs);
-            held.extend(fold(Some(n), rs.unwrap_or_default()));
-        }
-        held.extend(recorded.flat_map(|(_, rs)| fold(None, rs)));
-        // Each held node with whether it is answered.
-        let held: Vec<(Node, bool)> = held
-            .into_iter()
-            .map(|n| {
-                let answered = !self.withholds(&n);
-                (n, answered)
-            })
-            .collect();
-        let answers: FxHashMap<&str, bool> =
-            held.iter().map(|(n, a)| (n.id.as_str(), *a)).collect();
-        let mut edges = Vec::new();
-        for e in code.edges.into_iter().chain(records.edges) {
-            let e = self.canon_edge(e);
-            if e.rel == REL_GOVERNS {
-                for c in self.code.concepts_of(&e.to) {
-                    edges.push(attachment(&e, &c));
-                }
-            }
-            edges.push(e);
-        }
-        let answered = |id: &str| match answers.get(id) {
-            Some(&answered) => answered,
-            None => !self.withholds(&artifact(id)),
-        };
-        // Nothing withheld answers every edge.
-        if !self.stale.withholds_nothing() {
-            edges.retain(|e| answered(&e.from) && answered(&e.to));
-        }
-        let mut ends: BTreeMap<&str, Node> = BTreeMap::new();
-        for e in &edges {
-            for end in [&e.from, &e.to] {
-                if !answers.contains_key(end.as_str()) {
-                    ends.entry(end).or_insert_with(|| artifact(end));
-                }
-            }
-        }
-        drop(answers);
-        let mut nodes: Vec<Node> = Vec::with_capacity(held.len() + ends.len());
-        let mut ends = ends.into_values().peekable();
-        for (n, answered) in held {
-            nodes.extend(std::iter::from_fn(|| ends.next_if(|a| a.id < n.id)));
-            if answered {
-                nodes.push(n);
-            }
-        }
-        nodes.extend(ends);
-        Ok(Graph {
-            nodes,
-            edges: ordered(edges),
-        })
+        self.whole_over(self.code.whole()?, &self.withheld_groupings())
     }
 }
 
@@ -993,6 +1040,14 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)
+    }
+    /// The whole read in two phases: what withholding reads of the code half beside its graph
+    /// first, then the graph moved out of the half and merged with the record half's.
+    fn into_whole(mut self: Box<Self>) -> Result<(Graph, Label), Error> {
+        let withheld = self.withheld_groupings();
+        let code = self.code.take_whole()?;
+        let whole = self.whole_over(code, &withheld)?;
+        Ok((whole, self.stamp_label()))
     }
     fn stamp_label(&self) -> Label {
         Label {
@@ -1880,9 +1935,52 @@ mod tests {
 
     const COMMUNITY: &str = "community/1/0";
 
+    /// A whole read that consumes the graph moves its code half into the answer instead of
+    /// copying it: GIVEN each worktree comparison (exact, a code file, a design doc and the
+    /// workflow definition differing, none possible), WHEN the graph is read whole by consuming
+    /// it and, on a second open, by borrowing it, THEN both answer the same graph and label.
+    #[test]
+    fn a_consuming_whole_read_answers_the_borrowing_one() {
+        let differing = |path: &str| {
+            Ok(WorktreeDiff {
+                changed: vec![path.into()],
+                untracked: Vec::new(),
+            })
+        };
+        // (case, the comparison)
+        let cases: [(&str, Result<WorktreeDiff, String>); 5] = [
+            ("exact", Ok(WorktreeDiff::default())),
+            ("a code file", differing("src/a.rs")),
+            ("a design doc", differing("docs/d.md")),
+            ("the workflow definition", differing(".rigger/workflow.yml")),
+            ("no comparison", Err("unreadable".into())),
+        ];
+        let (records, view) = (records(), view_with_workflow());
+        for (case, diff) in cases {
+            for near in [false, true] {
+                let honesty = || honest(diff.clone());
+                let open = || -> Box<dyn ContextGraph + '_> {
+                    let filter = ViewFilter::default();
+                    match near {
+                        true => {
+                            Box::new(Composed::near(&records, &view, filter, honesty()).unwrap())
+                        }
+                        false => Box::new(composed(&records, &view, honesty())),
+                    }
+                };
+                // Neither a node nor an edge compares, so the two read as their debug forms.
+                let borrowed = open();
+                let want = format!("{:#?}", (borrowed.whole().unwrap(), borrowed.stamp_label()));
+                let got = format!("{:#?}", open().into_whole().unwrap());
+                assert_eq!(got, want, "{case} (near {near})");
+            }
+        }
+    }
+
     /// Every code-half node names the file its facts came from by one rule, which both the
     /// differing-files arm and the cannot-compare arm read: GIVEN one file differing (or the
-    /// worktree not comparable), WHEN each kind of code-half node is read whole and near, THEN a
+    /// worktree not comparable), WHEN each kind of code-half node is resolved and read in the
+    /// whole graph, borrowed and consumed, over the code half resolved whole and near, THEN a
     /// node is withheld and counted exactly when its file is withheld, a grouping when a member's
     /// file is, and nothing else is.
     #[test]
@@ -1944,6 +2042,18 @@ mod tests {
                     g.stamp_label().withheld,
                     withheld.len(),
                     "{case} (near {near}): the probes withheld are counted"
+                );
+                let held = |g: &Graph| -> Vec<&str> {
+                    let held = |id: &&str| g.nodes.iter().any(|n| n.id == *id);
+                    probes.into_iter().filter(held).collect()
+                };
+                let whole = g.whole().unwrap();
+                assert_eq!(held(&whole), want, "{case} (near {near}): the whole holds");
+                let (whole, _) = g.into_whole().unwrap();
+                assert_eq!(
+                    held(&whole),
+                    want,
+                    "{case} (near {near}): the consumed whole holds"
                 );
             }
         }

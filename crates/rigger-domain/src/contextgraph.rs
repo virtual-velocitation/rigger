@@ -1023,6 +1023,13 @@ pub trait ContextGraph: Send + Sync {
     /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
     /// differs from it, with the count of nodes withheld so far for differing.
     fn stamp_label(&self) -> crate::composed::Label;
+
+    /// [`Self::whole`] and then [`Self::stamp_label`], read by consuming the graph so a graph
+    /// that holds its nodes may move them into the answer rather than copy them.
+    fn into_whole(self: Box<Self>) -> Result<(Graph, crate::composed::Label), Error> {
+        let whole = self.whole()?;
+        Ok((whole, self.stamp_label()))
+    }
 }
 
 /// Opens the context graph a reader reads (7.3): the record graph composed with the code view of

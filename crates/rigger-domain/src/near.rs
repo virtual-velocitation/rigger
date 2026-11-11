@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
-use crate::code_view::{Cluster, CodeView, FileRef, Tests, ViewFilter};
+use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
 use crate::composed::{
     attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, CodeHalf, Indexed,
 };
@@ -939,6 +939,10 @@ impl Neighbors for Near<'_> {
 }
 
 impl CodeHalf for Near<'_> {
+    fn groupings(&self) -> &Groupings {
+        let view = self.state().view;
+        view.groupings()
+    }
     fn holds(&self, id: &str) -> bool {
         match self.whole.get() {
             Some(whole) => whole.holds(id),
@@ -1008,7 +1012,7 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{DefRef, FactsView, Groupings, MentionRef, Proofs, Settled};
+    use crate::code_view::{DefRef, FactsView, MentionRef, Proofs, Settled};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};

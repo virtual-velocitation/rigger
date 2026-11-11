@@ -555,6 +555,19 @@ fn dash_read<T>(
     tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
 ) -> Result<(T, Label), String> {
+    dash_open(graph_db, identity, tests, |graph| {
+        let answer = read(graph.as_ref())?;
+        Ok((answer, graph.stamp_label()))
+    })
+}
+
+/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it.
+fn dash_open<T>(
+    graph_db: &str,
+    identity: &str,
+    tests: Tests,
+    read: impl FnOnce(Box<dyn ContextGraph + '_>) -> Result<(T, Label), contextgraph::Error>,
+) -> Result<(T, Label), String> {
     let path = Path::new(graph_db);
     if !path.exists() {
         return Err(format!("no graph has been built at {graph_db}"));
@@ -571,8 +584,7 @@ fn dash_read<T>(
     let graph = read_graph
         .open(ViewFilter { tests })
         .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
-    let answer = read(graph.as_ref()).map_err(|e| format!("the graph cannot be read: {}", e.0))?;
-    Ok((answer, graph.stamp_label()))
+    read(graph).map_err(|e| format!("the graph cannot be read: {}", e.0))
 }
 
 /// What a dash graph read describes: the label of its open, or why it read no graph.
@@ -599,8 +611,10 @@ fn unattached(instance: Option<&str>) -> dash::GraphLabel {
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
 fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
-    let ((graph, tests_hidden), label) = described(dash_read(graph_db, identity, tests, |g| {
-        Ok((g.whole()?, g.hidden_tests()?.len()))
+    let ((graph, tests_hidden), label) = described(dash_open(graph_db, identity, tests, |g| {
+        let tests_hidden = g.hidden_tests()?.len();
+        let (graph, label) = g.into_whole()?;
+        Ok(((graph, tests_hidden), label))
     }));
     dash::GraphRead {
         graph,
