@@ -122,16 +122,13 @@ impl Names {
                 ids: self.ids(&ranked(prefixed, &key)),
             };
         }
-        let distance = fuzziness(&key);
-        if distance > 0 {
-            if let Ok(automaton) = Levenshtein::new(&key, distance) {
-                let near = self.gather(automaton);
-                if !near.is_empty() {
-                    return Resolved::Found {
-                        tier: Tier::Fuzzy,
-                        ids: self.ids(&ranked(near, &key)),
-                    };
-                }
+        if let Ok(automaton) = Levenshtein::new(&key, fuzziness(&key)) {
+            let near = self.gather(automaton);
+            if !near.is_empty() {
+                return Resolved::Found {
+                    tier: Tier::Fuzzy,
+                    ids: self.ids(&ranked(near, &key)),
+                };
             }
         }
         Resolved::Missing {
