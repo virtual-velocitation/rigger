@@ -48,10 +48,8 @@ pub struct Stamp {
 /// What a name-reference is, as written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MentionKind {
-    /// A call.
+    /// An untagged reference: a call, or any reference the extractor tags with no kind.
     Call,
-    /// A plain reference to a name.
-    Plain,
     /// A reference tagged with its kind (a type reference, a use, a trait impl, a const read).
     Tagged(String),
 }

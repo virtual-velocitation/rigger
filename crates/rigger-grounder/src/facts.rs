@@ -302,7 +302,6 @@ mod tests {
                     assert_eq!(m.leaf, m.name, "{path}: a reference is named by its leaf");
                     let kind = match &m.kind {
                         MentionKind::Call => "call".to_string(),
-                        MentionKind::Plain => "plain".to_string(),
                         MentionKind::Tagged(kind) => format!("tagged:{kind}"),
                     };
                     (
