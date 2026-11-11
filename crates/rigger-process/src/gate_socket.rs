@@ -83,6 +83,23 @@ fn check_private(dir: &Path) -> io::Result<()> {
     ))
 }
 
+/// `e`, naming the cause when it is the OS refusing `path` as longer than a socket path may be:
+/// the runtime directory it sits under is too long.
+#[cfg(unix)]
+fn naming_overflow(path: &Path, e: io::Error) -> io::Error {
+    if e.kind() != io::ErrorKind::InvalidInput {
+        return e;
+    }
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "the gate socket path {} is longer than this OS allows a socket, because the runtime \
+             directory ($XDG_RUNTIME_DIR, or the temp directory when it is unset) is too long ({e})",
+            path.display()
+        ),
+    )
+}
+
 /// Make `dir` this user's private directory: created with mode 0700 when absent, refused by
 /// [`check_private`] when it is there but not private.
 #[cfg(unix)]
@@ -141,7 +158,7 @@ impl GateSocket {
         }
         let staging = staging_path(path);
         let _ = std::fs::remove_file(&staging);
-        let listener = UnixListener::bind(&staging)?;
+        let listener = UnixListener::bind(&staging).map_err(|e| naming_overflow(path, e))?;
         let placed = std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o600))
             .and_then(|()| std::fs::rename(&staging, path));
         if let Err(e) = placed {
@@ -242,7 +259,7 @@ pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> 
         {
             return Ok(None)
         }
-        Err(e) => return Err(e),
+        Err(e) => return Err(naming_overflow(path, e)),
     };
     stream.write_all(rigger_domain::gate_channel::to_line(request).as_bytes())?;
     let mut line = String::new();

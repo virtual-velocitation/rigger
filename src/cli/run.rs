@@ -1819,10 +1819,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // leaves the verb information-only.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
     let socket = rigger::gate_socket::socket_path(Path::new(&root))
-        .and_then(|path| {
-            rigger::gate_socket::GateSocket::bind(&path)
-                .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))
-        })
+        .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
         .inspect_err(|e| {
             stderr_line(&format!(
                 "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs for \

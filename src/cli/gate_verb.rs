@@ -29,11 +29,8 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
             gate: gate_id.clone(),
         };
         let repo = loc.repo_root();
-        let socket = rigger::gate_socket::socket_path(Path::new(&repo));
-        let asked = socket
-            .as_ref()
-            .map_err(|e| std::io::Error::new(e.kind(), e.to_string()))
-            .and_then(|path| rigger::gate_socket::ask(path, &request));
+        let asked = rigger::gate_socket::socket_path(Path::new(&repo))
+            .and_then(|path| rigger::gate_socket::ask(&path, &request));
         let unserved = match asked {
             Ok(Some(GateReply::Ran {
                 gate,
@@ -52,18 +49,9 @@ pub(crate) fn cmd_gate(args: &[String]) -> Res {
                 )
                 .into())
             }
-            // A socket path longer than the OS allows: the driver could not bind it either.
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                let path = socket
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
-                format!(
-                    "the gate socket path {path} is longer than this OS allows a socket, because \
-                     the runtime directory ($XDG_RUNTIME_DIR, or the temp directory when it is \
-                     unset) is too long ({e})"
-                )
-            }
+            // A socket path longer than the OS allows, its cause named by the adapter: the driver
+            // could not bind it either.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => e.to_string(),
             Err(e) => return Err(format!("gate: asking the driver failed: {e}").into()),
         };
         let cfg = load_run_config(&repo)?;
