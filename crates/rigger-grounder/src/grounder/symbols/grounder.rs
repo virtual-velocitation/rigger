@@ -12,8 +12,11 @@
 use crate::facts::DirectoryHead;
 use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
 use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
-use rigger_domain::code_facts::{Half, MentionKind, Scope};
-use rigger_domain::code_view::{CodeView, DefRef, FileRef, MentionRef, OpenCodeView, WorktreeDiff};
+use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
+use rigger_domain::code_view::{
+    CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Withheld,
+};
+use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -48,20 +51,36 @@ impl Symbols {
         Symbols::over(root, Box::new(DirectoryHead::new(Path::new(root))))
     }
 
-    /// `read` over the head's view as it stands now, less the files `root` puts in doubt. None when
-    /// the head cannot be read, which no answer is drawn from.
-    fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> Option<T> {
-        let head = self.heads.head(Path::new(&self.root)).ok()?;
-        Some(read(&Sight::new(&*head.view, head.diff)))
+    /// `read` over the head's view as it stands now, less the files `root` puts in doubt. A head
+    /// that cannot be read is a worktree that cannot be compared and more: every file is
+    /// withheld, over a view that holds none, so the radius falls back to the text search
+    /// ([`Grounder::label`] states why).
+    fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> T {
+        match self.heads.head(Path::new(&self.root)) {
+            Ok(head) => read(&Sight::new(&*head.view, Withheld::of(head.diff))),
+            Err(_) => read(&Sight::new(&unread_view(), Withheld::All)),
+        }
     }
 }
 
-/// The files a read does not serve.
-enum Withheld {
-    /// The worktree's files that differ from the view's tree.
-    Files(BTreeSet<String>),
-    /// Every file: the worktree cannot be compared with the tree.
-    All,
+/// The tree id of the view a head that cannot be read stands in for.
+const UNREAD_TREE: &str = "unread";
+
+/// The view a head that cannot be read stands in for: it holds no file.
+fn unread_view() -> FactsView {
+    let tip = Tip {
+        head: String::new(),
+        commit: None,
+        tree: UNREAD_TREE.to_string(),
+    };
+    FactsView::new(
+        Stamp {
+            tip,
+            fingerprint: 0,
+            seq: 0,
+        },
+        Vec::new(),
+    )
 }
 
 /// What one read sees: the head's view, less the files its worktree puts in doubt. Only code-half
@@ -72,29 +91,23 @@ struct Sight<'v> {
 }
 
 impl<'v> Sight<'v> {
-    fn new(view: &'v dyn CodeView, diff: Result<WorktreeDiff, String>) -> Self {
-        let withheld = match diff {
-            Ok(diff) => Withheld::Files(diff.files_in_scope()),
-            Err(_) => Withheld::All,
-        };
+    fn new(view: &'v dyn CodeView, withheld: Withheld) -> Self {
         Sight { view, withheld }
     }
 
     /// Whether the file at `path` is withheld from this read.
     fn withholds(&self, path: &str) -> bool {
-        match &self.withheld {
-            Withheld::All => true,
-            Withheld::Files(files) => files.contains(path),
-        }
+        self.withheld.withholds_file(path)
     }
 
     fn serves(&self, file: &FileRef<'_>) -> bool {
         file.half == Half::Code && !self.withholds(file.path)
     }
 
-    /// Whether any file is withheld because it differs from the view's tree.
-    fn has_differing_files(&self) -> bool {
-        matches!(&self.withheld, Withheld::Files(files) if !files.is_empty())
+    /// Whether the radius must text-search the names the view resolves: some file is withheld, so
+    /// a reference in it may be one the view does not hold.
+    fn has_withheld_files(&self) -> bool {
+        !self.withheld.withholds_nothing()
     }
 
     /// The served files, in path order.
@@ -570,7 +583,6 @@ impl Grounder for Symbols {
                 })
                 .collect()
         })
-        .unwrap_or_default()
     }
 
     /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
@@ -619,7 +631,6 @@ impl Grounder for Symbols {
             seed.truncate(k);
             seed
         })
-        .unwrap_or_default()
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
@@ -670,7 +681,6 @@ impl Grounder for Symbols {
             return BlastRadius::default();
         }
         self.read(|sight| self.radius(sight, &terms, k))
-            .unwrap_or_default()
     }
 
     /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event:
@@ -682,9 +692,26 @@ impl Grounder for Symbols {
     fn index_stamp(&self) -> String {
         let tree = match self.heads.head(Path::new(&self.root)) {
             Ok(head) => head.view.stamp().tip.tree.clone(),
-            Err(_) => "unread".to_string(),
+            Err(_) => UNREAD_TREE.to_string(),
         };
         format!("{tree}/{GRAMMAR_TAGS_VERSION}")
+    }
+
+    /// The label of the head as it stands now: the tree it describes, how many of the worktree's
+    /// files differ (every file when it cannot be compared) and why the view is behind; or, when
+    /// the store cannot be opened, the failure ([`Label::unopened`]). The answers withhold exactly
+    /// those files.
+    fn label(&self) -> Option<Label> {
+        let worktree = self.root.clone();
+        Some(match self.heads.head(Path::new(&self.root)) {
+            Ok(head) => Label::describing(
+                &head.view.stamp().tip,
+                worktree,
+                &Withheld::of(head.diff),
+                head.behind,
+            ),
+            Err(reason) => Label::unopened(worktree, &reason),
+        })
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3): [`scored_hits`]'s already-ranked list,
@@ -799,7 +826,6 @@ impl Grounder for Symbols {
             }
             out
         })
-        .unwrap_or_default()
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
@@ -873,7 +899,6 @@ impl Grounder for Symbols {
                 ambiguous <= cutoff
             })
         })
-        .unwrap_or(false)
     }
 }
 
@@ -948,7 +973,7 @@ impl Symbols {
         for n in &terms.names {
             let resolved = defined.contains(n.name.as_str());
             // A resolved name is searched only for the files the worktree withholds from the view.
-            if resolved && !sight.has_differing_files() {
+            if resolved && !sight.has_withheld_files() {
                 continue;
             }
             for r in grep.ground_identifier(&n.text, usize::MAX) {
@@ -980,7 +1005,8 @@ mod tests {
     use crate::facts::FactsExtractor;
     use crate::grounder::Grounder;
     use rigger_domain::code_facts::{Def, FileFacts, Mention, Stamp, Tip};
-    use rigger_domain::code_view::{Entry, Extract, FactsView, Head};
+    use rigger_domain::code_view::{Entry, Extract, Head, WorktreeDiff};
+    use rigger_domain::composed::Compared;
 
     /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
     /// the structural-active signal the conductor keys the `BlastRadiusComputed` audit off) is
@@ -2223,6 +2249,7 @@ mod tests {
             Ok(Head {
                 view: Box::new(FactsView::new(stamp(), self.files.clone())),
                 diff: self.diff.clone(),
+                behind: None,
             })
         }
     }
@@ -2278,7 +2305,7 @@ mod tests {
     }
 
     fn agreeing(view: &FactsView) -> Sight<'_> {
-        Sight::new(view, Ok(WorktreeDiff::default()))
+        Sight::new(view, Withheld::of(Ok(WorktreeDiff::default())))
     }
 
     /// A one-file `fixture.rs` Rust view of `defs` and `refs`.
@@ -2573,6 +2600,91 @@ mod tests {
                 g.blast_radius("`apply_damage`", 8).precise,
                 precise,
                 "{name}: blast radius"
+            );
+        }
+    }
+
+    /// A store that cannot be opened withholds everything, like a worktree that cannot be compared,
+    /// and says why: nothing is served from the view, the radius falls back to the text search
+    /// (the safe over-approximation), and the label names the failure. Never an empty answer
+    /// indistinguishable from "no hit".
+    #[test]
+    fn grounding_answers_state_an_unopenable_store() {
+        struct Unopenable;
+        impl OpenCodeView for Unopenable {
+            fn head(&self, _worktree: &Path) -> Result<Head, String> {
+                Err("the code store is locked".to_string())
+            }
+        }
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::write(worktree.path().join("def.rs"), "fn apply_damage() {}\n").unwrap();
+        std::fs::write(
+            worktree.path().join("caller.rs"),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+        let g = Symbols::over(worktree.path().to_str().unwrap(), Box::new(Unopenable));
+
+        assert!(g.ground("apply_damage", 8).is_empty(), "nothing is served");
+        let radius = g.blast_radius("`apply_damage`", 8);
+        assert!(radius.precise.is_empty(), "no structural view");
+        let mut safe = radius.safe;
+        safe.sort();
+        assert_eq!(
+            safe,
+            ["caller.rs", "def.rs"],
+            "the text search answers in place of the view"
+        );
+        let label = g.label().expect("the symbols grounder labels its answers");
+        assert_eq!(label.compared, Compared::Uncomparable);
+        assert!(
+            label.to_string().contains("the code store is locked"),
+            "the label names why: {label}"
+        );
+    }
+
+    /// Every answer's label states what was withheld. Each row: the worktree's difference and the
+    /// label's text after `describes <tree>`.
+    #[test]
+    fn grounding_labels_state_what_was_withheld() {
+        let files = vec![code_file(
+            "src/a.rs",
+            "rust",
+            Scope::Product,
+            vec![hand_def("a", 1)],
+            vec![],
+        )];
+        let cases = [
+            ("agreeing", differing(&[], &[]), ""),
+            (
+                "one file differs",
+                differing(&["src/a.rs"], &[]),
+                "; 1 file in W differs",
+            ),
+            (
+                "two files differ",
+                differing(&["src/a.rs"], &["src/b.rs"]),
+                "; 2 files in W differ",
+            ),
+            (
+                "not comparable",
+                Err("no such commit".to_string()),
+                "; W cannot be compared",
+            ),
+        ];
+        for (name, diff, after_tree) in cases {
+            let g = Symbols::over(
+                "W",
+                Box::new(Fixed {
+                    files: files.clone(),
+                    diff,
+                }),
+            );
+            let label = g.label().expect("labelled").to_string();
+            assert_eq!(
+                label,
+                format!("describes {}{after_tree}", stamp().tip.tree),
+                "{name}"
             );
         }
     }

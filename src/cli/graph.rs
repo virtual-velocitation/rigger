@@ -1010,13 +1010,17 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     let grounder = select_grounder(&name)?;
     if k > 0 && !grounder.has_strong_match(query, k) {
         println!("no entity matches strongly for {query:?}");
-        return Ok(());
+    } else {
+        for r in grounder.ground_ranked(query, k) {
+            println!(
+                "{}:{}: {} (degree {})",
+                r.loc.file, r.loc.line, r.loc.text, r.degree
+            );
+        }
     }
-    for r in grounder.ground_ranked(query, k) {
-        println!(
-            "{}:{}: {} (degree {})",
-            r.loc.file, r.loc.line, r.loc.text, r.degree
-        );
+    // The honesty label (6.1) travels with every answer; stderr keeps the rows themselves clean.
+    if let Some(label) = grounder.label() {
+        eprintln!("{label}");
     }
     Ok(())
 }

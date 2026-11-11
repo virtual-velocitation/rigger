@@ -2830,6 +2830,43 @@ fn ground_via_symbols(files: &[(&str, &str)], query_args: &[&str]) -> String {
     out
 }
 
+/// The honesty label (6.1) travels with every `rigger ground` answer, on stderr beside the rows.
+/// Each row: what the worktree holds beyond the committed tree and the label's text after
+/// `describes <commit>`.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_states_what_the_worktree_puts_in_doubt() {
+    for (name, uncommitted, after_commit) in [
+        ("a worktree that agrees", None, ""),
+        (
+            "one uncommitted file",
+            Some("extra.rs"),
+            "; 1 file in . differs",
+        ),
+    ] {
+        let dir = temp_project();
+        let root = dir.path();
+        write_grounder_workflow(root, "symbols");
+        std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        common::fixtures::commit_tree(root);
+        if let Some(file) = uncommitted {
+            std::fs::write(root.join(file), "fn extra() {}\n").unwrap();
+        }
+        let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
+        assert!(ok, "{name}: ground must succeed; stderr: {err}");
+        assert!(
+            out.starts_with("combat.rs:"),
+            "{name}: rows on stdout: {out}"
+        );
+        let label = err.lines().last().unwrap_or_default();
+        let after = label.find(';').map_or("", |at| &label[at..]);
+        assert!(
+            label.starts_with("describes ") && after == after_commit,
+            "{name}: the label states what differs; stderr: {err}"
+        );
+    }
+}
+
 /// End-to-end selection wiring (spec 15, unit 4): with `defaults.grounder: symbols`, `rigger
 /// ground` resolves the real `Symbols` grounder through `select_grounder` - reading the code
 /// store over the project - and ranks a DEFINITION above an incidental prose
