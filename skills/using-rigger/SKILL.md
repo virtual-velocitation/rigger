@@ -58,7 +58,7 @@ Every gating agent ends its output with its verdict line: a JSON line carrying {
 
 ## Self-serve
 
-Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the binary on your path and the tree it was built from. This repo keeps its specs in specs/. The full command surface is: run, resume-unit, hold, release, graph, stats, canary, playbooks, replay, status, dash, watch, ground, reindex, symbols-index, emit, gate, progress, result, peers, reset, critique, validate, init, setup, docs, prime, instructions, mcp, grep-guard, guard-write, hook, version, help.
+Run `rigger version` to see the exact binary and its build provenance and to diagnose drift between the binary on your path and the tree it was built from. This repo keeps its specs in specs/. The full command surface is: run, resume-unit, hold, release, graph, stats, canary, playbooks, replay, status, dash, watch, ground, emit, gate, progress, result, peers, reset, critique, validate, init, setup, docs, prime, instructions, mcp, grep-guard, guard-write, hook, version, help.
 
 ## The load-bearing decisions
 
