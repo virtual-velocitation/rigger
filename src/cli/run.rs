@@ -485,6 +485,33 @@ fn reclaim_run_scratch(root: &str) {
     reap_then_remove_dir(&base.join("target"), base);
 }
 
+/// The one teardown every ending of a `rigger run` passes through: dropped as `run_cli` returns,
+/// done, halted, escalated or failed, it reclaims the run-level scratch ([`reclaim_run_scratch`])
+/// unless the run ended with a unit awaiting a human, whose review resumes it. No spawn of the run
+/// is live by then: the run reaps every earlier launch at its start and the driver reaps each
+/// launch it makes before the conductor returns. A log that cannot be read reclaims nothing, and a
+/// project with no scratch root has none to reclaim.
+struct RunTeardown<'a> {
+    scratch: Option<&'a str>,
+    store: &'a dyn EventStore,
+}
+
+impl Drop for RunTeardown<'_> {
+    fn drop(&mut self) {
+        if let Some(root) = self.scratch.filter(|_| awaits_no_human(self.store)) {
+            reclaim_run_scratch(root);
+        }
+    }
+}
+
+/// Whether the current run's log reads, and no unit of it awaits a human's review.
+fn awaits_no_human(store: &dyn EventStore) -> bool {
+    runscope::read::read_current_run(store, conductor::STREAM)
+        .ok()
+        .and_then(|(events, _)| ledger::project(&events).ok())
+        .is_some_and(|rs| rs.manual_review.is_empty())
+}
+
 /// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
 /// parks probe repos and verify builds in, per-spawn liveness markers, and a headless host's raw
 /// transcripts.
@@ -861,6 +888,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
+    // Every way this run ends from here - done, a halt, an escalation, a refusal or an error -
+    // passes through this one teardown, dropped after the driver, the dash and the gate socket.
+    let _teardown = RunTeardown {
+        scratch: scratch.as_deref(),
+        store: &store,
+    };
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
@@ -961,12 +994,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                 "rigger run: the done run's hold was not released: {e}"
             ));
         }
-    }
-    // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
-    // run that stopped short of done keeps it for the resume, and a project with no scratch root
-    // has none to reclaim.
-    if let Some(root) = scratch.as_deref().filter(|_| rs.done()) {
-        reclaim_run_scratch(root);
     }
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,

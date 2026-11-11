@@ -7703,29 +7703,85 @@ rigger::test_cases! {
     );
 }
 
-/// Spec 105's run teardown, end to end: given a project whose run ends, when the run ended done
-/// the agent streams its launches wrote are reclaimed with the rest of its scratch, and when it
-/// ended with work left (here an escalated unit) they stand for whoever resumes or reads them.
+/// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] with its one stage under `autonomy: manual`: the unit's gate
+/// passes and the run pauses it for a human, so the run ends with the unit awaiting review.
+const MANUAL_REVIEW_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    autonomy: manual
+    on_pass: merge
+"#,
+};
+
+/// The run teardown, end to end: given a project whose run ends, every way `rigger run` ends it -
+/// done, an escalated unit, a budget halt, a definition-drift halt - reclaims the run-level scratch,
+/// its agent streams included, and a run that ends with a unit awaiting a human keeps it for the
+/// review that resumes it.
 #[cfg(unix)]
 #[test]
-fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
+fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keeps_it() {
     struct Case {
         name: &'static str,
         workflow: &'static WorkflowFixture,
-        ending: &'static str,
+        /// What happens to the project before the run under test: an earlier run, an edit.
+        before: fn(&Path, &Path),
+        ok: bool,
+        tells: &'static str,
         reclaimed: bool,
+    }
+    fn nothing(_: &Path, _: &Path) {}
+    fn a_pinned_run_then_a_prompt_edit(root: &Path, scratch: &Path) {
+        let (out, err, _ok, _fake) = run_recording(root, &["run"], scratch);
+        assert!(out.contains("halted: budget exhausted"), "stderr: {err}\nstdout: {out}");
+        edit_worker_prompt(root, "Do the unit, but differently now.");
     }
     let cases = [
         Case {
             name: "done",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            ending: "done: every unit integrated",
+            before: nothing,
+            ok: true,
+            tells: "done: every unit integrated",
             reclaimed: true,
         },
         Case {
             name: "escalated",
             workflow: &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW,
-            ending: "incomplete: not every unit integrated",
+            before: nothing,
+            ok: true,
+            tells: "incomplete: not every unit integrated",
+            reclaimed: true,
+        },
+        Case {
+            name: "budget halt",
+            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
+            before: nothing,
+            ok: true,
+            tells: "halted: budget exhausted",
+            reclaimed: true,
+        },
+        Case {
+            name: "definition-drift halt",
+            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
+            before: a_pinned_run_then_a_prompt_edit,
+            ok: false,
+            tells: "definition drift",
+            reclaimed: true,
+        },
+        Case {
+            name: "awaiting review",
+            workflow: &MANUAL_REVIEW_GIT_UNIT_WORKFLOW,
+            before: nothing,
+            ok: true,
+            tells: "incomplete: not every unit integrated",
             reclaimed: false,
         },
     ];
@@ -7734,29 +7790,13 @@ fn a_done_runs_agent_streams_are_reclaimed_and_an_unfinished_runs_are_kept() {
         let root = dir.path();
         write_workflow_fixture(root, case.workflow);
         let scratch = tempfile::tempdir().unwrap();
+        (case.before)(root, scratch.path());
         plant_run_level_scratch(scratch.path());
-        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
-        assert!(
-            ok,
-            "{}: the run exits 0; stderr: {err}\nstdout: {out}",
-            case.name
-        );
+        let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
         assert_eq!(
-            out.lines().nth(2).unwrap(),
-            case.ending,
-            "{}: how the run ended",
-            case.name
-        );
-        assert_eq!(
-            std::fs::read_to_string(fake.path().join("bin/streams")).unwrap(),
-            "solo_2fimplementer_230.0.jsonl\n",
-            "{}: the launch's stream was on disk under the scratch root while it ran",
-            case.name
-        );
-        assert_eq!(
-            !scratch.path().join("agent-stream").exists(),
-            case.reclaimed,
-            "{}: the agent streams after the run",
+            (ok, out.contains(case.tells) || err.contains(case.tells)),
+            (case.ok, true),
+            "{}: how the run ended; stderr: {err}\nstdout: {out}",
             case.name
         );
         if case.reclaimed {
@@ -10352,7 +10392,8 @@ const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
 /// Plant the run-LEVEL shared scratch areas the terminal-state teardown (spec 34 c3) owns under
 /// `scratch`: the SHARED build cache (`cargo-target` + `target` directly under the root - the
 /// driver's `CARGO_TARGET_DIR`, the unbounded multi-GB leak), `agent-scratch` (probe repos +
-/// verify builds a worker parks there), and `agent-live` (per-spawn liveness markers). These are
+/// verify builds a worker parks there), `agent-live` (per-spawn liveness markers) and
+/// `agent-stream` (a headless launch's transcript). These are
 /// exactly what the orphan-sweep backstop (c2) deliberately SPARES while the run is live, so
 /// only the run-level teardown ever reclaims them.
 fn plant_run_level_scratch(scratch: &Path) {
@@ -10368,13 +10409,25 @@ fn plant_run_level_scratch(scratch: &Path) {
     let marker = scratch.join("agent-live").join("run").join("spawn");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
+    let stream = scratch.join("agent-stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    std::fs::write(stream.join("spawn.jsonl"), b"{}\n").unwrap();
 }
+
+/// The run-level areas [`plant_run_level_scratch`] plants.
+const RUN_LEVEL_SCRATCH: [&str; 5] = [
+    "cargo-target",
+    "target",
+    "agent-scratch",
+    "agent-live",
+    "agent-stream",
+];
 
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL still
 /// present (the never-delete-live rail: while a spawn is live, or a run ended with work left, the
 /// teardown must not fire).
 fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
-    for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
+    for area in RUN_LEVEL_SCRATCH {
         assert!(
             scratch.join(area).exists(),
             "{ctx}: the teardown must SPARE the run-level {area}; it was wrongly reclaimed"
@@ -10385,7 +10438,7 @@ fn assert_run_level_scratch_spared(scratch: &Path, ctx: &str) {
 /// Assert the run-level shared scratch planted by [`plant_run_level_scratch`] is ALL reclaimed
 /// (the terminal teardown fired). Includes the SHARED build cache the orphan-sweep spares.
 fn assert_run_level_scratch_reclaimed(scratch: &Path, ctx: &str) {
-    for area in ["cargo-target", "target", "agent-scratch", "agent-live"] {
+    for area in RUN_LEVEL_SCRATCH {
         assert!(
             !scratch.join(area).exists(),
             "{ctx}: the terminal-state teardown must reclaim the run-level {area}; it survived under {}",
