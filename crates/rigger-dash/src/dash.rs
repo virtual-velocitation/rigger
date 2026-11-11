@@ -50,8 +50,9 @@ use crate::contextgraph::{
 // one of them (in the code below and in `mod tests`'s `use super::*`), it just no longer DEFINES
 // them.
 use crate::contextgraph::query::{
-    bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id, Buckets,
+    bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
+    Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -1610,12 +1611,13 @@ fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
     let buckets = Buckets::new(graph, lens);
     let bucket_label = bucket_label_index(graph, &buckets);
-    let (clusters, edges) = fold_buckets(
+    let (mut clusters, edges) = fold_buckets(
         members.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
         &bucket_label,
     );
+    count_tests(&mut clusters, graph, &buckets);
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
     // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
     // dropped); this message is the additive caption the panel shows. A single member with a derived
@@ -5826,12 +5828,14 @@ mod tests {
                     count: 1,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
                 Cluster {
                     key: "src/a.rs".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
             ],
             "each code entity folds by its OWN FILE; the file's own node, the design-doc, and the \
@@ -6169,6 +6173,82 @@ mod tests {
         assert!(none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none());
     }
 
+    /// The lenses report the tests the filter hides: a community or concept cluster carries its
+    /// attached test count (`tests`), and the overview says how many attached tests it hides
+    /// (`tests_hidden`): all of them under `exclude`, none once `include` or `only` draws them.
+    /// Each row: the lens, whether the tests are drawn, the overview's hidden count and its
+    /// clusters' test counts.
+    #[test]
+    fn lenses_report_the_hidden_test_count() {
+        use rigger_domain::contextgraph::REL_TESTS;
+
+        let node = |id: &str, kind: &str, tests: Option<&str>| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: tests
+                .map(|n| ("tests".to_string(), n.to_string()))
+                .into_iter()
+                .chain([("name".to_string(), id.to_string())])
+                .collect(),
+        };
+        let edge = |from: &str, to: &str, rel: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.to_string(),
+        };
+        let product = |drawn: bool| {
+            let mut graph = Graph {
+                nodes: vec![
+                    node("src/a.rs::foo", KIND_CODE_ENTITY, None),
+                    node("src/b.rs::bar", KIND_CODE_ENTITY, None),
+                    node("community/1/0", KIND_COMMUNITY, Some("2")),
+                    node("community/1/1", KIND_COMMUNITY, None),
+                ],
+                edges: vec![
+                    edge("src/a.rs::foo", "community/1/0", REL_IN_COMMUNITY),
+                    edge("src/b.rs::bar", "community/1/1", REL_IN_COMMUNITY),
+                ],
+            };
+            if drawn {
+                for t in ["tests/t.rs::t1", "tests/t.rs::t2"] {
+                    graph.nodes.push(node(t, KIND_CODE_ENTITY, None));
+                    graph.edges.push(edge(t, "community/1/0", REL_TESTS));
+                }
+            }
+            graph
+        };
+        let code = Lens::Code {
+            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        };
+        let cases = [
+            ("exclude", false, &code, 2, vec![("community/1/0", 2)]),
+            ("include", true, &code, 0, vec![("community/1/0", 2)]),
+            ("exclude, files lens", false, &Lens::Files, 2, vec![]),
+            ("include, files lens", true, &Lens::Files, 0, vec![]),
+        ];
+        for (name, drawn, lens, hidden, counted) in cases {
+            let overview = clustered_overview(&product(drawn), lens);
+            let counts: Vec<(&str, usize)> = overview
+                .clusters
+                .iter()
+                .filter(|c| c.tests > 0)
+                .map(|c| (c.key.as_str(), c.tests))
+                .collect();
+            assert_eq!(overview.tests_hidden, hidden, "{name}: hidden count");
+            assert_eq!(counts, counted, "{name}: cluster test counts");
+            let json = serde_json::to_value(&overview).unwrap();
+            assert_eq!(
+                json.get("tests_hidden").and_then(|v| v.as_u64()),
+                (hidden > 0).then_some(hidden as u64),
+                "{name}: the hidden count rides the body only when something is hidden"
+            );
+        }
+    }
+
     /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
     /// CODE-ENTITY node carrying a live `IN_COMMUNITY` membership by its coupling COMMUNITY (a
     /// subsystem grouped ACROSS directory lines), sizing the community super-node by member count,
@@ -6270,12 +6350,14 @@ mod tests {
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("foo".to_string()),
+                    tests: 0,
                 },
                 Cluster {
                     key: "community/1/1".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("baz".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
                 // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
@@ -6484,6 +6566,7 @@ mod tests {
                     count: 3,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("the graph".to_string()),
+                    tests: 0,
                 },
                 // concept/1/1 (the smaller): the SHARED build folds under its primary c0, so c1 counts
                 // ONLY its sole non-shared member docs/review.md.
@@ -6492,6 +6575,7 @@ mod tests {
                     count: 1,
                     kind: KIND_DESIGN_DOC.to_string(),
                     label: Some("the review".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less code entity / decision (spec 63 c4): the concepts
                 // lens admits ONLY concept members, so they carry no bucket of any kind.
