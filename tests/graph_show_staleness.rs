@@ -1,10 +1,12 @@
-//! Acceptance test for `rigger graph --show <entity>` GRACEFUL STALENESS (spec 58, criterion 2:
-//! the degrade path). It drives the COMPILED `rigger` binary against a throwaway project whose
-//! `graph.db` is seeded from the ALWAYS-compiled `CodeEntityExtracted` fold (so the seeding runs
-//! identically in BOTH feature lanes) and whose working tree no longer holds the recorded file:
-//! the command EXITS SUCCESS (never an error) and prints the site header with a note in place of
-//! the body. The degrade is pre-extent (the working-tree read fails before any grammar is
-//! consulted), so it holds LANE-INDEPENDENTLY.
+//! Acceptance test for `rigger graph --show <entity>` FRESHNESS (spec 58, criterion 2: the degrade
+//! path). It drives the COMPILED `rigger` binary against a throwaway project whose code store
+//! describes a committed tree and whose working tree no longer holds the recorded file: a location
+//! the tree no longer holds is never served as current. The differing file's hits are WITHHELD and
+//! the honesty label heading the answer counts the withheld file; the command EXITS SUCCESS (never
+//! an error) and prints no body. The sibling file the working tree still matches keeps answering.
+
+// The extractor that reads the committed source is linked by `symbols` alone.
+#![cfg(feature = "symbols")]
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
@@ -12,32 +14,31 @@
 use crate::common;
 
 use common::cli::body_line_count;
-use common::cli::open_graph;
 use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
-use common::fixtures::apply_code_entity;
+use common::fixtures::commit_tree;
 
-/// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface still
-/// prints the recorded SITE header (the graph facts survive), replaces the body with a STALE note,
-/// and EXITS SUCCESS - never an error. This degrade is pre-extent (the working-tree read fails
-/// before any grammar is consulted), so the whole contract holds LANE-INDEPENDENTLY.
+/// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface withholds
+/// the file's entity (the label counts it), answers that the entity is not in the graph, prints no
+/// body, and EXITS SUCCESS - never an error. A sibling file the tree still matches is shown.
 #[test]
-fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
+fn graph_show_withholds_an_entity_whose_recorded_file_is_missing() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
 
-    // `ghost` is recorded at gone.rs:7, but gone.rs is never written to the working tree - so its
-    // recorded location no longer matches the tree (the file was deleted since the graph was built).
-    // A sibling `present.rs` exists and is folded too, so the graph is genuinely populated (the miss
-    // is a real drift, not an empty db).
+    // `ghost` is defined at gone.rs:7 in the committed tree, then gone.rs is deleted from the
+    // working tree (the file was deleted since the code store was advanced). The sibling
+    // `present.rs` is unchanged, so the store is genuinely populated.
     std::fs::write(root.join("present.rs"), "fn present() {}\n").unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "present.rs", "present", "function", 1, "rust");
-        apply_code_entity(&p, 2, "gone.rs", "ghost", "function", 7, "rust");
-    }
+    std::fs::write(
+        root.join("gone.rs"),
+        "// a\n// b\n// c\n// d\n// e\n// f\nfn ghost() {}\n",
+    )
+    .unwrap();
+    commit_tree(root);
+    std::fs::remove_file(root.join("gone.rs")).unwrap();
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "ghost"]);
 
@@ -46,25 +47,30 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
         ok,
         "a missing recorded file degrades gracefully (exit SUCCESS, never an error); stderr: {err}"
     );
-    // THE SITE SURVIVES: the recorded site header and the graph facts (kind/degree) still print.
+    // THE LABEL COUNTS THE WITHHELD FILE.
+    let label = out.lines().next().unwrap_or_default();
     assert!(
-        out.contains("gone.rs:7"),
-        "the recorded site header survives a missing file; got:\n{out}"
+        label.starts_with("describes ")
+            && label.contains("1 file in ")
+            && label.contains(" differs; 1 withheld"),
+        "the honesty label counts the differing file and the withheld hit; got:\n{out}"
     );
+    // NEVER THE STALE LOCATION: the entity is not served as current, at gone.rs:7 or anywhere.
     assert!(
-        out.contains("degree"),
-        "the graph facts (kind/degree) still print when the body is unavailable; got:\n{out}"
-    );
-    // A STALE NOTE stands in for the body - lane-independent, since the read fails before any extent
-    // derivation.
-    assert!(
-        out.contains("stale"),
-        "a stale-location note replaces the body for a missing file; got:\n{out}"
+        out.contains("no such entity") && !out.contains("gone.rs:7"),
+        "the deleted file's entity is withheld, never served at its old location; got:\n{out}"
     );
     // NEVER WRONG TEXT: no line-numbered body is presented as the entity's current source.
     assert_eq!(
         body_line_count(&out),
         0,
         "no line-numbered body is printed for a missing file; got:\n{out}"
+    );
+    // THE UNCHANGED SIBLING STILL ANSWERS at its own site.
+    let (present, err, ok) = run_rigger(root, &["graph", "--show", "present"]);
+    assert!(ok, "the unchanged file's entity shows; stderr: {err}");
+    assert!(
+        present.contains("present.rs:1"),
+        "the unchanged file's entity is served at its site; got:\n{present}"
     );
 }
