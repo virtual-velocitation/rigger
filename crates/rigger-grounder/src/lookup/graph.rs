@@ -12,9 +12,11 @@ use rigger_domain::composed::Label;
 #[cfg(feature = "symbols")]
 use super::budget::GRAPH_ENTITIES;
 #[cfg(feature = "symbols")]
-use super::names::{Names, Resolved, Tier};
+use super::names::{Held, Names, Resolved, Tier};
 #[cfg(feature = "symbols")]
-use crate::contextgraph::query::node_file;
+use super::normalise;
+#[cfg(feature = "symbols")]
+use crate::contextgraph::query::{node_file, node_name};
 #[cfg(feature = "symbols")]
 use crate::contextgraph::{
     entity_site, CallGraph, Direction, Located, Node, KIND_CODE_ENTITY, TIER_INFERRED,
@@ -87,56 +89,60 @@ pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answe
     )
 }
 
-/// Each term of `terms` answered from `graph`, in order.
+/// Each term of `terms` answered from `graph`, in order. The names are indexed whole; the
+/// entities a name carries are read only when a term's search reaches the name, so the graph is
+/// read near the terms and its label counts only the hits a term reached and the graph withheld.
 #[cfg(feature = "symbols")]
 pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
     let read = |e: crate::contextgraph::Error| format!("the context graph could not be read: {e}");
-    let names = Names::build(graph.nodes_of_kind(KIND_CODE_ENTITY).map_err(read)?);
-    let hidden = Names::build(graph.hidden_tests().map_err(read)?);
-    let terms = asked
-        .iter()
-        .map(|term| {
-            let (tier, ids) = match located(graph, term).map_err(read)? {
-                Some(ids) => (Tier::Exact, ids),
-                None => match names.resolve(term) {
-                    Resolved::Found { tier, ids } => (tier, ids),
-                    Resolved::Missing { nearest } => return Ok(TermGraph::Missing { nearest }),
-                },
-            };
-            let mut entities = Vec::new();
-            for id in ids.iter().take(GRAPH_ENTITIES) {
-                let up = graph
-                    .calls(std::slice::from_ref(id), Direction::Up, 1, TIER_INFERRED)
-                    .map_err(read)?;
-                let down = graph
-                    .calls(std::slice::from_ref(id), Direction::Down, 1, TIER_INFERRED)
-                    .map_err(read)?;
-                entities.push(Entity {
-                    site: site_of(names.node(id), id),
-                    callers: neighbours(&up),
-                    callees: neighbours(&down),
-                    referenced_in: up
-                        .referenced_not_called
-                        .iter()
-                        .filter_map(|n| node_file(&n.kind, &n.id).map(str::to_string))
-                        .collect(),
-                });
-            }
-            Ok(TermGraph::Found {
-                tier: tier.label(),
-                unread: ids.len() - entities.len(),
-                reached: ids.len(),
-                entities,
-            })
-        })
-        .collect::<Result<_, String>>()?;
-    let test_hits = asked
-        .iter()
-        .map(|term| match hidden.resolve(term) {
-            Resolved::Found { ids, .. } => ids.len(),
-            Resolved::Missing { .. } => 0,
-        })
-        .collect();
+    let names = Names::build(graph.entity_names().map_err(read)?);
+    let ids = |nodes: Vec<Node>| -> Vec<String> { nodes.into_iter().map(|n| n.id).collect() };
+    let shown = |name: &str| graph.entities_named(name).map(ids);
+    let hidden = |name: &str| graph.hidden_tests_named(name).map(ids);
+    let (mut shown, mut hidden) = (Held::new(&shown), Held::new(&hidden));
+    let mut terms = Vec::with_capacity(asked.len());
+    for term in asked {
+        let (tier, ids) = match located(graph, term).map_err(read)? {
+            Some(ids) => (Tier::Exact, ids),
+            None => match names.resolve(term, &mut shown).map_err(read)? {
+                Resolved::Found { tier, ids } => (tier, ids),
+                Resolved::Missing { nearest } => {
+                    terms.push(TermGraph::Missing { nearest });
+                    continue;
+                }
+            },
+        };
+        let mut entities = Vec::new();
+        for id in ids.iter().take(GRAPH_ENTITIES) {
+            let up = graph
+                .calls(std::slice::from_ref(id), Direction::Up, 1, TIER_INFERRED)
+                .map_err(read)?;
+            let down = graph
+                .calls(std::slice::from_ref(id), Direction::Down, 1, TIER_INFERRED)
+                .map_err(read)?;
+            entities.push(Entity {
+                site: site_of(&up, id),
+                callers: neighbours(&up),
+                callees: neighbours(&down),
+                referenced_in: up
+                    .referenced_not_called
+                    .iter()
+                    .filter_map(|n| node_file(&n.kind, &n.id).map(str::to_string))
+                    .collect(),
+            });
+        }
+        terms.push(TermGraph::Found {
+            tier: tier.label(),
+            unread: ids.len() - entities.len(),
+            reached: ids.len(),
+            entities,
+        });
+    }
+    let mut test_hits = Vec::with_capacity(asked.len());
+    for term in asked {
+        let found = names.found(term, &mut hidden).map_err(read)?;
+        test_hits.push(found.map_or(0, |(_, ids)| ids.len()));
+    }
     Ok(Answered {
         label: graph.stamp_label(),
         terms,
@@ -157,10 +163,17 @@ fn located(
     })
 }
 
-/// The site of `node`, or of the bare `id` when the name index does not hold it.
+/// The site of the entity `id` the walk `up` seeds: its node, read in the walk, when the node is
+/// a code entity a name indexes, else the bare `id`.
 #[cfg(feature = "symbols")]
-fn site_of(node: Option<&Node>, id: &str) -> Site {
-    match node {
+fn site_of(up: &CallGraph, id: &str) -> Site {
+    let seeded = (up.nodes.iter())
+        .find(|n| n.layer == 0 && n.node.id == id)
+        .map(|n| &n.node)
+        .filter(|n| {
+            n.kind == KIND_CODE_ENTITY && node_name(n).is_some_and(|m| !normalise(m).is_empty())
+        });
+    match seeded {
         Some(node) => site(node),
         None => Site {
             id: id.to_string(),

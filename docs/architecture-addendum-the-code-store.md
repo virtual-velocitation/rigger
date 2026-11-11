@@ -652,6 +652,12 @@ edge has no log position, and readers only ever skip closed edges. The history o
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
 
+A lookup term resolves the same way. The distinct leaves the definitions carry are its name
+index; each name a tier reaches (exact, prefix, fuzzy, or the nearest names of a miss) reads
+only the definitions of that leaf, and a name is a match only when one of those is shown. The
+lookup never resolves the whole graph, and the hits it withholds are only those of the names it
+reached.
+
 ### 6.4 Read cost
 
 | Query | Work | Budget (through the binary) |

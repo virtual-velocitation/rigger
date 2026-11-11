@@ -986,6 +986,40 @@ pub trait ContextGraph: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Every distinct name a code entity of this graph may carry, shown or hidden, in order: the
+    /// names the combined lookup resolves a term against. A name listed may answer no entity
+    /// ([`Self::entities_named`] and [`Self::hidden_tests_named`] read which do), so a graph may
+    /// list names it would read too dearly to rule out. By default the names of
+    /// [`Self::nodes_of_kind`]'s code entities and of [`Self::hidden_tests`].
+    fn entity_names(&self) -> Result<Vec<String>, Error> {
+        let shown = self.nodes_of_kind(KIND_CODE_ENTITY)?;
+        let hidden = self.hidden_tests()?;
+        let mut names: Vec<String> = (shown.iter().chain(&hidden))
+            .filter_map(query::node_name)
+            .map(str::to_string)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        Ok(names)
+    }
+
+    /// The code entities named `name` this graph answers, ordered by id: those of
+    /// [`Self::nodes_of_kind`] named `name`, read near the name. A hit it withholds is counted
+    /// in its label as every withheld hit is.
+    fn entities_named(&self, name: &str) -> Result<Vec<Node>, Error> {
+        let mut nodes = self.nodes_of_kind(KIND_CODE_ENTITY)?;
+        nodes.retain(|n| query::node_name(n) == Some(name));
+        Ok(nodes)
+    }
+
+    /// The test entities named `name` the graph's `tests` filter hides: those of
+    /// [`Self::hidden_tests`] named `name`, read near the name.
+    fn hidden_tests_named(&self, name: &str) -> Result<Vec<Node>, Error> {
+        let mut nodes = self.hidden_tests()?;
+        nodes.retain(|n| query::node_name(n) == Some(name));
+        Ok(nodes)
+    }
+
     /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
     /// differs from it, with the count of nodes withheld so far for differing.
     fn stamp_label(&self) -> crate::composed::Label;

@@ -378,6 +378,11 @@ pub trait CodeHalf: Neighbors {
     fn concept_members(&self, concept: &str) -> Vec<String>;
     /// The test entities the filter hides, in id order.
     fn hidden_tests(&self) -> Vec<Node>;
+    /// Every distinct name a code entity of the half may carry, in order, perhaps with names
+    /// none carries ([`ContextGraph::entity_names`]).
+    fn entity_names(&self) -> Vec<String>;
+    /// The test entities named `name` the filter hides, in id order.
+    fn hidden_tests_named(&self, name: &str) -> Vec<Node>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -503,6 +508,29 @@ impl CodeHalf for Whole {
     }
     fn hidden_tests(&self) -> Vec<Node> {
         self.hidden_tests.clone()
+    }
+    fn entity_names(&self) -> Vec<String> {
+        let shown = (self.code).held(
+            self.code
+                .index()
+                .kinds
+                .get(KIND_CODE_ENTITY)
+                .into_iter()
+                .flatten(),
+        );
+        let mut names: Vec<String> = (shown.iter().chain(&self.hidden_tests))
+            .filter_map(node_name)
+            .map(str::to_string)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+    fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        (self.hidden_tests.iter())
+            .filter(|n| node_name(n) == Some(name))
+            .cloned()
+            .collect()
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -914,6 +942,37 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         Ok(self
             .code
             .hidden_tests()
+            .into_iter()
+            .filter(|n| !self.withholds_code(n))
+            .collect())
+    }
+    fn entity_names(&self) -> Result<Vec<String>, Error> {
+        let mut names = self.code.entity_names();
+        let recorded = self.records.of_kind(KIND_CODE_ENTITY)?;
+        names.extend(recorded.iter().filter_map(node_name).map(str::to_string));
+        names.sort_unstable();
+        names.dedup();
+        Ok(names)
+    }
+    /// The nodes binding `name` in either half, kept when they read as a code entity named
+    /// `name` before any is withheld, so the label counts only the entities so named.
+    fn entities_named(&self, name: &str) -> Result<Vec<Node>, Error> {
+        let ids: BTreeSet<String> = self.both(|h| h.leaf_nodes(name))?.into_iter().collect();
+        let mut nodes = Vec::new();
+        for id in ids {
+            let named = (self.merged(&id)?)
+                .filter(|n| n.kind == KIND_CODE_ENTITY && node_name(n) == Some(name));
+            nodes.extend(named.filter(|n| !self.withholds(n)));
+        }
+        Ok(nodes)
+    }
+    fn hidden_tests_named(&self, name: &str) -> Result<Vec<Node>, Error> {
+        if self.label.compared == Compared::Uncomparable {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .code
+            .hidden_tests_named(name)
             .into_iter()
             .filter(|n| !self.withholds_code(n))
             .collect())

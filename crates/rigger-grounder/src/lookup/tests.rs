@@ -12,12 +12,12 @@ use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
+#[cfg(feature = "symbols")]
+use crate::contextgraph::KIND_CODE_ENTITY;
 use crate::contextgraph::{
     CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node,
     KIND_DECISION, REBUILD_OWED,
 };
-#[cfg(feature = "symbols")]
-use crate::contextgraph::KIND_CODE_ENTITY;
 use rigger_domain::composed::{Compared, Label};
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
@@ -210,16 +210,26 @@ crate::test_cases! {
 
 #[cfg(feature = "symbols")]
 fn resolves(term: &str, expected: super::names::Resolved) {
-    use super::names::Names;
-    let names = Names::build(vec![
+    use super::names::{Held, Names};
+    let entities = [
         entity("a.rs", "apply_damage", 3),
         entity("b.rs", "HttpServer", 7),
         entity("c.rs", "parse_config", 1),
         entity("c.rs", "parse_args", 5),
         entity("d.rs", "render", 9),
         entity("e.rs", "go", 2),
-    ]);
-    assert_eq!(names.resolve(term), expected, "the term {term:?}");
+    ];
+    let name = |n: &Node| n.attrs["name"].clone();
+    let names = Names::build(entities.iter().map(name));
+    let read = |wanted: &str| {
+        Ok(entities
+            .iter()
+            .filter(|n| name(n) == wanted)
+            .map(|n| n.id.clone())
+            .collect())
+    };
+    let resolved = names.resolve(term, &mut Held::new(&read)).unwrap();
+    assert_eq!(resolved, expected, "the term {term:?}");
 }
 
 #[cfg(feature = "symbols")]
@@ -609,6 +619,342 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
             "a repeated term is answered once"
         );
     }
+}
+
+/// A tree whose names reach every tier: `src/kept.rs` and `src/gen.rs` the caller holds as the
+/// graph's tree does, `src/edited.rs` and `tests/edited.rs` it changed. `widget` and the first
+/// fifty `item_` names are defined only in a changed file, so a term reaching them reaches only
+/// withheld entities and falls to the next tier; the other three hundred `item_` names exceed what
+/// a prefix gathers. `tests/` holds test entities, one named as a product entity is. The record
+/// half holds one code entity of its own.
+#[cfg(feature = "symbols")]
+fn named_tree() -> (
+    rigger_domain::composed::Indexed,
+    rigger_domain::code_view::FactsView,
+) {
+    use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind, Scope, Stamp, Tip};
+    let def = |name: &str| Def {
+        local: name.to_string(),
+        leaf: name.to_string(),
+        kind: "function".to_string(),
+        line: 1,
+        end_line: 1,
+        parent: None,
+        test: false,
+    };
+    let call = |from: u32, to: &str| Mention {
+        enclosing: Some(from),
+        name: to.to_string(),
+        leaf: to.to_string(),
+        kind: MentionKind::Call,
+        line: 1,
+        test: false,
+    };
+    let file = |path: &str, scope: Scope, names: &[&str], mentions: Vec<Mention>| FileFacts {
+        path: path.to_string(),
+        lang: "rust".to_string(),
+        scope,
+        defs: names.iter().map(|n| def(n)).collect(),
+        mentions,
+        ..FileFacts::default()
+    };
+    let items = |range: std::ops::Range<u32>| -> Vec<String> {
+        range.map(|i| format!("item_{i:03}")).collect()
+    };
+    let (withheld_items, kept_items) = (items(0..50), items(50..350));
+    fn refs(names: &[String]) -> Vec<&str> {
+        names.iter().map(String::as_str).collect()
+    }
+    let mut edited_names = vec!["widget", "alpha_two", "beta"];
+    edited_names.extend(refs(&withheld_items));
+    let mut files = vec![
+        file(
+            "src/edited.rs",
+            Scope::Product,
+            &edited_names,
+            vec![call(1, "alpha_one")],
+        ),
+        file("src/gen.rs", Scope::Product, &refs(&kept_items), Vec::new()),
+        file(
+            "src/kept.rs",
+            Scope::Product,
+            &[
+                "alpha_one",
+                "beta",
+                "Gamma",
+                "_",
+                "parse_config",
+                "parse_args",
+                "render",
+                "widget_extra",
+            ],
+            vec![call(0, "beta"), call(0, "missing_fn"), call(2, "render")],
+        ),
+        file(
+            "tests/edited.rs",
+            Scope::Test,
+            &["beta", "checks_edited"],
+            vec![call(1, "beta")],
+        ),
+        file(
+            "tests/t.rs",
+            Scope::Test,
+            &["beta", "alpha_test", "widget_test"],
+            vec![call(1, "alpha_one")],
+        ),
+    ];
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let stamp = Stamp {
+        tip: Tip {
+            head: "main".to_string(),
+            commit: Some("c1".to_string()),
+            tree: "t1".to_string(),
+        },
+        fingerprint: 0,
+        seq: 0,
+    };
+    let recorded = Graph {
+        nodes: vec![entity("records.rs", "recorded_fn", 4)],
+        edges: Vec::new(),
+    };
+    let records = rigger_domain::composed::Indexed::new(recorded, Vec::new());
+    (
+        records,
+        rigger_domain::code_view::FactsView::new(stamp, files),
+    )
+}
+
+/// A graph answering every read as `0` does, its name reads left to their defaults, which read
+/// the whole graph: the answer the lookup gave before it read names near its terms.
+#[cfg(feature = "symbols")]
+struct Defaults<'g>(&'g dyn ContextGraph);
+
+#[cfg(feature = "symbols")]
+impl ContextGraph for Defaults<'_> {
+    fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
+        self.0.subgraph(seed, depth)
+    }
+    fn calls(
+        &self,
+        seed: &[String],
+        direction: Direction,
+        depth: i64,
+        tier_floor: &str,
+    ) -> Result<CallGraph, Error> {
+        self.0.calls(seed, direction, depth, tier_floor)
+    }
+    fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
+        self.0.resolve(mention)
+    }
+    fn locate(&self, entity: &str) -> Result<Located, Error> {
+        self.0.locate(entity)
+    }
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        self.0.nodes_of_kind(kind)
+    }
+    fn whole(&self) -> Result<Graph, Error> {
+        self.0.whole()
+    }
+    fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
+        self.0.hidden_tests()
+    }
+    fn stamp_label(&self) -> Label {
+        self.0.stamp_label()
+    }
+}
+
+/// The terms of [`named_tree`] every tier, withheld hit and test hit is reached by.
+#[cfg(feature = "symbols")]
+const NAMED_TERMS: [&str; 22] = [
+    "alpha",
+    "alpha_one",
+    "AlphaOne",
+    "beta",
+    "Gamma",
+    "gamma",
+    "widget",
+    "widgit",
+    "item",
+    "item_0",
+    "item_05",
+    "rendr",
+    "parse",
+    "src/kept.rs::beta",
+    "src/kept.rs::%missing_fn",
+    "src/edited.rs::widget",
+    "missing_fn",
+    "recorded_fn",
+    "_",
+    "zzz",
+    "alpha_test",
+    "checks_edited",
+];
+
+/// THE LOOKUP READS NEAR ITS TERMS: under every filter, a worktree that differs and one that
+/// cannot be compared, the graph half read near its terms answers every term, and counts its
+/// test hits, as it did reading the whole graph. The terms reach each tier, a best tier whose
+/// every hit is withheld (which falls to the next), a prefix gathering past withheld names, the
+/// nearest names of a missing term (never a withheld one), an id, a placeholder, a record-half
+/// entity, and test hits, one withheld.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
+    use rigger_domain::code_view::{Tests, ViewFilter, WorktreeDiff};
+    use rigger_domain::composed::{Composed, Honesty};
+    let (records, view) = named_tree();
+    let diffs = [
+        Ok(WorktreeDiff {
+            changed: vec!["src/edited.rs".to_string(), "tests/edited.rs".to_string()],
+            untracked: Vec::new(),
+        }),
+        Err("the worktree could not be listed".to_string()),
+    ];
+    let honesty = |diff: &Result<WorktreeDiff, String>| Honesty {
+        worktree: "W".to_string(),
+        diff: diff.clone(),
+        behind: None,
+    };
+    for diff in &diffs {
+        for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
+            let filter = ViewFilter { tests };
+            let whole = Composed::new(&records, &view, filter, honesty(diff)).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty(diff)).unwrap();
+            let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole)).unwrap();
+            let got = super::graph::answer(&NAMED_TERMS, &near).unwrap();
+            let at = format!("{tests:?} {:?}", diff.is_ok());
+            for (i, term) in NAMED_TERMS.iter().enumerate() {
+                assert_eq!(got.terms[i], want.terms[i], "{at} {term}");
+            }
+            assert_eq!(got.test_hits, want.test_hits, "{at}");
+            if diff.is_ok() && tests == Tests::Exclude {
+                pinned(&got);
+            }
+        }
+    }
+}
+
+/// A view that records every file it is asked for.
+#[cfg(feature = "symbols")]
+struct Counting {
+    view: rigger_domain::code_view::FactsView,
+    read: std::sync::Mutex<Vec<String>>,
+}
+
+#[cfg(feature = "symbols")]
+impl rigger_domain::code_view::CodeView for Counting {
+    fn stamp(&self) -> &rigger_domain::code_facts::Stamp {
+        self.view.stamp()
+    }
+    fn files(&self) -> Box<dyn Iterator<Item = rigger_domain::code_view::FileRef<'_>> + '_> {
+        self.view.files()
+    }
+    fn file(
+        &self,
+        path: &str,
+    ) -> Option<std::borrow::Cow<'_, rigger_domain::code_facts::FileFacts>> {
+        self.read.lock().unwrap().push(path.to_string());
+        self.view.file(path)
+    }
+    fn defs_named(
+        &self,
+        leaf: &str,
+    ) -> Box<dyn Iterator<Item = rigger_domain::code_view::DefRef<'_>> + '_> {
+        self.view.defs_named(leaf)
+    }
+    fn mentions_named(
+        &self,
+        leaf: &str,
+    ) -> Box<dyn Iterator<Item = rigger_domain::code_view::MentionRef<'_>> + '_> {
+        self.view.mentions_named(leaf)
+    }
+    fn groupings(&self) -> &rigger_domain::code_view::Groupings {
+        self.view.groupings()
+    }
+    fn def_leaves(&self) -> Vec<String> {
+        self.view.def_leaves()
+    }
+}
+
+/// THE LOOKUP NEVER READS THE WHOLE GRAPH: each row looks terms up over a neighbourhood, counted
+/// from before the graph is opened, and says whether `src/gen.rs`, which no term names, is read.
+/// The lookup reads it only when its name reads fall to their whole-graph defaults.
+#[cfg(feature = "symbols")]
+#[test]
+fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
+    use rigger_domain::code_view::{ViewFilter, WorktreeDiff};
+    use rigger_domain::composed::{Composed, Honesty};
+    let terms = [
+        "beta",
+        "widget",
+        "widgit",
+        "rendr",
+        "AlphaOne",
+        "alpha_test",
+        "zzz",
+    ];
+    let cases: [(&str, bool, bool); 2] = [("near", false, false), ("defaults", true, true)];
+    for (case, defaults, reads_gen) in cases {
+        let (records, view) = named_tree();
+        let view = Counting {
+            view,
+            read: std::sync::Mutex::new(Vec::new()),
+        };
+        let honesty = Honesty {
+            worktree: "W".to_string(),
+            diff: Ok(WorktreeDiff {
+                changed: vec!["src/edited.rs".to_string()],
+                untracked: Vec::new(),
+            }),
+            behind: None,
+        };
+        let near = Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap();
+        let graph: &dyn ContextGraph = if defaults { &Defaults(&near) } else { &near };
+        super::graph::answer(&terms, graph).unwrap();
+        let read = view.read.lock().unwrap();
+        assert_eq!(
+            read.iter().any(|f| f == "src/gen.rs"),
+            reads_gen,
+            "{case}: {read:?}"
+        );
+    }
+}
+
+/// The rows [`the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does`] reaches, read
+/// off its answer under the default filter in a worktree that differs.
+#[cfg(feature = "symbols")]
+fn pinned(got: &Answered) {
+    let of = |term: &str| &got.terms[NAMED_TERMS.iter().position(|t| *t == term).unwrap()];
+    let tier_and_reached = |term: &str| match of(term) {
+        TermGraph::Found { tier, reached, .. } => (*tier, *reached),
+        TermGraph::Missing { .. } => ("missing", 0),
+    };
+    let rows = [
+        // `widget` is defined only in a changed file: its exact hit is withheld, so the term
+        // falls to the prefix tier.
+        ("widget", ("prefix", 1)),
+        // Fifty withheld names lead the stream; the prefix gathers its 256 past them.
+        ("item", ("prefix", 256)),
+        ("AlphaOne", ("case or separator variant", 1)),
+        ("rendr", ("fuzzy", 1)),
+        ("recorded_fn", ("exact", 1)),
+        ("src/kept.rs::%missing_fn", ("exact", 1)),
+    ];
+    for (term, want) in rows {
+        assert_eq!(tier_and_reached(term), want, "{term}");
+    }
+    assert_eq!(
+        of("widgit"),
+        &TermGraph::Missing {
+            nearest: vec!["widget_extra".to_string()]
+        },
+        "a missing term's nearest names are never withheld ones"
+    );
+    let hits = |term: &str| got.test_hits[NAMED_TERMS.iter().position(|t| *t == term).unwrap()];
+    assert_eq!(
+        [hits("beta"), hits("alpha_test"), hits("checks_edited")],
+        [1, 1, 0],
+        "a test hit in a changed file is withheld"
+    );
 }
 
 /// The reason a caller that could not open its graph hands the lookup in its place.

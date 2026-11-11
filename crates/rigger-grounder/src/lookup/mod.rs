@@ -113,10 +113,14 @@ pub(crate) fn words(term: &str) -> Vec<String> {
 }
 
 /// The normalised form of a name: its [`words`] run together, so every spelling of one name
-/// across snake, camel, kebab and letter case is one key.
+/// across snake, camel, kebab and letter case is one key. Read in one pass over its letters and
+/// digits, lowercased, which is what joining its words yields without splitting it first.
 #[cfg(feature = "symbols")]
 pub(crate) fn normalise(term: &str) -> String {
-    words(term).concat()
+    term.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]

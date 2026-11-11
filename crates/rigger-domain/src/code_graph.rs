@@ -11,7 +11,7 @@
 //! Product edges are the same under every filter.
 
 use rustc_hash::FxHashMap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
@@ -377,6 +377,30 @@ impl<'v> CodeGraph<'v> {
             if let Some(facts) = self.view.file(f.path) {
                 for e in self.resolver.entities(&facts, true) {
                     if e.test {
+                        hidden.push(hidden_node(&facts, e));
+                    }
+                }
+            }
+        }
+        hidden.sort_by(|a, b| a.id.cmp(&b.id));
+        hidden
+    }
+
+    /// The test entities named `name` a filter that excludes tests hides, in id order: those of
+    /// [`Self::hidden_tests`] named `name`, read from the code files defining a leaf `name` alone.
+    pub(crate) fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        if self.filter.tests != Tests::Exclude {
+            return Vec::new();
+        }
+        let files: BTreeSet<&str> = (self.view.defs_named(name))
+            .filter(|d| d.file.half == Half::Code)
+            .map(|d| d.file.path)
+            .collect();
+        let mut hidden = Vec::new();
+        for path in files {
+            if let Some(facts) = self.view.file(path) {
+                for e in self.resolver.entities(&facts, true) {
+                    if e.test && e.name == name {
                         hidden.push(hidden_node(&facts, e));
                     }
                 }

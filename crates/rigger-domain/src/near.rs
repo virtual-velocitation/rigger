@@ -1020,6 +1020,13 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests(&self) -> Vec<Node> {
         self.state().graph.hidden_tests()
     }
+    /// The view's definition leaves: every entity is named by its definition's leaf.
+    fn entity_names(&self) -> Vec<String> {
+        self.state().view.def_leaves()
+    }
+    fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        self.state().graph.hidden_tests_named(name)
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
             let mut state = self.state();
@@ -1046,6 +1053,7 @@ mod tests {
     use crate::code_facts::{FileFacts, ModuleDecl};
     use crate::code_view::{DefRef, FactsView, Groupings, MentionRef};
     use crate::composed::{Composed, Honesty, Whole};
+    use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
     use crate::resolve::tests::{fixture, stamp};
     use std::borrow::Cow;
@@ -1273,6 +1281,38 @@ mod tests {
             }
             let (got, want) = (near.hidden_tests(), whole.hidden_tests());
             same!(got.unwrap(), want.unwrap());
+            // Every name an entity carries is listed, and each name reads the entities, shown
+            // and hidden, the whole graph's named so.
+            let (listed, named) = (near.entity_names().unwrap(), whole.entity_names().unwrap());
+            let shown = whole.nodes_of_kind(KIND_CODE_ENTITY).unwrap();
+            let hidden = whole.hidden_tests().unwrap();
+            let carried = |n: &Node| node_name(n).map(str::to_string);
+            for name in shown.iter().chain(&hidden).filter_map(carried) {
+                assert!(
+                    listed.contains(&name) && named.contains(&name),
+                    "{tests:?} {name}"
+                );
+            }
+            for name in listed
+                .iter()
+                .chain(&named)
+                .map(String::as_str)
+                .chain(["nothing"])
+            {
+                let want = |nodes: &[Node]| -> Vec<Node> {
+                    let named = nodes.iter().filter(|n| node_name(n) == Some(name));
+                    named.cloned().collect()
+                };
+                for graph in [&near as &dyn ContextGraph, &whole] {
+                    let at = format!("{tests:?} named {name}");
+                    same!(graph.entities_named(name).unwrap(), want(&shown), "{at}");
+                    same!(
+                        graph.hidden_tests_named(name).unwrap(),
+                        want(&hidden),
+                        "{at}"
+                    );
+                }
+            }
             same!(near.stamp_label(), whole.stamp_label());
         }
     }
