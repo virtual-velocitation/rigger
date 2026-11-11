@@ -7971,12 +7971,12 @@ mod tests {
     fn folding_each_episodic_type_writes_its_applied_row_and_leaves_the_projection_unchanged() {
         // Spec 107, criterion 1 (THE CLASSES ARE ONE TABLE): an episodic type is one whose fold
         // changes neither the live projection nor the fold state, `FileTouched` and `GateVerdict`
-        // through their no-op arms and the rest through none. Over a seeded graph, folding one
-        // event of each type of `retention::EPISODIC_TYPES`, its payload naming a seeded file,
-        // leaves every table but `applied` row for row as it stood and adds exactly its own
-        // position to `applied`.
+        // through their no-op arms and the rest through none. Over a graph a decision seeds,
+        // folding one event of each type of `retention::EPISODIC_TYPES`, its payload naming the
+        // file the decision governs, leaves every table but `applied` row for row as it stood and
+        // adds exactly its own position to `applied`.
         let p = Projector::open(":memory:", "test").unwrap();
-        let mut pos = crate::test_support::seed_two_subsystems(&p);
+        let mut pos = 1;
         apply_decision(&p, pos, "d1", "keep", &["src/combat/hit.rs"], "");
         let seeded = projection_but_ledger(&p);
         for table in ["nodes: ", "edges: ", "node_assertions: "] {

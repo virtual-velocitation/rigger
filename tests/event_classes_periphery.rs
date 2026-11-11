@@ -32,7 +32,7 @@ use rigger::retention::EPISODIC_TYPES;
 /// The feature gate `ingest` and `retention` are declared under.
 const STORE_GATE: &str = "#[cfg(any(feature = \"store\", not(feature = \"core\")))]";
 
-/// The files `seed_two_subsystems` defines entities in, in their seeded order.
+/// The files [`TWO_SUBSYSTEM_DEFS`] defines entities in, in their order.
 fn seeded_files() -> Vec<String> {
     let mut files = TWO_SUBSYSTEM_DEFS
         .map(|(file, _)| file.to_string())

@@ -31,21 +31,15 @@ use crate::common;
 
 #[cfg(feature = "symbols")]
 use common::cli::body_line_count;
-use common::cli::open_graph;
 use common::cli::planted_graph;
 use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
-use common::fixtures::apply_code_entity;
-#[cfg(feature = "symbols")]
-use common::fixtures::{apply_json, path_entity_json};
 use common::fixtures::{
     file_half, member_graph, BARE_PARENT, FILELESS_MEMBER, FILE_MATE, LEAF_PLACEHOLDER,
     MAKE_TARGET, NESTED_METHOD, RANGE_ARTIFACT,
 };
-#[cfg(feature = "symbols")]
-use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
 use rigger::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
@@ -58,10 +52,18 @@ fn graph_show_unknown_entity_reports_not_found() {
     let root = dir.path();
     seed_rigger_dir(root);
 
-    // A graph that HAS entities, so a miss is a genuine no-match and not merely an empty db.
+    // A committed tree that HAS a definition, so a miss is a genuine no-match and not merely an
+    // empty view. Only the `symbols` lane keeps the code store, so only it can show `alpha`.
+    std::fs::write(root.join("a.rs"), "fn alpha() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
+    #[cfg(feature = "symbols")]
     {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "a.rs", "alpha", "function", 1, "rust");
+        let (out, err, ok) = run_rigger(root, &["graph", "--show", "alpha"]);
+        assert!(
+            ok && out.contains("fn alpha"),
+            "fixture sanity: the view holds `alpha`, so the miss below is genuine; stderr: \
+             {err}; got:\n{out}"
+        );
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "does_not_exist"]);
@@ -216,12 +218,6 @@ fn graph_show_bounds_body_at_the_definitions_own_extent() {
          }\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "c.rs", "one", "function", 1, "rust");
-        apply_code_entity(&p, 2, "c.rs", "two", "function", 6, "rust");
-    }
-
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "one"]);
     assert!(ok, "graph --show one must succeed; stderr: {err}");
@@ -287,18 +283,6 @@ fn graph_show_shows_full_body_past_nested_definition() {
          }\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "outer.rs", "outer", "function", 1, "rust");
-        apply_json(
-            &p,
-            2,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            path_entity_json("outer.rs", "helper", "outer::helper", "function", 2, "rust"),
-        );
-        apply_code_entity(&p, 3, "outer.rs", "sibling", "function", 9, "rust");
-    }
-
     // `--show outer`: the FULL body is shown, INCLUDING the nested `helper`, not truncated to the
     // `fn outer` signature line.
     common::fixtures::commit_tree(root);
@@ -375,12 +359,6 @@ fn graph_show_shows_full_body_of_a_destructuring_signature() {
          }\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "sig.rs", "config", "function", 1, "rust");
-        apply_code_entity(&p, 2, "sig.rs", "sibling", "function", 6, "rust");
-    }
-
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "config"]);
     assert!(ok, "graph --show config must succeed; stderr: {err}");
@@ -431,12 +409,6 @@ fn graph_show_extent_ignores_braces_in_strings_comments_and_chars() {
          fn after() {}\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "tricky.rs", "tricky", "function", 1, "rust");
-        apply_code_entity(&p, 2, "tricky.rs", "after", "function", 8, "rust");
-    }
-
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "tricky"]);
     assert!(ok, "graph --show tricky must succeed; stderr: {err}");
@@ -480,24 +452,6 @@ fn graph_show_shows_full_body_of_a_python_nested_def() {
          \x20\x20\x20\x20return total\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "nested.py", "outer", "function", 1, "python");
-        apply_json(
-            &p,
-            2,
-            TYPE_CODE_ENTITY_EXTRACTED,
-            path_entity_json(
-                "nested.py",
-                "inner",
-                "outer::inner",
-                "function",
-                2,
-                "python",
-            ),
-        );
-    }
-
     // `--show outer`: the FULL indented block is shown, INCLUDING the nested `inner`, then outer's
     // own body after it - never truncated at the nested child.
     common::fixtures::commit_tree(root);
@@ -568,12 +522,6 @@ fn graph_show_does_not_overread_a_js_single_quote_brace_body() {
          }\n",
     )
     .unwrap();
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "widget.js", "open", "function", 1, "javascript");
-        apply_code_entity(&p, 2, "widget.js", "next", "function", 5, "javascript");
-    }
-
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "open"]);
     assert!(ok, "graph --show open (js) must succeed; stderr: {err}");
@@ -619,11 +567,6 @@ fn graph_show_clamps_body_to_the_max_window() {
     lines.push("    let beyond_clamp_61 = 61;".to_string()); // line 61: one line past the cap
     lines.push("}".to_string()); // line 62: the definition's real closing brace
     std::fs::write(root.join("big.rs"), format!("{}\n", lines.join("\n"))).unwrap();
-
-    {
-        let p = open_graph(root);
-        apply_code_entity(&p, 1, "big.rs", "big", "function", 1, "rust");
-    }
 
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "big"]);

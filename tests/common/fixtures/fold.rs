@@ -652,13 +652,6 @@ pub fn t_rs_batch_reference(
     keyed_event(pos, TYPE_EDGE_INFERRED, payload, &key, secs)
 }
 
-/// The CALLER-ATTRIBUTED `EdgeInferred` payload (spec 37): `file` references `name` from inside
-/// the enclosing definition `caller`, exactly what the emit pass records for a call in a function
-/// body, which the fold turns into `<file>::<caller> --CALLS--> <target>`.
-pub fn call_json(file: &str, name: &str, caller: &str) -> serde_json::Value {
-    serde_json::json!({ "file": file, "name": name, "lang": "rust", "caller": caller })
-}
-
 /// The `DecisionMade` payload. Each entry in `governs` folds a `decision --GOVERNS--> file` edge; a
 /// non-empty `supersedes` folds `decision --SUPERSEDES--> <id>` and INVALIDATES (stamps `valid_to`
 /// on, never deletes) the superseded decision's live `GOVERNS` edges.
@@ -673,31 +666,6 @@ pub fn decision_json(
     })
 }
 
-/// Fold one code entity (see [`code_entity_json`]) at `pos`.
-pub fn apply_code_entity(
-    p: &Projector,
-    pos: u64,
-    file: &str,
-    name: &str,
-    kind: &str,
-    line: u64,
-    lang: &str,
-) {
-    apply_json(
-        p,
-        pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        code_entity_json(file, name, kind, line, lang),
-    );
-}
-
-/// Fold one definition (spec 29a) at `pos`, its line the position: the file node, the
-/// `<file>::<name>` entity node (carrying the `name` attr that marks a real definition), and their
-/// `CONTAINS` edge.
-pub fn def(p: &Projector, pos: u64, file: &str, name: &str) {
-    apply_code_entity(p, pos, file, name, "function", pos, "rust");
-}
-
 /// The test-origin `EdgeInferred` payload: `file` references `name` at line `line` from a test,
 /// the evidence a test's reference to a definition records.
 pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_json::Value {
@@ -708,13 +676,6 @@ pub fn edge_inferred_evidence_json(file: &str, name: &str, line: u32) -> serde_j
 /// marked the head of its file's batch when `fresh`, and not when not ([`marked_fresh`]).
 pub fn test_reference_json(file: &str, name: &str, line: u32, fresh: bool) -> serde_json::Value {
     marked_fresh(edge_inferred_evidence_json(file, name, line), fresh)
-}
-
-/// Fold one caller-attributed call (see [`call_json`]) at `pos`. When `name` is defined in
-/// ANOTHER file it lands on the BARE same-file placeholder `<file>::%<name>` the detection
-/// pass resolves by its unique leaf.
-pub fn apply_call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-    apply_json(p, pos, TYPE_EDGE_INFERRED, call_json(file, name, caller));
 }
 
 /// Fold one decision (see [`decision_json`]) at `pos`.
@@ -753,29 +714,6 @@ pub fn apply_governs_at(p: &Projector, pos: u64, id: &str, path: &str, secs: u64
         decision_json(id, "x", &[path], ""),
         secs,
     );
-}
-
-/// Seed the canonical spec-53 TWO-SUBSYSTEM coupling graph onto `p`, each subsystem spanning TWO
-/// directories and joined to the other by a single weak bridge. Returns the next free position.
-/// Replaying this onto a fresh projector reproduces the identical coupling graph.
-///
-/// Subsystem A spans `src/combat` and `src/net`; subsystem B spans `src/render` and `src/ui`.
-/// Every cross-file call lands on a bare placeholder the pass resolves, so A's four entities
-/// couple across the combat/net line and B's across the render/ui line. Its coupling graph has 12
-/// nodes (eight entities + four files), so at a high enough resolution every node isolates into
-/// its own community.
-pub fn seed_two_subsystems(p: &Projector) -> u64 {
-    // Definitions (each folds its file node + entity + CONTAINS), then the calls.
-    let mut pos = 0;
-    for (file, name) in TWO_SUBSYSTEM_DEFS {
-        pos += 1;
-        def(p, pos, file, name);
-    }
-    for (file, name, caller) in TWO_SUBSYSTEM_CALLS {
-        pos += 1;
-        apply_call(p, pos, file, name, caller);
-    }
-    pos + 1
 }
 
 /// The definitions of the canonical spec-53 TWO-SUBSYSTEM coupling graph, `(file, name)`:
