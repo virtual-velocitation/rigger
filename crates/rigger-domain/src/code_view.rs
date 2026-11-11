@@ -127,8 +127,8 @@ pub trait Extract: Send + Sync {
     /// Changes whenever any extraction output can change; a snapshot of another fingerprint is
     /// not trusted.
     fn fingerprint(&self) -> u64;
-    /// The file's facts. The returned `blob` is empty: the caller holds the blob id.
-    fn extract(&self, path: &str, bytes: &[u8]) -> FileFacts;
+    /// The facts of the file `entry` names, read from `bytes`; `path` and `blob` come from `entry`.
+    fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;
 }
 
 /// Computes a view's groupings.
