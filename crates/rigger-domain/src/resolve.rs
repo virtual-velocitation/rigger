@@ -1172,6 +1172,25 @@ pub(crate) mod tests {
         ]);
     }
 
+    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
+    /// line settles the id wherever it sits among them, and of twins on one line the first.
+    #[test]
+    fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
+        fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
+            (d.0, d.1)
+        }
+        assert_eq!(
+            settled(vec![("function", 9, "A"), ("function", 8, "B")], kind_line),
+            Some(("function", 8, "B")),
+            "the lower line, though it comes last"
+        );
+        assert_eq!(
+            settled(vec![("function", 1, "A"), ("function", 1, "B")], kind_line),
+            Some(("function", 1, "A")),
+            "of one line, the first"
+        );
+    }
+
     #[test]
     fn product_tiers_ignore_test_candidates() {
         check(vec![

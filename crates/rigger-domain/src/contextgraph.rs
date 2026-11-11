@@ -1207,7 +1207,7 @@ pub struct EdgeInferred {
     ///
     /// Spec 86 criterion 2 (round 2) double duty: on a TEST-ORIGIN event (`is_test`), this same
     /// flag instead marks the boundary of the referencing file's own EVIDENCE batch (stamped by
-    /// [`crate::grounder::symbols::events::proof_events`], never `extract_events`), and the fold
+    /// the evidence pass that wrote it, never the structural pass), and the fold
     /// reads it as `supersede_file_proof`'s trigger rather than `supersede_file_edges`'s - the two
     /// concerns share the field because they share the same "first event of this file's re-emitted
     /// batch" shape, never because one is defined in terms of the other.
@@ -1232,15 +1232,14 @@ pub struct EdgeInferred {
     pub caller: Option<String>,
     /// The reference's 1-based source line (spec 86 criterion 2). Unused by a STRUCTURAL reference
     /// (the REFERENCES/CALLS edges it folds carry no line today) so the production emit for an
-    /// ordinary reference leaves this `0`; [`crate::grounder::symbols::events::proof_events`] is the
-    /// one emitter that populates it for real, since a `proven_by` evidence entry needs the exact
+    /// ordinary reference leaves this `0`; the evidence pass that wrote a test-origin event is the
+    /// one writer that populated it for real, since a `proven_by` evidence entry needs the exact
     /// call site. Serde-defaulted and omitted when `0` (never a real 1-based line), so an ordinary
     /// reference's wire form stays byte-identical to before this criterion.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub line: u32,
     /// Spec 86 criterion 2: marks this event as TEST-ORIGIN EVIDENCE rather than a structural fact -
-    /// emitted only by [`crate::grounder::symbols::events::proof_events`], never by the ordinary
-    /// `extract_events` structural pass. The fold reads it FIRST in the `TYPE_EDGE_INFERRED` arm and,
+    /// written only by the evidence pass, never by the ordinary structural pass. The fold reads it FIRST in the `TYPE_EDGE_INFERRED` arm and,
     /// when set, never creates a `file` node or a `REFERENCES`/`CALLS` edge (criterion 1's "never a
     /// node and never an edge on the canvas" promise extends to evidence too) - it instead folds the
     /// reference onto the referenced entity's `proven_by` count / evidence list. Serde-defaulted and
@@ -1399,8 +1398,7 @@ pub fn asserted_fact(
 
 /// Periphery layer (spec 37 criterion 2): the round-trip + back-compat CONTRACT of the
 /// [`EdgeInferred`] wire form now that it carries `caller`. This is the emit->log->fold seam,
-/// not the emit pass itself: the feature-gated `extract_events` (its own inside-out unit tests
-/// live in `grounder::symbols::events`) serializes the event, and the always-compiled fold in
+/// not the emit pass itself: a recorded log holds the serialized event, and the always-compiled fold in
 /// [`sqlite`] reads it straight back with `serde_json::from_slice::<EdgeInferred>` (see the
 /// `TYPE_EDGE_INFERRED` arm). These tests pin the serialized form the two sides share, so they
 /// are NOT feature-gated and run in BOTH lanes exactly like the fold they guard. They guard what

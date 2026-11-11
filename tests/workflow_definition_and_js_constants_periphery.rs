@@ -94,11 +94,10 @@ fn seed_js_files(root: &Path) {
     .unwrap();
 }
 
-/// WIRING, at the shared-walk seam (`src/ingest.rs` `walk_batches` calling
-/// `grounder::workflowdef::project_batches`, alongside the code half's JS extraction) and at the
-/// CLI entry point (`cmd_graph_build`) both this criterion's halves are reached through: ONE
-/// `rigger graph build` over a project carrying BOTH a real `.rigger/workflow.yml` and a real
-/// `workflows/rigger.js` must make BOTH a workflow-definition entity and a JS-constant entity
+/// WIRING, at the code store's read of one tree (`facts.rs` extracting the workflow definition
+/// alongside the code half's JS extraction) and at the CLI entry point (`cmd_graph_build`) both
+/// this criterion's halves are reached through: ONE `rigger graph build` over a project carrying
+/// BOTH a real `.rigger/workflow.yml` and a real `workflows/rigger.js` must make BOTH a workflow-definition entity and a JS-constant entity
 /// resolvable afterward - proving the whole product is covered in one pass, not two accidentally
 /// disjoint indexers a reader would have to invoke separately.
 #[cfg(feature = "symbols")]

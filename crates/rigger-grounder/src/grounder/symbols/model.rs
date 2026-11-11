@@ -99,8 +99,8 @@ pub struct Def {
     /// every non-`Module` kind, which never declares a file this way. Computed structurally in
     /// [`crate::grounder::symbols::extract::extract`] (the node's own `body` field is absent iff the
     /// declaration is out-of-line - a fact only the parsed tree, not the tags pass, can see), and
-    /// consumed at the events/index layer ([`crate::grounder::symbols::events::extract_events`]'s
-    /// module), the ONE place a `mod name;` declaration's OWN file and every OTHER file's path are
+    /// consumed by the code store's resolver (the file's facts carry it as a module declaration),
+    /// the ONE place a `mod name;` declaration's OWN file and every OTHER file's path are
     /// both already known, to resolve which file `name` names and exclude it wholesale when the
     /// declaration is also `is_test` - the per-file extractor can never see that attribute itself,
     /// since it lives in a DIFFERENT file's tree entirely. `#[serde(default)]` for the same
@@ -115,8 +115,8 @@ pub struct Def {
     /// Captured structurally in [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`, for the SAME reason: only the declaring file's own parsed tree
     /// carries the attribute, so it must be carried on the definition since a reused persisted
-    /// index never re-reads the source. Consumed at the events/index layer
-    /// ([`crate::grounder::symbols::events`]'s `out_of_line_test_module_files`), which resolves it
+    /// index never re-reads the source. Consumed by
+    /// `symbols::paths::module_candidates`, which resolves it
     /// relative to the declaring file's own directory, or its module directory and inline chain
     /// when nested in inline mods ([`Self::enclosing_inline_module_path`], whose doc gives examples
     /// where that chain departs from rustc). `#[serde(default)]` for the same
@@ -147,7 +147,7 @@ pub struct Def {
     /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
     /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
-    /// ([`crate::grounder::symbols::events::module_candidates`], both branches).
+    /// ([`crate::grounder::symbols::paths::module_candidates`], both branches).
     /// `#[serde(default)]` for the same pre-round-9-index-compatibility reason as the other
     /// out-of-line fields; omitted from the wire form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

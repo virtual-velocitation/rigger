@@ -6,8 +6,12 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
-use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
-use crate::grounder::symbols::events::kind_str;
+use crate::contextgraph::{
+    CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
+    CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
+    CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE,
+    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
+};
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -2160,10 +2164,93 @@ fn line_of_byte(line_starts: &[usize], byte: usize) -> u32 {
         .saturating_sub(1) as u32
 }
 
+/// The lowercase, stable string for a rigger definition `Kind`, carried on a definition's facts
+/// and the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
+pub(crate) fn kind_str(k: Kind) -> &'static str {
+    match k {
+        Kind::Function => CODE_KIND_FUNCTION,
+        Kind::Method => CODE_KIND_METHOD,
+        Kind::Type => CODE_KIND_TYPE,
+        Kind::Trait => CODE_KIND_TRAIT,
+        Kind::Impl => CODE_KIND_IMPL,
+        Kind::Module => CODE_KIND_MODULE,
+        Kind::Constant => CODE_KIND_CONSTANT,
+        Kind::Constructor => CODE_KIND_CONSTRUCTOR,
+        Kind::Macro => CODE_KIND_MACRO,
+        Kind::Declaration => CODE_KIND_DECLARATION,
+        Kind::Static => CODE_KIND_STATIC,
+        Kind::Variant => CODE_KIND_VARIANT,
+        Kind::Field => CODE_KIND_FIELD,
+        Kind::Variable => CODE_KIND_VARIABLE,
+        Kind::Property => CODE_KIND_PROPERTY,
+        Kind::Other => CODE_KIND_OTHER,
+    }
+}
+
+/// The lowercase, stable string for a rigger `Lang`, carried on a file's facts and the
+/// file / entity `lang` attr.
+pub(crate) fn lang_str(l: Lang) -> &'static str {
+    match l {
+        Lang::Rust => "rust",
+        Lang::CSharp => "csharp",
+        Lang::Js => "js",
+        Lang::Ts => "ts",
+        Lang::Go => "go",
+        Lang::Python => "python",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
+
+    /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
+    /// existed already holds, none renamed by reading it from a constant and none swapped for
+    /// another, and the kinds spec 116 adds (the caller rule's at criterion 2, the Rust data
+    /// definitions' at 6, Go's variable at 7, C#'s property at 8).
+    #[test]
+    fn each_kind_lowers_to_its_kind_string() {
+        assert_eq!(
+            [
+                Kind::Constant,
+                Kind::Function,
+                Kind::Impl,
+                Kind::Method,
+                Kind::Module,
+                Kind::Other,
+                Kind::Trait,
+                Kind::Type,
+                Kind::Constructor,
+                Kind::Macro,
+                Kind::Declaration,
+                Kind::Static,
+                Kind::Variant,
+                Kind::Field,
+                Kind::Variable,
+                Kind::Property,
+            ]
+            .map(kind_str),
+            [
+                "constant",
+                "function",
+                "impl",
+                "method",
+                "module",
+                "other",
+                "trait",
+                "type",
+                "constructor",
+                "macro",
+                "declaration",
+                "static",
+                "variant",
+                "field",
+                "variable",
+                "property",
+            ]
+        );
+    }
 
     #[test]
     fn extracts_a_rust_definition_and_a_reference() {

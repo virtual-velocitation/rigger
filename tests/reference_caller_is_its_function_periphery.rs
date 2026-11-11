@@ -1,30 +1,17 @@
 //! Periphery (API / contract / integration) tests for spec 116 criterion 2, A REFERENCE'S CALLER
 //! IS ITS FUNCTION: a reference's caller is its innermost enclosing function-like definition,
 //! else its innermost enclosing definition, else its file. The crate's own tests pin the rule on
-//! the extracted references; these run OUTSIDE the crate and guard the three boundaries the rule
-//! crosses on its way to an operator:
-//!
-//!  - the graph `rigger graph build` folds: each call hangs off the function the rule names, on
-//!    source where that function and the innermost enclosing definition are different entities;
-//!  - the wire forms of the three code kinds the rule reads, `constructor`, `macro` and
-//!    `declaration`: the kind string a code entity event carries.
+//! the extracted references; these run OUTSIDE the crate and guard the boundary the rule
+//! crosses on its way to an operator: the graph `rigger graph build` folds, where each call hangs
+//! off the function the rule names, on source where that function and the innermost enclosing
+//! definition are different entities.
 //!
 //! It also guards, on the graph `rigger graph build` folds, spec 119 criterion 8, A CALLER IS
 //! NAMED BY ITS PATH: a call in a Rust method of `impl T` and one in a Go receiver method each
 //! hang off the method's own definition node at its path, never a nameless node at its leaf.
-//!
-//! It also holds the wire form of the eight older kinds (spec 116 criterion 4 moved their kind
-//! strings onto shared constants): the emit pass still lowers each to the string it always did.
 
 #[cfg(feature = "symbols")]
 use crate::common;
-#[cfg(feature = "symbols")]
-use crate::symbol_index;
-
-#[cfg(feature = "symbols")]
-use rigger::grounder::symbols::model::Kind;
-#[cfg(feature = "symbols")]
-use symbol_index::{def, rust_file};
 
 /// GIVEN a project holding the two caller sources: a Rust file nesting an impl, a trait and an
 /// inline mod in `fn host` beside a file-level impl, mod and trait, and a JS file binding calls
@@ -123,80 +110,4 @@ fn graph_build_hangs_a_method_s_calls_off_the_method_s_path() {
              node among them",
         );
     }
-}
-
-/// A file holding one definition of each of the three kinds, each on line 1.
-#[cfg(feature = "symbols")]
-fn one_of_each_new_kind() -> rigger::grounder::symbols::model::FileSymbols {
-    rust_file(
-        vec![
-            def(Kind::Constructor, "c"),
-            def(Kind::Declaration, "d"),
-            def(Kind::Macro, "m"),
-        ],
-        vec![],
-    )
-}
-
-/// The `(name, kind string)` of each code entity event the emit pass lowers `file` to, sorted.
-#[cfg(feature = "symbols")]
-fn emitted_kinds(file: &rigger::grounder::symbols::model::FileSymbols) -> Vec<(String, String)> {
-    use rigger::contextgraph::{CodeEntityExtracted, TYPE_CODE_ENTITY_EXTRACTED};
-    use rigger::grounder::symbols::events::extract_events;
-
-    let mut kinds: Vec<(String, String)> = extract_events("a.rs", file)
-        .iter()
-        .filter(|e| e.type_ == TYPE_CODE_ENTITY_EXTRACTED)
-        .map(|e| serde_json::from_slice::<CodeEntityExtracted>(&e.data).unwrap())
-        .map(|entity| (entity.name, entity.kind))
-        .collect();
-    kinds.sort();
-    kinds
-}
-
-/// The emit pass lowers a constructor, a declaration and a macro definition to a code entity
-/// event carrying the kind string `constructor`, `declaration` and `macro`.
-#[cfg(feature = "symbols")]
-#[test]
-fn the_emit_pass_lowers_the_three_code_kinds_to_their_kind_strings() {
-    assert_eq!(
-        emitted_kinds(&one_of_each_new_kind()),
-        [("c", "constructor"), ("d", "declaration"), ("m", "macro")]
-            .map(|(name, kind)| (name.to_string(), kind.to_string()))
-    );
-}
-
-/// The emit pass lowers each of the eight other definition kinds to the kind string a graph
-/// folded before the kind constants existed already holds: none is renamed by reading it from
-/// a constant, and none is swapped for another.
-#[cfg(feature = "symbols")]
-#[test]
-fn the_emit_pass_lowers_the_eight_older_kinds_to_the_kind_strings_a_folded_graph_holds() {
-    let file = rust_file(
-        vec![
-            def(Kind::Constant, "k"),
-            def(Kind::Function, "f"),
-            def(Kind::Impl, "i"),
-            def(Kind::Method, "e"),
-            def(Kind::Module, "o"),
-            def(Kind::Other, "x"),
-            def(Kind::Trait, "t"),
-            def(Kind::Type, "y"),
-        ],
-        vec![],
-    );
-    assert_eq!(
-        emitted_kinds(&file),
-        [
-            ("e", "method"),
-            ("f", "function"),
-            ("i", "impl"),
-            ("k", "constant"),
-            ("o", "module"),
-            ("t", "trait"),
-            ("x", "other"),
-            ("y", "type"),
-        ]
-        .map(|(name, kind)| (name.to_string(), kind.to_string()))
-    );
 }

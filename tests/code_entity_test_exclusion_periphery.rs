@@ -12,7 +12,7 @@
 //!    item, and the `tests/` file carries no file container node at all - the concrete mechanism
 //!    behind "the files lens lists no test file as a subject" (the files lens folds by existing
 //!    file nodes; a file with none can never be one of its subjects). The implementer's own
-//!    `events.rs` unit tests already prove this same contract in-crate, but that proof rests on
+//!    `facts.rs` and `resolve.rs` unit tests already prove this same contract in-crate, but that proof rests on
 //!    the implementer's own understanding of the boundary - the periphery layer exists precisely
 //!    so that guarantee does not rest on one role's judgment alone, so this test drives the same
 //!    Done-when independently, over a fixture of its own, through the public surface only. Lives
@@ -103,10 +103,6 @@ use Expect::{CodeEntity, Graphed, NoCodeEntity, NoneGraphed, NotGraphed};
 
 #[cfg(feature = "symbols")]
 use crate::symbol_index;
-#[cfg(feature = "symbols")]
-use rigger::grounder::symbols::model::{Def, Kind};
-#[cfg(feature = "symbols")]
-use symbol_index::{def, rust_file};
 
 // ---- the exclusion rule's Done-when, end to end via the public API (symbols lane only) ----
 
@@ -717,9 +713,8 @@ rigger::test_cases! {
 /// `CodeEntityExtracted` event and reached the graph as ordinary product code, exactly the failure
 /// this test pins. The round-5 fix (`fix-u86c1-r5-inner-attribute-item`) closed item 1 of the
 /// mandate (the inner-attribute module form) only; this test is expected to FAIL until a future
-/// round resolves each test-shaped out-of-line module declaration to its file(s) at the
-/// events/index layer (where every file's path is known - `events.rs`'s `is_dev_only` /
-/// `project_batches`, per the mandate) and excludes them there, since a per-file extractor
+/// round resolves each test-shaped out-of-line module declaration to its file(s) where every
+/// file's path is known (today the code store's resolver, `resolve.rs`) and excludes them there, since a per-file extractor
 /// structurally cannot see an attribute that lives in a different file.
 #[cfg(feature = "symbols")]
 const PARENT_SRC: &str = "\
@@ -767,8 +762,8 @@ rigger::test_cases! {
     /// sdet-author gap: the test above and
     /// `a_non_test_out_of_line_mod_and_an_inline_test_mod_never_
     /// exclude_a_coincidentally_named_sibling_file` below both place the declaring file and its
-    /// out-of-line target at the tempdir ROOT (`dir` empty), so `out_of_line_test_module_files`'s
-    /// `dir.is_empty()` branch is the only one any test in this round exercises. This repo's OWN
+    /// out-of-line target at the tempdir ROOT (`dir` empty), so `module_candidates`'s
+    /// empty-directory branch is the only one any test in this round exercises. This repo's OWN
     /// round-5-disclosed live instance `src/eventstore/mod.rs` (`#[cfg(test)] pub mod contract;`
     /// resolving to `src/eventstore/contract.rs`) is the OTHER branch: a `mod.rs`-named declaring
     /// file that itself lives in a subdirectory, so the resolved sibling path carries that same
@@ -813,8 +808,8 @@ rigger::test_cases! {
 
 rigger::test_cases! {
     /// sdet-author gap: every out-of-line-resolution fixture in this file names a `mod` that DOES
-    /// resolve to a real file `idx` holds. `out_of_line_test_module_files`'s own doc comment claims
-    /// the resolution is matched against paths the index ACTUALLY holds, "never assumed" - a
+    /// resolve to a real file the tree holds. `module_target`'s own doc comment claims
+    /// the resolution is matched against paths the tree ACTUALLY holds, "never assumed" - a
     /// `#[cfg(test)] mod name;` declaration whose named file genuinely does not exist (a stale
     /// declaration, or a form this resolver does not yet reach - `#[path = ".."]`,
     /// `dec-u86c1-r6-path-and-nested-mod-not-yet-covered`) must not panic the whole ingest and must
@@ -848,78 +843,9 @@ rigger::test_cases! {
     );
 }
 
-/// sdet-author gap: the out-of-line-resolution tests above read the flattened event list. The mandate
-/// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
-/// names TWO production entry points needing the fix - `events.rs`'s `is_dev_only` /
-/// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
-/// (`conductor::RunCtx::ingest_project_batches`, spec 29c), not merely a test convenience;
-/// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
-/// inline `.filter(|(path, _)| !excluded.contains(...))` sites over the SAME shared helper, per
-/// `events.rs`'s own source), so nothing so far proves `project_batches`'s OWN copy of that wiring
-/// is correct per batch rather than only in the flattened list exercised everywhere else here.
-#[cfg(feature = "symbols")]
-#[test]
-fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file() {
-    use crate::common::fixtures::RecordsRead;
-    use rigger::grounder::symbols::events::project_batches;
-    use std::collections::BTreeSet;
-
-    let root = tempfile::tempdir().unwrap();
-    // `lib.rs` (round 7: a directory-owning basename, see the sibling test above) - its
-    // out-of-line children resolve as FLAT same-directory siblings.
-    std::fs::write(root.path().join("lib.rs"), PARENT_SRC).unwrap();
-    std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
-
-    let batches = project_batches(root.path().to_str().unwrap());
-    let files: BTreeSet<&str> = batches.iter().map(|(f, _, _)| f.as_str()).collect();
-    assert!(
-        files.contains("lib.rs"),
-        "the declaring file still contributes its own batch; files: {files:?}"
-    );
-    // Spec 86 criterion 3 (round 5, adj-u86c3-r4-out-of-line-exclusion-still-unmigrated)
-    // deliberately supersedes this test's own former "the file's batch is dropped entirely"
-    // pin: an out-of-line-excluded file's batch is no longer dropped before extract_events runs
-    // (that let a legacy entity a prior extraction created outlive every re-ingest forever) - it
-    // now contributes exactly ONE boundary-sentinel event, hollowed via events.rs's own
-    // `for_extraction`, so a re-ingest still supersedes whatever this file held before. The
-    // criterion-1 promise this test exists to pin is unchanged below: no REAL entity or edge for
-    // anything the excluded file defines ever reaches the graph.
-    let contract_batch = batches
-        .iter()
-        .find(|(f, _, _)| f == "contract.rs")
-        .map(|(_, evs, _)| evs)
-        .unwrap_or_else(|| {
-            panic!(
-                "project_batches (the entry point a live run actually drives, spec 29c) must \
-                     still contribute the out-of-line-excluded file's own boundary-sentinel \
-                     batch; files: \
-                     {files:?}"
-            )
-        });
-    assert_eq!(
-        contract_batch.len(),
-        1,
-        "the out-of-line-excluded file's batch is boundary-only - no real CodeEntityExtracted \
-         and no named EdgeInferred; got {contract_batch:?}"
-    );
-
-    let g = common::fixtures::fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
-        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
-        .unwrap();
-    assert!(
-        !g.nodes
-            .iter()
-            .any(|n| n.id == "contract.rs::assert_contract"),
-        "the excluded file's own definition must never reach the graph through this entry \
-         point either; nodes: {:?}",
-        g.nodes
-    );
-}
-
 rigger::test_cases! {
-    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, events.rs
-    /// `out_of_line_test_module_files`'s seed-loop `d.kind != Kind::Module ||
-    /// !d.is_out_of_line_module || !d.is_test` guard; the fixture's own target paths updated in
+    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, on the test-module closure's
+    /// seed guard, today `Resolver::new` in `resolve.rs` seeding from test declarations only; the fixture's own target paths updated in
     /// round 7 to `module_dir`'s real per-file-module convention - `host_a.rs`/`host_b.rs` are
     /// non-mod.rs leaves, so their out-of-line children resolve under `host_a/`/`host_b/`, never as
     /// root-level same-directory siblings, or this fixture stops exercising the guard at all under
@@ -980,76 +906,6 @@ rigger::test_cases! {
                  the is_out_of_line_module gate must block exclusion here",
             ),
         ],
-    );
-}
-
-/// Round 7 mutation-efficacy pin (`cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
-/// CLOSURE-loop guard `d.kind != Kind::Module || !d.is_out_of_line_module`, mutated `||` to `&&`):
-/// through the REAL extraction pipeline, `is_out_of_line_module` is set true ONLY inside
-/// `extract()`'s `if d.kind == Kind::Module` arm (`model.rs`'s own field doc), so a
-/// non-`Module`-kind `Def` with `is_out_of_line_module: true` can never arise from parsing real
-/// source - but `Def`'s fields are plain `pub`, so the combination can be built by hand. The
-/// `d.kind != Kind::Module` half of the guard is what stops such a stray flag on an ordinary
-/// function/type/etc. from being treated as an out-of-line module declaration and resolved against
-/// unrelated files. Built directly via `SymbolIndex::insert_file` (bypassing `extract()` on
-/// purpose): `host.rs` seeds a genuine out-of-line `#[cfg(test)]` module `excluded_file`,
-/// resolving to `host/excluded_file.rs`; that file's own `victim` definition is a `Function`
-/// (never a `Module`) but carries a STRAY `is_out_of_line_module: true`. Under the mutant this
-/// stray flag is enough to make `victim` resolve as if it declared an out-of-line module named
-/// `victim`, at `host/excluded_file/victim.rs` (`module_dir`'s convention for the leaf file
-/// `host/excluded_file.rs`) - a REAL, wholly unrelated product file placed exactly there to make
-/// the wrong exclusion observable.
-#[cfg(feature = "symbols")]
-#[test]
-fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exclusion() {
-    use rigger::grounder::symbols::events::out_of_line_test_module_files;
-    use rigger::grounder::symbols::model::SymbolIndex;
-
-    // One shared single-def-file builder for this test's three hand-crafted fixture files - the
-    // varying bits (kind/name/is_test/is_out_of_line_module) are exactly this test's own point of
-    // interest.
-    fn one_def_file(
-        kind: Kind,
-        name: &str,
-        is_test: bool,
-        is_out_of_line_module: bool,
-    ) -> rigger::grounder::symbols::model::FileSymbols {
-        let d = Def {
-            is_test,
-            is_out_of_line_module,
-            ..def(kind, name)
-        };
-        rust_file(vec![d], vec![])
-    }
-
-    let mut idx = SymbolIndex::default();
-    idx.insert_file(
-        "host.rs".into(),
-        one_def_file(Kind::Module, "excluded_file", true, true),
-    );
-    // `victim`'s is_out_of_line_module: true is never reachable via real extraction on a
-    // non-Module def (model.rs's own field doc); modeling a hand-built index on purpose - see the
-    // test's own doc comment above.
-    idx.insert_file(
-        "host/excluded_file.rs".into(),
-        one_def_file(Kind::Function, "victim", false, true),
-    );
-    idx.insert_file(
-        "host/excluded_file/victim.rs".into(),
-        one_def_file(Kind::Function, "victim_fn", false, false),
-    );
-
-    let excluded = out_of_line_test_module_files(&idx);
-    assert!(
-        excluded.contains("host/excluded_file.rs"),
-        "the genuine out-of-line test module's file is excluded; got {excluded:?}"
-    );
-    assert!(
-        !excluded.contains("host/excluded_file/victim.rs"),
-        "a real, unrelated product file must never be swept into exclusion by a stray \
-         is_out_of_line_module flag on a NON-Module definition inside an already-excluded file - \
-         the kind guard must block cross-file resolution here regardless of that flag; got \
-         {excluded:?}"
     );
 }
 
@@ -1269,7 +1125,7 @@ rigger::test_cases! {
     /// Round 7 fix (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`, closing round-6
     /// finding
     /// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
-    /// nesting-path`): `out_of_line_test_module_files` used to resolve a `#[cfg(test)] mod name;`
+    /// nesting-path`): the out-of-line resolution used to resolve a `#[cfg(test)] mod name;`
     /// declaration to `<directory containing the DECLARING file>/<name>.rs`. That coincides with
     /// rustc's placement for some declaring files, among them a `mod.rs` and a crate root such as
     /// `src/lib.rs` - both of this repo's two disclosed live instances (`src/eventstore/mod.rs`,
@@ -1296,7 +1152,7 @@ rigger::test_cases! {
             ),
             ("parent/helper.rs", "pub fn real_test_helper() {}\n"),
             // An UNRELATED top-level file that merely happens to share the submodule's bare name,
-            // sitting where `out_of_line_test_module_files`'s "same directory as the declaring
+            // sitting where the old "same directory as the declaring
             // file" heuristic would actually look.
             ("helper.rs", "pub fn totally_unrelated_helper() {}\n"),
         ],
@@ -1307,7 +1163,7 @@ rigger::test_cases! {
                 "helper.rs::totally_unrelated_helper",
                 "an unrelated top-level file must never be swept into exclusion just \
                  because a DIFFERENT file's own child submodule happens to share its bare \
-                 name - `out_of_line_test_module_files` resolves off the DECLARING FILE's \
+                 name - a resolution off the DECLARING FILE's \
                  directory, not off Rust's actual per-file module-nesting rule, so a \
                  same-named sibling of the declaring file is wrongly treated as the \
                  declared module's target",
@@ -1978,7 +1834,7 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
 }
 
 rigger::test_cases! {
-    /// sdet-author gap, round 7: `resolve_out_of_line_target`'s nested `<module_dir>/<name>/mod.rs`
+    /// sdet-author gap, round 7: `module_candidates`'s nested `<module_dir>/<name>/mod.rs`
     /// fallback (`an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_
     /// sibling_exists`) only ever exercises it with `module_dir` NON-empty (a non-`mod.rs` leaf
     /// declaring file at the tempdir root, whose own `module_dir` is its own bare stem - a
@@ -2030,7 +1886,7 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
-    /// sdet-author gap, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
+    /// sdet-author gap, round 7: `module_candidates`'s `#[path]`-override branch
     /// (`a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api`) only
     /// ever places the declaring file at the tempdir ROOT, so `dir_of(declaring_path)` is empty and
     /// the override is resolved as the bare attribute string with no directory prefix at all
@@ -2083,17 +1939,18 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
-    /// sdet finding, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
-    /// (`crates/rigger-grounder/src/grounder/symbols/events.rs`) joins the declaring file's own directory onto the raw
+    /// sdet finding, round 7: the `#[path]`-override branch of the out-of-line resolution
+    /// (today `module_candidates` in `crates/rigger-grounder/src/grounder/symbols/paths.rs`) joined
+    /// the declaring file's own directory onto the raw
     /// attribute string with a single `format!("{declaring_dir}/{p}")` and does no `..`/`.`
     /// normalization before looking the result up in `idx.files()`, whose keys are always the
     /// project's real, already-clean relative paths (never containing a literal `..` segment). A
     /// `#[path]` value that walks back up past the declaring file's own directory (`#[path =
     /// "../fixtures/actual.rs"]`, resolving `src/parent.rs`'s override to the literal string
     /// `"src/../fixtures/actual.rs"`) therefore never matches any real key,
-    /// `resolve_out_of_line_target` falls through its `contains_key` check to `None` ("a stale or
+    /// `module_candidates` falls through its `contains_key` check to `None` ("a stale or
     /// unresolvable declaration excludes nothing" per its own doc), and the actual target file is
-    /// left OUT of `out_of_line_test_module_files`, so its test code graphs as ordinary product
+    /// left OUT of the test-module closure, so its test code graphs as ordinary product
     /// code: the exact `Kind::Module`/`is_out_of_line_module` failure class every prior round of
     /// this unit was rejected for. This is not a contrived shape: this very repository's own house
     /// style already writes an upward-escaping `#[path = "../build/gitsemver.rs"]`
@@ -2147,7 +2004,7 @@ rigger::test_cases! {
     /// (see the `..dotdot..` test above) also breaks the SAME-DIRECTORY-EXPLICIT shape `#[path =
     /// "./x.rs"]`: `format!("{declaring_dir}/{p}")` on a declaring file `src/parent.rs` and
     /// override value `"./actual.rs"` yields the literal string `"src/./actual.rs"`, which never
-    /// matches `idx.files()`'s clean key `"src/actual.rs"` either, so `resolve_out_of_line_target`
+    /// matches `idx.files()`'s clean key `"src/actual.rs"` either, so `module_candidates`
     /// falls through to `None` and the actual target's test code graphs as ordinary product code. A
     /// narrow fix that only strips a leading/embedded `..` (matching just the sibling test's shape)
     /// would leave this `./` shape open - the fix under test is real logical path-segment
@@ -2237,7 +2094,7 @@ rigger::test_cases! {
     /// That collapsed string is syntactically a valid relative path but semantically WRONG (it
     /// walked back further than the declaring file's own tree allows), and nothing stops it from
     /// coincidentally matching a real, unrelated file's key - at which point
-    /// `resolve_out_of_line_target` treats that unrelated product file as the out-of-line module's
+    /// `module_candidates` treats that unrelated product file as the out-of-line module's
     /// resolved target and silently drops its whole entity set from the graph. This fixture
     /// reproduces the adjudication's own probe exactly: a ROOT-level declaring file (`parent.rs`,
     /// so its own directory is the empty string) whose `#[path = "../actual.rs"]` override has one
@@ -2245,7 +2102,7 @@ rigger::test_cases! {
     /// the raw string `"../actual.rs"`, popping past an already-empty stack on its very first
     /// segment - and a genuine, ALSO-root-level `actual.rs` that the collapsed remainder
     /// (`"actual.rs"`) happens to name, product code with no relation to the test module at all.
-    /// The correct behaviour is `resolve_out_of_line_target` finding no resolvable target for the
+    /// The correct behaviour is `module_candidates` finding no resolvable target for the
     /// malformed override (falling through to `None`, excluding nothing) - so `actual.rs`'s own
     /// product item must stay graphed, exactly as it would if the declaring file's stray override
     /// did not exist.

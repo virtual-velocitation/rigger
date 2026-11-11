@@ -18,15 +18,10 @@
 //!  - the implementer unit-tests only the sqlite Projector's OVERRIDE of `apply_batch`; the trait's
 //!    DEFAULT `apply_batch` - the backend-agnostic contract any other `RecordFold` inherits - is
 //!    tested nowhere. A backend with no cheaper batch path must still fold every event through
-//!    `apply`, in order, short-circuiting on the first error;
-//!  - nothing else pins that the public ingest entries (`ingest_project_batched` / `_paced`) hand a
-//!    file over as ONE whole keyed batch.
+//!    `apply`, in order, short-circuiting on the first error.
 //!
 //! `FoldingStore::append_and_fold`, the trait method, and the sqlite/eventstore backends are all compiled
-//! UNCONDITIONALLY, so the append/fold/default-contract tests are UNGATED and run in BOTH feature
-//! lanes. The tests that drive the extraction WALK (`ingest_project_batched`) are `symbols`-gated
-//! exactly like the sibling ingest suites; a light-lane test pins the walk's no-op there. Both lanes
-//! stay green.
+//! UNCONDITIONALLY, so every test here is UNGATED and runs in BOTH feature lanes.
 
 use crate::common;
 use common::fixtures::RecordsRead;
@@ -376,127 +371,6 @@ fn projection_default_apply_batch_folds_each_event_through_apply_in_order_and_sh
         vec![1],
         "the default apply_batch stops at the first apply error: event 1 folded, event 2 errored, \
          event 3 never folded"
-    );
-}
-
-/// The BATCHED public entry `ingest_project_batched` hands the sink each file's WHOLE keyed
-/// batch at once: that a file arrives as ONE `on_batch` call carrying all its events,
-/// that the keys of a batch share one `<prefix>/<file>@<hash>` and enumerate `#0,#1,...`, that
-/// batches arrive in sorted file-path order, and that the batching is width-invariant (parse width
-/// changes only criterion 1's parallelism, never the per-file batching).
-#[cfg(feature = "symbols")]
-#[test]
-fn ingest_project_batched_hands_whole_file_batches() {
-    use std::collections::BTreeSet;
-
-    // Each file carries a def AND a reference to it, so its batch is MULTI-EVENT (a
-    // CodeEntityExtracted plus an EdgeInferred): "one whole batch per file" is then observably
-    // different from "one event at a time".
-    let dir = tempfile::tempdir().unwrap();
-    for i in 0..4 {
-        std::fs::write(
-            dir.path().join(format!("m{i}.rs")),
-            format!("pub fn def{i}() {{}}\npub fn use{i}() {{ def{i}(); }}\n"),
-        )
-        .unwrap();
-    }
-    let root = dir.path().to_str().unwrap();
-
-    type Triple = (String, String, Vec<u8>);
-    let triples = |keyed: &[(String, &Event)]| -> Vec<Triple> {
-        keyed
-            .iter()
-            .map(|(k, ev)| (k.clone(), ev.type_.clone(), ev.data.clone()))
-            .collect()
-    };
-
-    // Drive the BATCHED public entry: one inner Vec per on_batch call (i.e. per file).
-    let mut batches: Vec<Vec<Triple>> = Vec::new();
-    let bstats =
-        rigger::ingest::ingest_project_batched(root, &[], |keyed, _| batches.push(triples(keyed)));
-
-    assert!(
-        !batches.is_empty(),
-        "the four-file fixture yields code-ingest batches"
-    );
-
-    // One on_batch call PER FILE, and at least one file's batch is multi-event (a def + its
-    // reference) - so a batch is a whole file's events, never a disguised one-event call.
-    assert_eq!(
-        batches.len(),
-        bstats.batches_emitted,
-        "ingest_project_batched calls on_batch exactly once per file batch"
-    );
-    assert!(
-        batches.iter().any(|b| b.len() >= 2),
-        "a file with a def and a reference to it yields a multi-event batch handed as one unit"
-    );
-
-    // Within each batch the keys share ONE `<prefix>/<file>@<hash>` and enumerate `#0,#1,...` in
-    // order; across batches the `<prefix>/<file>` arrive sorted (the ordered-emit discipline).
-    let mut file_order: Vec<String> = Vec::new();
-    for b in &batches {
-        let mut stems: BTreeSet<String> = BTreeSet::new();
-        for (i, (key, _, _)) in b.iter().enumerate() {
-            let (stem, idx) = key
-                .rsplit_once('#')
-                .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<i>`"));
-            assert_eq!(
-                idx.parse::<usize>().unwrap(),
-                i,
-                "a batch enumerates its events `#0,#1,...` in order; key {key:?}"
-            );
-            stems.insert(stem.to_string());
-        }
-        assert_eq!(
-            stems.len(),
-            1,
-            "every event of a file's batch shares one `<prefix>/<file>@<hash>`; got {stems:?}"
-        );
-        let stem = stems.into_iter().next().unwrap();
-        let file = stem
-            .rsplit_once('@')
-            .unwrap_or_else(|| panic!("stem {stem:?} must be `<prefix>/<file>@<hash>`"))
-            .0
-            .to_string();
-        file_order.push(file);
-    }
-    let mut sorted = file_order.clone();
-    sorted.sort();
-    assert_eq!(
-        file_order, sorted,
-        "batches arrive in sorted `<prefix>/<file>` order; got {file_order:?}"
-    );
-
-    // Batching is width-INVARIANT: the paced entry at width 1 hands the identical batches (parse
-    // width changes only the code half's parallelism, criterion 1, never the per-file batching).
-    let mut serial_batches: Vec<Vec<Triple>> = Vec::new();
-    rigger::ingest::ingest_project_batched_paced(root, 1, &[], |keyed, _| {
-        serial_batches.push(triples(keyed))
-    });
-    assert_eq!(
-        serial_batches, batches,
-        "ingest_project_batched_paced at width 1 hands the identical per-file batches - batching is \
-         width-invariant"
-    );
-}
-
-/// The light lane compiles no extraction pass, so its `ingest_project_batched` is a no-op that hands
-/// the sink NO batches - what lets a cold `graph build` degrade to an empty graph in the light
-/// lane. Pinned directly at the public boundary in that lane.
-#[cfg(not(feature = "symbols"))]
-#[test]
-fn light_lane_ingest_project_batched_hands_no_batches() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut calls = 0usize;
-    rigger::ingest::ingest_project_batched(
-        dir.path().to_str().unwrap(),
-        &[],
-        |_batch: &[(String, &rigger::eventstore::Event)], _excluded: bool| calls += 1,
-    );
-    assert_eq!(
-        calls, 0,
-        "the light lane compiles no extraction pass, so ingest_project_batched hands no batches"
     );
 }
 

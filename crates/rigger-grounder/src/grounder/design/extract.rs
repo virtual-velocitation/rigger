@@ -21,7 +21,7 @@
 //! [`doc_links`]: a design doc's mention of a dev-only path - inline SPECIFIES/
 //! CONSTRAINS/GOVERNS carrier or markdown-citation REFERENCES carrier alike - is excluded from
 //! this pass too, by the SAME predicate the code-entity pass applies to a whole dev-only file
-//! ([`crate::grounder::symbols::events::is_dev_only`], spec 116 criterion 1, reused here rather
+//! ([`crate::grounder::symbols::paths::is_dev_only`], spec 116 criterion 1, reused here rather
 //! than re-derived, and read over the path the mention names, [`named_path`]: the mention
 //! without its `#anchor` or its `:line` suffix, which the link target keeps). Without this, the
 //! always-compiled fold would still mint a bare `KIND_ARTIFACT` node for the mention that
@@ -41,7 +41,7 @@ use rigger_domain::contextgraph::query::sans_line_span;
 use rigger_domain::spec::{code_spans, fenced_code_lines};
 
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
-use crate::grounder::symbols::events::is_dev_only;
+use crate::grounder::symbols::paths::is_dev_only;
 
 /// Extract every design-intent concept from one file at relative path `path` with `contents`.
 ///

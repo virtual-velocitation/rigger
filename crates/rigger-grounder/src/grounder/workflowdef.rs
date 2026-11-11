@@ -1,27 +1,19 @@
-//! The workflow-definition-to-events emit pass (spec 92 criterion 2, THE WHOLE PRODUCT IS
-//! COVERED): lowers `.rigger/workflow.yml`'s stages, gates and agent roles into
-//! `DocConceptExtracted` / `DocLinkExtracted` events - REUSING the exact events and fold the
-//! design-intent pass (spec 29b) uses, never a second entity/edge-fold authority (see
-//! `crate::contextgraph`'s fold-arm doc) - so the workflow definition becomes graph entities
-//! (`stage:<name>`, `gate:<name>`, `agent:<name>`) with `needs` / `runs` /
-//! `reviews` relations - the last split into a plain edge for a panel's full-only roster and a
-//! distinctly-tagged one for its opt-in `tiers.light` roster (see `reviewers_of`'s own doc for
-//! why the two are never unioned). This is the emit half; the fold half lives in
-//! `contextgraph::sqlite` and stays compiled in both lanes.
+//! The workflow-definition extraction (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): reads
+//! `.rigger/workflow.yml`'s stages, gates and agent roles into the `(kind, id, title)` concepts and
+//! `(from, rel, to)` links the code store's extractor carries on the definition's facts, so the
+//! workflow definition becomes graph entities (`stage:<name>`, `gate:<name>`, `agent:<name>`) with
+//! `needs` / `runs` / `reviews` relations - the last split into a plain edge for a panel's
+//! full-only roster and a distinctly-tagged one for its opt-in `tiers.light` roster (see
+//! `reviewers_of`'s own doc for why the two are never unioned).
 
-use super::workflow_doc;
 #[cfg(test)]
 use crate::config;
 use crate::config::{first_seen, push_reviewers, ReviewPanel, Stage, Workflow};
-use crate::config_store;
 use crate::contextgraph::{
-    DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
-    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
 };
-use crate::eventstore::Event;
 use rigger_domain::wave::reviews_through_panel;
 use std::collections::BTreeSet;
-use std::path::Path;
 
 fn stage_id(name: &str) -> String {
     format!("stage:{name}")
@@ -35,17 +27,15 @@ fn agent_id(name: &str) -> String {
     format!("agent:{name}")
 }
 
-/// One `(kind, id, title)` concept tuple, before it is lowered into a `DocConceptExtracted`
-/// payload - see [`extract`]'s own doc.
+/// One `(kind, id, title)` concept tuple - see [`extract`]'s own doc.
 pub(crate) type ConceptTuple = (&'static str, String, String);
 
-/// One `(from, rel, to)` link tuple, before it is lowered into a `DocLinkExtracted` payload - see
-/// [`extract`]'s own doc.
+/// One `(from, rel, to)` link tuple - see [`extract`]'s own doc.
 pub(crate) type LinkTuple = (String, &'static str, String);
 
 /// Lower `workflow`'s stages, gates and agent roles into `(kind, id, title)` concepts and
-/// `(from, rel, to)` links - the pure computation [`extract_events`] serializes. Kept separate
-/// from serialization so a test can assert on the plain tuples without decoding JSON.
+/// `(from, rel, to)` links. Pure and deterministic: identical input yields identical output,
+/// entirely from `workflow`'s own `BTreeMap`-ordered stages/gates.
 ///
 /// Per stage: `stage --NEEDS--> stage` for each `stage.needs` entry; `stage --RUNS--> gate` for
 /// each `stage.gates` entry; `stage --RUNS--> agent` for `stage.agent` / each of `stage.agents`
@@ -157,92 +147,11 @@ fn reviewers_of(workflow: &Workflow, stage: &Stage) -> (Vec<String>, Vec<String>
     (first_seen(full), light)
 }
 
-/// Lower `workflow`'s stages, gates and agent roles into events: one `DocConceptExtracted` per
-/// entity (sorted by kind then id, mirroring
-/// [`crate::grounder::design::events::concept_events`]'s own ordering), THEN one
-/// `DocLinkExtracted` per relation (sorted by rel then from then to) - concepts before links so a
-/// link's endpoint is ensured at its SPECIFIC kind when its own concept event folds first
-/// (`ensure_node` never demotes an already-specific kind back to the generic role a link alone
-/// would ensure), mirroring the design-intent pass's own concept-before-link ordering. Pure and
-/// deterministic: identical input yields byte-identical output, entirely from `workflow`'s own
-/// `BTreeMap`-ordered stages/gates - no filesystem, no clock, no randomness.
-pub fn extract_events(workflow: &Workflow) -> Vec<Event> {
-    let (concepts, links) = extract(workflow);
-    let mut events: Vec<Event> = concepts
-        .into_iter()
-        .map(|(kind, id, title)| {
-            let payload = DocConceptExtracted {
-                kind: kind.to_string(),
-                id,
-                title,
-                doc: workflow_doc(),
-            };
-            Event::new(
-                TYPE_DOC_CONCEPT_EXTRACTED,
-                serde_json::to_vec(&payload)
-                    .expect("workflow-definition concept payload serializes"),
-            )
-        })
-        .collect();
-    events.extend(links.into_iter().map(|(from, rel, to)| {
-        let payload = DocLinkExtracted {
-            from,
-            to,
-            rel: rel.to_string(),
-        };
-        Event::new(
-            TYPE_DOC_LINK_EXTRACTED,
-            serde_json::to_vec(&payload).expect("workflow-definition link payload serializes"),
-        )
-    }));
-    events
-}
-
-/// Load `.rigger/workflow.yml` at `root` and lower it into events - the production entry point a
-/// live run's [`crate::ingest`] pipeline and a cold `rigger graph build` both use. Reads through
-/// the LIGHTWEIGHT [`config_store::load_workflow`] (no agents-dir read, no referential validation) - see
-/// that function's own doc for why indexing the definition must not fail on an unrelated agent
-/// frontmatter concern. Absent or unparseable yields NO events (never a crash), mirroring how a
-/// design doc with no design intent yields nothing to the design extraction pass.
-pub fn project_events(root: &str) -> Vec<Event> {
-    let path = Path::new(root).join(workflow_doc());
-    match config_store::load_workflow(&path) {
-        Ok(wf) => extract_events(&wf),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// The `gw` batch of the workflow definition holding `bytes` (spec 107), total over its input:
-/// the batch the walk lowers from that file - [`extract_events`] over the workflow
-/// [`config_store::parse_workflow`] reads from UTF-8 bytes, and the empty batch for no bytes, for
-/// bytes that are not UTF-8 and for text that parse refuses, as [`project_events`] answers a
-/// definition it cannot load. The definition has one path, and the walk's flag changes no `gw`
-/// batch, so neither is read.
-pub fn bytes_batch(_path: &str, bytes: Option<&[u8]>, _excluded: bool) -> Vec<Event> {
-    super::text_of(bytes)
-        .and_then(|text| config_store::parse_workflow(text).ok())
-        .map(|workflow| extract_events(&workflow))
-        .unwrap_or_default()
-}
-
-/// [`project_events`] as ONE keyed file batch (`.rigger/workflow.yml`, its events) - the shape
-/// [`crate::ingest`]'s walk folds alongside the code (`gc`) and design (`gd`) halves, under its
-/// own `gw` prefix. Empty when there is nothing to extract ([`project_events`] returned no
-/// events), so an absent/unparseable workflow contributes no batch at all - never an
-/// empty-but-present one the caller would key and append pointlessly.
-pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
-    let events = project_events(root);
-    if events.is_empty() {
-        Vec::new()
-    } else {
-        vec![(workflow_doc(), events)]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Gate;
+    use crate::config_store;
     use std::collections::BTreeMap;
 
     /// A small fixture workflow mirroring this project's OWN `.rigger/workflow.yml` shape closely
@@ -578,13 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn a_real_on_disk_workflow_yml_with_tiers_still_tags_the_light_roster_distinctly() {
-        // Same guarantee as the in-process fixture above, but through a REAL on-disk
-        // `.rigger/workflow.yml` parsed by `config_store::load_workflow` (via `project_events`) - not a
-        // hand-built `Workflow` struct - proving the split survives real YAML parsing end to end.
-        let dir = tempfile::tempdir().unwrap();
-        let rigger_dir = dir.path().join(".rigger");
-        std::fs::create_dir_all(&rigger_dir).unwrap();
+    fn a_parsed_workflow_yml_with_tiers_still_tags_the_light_roster_distinctly() {
+        // Same guarantee as the in-process fixture above, but through real YAML parsed by
+        // `config_store::parse_workflow` - the parse the code store's extractor reads the
+        // definition through - not a hand-built `Workflow` struct, proving the split survives
+        // real YAML parsing end to end.
         let yaml = "defaults:\n  \
 review:\n    \
 lenses: [archlens]\n    \
@@ -602,21 +509,16 @@ gates: [fmt]\n\
 gates:\n  \
 fmt:\n    \
 run: cargo fmt --check\n";
-        std::fs::write(rigger_dir.join("workflow.yml"), yaml).unwrap();
 
-        let events = project_events(dir.path().to_str().unwrap());
+        let (_, links) = extract(&config_store::parse_workflow(yaml).unwrap());
         let has_link = |from: &str, rel: &str, to: &str| {
-            events.iter().any(|e| {
-                if e.type_ != TYPE_DOC_LINK_EXTRACTED {
-                    return false;
-                }
-                let l: DocLinkExtracted = serde_json::from_slice(&e.data).unwrap();
-                l.from == from && l.rel == rel && l.to == to
-            })
+            links
+                .iter()
+                .any(|(f, r, t)| f == from && *r == rel && t == to)
         };
         assert!(
             has_link("agent:fast-lens", REL_REVIEWS_LIGHT, "stage:implement"),
-            "got {events:?}"
+            "got {links:?}"
         );
         assert!(
             has_link(
@@ -624,12 +526,12 @@ run: cargo fmt --check\n";
                 REL_REVIEWS_LIGHT,
                 "stage:implement"
             ),
-            "got {events:?}"
+            "got {links:?}"
         );
         assert!(
             !has_link("agent:fast-lens", REL_REVIEWS, "stage:implement"),
             "the light-only lens must never be indistinguishable from a full-panel reviewer; \
-             got {events:?}"
+             got {links:?}"
         );
         assert!(has_link("agent:archlens", REL_REVIEWS, "stage:implement"));
         assert!(has_link("agent:adv", REL_REVIEWS, "stage:implement"));
@@ -637,90 +539,33 @@ run: cargo fmt --check\n";
     }
 
     #[test]
-    fn extract_events_is_deterministic_across_repeated_calls() {
+    fn extract_is_deterministic_across_repeated_calls() {
         let wf = fixture();
-        let a = extract_events(&wf);
-        let b = extract_events(&wf);
-        let ser = |evs: &[Event]| -> Vec<(String, Vec<u8>)> {
-            evs.iter()
-                .map(|e| (e.type_.clone(), e.data.clone()))
-                .collect()
-        };
+        let a = extract(&wf);
         assert_eq!(
-            ser(&a),
-            ser(&b),
-            "identical input must yield byte-identical events on every call"
+            a,
+            extract(&wf),
+            "identical input must yield identical concepts and links on every call"
         );
-        assert!(!a.is_empty(), "the fixture must actually extract something");
+        assert!(
+            !a.0.is_empty(),
+            "the fixture must actually extract something"
+        );
     }
 
     #[test]
-    fn project_events_on_a_missing_workflow_yields_nothing_never_a_crash() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(project_events(dir.path().to_str().unwrap()).is_empty());
-        assert!(project_batches(dir.path().to_str().unwrap()).is_empty());
-    }
-
-    #[test]
-    fn project_events_reads_this_projects_own_real_workflow_yml() {
-        // The strongest proof of THE WHOLE PRODUCT IS COVERED: indexing the REAL, committed
+    fn extract_reads_this_projects_own_real_workflow_yml() {
+        // The strongest proof of THE WHOLE PRODUCT IS COVERED: extracting the REAL, committed
         // `.rigger/workflow.yml` (not a fixture) yields its stage and agent concepts; its gates are
         // the operator's to change, so no assertion reads them.
         // `CARGO_MANIFEST_DIR` (not `.`), so this resolves the crate root regardless of the
         // process's own working directory.
-        let events = project_events(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
-        assert!(
-            !events.is_empty(),
-            "this project's own .rigger/workflow.yml must extract at least one event"
-        );
-        let has_concept = |kind: &str, id: &str| {
-            events.iter().any(|e| {
-                if e.type_ != TYPE_DOC_CONCEPT_EXTRACTED {
-                    return false;
-                }
-                let c: DocConceptExtracted = serde_json::from_slice(&e.data).unwrap();
-                c.kind == kind && c.id == id
-            })
-        };
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../.rigger/workflow.yml");
+        let text = std::fs::read_to_string(path).unwrap();
+        let (concepts, _) = extract(&config_store::parse_workflow(&text).unwrap());
+        let has_concept =
+            |kind: &str, id: &str| concepts.iter().any(|(k, i, _)| *k == kind && i == id);
         assert!(has_concept(KIND_STAGE, "stage:implement"));
         assert!(has_concept(KIND_AGENT, "agent:rust-engineer"));
-    }
-
-    /// THE REBUILD RE-EXTRACTS THE LEDGER (spec 107): `bytes_batch` over the workflow
-    /// definition's UTF-8 bytes answers the batch the walk lowers from that file, whatever the
-    /// flag says, and the empty batch for no bytes, for bytes that are not UTF-8 and for text
-    /// the workflow parse refuses.
-    #[test]
-    fn bytes_batch_answers_the_walks_batch_for_a_parsed_definition_and_the_empty_batch_otherwise() {
-        use crate::extraction_tree::{walked_batch, WORKFLOW_BODY, WORKFLOW_PATH};
-        use crate::test_support::wire;
-
-        let expected = walked_batch("gw", WORKFLOW_PATH).to_vec();
-        for excluded in [false, true] {
-            assert_eq!(
-                wire(&bytes_batch(
-                    WORKFLOW_PATH,
-                    Some(WORKFLOW_BODY.as_bytes()),
-                    excluded
-                )),
-                expected,
-                "excluded {excluded}"
-            );
-        }
-        let not_utf8 = [WORKFLOW_BODY.as_bytes(), &[0xff]].concat();
-        let unknown_key = format!("{WORKFLOW_BODY}\nnot_a_key: 1\n");
-        assert_eq!(wire(&bytes_batch(WORKFLOW_PATH, None, false)), vec![]);
-        assert_eq!(
-            wire(&bytes_batch(WORKFLOW_PATH, Some(&not_utf8), false)),
-            vec![]
-        );
-        assert_eq!(
-            wire(&bytes_batch(
-                WORKFLOW_PATH,
-                Some(unknown_key.as_bytes()),
-                false
-            )),
-            vec![]
-        );
     }
 }

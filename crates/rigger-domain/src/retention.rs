@@ -34,8 +34,8 @@ pub struct GenerationIngested {
     /// The object id of the bytes the batch was extracted from, as git prints it, or empty when
     /// the path held no file.
     pub blob: String,
-    /// The walk's flag: whether `walk_exclusions` names the entry's identity. It changes only a
-    /// parsed `gc` batch.
+    /// The walk's flag as recorded: whether the walk that wrote the entry excluded its identity.
+    /// It changes only a parsed `gc` batch.
     pub excluded: bool,
 }
 
