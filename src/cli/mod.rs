@@ -1770,6 +1770,30 @@ impl OpenGraph for ReadGraph<'_> {
         .map_err(contextgraph::Error)?;
         Ok(Box::new(composed))
     }
+
+    /// The graph whose code half resolves near the ids `ask` reads (spec 6.3), over the one view
+    /// of the head this answer opens.
+    fn answer(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+        ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), contextgraph::Error>,
+    ) -> Result<(), contextgraph::Error> {
+        head_view(&self.worktree, |view, diff, behind| {
+            let composed = rigger_domain::composed::Composed::near(
+                self.records,
+                view,
+                filter,
+                rigger_domain::composed::Honesty {
+                    worktree: self.worktree.display().to_string(),
+                    diff,
+                    behind,
+                },
+            )
+            .map_err(|e| e.0)?;
+            ask(&composed).map_err(|e| e.0)
+        })
+        .map_err(contextgraph::Error)
+    }
 }
 
 /// Hands `compose` the code store's view of the head of the project `worktree` lies in, how

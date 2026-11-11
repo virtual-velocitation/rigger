@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use crate::contextgraph::query::whole_graph_degree;
 use crate::contextgraph::{
-    entity_site, open_unowed, site_fields, wired, EntitySite, Fold, Located, OpenGraph, RecordFold,
+    answer_unowed, answered_or_why, entity_site, site_fields, wired, ContextGraph, EntitySite,
+    Fold, Located, OpenGraph, RecordFold,
 };
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
@@ -588,20 +589,37 @@ impl<'a> Server<'a> {
             let lookup = self
                 .lookup
                 .ok_or("rigger_graph: no lookup is wired on this server")?;
-            let graph = match (self.graph, self.context) {
-                (Some(fold), Some(context)) => open_unowed(fold, context, filter).map_err(|e| e.0),
-                _ => Err(NO_GRAPH_WIRED.to_string()),
+            let answer = |graph: Result<&dyn ContextGraph, String>| {
+                lookup
+                    .lookup(&terms, graph)
+                    .map(Value::String)
+                    .map_err(|e| format!("rigger_graph: {e}").into())
             };
-            return lookup
-                .lookup(&terms, graph.as_deref().map_err(Clone::clone))
-                .map(Value::String)
-                .map_err(|e| format!("rigger_graph: {e}").into());
+            return match (self.graph, self.context) {
+                (Some(fold), Some(context)) => answer_unowed(fold, context, filter, |graph| {
+                    answer(graph.map_err(|e| e.0))
+                }),
+                _ => answer(Err(NO_GRAPH_WIRED.to_string())),
+            };
         }
         let context = self
             .context
             .ok_or(format!("rigger_graph: {NO_GRAPH_WIRED}"))?;
         self.refuse_if_rebuild_owed("rigger_graph")?;
-        let graph = context.open(filter).map_err(|e| e.to_string())?;
+        answered_or_why(context, filter, |graph| {
+            self.graph_answer(graph.map_err(|e| e.to_string())?, show, around, depth)
+        })
+    }
+
+    /// `rigger_graph`'s `show` or `around` answer from `graph`: where `show` is defined when it is
+    /// asked, else the neighbourhood within `depth` hops of `around`.
+    fn graph_answer(
+        &self,
+        graph: &dyn ContextGraph,
+        show: &str,
+        around: &str,
+        depth: i64,
+    ) -> Result<Value, ToolError> {
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
             let label = graph.stamp_label().to_string();
@@ -630,7 +648,7 @@ impl<'a> Server<'a> {
                 }
             });
         }
-        let g = crate::contextgraph::around(graph.as_ref(), &[around.to_string()], depth)
+        let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
