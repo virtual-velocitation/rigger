@@ -52,10 +52,13 @@ pub struct BlastRadius {
     pub safe: Vec<String>,
 }
 
-/// A blast radius with the provenance stamp of the read that grounded it
-/// ([`Grounder::blast_radius_stamped`]); an empty stamp marks a grounder with no structural index.
+/// A unit's prompt seed and blast radius with the provenance stamp of the one read that grounded
+/// both ([`Grounder::blast_radius_stamped`]); an empty stamp marks a grounder with no structural
+/// index.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StampedRadius {
+    /// The prompt seed ([`Grounder::seed`]) of the read that grounded `radius`.
+    pub seed: Vec<String>,
     pub radius: BlastRadius,
     pub stamp: String,
 }
@@ -98,18 +101,20 @@ pub trait Grounder: Send + Sync {
         }
     }
 
-    /// [`Self::blast_radius`] with the provenance stamp of the read that grounded it, for the
-    /// `BlastRadiusComputed` audit event (spec 16 unit 3, architecture 5.5.9): the tree id +
-    /// grammar / tag-query version that produced THIS radius, so a recorded radius reconstructs
-    /// which tree grounded it and staleness is answerable ("why the full panel?"). The stamp comes
-    /// from the same read as the radius, never a second one, so a store advanced between two reads
-    /// cannot stamp a radius with a tree it was not grounded on. A non-empty stamp is ALSO the
+    /// [`Self::seed`] and [`Self::blast_radius`] with the provenance stamp of the read that
+    /// grounded them, for the `BlastRadiusComputed` audit event (spec 16 unit 3, architecture
+    /// 5.5.9): the tree id + grammar / tag-query version that produced THIS radius, so a recorded
+    /// radius reconstructs which tree grounded it and staleness is answerable ("why the full
+    /// panel?"). The seed, the radius and the stamp come from one read, never several, so a store
+    /// advanced between two reads cannot record a seed and a radius of different trees, or stamp
+    /// either with a tree it was not grounded on. A non-empty stamp is ALSO the
     /// structural-active signal the conductor keys the audit off: the DEFAULT (grep / nop - no
     /// structural cross-reference index) stamps EMPTY, so the conductor emits NO audit event and
     /// drives NO retention metric on that path. Only the `symbols` grounder overrides this to a
     /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
     fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
         StampedRadius {
+            seed: self.seed(query, k),
             radius: self.blast_radius(query, k),
             stamp: String::new(),
         }

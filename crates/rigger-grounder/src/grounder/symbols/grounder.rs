@@ -85,6 +85,45 @@ impl Symbols {
     fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> T {
         self.read_labelled(read).0
     }
+
+    /// [`Grounder::seed`] over one read's `sight`.
+    fn seed_in(&self, sight: &Sight<'_>, query: &str, k: usize) -> Vec<String> {
+        if query.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let terms = code_terms(query);
+        let mut seed: Vec<String> = Vec::new();
+        let mut add = |file: &str| {
+            if !seed.iter().any(|s| s == file) {
+                seed.push(file.to_string());
+            }
+        };
+        for t in &terms.paths {
+            let served: Vec<&str> = sight
+                .files()
+                .map(|f| f.path)
+                .filter(|p| names_path(p, t))
+                .collect();
+            if served.is_empty() && held_in_tree(&self.root, t) {
+                add(t);
+            }
+            served.into_iter().for_each(&mut add);
+        }
+        let mut named: Vec<Vec<&str>> = terms
+            .names
+            .iter()
+            .map(|n| definers(sight, &n.name))
+            .collect();
+        named.sort_by_key(Vec::len);
+        named.into_iter().flatten().for_each(&mut add);
+        scored_hits(sight, &query_terms(query))
+            .into_iter()
+            .filter(|h| !h.test)
+            .take(k)
+            .for_each(|h| add(&h.file));
+        seed.truncate(k);
+        seed
+    }
 }
 
 /// The tree id of the view a head that cannot be read stands in for.
@@ -653,43 +692,7 @@ impl Grounder for Symbols {
     /// while a test file or test function the query names explicitly still seeds. At most `k`
     /// distinct files.
     fn seed(&self, query: &str, k: usize) -> Vec<String> {
-        if query.is_empty() || k == 0 {
-            return Vec::new();
-        }
-        let terms = code_terms(query);
-        self.read(|sight| {
-            let mut seed: Vec<String> = Vec::new();
-            let mut add = |file: &str| {
-                if !seed.iter().any(|s| s == file) {
-                    seed.push(file.to_string());
-                }
-            };
-            for t in &terms.paths {
-                let served: Vec<&str> = sight
-                    .files()
-                    .map(|f| f.path)
-                    .filter(|p| names_path(p, t))
-                    .collect();
-                if served.is_empty() && held_in_tree(&self.root, t) {
-                    add(t);
-                }
-                served.into_iter().for_each(&mut add);
-            }
-            let mut named: Vec<Vec<&str>> = terms
-                .names
-                .iter()
-                .map(|n| definers(sight, &n.name))
-                .collect();
-            named.sort_by_key(Vec::len);
-            named.into_iter().flatten().for_each(&mut add);
-            scored_hits(sight, &query_terms(query))
-                .into_iter()
-                .filter(|h| !h.test)
-                .take(k)
-                .for_each(|h| add(&h.file));
-            seed.truncate(k);
-            seed
-        })
+        self.read(|sight| self.seed_in(sight, query, k))
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
@@ -732,8 +735,8 @@ impl Grounder for Symbols {
         self.blast_radius_stamped(query, k).radius
     }
 
-    /// The radius with the provenance stamp `<tree-id>/<grammar-tags-version>` of the open that
-    /// grounded it: the tree the view describes unioned with the grammar / tag-query version. The
+    /// The prompt seed and the radius with the provenance stamp `<tree-id>/<grammar-tags-version>`
+    /// of the one open that grounded both: the tree the view describes unioned with the grammar / tag-query version. The
     /// `symbols` grounder is STRUCTURAL, so the stamp is NON-EMPTY - the signal unit 3's conductor
     /// keys the audit + retention metric off - even for the empty-radius fail-safe, whose open
     /// still names the tree. A change to the tree changes the stamp.
@@ -742,18 +745,21 @@ impl Grounder for Symbols {
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
         let terms = code_terms(query);
-        let (radius, _label, tree) = self.read_opened(|sight| {
+        let ((seed, radius), _label, tree) = self.read_opened(|sight| {
+            let seed = self.seed_in(sight, query, k);
             // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
             // (an empty query, prose only, a single character, all punctuation) grounds to the
             // empty radius - empty precise and empty safe - which the scheduler runs alone and
             // unit 3 routes to the full, unpartitioned panel.
-            if terms.is_empty() {
+            let radius = if terms.is_empty() {
                 BlastRadius::default()
             } else {
                 self.radius(sight, &terms, k)
-            }
+            };
+            (seed, radius)
         });
         StampedRadius {
+            seed,
             radius,
             stamp: format!("{tree}/{GRAMMAR_TAGS_VERSION}"),
         }
@@ -2874,8 +2880,9 @@ mod tests {
         }
     }
 
-    /// The radius and its audit stamp come from ONE open of the store: a store advanced between
-    /// two opens never stamps a radius with a tree it was not grounded on.
+    /// The prompt seed, the radius and its audit stamp come from ONE open of the store: a store
+    /// advanced between two opens never records a seed and a radius of different trees, or
+    /// stamps either with a tree it was not grounded on.
     #[test]
     fn a_radius_is_stamped_with_the_tree_of_the_open_that_grounded_it() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2884,6 +2891,7 @@ mod tests {
         let opens = Arc::new(AtomicUsize::new(0));
         let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
         let stamped = g.blast_radius_stamped("`apply_damage`", 8);
+        assert_eq!(stamped.seed, ["open1.rs"], "the seed reads the first open");
         assert!(
             stamped.radius.precise.contains(&"open1.rs".to_string()),
             "the radius reads the first open: {:?}",
@@ -2894,7 +2902,11 @@ mod tests {
             format!("tree-1/{GRAMMAR_TAGS_VERSION}"),
             "the stamp names that same open's tree"
         );
-        assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "one seed and radius, one open"
+        );
     }
 
     /// Every answer's label states what was withheld, and counts the hits of that answer the

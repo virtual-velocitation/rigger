@@ -72,6 +72,7 @@ impl Grounder for StampedGrounder {
     fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
         // Non-empty: the structural-active signal that makes the conductor emit the audit at all.
         StampedRadius {
+            seed: self.seed(query, k),
             radius: self.blast_radius(query, k),
             stamp: "test-index-stamp/v1".into(),
         }

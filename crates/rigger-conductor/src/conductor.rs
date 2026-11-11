@@ -5109,7 +5109,7 @@ impl RunCtx<'_> {
                 (Some(safe), _) => safe,
                 (None, Some(st)) => {
                     let stamped = self.grounded_blast_radius_stamped(st);
-                    self.record_blast_radius(st, 0, &self.grounded_seed(st), &stamped)?;
+                    self.record_blast_radius(st, 0, &stamped)?;
                     stamped.radius.safe
                 }
                 (None, None) => Vec::new(),
@@ -6633,17 +6633,20 @@ impl RunCtx<'_> {
             // The PRECISE seed for THIS attempt: it seeds the implementer spawn's `blast_radius`
             // AND selects which gates the blast-radius-narrowed inner loop runs (spec 12, unit 3),
             // so the gates a remediation iteration re-verifies are exactly the files the implementer
-            // was grounded on.
-            let blast_radius = self.grounded_seed(st);
-            // The unit's two-view radius (spec 16 unit 3): the UNCAPPED `.safe`-superset view routes
-            // the review tier (below) - high-risk membership and the size signal read true
-            // structural width, so a beyond-cap high-risk file still forces the full panel - and the
-            // whole radius is recorded as a `BlastRadiusComputed` audit (structural grounder only,
-            // incl. the empty-radius fail-safe). On the non-symbols default `.safe` equals the seed,
-            // so routing is unchanged and no audit is emitted.
+            // was grounded on. The unit's two-view radius (spec 16 unit 3) comes from the same
+            // read: the UNCAPPED `.safe`-superset view routes the review tier (below) - high-risk
+            // membership and the size signal read true structural width, so a beyond-cap high-risk
+            // file still forces the full panel - and the seed and radius are recorded as a
+            // `BlastRadiusComputed` audit (structural grounder only, incl. the empty-radius
+            // fail-safe). On the non-symbols default `.safe` equals the seed, so routing is
+            // unchanged and no audit is emitted.
             let stamped = self.grounded_blast_radius_stamped(st);
-            self.record_blast_radius(st, attempts, &blast_radius, &stamped)?;
-            let radius = stamped.radius;
+            self.record_blast_radius(st, attempts, &stamped)?;
+            let StampedRadius {
+                seed: blast_radius,
+                radius,
+                ..
+            } = stamped;
             let mut spawn_err: Option<String> = None;
             // The crash of a spawn after the implementer's (the sdet seam's or a review tier's,
             // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
@@ -7392,10 +7395,13 @@ impl RunCtx<'_> {
         // each lane's review tier. A speculation group is ONE unit reviewed per lane, so the audit
         // event is recorded once for the unit (keyed at attempt 0); on the non-symbols default
         // `.safe` equals the seed and no audit is emitted.
-        let blast_radius = self.grounded_seed(st);
         let stamped = self.grounded_blast_radius_stamped(st);
-        self.record_blast_radius(st, 0, &blast_radius, &stamped)?;
-        let radius = stamped.radius;
+        self.record_blast_radius(st, 0, &stamped)?;
+        let StampedRadius {
+            seed: blast_radius,
+            radius,
+            ..
+        } = stamped;
         let agent_def = self
             .cfg
             .agents
@@ -11992,6 +11998,7 @@ impl RunCtx<'_> {
     /// the radius is the seed, the named code's files.
     fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> StampedRadius {
         let StampedRadius {
+            seed,
             radius: base,
             stamp,
         } = match self.deps.grounder {
@@ -11999,6 +12006,7 @@ impl RunCtx<'_> {
             None => StampedRadius::default(),
         };
         StampedRadius {
+            seed,
             radius: self.graph_tiered(base, depth),
             stamp,
         }
@@ -12074,9 +12082,9 @@ impl RunCtx<'_> {
     /// parallelism-retention metric offline (`metrics::project`). It is pure audit: the
     /// context-graph projector matches no fold arm for it, so it folds to no node/edge idempotently.
     ///
-    /// The recorded `precise` is the actual prompt `seed` - the caller's
-    /// [`grounded_seed`](Self::grounded_seed), the grounder's `seed(query, k)` files that seed
-    /// the agent - NOT the radius's `precise` view (spec 17, 4b). The two DIVERGE past the cap:
+    /// The recorded `precise` is the actual prompt `seed` - the grounder's `seed(query, k)` files
+    /// that seed the agent, from the same read as the radius and the stamp - NOT the radius's
+    /// `precise` view (spec 17, 4b). The two DIVERGE past the cap:
     /// `grounded_seed`'s fill truncates at k LINES then dedups to distinct files, while the radius's
     /// `precise` is a k-FILE structural rank, so beyond the cap the recorded files would otherwise
     /// name files the prompt was never seeded on. The same `seed` seeds the spawn and is recorded
@@ -12088,10 +12096,13 @@ impl RunCtx<'_> {
         &self,
         st: &Stage,
         attempt: u32,
-        seed: &[String],
-        radius: &StampedRadius,
+        stamped: &StampedRadius,
     ) -> Result<(), Error> {
-        let StampedRadius { radius, stamp } = radius;
+        let StampedRadius {
+            seed,
+            radius,
+            stamp,
+        } = stamped;
         if stamp.is_empty() {
             // Non-structural grounder (or none): no audit, no retention metric - the shipped
             // default path is byte-for-byte unchanged.
@@ -40904,6 +40915,7 @@ mod tests {
         }
         fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
             StampedRadius {
+                seed: self.seed(query, k),
                 radius: self.blast_radius(query, k),
                 stamp: self.stamp.clone(),
             }
@@ -41056,6 +41068,73 @@ mod tests {
             m.parallelism_retention.is_some(),
             "the BlastRadiusComputed audit drives the runtime parallelism-retention metric"
         );
+    }
+
+    /// A structural grounder whose store advances between reads: its stamped read grounds the
+    /// seed `grounded.rs`, a later seed read would ground `later.rs`.
+    struct AdvancingStubGrounder;
+    impl Grounder for AdvancingStubGrounder {
+        fn ground(&self, _query: &str, _k: usize) -> Vec<crate::grounder::Ref> {
+            Vec::new()
+        }
+        fn seed(&self, _query: &str, _k: usize) -> Vec<String> {
+            vec!["later.rs".to_string()]
+        }
+        fn blast_radius_stamped(&self, _query: &str, _k: usize) -> StampedRadius {
+            StampedRadius {
+                seed: vec!["grounded.rs".to_string()],
+                radius: BlastRadius {
+                    precise: vec!["grounded.rs".to_string()],
+                    safe: vec!["grounded.rs".to_string()],
+                },
+                stamp: "tree-1/tags-v1".to_string(),
+            }
+        }
+    }
+
+    /// The audit records the seed and the safe view of ONE read with that read's stamp, so a store
+    /// advanced between two reads never records a seed of one tree beside a radius of another.
+    #[test]
+    fn the_blast_radius_audit_records_the_seed_of_the_read_that_stamped_it() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let grounder = AdvancingStubGrounder;
+        let cfg = tiered_cfg(tiered_stage(20, &["specs/"]));
+        let store = Store::open(":memory:").unwrap();
+        let driver = CacheDriver {
+            contents: vec!["work\n".into()],
+            approve_at: 0,
+        };
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path,
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+            check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: None,
+        };
+        run_isolated(&cfg, &deps).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let audit: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == TYPE_BLAST_RADIUS_COMPUTED)
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        assert_eq!(audit.len(), 1, "one audit for the one unit");
+        assert_eq!(
+            audit[0]["precise"],
+            json!(["grounded.rs"]),
+            "the recorded seed is the stamped read's"
+        );
+        assert_eq!(audit[0]["safe"], json!(["grounded.rs"]));
+        assert_eq!(audit[0]["index_stamp"], json!("tree-1/tags-v1"));
     }
 
     /// spec 16 unit 3, the empty fail-safe pin: a STRUCTURAL grounder whose query grounds to
@@ -41858,15 +41937,14 @@ mod tests {
         let ctx = RunCtx::for_test(&cfg, &deps);
 
         // The EXACT production call sequence (`run_single_stage` / `run_speculation`): the prompt
-        // SEED, the two-view radius, then the audit keyed at the attempt.
-        let seed = ctx.grounded_seed(&st);
+        // SEED and the two-view radius from one read, then the audit keyed at the attempt.
         let stamped = ctx.grounded_blast_radius_stamped(&st);
-        ctx.record_blast_radius(&st, 0, &seed, &stamped).unwrap();
-        let radius = &stamped.radius;
+        ctx.record_blast_radius(&st, 0, &stamped).unwrap();
+        let (seed, radius) = (&stamped.seed, &stamped.radius);
 
         // The seed is the small distinct-FILE set; the structural precise diverges past the cap.
         assert_eq!(
-            seed,
+            *seed,
             vec!["def.rs".to_string(), "busy.rs".to_string()],
             "the prompt seed is the distinct FILES of ground(target, k): {seed:?}"
         );
@@ -41898,7 +41976,7 @@ mod tests {
             .map(|f| f.as_str().unwrap().to_string())
             .collect();
         assert_eq!(
-            recorded_precise, seed,
+            recorded_precise, *seed,
             "the audit must record the prompt seed as precise, not the k-FILE structural rank"
         );
         assert!(
