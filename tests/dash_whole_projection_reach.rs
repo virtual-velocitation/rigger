@@ -27,14 +27,11 @@
 
 use crate::common;
 
-use crate::common::fixtures::RecordsRead;
+use crate::common::fixtures::{facts_view, planted_file, view_graph};
 use common::served::body_of;
 use common::served::{fetch_with_retry, try_fetch_over};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{
-    Graph, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
-    TYPE_EDGE_INFERRED,
-};
+use rigger::contextgraph::{ContextGraph, Graph, REL_CONTAINS, REL_GOVERNS, TYPE_DECISION_MADE};
 use rigger::dash::{self};
 use rigger::eventstore::Event;
 
@@ -51,30 +48,25 @@ fn decision_event(pos: u64, id: &str, summary: &str, governs: &[&str], supersede
     e
 }
 
-/// A `CodeEntityExtracted` event (`file` defines `name`) in its on-log JSON form - one definition the
-/// extraction pass emits, folded into a file container node, a `file::name` code-entity node, and the
-/// structural CONTAINS edge between them. Code ingest emits these with NO decision/finding, so a
-/// projection built from them alone has an EMPTY run-seed set.
-fn code_entity_event(pos: u64, file: &str, name: &str, line: u32) -> Event {
-    let payload = serde_json::json!({
-        "file": file, "name": name, "kind": "function", "line": line, "lang": "rust",
-    });
-    let mut e = Event::new(
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::to_vec(&payload).unwrap(),
-    );
-    e.position = pos;
-    e
+/// The code view of a tree whose files each define the `(leaf, kind)` function names of `defs` and
+/// reference the names of `refs`, planted as the code store's extractor would read them - the
+/// definitions and references code ingest yields, with NO decision or finding beside them.
+fn code_view(files: &[(&str, &[&str], &[&str])]) -> rigger::code_view::FactsView {
+    facts_view(
+        files
+            .iter()
+            .map(|(path, defs, refs)| {
+                let defs: Vec<(&str, &str)> = defs.iter().map(|d| (*d, "function")).collect();
+                planted_file(path, &defs, &[], refs)
+            })
+            .collect(),
+    )
 }
 
-/// An `EdgeInferred` event (`file` references `name`) in its on-log JSON form - one reference the
-/// extraction pass emits, folded into a REFERENCES edge to the referenced symbol's `file::name` node
-/// (created bare when the name is not defined in the file).
-fn edge_inferred_event(pos: u64, file: &str, name: &str) -> Event {
-    let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust" });
-    let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    e
+/// The whole live graph `records` serves beside `view`: the record half composed with the code
+/// view, read with no seed and no reachability walk.
+fn whole_of(records: &Projector, view: &rigger::code_view::FactsView) -> Graph {
+    ContextGraph::whole(&view_graph(records, view)).unwrap()
 }
 
 /// The comparable projection of a graph's edges: `(from, to, rel, valid_from)` per edge, in the order
@@ -115,12 +107,9 @@ fn whole_reads_the_projection_with_deterministic_node_and_edge_ordering() {
         &p,
         std::slice::from_ref(&decision_event(2, "d1", "first", &["y.rs"], "")),
     );
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(3, "a.rs", "run", 5)),
-    );
+    let view = code_view(&[("a.rs", &["run"], &[])]);
 
-    let g = p.whole().unwrap();
+    let g = whole_of(&p, &view);
 
     // (a) edges come back ordered by the promised key.
     let keys = edge_keys(&g);
@@ -145,7 +134,7 @@ fn whole_reads_the_projection_with_deterministic_node_and_edge_ordering() {
     );
 
     // (b) a second read is identical in nodes AND edges - deterministic by construction.
-    let g2 = p.whole().unwrap();
+    let g2 = whole_of(&p, &view);
     assert_eq!(
         node_keys(&g),
         node_keys(&g2),
@@ -165,9 +154,7 @@ fn whole_reads_the_projection_with_deterministic_node_and_edge_ordering() {
 #[test]
 fn whole_on_a_fresh_projection_is_empty_and_never_errors() {
     let p = Projector::open(":memory:", "fresh").unwrap();
-    let g = p
-        .whole()
-        .expect("whole() on a fresh projection is Ok, never an error");
+    let g = whole_of(&p, &code_view(&[]));
     assert!(
         g.nodes.is_empty() && g.edges.is_empty(),
         "a fresh projection reads back as an empty graph, got {g:?}"
@@ -187,20 +174,13 @@ fn whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it() 
     // A decision seeds one component (d1 GOVERNS src/combat.rs, which CONTAINS apply_damage).
     let d1 = decision_event(1, "d1", "wire combat", &["src/combat.rs"], "");
     common::fixtures::folds(&p, std::slice::from_ref(&d1));
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "apply_damage", 7)),
-    );
-    // A SEPARATE component with no path to the seed: code ingest of an unrelated file. No decision
-    // or finding concerns it, so no run seed can ever reach it.
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(3, "src/unrelated.rs", "helper", 3)),
-    );
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&edge_inferred_event(4, "src/unrelated.rs", "detail")),
-    );
+    // And the code view: the decision's file with a definition, and a SEPARATE component with no
+    // path to the seed - code ingest of an unrelated file. No decision or finding concerns it, so
+    // no run seed can ever reach it.
+    let view = code_view(&[
+        ("src/combat.rs", &["apply_damage"], &[]),
+        ("src/unrelated.rs", &["helper"], &["detail"]),
+    ]);
 
     // The run-seeded read the OLD provider used: seeds derived from the run log (the decision only),
     // walked depth-2. It reaches the decision's own component but NOT the unrelated one.
@@ -210,14 +190,14 @@ fn whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it() 
         !seeds.is_empty(),
         "the decision contributes run seeds (its id + governed file)"
     );
-    let seeded = p.subgraph(&seeds, 2).unwrap();
+    let seeded = ContextGraph::subgraph(&view_graph(&p, &view), &seeds, 2).unwrap();
     let seeded_ids: Vec<&str> = seeded.nodes.iter().map(|n| n.id.as_str()).collect();
     assert!(
         !seeded_ids.contains(&"src/unrelated.rs::helper"),
         "the run-seeded walk cannot reach the disconnected code node, got {seeded_ids:?}"
     );
 
-    let whole = p.whole().unwrap();
+    let whole = whole_of(&p, &view);
     let whole_ids: Vec<&str> = whole.nodes.iter().map(|n| n.id.as_str()).collect();
     // REACH: whole returns the node no run seed could reach.
     assert!(
@@ -233,31 +213,22 @@ fn whole_reaches_nodes_the_run_seeded_subgraph_cannot_and_is_a_superset_of_it() 
     }
 }
 
-/// Populate a file-backed graph.db from CODE INGEST ALONE (no decision / finding) and return its
-/// path. This is exactly what a cold-checkout `graph build` folds, and the never-built-repo
-/// precondition: the run log carries no content event, so `graph_seeds` is empty and the run-seeded
-/// read collapses to `Graph::default`.
+/// A file-backed graph.db holding NO record, and the code view of CODE INGEST ALONE (no decision /
+/// finding): the never-built-repo precondition, where the run log carries no content event, so
+/// `graph_seeds` is empty and the run-seeded read collapses to `Graph::default`.
 fn code_ingest_db(dir: &std::path::Path, identity: &str) -> String {
     let path = dir.join("graph.db");
     let path = path.to_str().unwrap().to_string();
-    let p = Projector::open(&path, identity).unwrap();
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(1, "src/combat.rs", "apply_damage", 7)),
-    );
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(2, "src/combat.rs", "take_hit", 20)),
-    );
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&edge_inferred_event(3, "src/combat.rs", "clamp")),
-    );
-    common::fixtures::folds(
-        &p,
-        std::slice::from_ref(&code_entity_event(4, "src/loot.rs", "roll_drop", 11)),
-    );
+    Projector::open(&path, identity).unwrap();
     path
+}
+
+/// The code view of code ingest alone: `src/combat.rs` and `src/loot.rs` with their definitions.
+fn code_ingest_view() -> rigger::code_view::FactsView {
+    code_view(&[
+        ("src/combat.rs", &["apply_damage", "take_hit"], &["clamp"]),
+        ("src/loot.rs", &["roll_drop"], &[]),
+    ])
 }
 
 /// Drive the real `serve` socket, retrying the whole port handoff on a connection-level transient.
@@ -272,7 +243,9 @@ fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
         let id = identity.to_string();
         let whole = move |_instance: Option<&str>| -> Graph {
             match Projector::open(&db, &id) {
-                Ok(p) => p.whole().unwrap_or_default(),
+                Ok(p) => {
+                    ContextGraph::whole(&view_graph(&p, &code_ingest_view())).unwrap_or_default()
+                }
                 Err(_) => Graph::default(),
             }
         };
@@ -281,7 +254,7 @@ fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
 }
 
 /// Integration (spec 45, criterion 2) over the REAL serve socket: on a never-built repo (a graph.db
-/// populated by code ingest alone, empty run seeds), the dedicated `/api/graph` provider reads the
+/// the code view holding code ingest alone, empty run seeds), the dedicated `/api/graph` provider reads the
 /// WHOLE projection, so BOTH the whole-graph overview and a seeded neighborhood reach real nodes -
 /// instead of the `Graph::default` dead-end the run-seeded read produced. This crosses the wire
 /// (transport + framing + JSON) through the real whole-projection read, which the implementer's
