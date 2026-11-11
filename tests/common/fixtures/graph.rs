@@ -265,6 +265,50 @@ pub fn view_graph<'r>(
     .expect("a view composes")
 }
 
+/// The code view of a tree holding exactly `files`, each `(path, source text)` pair read into its
+/// facts by `extract` as the code store reads a file.
+pub fn files_view(
+    extract: &impl rigger::code_view::Extract,
+    files: &[(&str, &str)],
+) -> rigger::code_view::FactsView {
+    let facts = files
+        .iter()
+        .map(|(path, text)| {
+            let entry = rigger::code_view::Entry {
+                path: path.to_string(),
+                blob: String::new(),
+            };
+            extract.extract(&entry, text.as_bytes())
+        })
+        .collect();
+    let stamp = rigger::code_facts::Stamp {
+        tip: rigger::code_facts::Tip {
+            head: "main".to_string(),
+            commit: None,
+            tree: "files".to_string(),
+        },
+        fingerprint: extract.fingerprint(),
+        seq: 1,
+    };
+    rigger::code_view::FactsView::new(stamp, facts)
+}
+
+/// An opener of the record half composed with the code view it holds ([`view_graph`]), whatever
+/// the filter: the context a test wires where the composition root wires the code store's.
+pub struct ViewedRecords<'a> {
+    pub records: &'a dyn rigger::contextgraph::Neighbors,
+    pub view: rigger::code_view::FactsView,
+}
+
+impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
+    fn open(
+        &self,
+        _filter: rigger::code_view::ViewFilter,
+    ) -> Result<Box<dyn ContextGraph + '_>, rigger::contextgraph::Error> {
+        Ok(Box::new(view_graph(self.records, &self.view)))
+    }
+}
+
 /// An opener of the record half it holds read as [`records_graph`], whatever the filter: the
 /// context a test wires where the composition root wires the code store's.
 pub struct RecordsOnly<'a>(pub &'a dyn rigger::contextgraph::Neighbors);
