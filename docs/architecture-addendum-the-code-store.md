@@ -555,7 +555,9 @@ open(caller worktree W, filter)
 
 A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
 until W commits. Without git, the directory source counts a file in W it cannot read as
-differing, since its content is unknown; its facts hold no such file.
+differing, since its content is unknown; its facts hold no such file. With git, the check
+follows git's own view of W, as every git tool does: a file marked assume-unchanged or
+skip-worktree reads as unchanged whatever W holds.
 
 This check replaces the per-hit generation comparison. It runs once per view, not once per hit,
 and the label travels with every answer:
