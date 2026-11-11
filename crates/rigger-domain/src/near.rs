@@ -243,6 +243,17 @@ struct Resolved {
     incoming: Vec<Edge>,
 }
 
+/// The files a resolve folds, by place and part, in file order.
+type Sources = Vec<(u32, Part)>;
+
+/// An id's resolves: each distinct set of files folded, with what it resolved to, and the one
+/// each reach reads ([`Reach::at`]).
+#[derive(Default)]
+struct Reads {
+    folded: Vec<(Sources, Arc<Resolved>)>,
+    reaches: [Option<Arc<Resolved>>; 4],
+}
+
 /// What a neighbourhood has read so far.
 struct State<'v> {
     view: &'v dyn CodeView,
@@ -259,14 +270,17 @@ struct State<'v> {
     /// Each file a module declaration reaches, with the places of the files declaring it.
     modules: Option<FxHashMap<String, Vec<u32>>>,
     clusters: Option<Arc<Clusters<'v>>>,
-    /// Each id resolved so far, under each reach ([`Reach::at`]).
-    resolved: FxHashMap<String, [Option<Arc<Resolved>>; 4]>,
+    /// Each id resolved so far.
+    resolved: FxHashMap<String, Reads>,
     /// Each (arm, test entity)'s cluster place, the plurality rule's winner.
     attach: FxHashMap<(usize, String), Option<usize>>,
     /// Each code file's proof calls, by place.
     proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
     attached: FxHashMap<(usize, String), Arc<Vec<String>>>,
+    /// Each (place, id) whose code assertions were read, in the order read.
+    #[cfg(test)]
+    read_code: Vec<(u32, String)>,
 }
 
 /// The code half of a view under one filter, resolved only near the ids it is asked about. Its
@@ -298,6 +312,8 @@ impl<'v> Near<'v> {
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
                 proofs_in: FxHashMap::default(),
+                #[cfg(test)]
+                read_code: Vec::new(),
                 attached: FxHashMap::default(),
             }),
             whole: OnceLock::new(),
@@ -444,6 +460,8 @@ impl<'v> State<'v> {
         let mentions = at.iter().map(|&at| &facts.mentions[at as usize]);
         let tests = self.tests != Tests::Exclude;
         let mut touching = Touching { id, b };
+        #[cfg(test)]
+        self.read_code.push((place, id.to_string()));
         self.graph
             .code_mentions(&facts, mentions, tests, &mut touching);
     }
@@ -499,9 +517,10 @@ impl<'v> State<'v> {
         places
     }
 
-    /// `id` resolved from the assertions `reach` folds, as the whole graph holds it.
-    fn resolve(&mut self, id: &str, reach: Reach) -> Resolved {
-        let mut sources: Vec<(u32, Part)> = Vec::new();
+    /// The files whose assertions `reach` folds for `id`, in file order, and the leaves of the
+    /// definitions settling `id`.
+    fn sources(&mut self, id: &str, reach: Reach) -> (Sources, Vec<String>) {
+        let mut sources: Sources = Vec::new();
         let (file, rest) = split_id(id);
         let own = self.code_place(file);
         sources.extend(own.map(|at| (at, Part::Code)));
@@ -518,10 +537,15 @@ impl<'v> State<'v> {
         sources.extend(intent.into_iter().map(|at| (at, Part::Intent)));
         sources.sort_unstable();
         sources.dedup();
+        (sources, leaves)
+    }
+
+    /// `id` resolved from the assertions of `sources`, as the whole graph holds it.
+    fn resolve(&mut self, id: &str, sources: &[(u32, Part)], leaves: &[String]) -> Resolved {
         let mut named: Vec<&str> = leaves.iter().map(String::as_str).collect();
         named.extend(leaf_of(id));
         let mut b = Builder::default();
-        for (place, part) in sources {
+        for &(place, part) in sources {
             match part {
                 Part::Code => self.code(place, id, &named, &mut b),
                 Part::Intent => {
@@ -549,14 +573,32 @@ impl<'v> State<'v> {
         }
     }
 
-    /// `id` resolved from the assertions `reach` folds, read once per reach.
+    /// `id` resolved from the assertions `reach` folds: resolved once for each distinct set of
+    /// files the reaches it is read at fold, and read once per reach.
     fn resolved(&mut self, id: &str, reach: Reach) -> Arc<Resolved> {
-        if let Some(held) = self.resolved.get(id).and_then(|r| r[reach.at()].as_ref()) {
+        if let Some(held) = self
+            .resolved
+            .get(id)
+            .and_then(|r| r.reaches[reach.at()].as_ref())
+        {
             return Arc::clone(held);
         }
-        let resolved = Arc::new(self.resolve(id, reach));
+        let (sources, leaves) = self.sources(id, reach);
+        let folded = (self.resolved.get(id).into_iter())
+            .flat_map(|r| &r.folded)
+            .find(|(folded, _)| *folded == sources)
+            .map(|(_, resolved)| Arc::clone(resolved));
+        let resolved = match folded {
+            Some(resolved) => resolved,
+            None => {
+                let resolved = Arc::new(self.resolve(id, &sources, &leaves));
+                let held = self.resolved.entry(id.to_string()).or_default();
+                held.folded.push((sources, Arc::clone(&resolved)));
+                resolved
+            }
+        };
         let held = self.resolved.entry(id.to_string()).or_default();
-        held[reach.at()] = Some(Arc::clone(&resolved));
+        held.reaches[reach.at()] = Some(Arc::clone(&resolved));
         resolved
     }
 
@@ -1471,6 +1513,22 @@ mod tests {
             want.dedup();
             assert_eq!(got, want, "{id}");
         }
+    }
+
+    /// An id whose reaches fold the same files is resolved once: `run` is tagged nowhere and is no
+    /// file a module declaration reaches, so its edges in fold the files its node and edges out
+    /// fold, and reading them reads no file's assertions again.
+    #[test]
+    fn an_id_its_reaches_fold_alike_is_resolved_once() {
+        let view = view();
+        let id = "src/a.rs::run";
+        let near = Near::new(&view, ViewFilter::default());
+        near.node(id).unwrap();
+        near.out(id).unwrap();
+        let first = std::mem::take(&mut near.state().read_code);
+        assert!(!first.is_empty(), "the first read reads its own file");
+        near.incoming(id).unwrap();
+        assert_eq!(near.state().read_code, Vec::new());
     }
 
     /// Over a view that settles its proofs, a cluster's node, which counts the tests attached to
