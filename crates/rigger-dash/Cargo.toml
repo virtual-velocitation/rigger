@@ -28,6 +28,7 @@ store = [
     "rigger-grounder/store",
     "rigger-conductor/store",
     "rigger-console/store",
+    "rigger-store/store",
 ]
 core = [
     "rigger-domain/core",
@@ -39,6 +40,7 @@ core = [
     "rigger-grounder/core",
     "rigger-conductor/core",
     "rigger-console/core",
+    "rigger-store/core",
 ]
 
 [dependencies]
@@ -51,7 +53,7 @@ rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-conductor = { path = "../rigger-conductor", default-features = false }
 rigger-console = { path = "../rigger-console", default-features = false }
 # The code store the composed view opens, and the git tree source it reads the tree through.
-rigger-store = { path = "../rigger-store" }
+rigger-store = { path = "../rigger-store", default-features = false }
 rigger-worktree-git = { path = "../rigger-worktree-git", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

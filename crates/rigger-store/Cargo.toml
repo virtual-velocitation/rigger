@@ -9,8 +9,6 @@ description = "Rigger's owned store: the shared file format (header, crc, sectio
 name = "rigger_store"
 path = "src/lib.rs"
 
-# No `store`/`core` features: the crate depends only on the domain and std, and the format it
-# owns is read by modules that compile in every lane.
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
 
@@ -21,5 +19,11 @@ tempfile = "3"
 workspace = true
 
 [features]
+# Mirrors the root crate's lane features (see the root manifest): the code store, gated
+# `any(feature = "store", not(feature = "core"))`, names domain items only the `store` lane
+# compiles; the format compiles in every lane, since the symbols index persists through it.
+default = ["store"]
+store = ["rigger-domain/store"]
+core = ["rigger-domain/core"]
 # Test doubles of the code store's interfaces, for the tests of crates that implement a tree source.
 doubles = []

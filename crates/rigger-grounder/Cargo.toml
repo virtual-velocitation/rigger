@@ -15,8 +15,8 @@ path = "src/lib.rs"
 # gate here, and the root forwards all three features, so every lane compiles exactly the
 # surface it did before.
 default = ["symbols", "store"]
-store = ["rigger-domain/store", "rigger-process/store", "rigger-config-files/store"]
-core = ["rigger-domain/core", "rigger-process/core", "rigger-config-files/core", "rigger-graph-sqlite/core"]
+store = ["rigger-domain/store", "rigger-process/store", "rigger-config-files/store", "rigger-store/store"]
+core = ["rigger-domain/core", "rigger-process/core", "rigger-config-files/core", "rigger-graph-sqlite/core", "rigger-store/core"]
 symbols = [
     "dep:tree-sitter",
     "dep:tree-sitter-tags",
@@ -36,7 +36,7 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # same-ring edge).
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
 # The owned format's atomic publish and write lock the symbols index persists through.
-rigger-store = { path = "../rigger-store" }
+rigger-store = { path = "../rigger-store", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
