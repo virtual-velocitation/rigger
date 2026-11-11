@@ -132,7 +132,7 @@ supersedes them and replays them.
 | Whole-tree parse | 11.44 s on one core (~25 ms per file) |
 | Communities pass | 1.99 s (410 communities over 7,256 nodes) |
 | Concepts pass | 0.28 s (102 concepts over 816 nodes) |
-| `git diff` of a worktree against a commit; the untracked list; `diff-tree` between two commits | under 10 ms each, on 769 tracked files |
+| `git diff` of a worktree against a commit; the untracked list; `ls-tree` of a commit | under 10 ms each, on 769 tracked files |
 
 A model of query-time resolution over the extracted facts (interpreted Python, used to size the
 design; it is not a merge figure):
@@ -202,7 +202,7 @@ Any design that holds test code fully has to keep product views the size they ar
              +------------------> code::open_current(root) --- LOCK held while advancing
                                          |
              TreeSource (Git | Dir) <----+----> Extract (per-language extractors)
-             ls-tree, diff-tree,          |       Group (communities, concepts)
+             ls-tree,                     |       Group (communities, concepts)
              cat-file --batch             v
                                .rigger/store/code/
                                  CURRENT    -> "000042.snap"
@@ -376,9 +376,9 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
        differs from extract.fingerprint()
   if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
-  changes <- source.changed(S.stamp.tip.tree, target.tree)      [(path, old blob?, new blob?)]
-  keep    <- S.files without the changed paths              (facts copied, never re-extracted)
-  fresh   <- extract each new blob, in parallel             (std::thread::scope, one chunk per
+  entries <- source.list(target.tree)                       [(path, blob)] of each in-scope file
+  keep    <- S.files whose (path, blob) is in entries       (facts copied, never re-extracted)
+  fresh   <- extract every other entry, in parallel         (std::thread::scope, one chunk per
                                                             available core; bytes from
                                                             source.read_blobs, never the worktree)
   view    <- FactsView(keep + fresh)                         (in memory; indexes built)
@@ -392,7 +392,7 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
 
 ```
    S (stamp tree T1)                     target (tree T2)
-   +------+------+------+------+         git diff-tree T1 T2
+   +------+------+------+------+         git ls-tree T2, compared with S
    | a.rs | b.rs | c.rs | d.md |  ---->  M b.rs   D c.rs   A e.rs
    +------+------+------+------+
        |      x      x      |             cat-file --batch b.rs@T2, e.rs@T2
@@ -454,7 +454,8 @@ fails because of, a writer.
                                              |
                                  code::open_current(root)
                                              |
-                       diff-tree stamp.tip.tree C'^{tree}  -> the merged unit's changed files
+                  ls-tree C'^{tree} against the snapshot's (path, blob) pairs
+                                  -> the merged unit's changed files
                                              |
                                     advance(target = C')
                                              |
@@ -464,8 +465,8 @@ fails because of, a writer.
 ```
 
 This replaces the conductor's per-merge ingest of the named files and its whole-project ingest.
-The changed-file list comes from git, not from the unit's report, so a file the unit touched but
-did not name still gets re-extracted.
+The changed files come from git's listing of C', not from the unit's report, so a file the unit
+touched but did not name still gets re-extracted.
 
 ### 5.4 Groupings at advance
 
@@ -508,7 +509,7 @@ Grouping before and after:
 
 | Step | One changed file | From empty (769 files) |
 |---|---|---|
-| diff-tree + cat-file | < 10 ms | ~ 50 ms (ls-tree + one batch) |
+| ls-tree + cat-file | < 10 ms | ~ 50 ms (ls-tree + one batch) |
 | extract | ~ 25 ms | 11.4 s / cores ~ 1.5-3 s |
 | build indexes | ~ 15 ms | ~ 15 ms |
 | groupings | ~ 2.3 s | ~ 2.3 s |
@@ -525,7 +526,7 @@ Grouping before and after:
 open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT, read snap,
                                                                    verify crc: ~ 10 ms)
-  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-only + the
+  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
                                                                    untracked list: < 20 ms)
   diff empty      -> answers describe W exactly; label "describes <commit>"
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ";
@@ -651,7 +652,6 @@ pub trait CodeView: Send + Sync {
 pub trait TreeSource {
     fn head(&self) -> Result<Tip, String>;                         // HEAD commit + tree
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;      // path, blob
-    fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String>;
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
         -> Result<WorktreeDiff, String>;                           // changed + untracked paths
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;
@@ -670,7 +670,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff-tree`, `diff --name-only`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff --name-status`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 

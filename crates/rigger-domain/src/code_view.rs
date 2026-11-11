@@ -73,15 +73,6 @@ pub struct Entry {
     pub blob: String,
 }
 
-/// One path that differs between two trees; `old` is none for an added file and `new` is none
-/// for a deleted one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Change {
-    pub path: String,
-    pub old: Option<String>,
-    pub new: Option<String>,
-}
-
 /// How a worktree differs from a tree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorktreeDiff {
@@ -112,8 +103,6 @@ pub trait TreeSource {
     fn head(&self) -> Result<Tip, String>;
     /// Every file of `tree`.
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;
-    /// The paths that differ between two trees.
-    fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String>;
     /// How `worktree` differs from `tree`.
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
         -> Result<WorktreeDiff, String>;

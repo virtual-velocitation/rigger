@@ -2,10 +2,10 @@
 //! their calls, and a tree source held in memory. Compiled for this crate's tests and, through
 //! the `doubles` feature, for the tests of crates that implement a tree source.
 
-use crate::code::dir_source::{content_id, diff, tree_id};
+use crate::code::dir_source::{content_id, tree_id};
 use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind, Scope, Tip};
 use rigger_domain::code_view::{
-    Change, Cluster, CodeView, Entry, Extract, Group, Groupings, TreeSource, WorktreeDiff,
+    Cluster, CodeView, Entry, Extract, Group, Groupings, TreeSource, WorktreeDiff,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -217,10 +217,6 @@ impl TreeSource for MemSource {
             .get(tree)
             .cloned()
             .ok_or_else(|| format!("no tree {tree}"))
-    }
-
-    fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String> {
-        Ok(diff(&self.list(from)?, &self.list(to)?))
     }
 
     fn changed_against_worktree(&self, _: &str, _: &Path) -> Result<WorktreeDiff, String> {

@@ -3,9 +3,9 @@
 //! content always names the same tree.
 
 use rigger_domain::code_facts::Tip;
-use rigger_domain::code_view::{Change, Entry, TreeSource, WorktreeDiff};
+use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use rigger_domain::playbooks::fnv1a_64;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -27,26 +27,6 @@ pub fn tree_id(entries: &[Entry]) -> String {
         listing.push(b'\n');
     }
     content_id(&listing)
-}
-
-/// The paths that differ between two path-sorted listings.
-pub fn diff(old: &[Entry], new: &[Entry]) -> Vec<Change> {
-    let mut by_path: BTreeMap<&str, (Option<&str>, Option<&str>)> = BTreeMap::new();
-    for e in old {
-        by_path.entry(&e.path).or_default().0 = Some(&e.blob);
-    }
-    for e in new {
-        by_path.entry(&e.path).or_default().1 = Some(&e.blob);
-    }
-    by_path
-        .into_iter()
-        .filter(|(_, (o, n))| o != n)
-        .map(|(path, (old, new))| Change {
-            path: path.to_owned(),
-            old: old.map(str::to_owned),
-            new: new.map(str::to_owned),
-        })
-        .collect()
 }
 
 /// Every regular file under `root`, path-sorted, with its content id. Hidden entries (`.git`,
@@ -131,23 +111,34 @@ impl TreeSource for DirTreeSource {
         self.remembered(tree)
     }
 
-    fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String> {
-        Ok(diff(&self.remembered(from)?, &self.remembered(to)?))
-    }
-
     fn changed_against_worktree(
         &self,
         tree: &str,
         worktree: &Path,
     ) -> Result<WorktreeDiff, String> {
-        let mut out = WorktreeDiff::default();
-        for change in diff(&self.remembered(tree)?, &walk(worktree)?) {
-            if change.old.is_some() {
-                out.changed.push(change.path);
-            } else {
-                out.untracked.push(change.path);
-            }
-        }
+        let held: HashMap<String, String> = self
+            .remembered(tree)?
+            .into_iter()
+            .map(|e| (e.path, e.blob))
+            .collect();
+        let now: HashMap<String, String> = walk(worktree)?
+            .into_iter()
+            .map(|e| (e.path, e.blob))
+            .collect();
+        let mut out = WorktreeDiff {
+            changed: held
+                .iter()
+                .filter(|(path, blob)| now.get(*path) != Some(*blob))
+                .map(|(path, _)| path.clone())
+                .collect(),
+            untracked: now
+                .keys()
+                .filter(|path| !held.contains_key(*path))
+                .cloned()
+                .collect(),
+        };
+        out.changed.sort();
+        out.untracked.sort();
         Ok(out)
     }
 

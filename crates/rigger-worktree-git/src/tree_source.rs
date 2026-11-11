@@ -1,9 +1,9 @@
 //! [`GitTreeSource`]: the code store's tree source over a git repository. Every answer is read
-//! from git's objects - the checked-out commit's tree, its listing, two trees' differences and
-//! the blobs themselves - so a tree's facts never depend on what the worktree holds.
+//! from git's objects - the checked-out commit's tree, its listing and the blobs themselves - so
+//! a tree's facts never depend on what the worktree holds.
 
 use rigger_domain::code_facts::Tip;
-use rigger_domain::code_view::{Change, Entry, TreeSource, WorktreeDiff};
+use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use std::path::{Path, PathBuf};
 
 /// The file modes a listing keeps: regular files, executable or not. Symlinks and submodules
@@ -53,7 +53,7 @@ fn fields(out: &[u8]) -> impl Iterator<Item = &[u8]> {
     out.split(|b| *b == 0).filter(|f| !f.is_empty())
 }
 
-/// The blob a side of a raw diff names, when that side is a file a listing keeps.
+/// The blob a listing line names, when the line is a file a listing keeps.
 fn file_side(mode: &str, blob: &str) -> Option<String> {
     FILE_MODES.contains(&mode).then(|| blob.to_owned())
 }
@@ -94,38 +94,6 @@ impl TreeSource for GitTreeSource {
             .collect();
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
-    }
-
-    /// A rename reads as a deletion and an addition, and a change of mode alone, which leaves
-    /// the bytes as they were, is no change.
-    fn changed(&self, from: &str, to: &str) -> Result<Vec<Change>, String> {
-        let out = Self::git(
-            &self.root,
-            &["diff-tree", "-r", "-z", "--raw", "--no-renames", from, to],
-        )?;
-        let mut changes = Vec::new();
-        let mut raw = fields(&out);
-        // `:<old mode> <new mode> <old object> <new object> <status>`, then the path.
-        while let (Some(meta), Some(path)) = (raw.next(), raw.next()) {
-            let (Ok(meta), Ok(path)) = (std::str::from_utf8(meta), std::str::from_utf8(path))
-            else {
-                continue;
-            };
-            let meta: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
-            let [old_mode, new_mode, old, new, ..] = meta.as_slice() else {
-                return Err(format!("git diff-tree answered {meta:?}"));
-            };
-            let (old, new) = (file_side(old_mode, old), file_side(new_mode, new));
-            if old != new {
-                changes.push(Change {
-                    path: path.to_owned(),
-                    old,
-                    new,
-                });
-            }
-        }
-        changes.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(changes)
     }
 
     /// Staged and unstaged edits both count: a path the tree holds is changed when the
@@ -235,15 +203,6 @@ mod tests {
 
     fn paths(entries: &[Entry]) -> Vec<String> {
         entries.iter().map(|e| e.path.clone()).collect()
-    }
-
-    /// A change as its path and whether it has an old and a new side, since the two sources
-    /// name blobs differently.
-    fn shape(changes: &[Change]) -> Vec<(String, bool, bool)> {
-        changes
-            .iter()
-            .map(|c| (c.path.clone(), c.old.is_some(), c.new.is_some()))
-            .collect()
     }
 
     #[test]
@@ -364,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn git_and_dir_sources_list_and_diff_the_same_tree() {
+    fn git_and_dir_sources_list_the_same_files_and_bytes_across_commits() {
         struct Row {
             name: &'static str,
             write: Files,
@@ -438,12 +397,6 @@ mod tests {
                 let expected: Vec<String> = walked.iter().map(|e| e.blob.clone()).collect();
                 assert_eq!(hashed, expected, "{}: blob bytes", row.name);
             }
-            assert_eq!(
-                shape(&git.changed(&git_old.tree, &git_new.tree).unwrap()),
-                shape(&plain.changed(&dir_old.tree, &dir_new.tree).unwrap()),
-                "{}: changed",
-                row.name
-            );
         }
     }
 
