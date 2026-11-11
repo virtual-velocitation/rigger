@@ -81,18 +81,16 @@ Anything scriptable can gate: compilers, linters, test suites, contract suites a
 1. **Gates mirror CI exactly** - same commands, same versions. A gate/CI mismatch means the loop green-lights what CI rejects, and agents "fix" the wrong failure.
 2. **Know what the gates cannot see.** Every gate suite has a blind spot (a lock file masking fresh-resolve skew, non-compiled artifacts, behavior only a live server exercises). Name the blind spots in the spec and route their verification to the adjudicator as demanded evidence.
 
-## 4. The MCP bridge: Rigger's tools inside another harness
+## 4. The MCP servers: Rigger's tools inside a session
 
-`rigger serve` runs the conductor as an MCP server over stdio. An external harness (Claude Code or anything MCP-speaking) connects and gets four tools:
+`rigger` serves its tools over MCP on stdio in two shapes:
 
-| Tool | Direction | Purpose |
+| Command | Who connects | Tools |
 |---|---|---|
-| `rigger_next` | pull | Fetch the next ready assignment (unit + context slice) |
-| `rigger_result` | push | Report a completed assignment's outcome |
-| `rigger_emit` | push | Append an event (same contract as `rigger emit`) |
-| `rigger_peers` | pull | Live peer decisions (same contract as `rigger peers`) |
+| `rigger mcp --spawn <id>` | one agent `rigger run` spawned | the lookup tools plus `rigger_emit`, `rigger_progress` and `rigger_scratch`, each bound to that spawn |
+| `rigger mcp` | your own interactive session (`rigger setup` registers it in `.mcp.json`) | the read-only lookup tools: `rigger_graph`, `rigger_ground`, `rigger_peers` |
 
-This is the integration seam for embedding Rigger's orchestration and memory into a harness you do not control: the harness runs the agents; Rigger assigns the work, holds the memory, and keeps the score. The CLI (`rigger emit` / `rigger peers`) and the MCP tools hit the same store, so a fleet can mix both - in-session workflow agents on the CLI verbs, external agents on the bridge - and still share one memory.
+The CLI verbs (`rigger emit` / `rigger peers` / `rigger graph`) and the MCP tools hit the same store, so an agent, your session and a script all share one memory.
 
 ## 5. Context: what an agent is handed without asking
 

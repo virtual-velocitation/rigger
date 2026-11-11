@@ -4,7 +4,7 @@ Point Rigger at a spec and it produces working, integrated code by running a tea
 
 The name is a climbing reference. A rigger is the person who sets up your harness and checks your gear before you leave the ground. That is the job here: set up the agent fleet, hold the rope, keep everyone clipped into the same system.
 
-> Status: Rigger is written in Rust and CI-green. The event store (embedded SQLite behind a KurrentDB-shaped trait, with optimistic concurrency and a contract suite), the bi-temporal context graph (supersession invalidates, never deletes), the config loader (agent files + workflow YAML), the gate / autonomy-ratchet / safety rails, the event-sourced ledger, the conductor, both agent drivers (the standalone CLI driver and the in-Claude-Code workflow driver over a stdio MCP bridge - `rigger serve`), and the `rigger` binary are implemented and tested. A run lands code: each unit's worktree is committed and merged into the repo on a green gate. Independent stages run concurrently in isolated worktrees; each agent is fed the subgraph of decisions governing the files it touches plus the lessons learned about them; the side-car surfaces peers' decisions; escalations are recorded as lessons that resurface later; `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage; a planning stage can extend the DAG at runtime; and gates ratchet their own autonomy. Grounding is structural: the default is the `symbols` grounder (a deterministic tree-sitter symbol index), so a plain `cargo install` ships it and stays light; the vector-embedding grounder was retired as measured dead weight (see below). The full blueprint is [docs/architecture.md](docs/architecture.md).
+> Status: Rigger is written in Rust and CI-green. The event store (embedded SQLite behind a KurrentDB-shaped trait, with optimistic concurrency and a contract suite), the bi-temporal context graph (supersession invalidates, never deletes), the config loader (agent files + workflow YAML), the gate / autonomy-ratchet / safety rails, the event-sourced ledger, the conductor, the agent driver (`rigger run`, one headless `claude` process per agent), and the `rigger` binary are implemented and tested. A run lands code: each unit's worktree is committed and merged into the repo on a green gate. Independent stages run concurrently in isolated worktrees; each agent is fed the subgraph of decisions governing the files it touches plus the lessons learned about them; the side-car surfaces peers' decisions; escalations are recorded as lessons that resurface later; `rigger run <spec>` refuses to start unless every acceptance criterion is covered by a stage; a planning stage can extend the DAG at runtime; and gates ratchet their own autonomy. Grounding is structural: the default is the `symbols` grounder (a deterministic tree-sitter symbol index), so a plain `cargo install` ships it and stays light; the vector-embedding grounder was retired as measured dead weight (see below). The full blueprint is [docs/architecture.md](docs/architecture.md).
 
 ## The problem
 
@@ -44,7 +44,7 @@ Gates are config too. A gate is just a command that has to exit clean, plus a la
 Everything underneath is pluggable through interfaces, each with a sensible default and a pluggable alternative:
 
 - Storage. The event log and the context graph live in embedded SQLite (bundled - one file, no server, nothing to install). The store sits behind a KurrentDB-shaped trait, so a KurrentDB adapter drops in without touching the rest of the system; the local store is modeled on KurrentDB's own shape on purpose, so it is a faithful stand-in.
-- Agent driver. By default Rigger runs agents by shelling out to the `claude` command line tool, so it works anywhere that tool is installed, with no dependency on a particular editor or runtime. The in-Claude-Code workflow driver (`rigger serve`, over a stdio MCP bridge) is the richer alternative, again behind the same trait.
+- Agent driver. Rigger runs each agent as its own headless `claude` command line process, so it works anywhere that tool is installed, with no dependency on a particular editor or runtime. The driver sits behind a trait, so another host drops in without touching the conductor.
 - Grounding. The default is the `symbols` grounder: a deterministic, tree-sitter-derived structural index of where each symbol is defined and what references it, shipped in the default build. `grep` (a self-contained substring search, no index, no dependency) and `nop` are the explicit opt-outs, named in the workflow. There is no longer a vector-embedding grounder - it was retired after measurement answered the retention question twice. On a retrieval benchmark its hit-set was identical to the knowledge graph's own structural retrieval: zero marginal recall. In a real A/B workload - the same documentation-rebuild run with and without it - it was invoked zero times by any agent in both runs, while its index freshening taxed every step and its embedding/accelerator dependency tree taxed every build and install. The knowledge graph is the lookup surface; the vector sidecar was dead weight, so it is gone.
 
 The loop's discipline, in one breath: take a spec, break it into a dependency graph of units, refuse to call anything done until every requirement is covered and every gate is green, run independent units in parallel in isolated worktrees, review each one adversarially before it lands, and escalate or retry on failure instead of silently dropping it or spinning forever. Rigger is that machinery and nothing else - everything project-specific arrives as your config.
@@ -55,22 +55,23 @@ The loop's discipline, in one breath: take a spec, break it into a dependency gr
 cargo install --git https://github.com/virtual-velocitation/rigger
 
 cd your-project
-rigger setup                   # scaffold config + hook, install the native /rigger
-                               #   workflow, and provision the JS driver (npm install)
+rigger setup                   # scaffold config, hooks and skills
 ```
 
-Then drive the loop from inside Claude Code:
+Then drive the loop from a terminal:
 
 ```
-/rigger specs/feature.md       # run the loop on a spec - no hand-editing, it just works
+rigger run specs/feature.md --base main   # run the loop on a spec; launch it in the background
+rigger status                             # where the run stands
+rigger watch                              # follow it live; `rigger dash` serves the dashboard
 rigger graph --around path/to/file
 ```
 
 Need a fleet to start from? [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) offers 200+ ready-made agent definitions in the same Markdown-with-frontmatter shape - see [the handbook's authoring-agents chapter](docs/handbook/authoring-agents.md) for how to adapt one into `.rigger/agents/`.
 
-`rigger setup` installs the native Claude Code workflow at `.claude/workflows/rigger.js`, which Claude Code auto-discovers - so `/rigger <spec>` is runnable immediately, with nothing else to wire up. That workflow is the primary driver: it decomposes the spec into a unit DAG and, per unit, implements -> runs the cargo gates -> runs its review panel -> integrates, with bounded remediation. Its agents ground themselves with `rigger ground` and read/write the shared context graph through `rigger emit` and `rigger peers`, so no agent works blind.
+`rigger run <spec> --base <ref>` is the one driver. It decomposes the spec into a unit DAG and, per unit, implements -> runs the gates -> runs its review panel -> integrates, with bounded remediation. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed: launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard. Its agents ground themselves and read and write the shared context graph through their spawn-bound `rigger mcp --spawn` server, so no agent works blind.
 
-`rigger setup` also provisions the standalone JS driver in `.rigger/shim/`, so `rigger workflow specs/feature.md` runs the same loop from the command line as a fallback - useful outside an interactive Claude Code session. The lower-level pieces are still there too: `rigger init` does config-only setup, `rigger run specs/feature.md` is the standalone CLI driver, and `rigger serve` runs the MCP bridge.
+`rigger init` does config-only setup; `rigger setup` is init plus the hooks, the skills and the `rigger mcp` lookup server for your own session.
 
 By default this uses the local SQLite store, the `symbols` grounder, and the `claude` CLI agent driver, so there is nothing else to stand up: no model to download and no accelerator runtime to install.
 

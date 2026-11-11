@@ -1,6 +1,6 @@
 # Authoring loops
 
-A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with one of four drivers. This document opens with what rigger prescribes, then covers all three parts.
+A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with `rigger run`. This document opens with what rigger prescribes, then covers all three parts.
 
 ## What rigger prescribes
 
@@ -167,18 +167,11 @@ A `.rigger/gates/mutation.sh` an earlier `rigger init` wrote reads `$MUTANTS`, w
 
 `rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, unowned agent scratch, and the shared gate build cache - and leaves any entry a live process still holds (its working directory or an open file) where it is.
 
-## The four drivers
+## The driver
 
-Same loop, four entry points - pick by where you are sitting:
+`rigger run <spec> --base <ref>` drives every run. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed. Launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard (`rigger dash`). A killed or interrupted run resumes from its event log: relaunch the same command.
 
-| Driver | Command | When |
-|---|---|---|
-| Native Claude Code workflow | `/rigger specs/feature.md` | The primary driver. Installed by `rigger setup` at `.claude/workflows/rigger.js`; runs inside your Claude Code session, progress visible in `/workflows`. |
-| Standalone JS driver | `rigger workflow specs/feature.md` | Same loop from a plain terminal - no interactive session needed. Provisioned in `.rigger/shim/` by `rigger setup`. |
-| Standalone CLI driver | `rigger run specs/feature.md` | The lower-level conductor binary driving the `claude` CLI directly. |
-| MCP bridge | `rigger serve` | The conductor as an MCP server: an external harness pulls assignments and reports results over stdio. See [tools-and-context.md](tools-and-context.md#the-mcp-bridge). |
-
-Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus installing the Claude Code workflow and the shim driver). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
+Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus the hooks, the skills and the `rigger mcp` lookup server). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
 
 ## Running Rigger on a new project: the checklist
 

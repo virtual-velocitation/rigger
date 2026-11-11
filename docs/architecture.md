@@ -50,7 +50,7 @@
 >   conductor per project parents every subprocess (ending work by handle, never
 >   inference) and runs a world reconciler that converges the filesystem toward a
 >   desired state derived from the event log; git is the retention system, disk holds
->   only what is live, and the command line (and the workflow's couriers) are clients.
+>   only what is live, and the command line is a client.
 > - [Native Claude Code integration](architecture-addendum-claude-code-integration.md) -
 >   rigger owns the run as a supervised process, hosts every agent as a headless Claude
 >   Code session it reads through the typed message stream, holds the run through an API
@@ -183,7 +183,7 @@ chosen by config or cargo feature:*
 | Seam | Trait | Default impl | Optional impl | Chosen by |
 |---|---|---|---|---|
 | **EventStore** | `append` / `read_stream` / `read_all` / `subscribe_all` | `sqlite` (embedded, 1 file) | `kurrentdb` (server backend) | **store resolution** (section 5.1.1): a flag, an env var, a secret file, or the committed `store:` selection - never a recompile |
-| **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `claude_code` (headless `claude` sessions) | `workflow` (MCP shim) | the `--driver` flag / config |
+| **AgentDriver** | `spawn(agent, prompt, opts, emit) -> result` | `claude_code` (headless `claude` sessions) | `cli` (the blocking subprocess host `rigger canary` probes with) | the composition root |
 | **Grounder** | `ground(query, k) -> Vec<Ref>` | `symbols` (structural; the unset default, shipped in the default build) | `grep` (self-contained substring search) and `nop` (the explicit, named-only opt-outs) | cargo feature + config |
 
 ---
@@ -543,7 +543,7 @@ suite, two backends green.
 
 Which backend a command uses is **pure configuration behind a single resolution
 authority** (`main::store_selection` / the pure `store_selection_at`). Every command - and
-every worker's bare `rigger result` - resolves the SAME store with no per-command flag, so
+every spawn's bound tool server - resolves the SAME store with no per-command flag, so
 a run's state never fractures across two stores. The authority reads a fixed precedence,
 highest first:
 
@@ -955,7 +955,7 @@ measurement and the push/pull split.
 // crates/rigger-conductor/src/conductor.rs
 pub trait AgentDriver: Send + Sync {
     /// Spawn one agent to completion. A driver may hand an event the agent emits during its
-    /// run through `emit`; the headless and workflow drivers leave it unused, because their
+    /// run through `emit`; the headless driver leaves it unused, because their
     /// agents record through the `rigger` MCP server while the spawn runs.
     fn spawn(
         &self,
@@ -977,8 +977,7 @@ The conductor fills `blast_radius` from the same grounding it seeds the prompt w
 side-car filters peer decisions against exactly the files the agent was grounded on.
 
 - **`claude_code` (default, self-contained).** `rigger run` builds
-  `driver::claude_code::Driver` at its composition root (`--driver cli`, the default, selects
-  it). It hosts each agent as a headless `claude` session over the stream-json protocol and
+  `driver::claude_code::Driver` at its composition root. It hosts each agent as a headless `claude` session over the stream-json protocol and
   records the spawn's result itself. Worktree isolation is Rigger's own (`worktree::Worktree`):
   `git worktree add` before, harvest the branch + remove after. **No editor-runtime
   assumption: works for any `cargo install` user with the `claude` CLI on PATH.** Fan-out is a
@@ -986,14 +985,6 @@ side-car filters peer decisions against exactly the files the agent was grounded
   `emit`: it records through its spawn-bound `rigger mcp --spawn <id>` server, whose tools each
   launch pre-approves, so this driver leaves `emit` unused. `driver::cli::Driver`, the blocking
   subprocess host, stays as the host `rigger canary` probes with.
-- **`workflow` (optional).** `driver::workflow::Driver` runs inside an editor's workflow tool
-  to keep its built-in parallelism / journaling / resume. The sandbox cannot shell out to a
-  binary, so the bridge is **MCP, not a subprocess**: `rigger serve` runs the conductor on a
-  background thread and serves an MCP server (`mcpserver::Server`) over stdio exposing
-  `rigger_next` / `rigger_result` / `rigger_emit` / `rigger_peers` (and the graph query tool
-  of section 5.7). A thin shim loops - next spawn, run it in-process, report the result -
-  while agents record decisions live. The Rust core is identical; only the spawn seam changes.
-
 **Runaway-proof by construction:** the implementer agent def declares `recurse: false` (no
 Agent/spawn capability), and a unit runs only while its blast radius is disjoint from every unit in flight, so parallel
 worktrees cannot conflict and an agent cannot fan out.
@@ -1007,21 +998,15 @@ bound its own address, that view would scatter across an unpredictable set of ad
 force the observer to hunt for the right one. So `rigger dash` (`crates/rigger-dash/src/dash.rs`) binds a
 **machine-level singleton at a fixed, stable address**: `http://127.0.0.1:7420/`
 (`dash::DEFAULT_PORT`) - a second `rigger dash` recognizes the running singleton and exits
-without binding a second one, never searching upward. The loop driver's native step path
-(`rigger step`, `ensure_run_dashboard`) targets that SAME fixed singleton: the first step of
-a run starts it on `DEFAULT_PORT` and every later step finds it serving and starts none, so a
-whole `rigger step` loop shares the one machine dash. (An env override, `RIGGER_DASH_PORT`,
-exists only so the fixed address is testable and usable on a box that already has something on
-7420; it does not weaken the singleton contract.)
+without binding a second one, never searching upward.
 
-One path is deliberately NOT the fixed singleton, and the doc scopes the claim to say so: the
-one-shot `rigger run` driver (`start_run_dashboard` -> `spawn_run_dashboard` ->
-`dash::free_port_from(DEFAULT_PORT)`) spawns its OWN per-run dashboard that searches UPWARD
-from `DEFAULT_PORT` for a free port, so two concurrent `rigger run` invocations bind 7420 and
-7421 - each one-shot run gets a private view for its own lifetime, reaped when that run ends.
-The fixed singleton above is the shared, always-on observation point that `rigger dash` and
-the `rigger step` loop bind; the port-searching per-run dash is `rigger run`'s private view,
-not the machine singleton.
+The run driver does NOT bind the fixed singleton: `rigger run` (`start_run_dashboard` ->
+`spawn_run_dashboard` -> `dash::free_port_from(DEFAULT_PORT)`) spawns its OWN per-run
+dashboard that searches UPWARD from `DEFAULT_PORT` for a free port, so two concurrent
+`rigger run` invocations bind 7420 and 7421 - each run gets a private view for its own
+lifetime, reaped when that run ends. The fixed singleton above is the shared observation
+point an operator starts with `rigger dash`; the port-searching per-run dash is `rigger run`'s
+private view, not the machine singleton.
 
 - **An instance registry** (`crates/rigger-store-sqlite/src/registry.rs`) makes discovery a lookup, not a protocol.
   Every `rigger` invocation that starts or advances a run registers its instance - the
@@ -1040,12 +1025,12 @@ not the machine singleton.
   carries only the credential-free endpoint, never the secret). Its reads are **run-agnostic**:
   it reads whatever runs a store holds, past and present, so a single dash presents every
   project's history without being tied to one run.
-- **Always-on, with an opt-out.** The native step path **auto-ensures** the one machine
-  singleton is up on every run, so an observer never has to remember to start it. A headless
-  or CI run opts out with the documented `dash: off` workflow key (or its `false`/`no`
-  synonyms), resolved through the single `Workflow::dash_enabled` authority, or with the
-  `RIGGER_NO_DASH` environment variable - either suppresses the ensure entirely, so the run
-  proceeds with no dash and no port bind. The singleton self-reaps only once TWO independent
+- **Always-on, with an opt-out.** `rigger run` **starts its per-run dash** on every run, so
+  an observer never has to remember to start one. A headless or CI run opts out with the
+  documented `dash: off` workflow key (or its `false`/`no` synonyms), resolved through the
+  single `Workflow::dash_enabled` authority, or with the `RIGGER_NO_DASH` environment
+  variable (`dash_opted_out`) - either suppresses the start entirely, so the run proceeds
+  with no dash and no port bind. The `rigger dash` singleton self-reaps only once TWO independent
   signals both go quiet: the instance registry holds no live entry for any registered
   project (an entry whose heartbeat has aged past the idle window is pruned before this
   check runs), AND no in-flight agent's own liveness marker is still fresh. That
@@ -1169,7 +1154,7 @@ github.com/virtual-velocitation/rigger
 |   |-- community.rs concepts.rs the offline derivations (coupling communities, intent concepts)
 |   |-- ingest.rs                the one parallel, incremental, project-scoped ingest authority
 |   |-- dash.rs registry.rs      the fixed-address dashboard singleton + the instance registry
-|   |-- driver/                  claude_code.rs (headless sessions) + cli.rs (canary) + workflow.rs (MCP shim)
+|   |-- driver/                  claude_code.rs (headless sessions) + cli.rs (canary)
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
@@ -1185,7 +1170,6 @@ cargo install --git https://github.com/virtual-velocitation/rigger --no-default-
 cd my-project
 rigger init                         # scaffold .rigger/workflow.yml + .rigger/agents/
 rigger run specs/feature.md         # run the producing loop on a spec
-rigger serve                        # run as an MCP server for the in-editor workflow shim
 rigger dash                         # the fixed-address observability dashboard (127.0.0.1:7420)
 rigger graph build                  # fold the project's source into the graph from a cold checkout
 rigger graph communities            # derive the code lens's coupling communities (offline)
@@ -1220,7 +1204,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |
 | `ingest` | the one parallel, incremental, project-scoped source fold | one walk-and-key authority the run and `graph build` share |
 | `dash` + `registry` | the fixed-address dashboard singleton + machine-global discovery | a singleton over a credential-free registry, not a per-run dash-to-dash protocol |
-| `driver/` | spawns and awaits agents | a pluggable seam: `claude_code` (headless sessions) or `workflow` (MCP bridge) |
+| `driver/` | spawns and awaits agents | a pluggable seam: `claude_code` (headless sessions) |
 | `examples/demo/` | a complete worked config | the proof that the crate itself ships knowing no project |
 
 ---

@@ -11,7 +11,7 @@ Read in order if you are new. Jump to the file you need if you are not.
 | [agentic-sdlc.md](agentic-sdlc.md) | **What** - the stages of the SDLC, which of them agents can own today, the roles that own them, and where humans stay in the loop |
 | [authoring-agents.md](authoring-agents.md) | **How** - defining a new agent: the `.rigger/agents/<id>.md` file format, model tiering, prompt-writing practice |
 | [authoring-loops.md](authoring-loops.md) | **How** - creating a loop: spec format, the workflow YAML, the per-unit lifecycle, the four ways to drive a run |
-| [tools-and-context.md](tools-and-context.md) | **How** - making tools available to agents: the `tools:` allowlist, the `rigger` CLI surface, the MCP bridge, gates |
+| [tools-and-context.md](tools-and-context.md) | **How** - making tools available to agents: the `tools:` allowlist, the `rigger` CLI surface, the MCP servers, gates |
 | [best-practices.md](best-practices.md) | The distilled rules - what we learned running Rigger on itself, stated as practice you can adopt directly |
 
 ## The one-paragraph model

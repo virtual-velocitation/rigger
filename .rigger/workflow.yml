@@ -4,9 +4,7 @@
 # This is the canonical example of a Rigger project - and it produces Rigger
 # itself. Rigger is a pure-Rust crate now, so every gate below is a real cargo
 # invocation matching the repo's CI (.github/workflows/rust.yml). Run it from
-# the repo root with `rigger run <spec>` (the standalone CLI driver) or
-# `rigger serve` (the Workflow + MCP driver, agents in-process). Validate it
-# with `rigger validate`.
+# the repo root with `rigger run <spec>`. Validate it with `rigger validate`.
 #
 # The loop reinforces itself: every agent is grounded on only the code it needs,
 # records each decision live to the shared event log (so the next stage and any
@@ -53,16 +51,13 @@ defaults:
 
   # The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): the liveness ceiling
   # every spawn inherits unless its agent's frontmatter sets its own `max_wall_clock`
-  # (per-role override). A worker keeps a per-spawn heartbeat marker fresh under
-  # <scratch>/agent-live while it works; `rigger step`'s liveness sweep treats a marker
-  # stale beyond this bound as a HUNG agent - an INFRASTRUCTURE fault routed through the
-  # failure taxonomy (infra), recorded on the spawn's id and charging the unit NO
-  # remediation attempt (its code is not at fault) - so a hung agent halts the wave
-  # VISIBLY instead of stalling it invisibly. Recover by recording a real result on the
-  # named spawn (last-write-wins) and re-driving. 0 (absent) means unbounded - liveness
-  # timeouts are opt-in and an un-set workflow is byte-for-byte back-compatible. 3600s
-  # (1h) is a deliberately generous "definitely hung" ceiling for this repo's cargo-heavy
-  # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
+  # (per-role override). The agent host stops a spawn whose agent stream stays silent
+  # past this bound with no result and records the stop as an INFRASTRUCTURE fault on
+  # the spawn's id, charging the unit NO remediation attempt (its code is not at fault),
+  # so a hung agent halts the wave VISIBLY instead of stalling it invisibly. 0 (absent)
+  # means unbounded - liveness timeouts are opt-in. 3600s (1h) is a deliberately generous
+  # "definitely hung" ceiling for this repo's cargo-heavy workers; a fast reviewer role
+  # can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
   # How many implement units build at once (spec 89, per-unit pipelining). Each live unit
