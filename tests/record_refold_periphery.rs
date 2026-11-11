@@ -357,7 +357,8 @@ fn migration_refuses_when_a_record_names_a_grouping() {
 }
 
 /// Given a rule-6 graph.db `rigger setup` migrated, when the operator runs `rigger setup` again,
-/// then no rebuild is owed or reported and the graph stands as the migration left it.
+/// then no rebuild is owed or reported, no derived event is left to delete, and the graph and the
+/// log stand as the migration left them.
 #[test]
 fn migration_is_idempotent() {
     let store = a_rule_6_store(&[a_decision_governing_the_tree_file()], "");
@@ -369,13 +370,46 @@ fn migration_is_idempotent() {
         "the first setup migrates; stdout: {first}"
     );
     let migrated = graph_identity(&graph_db, &project);
+    let ids = |root| -> Vec<String> { read_run_events(root).into_iter().map(|e| e.id).collect() };
+    let log = ids(store.path());
     let again = setup_ok(store.path(), &[]);
     assert_eq!(
         (
-            again.contains("graph.db"),
-            graph_identity(&graph_db, &project)
+            again.contains("graph.db") || again.contains("derived"),
+            graph_identity(&graph_db, &project),
+            ids(store.path()),
         ),
-        (false, migrated),
-        "a migrated store owes no migration and keeps its graph; stdout: {again}"
+        (false, migrated, log),
+        "a migrated store owes no migration, deletes nothing and keeps its graph; stdout: {again}"
+    );
+}
+
+/// Given a rule-6 graph.db beside a log still holding derived rows, when the operator runs
+/// `rigger setup`, then once the records-only graph is swapped in setup deletes every derived row
+/// of the run stream, keeping the records, and says how many it deleted.
+#[test]
+fn migration_deletes_the_derived_rows_once_the_graph_is_swapped_in() {
+    use rigger::retention::DERIVED_TYPES;
+    let store = a_rule_6_store(&[a_decision_governing_the_tree_file()], "");
+    let held = |root| {
+        read_run_events(root)
+            .iter()
+            .filter(|e| DERIVED_TYPES.contains(&e.type_.as_str()))
+            .count()
+    };
+    let before = read_run_events(store.path()).len();
+    let derived = held(store.path());
+    let out = setup_ok(store.path(), &[]);
+    assert_eq!(
+        (
+            derived > 0,
+            held(store.path()),
+            read_run_events(store.path()).len(),
+            out.contains(&format!(
+                "reset --derived: deleted {derived} derived event(s) from the event log"
+            )),
+        ),
+        (true, 0, before - derived, true),
+        "setup deletes every derived row and only those; stdout: {out}"
     );
 }

@@ -1050,6 +1050,9 @@ const REBUILD_BATCH: usize = 10_000;
 /// owed: while another holds it - a rebuild, whatever phase it is in, or a `rigger reset` - this
 /// setup is refused at once with the one refusal text naming the lock, having opened no graph file
 /// and made none.
+///
+/// On the sqlite backend, once the rebuild is paid or found not owed, setup deletes the derived
+/// events the log still holds, under the same rebuild lock ([`delete_derived_once_rebuilt`]).
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     Projector::forget_orphaned_mark(&graph_db)?;
@@ -1088,10 +1091,11 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             let store = open_sqlite_store(sqlite.log_file(&events_db))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
-            pay_owed_rebuild(
+            let log = Namespaced::new(&store, &project);
+            let rebuilt = pay_owed_rebuild(
                 &held,
                 &graph,
-                &Namespaced::new(&store, &project),
+                &log,
                 SeedingReads {
                     live: &mut |sink| {
                         store
@@ -1125,7 +1129,19 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                         .map_err(graph_error)
                 },
                 &refuse,
-            )
+            )?;
+            for line in delete_derived_once_rebuilt(&store, &run_stream_of(&project), &|| {
+                refuse_if_live(
+                    &loc,
+                    &selection,
+                    &ResetEnv::resolve(&loc)?,
+                    &log,
+                    live_run_delete_refusal,
+                )
+            }) {
+                println!("{line}");
+            }
+            Ok(rebuilt)
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
@@ -1152,6 +1168,40 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             )
         }
     }
+}
+
+/// The delete `rigger setup` runs once the graph it rebuilt stands in place of the old one: every
+/// derived event `stream` of `store` still holds, deleted through the one body `rigger reset
+/// --derived` runs ([`delete_derived_events`]), answering the lines to print. It reads no liveness
+/// and touches nothing when the stream holds no derived event, so a store with none - a project
+/// with no `events.db` among them - is left as it stands; otherwise it asks `refuse_live` first
+/// and holds the step lock its probe took while it deletes. A live run, or a probe or delete that
+/// fails, deletes nothing and fails nothing: the graph is already paid, so setup carries on with
+/// a line naming why and `rigger reset --derived`, which deletes them once rerun.
+fn delete_derived_once_rebuilt(
+    store: &rigger::eventstore::sqlite::Store,
+    stream: &str,
+    refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
+) -> Vec<String> {
+    let deleted = store
+        .count_derived(stream)
+        .map_err(Into::into)
+        .and_then(|held| match held {
+            0 => Ok(Vec::new()),
+            _ => refuse_live().and_then(|_step_lock| delete_derived_events(store, stream)),
+        });
+    deleted.unwrap_or_else(|e| {
+        vec![format!(
+            "rigger setup: deleted no derived event from the event log - {e}; run `rigger reset \
+             --derived` to delete them"
+        )]
+    })
+}
+
+/// What the live-run refusal of setup's delete of the derived events says, `reasons` being what
+/// the live-writer probe names, joined: the run is live, so the delete waits for it to stop.
+fn live_run_delete_refusal(reasons: &str) -> String {
+    format!("the run is live ({reasons})")
 }
 
 /// The two reads of the log that seed `graph.db`'s `caught_up` cursor ([`Projector::seed_cursor`],

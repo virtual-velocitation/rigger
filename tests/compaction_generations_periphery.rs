@@ -90,6 +90,7 @@ use common::cli::unfolded_run_events;
 use common::cli::write_workflow_fixture;
 use common::cli::DriverTraces;
 use common::cli::LOG_LEFT_AS_IT_STANDS_LINE;
+use common::cli::NOTHING_TO_DELETE_LINE;
 use common::cli::REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW;
 use common::cli::SPAWN;
 use common::cli::{
@@ -952,9 +953,9 @@ fn a_rebuild_tail_lands_a_writer_between_its_read_batches() {
     );
 }
 
-/// `rigger reset --derived` refuses to migrate while the project's `graph.db` still owes its
-/// rebuild, and says how to pay it; `rigger setup` rebuilds it from the log, after which the
-/// migration runs.
+/// `rigger reset --derived` refuses to delete while the project's `graph.db` still owes its
+/// rebuild, and says how to pay it; `rigger setup` rebuilds it from the log and then deletes the
+/// derived events itself, after which the derived reset runs and finds none left.
 #[test]
 fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
     let dir = temp_store_project();
@@ -1002,16 +1003,17 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
         )),
         "the refusal is the one owed refusal, naming the command that rebuilds it; stderr: {err}"
     );
-    setup_ok(root, &[]);
+    let rebuilt = setup_ok(root, &[]);
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
-        (ok, out),
+        (rebuilt.contains(&deleted_line(5)), ok, out),
         (
             true,
-            format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", deleted_line(5))
+            true,
+            format!("{NOTHING_TO_DELETE_LINE}{LOG_LEFT_AS_IT_STANDS_LINE}")
         ),
-        "once the graph is rebuilt the migration converts each file's h2 batch into its entry \
-         and sheds all five derived recordings; stderr: {err}"
+        "once setup has rebuilt the graph it deletes all five derived recordings, leaving the \
+         derived reset none to delete; setup stdout: {rebuilt} stderr: {err}"
     );
 }
 
@@ -1224,7 +1226,7 @@ impl ReleaseEraStore {
         let mut reads = 0;
         rebuild_the_store_s(self.root(), true, &mut |after, sink: &mut RebuildSink| {
             reads += 1;
-            rigger::contextgraph::sqlite::stream_past(&log, after, log.len(), sink)?;
+            rigger::contextgraph::sqlite::stream_past(&log, after, log.len().max(1), sink)?;
             if reads == read {
                 return source_interrupted();
             }
@@ -1258,6 +1260,15 @@ impl ReleaseEraStore {
     /// The project's identity as the binary resolves it now.
     fn project(&self) -> String {
         run_stream_identity(self.root())
+    }
+
+    /// The log's head: the position of the last event it ever held, which a delete never lowers.
+    fn head(&self) -> rigger::eventstore::Position {
+        Store::open(self.events_db.to_str().unwrap())
+            .unwrap()
+            .log_head()
+            .unwrap()
+            .unwrap()
     }
 
     /// The project's run stream as the log now records it.
@@ -1335,7 +1346,7 @@ fn rigger_setup_rebuilds_a_release_era_graph_db_from_the_log_and_stamps_the_rule
         .lines()
         .filter(|l| l.contains("graph.db") || l.starts_with("rebuilt "))
         .collect();
-    let head = store.log().last().unwrap().position;
+    let head = store.head();
     assert_eq!(
         rebuild,
         vec![
@@ -1789,7 +1800,7 @@ fn rigger_setup_runs_beside_a_held_step_lock(
         lines,
         "setup runs beside the held step lock; stdout: {out}"
     );
-    let head = store.log().last().unwrap().position;
+    let head = store.head();
     assert_eq!(
         (
             store.rebuild_state(),
@@ -6151,7 +6162,7 @@ fn whole_graph(root: &Path) -> String {
 /// setup`, printing nothing else and leaving the event log and every `graph.db` file byte for
 /// byte; a graph that owes its rebuild as well is refused in the same words, the unfinished
 /// rebuild being asked before the debt; and once `rigger setup` has finished the rebuild and
-/// dropped the cursor the same command migrates them.
+/// dropped the cursor it deletes them itself, the same command then finding none to delete.
 #[test]
 fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it() {
     let dir = temp_store_project();
@@ -6181,7 +6192,11 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
     common::fixtures::owe_a_rebuild(&common::cli::open_graph(root), &graph_db);
     let owing_too = refused();
     let (out, err, finished_ok) = run_rigger_envs(root, &["setup"], &[]);
-    let finished = (finished_ok, holds_table(&graph_db, "rebuild_cursor"));
+    let finished = (
+        finished_ok,
+        holds_table(&graph_db, "rebuild_cursor"),
+        out.contains(&deleted_line(3)),
+    );
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (
@@ -6195,10 +6210,10 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
             (false, true, false),
             unfinished(),
             unfinished(),
-            (true, false),
+            (true, false, true),
             (
                 true,
-                format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", deleted_line(3)),
+                format!("{NOTHING_TO_DELETE_LINE}{LOG_LEFT_AS_IT_STANDS_LINE}"),
             ),
         ),
         "a graph file holding the rebuild's cursor refuses the derived reset, before its debt is \
