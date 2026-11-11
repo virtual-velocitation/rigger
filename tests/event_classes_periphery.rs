@@ -20,11 +20,13 @@ use crate::common;
 
 use common::fixtures::nanos;
 use common::fixtures::{
-    apply_governs_at, apply_json, governs, live_node_ids, seed_two_subsystems, TWO_SUBSYSTEM_DEFS,
+    apply_governs_at, apply_json, governs, live_node_ids, view_graph, PlantedTree,
+    TWO_SUBSYSTEM_DEFS,
 };
 use common::repo::repo_text;
+use rigger::code_view::CodeView;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Graph, KIND_DECISION, KIND_FILE};
+use rigger::contextgraph::{ContextGraph, Graph, KIND_DECISION, KIND_FILE};
 use rigger::retention::EPISODIC_TYPES;
 
 /// The feature gate `ingest` and `retention` are declared under.
@@ -110,9 +112,18 @@ fn retention_is_declared_under_the_feature_gate_ingest_carries() {
     }
 }
 
-/// The projector's public read of the whole live graph.
-fn served(p: &Projector) -> Graph {
-    p.whole().unwrap()
+/// The whole live graph the record half `p` serves beside the code view `view`.
+fn served(p: &Projector, view: &dyn CodeView) -> Graph {
+    ContextGraph::whole(&view_graph(p, view)).unwrap()
+}
+
+/// The code view of the tree holding [`TWO_SUBSYSTEM_DEFS`]' files, each definition on its own line.
+fn two_subsystem_view() -> rigger::code_view::FactsView {
+    let mut tree = PlantedTree::default();
+    for (line, (file, name)) in (1..).zip(TWO_SUBSYSTEM_DEFS) {
+        tree.define(file, name, "function", line);
+    }
+    tree.view()
 }
 
 /// Every node and edge of `g` as one row each, sorted, so two reads compare whatever order the
@@ -135,12 +146,11 @@ fn rows(g: &Graph) -> Vec<String> {
 #[test]
 fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decision_after_them_lands()
 {
-    // Given a graph holding code structure and one decision.
+    // Given a record half beside a code view holding code structure, and one decision.
     let p = Projector::open(":memory:", "test").unwrap();
-    let seeded_to = seed_two_subsystems(&p);
-    assert_eq!(seeded_to, 20, "the seed leaves position 20 free");
+    let view = two_subsystem_view();
     apply_governs_at(&p, 20, "d1", "src/combat/hit.rs", 100);
-    let before = served(&p);
+    let before = served(&p, &view);
     let before_rows = rows(&before);
     assert_eq!(
         live_node_ids(&before, KIND_FILE),
@@ -178,7 +188,7 @@ fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decisio
         );
         // Then the served graph is row for row what it was.
         assert_eq!(
-            rows(&served(&p)),
+            rows(&served(&p, &view)),
             before_rows,
             "folding {type_} changes nothing the projection serves"
         );
@@ -187,7 +197,7 @@ fn folding_every_episodic_type_leaves_the_served_graph_as_it_stood_and_a_decisio
 
     // And a decision folded after them lands at its own position, beside everything seeded.
     apply_governs_at(&p, 41, "d2", "src/net/link.rs", 500);
-    let after = served(&p);
+    let after = served(&p, &view);
     let after_rows = rows(&after);
     assert_eq!(
         governs(&after.edges),
