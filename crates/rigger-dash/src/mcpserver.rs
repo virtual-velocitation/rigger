@@ -537,11 +537,16 @@ impl<'a> Server<'a> {
             .ok_or("rigger_ground: no grounder is wired on this server")?;
         // The rows and their honesty label (6.1) come from one read of the code store.
         let (rows, label) = grounder.ground_labelled(query, k, tests);
+        let hidden = grounder.hidden_test_hits(query, tests);
         let results: Vec<Value> = rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
             .collect();
-        Ok(json!({"results": results, "label": label.map(|l| l.to_string())}))
+        Ok(json!({
+            "results": results,
+            "label": label.map(|l| l.to_string()),
+            "tests_hidden": hidden,
+        }))
     }
 
     /// Refuse `tool`, whose answer depends on the fold, while the wired graph owes its rebuild
@@ -2266,6 +2271,9 @@ mod tests {
                 self.0.lock().unwrap().push(tests);
                 (Vec::new(), None)
             }
+            fn hidden_test_hits(&self, _query: &str, _tests: Tests) -> usize {
+                2
+            }
         }
 
         let ground = ground_tool();
@@ -2293,7 +2301,13 @@ mod tests {
             let reply = call(&server, &tools_call("rigger_ground", args));
             let seen = spy.0.lock().unwrap().clone();
             match expected {
-                Ok(want) => assert_eq!(seen, [want], "{tests:?}: {reply}"),
+                Ok(want) => {
+                    assert_eq!(seen, [want], "{tests:?}: {reply}");
+                    assert_eq!(
+                        reply["result"]["structuredContent"]["tests_hidden"], 2,
+                        "the hidden test hits ride as a separate count: {reply}"
+                    );
+                }
                 Err(message) => {
                     assert!(seen.is_empty(), "{tests:?} must be refused before a read");
                     assert_eq!(reply["error"]["message"], message, "{tests:?}");

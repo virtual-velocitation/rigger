@@ -208,3 +208,41 @@ fn graph_communities_report_their_attached_tests() {
         assert_eq!(run_rigger_ok(root, &args), report, "{extra:?}");
     }
 }
+
+/// GIVEN a built project whose product function `alpha` has a test calling it, WHEN `rigger
+/// ground alpha` runs under each `--tests` setting, THEN `exclude` (the default) prints the
+/// product row and says on stderr how many test hits it left out, `include` prints the product
+/// row (a test's call joins the entity it calls) and `only` the test rows, neither stating a count, and a bad value is refused.
+#[test]
+fn ground_takes_the_same_tests_option_and_counts_what_it_hides() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn alpha_works() { alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let hidden = "test hit not shown";
+    // (the extra arguments, whether the product row and the test row print, whether a count does)
+    let cases: [(&[&str], bool, bool, bool); 4] = [
+        (&[], true, false, true),
+        (&["--tests", "exclude"], true, false, true),
+        // The ranked page dedups by entity, so the test call joins the product row it calls.
+        (&["--tests", "include"], true, false, false),
+        (&["--tests", "only"], false, true, false),
+    ];
+    for (extra, product, test, counted) in cases {
+        let mut args = vec!["ground", "alpha"];
+        args.extend(extra);
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{extra:?} answers; stderr:\n{err}");
+        assert_eq!(out.contains("src/lib.rs:"), product, "{extra:?}:\n{out}");
+        assert_eq!(out.contains("tests/t.rs:"), test, "{extra:?}:\n{out}");
+        assert_eq!(err.contains(hidden), counted, "{extra:?}:\n{err}");
+    }
+    let (_, err, ok) = run_rigger(root, &["ground", "alpha", "--tests", "some"]);
+    assert!(!ok && err.contains("not \"some\""), "{err}");
+}

@@ -713,8 +713,9 @@ fn report_groupings(
         };
         let clusters = pick(groupings);
         let members: usize = clusters.iter().map(|c| c.members.len()).sum();
-        let proofs = rigger_domain::resolve::Resolver::new(view).proof_calls();
-        let attached = rigger_domain::test_view::TestAttachment::new(&proofs, clusters);
+        let resolver = rigger_domain::resolve::Resolver::new(view);
+        let attached =
+            rigger_domain::test_view::TestAttachment::new(resolver.proof_calls(), clusters);
         let mut lines = vec![format!(
             "graph {verb}: {} over {members} node(s) at resolution {resolution}",
             counted(clusters.len())
@@ -797,16 +798,27 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
         .ok_or("ground: expected a query: rigger ground \"<query>\" [<k>]")?;
-    let k: usize = match args.get(1) {
+    // `--tests <exclude|include|only>` may stand anywhere after the query; the rest is `[<k>]`.
+    let mut tests = Tests::default();
+    let mut rest = Vec::new();
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        if a == "--tests" {
+            tests = tests_option("ground", it.next())?;
+        } else {
+            rest.push(a);
+        }
+    }
+    let k: usize = match rest.first() {
         Some(s) => s
             .parse()
             .map_err(|_| format!("ground: <k> must be a non-negative integer, got {s:?}"))?,
         None => 8,
     };
-    if args.len() > 2 {
+    if rest.len() > 1 {
         return Err(format!(
             "ground: expected at most a query and k, got {} arguments",
-            args.len()
+            rest.len() + 1
         )
         .into());
     }
@@ -819,7 +831,7 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
     // The rows and their honesty label (6.1) come from one read of the code store.
-    let (rows, label) = grounder.ground_ranked_labelled(query, k);
+    let (rows, label) = grounder.ground_ranked_labelled(query, k, tests);
     match rows {
         None => println!("no entity matches strongly for {query:?}"),
         Some(rows) => {
@@ -834,6 +846,12 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     // The label travels with every answer; stderr keeps the rows themselves clean.
     if let Some(label) = label {
         eprintln!("{label}");
+    }
+    // The test hits the filter left out, counted apart from the rows above.
+    let hidden = grounder.hidden_test_hits(query, tests);
+    if hidden > 0 {
+        let noun = if hidden == 1 { "hit" } else { "hits" };
+        eprintln!("{hidden} test {noun} not shown; --tests include or only shows them");
     }
     Ok(())
 }

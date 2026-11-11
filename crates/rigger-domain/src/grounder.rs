@@ -110,6 +110,14 @@ pub trait Grounder: Send + Sync {
         (self.ground(query, k), None)
     }
 
+    /// How many test locations `query` matches that `tests` leaves out of the answer: the separate
+    /// count of test hits beside the product hits shown. None unless `tests` excludes them, and
+    /// for a grounder that cannot tell test code from product code (the DEFAULT).
+    fn hidden_test_hits(&self, query: &str, tests: crate::code_view::Tests) -> usize {
+        let _ = (query, tests);
+        0
+    }
+
     /// The ranked page `rigger ground` prints with its label: `None` rows when `k > 0` and no
     /// entity matches strongly ([`Self::has_strong_match`]), else [`Self::ground_ranked`]'s page.
     /// Overridden, like [`Self::ground_labelled`], to read the view once.
@@ -117,7 +125,9 @@ pub trait Grounder: Send + Sync {
         &self,
         query: &str,
         k: usize,
+        tests: crate::code_view::Tests,
     ) -> (Option<Vec<RankedRef>>, Option<crate::composed::Label>) {
+        let _ = tests;
         let rows =
             (k == 0 || self.has_strong_match(query, k)).then(|| self.ground_ranked(query, k));
         (rows, None)

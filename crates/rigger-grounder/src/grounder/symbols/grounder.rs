@@ -739,19 +739,28 @@ impl Grounder for Symbols {
     /// cannot be pinned to any given reference must never claim it too - see the degree
     /// computation below for the full reasoning.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
-        self.read(|sight| ranked_in(sight, &query_terms(query), k))
+        self.read(|sight| ranked_in(sight, &query_terms(query), k, Tests::Include))
     }
 
     fn ground_ranked_labelled(
         &self,
         query: &str,
         k: usize,
+        tests: Tests,
     ) -> (Option<Vec<RankedRef>>, Option<Label>) {
         let terms = query_terms(query);
         let (rows, label) = self.read_labelled(|sight| {
-            (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k))
+            (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests))
         });
         (rows, Some(label))
+    }
+
+    fn hidden_test_hits(&self, query: &str, tests: Tests) -> usize {
+        if tests != Tests::Exclude {
+            return 0;
+        }
+        let terms = query_terms(query);
+        self.read(|sight| scored_hits(sight, &terms).iter().filter(|h| h.test).count())
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
@@ -788,11 +797,14 @@ impl Grounder for Symbols {
 
 /// The ranked-by-intent page of `terms` over what `sight` serves ([`Grounder::ground_ranked`]
 /// states the contract): empty for no terms or `k == 0`.
-fn ranked_in(sight: &Sight<'_>, terms: &[&str], k: usize) -> Vec<RankedRef> {
+fn ranked_in(sight: &Sight<'_>, terms: &[&str], k: usize, tests: Tests) -> Vec<RankedRef> {
     if terms.is_empty() || k == 0 {
         return Vec::new();
     }
-    let hits = scored_hits(sight, terms);
+    let hits: Vec<ScoredHit> = scored_hits(sight, terms)
+        .into_iter()
+        .filter(|h| tests.admits(h.test))
+        .collect();
 
     // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look
     // up whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Read over the WHOLE
@@ -2702,6 +2714,14 @@ mod tests {
             let rows = g.ground_labelled("widget", 8, tests).0;
             let found: Vec<&str> = rows.iter().map(|r| r.file.as_str()).collect();
             assert_eq!(found, expected, "{tests:?}");
+            let ranked = g
+                .ground_ranked_labelled("widget", 8, tests)
+                .0
+                .unwrap_or_default();
+            let ranked: Vec<&str> = ranked.iter().map(|r| r.loc.file.as_str()).collect();
+            assert_eq!(ranked, expected, "{tests:?}: the ranked page follows it");
+            let hidden = usize::from(tests == Tests::Exclude);
+            assert_eq!(g.hidden_test_hits("widget", tests), hidden, "{tests:?}");
         }
     }
 
@@ -2740,7 +2760,7 @@ mod tests {
             (rows.into_iter().map(|r| r.file).collect(), label)
         };
         let ranked: Answer = |g| {
-            let (rows, label) = g.ground_ranked_labelled("apply_damage", 8);
+            let (rows, label) = g.ground_ranked_labelled("apply_damage", 8, Tests::Include);
             (
                 rows.unwrap_or_default()
                     .into_iter()
