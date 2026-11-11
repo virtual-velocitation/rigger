@@ -26985,53 +26985,59 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
     mcp.finish_cleanly();
 }
 
-/// Spec 119, SHOW IS ONE RENDERER: GIVEN a graph holding a const, a field, a definition whose
-/// `kind` attr is empty, `Makefile::all`, a finding, an architecture decision and a doc section,
-/// WHEN the operator runs `rigger graph --show` on each exact id, THEN a node with a file prints
-/// today's `site:` header line, one line per remaining `site_fields` entry (a `doc` holding a
-/// newline on one line with spaces; an empty `lang` and the `proven_by` attr printing nothing)
-/// and its body note, while the finding prints its kind, degree, `by`, `unit` and `summary` with
-/// no `site:`, no body and no note; and each output's header and entry lines, read back as
-/// ordered entry and value pairs, equal `site_fields` of the located site after the CLI's newline
-/// transform.
+/// Spec 119, SHOW IS ONE RENDERER: GIVEN a committed tree holding a const, a field, a function,
+/// an architecture decision and a design-doc section, and a finding in the record half, WHEN the
+/// operator runs `rigger graph --show` on each exact id, THEN a node with a file prints today's
+/// `site:` header line, one line per remaining `site_fields` entry and its body or note, while
+/// the finding prints its kind, degree, `by`, `unit` and `summary` with no `site:`, no body and
+/// no note; and each output's header and entry lines, read back as ordered entry and value
+/// pairs, equal `site_fields` of the located site after the CLI's newline transform. The cases the
+/// fold seeded that no extractor produces (an empty kind, a `Makefile` definition, a field with no
+/// language, stale notes for source not in the tree, a document holding a newline) are not
+/// exercised; the newline transform is covered by the domain unit test of `site_fields` in
+/// `crates/rigger-domain/src/contextgraph.rs`.
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_show_prints_each_node_through_the_one_site_renderer() {
-    use common::fixtures::{seed_shown_nodes, SHOWN_IDS};
+    use common::fixtures::{
+        assert_shown_tree_function_carries_proven_by, fold_shown_tree_finding, shown_tree_sites,
+        SHOWN_TREE_IDS, SHOWN_TREE_SOURCES,
+    };
 
     let dir = temp_project();
     let root = dir.path();
     common::cli::seed_rigger_dir(root);
-    seed_shown_nodes(&common::cli::open_graph(root));
+    for (path, text) in SHOWN_TREE_SOURCES {
+        common::fixtures::write_text(root, path, text);
+    }
+    common::fixtures::commit_tree(root);
+    let graph = common::cli::open_graph(root);
+    fold_shown_tree_finding(&graph);
 
-    let shown = SHOWN_IDS.map(|id| common::cli::graph_ok(root, &["graph", "--show", id]));
+    let shown = SHOWN_TREE_IDS.map(|id| common::cli::graph_ok(root, &["graph", "--show", id]));
     let stale =
         |at: &str| format!("  (source unavailable at {at}; the recorded location may be stale)\n");
     assert_eq!(
         shown,
         [
             "show src/limits.rs::LIMIT\n\
-             \x20 site: src/limits.rs:3   kind constant   degree 1\n\
+             \x20 site: src/limits.rs:2   kind constant   degree 2\n\
              \x20 name LIMIT\n\
-             \x20 lang rust\n"
-                .to_string()
-                + &stale("src/limits.rs:3"),
-            "show src/limits.rs::width\n\
-             \x20 site: src/limits.rs:5   kind field   degree 1\n\
-             \x20 name width\n"
-                .to_string()
-                + &stale("src/limits.rs:5"),
+             \x20 lang rust\n\
+             \x20      2 | pub const LIMIT: u32 = 3;\n"
+                .to_string(),
+            "show src/limits.rs::Bounds\n\
+             \x20 site: src/limits.rs:4   kind type   degree 2\n\
+             \x20 name Bounds\n\
+             \x20 lang rust\n\
+             \x20      4 | pub struct Bounds;\n"
+                .to_string(),
             "show src/limits.rs::blank\n\
-             \x20 site: src/limits.rs:7   kind code-entity   degree 1\n\
+             \x20 site: src/limits.rs:6   kind function   degree 2\n\
              \x20 name blank\n\
-             \x20 lang rust\n"
-                .to_string()
-                + &stale("src/limits.rs:7"),
-            "show Makefile::all\n\
-             \x20 site: Makefile:1   kind function   degree 1\n\
-             \x20 name all\n\
-             \x20 lang make\n"
-                .to_string()
-                + &stale("Makefile:1"),
+             \x20 lang rust\n\
+             \x20      6 | pub fn blank() {}\n"
+                .to_string(),
             "show f-shown\n\
              \x20 kind finding   degree 2\n\
              \x20 by lens:sdet\n\
@@ -27041,7 +27047,7 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
             "show docs/decisions/one-renderer.md\n\
              \x20 site: docs/decisions/one-renderer.md:0   kind arch-decision   degree 0\n\
              \x20 title One renderer\n\
-             \x20 doc the decision log its second line\n"
+             \x20 doc docs/decisions/one-renderer.md\n"
                 .to_string()
                 + &stale("docs/decisions/one-renderer.md:0"),
             "show docs/x.md#sec\n\
@@ -27054,12 +27060,22 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
         "each node's show output"
     );
 
-    let graph = common::cli::open_graph(root);
-    common::fixtures::assert_the_shown_const_carries_proven_by(&graph);
-    for ((id, site), out) in common::fixtures::shown_sites(&graph).iter().zip(&shown) {
+    let view =
+        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
+    let composed = common::fixtures::view_graph(&graph, &view);
+    assert_shown_tree_function_carries_proven_by(&composed);
+    for ((id, site), out) in shown_tree_sites(&composed).iter().zip(&shown) {
+        // The degree is the production composition's, which adds the community edges the
+        // oracle's composition does not hold; the literals above pin it.
+        let without_degree = |pairs: Vec<(String, String)>| {
+            pairs
+                .into_iter()
+                .filter(|(key, _)| key != "degree")
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            common::cli::printed_site_entries(out),
-            common::cli::site_entries_as_printed(site),
+            without_degree(common::cli::printed_site_entries(out)),
+            without_degree(common::cli::site_entries_as_printed(site)),
             "{id}: the CLI prints site_fields"
         );
     }
@@ -27540,29 +27556,34 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     mcp.finish_cleanly();
 }
 
-/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer seed
-/// folded into the project's `graph.db`, WHEN an MCP client calls `rigger_graph` with `show` on
-/// each exact id and with `around` on the seed file at depth 1, THEN each `show` site is the
-/// node's `id` beside the `site_fields` entries of the site the graph locates, and every `around`
-/// node is `entity_site` over the `Node` the merged graph loads, less its `summary`, at its edge
-/// count there - the file at 4, each definition and the finding at 1 - so the finding, at the
-/// depth bound, shows one edge fewer than the 2 `show` gives it and no summary, which `show`
-/// keeps.
+/// Spec 119, SHOW IS ONE RENDERER, at the `rigger mcp` binary: GIVEN the show-renderer tree
+/// committed and its finding folded into the project's `graph.db`, WHEN an MCP client calls
+/// `rigger_graph` with `show` on each exact id and with `around` on the seed file at depth 1,
+/// THEN each `show` site is the node's `id` beside the `site_fields` entries of the site the graph
+/// locates, and every `around` node is `entity_site` over the `Node` the merged graph loads, less
+/// its `summary`, at its edge count there, so the finding, at the depth bound, shows one edge
+/// fewer than the 2 `show` gives it and no summary, which `show` keeps. The cases no extractor
+/// produces (see the fixture) are not exercised.
+#[cfg(feature = "symbols")]
 #[test]
 fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
     use common::fixtures::{
-        around_nodes, assert_around_is_entity_sites, assert_finding_shows_past_the_depth_bound,
-        assert_shows_are_site_fields, seed_shown_nodes, SHOWN_FILE, SHOWN_IDS,
+        assert_shown_tree_finding_shows_past_the_depth_bound, fold_shown_tree_finding,
+        shown_tree_around_nodes, SHOWN_TREE_FILE, SHOWN_TREE_IDS, SHOWN_TREE_SOURCES,
     };
 
     let dir = temp_store_project();
     let root = dir.path();
-    common::cli::seed_rigger_dir(root);
-    seed_shown_nodes(&common::cli::open_graph(root));
+    for (path, text) in SHOWN_TREE_SOURCES {
+        common::fixtures::write_text(root, path, text);
+    }
+    common::fixtures::commit_tree(root);
+    let graph = common::cli::open_graph(root);
+    fold_shown_tree_finding(&graph);
 
     let mut mcp = McpSession::start(root);
-    let sites = SHOWN_IDS.map(|id| mcp.shown_site(id));
-    let nodes = around_nodes(&mcp.around_answer(SHOWN_FILE));
+    let sites = SHOWN_TREE_IDS.map(|id| mcp.shown_site(id));
+    let nodes = shown_tree_around_nodes(&mcp.around_answer(SHOWN_TREE_FILE));
     mcp.finish_cleanly();
 
     assert_eq!(
@@ -27574,19 +27595,25 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
             ))
             .collect::<Vec<_>>(),
         [
+            ("community/1/0", 4),
             ("f-shown", 1),
-            ("src/limits.rs", 4),
-            ("src/limits.rs::LIMIT", 1),
-            ("src/limits.rs::blank", 1),
-            ("src/limits.rs::width", 1),
+            ("src/limits.rs", 5),
+            ("src/limits.rs::Bounds", 2),
+            ("src/limits.rs::LIMIT", 2),
+            ("src/limits.rs::blank", 2),
         ],
         "every loaded node at its edge count in the merged graph"
     );
-    let finding = SHOWN_IDS.iter().position(|id| *id == "f-shown").unwrap();
-    assert_finding_shows_past_the_depth_bound(&sites[finding]);
-    let graph = common::cli::open_graph(root);
-    assert_shows_are_site_fields(&graph, &sites);
-    assert_around_is_entity_sites(&common::fixtures::records_graph(&graph), &nodes);
+    let finding = SHOWN_TREE_IDS
+        .iter()
+        .position(|id| *id == "f-shown")
+        .unwrap();
+    assert_shown_tree_finding_shows_past_the_depth_bound(&sites[finding]);
+    let view =
+        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
+    let composed = common::fixtures::view_graph(&graph, &view);
+    common::fixtures::assert_shown_tree_sites_are_site_fields(&composed, &sites);
+    common::fixtures::assert_shown_tree_around_is_entity_sites(&composed, &nodes);
 }
 
 /// Spec 117, UNRESOLVED REFERENCES ARE A READ, at the `rigger mcp` binary: GIVEN the project's own
