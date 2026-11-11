@@ -78,6 +78,12 @@ pub fn read_repository(start: &Path) -> Option<Option<Repository>> {
     {
         return None;
     }
+    // An empty `start` is the current directory, as `git -C ""` takes it.
+    let start = if start.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        start
+    };
     let physical = match std::fs::canonicalize(start) {
         Ok(physical) => physical,
         Err(e) if e.kind() == ErrorKind::NotFound => return Some(None),
@@ -370,6 +376,22 @@ mod tests {
                 );
             }
         }
+        // An empty start is the directory this process runs in, which git takes `-C ""` to mean.
+        let (here, empty) = (
+            read_repository(Path::new(".")),
+            read_repository(Path::new("")),
+        );
+        for ask in [Location::Toplevel, Location::CommonDir] {
+            let answer = |found: &Option<Option<Repository>>| {
+                found.as_ref().map(|r| r.as_ref().map(|r| r.answer(ask)))
+            };
+            assert_eq!(answer(&empty), answer(&here), "an empty start: {ask:?}");
+            assert_eq!(
+                rev_parse(Path::new(""), ask),
+                git_says(Path::new(""), ask),
+                "an empty start: {ask:?}"
+            );
+        }
         let outside = tempfile::tempdir().unwrap();
         if git_says(outside.path(), Location::Toplevel).is_none() {
             let found = read_repository(outside.path());
@@ -407,5 +429,11 @@ mod tests {
             packed.1,
             Some(git_out(dir.path().join("main"), &["rev-parse", "packed"]))
         );
+        // An empty start is the directory this process runs in, which git takes `-C ""` to mean.
+        let empty = read_head(Path::new(""));
+        assert_eq!(empty, read_head(Path::new(".")), "an empty start");
+        if let Some(head) = empty {
+            assert_eq!(head, git_head(Path::new("")), "an empty start");
+        }
     }
 }
