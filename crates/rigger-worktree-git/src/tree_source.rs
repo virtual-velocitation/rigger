@@ -21,7 +21,7 @@ const FILE_MODES: [&str; 2] = ["100644", "100755"];
 const INDEX_FILE: &str = "GIT_INDEX_FILE";
 
 /// The file name of a git index, in a worktree's git dir and in an [`IndexCopy`]'s directory.
-const INDEX: &str = "index";
+pub(crate) const INDEX: &str = "index";
 
 /// The one git command every git the source starts itself is built from: git in `dir`
 /// ([`git_in`]) with optional locks off, so a read takes no lock it can do without. A diff

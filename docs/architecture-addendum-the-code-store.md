@@ -609,7 +609,12 @@ judges a racily clean entry as it would over the index itself. The directory goe
 ends; one a hard stop leaves is the OS temp cleaner's. A W with no index reads as git reads it:
 every tracked file deleted. Until W's own git refreshes its index, each check re-hashes every
 file the index cannot vouch for by stat: one whose stat alone changed, or one racily clean, as a
-fresh clone's files are.
+fresh clone's files are. A worktree rigger checks out for a unit is refreshed where it is
+created: git judges racy cleanness to the second, and a checkout writes its files and its index
+in the same second, so the create waits for the clock to pass that second (at most a second,
+once per worktree) and then refreshes the index through git, and no read of it re-hashes a file.
+The operator's own checkout is refreshed by their own git, which rewrites the index on any
+status or commit; rigger never writes it.
 
 A head with no commit (an unborn branch, which git answers by its quiet no that `HEAD` names no
 object) reads as the empty tree, so every file in W differs until W commits. A head git fails to

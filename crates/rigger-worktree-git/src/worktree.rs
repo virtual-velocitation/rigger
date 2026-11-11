@@ -200,82 +200,87 @@ impl Worktree {
         // against every other in-process admin-directory mutation this process makes for
         // the SAME repository (spec 103 criterion 4, widened at the checkin seam: see
         // `repo_admin_lock`'s doc comment for the race this closes and what it does not).
-        let repo_lock = repo_admin_lock(repo);
-        let _repo_guard = repo_lock.lock().unwrap();
-        // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
-        // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
-        // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
-        // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
-        // is a no-op, and a healthy registered worktree is never touched.
-        heal_corrupt_worktree_admin(repo);
-        ensure_scratch_root_cargo_config(dir);
-        if branch_exists(repo, branch) {
-            // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
-            // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
-            // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
-            // derives the SAME `dir` for this branch. If that dir already IS this branch's
-            // worktree, adopt it directly - a check on the dir's own HEAD, with no
-            // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
-            // branch already checked out). (This handles sequential resume/supersede, not
-            // a true create-race for the SAME branch name: two INDEPENDENT `Worktree::create`
-            // calls that both see one particular branch absent still race the underlying
-            // `git worktree add -b` for THAT branch - rigger never asks two units to create
-            // the same branch concurrently, so that shape is not a first-class case. The
-            // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
-            // `run_wave`, whose heal scans and adds could interleave and corrupt each
-            // other's admin entries - is now closed in-process by `repo_admin_lock` above
-            // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
-            // worktrees against this same repository, which only the `locked`/grace-period
-            // guards in `worktree_admin_is_corrupt` defend against.
-            // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
-            // different shape - N threads that already share one `&Worktree` - and that one
-            // IS serialized, by `reassert_mu`.)
-            if worktree_on_branch(dir, branch) {
-                return Ok(Worktree {
-                    dir: dir.to_string(),
-                    branch: branch.to_string(),
-                    repo: repo.to_string(),
-                    authorized_root: authorized_root.to_string(),
-                    reassert_mu: std::sync::Mutex::new(()),
-                });
-            }
-            // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
-            // is still checked out in a PRIOR process's registration - a killed or
-            // superseded `rigger run` - whose working dir may be at a different/old path
-            // or gone entirely). ADOPT the surviving registration when its dir survives,
-            // and prune-then-recreate when it does not; never fail on it.
-            if let Some(existing) = registered_worktree_for(repo, branch) {
-                if std::path::Path::new(&existing).is_dir() {
+        {
+            let repo_lock = repo_admin_lock(repo);
+            let _repo_guard = repo_lock.lock().unwrap();
+            // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
+            // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
+            // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
+            // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
+            // is a no-op, and a healthy registered worktree is never touched.
+            heal_corrupt_worktree_admin(repo);
+            ensure_scratch_root_cargo_config(dir);
+            if branch_exists(repo, branch) {
+                // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
+                // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
+                // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
+                // derives the SAME `dir` for this branch. If that dir already IS this branch's
+                // worktree, adopt it directly - a check on the dir's own HEAD, with no
+                // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
+                // branch already checked out). (This handles sequential resume/supersede, not
+                // a true create-race for the SAME branch name: two INDEPENDENT `Worktree::create`
+                // calls that both see one particular branch absent still race the underlying
+                // `git worktree add -b` for THAT branch - rigger never asks two units to create
+                // the same branch concurrently, so that shape is not a first-class case. The
+                // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
+                // `run_wave`, whose heal scans and adds could interleave and corrupt each
+                // other's admin entries - is now closed in-process by `repo_admin_lock` above
+                // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
+                // worktrees against this same repository, which only the `locked`/grace-period
+                // guards in `worktree_admin_is_corrupt` defend against.
+                // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
+                // different shape - N threads that already share one `&Worktree` - and that one
+                // IS serialized, by `reassert_mu`.)
+                if worktree_on_branch(dir, branch) {
                     return Ok(Worktree {
-                        dir: existing,
+                        dir: dir.to_string(),
                         branch: branch.to_string(),
                         repo: repo.to_string(),
                         authorized_root: authorized_root.to_string(),
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
-                git(repo, &["worktree", "prune"])?;
+                // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
+                // is still checked out in a PRIOR process's registration - a killed or
+                // superseded `rigger run` - whose working dir may be at a different/old path
+                // or gone entirely). ADOPT the surviving registration when its dir survives,
+                // and prune-then-recreate when it does not; never fail on it.
+                if let Some(existing) = registered_worktree_for(repo, branch) {
+                    if std::path::Path::new(&existing).is_dir() {
+                        return Ok(Worktree {
+                            dir: existing,
+                            branch: branch.to_string(),
+                            repo: repo.to_string(),
+                            authorized_root: authorized_root.to_string(),
+                            reassert_mu: std::sync::Mutex::new(()),
+                        });
+                    }
+                    git(repo, &["worktree", "prune"])?;
+                }
+                // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
+                // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
+                // registration not finalized) - or any crash that leaves a populated dir at
+                // this fixed path that is NOT a registered worktree on the branch - would make
+                // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
+                // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
+                // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
+                // Clear the unregistered leftover (deregister it if git still tracks it, else
+                // remove the bare dir) so the branch's committed checkpoint is checked out
+                // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
+                // cleared, never the durable branch - the branch's work is exactly what we reuse.
+                if std::path::Path::new(dir).exists() {
+                    clear_worktree_dir(repo, dir, authorized_root)?;
+                }
+                // Reuse the existing branch's committed work: check it out into the fresh
+                // worktree dir, no `-b` (which would refuse, the ref already exists).
+                git(repo, &["worktree", "add", dir, branch])?;
+            } else {
+                git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
             }
-            // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
-            // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
-            // registration not finalized) - or any crash that leaves a populated dir at
-            // this fixed path that is NOT a registered worktree on the branch - would make
-            // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
-            // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
-            // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
-            // Clear the unregistered leftover (deregister it if git still tracks it, else
-            // remove the bare dir) so the branch's committed checkpoint is checked out
-            // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
-            // cleared, never the durable branch - the branch's work is exactly what we reuse.
-            if std::path::Path::new(dir).exists() {
-                clear_worktree_dir(repo, dir, authorized_root)?;
-            }
-            // Reuse the existing branch's committed work: check it out into the fresh
-            // worktree dir, no `-b` (which would refuse, the ref already exists).
-            git(repo, &["worktree", "add", dir, branch])?;
-        } else {
-            git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
         }
+        // The admin directory is written; the refresh writes only the new worktree's own index,
+        // so it runs outside the repository's admin lock and a wave's creates never queue on it.
+        refresh_checked_out_index(dir)?;
         Ok(Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
@@ -2582,6 +2587,51 @@ pub fn head_sha_of(dir: &str) -> String {
         .unwrap_or_default()
 }
 
+/// How far a file's recorded modification time can trail the system clock: filesystems stamp
+/// files from a coarse clock that advances once per scheduler tick, 10 ms at the coarsest
+/// common tick rate. A write this long past a second's boundary is stamped with the new second.
+const FILE_CLOCK_LAG: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Refreshes the index of the worktree just checked out at `dir`, so a read of it re-hashes no
+/// file. git compares a file's modification time with its index entry's to the second, so it
+/// cannot tell a file modified in the second the index was written from the one it recorded:
+/// it takes every such entry as possibly changed and re-hashes its file on every read that does
+/// not write the index back, as a read never does. A checkout writes its files and then its
+/// index within the same second, and a refresh in that second records it again; so the refresh
+/// waits until the clock has passed the second of the checkout's index write (at most a second,
+/// once per worktree), and the index it writes is then later than every file. The operator's
+/// own checkout is not rigger's to write: their own git refreshes it.
+///
+/// A refresh git refuses fails the create, as a git that cannot read the worktree it has just
+/// checked out fails every step after it as well.
+fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
+    use crate::discover::{rev_parse, Location};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let git_dir = rev_parse(std::path::Path::new(dir), Location::GitDir)
+        .map_err(Error)?
+        .ok_or_else(|| Error(format!("{dir} is in no git repository")))?;
+    let index = std::path::Path::new(&git_dir).join(crate::tree_source::INDEX);
+    let written = match std::fs::metadata(&index).and_then(|m| m.modified()) {
+        Ok(written) => written,
+        // A checkout that writes no index has no entry to re-hash.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(Error(format!("read {}: {e}", index.display()))),
+    };
+    // Nor has one of an empty tree, whose index lists no file: it needs no wait.
+    if git(dir, &["ls-files", "-z"])?.is_empty() {
+        return Ok(());
+    }
+    let second = written
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let past = UNIX_EPOCH + Duration::from_secs(second + 1) + FILE_CLOCK_LAG;
+    if let Ok(wait) = past.duration_since(SystemTime::now()) {
+        std::thread::sleep(wait);
+    }
+    git(dir, &["update-index", "-q", "--refresh"]).map(drop)
+}
+
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
 }
@@ -3395,6 +3445,40 @@ mod tests {
             &format!("{UNIT_WORKTREE_PREFIX}{slug}"),
             &format!("rigger/u/{slug}"),
         )
+    }
+
+    /// A worktree rigger checks out holds an index a later read takes as it is. git rewrites
+    /// an index it reads (a plain `git status` does) exactly when some entry's file may have
+    /// changed since the index was written: stat data that no longer matches, or a file
+    /// modified in the second the index was written, which git re-hashes on every read. So a
+    /// status that leaves the index's bytes and modification time as they were re-hashed
+    /// nothing, and neither will the reads after it.
+    #[test]
+    fn a_created_worktree_holds_an_index_a_later_read_rehashes_nothing_in() {
+        let (_repo, repo_path, root) = scratch_repo(false);
+        for i in 0..40 {
+            let file = std::path::Path::new(&repo_path).join(format!("f{i}.txt"));
+            std::fs::write(file, format!("file {i}\n")).unwrap();
+        }
+        run_git(&repo_path, &["add", "."]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "files"]).unwrap();
+        let (dir, _wt) = wt_at(&repo_path, &root, "fresh", "rigger/u/fresh");
+        let index = git(
+            &dir,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .unwrap();
+        let index = std::path::PathBuf::from(index.trim());
+        let state = || {
+            let modified = std::fs::metadata(&index).unwrap().modified().unwrap();
+            (std::fs::read(&index).unwrap(), modified)
+        };
+        let checked_out = state();
+        run_git(&dir, &["status"]).unwrap();
+        assert!(
+            state() == checked_out,
+            "a later read rewrote the index of a worktree rigger had just checked out"
+        );
     }
 
     /// Create `dir` (with its parents) holding an `x` file for each of `files`.
