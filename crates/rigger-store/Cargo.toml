@@ -19,3 +19,7 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+[features]
+# Test doubles of the code store's interfaces, for the tests of crates that implement a tree source.
+doubles = []
