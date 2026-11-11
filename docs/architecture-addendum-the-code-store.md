@@ -718,9 +718,12 @@ Extraction and grouping are passed into it, so it holds no language knowledge. A
 
 Which files a tree's facts cover is one rule, `rigger_domain::code_view::in_scope`: a path with
 no hidden component, or one of `ALWAYS_IN_SCOPE` (the workflow file `.rigger/workflow.yml`).
-Advance reads every source's listing through it, and the directory walk honours the committed
-`.gitignore` and adds each `ALWAYS_IN_SCOPE` path that exists, so `GitTreeSource` and
-`DirTreeSource` list the same files for the same tree.
+Advance reads every source's listing through it, and the one scoped walk that `DirTreeSource`
+and the grounder walk with applies it as it walks, entering a hidden directory only on the way
+to an `ALWAYS_IN_SCOPE` path. Which files are the project's beyond that rule each source answers
+by its own mechanism: `GitTreeSource` lists what git tracks, and the walk, with no index to read,
+honours the committed `.gitignore`, which can leave out the workflow file as it can any other. A
+name that is not UTF-8 is outside the scope, since the facts hold paths as text.
 
 ### 7.2 Splitting `Projection`
 

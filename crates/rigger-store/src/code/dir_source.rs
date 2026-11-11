@@ -2,9 +2,9 @@
 //! of its bytes, and the tree id is the hash over the sorted (path, content id) pairs, so the same
 //! content always names the same tree.
 
-use crate::walk::walk_scoped;
+use crate::walk::{tree_path, walk_scoped};
 use rigger_domain::code_facts::Tip;
-use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff, ALWAYS_IN_SCOPE};
+use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use rigger_domain::playbooks::fnv1a_64;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::ControlFlow;
@@ -40,10 +40,9 @@ struct Walked {
     unreadable: Vec<String>,
 }
 
-/// Every file under `root` a tree's facts cover: the files the one scoped walk visits (committed
-/// `.gitignore` honoured, hidden entries and symlinks skipped), plus each [`ALWAYS_IN_SCOPE`]
-/// path that is a regular file. A path that is not UTF-8 is skipped, since the facts hold paths
-/// as text; a file that cannot be read is kept apart from the entries.
+/// Every file under `root` a tree's facts cover: the files the one scoped walk visits (the
+/// domain's scope rule and the committed `.gitignore` applied, symlinks skipped), path-sorted. A
+/// file that cannot be read is kept apart from the entries.
 fn walk(root: &Path) -> Walked {
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     let _ = walk_scoped(root, None, &mut |file| {
@@ -52,14 +51,7 @@ fn walk(root: &Path) -> Walked {
         }
         ControlFlow::Continue(())
     });
-    for path in ALWAYS_IN_SCOPE {
-        let file = root.join(path);
-        if std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
-            files.push(((*path).to_owned(), file));
-        }
-    }
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    files.dedup_by(|a, b| a.0 == b.0);
     let mut walked = Walked {
         entries: Vec::new(),
         unreadable: Vec::new(),
@@ -74,17 +66,6 @@ fn walk(root: &Path) -> Walked {
         }
     }
     walked
-}
-
-/// The `/`-separated path of `file` under `root`, or none when a component is not UTF-8.
-fn tree_path(root: &Path, file: &Path) -> Option<String> {
-    let parts: Option<Vec<&str>> = file
-        .strip_prefix(root)
-        .ok()?
-        .components()
-        .map(|c| c.as_os_str().to_str())
-        .collect();
-    Some(parts?.join("/"))
 }
 
 /// The tree of a directory with no git. A tree id names a listing this source has seen, since a

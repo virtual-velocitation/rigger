@@ -2,6 +2,7 @@
 //! grep and ingests, and the directory tree source) goes through [`walk_scoped`], so the scope
 //! can never drift between them and every walk covers exactly the same file set.
 
+use rigger_domain::code_view::{in_scope, ALWAYS_IN_SCOPE};
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
@@ -18,9 +19,14 @@ use std::path::{Path, PathBuf};
 ///   machine). `require_git(false)` applies those rules even when the tree is not a checked-out
 ///   repository, and `parents(false)` confines rule-reading to the root so a `.gitignore` above
 ///   the project never bleeds in.
-/// - **The always-excluded set.** Hidden entries are skipped: the VCS metadata directory `.git`,
-///   rigger's own runtime directory `.rigger`, and every other tooling dot-directory, none of
-///   which is first-party source.
+/// - **The domain's scope rule.** A file is visited only when
+///   [`in_scope`](rigger_domain::code_view::in_scope) keeps its path under `root`, the one rule
+///   the code store's advance reads every tree source's listing through: hidden entries are
+///   skipped (the VCS metadata directory `.git`, rigger's own runtime directory `.rigger`, every
+///   other tooling dot-directory), save each
+///   [`ALWAYS_IN_SCOPE`](rigger_domain::code_view::ALWAYS_IN_SCOPE) path, and a hidden directory
+///   is entered only on the way to one. A name that is not UTF-8 is outside the scope, since the
+///   facts hold paths as text.
 /// - **Root confinement.** Symlinks are not followed, so a link that escapes the root, or a link
 ///   cycle, is never traversed.
 ///
@@ -38,8 +44,8 @@ where
 {
     let mut walker = ignore::WalkBuilder::new(root);
     walker
-        // The always-excluded set, independent of any ignore file.
-        .hidden(true)
+        // Hidden entries are the domain's scope rule's to judge, below, never the walker's own.
+        .hidden(false)
         // The project's own committed ignore rules only, so the scope is a pure function of the
         // tree.
         .git_ignore(true)
@@ -53,10 +59,22 @@ where
         // Root confinement: nothing escapes the root and no cycle forms.
         .follow_links(false)
         .sort_by_file_name(|a, b| a.cmp(b));
-    if let Some(named) = named {
-        let wanted: Vec<PathBuf> = named.iter().map(|n| root.join(n)).collect();
-        walker.filter_entry(move |entry| wanted.iter().any(|w| w.starts_with(entry.path())));
-    }
+    let base = root.to_path_buf();
+    let wanted: Option<Vec<PathBuf>> =
+        named.map(|named| named.iter().map(|n| root.join(n)).collect());
+    walker.filter_entry(move |entry| {
+        let scoped = tree_path(&base, entry.path()).is_some_and(|path| {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                leads_into_scope(&path)
+            } else {
+                in_scope(&path)
+            }
+        });
+        scoped
+            && wanted
+                .as_ref()
+                .is_none_or(|wanted| wanted.iter().any(|w| w.starts_with(entry.path())))
+    });
     for dent in walker.build() {
         let Ok(entry) = dent else { continue };
         // An unfollowed symlink's file type is the link, so it never reaches `on_file`.
@@ -65,6 +83,28 @@ where
         }
     }
     ControlFlow::Continue(())
+}
+
+/// The `/`-separated path of `file` under `root`, or none when `file` is not under `root` or a
+/// component is not UTF-8.
+pub fn tree_path(root: &Path, file: &Path) -> Option<String> {
+    let parts: Option<Vec<&str>> = file
+        .strip_prefix(root)
+        .ok()?
+        .components()
+        .map(|c| c.as_os_str().to_str())
+        .collect();
+    Some(parts?.join("/"))
+}
+
+/// Whether the directory at `dir` (a tree path) can hold a file in scope: it is in scope itself,
+/// or it lies on the way to an [`ALWAYS_IN_SCOPE`] path.
+fn leads_into_scope(dir: &str) -> bool {
+    in_scope(dir)
+        || ALWAYS_IN_SCOPE.iter().any(|path| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.starts_with('/'))
+        })
 }
 
 #[cfg(test)]
