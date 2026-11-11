@@ -27251,34 +27251,52 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     );
 }
 
-/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a graph recording the method `T::new` at line 4
-/// of a file whose working tree has deleted it while `U::new`, of the same name and kind, sits at
-/// that line, WHEN the operator runs `rigger graph --show` on `T::new`'s id, THEN no body is
-/// printed and the note names the path it was sought at, `U::new` never bounding it.
+/// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a committed tree whose `src/pair.rs` holds the
+/// method `T::new` at line 4 and whose `src/other.rs` holds a same-named `U::new`, and a working
+/// tree that has deleted `T::new`, WHEN the operator runs `rigger graph --show` on `T::new`'s id,
+/// THEN the changed file's hit is withheld and the label counts it, never serving the deleted
+/// method as current; and `U::new`, in the unchanged file, still shows at its own path.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_show_notes_a_deleted_method_at_its_path_beside_a_same_named_one() {
+fn graph_show_withholds_a_deleted_method_beside_a_same_named_one_in_an_unchanged_file() {
     let dir = temp_project();
-    let out = common::cli::show_recorded(
-        dir.path(),
+    let root = dir.path();
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(
+        root,
         "src/pair.rs",
-        "struct T;\nstruct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
-        "T::new",
-        "method",
-        4,
-        "rust",
+        "struct T;\nstruct U;\nimpl T {\n    fn new() -> T {\n        T\n    }\n}\n",
+    );
+    common::fixtures::write_text(
+        root,
+        "src/other.rs",
+        "struct U;\nimpl U {\n    fn new() -> U {\n        U\n    }\n}\n",
+    );
+    common::fixtures::commit_tree(root);
+    common::fixtures::write_text(root, "src/pair.rs", "struct T;\nstruct U;\n");
+
+    let (deleted, err, ok) =
+        common::cli::run_rigger(root, &["graph", "--show", "src/pair.rs::T::new"]);
+    assert!(ok, "the show of a deleted method exits 0; stderr: {err}");
+    let label = deleted.lines().next().unwrap_or_default();
+    assert!(
+        label.contains("1 file in ") && label.contains(" differs; 1 withheld"),
+        "the label counts the differing file and the withheld hit; got:\n{deleted}"
+    );
+    assert!(
+        deleted.contains("no such entity") && !deleted.contains("pair.rs:4"),
+        "a deleted T::new is withheld, never served at its old line; got:\n{deleted}"
     );
     assert_eq!(
-        out.lines().collect::<Vec<_>>(),
+        common::cli::show_lines(root, "src/other.rs::U::new")
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>(),
         [
-            "show src/pair.rs::T::new",
-            "  site: src/pair.rs:4   kind method   degree 1",
-            "  name new",
-            "  lang rust",
-            "  (no production definition named \"new\" at path \"T::new\" of kind method at line 4 \
-             of src/pair.rs)",
+            "show src/other.rs::U::new",
+            "  site: src/other.rs:3   kind method   degree 3",
         ],
-        "a deleted T::new is noted at its path, never bounded by U::new at its line"
+        "the same-named method in the unchanged file shows at its own path"
     );
 }
 
