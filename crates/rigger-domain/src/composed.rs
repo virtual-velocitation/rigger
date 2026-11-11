@@ -9,9 +9,10 @@
 //! withheld and counted. The searches every reader asks ([`subgraph`], [`calls`], [`locate`])
 //! are written once over [`Neighbors`], so they step through both halves alike.
 
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use crate::code_facts::Tip;
 use crate::code_graph::CodeGraph;
@@ -165,86 +166,134 @@ fn closed(mut nodes: BTreeMap<String, Node>, edges: Vec<Edge>) -> Graph {
     }
 }
 
-/// A graph held in memory and indexed for [`Neighbors`]: the code half a view resolves to.
+/// A graph held in memory and indexed for [`Neighbors`]: the code half a view resolves to. Its
+/// nodes are held once in id order and its live edges once in [`ordered`] order; the indexes
+/// name them by place and are built by the first read that needs them.
 #[derive(Default)]
 pub struct Indexed {
-    nodes: BTreeMap<String, Node>,
-    out: BTreeMap<String, Vec<Edge>>,
-    incoming: BTreeMap<String, Vec<Edge>>,
-    members: BTreeMap<String, Vec<String>>,
-    leaves: BTreeMap<String, BTreeSet<String>>,
-    kinds: BTreeMap<String, Vec<String>>,
+    nodes: Vec<Node>,
+    edges: Vec<Edge>,
+    /// The place of each node given, in the order given.
+    given: Vec<usize>,
     aliases: Vec<(String, String)>,
+    index: OnceLock<Index>,
+}
+
+/// The places [`Indexed`] reads its neighbours by.
+#[derive(Default)]
+struct Index {
+    /// The places of the edges into each id, by id then edge order.
+    incoming: Vec<usize>,
+    members: BTreeMap<String, Vec<usize>>,
+    leaves: BTreeMap<String, Vec<usize>>,
+    kinds: BTreeMap<String, Vec<usize>>,
 }
 
 impl Indexed {
-    /// `graph` indexed, its edges live, with the recorded `aliases`.
+    /// `graph` held, its edges live, with the recorded `aliases`. Of nodes sharing an id the
+    /// last is held.
     pub fn new(graph: Graph, aliases: Vec<(String, String)>) -> Self {
-        let mut ix = Indexed {
+        let edges: Vec<Edge> = ordered(graph.edges)
+            .into_iter()
+            .filter(|e| e.valid_to.is_none())
+            .collect();
+        let mut order: Vec<usize> = (0..graph.nodes.len()).collect();
+        order.sort_by(|&a, &b| graph.nodes[a].id.cmp(&graph.nodes[b].id));
+        let mut given = vec![0; graph.nodes.len()];
+        let mut kept: Vec<usize> = Vec::new();
+        for run in order.chunk_by(|&a, &b| graph.nodes[a].id == graph.nodes[b].id) {
+            run.iter().for_each(|&at| given[at] = kept.len());
+            kept.extend(run.last());
+        }
+        let mut slots: Vec<Option<Node>> = graph.nodes.into_iter().map(Some).collect();
+        Indexed {
+            nodes: kept.into_iter().filter_map(|at| slots[at].take()).collect(),
+            edges,
+            given,
             aliases,
-            ..Indexed::default()
-        };
-        for e in ordered(graph.edges) {
-            if e.valid_to.is_none() {
-                ix.out.entry(e.from.clone()).or_default().push(e.clone());
-                ix.incoming.entry(e.to.clone()).or_default().push(e);
-            }
+            index: OnceLock::new(),
         }
-        for n in graph.nodes {
-            if let Some(file) = member_file(&n) {
-                ix.members
-                    .entry(file.to_string())
-                    .or_default()
-                    .push(n.id.clone());
-            }
-            let rest = split_id(&n.id).1;
-            let leaves = [
-                node_name(&n),
-                rest,
-                rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL)),
-            ];
-            for leaf in leaves.into_iter().flatten() {
-                ix.leaves
-                    .entry(leaf.to_string())
-                    .or_default()
-                    .insert(n.id.clone());
-            }
-            ix.kinds
-                .entry(n.kind.clone())
-                .or_default()
-                .push(n.id.clone());
-            ix.nodes.insert(n.id.clone(), n);
-        }
-        ix
     }
 
-    /// The nodes of `ids` this graph holds, in the order given.
-    fn held<'a>(&self, ids: impl IntoIterator<Item = &'a String>) -> Vec<Node> {
-        ids.into_iter()
-            .filter_map(|id| self.nodes.get(id).cloned())
+    /// The indexes, built on first read.
+    fn index(&self) -> &Index {
+        self.index.get_or_init(|| {
+            let mut ix = Index::default();
+            ix.incoming = (0..self.edges.len()).collect();
+            ix.incoming
+                .sort_by(|&a, &b| self.edges[a].to.cmp(&self.edges[b].to));
+            for &at in &self.given {
+                let n = &self.nodes[at];
+                if let Some(file) = member_file(n) {
+                    ix.members.entry(file.to_string()).or_default().push(at);
+                }
+                ix.kinds.entry(n.kind.clone()).or_default().push(at);
+            }
+            for (at, n) in self.nodes.iter().enumerate() {
+                let rest = split_id(&n.id).1;
+                let leaves = [
+                    node_name(n),
+                    rest,
+                    rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL)),
+                ];
+                for leaf in leaves.into_iter().flatten() {
+                    let held = ix.leaves.entry(leaf.to_string()).or_default();
+                    if held.last() != Some(&at) {
+                        held.push(at);
+                    }
+                }
+            }
+            ix
+        })
+    }
+
+    /// The nodes at `places`, in the order given.
+    fn held<'a>(&self, places: impl IntoIterator<Item = &'a usize>) -> Vec<Node> {
+        places
+            .into_iter()
+            .map(|&at| self.nodes[at].clone())
             .collect()
+    }
+
+    /// The place of the node `id`.
+    fn place(&self, id: &str) -> Option<usize> {
+        self.nodes.binary_search_by(|n| n.id.as_str().cmp(id)).ok()
+    }
+
+    /// Whether this graph holds a node `id`.
+    fn holds(&self, id: &str) -> bool {
+        self.place(id).is_some()
     }
 }
 
 impl Neighbors for Indexed {
     fn node(&self, id: &str) -> Result<Option<Node>, Error> {
-        Ok(self.nodes.get(id).cloned())
+        Ok(self.place(id).map(|at| self.nodes[at].clone()))
     }
     fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
-        Ok(self.out.get(id).cloned().unwrap_or_default())
+        let start = self.edges.partition_point(|e| e.from.as_str() < id);
+        let end = start + self.edges[start..].partition_point(|e| e.from == id);
+        Ok(self.edges[start..end].to_vec())
     }
     fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
-        Ok(self.incoming.get(id).cloned().unwrap_or_default())
+        let incoming = &self.index().incoming;
+        let to = |&at: &usize| self.edges[at].to.as_str();
+        let start = incoming.partition_point(|at| to(at) < id);
+        let end = start + incoming[start..].partition_point(|at| to(at) == id);
+        Ok(incoming[start..end]
+            .iter()
+            .map(|&at| self.edges[at].clone())
+            .collect())
     }
     fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
-        Ok(self.held(self.members.get(file).into_iter().flatten()))
+        Ok(self.held(self.index().members.get(file).into_iter().flatten()))
     }
     fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error> {
-        let nodes = self.held(self.leaves.get(leaf).into_iter().flatten());
+        let nodes = self.held(self.index().leaves.get(leaf).into_iter().flatten());
         Ok(nodes.into_iter().filter(|n| binds_leaf(n, leaf)).collect())
     }
     fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
-        Ok(self.held(self.kinds.get(kind).into_iter().flatten()))
+        Ok(self.held(self.index().kinds.get(kind).into_iter().flatten()))
     }
     /// An in-memory graph records no reference rows, so it holds no unresolved leaf.
     fn unresolved(&self, _node: &Node) -> Result<Vec<String>, Error> {
@@ -255,8 +304,8 @@ impl Neighbors for Indexed {
     }
     fn whole(&self) -> Result<Graph, Error> {
         Ok(Graph {
-            nodes: self.nodes.values().cloned().collect(),
-            edges: self.out.values().flatten().cloned().collect(),
+            nodes: self.nodes.clone(),
+            edges: self.edges.clone(),
         })
     }
 }
@@ -386,7 +435,7 @@ impl<'r> Composed<'r> {
         let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for c in &groupings.concepts {
-            for m in c.members.iter().filter(|m| code.nodes.contains_key(*m)) {
+            for m in c.members.iter().filter(|m| code.holds(m)) {
                 concept_members
                     .entry(c.id.clone())
                     .or_default()
@@ -411,15 +460,13 @@ impl<'r> Composed<'r> {
         })
     }
 
-    /// `id` read through the recorded aliases: its canonical id, or itself.
-    fn canon<'a>(&'a self, id: &'a str) -> &'a str {
-        self.canonical.get(id).map_or(id, String::as_str)
-    }
-
     /// `e` with both ends read through the recorded aliases.
     fn canon_edge(&self, mut e: Edge) -> Edge {
-        e.from = self.canon(&e.from).to_string();
-        e.to = self.canon(&e.to).to_string();
+        for end in [&mut e.from, &mut e.to] {
+            if let Some(id) = self.canonical.get(end.as_str()) {
+                end.clone_from(id);
+            }
+        }
         e
     }
 
@@ -440,7 +487,7 @@ impl<'r> Composed<'r> {
             Withheld::Files(_) => {
                 node_file(&node.kind, &node.id).is_some_and(|f| self.stale.withholds_file(f))
             }
-            Withheld::All => self.code.nodes.contains_key(&node.id),
+            Withheld::All => self.code.holds(&node.id),
         };
         if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
@@ -588,20 +635,34 @@ impl Neighbors for Composed<'_> {
         let code = self.code.whole()?;
         let records = self.records.whole()?;
         let is_alias = |n: &Node| self.canonical.contains_key(&n.id);
-        let mut nodes: BTreeMap<String, Node> = code
-            .nodes
-            .into_iter()
-            .filter(|n| !is_alias(n))
-            .map(|n| (n.id.clone(), n))
-            .collect();
+        // Each id's record nodes, in the order recorded, folded onto its code node in turn.
+        let mut recorded: BTreeMap<String, Vec<Node>> = BTreeMap::new();
         for r in records.nodes.into_iter().filter(|n| !is_alias(n)) {
-            let code = nodes.remove(&r.id);
-            if let Some(n) = merge(code, Some(r)) {
-                nodes.insert(n.id.clone(), n);
-            }
+            recorded.entry(r.id.clone()).or_default().push(r);
         }
-        let held: BTreeSet<String> = nodes.keys().cloned().collect();
-        nodes.retain(|_, n| !self.withholds(n));
+        let fold = |code: Option<Node>, records: Vec<Node>| {
+            records.into_iter().fold(code, |acc, r| merge(acc, Some(r)))
+        };
+        let mut recorded = recorded.into_iter().peekable();
+        let mut held: Vec<Node> = Vec::new();
+        for n in code.nodes.into_iter().filter(|n| !is_alias(n)) {
+            while let Some((_, rs)) = recorded.next_if(|(id, _)| *id < n.id) {
+                held.extend(fold(None, rs));
+            }
+            let rs = recorded.next_if(|(id, _)| *id == n.id).map(|(_, rs)| rs);
+            held.extend(fold(Some(n), rs.unwrap_or_default()));
+        }
+        held.extend(recorded.flat_map(|(_, rs)| fold(None, rs)));
+        // Each held node with whether it is answered.
+        let held: Vec<(Node, bool)> = held
+            .into_iter()
+            .map(|n| {
+                let answered = !self.withholds(&n);
+                (n, answered)
+            })
+            .collect();
+        let answers: FxHashMap<&str, bool> =
+            held.iter().map(|(n, a)| (n.id.as_str(), *a)).collect();
         let mut edges = Vec::new();
         for e in code.edges.into_iter().chain(records.edges) {
             let e = self.canon_edge(e);
@@ -612,11 +673,33 @@ impl Neighbors for Composed<'_> {
             }
             edges.push(e);
         }
-        let answered = |id: &str| {
-            nodes.contains_key(id) || (!held.contains(id) && !self.withholds(&artifact(id)))
+        let answered = |id: &str| match answers.get(id) {
+            Some(&answered) => answered,
+            None => !self.withholds(&artifact(id)),
         };
         edges.retain(|e| answered(&e.from) && answered(&e.to));
-        Ok(closed(nodes, edges))
+        let mut ends: BTreeMap<&str, Node> = BTreeMap::new();
+        for e in &edges {
+            for end in [&e.from, &e.to] {
+                if !answers.contains_key(end.as_str()) {
+                    ends.entry(end).or_insert_with(|| artifact(end));
+                }
+            }
+        }
+        drop(answers);
+        let mut nodes: Vec<Node> = Vec::with_capacity(held.len() + ends.len());
+        let mut ends = ends.into_values().peekable();
+        for (n, answered) in held {
+            nodes.extend(std::iter::from_fn(|| ends.next_if(|a| a.id < n.id)));
+            if answered {
+                nodes.push(n);
+            }
+        }
+        nodes.extend(ends);
+        Ok(Graph {
+            nodes,
+            edges: ordered(edges),
+        })
     }
 }
 
