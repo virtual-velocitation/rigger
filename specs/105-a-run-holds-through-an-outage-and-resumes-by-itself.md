@@ -88,10 +88,10 @@ stub driver that calls the emit callback, beside `refusing_at`
 results as it reads the replay driver's (`review_spawn_errored`,
 `reviewer_result_is_degenerate`, `crates/rigger-conductor/src/conductor.rs:7951`), so `rigger
 run` gets the step path's review semantics, and the swap corrects the comments that say a live
-driver records no result. When the conductor loop returns with `RunState::done()`
-(`crates/rigger-domain/src/ledger.rs:685`) true, `run_cli` runs `reclaim_run_scratch`
-(`src/cli/run.rs:1081`), which this spec extends to `AGENT_STREAM_SUBDIR` and whose
-`agent-scratch` removal also clears an `interrupted` launch's kept scratch. `run_cli` resolves
+driver records no result. However the run ends, done, halted, escalated or failed, `run_cli`'s
+one teardown (`RunTeardown`, `src/cli/run.rs`) runs `reclaim_run_scratch` unless a unit awaits a
+human's review; this spec extends that reclaim to `AGENT_STREAM_SUBDIR`, and its `agent-scratch`
+removal also clears an `interrupted` launch's kept scratch. `run_cli` resolves
 its scratch root by `project_scratch_root` (`src/cli/run.rs:293`) and refuses through
 `refuse_unless_one_root` (`:235`) at its start, before RESUME's step lock, as `rigger critique`
 does (`src/cli/critique.rs:84`); a project with no scratch root skips that teardown and the
