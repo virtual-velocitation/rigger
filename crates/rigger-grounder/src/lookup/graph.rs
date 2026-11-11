@@ -163,24 +163,30 @@ fn located(
     })
 }
 
-/// The site of the entity `id` the walk `up` seeds: its node, read in the walk, when the node is
-/// a code entity a name indexes, else the bare `id`.
+/// The site of the node `id` the walk `up` seeds: its node, read in the walk, when the node is
+/// a code entity a name indexes; else the bare `id` under the kind the walk read it as (a file, a
+/// community), a code entity when the walk holds no seed.
 #[cfg(feature = "symbols")]
 fn site_of(up: &CallGraph, id: &str) -> Site {
     let seeded = (up.nodes.iter())
         .find(|n| n.layer == 0 && n.node.id == id)
-        .map(|n| &n.node)
-        .filter(|n| {
-            n.kind == KIND_CODE_ENTITY && node_name(n).is_some_and(|m| !normalise(m).is_empty())
-        });
+        .map(|n| &n.node);
     match seeded {
-        Some(node) => site(node),
-        None => Site {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            file: node_file(KIND_CODE_ENTITY, id).map(|f| (f.to_string(), 0)),
-            test: false,
-        },
+        Some(node)
+            if node.kind == KIND_CODE_ENTITY
+                && node_name(node).is_some_and(|m| !normalise(m).is_empty()) =>
+        {
+            site(node)
+        }
+        _ => {
+            let kind = seeded.map_or(KIND_CODE_ENTITY, |n| n.kind.as_str());
+            Site {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                file: (node_file(kind, id).filter(|f| *f != id)).map(|f| (f.to_string(), 0)),
+                test: false,
+            }
+        }
     }
 }
 

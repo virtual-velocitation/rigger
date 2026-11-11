@@ -12,12 +12,12 @@ use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
-#[cfg(feature = "symbols")]
-use crate::contextgraph::KIND_CODE_ENTITY;
 use crate::contextgraph::{
     CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node,
     KIND_DECISION, REBUILD_OWED,
 };
+#[cfg(feature = "symbols")]
+use crate::contextgraph::{KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE};
 use rigger_domain::composed::{Compared, Label};
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
@@ -1442,6 +1442,49 @@ fn a_located_term_is_answered_with_its_direct_callers() {
         .unwrap();
     let expected = "exact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  called by: b.rs:1 b.rs::caller (function)\n";
     assert!(section(&reply, "graph").contains(expected), "{reply}");
+}
+
+/// A term the graph locates to a node that is not a code entity - a file, a community, a design
+/// section - is answered under that node's own kind, never as a code entity, its file named when
+/// it is not the node itself.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_located_node_is_answered_under_its_own_kind() {
+    let bare = |id: &str, kind: &str| Node {
+        id: id.to_string(),
+        kind: kind.to_string(),
+        attrs: BTreeMap::new(),
+    };
+    // (the located node's id, its kind, the line the graph half answers it with)
+    let cases = [
+        ("a.rs", KIND_FILE, "- a.rs (file)\n"),
+        (
+            "community/1/0",
+            KIND_COMMUNITY,
+            "- community/1/0 (community)\n",
+        ),
+        (
+            "docs/d.md#intent",
+            KIND_DESIGN_DOC,
+            "- docs/d.md docs/d.md#intent (design-doc)\n",
+        ),
+    ];
+    for (id, kind, line) in cases {
+        let graph = Held {
+            nodes: vec![bare(id, kind)],
+            located: [(id.to_string(), vec![id.to_string()])].into(),
+            ..Held::default()
+        };
+        let dir = tree(&[("a.rs", "fn a() {}\n")]);
+        let reply = TreeLookup::new(dir.path())
+            .lookup(&terms(&[id]), Ok(&graph))
+            .unwrap();
+        let expected = format!("exact match: 1 entity\n{line}");
+        assert!(
+            section(&reply, "graph").contains(&expected),
+            "{id}: {reply}"
+        );
+    }
 }
 
 /// One test-hit case: the term, the product entities and the hidden test entities the graph
