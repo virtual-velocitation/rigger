@@ -88,6 +88,13 @@ mod event_fixtures;
 
 /// The graph fixtures the sink-check tests take the read half of their projection double from,
 /// compiled here from the same file as the root crate's tests.
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(all(
     test,
     feature = "symbols",

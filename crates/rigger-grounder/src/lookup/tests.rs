@@ -1,54 +1,54 @@
 //! The combined lookup's unit tests: the word rule, name resolution's tiers, the live text scan,
-//! the prose index's refresh, the graph half's freshness filter, the refused graph and the reply
-//! budget, each a table over one check.
+//! the prose index's refresh, the graph half's label and withheld hits, the refused graph and the
+//! reply budget, each a table over one check.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[cfg(feature = "symbols")]
-use super::budget::WITHHELD;
 use super::budget::{self, REPLY_LIMIT, TEXT_TOTAL};
-use super::graph::{Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, Site, TermGraph};
 #[cfg(feature = "symbols")]
 use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
 use crate::contextgraph::{
-    CallGraph, CallNode, Candidate, Direction, EntryBatch, EntryFold, Error, FoldAccess, Graph,
-    Located, Node, Projection, KIND_DECISION, REBUILD_OWED,
+    CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node,
+    KIND_DECISION, REBUILD_OWED,
 };
 #[cfg(feature = "symbols")]
-use crate::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY};
-use rigger_domain::eventstore::Event;
+use crate::contextgraph::{Edge, KIND_CODE_ENTITY, REL_CALLS, TIER_EXTRACTED};
+use rigger_domain::composed::{Compared, Label};
 
-/// A graph held in memory: its nodes, the generation it holds per identity, whether it owes its
-/// rebuild, its calls as (caller, callee) ids, and the ids it locates a term to.
+/// The label [`Held`] answers under: it describes `c1` and withholds nothing.
+fn held_label() -> Label {
+    Label {
+        describes: "c1".to_string(),
+        worktree: "W".to_string(),
+        compared: Compared::Differ(0),
+        behind: None,
+        withheld: 0,
+    }
+}
+
+/// `terms` answered under [`held_label`].
+fn answered(terms: Vec<TermGraph>) -> Answered {
+    Answered {
+        label: held_label(),
+        terms,
+    }
+}
+
+/// A graph held in memory: its nodes, its calls as (caller, callee) ids, and the ids it locates a
+/// term to.
 #[derive(Default)]
 struct Held {
     nodes: Vec<Node>,
-    generations: BTreeMap<String, String>,
-    owed: bool,
     calls: Vec<(String, String)>,
     located: BTreeMap<String, Vec<String>>,
 }
 
-impl Projection for Held {
-    fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), Error> {
-        unreachable!("the lookup never folds")
-    }
-    fn apply_generation(&self, _entry: &Event, _batch: EntryBatch<'_>) -> Result<EntryFold, Error> {
-        unreachable!("the lookup never folds")
-    }
-    fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
-        Ok(self.generations.get(identity).cloned())
-    }
-    fn held_identities(&self) -> Result<Vec<String>, Error> {
-        Ok(self.generations.keys().cloned().collect())
-    }
-    fn rebuild_owed(&self) -> Result<bool, Error> {
-        Ok(self.owed)
-    }
+impl ContextGraph for Held {
     fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
         Ok(Graph::default())
     }
@@ -113,6 +113,15 @@ impl Projection for Held {
             .filter(|n| n.kind == kind)
             .cloned()
             .collect())
+    }
+    fn whole(&self) -> Result<Graph, Error> {
+        Ok(Graph {
+            nodes: self.nodes.clone(),
+            edges: Vec::new(),
+        })
+    }
+    fn stamp_label(&self) -> Label {
+        held_label()
     }
 }
 
@@ -409,113 +418,103 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
 
 // --- the whole lookup ----------------------------------------------------------------------
 
-/// A tree holding `files`, and a graph that ingested each of them as the tree holds it.
+/// A tree whose `kept.rs` is unchanged since the graph's tree, `edited.rs` was edited since and
+/// `gone.rs` deleted since, and whose `added.rs` is new since; each defines a `widget_*`
+/// function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`. Beside it
+/// the record half the graph is read through, and the worktree's diff against the graph's tree.
 #[cfg(feature = "symbols")]
-fn ingested(files: &[(&str, &str)], held: Held) -> (tempfile::TempDir, Held) {
-    let dir = tree(files);
-    let generations = files
-        .iter()
-        .map(|(file, _)| {
-            (
-                crate::ingest::code_identity(file),
-                crate::ingest::tree_generation(dir.path(), file, false),
-            )
-        })
-        .collect();
-    (
-        dir,
-        Held {
-            generations,
-            ..held
-        },
-    )
-}
-
-/// A graph over a tree whose `kept.rs` is unchanged since the graph ingested it, `edited.rs` was
-/// edited since and `gone.rs` deleted since, and whose `added.rs` is new since; each defines a
-/// `widget_*` function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`.
-/// Its `retired.rs` was deleted and a whole-project walk retired it: the graph holds the batch
-/// for no bytes, and only a record still names its `widget_retired`, which the graph locates by
-/// its exact id.
-#[cfg(feature = "symbols")]
-fn diverged() -> (tempfile::TempDir, Held) {
-    let (dir, mut graph) = ingested(
-        &[
-            ("kept.rs", "fn widget_kept() {}\n"),
-            ("edited.rs", "fn widget_edited() { widget_kept() }\n"),
-            ("gone.rs", "fn widget_gone() {}\n"),
-        ],
-        Held {
+fn diverged() -> (
+    tempfile::TempDir,
+    rigger_domain::composed::Indexed,
+    rigger_domain::code_view::WorktreeDiff,
+) {
+    let dir = tree(&[
+        ("kept.rs", "fn widget_kept() {}\n"),
+        ("edited.rs", "fn widget_renamed() { widget_kept() }\n"),
+        ("added.rs", "fn widget_added() {}\n"),
+    ]);
+    let records = rigger_domain::composed::Indexed::new(
+        Graph {
             nodes: vec![
                 entity("kept.rs", "widget_kept", 1),
                 entity("edited.rs", "widget_edited", 1),
                 entity("gone.rs", "widget_gone", 1),
             ],
-            calls: vec![(
-                "edited.rs::widget_edited".to_string(),
-                "kept.rs::widget_kept".to_string(),
-            )],
-            ..Held::default()
+            edges: vec![Edge {
+                from: "edited.rs::widget_edited".to_string(),
+                to: "kept.rs::widget_kept".to_string(),
+                rel: REL_CALLS.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: 0,
+                tier: TIER_EXTRACTED.to_string(),
+            }],
         },
+        Vec::new(),
     );
-    std::fs::remove_file(dir.path().join("gone.rs")).unwrap();
-    write(
-        dir.path(),
-        "edited.rs",
-        "fn widget_renamed() { widget_kept() }\n",
-    );
-    write(dir.path(), "added.rs", "fn widget_added() {}\n");
-    let retired = "retired.rs::widget_retired".to_string();
-    graph.generations.insert(
-        crate::ingest::code_identity("retired.rs"),
-        crate::ingest::tree_generation(dir.path(), "retired.rs", false),
-    );
-    graph.nodes.push(Node {
-        id: retired.clone(),
-        kind: KIND_ARTIFACT.to_string(),
-        attrs: BTreeMap::new(),
-    });
-    graph.located.insert(retired.clone(), vec![retired]);
-    (dir, graph)
+    let diff = rigger_domain::code_view::WorktreeDiff {
+        changed: vec!["edited.rs".to_string(), "gone.rs".to_string()],
+        untracked: vec!["added.rs".to_string()],
+    };
+    (dir, records, diff)
 }
 
-/// One freshness case: the term, the entity lines the graph half shows, what else the graph half
+/// The record half `records` composed over an empty tree stamped `c1`, the worktree differing
+/// from it by `diff`.
+#[cfg(feature = "symbols")]
+fn composed(
+    records: &rigger_domain::composed::Indexed,
+    diff: rigger_domain::code_view::WorktreeDiff,
+) -> rigger_domain::composed::Composed<'_> {
+    let stamp = rigger_domain::code_facts::Stamp {
+        tip: rigger_domain::code_facts::Tip {
+            head: "main".to_string(),
+            commit: Some("c1".to_string()),
+            tree: "t1".to_string(),
+        },
+        fingerprint: 0,
+        seq: 0,
+    };
+    let view = rigger_domain::code_view::FactsView::new(stamp, Vec::new());
+    let honesty = rigger_domain::composed::Honesty {
+        worktree: "W".to_string(),
+        diff: Ok(diff),
+        behind: None,
+    };
+    rigger_domain::composed::Composed::new(records, &view, Default::default(), honesty).unwrap()
+}
+
+/// One withheld case: the term, the entity lines the graph half shows, what else the graph half
 /// says, and what the text half says.
 #[cfg(feature = "symbols")]
-type FreshnessCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
+type WithheldCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
 
 /// A file changed, deleted or added in the caller's tree is answered from the tree by the text
-/// half and withheld by the graph half, with an unchanged file's hit kept; a deleted file the
-/// graph has retired is withheld too.
+/// half and withheld by the graph half, which heads its answer with the graph's label counting
+/// what it withheld; an unchanged file's hit is kept.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
-    let (dir, graph) = diverged();
+    let (dir, records, diff) = diverged();
     let lookup = TreeLookup::new(dir.path());
-    let cases: [FreshnessCase; 5] = [
+    let cases: [WithheldCase; 4] = [
         (
             "widget_kept",
             &["kept.rs:1 kept.rs::widget_kept (function)"],
-            &[&format!("{WITHHELD}: edited.rs")],
+            &[],
             &["kept.rs:1:", "edited.rs:1:"],
         ),
         (
             "widget_edited",
             &[],
-            &[&format!("{WITHHELD}: edited.rs")],
+            &["no entity named widget_edited"],
             &["no line of your tree holds widget_edited"],
         ),
         (
             "widget_gone",
             &[],
-            &[&format!("{WITHHELD}: gone.rs")],
+            &["no entity named widget_gone"],
             &["no line of your tree holds widget_gone"],
-        ),
-        (
-            "retired.rs::widget_retired",
-            &[],
-            &[&format!("{WITHHELD}: retired.rs")],
-            &[],
         ),
         (
             "widget_added",
@@ -525,8 +524,18 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
     ];
     for (term, shown, graph_says, text_says) in cases {
+        let graph = composed(&records, diff.clone());
         let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
         let graph_part = section(&reply, "graph");
+        let label = graph.stamp_label();
+        assert!(
+            label
+                .to_string()
+                .starts_with("describes c1; 3 files in W differ; ")
+                && label.withheld > 0
+                && graph_part.starts_with(&format!("{label}\n")),
+            "{term}: the graph half heads with the label counting what it withheld:\n{reply}"
+        );
         for line in shown.iter().chain(graph_says) {
             assert!(
                 graph_part.contains(line),
@@ -552,7 +561,8 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_multi_term_lookup_groups_each_section_per_term() {
-    let (dir, graph) = diverged();
+    let (dir, records, diff) = diverged();
+    let graph = composed(&records, diff);
     let reply = TreeLookup::new(dir.path())
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),
@@ -578,20 +588,17 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
 /// The reason a caller that could not open its graph hands the lookup in its place.
 const UNOPENED: &str = "the context graph could not be opened: disk full";
 
-/// A graph that cannot answer, or that the caller could not open, still leaves the text and prose
-/// halves answering, the graph's section stating why.
+/// A graph that owes its rebuild, or that the caller could not open, is handed to the lookup as
+/// the reason there is none, and still leaves the text and prose halves answering, the graph's
+/// section stating why.
 #[test]
 fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
     let dir = tree(&[
         ("a.rs", "fn gizmo() {}\n"),
         ("docs/a.md", "# Gizmo\nthe gizmo\n"),
     ]);
-    let owed = Held {
-        owed: true,
-        ..Held::default()
-    };
-    let cases: [(Result<&dyn Projection, String>, &str); 2] = [
-        (Ok(&owed), REBUILD_OWED),
+    let cases: [(Result<&dyn ContextGraph, String>, &str); 2] = [
+        (Err(REBUILD_OWED.to_string()), REBUILD_OWED),
         (Err(UNOPENED.to_string()), UNOPENED),
     ];
     for (graph, reason) in cases {
@@ -696,7 +703,6 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
                 .collect(),
             reached: 500,
             unread: 492,
-            withheld: (0..40).map(|i| format!("src/{long}/w{i}.rs")).collect(),
         })
         .collect();
     let text = refs
@@ -724,7 +730,7 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
         matched: 900,
         records_left_out: None,
     };
-    let reply = budget::reply(&refs, Ok(graph), Ok(text), Ok(prose));
+    let reply = budget::reply(&refs, Ok(answered(graph)), Ok(text), Ok(prose));
     (terms, reply)
 }
 
@@ -746,7 +752,6 @@ crate::test_cases! {
         "entities dropped to the graph section's size bound",
         "entities not read past the first",
         "(+30 more)",
-        "w9.rs (+30 more)",
         "matching lines shown",
         "top 10 of 900 matching sections shown",
     ]);
@@ -814,7 +819,6 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
             }],
             reached: 1,
             unread: 0,
-            withheld: (0..12).map(|i| format!("w{i}.rs")).collect(),
         },
     ];
     let hit = |file: &str, line: u64, text: &str| TextHit {
@@ -854,11 +858,17 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
         matched: 2,
         records_left_out: None,
     };
-    let reply = budget::reply(&["near", "far", "hit"], Ok(graph), Ok(text), Ok(prose));
+    let reply = budget::reply(
+        &["near", "far", "hit"],
+        Ok(answered(graph)),
+        Ok(text),
+        Ok(prose),
+    );
     let expected = format!(
         "# lookup: near, far, hit
 
 ## graph
+{label}
 {filtered}
 
 ### near
@@ -873,7 +883,6 @@ prefix match: 1 entity
   called by: {callers}
   calls: b.rs b.rs::x (fn); b.rs b.rs::y (fn)
   referenced in: {referenced}
-{withheld_note}: {withheld}
 
 ## text
 A literal, smart-case scan of your working tree as it stands, .gitignore honoured.
@@ -893,11 +902,10 @@ Prose and the graph's records ranked by relevance to all the terms together.
 - prose:doc docs/a.md:1 \"Hit\": the hit
 - prose:decision d1: keep hit
 ",
+        label = held_label(),
         filtered = budget::GRAPH_FILTERED,
         callers = listed("c", " (fn)", 12, "; "),
         referenced = listed("r", ".rs", 12, ", "),
-        withheld = listed("w", ".rs", 12, ", "),
-        withheld_note = budget::WITHHELD,
     );
     assert_eq!(reply, expected);
 }
@@ -925,9 +933,13 @@ fn graph_blocks_kept(lengths: &[usize], shown: usize, cut: Option<&str>) {
         reached: entities.len(),
         entities,
         unread: 0,
-        withheld: vec![],
     }];
-    let reply = budget::reply(&["t"], Ok(graph), Err("x".into()), Err("x".into()));
+    let reply = budget::reply(
+        &["t"],
+        Ok(answered(graph)),
+        Err("x".into()),
+        Err("x".into()),
+    );
     let part = section(&reply, "graph");
     assert_eq!(part.matches("\n- ").count(), shown, "{lengths:?}");
     match cut {
@@ -1035,16 +1047,15 @@ crate::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_located_term_is_answered_with_its_direct_callers() {
-    let (dir, graph) = ingested(
-        &[
+    let (dir, graph) = (
+        tree(&[
             ("a.rs", "fn target() {}\n"),
             ("b.rs", "fn caller() { target() }\n"),
-        ],
+        ]),
         Held {
             nodes: vec![entity("a.rs", "target", 1), entity("b.rs", "caller", 1)],
             calls: vec![("b.rs::caller".to_string(), "a.rs::target".to_string())],
             located: [("the-alias".to_string(), vec!["a.rs::target".to_string()])].into(),
-            ..Held::default()
         },
     );
     let reply = TreeLookup::new(dir.path())
@@ -1065,8 +1076,8 @@ fn a_term_reaching_more_entities_than_are_read_says_how_many_were_not() {
             ..entity("dup.rs", "dup", 1)
         })
         .collect();
-    let (dir, graph) = ingested(
-        &[("dup.rs", "fn dup() {}\n")],
+    let (dir, graph) = (
+        tree(&[("dup.rs", "fn dup() {}\n")]),
         Held {
             nodes,
             ..Held::default()

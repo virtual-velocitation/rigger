@@ -19,7 +19,7 @@
 //! lane has nothing to ingest - a no-op that emits nothing, exactly as the run's ingest is a
 //! no-op there.
 
-use crate::contextgraph::{fold_loss_clause, wired, EntryFold, Fold, Projection};
+use crate::contextgraph::{fold_loss_clause, wired, EntryFold, Fold, RecordFold};
 use crate::eventstore::{
     Appended, Error, Event, EventBatchSink, EventStore, ExpectedRevision, Filter, GroupHead,
     Position, Revision, Subscription, TypeSelection,
@@ -89,11 +89,11 @@ impl<'a, O> FoldingStore<'a, O> {
 /// [`FoldingStore::new`] with no opener does.
 pub fn folding_into<'a>(
     store: &'a dyn EventStore,
-    graph: Option<&'a dyn Projection>,
+    graph: Option<&'a dyn RecordFold>,
     log: &'a (dyn Fn(&str) + Sync),
 ) -> FoldingStore<
     'a,
-    impl Fn() -> Result<&'a dyn Projection, crate::contextgraph::Error> + Send + Sync + 'a,
+    impl Fn() -> Result<&'a dyn RecordFold, crate::contextgraph::Error> + Send + Sync + 'a,
 > {
     FoldingStore::new(
         store,
@@ -105,12 +105,12 @@ pub fn folding_into<'a>(
 impl<'g, O, G> FoldingStore<'_, O>
 where
     O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
-    G: std::ops::Deref<Target = dyn Projection + 'g>,
+    G: std::ops::Deref<Target = dyn RecordFold + 'g>,
 {
     /// THE APPEND-THEN-FOLD BODY of every event but a ledger entry: append `events` to `stream` under the caller's `expected`
     /// revision in ONE store append, then fold exactly what the store placed, at the positions it
     /// issued, through ONE [`Fold::of_batch`], at the transaction cadence
-    /// [`Projection::apply_batch`] states - the batched fold spec 49 needs, rather than one fold
+    /// [`RecordFold::apply_batch`] states - the batched fold spec 49 needs, rather than one fold
     /// per event. The append goes to the log first and the graph is opened only after it (spec
     /// 101: a verb whose job is to append never opens
     /// `graph.db` before its append). A fold failure never fails the append, which already landed
@@ -158,7 +158,7 @@ where
     /// THE LEDGER FORM (spec 107), the one fold that hands a ledger entry the batch its appender
     /// extracted - a rebuild and a catch-up call fold one from its re-extraction: append `entry`,
     /// a `GenerationIngested` event, to `stream` in ONE store append, then fold it with `batch`,
-    /// the batch it records, through [`Projection::apply_generation`] at the position the store
+    /// the batch it records, through [`RecordFold::apply_generation`] at the position the store
     /// issued, which states the transaction the entry and its batch commit in. `batch` is already
     /// extracted: the function the fold is handed only moves it out, so nothing is read, extracted
     /// or hashed while the graph is held for the write.
@@ -215,9 +215,9 @@ impl<O> FoldingStore<'_, O> {
 }
 
 /// Fold `entry` with `batch` into `graph`, or answer why the graph could not be had: the batch
-/// function [`Projection::apply_generation`] is handed moves the extracted batch out and does
+/// function [`RecordFold::apply_generation`] is handed moves the extracted batch out and does
 /// nothing else.
-fn fold_entry<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+fn fold_entry<'g, G: std::ops::Deref<Target = dyn RecordFold + 'g>>(
     graph: Result<G, crate::contextgraph::Error>,
     entry: &Event,
     batch: Vec<Event>,
@@ -228,7 +228,7 @@ fn fold_entry<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
 impl<'g, O, G> EventStore for FoldingStore<'_, O>
 where
     O: Fn() -> Result<G, crate::contextgraph::Error> + Send + Sync,
-    G: std::ops::Deref<Target = dyn Projection + 'g>,
+    G: std::ops::Deref<Target = dyn RecordFold + 'g>,
 {
     fn append(
         &self,
@@ -368,7 +368,7 @@ pub struct IngestStats {
 /// other batch, so a sink never computes it or loads an index. A sink records the file's batch
 /// in ONE store append and folds it with its ledger entry through the ledger form
 /// ([`FoldingStore::append_entry_and_fold`]), at the transaction cadence
-/// [`Projection::apply_generation`] states - the batched fold spec 49 needs, since the measured
+/// [`RecordFold::apply_generation`] states - the batched fold spec 49 needs, since the measured
 /// cold-build throughput was transaction-cadence bound.
 ///
 /// "Content" here is the batch this walk LOWERED, which is not always the file on disk, and the two
@@ -377,7 +377,7 @@ pub struct IngestStats {
 /// from the indexed symbols without reading the file. So on such a project the keys track that
 /// index's view of each file the walk sees. A file the walk no longer sees is never lowered from
 /// the index: every identity of `held` - the identities the graph holds a generation for
-/// ([`Projection::held_identities`]) - whose file the walk no longer sees is handed the batch a
+/// ([`RecordFold::held_identities`]) - whose file the walk no longer sees is handed the batch a
 /// sink extracts from no bytes, whatever the index lists, so its fold retires what the file
 /// asserted (see [`walk_batches`]).
 ///
@@ -574,7 +574,7 @@ pub fn ingest_files_batched(_root: &str, _files: &[String], _on_batch: impl Batc
 pub fn graph_index_lag(
     root: &std::path::Path,
     latest: &std::collections::HashMap<String, String>,
-    graph: Option<&dyn Projection>,
+    graph: Option<&dyn RecordFold>,
     files: &[String],
 ) -> Vec<String> {
     let excluded = std::cell::LazyCell::new(|| walk_exclusions(&root.to_string_lossy()).1);
@@ -598,7 +598,7 @@ pub fn graph_index_lag(
 /// the tree's one read rule hands ([`crate::grounder::tree_bytes`]), under the exclusion flag
 /// `excluded`, hashed as a batch is ([`batch_generation`]). A file the tree hands no bytes for
 /// extracts to the batch for no bytes. The one computation the index-lag advisory and the
-/// combined lookup's graph check compare against a graph's [`Projection::current_generation`].
+/// combined lookup's graph check compare against a graph's [`RecordFold::current_generation`].
 #[cfg(feature = "symbols")]
 pub fn tree_generation(root: &std::path::Path, file: &str, excluded: bool) -> String {
     let bytes = crate::grounder::tree_bytes(root, "gc", file);
@@ -615,7 +615,7 @@ pub fn tree_generation(root: &std::path::Path, file: &str, excluded: bool) -> St
 pub fn graph_index_lag(
     _root: &std::path::Path,
     _latest: &std::collections::HashMap<String, String>,
-    _graph: Option<&dyn Projection>,
+    _graph: Option<&dyn RecordFold>,
     _files: &[String],
 ) -> Vec<String> {
     Vec::new()
@@ -658,7 +658,7 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 pub fn graph_index_lag_sample(
     root: &std::path::Path,
     latest: &std::collections::HashMap<String, String>,
-    graph: Option<&dyn Projection>,
+    graph: Option<&dyn RecordFold>,
 ) -> Vec<String> {
     let mut recorded: Vec<&str> = latest
         .keys()
@@ -680,7 +680,7 @@ pub fn graph_index_lag_sample(
 pub fn graph_index_lag_sample(
     _root: &std::path::Path,
     _latest: &std::collections::HashMap<String, String>,
-    _graph: Option<&dyn Projection>,
+    _graph: Option<&dyn RecordFold>,
 ) -> Vec<String> {
     Vec::new()
 }
@@ -973,7 +973,7 @@ pub fn entry_of_batch(
     keyed: &[(String, &Event)],
     excluded: bool,
     logged: impl FnOnce(&str) -> Result<Option<String>, Error>,
-    graph: &dyn Projection,
+    graph: &dyn RecordFold,
     hash: &HashBlob,
 ) -> Result<Option<EntryOfBatch>, EntryFailure> {
     use rigger_domain::retention::GenerationIngested;
@@ -1857,7 +1857,7 @@ mod entry_of_batch_tests {
         generation_of, pairs, NO_BYTES_BATCH, OTHER_BATCH, OTHER_BODY,
     };
     use super::{batch_generation, entry_of_batch, key_batch};
-    use crate::contextgraph::{EntryBatch, EntryFold, Error as GraphError, FoldAccess, Projection};
+    use crate::contextgraph::{EntryBatch, EntryFold, Error as GraphError, FoldAccess, RecordFold};
     use crate::eventstore::{Error as StoreError, Event};
     use crate::extraction_tree::{
         planted_extraction_tree, walked_batch, walked_generation, DOCUMENT_PATH, SOURCE_BODY,
@@ -1889,7 +1889,7 @@ mod entry_of_batch_tests {
         pub(super) asked: Mutex<Vec<String>>,
     }
 
-    impl Projection for Side {
+    impl RecordFold for Side {
         fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), GraphError> {
             panic!("a sink's check folds nothing")
         }
@@ -1917,7 +1917,6 @@ mod entry_of_batch_tests {
             self.asked.lock().unwrap().push("owed".to_string());
             self.answers.0.map_err(|why| GraphError(why.to_string()))
         }
-        crate::projection_is_never_read!();
     }
 
     /// Everything one call asked of its three sources: the identities it looked up on the log
@@ -2585,7 +2584,7 @@ mod scoped_reindex_tests {
         batch_generation, graph_index_lag, graph_index_lag_sample, ingest_files_batched,
         ingest_project_batched_paced,
     };
-    use crate::contextgraph::Projection;
+    use crate::contextgraph::RecordFold;
     use crate::extraction_tree::{
         planted_extraction_tree, walked_generation, SOURCE_BODY, SOURCE_PATH, TEST_MODULE_BODY,
         TEST_MODULE_PATH,
@@ -2743,7 +2742,7 @@ mod scoped_reindex_tests {
             let lagging = graph_index_lag(
                 tree.path(),
                 &latest,
-                graph.as_ref().map(|graph| graph as &dyn Projection),
+                graph.as_ref().map(|graph| graph as &dyn RecordFold),
                 &file,
             );
             assert_eq!(

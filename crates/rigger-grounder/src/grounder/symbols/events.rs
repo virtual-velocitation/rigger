@@ -920,8 +920,8 @@ pub(crate) fn lang_str(l: Lang) -> &'static str {
 mod tests {
     use crate::contextgraph::sqlite::Projector;
     use crate::contextgraph::{
-        Projection, KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES,
-        TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+        KIND_CODE_ENTITY, KIND_FILE, REL_CONTAINS, REL_REFERENCES, TYPE_CODE_ENTITY_EXTRACTED,
+        TYPE_EDGE_INFERRED,
     };
 
     /// Every event the production whole-project ingest ([`super::project_batches`]) emits for
@@ -959,7 +959,7 @@ mod tests {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+        let g = rigger_domain::composed::subgraph(&p, &["combat.rs".to_string()], 3).unwrap();
         assert!(
             g.nodes
                 .iter()
@@ -2009,12 +2009,12 @@ fn an_integration_test() {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p
-            .subgraph(
-                &["product.rs".to_string(), "tests/integration.rs".to_string()],
-                3,
-            )
-            .unwrap();
+        let g = rigger_domain::composed::subgraph(
+            &p,
+            &["product.rs".to_string(), "tests/integration.rs".to_string()],
+            3,
+        )
+        .unwrap();
 
         // The product item has a code-entity node...
         assert!(
@@ -2116,12 +2116,12 @@ fn an_integration_test() {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p
-            .subgraph(
-                &["product.rs".to_string(), "tests/integration.rs".to_string()],
-                3,
-            )
-            .unwrap();
+        let g = rigger_domain::composed::subgraph(
+            &p,
+            &["product.rs".to_string(), "tests/integration.rs".to_string()],
+            3,
+        )
+        .unwrap();
 
         // PROVEN: product_fn is referenced by the in-file test (line 11) and the tests/-dir
         // integration test (line 3) - proven_by: 2, both file:lines, in fold order (product.rs
@@ -2278,9 +2278,12 @@ fn an_integration_test() {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p
-            .subgraph(&["broken.js".to_string(), "clean.js".to_string()], 1)
-            .unwrap();
+        let g = rigger_domain::composed::subgraph(
+            &p,
+            &["broken.js".to_string(), "clean.js".to_string()],
+            1,
+        )
+        .unwrap();
 
         let broken = g
             .nodes

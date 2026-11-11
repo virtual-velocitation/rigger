@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rigger_domain::code_facts::{Stamp, Tip};
 use rigger_domain::code_graph::CodeGraph;
 use rigger_domain::code_view::{Entry, Extract, FactsView, ViewFilter};
-use rigger_domain::contextgraph::{EntryFold, Graph, Projection};
+use rigger_domain::contextgraph::{EntryFold, Graph, RecordFold};
 use rigger_domain::eventstore::Event;
 use rigger_domain::ingest::derived_key_parts;
 use rigger_domain::retention::GenerationIngested;

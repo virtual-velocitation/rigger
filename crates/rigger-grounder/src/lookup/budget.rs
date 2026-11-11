@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use super::graph::{Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, Site, TermGraph};
 use super::prose::Ranked;
 use super::text::TermText;
 
@@ -33,23 +33,21 @@ pub(crate) const SNIPPET_CHARS: usize = 200;
 /// The characters a reply cut to [`REPLY_LIMIT`] keeps free for the note stating the cut.
 pub(crate) const NOTE_ROOM: usize = 200;
 
-/// What the graph section says of every answer it gives.
-pub(crate) const GRAPH_FILTERED: &str = "Filtered, not worktree-true: a hit whose file differs \
-in your tree from what the graph ingested is withheld; the text section answers from your tree.";
-/// What the graph section says of the files whose hits it withheld.
-pub(crate) const WITHHELD: &str = "changed in your tree; see the text results";
+/// What the graph section says after its label, of every answer it gives.
+pub(crate) const GRAPH_FILTERED: &str = "Filtered, not worktree-true: a hit in a file that \
+differs in your tree is withheld; the text section answers from your tree.";
 
 /// The reply to `terms`: the graph, text and prose sections, each answered or stating why not.
 pub(crate) fn reply(
     terms: &[&str],
-    graph: Result<Vec<TermGraph>, String>,
+    graph: Result<Answered, String>,
     text: Result<Vec<TermText>, String>,
     prose: Result<Ranked, String>,
 ) -> String {
     let mut out = format!("# lookup: {}\n", terms.join(", "));
     out.push_str("\n## graph\n");
     match graph {
-        Ok(answers) => graph_section(&mut out, terms, &answers),
+        Ok(answered) => graph_section(&mut out, terms, &answered),
         Err(reason) => not_answered(&mut out, &reason),
     }
     out.push_str("\n## text\n");
@@ -75,12 +73,12 @@ fn shares(total: usize, n: usize) -> impl Iterator<Item = usize> {
     (0..n).map(move |i| total / n + usize::from(i < total % n))
 }
 
-/// Each term's graph answer within its share of [`GRAPH_CHARS`].
-fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
-    let _ = writeln!(out, "{GRAPH_FILTERED}");
+/// The graph's label, then each term's graph answer within its share of [`GRAPH_CHARS`].
+fn graph_section(out: &mut String, terms: &[&str], answered: &Answered) {
+    let _ = writeln!(out, "{}\n{GRAPH_FILTERED}", answered.label);
     for ((term, answer), share) in terms
         .iter()
-        .zip(answers)
+        .zip(&answered.terms)
         .zip(shares(GRAPH_CHARS, terms.len()))
     {
         let _ = writeln!(out, "\n### {term}");
@@ -100,7 +98,6 @@ fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
                 entities,
                 reached,
                 unread,
-                withheld,
             } => {
                 let _ = writeln!(out, "{tier} match: {}", entities_counted(*reached));
                 let mut used = 0;
@@ -126,11 +123,6 @@ fn graph_section(out: &mut String, terms: &[&str], answers: &[TermGraph]) {
                         "truncated: {} not read past the first {GRAPH_ENTITIES} shown; pass a fuller name or path to narrow",
                         entities_counted(*unread)
                     );
-                }
-                if !withheld.is_empty() {
-                    let shown = withheld.len().min(EDGES_SHOWN);
-                    let _ = write!(out, "{WITHHELD}: {}", withheld[..shown].join(", "));
-                    more(out, withheld.len() - shown);
                 }
             }
         }

@@ -19,7 +19,7 @@ use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocumen
 use super::budget::{PROSE_TOP, SNIPPET_CHARS};
 use super::text::relative;
 use super::words;
-use crate::contextgraph::{Node, Projection, KIND_DECISION, KIND_FINDING, KIND_LESSON};
+use crate::contextgraph::{ContextGraph, Node, KIND_DECISION, KIND_FINDING, KIND_LESSON};
 use crate::grounder::walk_guarded;
 
 /// The file extensions read as prose.
@@ -74,7 +74,7 @@ pub(crate) struct Ranked {
 }
 
 /// The graph's records ranked as prose.
-pub(crate) fn records(graph: &dyn Projection) -> Result<Vec<Node>, String> {
+pub(crate) fn records(graph: &dyn ContextGraph) -> Result<Vec<Node>, String> {
     let mut nodes = Vec::new();
     for kind in RECORD_KINDS {
         nodes.extend(graph.nodes_of_kind(kind).map_err(|e| e.to_string())?);

@@ -162,9 +162,9 @@ fn text_batch(rel: &str, text: &str) -> Vec<Event> {
 mod tests {
     use super::*;
     use crate::contextgraph::{
-        Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
-        REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
-        TIER_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+        KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS,
+        REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
+        TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
     };
     use crate::grounder::design::extract::{extract_concepts, extract_links};
 
@@ -202,17 +202,17 @@ mod tests {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p
-            .subgraph(
-                &[
-                    "docs/architecture.md".to_string(),
-                    "docs/adr/0001-code-as-events.md".to_string(),
-                    "docs/handbook-rules.md".to_string(),
-                    "src/combat.rs#L2".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
+        let g = rigger_domain::composed::subgraph(
+            &p,
+            &[
+                "docs/architecture.md".to_string(),
+                "docs/adr/0001-code-as-events.md".to_string(),
+                "docs/handbook-rules.md".to_string(),
+                "src/combat.rs#L2".to_string(),
+            ],
+            1,
+        )
+        .unwrap();
         let has_kind = |kind: &str| g.nodes.iter().any(|n| n.kind == kind);
         assert!(
             has_kind(KIND_DESIGN_DOC),
@@ -315,17 +315,17 @@ mod tests {
 
         let p = crate::test_support::fold_events(events);
 
-        let g = p
-            .subgraph(
-                &[
-                    "docs/architecture.md".to_string(),
-                    "docs/adr/0001-code-as-events.md".to_string(),
-                    "docs/handbook.md".to_string(),
-                    "src/combat.rs#L2".to_string(),
-                ],
-                1,
-            )
-            .unwrap();
+        let g = rigger_domain::composed::subgraph(
+            &p,
+            &[
+                "docs/architecture.md".to_string(),
+                "docs/adr/0001-code-as-events.md".to_string(),
+                "docs/handbook.md".to_string(),
+                "src/combat.rs#L2".to_string(),
+            ],
+            1,
+        )
+        .unwrap();
         let has_edge = |from: &str, rel: &str, to: &str| {
             g.edges
                 .iter()

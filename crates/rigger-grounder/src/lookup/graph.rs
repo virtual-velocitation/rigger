@@ -1,17 +1,13 @@
-//! The graph half: each term resolved against the code graph ([`Projection::locate`] first, then
-//! the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition site
-//! and the sites of its direct callers and callees. The graph is not the caller's tree: every hit
-//! whose file's bytes in the caller's tree are not the bytes the graph ingested (the generation
-//! those bytes extract to differs from the one the graph holds for the file, the file absent
-//! included) is withheld and its file named, so the graph half never answers from bytes the
-//! caller no longer holds. It is filtered, not worktree-true: what the graph lacks for the tree's
-//! new bytes the text half answers.
+//! The graph half: each term resolved against the code graph ([`ContextGraph::locate`] first,
+//! then the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition
+//! site and the sites of its direct callers and callees. The graph is not the caller's tree: the
+//! graph withholds every hit in a file the caller's tree holds differently and counts it in its
+//! label ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers
+//! from bytes the caller no longer holds. What the graph lacks for the tree's new bytes the text
+//! half answers.
 
-use crate::contextgraph::{Projection, REBUILD_OWED};
-#[cfg(feature = "symbols")]
-use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "symbols")]
-use std::path::Path;
+use crate::contextgraph::ContextGraph;
+use rigger_domain::composed::Label;
 
 #[cfg(feature = "symbols")]
 use super::budget::GRAPH_ENTITIES;
@@ -56,38 +52,29 @@ pub(crate) struct Entity {
     )
 )]
 pub(crate) enum TermGraph {
-    /// The term reached entities: the first [`GRAPH_ENTITIES`] it reached whose files the caller's
-    /// tree holds as the graph does, how many it reached in all, how many of those were never read
-    /// once that many were kept, and the files of its hits that were withheld.
+    /// The term reached entities: the first [`GRAPH_ENTITIES`] it reached, how many it reached
+    /// in all, and how many of those were never read once that many were kept.
     Found {
         tier: &'static str,
         entities: Vec<Entity>,
         reached: usize,
         unread: usize,
-        withheld: Vec<String>,
     },
     /// No entity: the nearest names.
     Missing { nearest: Vec<String> },
 }
 
-/// The graph to answer from, or the reason there is none to answer from: the caller has none, it
-/// owes its rebuild, or it cannot say whether it does.
-pub(crate) fn usable(graph: Result<&dyn Projection, String>) -> Result<&dyn Projection, String> {
-    let graph = graph?;
-    match graph.rebuild_owed() {
-        Ok(false) => Ok(graph),
-        Ok(true) => Err(REBUILD_OWED.to_string()),
-        Err(e) => Err(format!("the context graph could not be read: {e}")),
-    }
+/// The graph half's answer: each term's, and the graph's label as it stands once every term was
+/// answered, so it counts every hit the answers withheld.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Answered {
+    pub label: Label,
+    pub terms: Vec<TermGraph>,
 }
 
 /// This build extracts no code, so its graph holds no code entity to answer from.
 #[cfg(not(feature = "symbols"))]
-pub(crate) fn answer(
-    _root: &std::path::Path,
-    _terms: &[&str],
-    _graph: &dyn Projection,
-) -> Result<Vec<TermGraph>, String> {
+pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answered, String> {
     Err(
         "this rigger build carries no code extraction (the `symbols` feature), so its graph \
          holds no code entity"
@@ -95,18 +82,12 @@ pub(crate) fn answer(
     )
 }
 
-/// Each term of `terms` answered from `graph`, in order, every hit checked against the tree at
-/// `root`.
+/// Each term of `terms` answered from `graph`, in order.
 #[cfg(feature = "symbols")]
-pub(crate) fn answer(
-    root: &Path,
-    terms: &[&str],
-    graph: &dyn Projection,
-) -> Result<Vec<TermGraph>, String> {
+pub(crate) fn answer(terms: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
     let read = |e: crate::contextgraph::Error| format!("the context graph could not be read: {e}");
     let names = Names::build(graph.nodes_of_kind(KIND_CODE_ENTITY).map_err(read)?);
-    let mut fresh = Freshness::new(root, graph);
-    terms
+    let terms = terms
         .iter()
         .map(|term| {
             let (tier, ids) = match located(graph, term).map_err(read)? {
@@ -117,17 +98,7 @@ pub(crate) fn answer(
                 },
             };
             let mut entities = Vec::new();
-            let mut withheld = BTreeSet::new();
-            let mut examined = 0;
-            for id in &ids {
-                if entities.len() >= GRAPH_ENTITIES {
-                    break;
-                }
-                examined += 1;
-                let site = site_of(names.node(id), id);
-                if !fresh.holds(&site, &mut withheld) {
-                    continue;
-                }
+            for id in ids.iter().take(GRAPH_ENTITIES) {
                 let up = graph
                     .calls(std::slice::from_ref(id), Direction::Up, 1, TIER_INFERRED)
                     .map_err(read)?;
@@ -135,32 +106,34 @@ pub(crate) fn answer(
                     .calls(std::slice::from_ref(id), Direction::Down, 1, TIER_INFERRED)
                     .map_err(read)?;
                 entities.push(Entity {
-                    site,
-                    callers: fresh.kept(neighbours(&up), &mut withheld),
-                    callees: fresh.kept(neighbours(&down), &mut withheld),
+                    site: site_of(names.node(id), id),
+                    callers: neighbours(&up),
+                    callees: neighbours(&down),
                     referenced_in: up
                         .referenced_not_called
                         .iter()
                         .filter_map(|n| node_file(&n.kind, &n.id).map(str::to_string))
-                        .filter(|file| fresh.file_holds(file, &mut withheld))
                         .collect(),
                 });
             }
             Ok(TermGraph::Found {
                 tier: tier.label(),
-                entities,
+                unread: ids.len() - entities.len(),
                 reached: ids.len(),
-                unread: ids.len() - examined,
-                withheld: withheld.into_iter().collect(),
+                entities,
             })
         })
-        .collect()
+        .collect::<Result<_, String>>()?;
+    Ok(Answered {
+        label: graph.stamp_label(),
+        terms,
+    })
 }
 
-/// The ids [`Projection::locate`] resolves `term` to, `None` when it resolves none.
+/// The ids [`ContextGraph::locate`] resolves `term` to, `None` when it resolves none.
 #[cfg(feature = "symbols")]
 fn located(
-    graph: &dyn Projection,
+    graph: &dyn ContextGraph,
     term: &str,
 ) -> Result<Option<Vec<String>>, crate::contextgraph::Error> {
     Ok(match graph.locate(term)? {
@@ -203,59 +176,4 @@ fn neighbours(walk: &CallGraph) -> Vec<Site> {
         .filter(|n| n.layer == 1)
         .map(|n| site(&n.node))
         .collect()
-}
-
-/// Whether each file's bytes in the caller's tree are the bytes the graph ingested, each file
-/// checked once per lookup: the generation the tree's bytes extract to, under the exclusion flag
-/// clear (a file the walk excludes is ingested with no entity, so a file holding a hit was
-/// ingested with the flag clear), against the generation the graph holds for it. A file the tree
-/// does not hold never holds a hit: a whole-project walk retires such a file by folding the batch
-/// for no bytes, the very generation its absence extracts to, and a node a record still names
-/// stays in the graph at that file.
-#[cfg(feature = "symbols")]
-struct Freshness<'a> {
-    root: &'a Path,
-    graph: &'a dyn Projection,
-    checked: BTreeMap<String, bool>,
-}
-
-#[cfg(feature = "symbols")]
-impl<'a> Freshness<'a> {
-    fn new(root: &'a Path, graph: &'a dyn Projection) -> Self {
-        Freshness {
-            root,
-            graph,
-            checked: BTreeMap::new(),
-        }
-    }
-
-    /// Whether `file` is held as the graph holds it; when not, it joins `withheld`.
-    fn file_holds(&mut self, file: &str, withheld: &mut BTreeSet<String>) -> bool {
-        let (root, graph) = (self.root, self.graph);
-        let holds = *self.checked.entry(file.to_string()).or_insert_with(|| {
-            let held = graph.current_generation(&crate::ingest::code_identity(file));
-            crate::grounder::tree_holds(root, "gc", file)
-                && matches!(held, Ok(Some(held)) if held == crate::ingest::tree_generation(root, file, false))
-        });
-        if !holds {
-            withheld.insert(file.to_string());
-        }
-        holds
-    }
-
-    /// Whether `site`'s file, if it names one, is held as the graph holds it.
-    fn holds(&mut self, site: &Site, withheld: &mut BTreeSet<String>) -> bool {
-        match &site.file {
-            Some((file, _)) => self.file_holds(file, withheld),
-            None => true,
-        }
-    }
-
-    /// The sites of `sites` whose files are held as the graph holds them.
-    fn kept(&mut self, sites: Vec<Site>, withheld: &mut BTreeSet<String>) -> Vec<Site> {
-        sites
-            .into_iter()
-            .filter(|site| self.holds(site, withheld))
-            .collect()
-    }
 }

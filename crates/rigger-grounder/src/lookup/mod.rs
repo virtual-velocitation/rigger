@@ -2,8 +2,8 @@
 //! of terms from three sources at once, each in its own labelled section of one bounded reply.
 //!
 //! - `graph`: each term resolved against the code graph's entity names ([`names`]) and answered
-//!   with its definition site and its callers and callees, every hit withheld whose file's bytes
-//!   in the caller's tree are not the bytes the graph ingested ([`graph`]).
+//!   with its definition site and its callers and callees under the graph's label, every hit in a
+//!   file the caller's tree holds differently withheld and counted ([`graph`]).
 //! - `text`: a live literal scan of the caller's tree, no index ([`text`]).
 //! - `prose`: the tree's prose and the graph's records ranked by relevance ([`prose`]).
 //!
@@ -20,7 +20,7 @@ mod text;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::contextgraph::Projection;
+use crate::contextgraph::ContextGraph;
 pub use rigger_domain::lookup::Lookup;
 
 /// The combined lookup over the working tree at one root: the caller's own tree. It keeps one
@@ -50,18 +50,15 @@ impl Lookup for TreeLookup {
     fn lookup(
         &self,
         terms: &[String],
-        graph: Result<&dyn Projection, String>,
+        graph: Result<&dyn ContextGraph, String>,
     ) -> Result<String, String> {
         let terms = distinct_terms(terms);
         if terms.is_empty() {
             return Err("lookup: pass one or more non-empty terms".to_string());
         }
-        let usable = graph::usable(graph);
-        let graph_half = usable
-            .clone()
-            .and_then(|g| graph::answer(&self.root, &terms, g));
+        let graph_half = graph.clone().and_then(|g| graph::answer(&terms, g));
         let text_half = text::scan(&self.root, &terms);
-        let records = usable.and_then(prose::records);
+        let records = graph.and_then(prose::records);
         let prose_half = self
             .prose
             .lock()
