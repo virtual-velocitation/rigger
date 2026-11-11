@@ -192,6 +192,7 @@ mod regate_landed_on_resume_periphery;
 mod registry_periphery;
 mod relocated_worktree_store_resolution_periphery;
 mod replan_episode_identity;
+mod repository_discovery_audit;
 mod reset_build_cache_periphery;
 mod reset_derived_compaction;
 mod reset_derived_compaction_periphery;

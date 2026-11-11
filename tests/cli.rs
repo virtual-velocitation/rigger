@@ -2170,6 +2170,58 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
     );
 }
 
+/// A git failure inside a repository is an error, never a directory store: given a linked
+/// worktree whose administrative directory is gone, so git refuses every call there, when the
+/// operator runs `rigger graph communities` in it, then it fails naming git's refusal and leaves
+/// no `.rigger/` in the worktree.
+#[test]
+fn a_git_failure_inside_a_repository_fails_rather_than_opening_a_directory_store() {
+    use common::fixtures::{git_ok, temp_git_project_with_commit};
+    let repo = temp_git_project_with_commit();
+    let outside = tempfile::tempdir().unwrap();
+    let tree = outside.path().join("tree");
+    git_ok(
+        repo.path(),
+        &["worktree", "add", "-q", tree.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(repo.path().join(".git").join("worktrees")).unwrap();
+    std::fs::write(tree.join("lib.rs"), "fn helper() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(&tree, &["graph", "communities"]);
+
+    assert_eq!(
+        (
+            ok,
+            tree.join(".rigger").exists(),
+            err.contains("git rev-parse")
+        ),
+        (false, false, true),
+        "the command fails naming git's refusal and creates no store; stdout: {out}; \
+         stderr: {err}"
+    );
+}
+
+/// `rigger setup` in a directory no repository encloses, with git discovery stopped at its
+/// parent, installs no pre-commit hook and leaves no `.git` behind: only discovery decides there
+/// is a repository to hook.
+#[test]
+fn setup_outside_any_repository_creates_no_git_directory() {
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    let ceiling = [(
+        "GIT_CEILING_DIRECTORIES",
+        root.parent().unwrap().to_str().unwrap(),
+    )];
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &ceiling);
+
+    assert_eq!(
+        (ok, root.join(".git").exists()),
+        (true, false),
+        "setup succeeds and creates no repository; stdout: {out}; stderr: {err}"
+    );
+}
+
 /// The scope of the tree a build reads (spec 49, section 3): the graph `rigger graph build` leaves
 /// holds the project's OWN sources, in both halves at once - the code half (a definition) AND the
 /// design half (an inline `// WHY:` rationale) - because both are read out of one listing of the
