@@ -3019,6 +3019,54 @@ pub fn route(
     base: &str,
     instances: &[InstanceView],
 ) -> Response {
+    route_hiding(
+        method,
+        target,
+        events,
+        graph,
+        0,
+        progress_events,
+        liveness_ages,
+        configured_max_retries,
+        run_branch,
+        base,
+        instances,
+    )
+}
+
+/// What a whole-graph provider reads: the graph a read drew and how many test entities its
+/// `tests` filter removed from it, which the graph itself does not hold.
+#[derive(Debug, Default)]
+pub struct GraphRead {
+    pub graph: Graph,
+    pub tests_hidden: usize,
+}
+
+/// A provider that reads no hidden tests answers a plain [`Graph`].
+impl From<Graph> for GraphRead {
+    fn from(graph: Graph) -> Self {
+        GraphRead {
+            graph,
+            tests_hidden: 0,
+        }
+    }
+}
+
+/// [`route`] over a graph read that hid `tests_hidden` test entities: the overview reports them.
+#[allow(clippy::too_many_arguments)]
+fn route_hiding(
+    method: &str,
+    target: &str,
+    events: &[Event],
+    graph: &Graph,
+    tests_hidden: usize,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+    instances: &[InstanceView],
+) -> Response {
     if method != "GET" {
         return Response::text(
             405,
@@ -3158,7 +3206,9 @@ pub fn route(
                     .map(percent_decode)
                     .unwrap_or_default();
                 if seed.is_empty() {
-                    serde_json::to_string(&clustered_overview(graph, &lens))
+                    let mut overview = clustered_overview(graph, &lens);
+                    overview.tests_hidden = tests_hidden;
+                    serde_json::to_string(&overview)
                 } else if query_param(target, "lens").is_some() {
                     // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
                     // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
@@ -3272,7 +3322,7 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, H, I>(
+pub fn serve_on<F, G, R, H, I>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
@@ -3284,7 +3334,8 @@ pub fn serve_on<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
@@ -3330,7 +3381,7 @@ where
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, H, I>(
+fn handle_conn<F, G, R, H, I>(
     stream: TcpStream,
     provider: &Arc<F>,
     graph_provider: &G,
@@ -3342,7 +3393,8 @@ fn handle_conn<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> CallGraph,
 {
@@ -3475,16 +3527,17 @@ where
                             // every other `/api/*` path keeps the cheap run-seeded graph the polled
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
-                            let graph = if path == "/api/graph" {
-                                graph_provider(instance, tests.unwrap_or_default())
+                            let read: GraphRead = if path == "/api/graph" {
+                                graph_provider(instance, tests.unwrap_or_default()).into()
                             } else {
-                                polled_graph
+                                polled_graph.into()
                             };
-                            route(
+                            route_hiding(
                                 &method,
                                 &target,
                                 &events,
-                                &graph,
+                                &read.graph,
+                                read.tests_hidden,
                                 &progress,
                                 &liveness,
                                 configured_max_retries,
@@ -6202,7 +6255,6 @@ mod tests {
     #[test]
     fn lenses_report_the_hidden_test_count() {
         use rigger_domain::contextgraph::REL_TESTS;
-        use rigger_domain::test_view::{HIDDEN_ID, HIDDEN_KIND};
 
         let node = |id: &str, kind: &str, tests: Option<&str>| Node {
             id: id.to_string(),
@@ -6240,24 +6292,42 @@ mod tests {
                     graph.nodes.push(node(t, KIND_CODE_ENTITY, None));
                     graph.edges.push(edge(t, "community/1/0", REL_TESTS));
                 }
-            } else {
-                // Three tests are hidden: the two attached to community 0 and one that proves
-                // nothing grouped.
-                graph.nodes.push(node(HIDDEN_ID, HIDDEN_KIND, Some("3")));
             }
             graph
         };
         let code = Lens::Code {
             resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
         };
+        // Three tests are hidden when none is drawn: the two attached to community 0 and one that
+        // proves nothing grouped. The opened graph counts them; the drawn graph holds none.
         let cases = [
-            ("exclude", false, &code, 3, vec![("community/1/0", 2)]),
-            ("include", true, &code, 0, vec![("community/1/0", 2)]),
-            ("exclude, files lens", false, &Lens::Files, 3, vec![]),
-            ("include, files lens", true, &Lens::Files, 0, vec![]),
+            ("exclude", false, "code", 3, vec![("community/1/0", 2)]),
+            ("include", true, "code", 0, vec![("community/1/0", 2)]),
+            ("exclude, files lens", false, "files", 3, vec![]),
+            ("include, files lens", true, "files", 0, vec![]),
         ];
-        for (name, drawn, lens, hidden, counted) in cases {
-            let overview = clustered_overview(&product(drawn), lens);
+        for (name, drawn, lens_name, hidden, counted) in cases {
+            let lens = match lens_name {
+                "code" => &code,
+                _ => &Lens::Files,
+            };
+            let graph = product(drawn);
+            let response = route_hiding(
+                "GET",
+                &format!("/api/graph?lens={lens_name}"),
+                &[],
+                &graph,
+                hidden,
+                &[],
+                &HashMap::new(),
+                3,
+                "run",
+                "base",
+                &[],
+            );
+            let json: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            let mut overview = clustered_overview(&graph, lens);
+            overview.tests_hidden = hidden;
             let counts: Vec<(&str, usize)> = overview
                 .clusters
                 .iter()
@@ -6266,7 +6336,6 @@ mod tests {
                 .collect();
             assert_eq!(overview.tests_hidden, hidden, "{name}: hidden count");
             assert_eq!(counts, counted, "{name}: cluster test counts");
-            let json = serde_json::to_value(&overview).unwrap();
             assert_eq!(
                 json.get("tests_hidden").and_then(|v| v.as_u64()),
                 (hidden > 0).then_some(hidden as u64),
@@ -8218,7 +8287,7 @@ mod tests {
         use std::net::{TcpListener, TcpStream};
         use std::sync::Mutex;
 
-        let ask = |target: &str| -> (String, Vec<Tests>, Vec<Tests>) {
+        let ask = |target: &str| -> (String, String, Vec<Tests>, Vec<Tests>) {
             let graph_seen = Arc::new(Mutex::new(Vec::new()));
             let calls_seen = Arc::new(Mutex::new(Vec::new()));
             let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
@@ -8227,7 +8296,10 @@ mod tests {
             };
             let graph_provider = move |_: Option<&str>, tests: Tests| {
                 g.lock().unwrap().push(tests);
-                Graph::default()
+                GraphRead {
+                    graph: Graph::default(),
+                    tests_hidden: 4,
+                }
             };
             let calls_provider = move |_: Option<&str>,
                                        _: &[String],
@@ -8263,9 +8335,14 @@ mod tests {
             client.read_to_string(&mut resp).unwrap();
             server.join().unwrap();
             let status = resp.lines().next().unwrap().to_string();
+            let body = resp
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
             let graph_seen = graph_seen.lock().unwrap().clone();
             let calls_seen = calls_seen.lock().unwrap().clone();
-            (status, graph_seen, calls_seen)
+            (status, body, graph_seen, calls_seen)
         };
         let ok = "HTTP/1.1 200 OK";
         let refused = "HTTP/1.1 400 Bad Request";
@@ -8295,8 +8372,16 @@ mod tests {
             ),
         ];
         for (target, status, graph, calls) in cases {
-            assert_eq!(ask(target), (status.to_string(), graph, calls), "{target}");
+            let (got, _, seen_graph, seen_calls) = ask(target);
+            assert_eq!(
+                (got, seen_graph, seen_calls),
+                (status.to_string(), graph, calls),
+                "{target}"
+            );
         }
+        // The count the provider read rides the overview body, from the same read as the graph.
+        let (_, body, _, _) = ask("/api/graph?tests=exclude");
+        assert!(body.contains(r#""tests_hidden":4"#), "{body}");
     }
 
     /// The read-only guard also holds over a real socket: a POST is refused 405 and the

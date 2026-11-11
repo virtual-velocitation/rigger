@@ -151,11 +151,11 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
         // the dash's own project by default, an attached instance's LOCAL graph projection when
         // one is selected, or an empty graph for a since-gone selector - never an error.
-        move |instance: Option<&str>, tests: Tests| -> contextgraph::Graph {
+        move |instance: Option<&str>, tests: Tests| -> dash::GraphRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
                 DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests),
                 DashAttach::Instance(inst) => dash_attach_graph(&inst, tests),
-                DashAttach::Empty => contextgraph::Graph::default(),
+                DashAttach::Empty => dash::GraphRead::default(),
             }
         }
     };
@@ -537,8 +537,14 @@ fn dash_read<T>(
 /// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
-fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> contextgraph::Graph {
-    dash_read(graph_db, identity, tests, |g| g.whole()).unwrap_or_default()
+fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
+    dash_read(graph_db, identity, tests, |g| {
+        Ok(dash::GraphRead {
+            graph: g.whole()?,
+            tests_hidden: g.hidden_tests()?.len(),
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
@@ -763,7 +769,7 @@ fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
 /// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
 /// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
 /// run seeded none. Best-effort/empty-degrade like the local read.
-fn dash_attach_graph(inst: &rigger::registry::Instance, tests: Tests) -> contextgraph::Graph {
+fn dash_attach_graph(inst: &rigger::registry::Instance, tests: Tests) -> dash::GraphRead {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
@@ -935,7 +941,7 @@ mod tests {
 
         // The fix: the graph provider reads the whole projection directly, so a real code node is
         // reachable with no run seeds at all.
-        let whole = dash_read_whole_graph(graph_path, identity, Tests::Exclude);
+        let whole = dash_read_whole_graph(graph_path, identity, Tests::Exclude).graph;
         assert!(
             whole
                 .nodes
@@ -1018,7 +1024,7 @@ mod tests {
         );
 
         // (a) The read degrades to an EMPTY graph, never an error.
-        let whole = dash_read_whole_graph(graph_db, identity, Tests::Exclude);
+        let whole = dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph;
         assert!(
             whole.nodes.is_empty() && whole.edges.is_empty(),
             "an absent projection reads as an empty graph, got {whole:?}"
@@ -1035,8 +1041,9 @@ mod tests {
         // The composed provider closure the dash consults on /api/graph (main.rs, the
         // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
         // absent path.
-        let provider =
-            || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity, Tests::Exclude) };
+        let provider = || -> contextgraph::Graph {
+            dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph
+        };
         let via_provider = provider();
         assert!(
             via_provider.nodes.is_empty() && via_provider.edges.is_empty(),

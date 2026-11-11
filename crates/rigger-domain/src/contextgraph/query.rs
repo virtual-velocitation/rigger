@@ -33,7 +33,7 @@ use crate::contextgraph::{
     REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
-use crate::test_view::{HIDDEN_KIND, TESTS_ATTR};
+use crate::test_view::TESTS_ATTR;
 
 /// The default hop bound for a seeded [`neighborhood`] walk (spec 30 c5) - the same breadth an
 /// agent's own blast-radius grounding walk uses (`subgraph` calls it, and `rigger graph --around`
@@ -612,7 +612,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             edges: Vec::new(),
             total: graph.nodes.len(),
             empty_state: buckets.derived_texts().map(|t| t.underived.to_string()),
-            tests_hidden: tests_hidden(graph),
+            tests_hidden: 0,
         };
     }
 
@@ -660,7 +660,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         edges,
         total: graph.nodes.len(),
         empty_state,
-        tests_hidden: tests_hidden(graph),
+        tests_hidden: 0,
     }
 }
 
@@ -756,17 +756,6 @@ pub fn count_tests(clusters: &mut [Cluster], graph: &Graph, buckets: &Buckets) {
     for c in clusters {
         c.tests = carried.get(c.key.as_str()).copied().unwrap_or(0);
     }
-}
-
-/// How many test entities `graph`'s read hid: the count the read's [`HIDDEN_KIND`] node carries,
-/// none when it carries none.
-pub fn tests_hidden(graph: &Graph) -> usize {
-    graph
-        .nodes
-        .iter()
-        .find(|n| n.kind == HIDDEN_KIND)
-        .and_then(|n| n.attrs.get(TESTS_ATTR)?.parse().ok())
-        .unwrap_or(0)
 }
 
 /// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and `dash.rs`'s
@@ -1804,8 +1793,9 @@ pub struct ClusterOverview {
     /// derived code grain, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
-    /// How many test entities the read hid, attached to a cluster or not. Skipped in JSON when
-    /// none is hidden.
+    /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
+    /// the opened graph's `hidden_tests()`, since the drawn graph holds none of them. Skipped in
+    /// JSON when none is hidden.
     #[serde(skip_serializing_if = "is_zero")]
     pub tests_hidden: usize,
 }
