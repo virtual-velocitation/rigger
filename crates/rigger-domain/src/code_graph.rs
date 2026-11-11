@@ -74,7 +74,7 @@ impl Builder {
     /// The graph under `tests`: a node no product fact asserts is marked `test=true`. Excluded,
     /// test nodes and edges are dropped; included, all are kept; only, the test edges and the
     /// nodes test code asserts or those edges reach.
-    fn graph(self, tests: Tests) -> Graph {
+    fn into_graph(self, tests: Tests) -> Graph {
         let Builder {
             nodes,
             product,
@@ -162,7 +162,7 @@ impl<'v> CodeGraph<'v> {
                 n.attrs.insert("proof_evidence".to_string(), evidence);
             }
         }
-        b.graph(self.filter.tests)
+        b.into_graph(self.filter.tests)
     }
 
     /// The file node, entities, placeholders and edges of the code file `facts`.
