@@ -1,1 +1,1213 @@
-//! The resolver: the one rule table that resolves every name in a code view at read time.
+//! The resolver: the one rule table that resolves every name in a code view at read time. A
+//! file's facts hold names as written; the rules here turn them into the entities, edges, tiers,
+//! placeholders and proofs readers get, against the definitions the whole view holds. It reads
+//! kinds and names only, so it holds no language knowledge.
+//!
+//! | Rule | Resolution |
+//! |---|---|
+//! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
+//! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
+//! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
+//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
+//! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
+//! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it |
+//! | structure | each definition's `CONTAINS` from its parent, else from its file |
+//! | proof | a test call: one same-file product call-target candidate, else one in the view |
+//! | duplicate id, kind precedence | one entity per id, its kind and line by [`definition_precedence`] |
+//! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure |
+//! | design link, workflow relation | the node kinds and relations an intent fact may name |
+//!
+//! A product mention resolves against product candidates only, so test definitions never change a
+//! product edge, tier, frontier or placeholder. A test call proves product definitions whatever
+//! tests a reader shows, and resolves against every candidate when tests are shown.
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
+
+use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
+use crate::code_view::{CodeView, DefRef};
+use crate::contextgraph::query::{entity_id, leaf_of, placeholder_id};
+use crate::contextgraph::{
+    definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_MODULE, KIND_AGENT,
+    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE,
+    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
+    REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+};
+
+/// The node kinds a design concept or a workflow node may name.
+const INTENT_KINDS: [&str; 7] = [
+    KIND_DESIGN_DOC,
+    KIND_ARCH_DECISION,
+    KIND_HANDBOOK_RULE,
+    KIND_RATIONALE,
+    KIND_STAGE,
+    KIND_GATE,
+    KIND_AGENT,
+];
+
+/// The relations a design link or a workflow relation may name.
+const INTENT_RELS: [&str; 9] = [
+    REL_SPECIFIES,
+    REL_CONSTRAINS,
+    REL_GOVERNS,
+    REL_EXPLAINS,
+    REL_DOC_REFERENCES,
+    REL_NEEDS,
+    REL_RUNS,
+    REL_REVIEWS,
+    REL_REVIEWS_LIGHT,
+];
+
+/// The file a module declaration reaches: the first of its candidate paths that is a code file.
+/// The module rule and the test-module closure both read it, so they cannot disagree.
+pub fn module_target(decl: &ModuleDecl, is_code_file: impl Fn(&str) -> bool) -> Option<&str> {
+    decl.candidates
+        .iter()
+        .map(String::as_str)
+        .find(|path| is_code_file(path))
+}
+
+/// What a set of candidates resolves to: nothing, the one candidate, or a frontier of several.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Hop<T> {
+    Terminal,
+    One(T),
+    Frontier(Vec<T>),
+}
+
+/// The one "exactly one" decision the rules take over a candidate set.
+pub fn hop<T>(mut candidates: Vec<T>) -> Hop<T> {
+    match candidates.len() {
+        0 => Hop::Terminal,
+        1 => Hop::One(candidates.remove(0)),
+        _ => Hop::Frontier(candidates),
+    }
+}
+
+/// Which candidates a mention resolves against: a product mention the product ones, a test
+/// mention all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pool {
+    Product,
+    All,
+}
+
+impl Pool {
+    /// The pool a mention of this test-ness resolves against.
+    pub fn of(test: bool) -> Self {
+        if test {
+            Pool::All
+        } else {
+            Pool::Product
+        }
+    }
+
+    fn admits(self, c: &Candidate) -> bool {
+        self == Pool::All || !c.test
+    }
+}
+
+/// One entity id a leaf names, settled over the definitions that share it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate<'v> {
+    pub id: String,
+    pub file: &'v str,
+    pub lang: &'v str,
+    pub kind: &'v str,
+    pub line: u32,
+    pub test: bool,
+}
+
+/// One entity of a file: an id, settled over the definitions that share it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entity {
+    pub id: String,
+    /// The definition's own name.
+    pub name: String,
+    pub kind: String,
+    pub line: u32,
+    pub test: bool,
+}
+
+/// One resolved edge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub from: String,
+    pub rel: &'static str,
+    pub to: String,
+    pub tier: &'static str,
+    /// Whether test code produced it.
+    pub test: bool,
+}
+
+/// One node a design concept or a workflow node names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentNode {
+    pub id: String,
+    pub kind: &'static str,
+    pub title: String,
+    /// The file it is read from.
+    pub doc: String,
+}
+
+/// The one of `defs` sharing an id that gives the id its kind and line: the first by
+/// [`definition_precedence`], the lesser kind string breaking a tie.
+fn settled<T>(defs: Vec<T>, kind_line: impl Fn(&T) -> (&str, u32)) -> Option<T> {
+    defs.into_iter().min_by(|a, b| {
+        let (ka, la) = kind_line(a);
+        let (kb, lb) = kind_line(b);
+        (definition_precedence(ka, la), ka).cmp(&(definition_precedence(kb, lb), kb))
+    })
+}
+
+/// The product share of `defs`, each paired with its test-ness, or all of them when none is
+/// product, with whether the share is test.
+fn product_else_test<T>(defs: Vec<(T, bool)>) -> (Vec<T>, bool) {
+    let test = defs.iter().all(|(_, test)| *test);
+    let share = defs
+        .into_iter()
+        .filter(|(_, t)| test || !t)
+        .map(|(d, _)| d)
+        .collect();
+    (share, test)
+}
+
+/// The one candidate of `targets` a reference from `file` takes: the one in `file` when it holds
+/// exactly one, else the one in the view; with whether it is in `file`.
+fn one_here_else_one_anywhere<'c, 'v>(
+    targets: &[&'c Candidate<'v>],
+    file: &str,
+) -> Option<(&'c Candidate<'v>, bool)> {
+    let here: Vec<&Candidate> = targets.iter().copied().filter(|c| c.file == file).collect();
+    match (here.as_slice(), targets) {
+        ([one], _) => Some((*one, true)),
+        (_, [one]) => Some((*one, false)),
+        _ => None,
+    }
+}
+
+/// The rule table applied to one view.
+pub struct Resolver<'v> {
+    view: &'v dyn CodeView,
+    /// Every code-half file of the view.
+    code_files: BTreeSet<&'v str>,
+    /// Every test file: Test-scope by path, or in the test-module closure.
+    test_files: BTreeSet<&'v str>,
+    /// The candidates of each leaf asked for, settled once per resolver.
+    candidates: RefCell<HashMap<String, Rc<Vec<Candidate<'v>>>>>,
+}
+
+impl<'v> Resolver<'v> {
+    /// The resolver of `view`. Its test files are the Test-scope files, then every file a
+    /// test-only module declaration, or any declaration in a test file, reaches.
+    pub fn new(view: &'v dyn CodeView) -> Self {
+        let mut code_files = BTreeSet::new();
+        let mut test_files = BTreeSet::new();
+        for f in view.files() {
+            if f.half == Half::Code {
+                code_files.insert(f.path);
+            }
+            if f.scope == Scope::Test {
+                test_files.insert(f.path);
+            }
+        }
+        let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
+        for &path in &code_files {
+            let Some(facts) = view.file(path) else {
+                continue;
+            };
+            for decl in &facts.modules {
+                if let Some(target) = module_target(decl, |p| code_files.contains(p))
+                    .and_then(|target| code_files.get(target))
+                {
+                    declared.push((path, decl.test, target));
+                }
+            }
+        }
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for &(from, test, to) in &declared {
+                if (test || test_files.contains(from)) && test_files.insert(to) {
+                    grew = true;
+                }
+            }
+        }
+        Self {
+            view,
+            code_files,
+            test_files,
+            candidates: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Whether `path` is test code by its scope or the test-module closure.
+    pub fn is_test_file(&self, path: &str) -> bool {
+        self.test_files.contains(path)
+    }
+
+    /// Whether `path` is a code-half file of the view.
+    pub fn is_code_file(&self, path: &str) -> bool {
+        self.code_files.contains(path)
+    }
+
+    /// The file `decl` reaches in this view.
+    pub fn module_target<'d>(&self, decl: &'d ModuleDecl) -> Option<&'d str> {
+        module_target(decl, |p| self.is_code_file(p))
+    }
+
+    /// Every entity id the leaf `leaf` names in the view's code, in id order. An id a product
+    /// definition holds is product, settled over its product definitions; one only test
+    /// definitions hold is test.
+    pub fn candidates(&self, leaf: &str) -> Rc<Vec<Candidate<'v>>> {
+        if let Some(held) = self.candidates.borrow().get(leaf) {
+            return Rc::clone(held);
+        }
+        let mut by_id: BTreeMap<(&'v str, &'v str), Vec<(DefRef<'v>, bool)>> = BTreeMap::new();
+        for d in self.view.defs_named(leaf) {
+            if d.file.half == Half::Code {
+                let test = d.test || self.is_test_file(d.file.path);
+                by_id
+                    .entry((d.file.path, d.local))
+                    .or_default()
+                    .push((d, test));
+            }
+        }
+        let found: Vec<Candidate<'v>> = by_id
+            .into_iter()
+            .filter_map(|((file, local), defs)| {
+                let (share, test) = product_else_test(defs);
+                let d = settled(share, |d| (d.kind, d.line))?;
+                Some(Candidate {
+                    id: entity_id(file, local),
+                    file,
+                    lang: d.file.lang,
+                    kind: d.kind,
+                    line: d.line,
+                    test,
+                })
+            })
+            .collect();
+        let found = Rc::new(found);
+        self.candidates
+            .borrow_mut()
+            .insert(leaf.to_string(), Rc::clone(&found));
+        found
+    }
+
+    /// The call-target candidates of `leaf` in `pool`.
+    fn call_targets(&self, leaf: &str, pool: Pool) -> Vec<Candidate<'v>> {
+        self.candidates(leaf)
+            .iter()
+            .filter(|c| pool.admits(c) && is_call_target(Some(c.kind)))
+            .cloned()
+            .collect()
+    }
+
+    /// The call rule: the target and tier of a call to `leaf` from `file`.
+    fn call(&self, file: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
+        let targets = self.call_targets(leaf, pool);
+        let here: Vec<&Candidate> = targets.iter().filter(|c| c.file == file).collect();
+        if let [one] = here.as_slice() {
+            return (one.id.clone(), TIER_EXTRACTED);
+        }
+        let tier = match hop(targets) {
+            Hop::Terminal => TIER_AMBIGUOUS,
+            Hop::One(_) | Hop::Frontier(_) => TIER_INFERRED,
+        };
+        (placeholder_id(file, leaf), tier)
+    }
+
+    /// The tagged-reference rule: the target and tier of a reference tagged `tag` to `leaf` from
+    /// `file`, written in `lang`; none when no one candidate takes it.
+    fn tagged(
+        &self,
+        file: &str,
+        lang: &str,
+        tag: &str,
+        leaf: &str,
+        pool: Pool,
+    ) -> Option<(String, &'static str)> {
+        let kinds = reference_candidate_kinds(tag);
+        let candidates = self.candidates(leaf);
+        let targets: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|c| pool.admits(c) && c.lang == lang && kinds.contains(&c.kind))
+            .collect();
+        one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
+            let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
+            (c.id.clone(), tier)
+        })
+    }
+
+    /// The proof rule: the product definition a test call to `leaf` from `file` proves.
+    fn proof(&self, file: &str, leaf: &str) -> Option<String> {
+        let targets = self.call_targets(leaf, Pool::Product);
+        let targets: Vec<&Candidate> = targets.iter().collect();
+        one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
+    }
+
+    /// Whether `m`, a mention in `facts`, is test code.
+    fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
+        m.test || self.is_test_file(&facts.path)
+    }
+
+    /// The entities of `facts`, one per id, in id order; test entities only when `tests`.
+    pub fn entities(&self, facts: &FileFacts, tests: bool) -> Vec<Entity> {
+        let file_test = self.is_test_file(&facts.path);
+        let mut by_local: BTreeMap<&str, Vec<(&Def, bool)>> = BTreeMap::new();
+        for d in &facts.defs {
+            by_local
+                .entry(&d.local)
+                .or_default()
+                .push((d, d.test || file_test));
+        }
+        by_local
+            .into_iter()
+            .filter_map(|(local, defs)| {
+                let (share, test) = product_else_test(defs);
+                if test && !tests {
+                    return None;
+                }
+                let d = settled(share, |d| (d.kind.as_str(), d.line))?;
+                Some(Entity {
+                    id: entity_id(&facts.path, local),
+                    name: d.leaf.clone(),
+                    kind: d.kind.clone(),
+                    line: d.line,
+                    test,
+                })
+            })
+            .collect()
+    }
+
+    /// The code edges of `facts`: the call, tagged, held and module rules over its mentions and
+    /// declarations, and each definition's `CONTAINS` from its parent or its file; test code's
+    /// edges only when `tests`.
+    pub fn links(&self, facts: &FileFacts, tests: bool) -> Vec<Link> {
+        let file = facts.path.as_str();
+        let file_test = self.is_test_file(file);
+        let entity = |i: u32| {
+            facts
+                .defs
+                .get(i as usize)
+                .map(|d| entity_id(file, &d.local))
+        };
+        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or_else(|| file.to_string());
+        let mut links = Vec::new();
+        for m in &facts.mentions {
+            let test = self.mention_is_test(facts, m);
+            if m.kind != MentionKind::Call || (test && !tests) {
+                continue;
+            }
+            let (to, tier) = self.call(file, &m.leaf, Pool::of(test));
+            if let Some(caller) = m.enclosing.and_then(entity) {
+                links.push(Link {
+                    from: caller,
+                    rel: REL_CALLS,
+                    to: to.clone(),
+                    tier,
+                    test,
+                });
+            }
+            links.push(Link {
+                from: file.to_string(),
+                rel: REL_REFERENCES,
+                to,
+                tier,
+                test,
+            });
+        }
+        // A product reference is held only by a product edge, so showing tests changes no
+        // product edge.
+        let held = |from: &str, to: &str, test: bool| {
+            links.iter().any(|l: &Link| {
+                l.rel == REL_REFERENCES && l.from == from && l.to == to && (test || !l.test)
+            })
+        };
+        let mut tagged = Vec::new();
+        for m in &facts.mentions {
+            let MentionKind::Tagged(tag) = &m.kind else {
+                continue;
+            };
+            let test = self.mention_is_test(facts, m);
+            if test && !tests {
+                continue;
+            }
+            let Some((to, tier)) = self.tagged(file, &facts.lang, tag, &m.leaf, Pool::of(test))
+            else {
+                continue;
+            };
+            let from = from_of(m.enclosing);
+            if held(&from, &to, test) || held(&from, &placeholder_id(&from, &m.leaf), test) {
+                continue;
+            }
+            tagged.push(Link {
+                from,
+                rel: REL_REFERENCES,
+                to,
+                tier,
+                test,
+            });
+        }
+        links.extend(tagged);
+        for decl in &facts.modules {
+            let test = decl.test || file_test;
+            let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
+                continue;
+            };
+            let declaring = facts
+                .defs
+                .iter()
+                .find(|d| d.kind == CODE_KIND_MODULE && d.leaf == decl.name && d.test == decl.test)
+                .map_or_else(|| file.to_string(), |d| entity_id(file, &d.local));
+            links.push(Link {
+                from: declaring,
+                rel: REL_CONTAINS,
+                to: target.to_string(),
+                tier: TIER_EXTRACTED,
+                test,
+            });
+        }
+        for d in &facts.defs {
+            let test = d.test || file_test;
+            if test && !tests {
+                continue;
+            }
+            links.push(Link {
+                from: from_of(d.parent),
+                rel: REL_CONTAINS,
+                to: entity_id(file, &d.local),
+                tier: TIER_EXTRACTED,
+                test,
+            });
+        }
+        links
+    }
+
+    /// Every product definition a test call proves, with its evidence `file:line`s in file then
+    /// evidence order. The same whatever tests a reader shows.
+    pub fn proofs(&self) -> BTreeMap<String, Vec<String>> {
+        let mut rows: Vec<(String, &str, String)> = Vec::new();
+        for &path in &self.code_files {
+            let Some(facts) = self.view.file(path) else {
+                continue;
+            };
+            for m in &facts.mentions {
+                if m.kind != MentionKind::Call || !self.mention_is_test(&facts, m) {
+                    continue;
+                }
+                if let Some(target) = self.proof(path, &m.leaf) {
+                    rows.push((target, path, format!("{path}:{}", m.line)));
+                }
+            }
+        }
+        rows.sort();
+        let mut proofs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (target, _, evidence) in rows {
+            proofs.entry(target).or_default().push(evidence);
+        }
+        proofs
+    }
+
+    /// The down-hop of `id`: what its placeholder's call-target candidates in `pool` resolve to;
+    /// none when `id` is no placeholder.
+    pub fn down_hop(&self, id: &str, pool: Pool) -> Option<Hop<Candidate<'v>>> {
+        leaf_of(id).map(|leaf| hop(self.call_targets(leaf, pool)))
+    }
+
+    /// The up-hop of the definition `id` named `leaf`: every call and reference edge that lands
+    /// on it, or on a placeholder whose candidates hold it; test edges only for [`Pool::All`].
+    pub fn callers(&self, id: &str, leaf: &str, pool: Pool) -> Vec<Link> {
+        let files: BTreeSet<&str> = self
+            .view
+            .mentions_named(leaf)
+            .map(|m| m.file.path)
+            .collect();
+        let reaches = |l: &Link| {
+            l.to == id
+                || match self.down_hop(&l.to, Pool::of(l.test)) {
+                    Some(Hop::One(c)) => c.id == id,
+                    Some(Hop::Frontier(cs)) => cs.iter().any(|c| c.id == id),
+                    Some(Hop::Terminal) | None => false,
+                }
+        };
+        files
+            .into_iter()
+            .filter_map(|path| self.view.file(path))
+            .flat_map(|facts| self.links(&facts, pool == Pool::All))
+            .filter(|l| l.rel != REL_CONTAINS && reaches(l))
+            .collect()
+    }
+
+    /// The design and workflow nodes and edges of `facts`, of the kinds and relations they may
+    /// name; a link's ends are as written.
+    pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<Link>) {
+        let kind_of = |k: &str| INTENT_KINDS.into_iter().find(|known| *known == k);
+        let rel_of = |r: &str| INTENT_RELS.into_iter().find(|known| *known == r);
+        let concepts = facts
+            .doc_concepts
+            .iter()
+            .map(|c| (&c.kind, &c.id, &c.title))
+            .chain(facts.wf_nodes.iter().map(|n| (&n.kind, &n.id, &n.title)));
+        let nodes = concepts
+            .filter_map(|(kind, id, title)| {
+                Some(IntentNode {
+                    id: id.clone(),
+                    kind: kind_of(kind)?,
+                    title: title.clone(),
+                    doc: facts.path.clone(),
+                })
+            })
+            .collect();
+        let relations = facts
+            .doc_links
+            .iter()
+            .map(|l| (&l.from, &l.rel, &l.to))
+            .chain(facts.wf_relations.iter().map(|r| (&r.from, &r.rel, &r.to)));
+        let links = relations
+            .filter_map(|(from, rel, to)| {
+                Some(Link {
+                    from: from.clone(),
+                    rel: rel_of(rel)?,
+                    to: to.clone(),
+                    tier: TIER_EXTRACTED,
+                    test: false,
+                })
+            })
+            .collect();
+        (nodes, links)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
+    use crate::code_view::FactsView;
+
+    fn def(local: &str, kind: &str, line: u32, parent: Option<u32>, test: bool) -> Def {
+        Def {
+            local: local.into(),
+            leaf: local.rsplit("::").next().unwrap().into(),
+            kind: kind.into(),
+            line,
+            end_line: line,
+            parent,
+            test,
+        }
+    }
+
+    fn mention(
+        kind: MentionKind,
+        leaf: &str,
+        enclosing: Option<u32>,
+        line: u32,
+        test: bool,
+    ) -> Mention {
+        Mention {
+            enclosing,
+            name: leaf.into(),
+            leaf: leaf.into(),
+            kind,
+            line,
+            test,
+        }
+    }
+
+    fn call(leaf: &str, enclosing: Option<u32>, line: u32, test: bool) -> Mention {
+        mention(MentionKind::Call, leaf, enclosing, line, test)
+    }
+
+    fn tagged(tag: &str, leaf: &str, enclosing: Option<u32>, line: u32) -> Mention {
+        mention(
+            MentionKind::Tagged(tag.into()),
+            leaf,
+            enclosing,
+            line,
+            false,
+        )
+    }
+
+    fn decl(name: &str, test: bool, candidates: &[&str]) -> ModuleDecl {
+        ModuleDecl {
+            name: name.into(),
+            test,
+            candidates: candidates.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn code(
+        path: &str,
+        lang: &str,
+        scope: Scope,
+        defs: Vec<Def>,
+        mentions: Vec<Mention>,
+    ) -> FileFacts {
+        FileFacts {
+            path: path.into(),
+            lang: lang.into(),
+            scope,
+            defs,
+            mentions,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn stamp() -> Stamp {
+        Stamp {
+            tip: Tip {
+                head: "main".into(),
+                commit: None,
+                tree: "t".into(),
+            },
+            fingerprint: 0,
+            seq: 1,
+        }
+    }
+
+    /// A tree holding a case of every rule: same-file, cross-file, ambiguous and unknown calls,
+    /// tagged references (one held by a call), out-of-line and test-only module declarations, a
+    /// test module and a test helper sharing product leaves, a second language, and design and
+    /// workflow facts.
+    pub(crate) fn fixture() -> FactsView {
+        let mut a = code(
+            "src/a.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("run", "function", 1, None, false),
+                def("sub", "module", 3, None, false),
+                def("helper", "function", 5, None, false),
+                def("Shape", "type", 10, None, false),
+                def("Shape", "impl", 12, None, false),
+                def("tests", "module", 20, None, true),
+                def("tests::helper", "function", 21, Some(5), true),
+                def("tests::checks", "function", 24, Some(5), true),
+            ],
+            vec![
+                call("helper", Some(0), 2, false),
+                call("compute", Some(0), 2, false),
+                call("draw", Some(0), 2, false),
+                call("vanish", None, 30, false),
+                tagged("type", "Shape", Some(0), 2),
+                tagged("use", "compute", None, 31),
+                call("helper", Some(7), 25, true),
+                call("run", Some(7), 26, true),
+            ],
+        );
+        a.modules = vec![
+            decl("sub", false, &["src/a/sub.rs", "src/sub.rs"]),
+            decl("a_tests", true, &["src/a/a_tests.rs", "src/a_tests.rs"]),
+        ];
+        let b = code(
+            "src/b.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("compute", "function", 3, None, false),
+                def("draw", "function", 7, None, false),
+                def("Config", "type", 9, None, false),
+                def("Config::draw", "field", 10, Some(2), false),
+            ],
+            vec![
+                tagged("type", "Shape", None, 1),
+                tagged("type", "Widget", None, 1),
+            ],
+        );
+        let c = code(
+            "src/c.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("draw", "function", 2, None, false),
+                def("Widget", "type", 4, None, false),
+            ],
+            vec![],
+        );
+        let sub = code(
+            "src/sub.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("sub_fn", "function", 1, None, false),
+                def("Widget", "type", 3, None, false),
+            ],
+            vec![],
+        );
+        let mut a_tests = code(
+            "src/a_tests.rs",
+            "rust",
+            Scope::Product,
+            vec![def("checks_run", "function", 3, None, false)],
+            vec![call("run", Some(0), 4, false)],
+        );
+        a_tests.modules = vec![decl("deeper", false, &["src/a_tests/deeper.rs"])];
+        let deeper = code(
+            "src/a_tests/deeper.rs",
+            "rust",
+            Scope::Product,
+            vec![def("deep_helper", "function", 1, None, false)],
+            vec![call("draw", Some(0), 2, false)],
+        );
+        let it = code(
+            "tests/it.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("it_works", "function", 1, None, true),
+                def("compute", "function", 5, None, false),
+                def("vanish", "function", 8, None, false),
+            ],
+            vec![
+                call("run", Some(0), 2, true),
+                call("compute", Some(0), 3, true),
+            ],
+        );
+        let py = code(
+            "scripts/t.py",
+            "python",
+            Scope::Product,
+            vec![
+                def("Shape", "type", 1, None, false),
+                def("assist", "function", 4, None, false),
+            ],
+            vec![call("compute", Some(1), 5, false)],
+        );
+        let doc = FileFacts {
+            path: "docs/d.md".into(),
+            lang: "markdown".into(),
+            half: Half::Design,
+            doc_concepts: vec![
+                DocConcept {
+                    kind: KIND_DESIGN_DOC.into(),
+                    id: "docs/d.md".into(),
+                    title: "D".into(),
+                },
+                DocConcept {
+                    kind: "bogus".into(),
+                    id: "bogus-concept".into(),
+                    title: "B".into(),
+                },
+            ],
+            doc_links: vec![
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: REL_SPECIFIES.into(),
+                    to: "src/b.rs".into(),
+                },
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: "bogus".into(),
+                    to: "src/c.rs".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let workflow = FileFacts {
+            path: ".rigger/workflow.yml".into(),
+            lang: "yaml".into(),
+            half: Half::Workflow,
+            wf_nodes: vec![WfNode {
+                kind: KIND_STAGE.into(),
+                id: "stage/plan".into(),
+                title: "plan".into(),
+            }],
+            wf_relations: vec![WfRelation {
+                from: "stage/plan".into(),
+                rel: REL_RUNS.into(),
+                to: "agent/planner".into(),
+            }],
+            ..Default::default()
+        };
+        FactsView::new(
+            stamp(),
+            vec![a, b, c, sub, a_tests, deeper, it, py, doc, workflow],
+        )
+    }
+
+    /// One question put to the resolver.
+    enum Ask {
+        Links(&'static str, bool),
+        DownHop(&'static str, Pool),
+        UpHop(&'static str, &'static str),
+        Proofs,
+        Entities(&'static str, bool),
+        TestFiles,
+        Intent(&'static str),
+    }
+
+    fn render_link(l: &Link) -> String {
+        format!("{} -{}/{}-> {}", l.from, l.rel, l.tier, l.to)
+    }
+
+    /// The resolver's answer to `ask` as lines.
+    fn answer(view: &FactsView, r: &Resolver, ask: &Ask) -> Vec<String> {
+        match ask {
+            Ask::Links(path, tests) => r
+                .links(&view.file(path).unwrap(), *tests)
+                .iter()
+                .map(render_link)
+                .collect(),
+            Ask::DownHop(id, pool) => vec![match r.down_hop(id, *pool) {
+                None => "no placeholder".to_string(),
+                Some(Hop::Terminal) => "terminal".to_string(),
+                Some(Hop::One(c)) => format!("one {}", c.id),
+                Some(Hop::Frontier(cs)) => {
+                    let ids: Vec<_> = cs.iter().map(|c| c.id.as_str()).collect();
+                    format!("frontier {}", ids.join(" "))
+                }
+            }],
+            Ask::UpHop(id, leaf) => r
+                .callers(id, leaf, Pool::Product)
+                .iter()
+                .map(render_link)
+                .collect(),
+            Ask::Proofs => r
+                .proofs()
+                .into_iter()
+                .map(|(target, evidence)| format!("{target} <- {}", evidence.join(" ")))
+                .collect(),
+            Ask::Entities(path, tests) => r
+                .entities(&view.file(path).unwrap(), *tests)
+                .iter()
+                .map(|e| {
+                    let mark = if e.test { " test" } else { "" };
+                    format!("{} {} {} {}{mark}", e.id, e.name, e.kind, e.line)
+                })
+                .collect(),
+            Ask::TestFiles => view
+                .files()
+                .filter(|f| r.is_test_file(f.path))
+                .map(|f| f.path.to_string())
+                .collect(),
+            Ask::Intent(path) => {
+                let (nodes, links) = r.intent(&view.file(path).unwrap());
+                nodes
+                    .iter()
+                    .map(|n| format!("node {} [{}] {} {}", n.id, n.kind, n.title, n.doc))
+                    .chain(links.iter().map(render_link))
+                    .collect()
+            }
+        }
+    }
+
+    /// Each row: a rule, the question that shows it, the lines the answer holds, and the text no
+    /// line of it holds.
+    type Row = (
+        &'static str,
+        Ask,
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+
+    fn check(rows: Vec<Row>) {
+        let view = fixture();
+        let r = Resolver::new(&view);
+        for (rule, ask, present, absent) in rows {
+            let lines = answer(&view, &r, &ask);
+            for want in present {
+                assert!(
+                    lines.iter().any(|l| l == want),
+                    "{rule}: {want} not in {lines:#?}"
+                );
+            }
+            for unwanted in absent {
+                assert!(
+                    !lines.iter().any(|l| l.contains(unwanted)),
+                    "{rule}: {unwanted} in {lines:#?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolver_rule_table() {
+        check(vec![
+            (
+                "call: one same-file candidate is extracted",
+                Ask::Links("src/a.rs", false),
+                &[
+                    "src/a.rs::run -CALLS/extracted-> src/a.rs::helper",
+                    "src/a.rs -REFERENCES/extracted-> src/a.rs::helper",
+                ],
+                &[],
+            ),
+            (
+                "call: a candidate elsewhere is an inferred placeholder",
+                Ask::Links("src/a.rs", false),
+                &[
+                    "src/a.rs::run -CALLS/inferred-> src/a.rs::%compute",
+                    "src/a.rs::run -CALLS/inferred-> src/a.rs::%draw",
+                ],
+                &[],
+            ),
+            (
+                "call: no candidate is an ambiguous placeholder from the file",
+                Ask::Links("src/a.rs", false),
+                &["src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish"],
+                &["CALLS/ambiguous"],
+            ),
+            (
+                "call: candidates of any language",
+                Ask::Links("scripts/t.py", false),
+                &["scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute"],
+                &[],
+            ),
+            (
+                "down-hop: one candidate",
+                Ask::DownHop("src/a.rs::%compute", Pool::Product),
+                &["one src/b.rs::compute"],
+                &[],
+            ),
+            (
+                "down-hop: a frontier of call targets, no field",
+                Ask::DownHop("src/a.rs::%draw", Pool::Product),
+                &["frontier src/b.rs::draw src/c.rs::draw"],
+                &[],
+            ),
+            (
+                "down-hop: no candidate",
+                Ask::DownHop("src/a.rs::%vanish", Pool::Product),
+                &["terminal"],
+                &[],
+            ),
+            (
+                "down-hop: no placeholder",
+                Ask::DownHop("src/b.rs::compute", Pool::Product),
+                &["no placeholder"],
+                &[],
+            ),
+            (
+                "up-hop: edges onto placeholders whose candidates hold the definition",
+                Ask::UpHop("src/b.rs::compute", "compute"),
+                &[
+                    "src/a.rs::run -CALLS/inferred-> src/a.rs::%compute",
+                    "scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute",
+                ],
+                &["tests/it.rs", "CONTAINS"],
+            ),
+            (
+                "tagged: one same-file candidate is extracted",
+                Ask::Links("src/a.rs", false),
+                &["src/a.rs::run -REFERENCES/extracted-> src/a.rs::Shape"],
+                &[],
+            ),
+            (
+                "tagged: one candidate of the file's language is inferred",
+                Ask::Links("src/b.rs", false),
+                &["src/b.rs -REFERENCES/inferred-> src/a.rs::Shape"],
+                &["scripts/t.py::Shape"],
+            ),
+            (
+                "tagged: several candidates write no edge",
+                Ask::Links("src/b.rs", false),
+                &[],
+                &["Widget"],
+            ),
+            (
+                "held: a tagged reference the call rule already references writes no edge",
+                Ask::Links("src/a.rs", false),
+                &["src/a.rs -REFERENCES/inferred-> src/a.rs::%compute"],
+                &["src/b.rs::compute"],
+            ),
+            (
+                "module: the first candidate that is a code file",
+                Ask::Links("src/a.rs", false),
+                &["src/a.rs::sub -CONTAINS/extracted-> src/sub.rs"],
+                &["src/a/sub.rs"],
+            ),
+            (
+                "structure: from the parent, else the file",
+                Ask::Links("src/b.rs", false),
+                &[
+                    "src/b.rs -CONTAINS/extracted-> src/b.rs::Config",
+                    "src/b.rs::Config -CONTAINS/extracted-> src/b.rs::Config::draw",
+                ],
+                &[],
+            ),
+            (
+                "proof: one same-file product candidate, else one in the view",
+                Ask::Proofs,
+                &[
+                    "src/a.rs::helper <- src/a.rs:25",
+                    "src/a.rs::run <- src/a.rs:26 src/a_tests.rs:4 tests/it.rs:2",
+                    "src/b.rs::compute <- tests/it.rs:3",
+                ],
+                &["draw", "tests/it.rs::"],
+            ),
+            (
+                "duplicate id, kind precedence: one entity, the type's kind and line",
+                Ask::Entities("src/a.rs", false),
+                &["src/a.rs::Shape Shape type 10"],
+                &["impl"],
+            ),
+            (
+                "test-ness: scope, closure seed and closure",
+                Ask::TestFiles,
+                &["src/a_tests.rs", "src/a_tests/deeper.rs", "tests/it.rs"],
+                &["src/a.rs", "src/sub.rs"],
+            ),
+            (
+                "design link: the kinds and relations a document may name",
+                Ask::Intent("docs/d.md"),
+                &[
+                    "node docs/d.md [design-doc] D docs/d.md",
+                    "docs/d.md -SPECIFIES/extracted-> src/b.rs",
+                ],
+                &["bogus"],
+            ),
+            (
+                "workflow relation: the workflow's nodes and relations",
+                Ask::Intent(".rigger/workflow.yml"),
+                &[
+                    "node stage/plan [stage] plan .rigger/workflow.yml",
+                    "stage/plan -RUNS/extracted-> agent/planner",
+                ],
+                &[],
+            ),
+        ]);
+    }
+
+    #[test]
+    fn product_tiers_ignore_test_candidates() {
+        check(vec![
+            (
+                "a same-file test helper sharing the leaf leaves the call extracted",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs::run -CALLS/extracted-> src/a.rs::helper"],
+                &[],
+            ),
+            (
+                "a test definition of the leaf leaves the call ambiguous",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish"],
+                &[],
+            ),
+            (
+                "a test definition of the leaf joins no product frontier",
+                Ask::DownHop("src/a.rs::%compute", Pool::Product),
+                &["one src/b.rs::compute"],
+                &[],
+            ),
+            (
+                "a test call resolves against every candidate",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::%helper"],
+                &[],
+            ),
+        ]);
+        let view = fixture();
+        let r = Resolver::new(&view);
+        for path in ["src/a.rs", "src/b.rs", "scripts/t.py"] {
+            let facts = view.file(path).unwrap();
+            let shown: Vec<Link> = r
+                .links(&facts, true)
+                .into_iter()
+                .filter(|l| !l.test)
+                .collect();
+            assert_eq!(
+                shown,
+                r.links(&facts, false),
+                "{path}: showing tests changed a product edge"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ness_is_def_mark_or_scope_or_closure() {
+        check(vec![
+            (
+                "a definition's own mark",
+                Ask::Entities("src/a.rs", true),
+                &[
+                    "src/a.rs::tests::helper helper function 21 test",
+                    "src/a.rs::helper helper function 5",
+                ],
+                &[],
+            ),
+            (
+                "a marked definition is hidden by default",
+                Ask::Entities("src/a.rs", false),
+                &["src/a.rs::helper helper function 5"],
+                &["tests::"],
+            ),
+            (
+                "a Test-scope file",
+                Ask::Entities("tests/it.rs", true),
+                &["tests/it.rs::compute compute function 5 test"],
+                &[],
+            ),
+            (
+                "a Test-scope file is hidden by default",
+                Ask::Entities("tests/it.rs", false),
+                &[],
+                &["tests/it.rs"],
+            ),
+            (
+                "a file in the closure",
+                Ask::Entities("src/a_tests/deeper.rs", true),
+                &["src/a_tests/deeper.rs::deep_helper deep_helper function 1 test"],
+                &[],
+            ),
+            (
+                "a closure file's edges are test edges",
+                Ask::Links("src/a_tests/deeper.rs", false),
+                &[],
+                &["deeper"],
+            ),
+        ]);
+    }
+
+    #[test]
+    fn module_target_is_shared_by_the_module_rule_and_the_closure() {
+        // Each row: the case, the declaration's candidates, the code files, the target.
+        type Case = (
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+            Option<&'static str>,
+        );
+        let cases: &[Case] = &[
+            (
+                "the first candidate",
+                &["x.rs", "y.rs"],
+                &["x.rs", "y.rs"],
+                Some("x.rs"),
+            ),
+            (
+                "a candidate not in the view is passed",
+                &["x.rs", "y.rs"],
+                &["y.rs"],
+                Some("y.rs"),
+            ),
+            ("no candidate in the view", &["x.rs"], &["y.rs"], None),
+        ];
+        for (name, candidates, code_files, want) in cases {
+            let d = decl("m", false, candidates);
+            assert_eq!(
+                module_target(&d, |p| code_files.contains(&p)),
+                *want,
+                "{name}"
+            );
+        }
+        // The test-only declaration's first candidate is absent: the module rule and the closure
+        // both reach its second.
+        check(vec![
+            (
+                "the module rule",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs -CONTAINS/extracted-> src/a_tests.rs"],
+                &["src/a/a_tests.rs"],
+            ),
+            (
+                "the closure",
+                Ask::TestFiles,
+                &["src/a_tests.rs"],
+                &["src/a/a_tests.rs"],
+            ),
+        ]);
+    }
+}
