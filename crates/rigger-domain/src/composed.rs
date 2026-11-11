@@ -322,41 +322,51 @@ pub(crate) fn joined(
     attachments: &[TestAttachment; 2],
     tests: Tests,
 ) -> Graph {
-    let kinds: BTreeMap<String, String> = graph
-        .nodes
-        .iter()
-        .map(|n| (n.id.clone(), n.kind.clone()))
-        .collect();
     let arms = [
         (KIND_COMMUNITY, REL_IN_COMMUNITY, &groupings.communities),
         (KIND_CONCEPT, REL_REALIZES, &groupings.concepts),
     ];
-    for ((kind, rel, clusters), attachment) in arms.into_iter().zip(attachments) {
-        for c in clusters {
+    // Each arm's membership edges, by the kinds `graph` holds before any grouping is joined on.
+    let memberships = {
+        let kinds: FxHashMap<&str, &str> = (graph.nodes.iter())
+            .map(|n| (n.id.as_str(), n.kind.as_str()))
+            .collect();
+        arms.map(|(_, rel, clusters)| {
+            let held = |m: &String| {
+                kinds
+                    .get(m.as_str())
+                    .is_some_and(|k| holds_attachment(k, rel))
+            };
+            (clusters.iter())
+                .flat_map(|c| c.members.iter().filter(|m| held(m)).map(|m| (m, &c.id)))
+                .map(|(m, c)| Edge {
+                    from: m.clone(),
+                    to: c.clone(),
+                    rel: rel.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: 0,
+                    tier: TIER_INFERRED.to_string(),
+                })
+                .collect::<Vec<Edge>>()
+        })
+    };
+    for (((kind, _, clusters), attachment), edges) in
+        arms.into_iter().zip(attachments).zip(memberships)
+    {
+        graph.nodes.extend(clusters.iter().map(|c| {
             let attrs = [
                 ("hash", c.hash.clone()),
                 ("label", c.label.clone()),
                 ("resolution", format!("{}", c.resolution)),
             ];
-            graph.nodes.push(Node {
+            Node {
                 id: c.id.clone(),
                 kind: kind.to_string(),
                 attrs: attrs.map(|(k, v)| (k.to_string(), v)).into(),
-            });
-            for m in &c.members {
-                if kinds.get(m).is_some_and(|k| holds_attachment(k, rel)) {
-                    graph.edges.push(Edge {
-                        from: m.clone(),
-                        to: c.id.clone(),
-                        rel: rel.to_string(),
-                        valid_from: 0,
-                        valid_to: None,
-                        source: 0,
-                        tier: TIER_INFERRED.to_string(),
-                    });
-                }
             }
-        }
+        }));
+        graph.edges.extend(edges);
         join_tests(&mut graph, attachment, tests);
     }
     graph

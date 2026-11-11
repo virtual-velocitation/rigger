@@ -3,6 +3,7 @@
 //! the plurality of the product definitions it proves: as that cluster's "tests" group, with its
 //! count, and never as a member.
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_view::{Cluster, Tests};
@@ -24,7 +25,7 @@ pub const TESTS_ATTR: &str = "tests";
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TestAttachment {
     cluster_of: BTreeMap<String, String>,
-    counts: BTreeMap<String, usize>,
+    counts: FxHashMap<String, usize>,
 }
 
 impl TestAttachment {
@@ -102,7 +103,7 @@ pub fn join_tests(graph: &mut Graph, attachment: &TestAttachment, tests: Tests) 
     if tests == Tests::Exclude {
         return;
     }
-    let held: BTreeSet<String> = graph.nodes.iter().map(|n| n.id.clone()).collect();
+    let held: FxHashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
     for (test, cluster) in attachment.attached() {
         if held.contains(test) {
             graph.edges.push(Edge {
