@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::code_view::ViewFilter;
 use crate::eventstore::{Event, Position};
 
 // THE QUERY ENGINE MOVES WITH THE OPS (spec 93 criterion 5): the pure graph query functions
@@ -422,11 +423,9 @@ pub struct CallGraph {
 }
 
 /// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup). A
-/// PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
-/// [`ContextGraph::locate`] returns the same kind of type every sibling `ContextGraph` method does,
-/// never a concrete adapter's own type):
-/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` resolves the query for the show
-/// surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
+/// domain-owned type, so [`ContextGraph::locate`] returns the same kind of type every sibling
+/// `ContextGraph` method does, never a concrete adapter's own type:
+/// [`crate::composed::locate`] resolves the query for the show surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
 /// a bare name matched as a definition's leaf, a path by its id suffix or a flat `<file>::<name>`
 /// as a leaf in that file (spec 119, A BARE SHOW FINDS A LEAF OR PATH), where an `--around` seed is
 /// an exact id or an alias resolved to its canonical id (spec 117), never a bare name looked up by
@@ -543,8 +542,7 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
 }
 
 /// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
-/// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` returns these SORTED by id, so
-/// the listing is deterministic.
+/// [`crate::composed::locate`] returns these SORTED by id, so the listing is deterministic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
     /// The candidate's full `<file>::<path>` node id.
@@ -1001,11 +999,11 @@ pub trait ContextGraph: Send + Sync {
     /// does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
-    /// The default returns an empty [`CallGraph`], so a projection with no directed-walk support (a
-    /// test double, or a not-yet-overriding adapter) degrades to an empty view rather than
-    /// erroring. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it
-    /// with the real walk. Read-only over the projection; an empty graph or a seed with no calls
-    /// yields an empty [`CallGraph`], never an error.
+    /// The default returns an empty [`CallGraph`], so a graph with no directed-walk support (a
+    /// test double) degrades to an empty view rather than erroring;
+    /// [`Composed`](crate::composed::Composed) overrides it with the real walk
+    /// ([`crate::composed::calls`]). Read-only; an empty graph or a seed with no calls yields an
+    /// empty [`CallGraph`], never an error.
     fn calls(
         &self,
         _seed: &[String],
@@ -1021,20 +1019,14 @@ pub trait ContextGraph: Send + Sync {
 
     /// Resolve `entity` by name/id in the CURRENT tree (spec 92, criterion 4's fix round): the
     /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
-    /// caller holding only `&dyn RecordFold` (`mcpserver::Server`, wired via
-    /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
-    /// can serve it without reaching for the concrete
-    /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` across the crate boundary - the DI
-    /// extension that retired the operator MCP surface's second read loop rather than adding one.
-    /// Mirrors `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate`: a full
-    /// `<file>::<path>` id resolves directly (a nameless code entity's or artifact's only once
+    /// caller holding only `&dyn ContextGraph` (the MCP server, the CLI) serves it without
+    /// reaching for a concrete adapter across the crate boundary. A full `<file>::<path>` id resolves directly (a nameless code entity's or artifact's only once
     /// nothing else does); else a bare name matches as a definition's leaf, a path (`Struct.field`)
     /// by its id suffix and a flat `<file>::<name>` as a leaf in that file (spec 119, A BARE SHOW
-    /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`], a port-owned type - see its doc)
-    /// are never a guess among candidates.
-    /// The default returns `Located::None`, so a projection with no locate support (a test double)
-    /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
-    /// lookup.
+    /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`]) are never a guess among
+    /// candidates. The default returns `Located::None`, so a graph with no locate support (a test
+    /// double) degrades honestly rather than erroring;
+    /// [`Composed`](crate::composed::Composed) overrides it ([`crate::composed::locate`]).
     fn locate(&self, _entity: &str) -> Result<Located, Error> {
         Ok(Located::None)
     }
@@ -1050,6 +1042,27 @@ pub trait ContextGraph: Send + Sync {
     /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
     /// differs from it, with the count of nodes withheld so far for differing.
     fn stamp_label(&self) -> crate::composed::Label;
+}
+
+/// Opens the context graph a reader reads (7.3): the record graph composed with the code view of
+/// the head, compared with the reader's worktree. The composition root implements it. A reader that
+/// lives across merges opens once per read, so each answer describes the store as it stands then.
+pub trait OpenGraph: Send + Sync {
+    /// The graph as it stands now under `filter`, or why it cannot be read.
+    fn open(&self, filter: ViewFilter) -> Result<Box<dyn ContextGraph + '_>, Error>;
+}
+
+/// The graph `read` opens for a reader whose answer depends on the fold, or why there is none:
+/// `fold` owes its rebuild ([`REBUILD_OWED`]), or the graph cannot be opened.
+pub fn open_unowed<'a>(
+    fold: &dyn RecordFold,
+    read: &'a dyn OpenGraph,
+    filter: ViewFilter,
+) -> Result<Box<dyn ContextGraph + 'a>, Error> {
+    if fold.rebuild_owed()? {
+        return Err(Error(REBUILD_OWED.to_string()));
+    }
+    read.open(filter)
 }
 
 /// One half of the context graph as a breadth-first search steps through it: the record graph

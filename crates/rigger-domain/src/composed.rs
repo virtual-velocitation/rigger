@@ -32,7 +32,7 @@ pub enum Compared {
     /// the worktree exactly.
     Differ(usize),
     /// The worktree cannot be compared with the tree (its stamp commit is not in the worktree's
-    /// object store).
+    /// object store, or its index cannot be read), so nothing is withheld.
     Uncomparable,
 }
 
@@ -352,8 +352,11 @@ impl<'r> Composed<'r> {
         let tip = &view.stamp().tip;
         let (compared, differing) = match honesty.diff {
             Ok(diff) => {
-                let files: BTreeSet<String> =
-                    diff.changed.into_iter().chain(diff.untracked).collect();
+                // A file out of the tree's scope (rigger's own state among them) holds no fact.
+                let files: BTreeSet<String> = (diff.changed.into_iter())
+                    .chain(diff.untracked)
+                    .filter(|f| crate::code_view::in_scope(f))
+                    .collect();
                 (Compared::Differ(files.len()), files)
             }
             Err(_) => (Compared::Uncomparable, BTreeSet::new()),
@@ -1378,6 +1381,15 @@ mod tests {
                 Ok(differing),
                 None,
                 "describes c1; 2 files in W differ",
+            ),
+            (
+                Some("c1"),
+                Ok(WorktreeDiff {
+                    changed: vec![".rigger/graph.db".into()],
+                    untracked: vec![".rigger/workflow.yml".into()],
+                }),
+                None,
+                "describes c1; 1 file in W differs",
             ),
             (
                 Some("c1"),
