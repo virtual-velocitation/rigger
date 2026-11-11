@@ -172,7 +172,9 @@ fn resolves(term: &str, expected: super::names::Resolved) {
         entity("a.rs", "apply_damage", 3),
         entity("b.rs", "HttpServer", 7),
         entity("c.rs", "parse_config", 1),
+        entity("c.rs", "parse_args", 5),
         entity("d.rs", "render", 9),
+        entity("e.rs", "go", 2),
     ]);
     assert_eq!(names.resolve(term), expected, "the term {term:?}");
 }
@@ -193,7 +195,12 @@ crate::test_cases! {
     a_snake_variant_of_a_pascal_name_resolves_as_a_variant: resolves("http_server", found(super::names::Tier::Variant, &["b.rs::HttpServer"]));
     a_kebab_variant_resolves_as_a_variant: resolves("apply-damage", found(super::names::Tier::Variant, &["a.rs::apply_damage"]));
     a_prefix_resolves_by_prefix: resolves("parse_conf", found(super::names::Tier::Prefix, &["c.rs::parse_config"]));
+    a_prefix_reaches_every_name_it_begins: resolves("parse", found(super::names::Tier::Prefix, &["c.rs::parse_args", "c.rs::parse_config"]));
     a_misspelling_resolves_fuzzily: resolves("rendr", found(super::names::Tier::Fuzzy, &["d.rs::render"]));
+    a_two_letter_term_allows_no_edit: resolves("gx", super::names::Resolved::Missing { nearest: vec!["go".into()] });
+    a_four_letter_term_allows_one_edit_not_two: resolves("rndr", super::names::Resolved::Missing { nearest: vec!["render".into()] });
+    a_long_term_allows_two_edits: resolves("aply_damag", found(super::names::Tier::Fuzzy, &["a.rs::apply_damage"]));
+    a_missing_name_names_every_name_sharing_its_longest_prefix: resolves("parse_zzzz", super::names::Resolved::Missing { nearest: vec!["parse_args".into(), "parse_config".into()] });
     a_longer_misspelling_resolves_fuzzily: resolves("aply_damage", found(super::names::Tier::Fuzzy, &["a.rs::apply_damage"]));
     a_missing_name_names_its_nearest: resolves("apple", super::names::Resolved::Missing { nearest: vec!["apply_damage".into()] });
     a_name_near_nothing_names_none: resolves("zzz", super::names::Resolved::Missing { nearest: vec![] });
@@ -236,6 +243,22 @@ crate::test_cases! {
     a_file_keeps_its_first_five_lines_and_counts_every_match: scans(
         &[("a.rs", &"alpha\n".repeat(7))], &["alpha"],
         &[(&[("a.rs", 1), ("a.rs", 2), ("a.rs", 3), ("a.rs", 4), ("a.rs", 5)], 7)]);
+}
+
+/// A term keeps at most [`TEXT_TOTAL`] lines across the files it matches in, every match counted.
+#[test]
+fn a_term_keeps_at_most_the_total_lines_across_its_files() {
+    let files: Vec<(String, String)> = (0..TEXT_TOTAL / 5 + 1)
+        .map(|i| (format!("f{i:02}.rs"), "alpha\n".repeat(5)))
+        .collect();
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(f, b)| (f.as_str(), b.as_str()))
+        .collect();
+    let dir = tree(&refs);
+    let found = text::scan(dir.path(), &["alpha"]).unwrap();
+    assert_eq!(found[0].hits.len(), TEXT_TOTAL);
+    assert_eq!(found[0].matched, TEXT_TOTAL + 5);
 }
 
 // --- the prose half ------------------------------------------------------------------------
