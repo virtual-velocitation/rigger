@@ -36,7 +36,9 @@ use common::cli::assert_light_lane_extent_note;
 
 #[cfg(feature = "symbols")]
 use common::cli::ambiguous_show;
+#[cfg(feature = "symbols")]
 use common::cli::open_graph;
+#[cfg(feature = "symbols")]
 use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
@@ -47,7 +49,8 @@ use common::cli::temp_project;
 use common::fixtures::apply_code_entity;
 #[cfg(feature = "symbols")]
 use common::fixtures::A_RS_NEWS;
-use common::fixtures::{fold_path_def_rows, hold, PathDef, FLAT_LEAF_ID, T_NEW, U_NEW};
+#[cfg(feature = "symbols")]
+use common::fixtures::{hold, FLAT_LEAF_ID};
 
 #[test]
 fn graph_show_resolves_by_id_and_name_and_lists_ambiguous_candidates() {
@@ -208,11 +211,8 @@ fn graph_show_lists_every_definition_a_flat_id_or_a_path_names() {
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
-    let dir = temp_project();
+    let dir = held_flat_id_project("impl T { fn new() {} }\n");
     let root = dir.path();
-    seed_rigger_dir(root);
-    hold(&open_graph(root), 1, &[FLAT_LEAF_ID]);
-    plant_sources(root, &[("a.rs", "impl T { fn new() {} }\n")]);
 
     assert_eq!(
         show_head(root, "a.rs::new"),
@@ -229,28 +229,29 @@ fn graph_show_answers_a_flat_id_a_decision_holds_by_its_definition() {
 /// operator runs `rigger graph --around a.rs::new --depth 1`, a node whose show lists both
 /// methods, THEN the held node's line prints with no `unresolved` line after it: a query whose
 /// site is ambiguous lists no unresolved leaf.
+#[cfg(feature = "symbols")]
 #[test]
 fn graph_around_an_ambiguous_flat_id_prints_its_node_and_no_unresolved_line() {
-    let dir = held_flat_id_project(&[T_NEW, U_NEW]);
+    let dir = held_flat_id_project("impl T { fn new() {} }\nimpl U { fn new() {} }\n");
     assert_eq!(
         run_around(dir.path(), FLAT_LEAF_ID, 1).0,
         "subgraph around \"a.rs::new\" (depth 1):\n\
          \x20 node a.rs::new                artifact\n\
          \n\
          \x20 1 governing decision(s)/finding(s) (newest 1 shown):\n\
-         \x20 node hold@3                   decision\n",
+         \x20 node hold@1                   decision\n",
         "the ambiguous node prints its line and no unresolved line"
     );
 }
 
-/// A [`temp_project`] whose own graph folds `defs` from position 1 ([`fold_path_def_rows`]) and
-/// then a decision holding the pre-spec flat id [`FLAT_LEAF_ID`] ([`hold`]).
-fn held_flat_id_project(defs: &[PathDef]) -> tempfile::TempDir {
+/// A [`temp_project`] whose committed tree holds `a.rs` as `source` and whose own graph holds a
+/// decision holding the pre-spec flat id [`FLAT_LEAF_ID`] ([`hold`]).
+#[cfg(feature = "symbols")]
+fn held_flat_id_project(source: &str) -> tempfile::TempDir {
     let dir = temp_project();
     seed_rigger_dir(dir.path());
-    let p = open_graph(dir.path());
-    let next = fold_path_def_rows(&p, defs);
-    hold(&p, next, &[FLAT_LEAF_ID]);
+    hold(&open_graph(dir.path()), 1, &[FLAT_LEAF_ID]);
+    plant_sources(dir.path(), &[("a.rs", source)]);
     dir
 }
 
