@@ -218,8 +218,10 @@ impl Indexed {
     /// The indexes, built on first read.
     fn index(&self) -> &Index {
         self.index.get_or_init(|| {
-            let mut ix = Index::default();
-            ix.incoming = (0..self.edges.len()).collect();
+            let mut ix = Index {
+                incoming: (0..self.edges.len()).collect(),
+                ..Index::default()
+            };
             ix.incoming
                 .sort_by(|&a, &b| self.edges[a].to.cmp(&self.edges[b].to));
             for &at in &self.given {
