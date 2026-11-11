@@ -421,7 +421,8 @@ mod tests {
         let checkout = repo(tree);
         let copy = tempfile::tempdir().unwrap();
         write(copy.path(), tree);
-        let rows: [(&str, &Path, fn(&Path) -> Box<dyn TreeSource>); 3] = [
+        type Opens = fn(&Path) -> Box<dyn TreeSource>;
+        let rows: [(&str, &Path, Opens); 3] = [
             (
                 "the git source over the checkout",
                 checkout.path(),
