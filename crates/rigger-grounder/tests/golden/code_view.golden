@@ -1,0 +1,109 @@
+edge docs/adr/0001-shapes.md -CONSTRAINS/extracted-> src/util.rs
+edge docs/architecture.md -SPECIFIES/extracted-> src/shapes.rs
+edge docs/architecture.md -references/extracted-> adr/0001-shapes.md
+edge scripts/tool.py -CONTAINS/extracted-> scripts/tool.py::Shape
+edge scripts/tool.py -CONTAINS/extracted-> scripts/tool.py::assist
+edge scripts/tool.py -REFERENCES/inferred-> scripts/tool.py::%compute
+edge scripts/tool.py::assist -CALLS/inferred-> scripts/tool.py::%compute
+edge src/inner/nested.rs -CONTAINS/extracted-> src/inner/nested.rs::nested_value
+edge src/inner/nested.rs -REFERENCES/inferred-> src/inner/nested.rs::%helper
+edge src/inner/nested.rs::nested_value -CALLS/inferred-> src/inner/nested.rs::%helper
+edge src/lib.rs -CONTAINS/extracted-> src/lib.rs::helper
+edge src/lib.rs -CONTAINS/extracted-> src/lib.rs::inner
+edge src/lib.rs -CONTAINS/extracted-> src/lib.rs::run
+edge src/lib.rs -CONTAINS/extracted-> src/lib.rs::shapes
+edge src/lib.rs -CONTAINS/extracted-> src/lib.rs::util
+edge src/lib.rs -REFERENCES/ambiguous-> src/lib.rs::%vanish
+edge src/lib.rs -REFERENCES/extracted-> src/lib.rs::helper
+edge src/lib.rs -REFERENCES/extracted-> src/lib.rs::inner::deep
+edge src/lib.rs -REFERENCES/inferred-> src/lib.rs::%compute
+edge src/lib.rs -REFERENCES/inferred-> src/lib.rs::%draw
+edge src/lib.rs -REFERENCES/inferred-> src/lib.rs::%new
+edge src/lib.rs -REFERENCES/inferred-> src/shapes.rs::Shape
+edge src/lib.rs -REFERENCES/inferred-> src/util.rs::LIMIT
+edge src/lib.rs::inner -CONTAINS/extracted-> src/lib.rs::inner::deep
+edge src/lib.rs::inner -CONTAINS/extracted-> src/lib.rs::inner::nested
+edge src/lib.rs::inner::deep -CALLS/extracted-> src/lib.rs::helper
+edge src/lib.rs::inner::nested -CONTAINS/extracted-> src/inner/nested.rs
+edge src/lib.rs::run -CALLS/ambiguous-> src/lib.rs::%vanish
+edge src/lib.rs::run -CALLS/extracted-> src/lib.rs::helper
+edge src/lib.rs::run -CALLS/extracted-> src/lib.rs::inner::deep
+edge src/lib.rs::run -CALLS/inferred-> src/lib.rs::%compute
+edge src/lib.rs::run -CALLS/inferred-> src/lib.rs::%draw
+edge src/lib.rs::run -CALLS/inferred-> src/lib.rs::%new
+edge src/lib.rs::run -REFERENCES/inferred-> src/shapes.rs::Shape
+edge src/lib.rs::run -REFERENCES/inferred-> src/util.rs::LIMIT
+edge src/lib.rs::shapes -CONTAINS/extracted-> src/shapes.rs
+edge src/lib.rs::util -CONTAINS/extracted-> src/util.rs
+edge src/shapes.rs -CONTAINS/extracted-> src/shapes.rs::Shape
+edge src/shapes.rs -CONTAINS/extracted-> src/shapes.rs::draw
+edge src/shapes.rs -CONTAINS/extracted-> src/shapes.rs::impl Default for Shape
+edge src/shapes.rs -CONTAINS/extracted-> src/shapes.rs::impl Shape
+edge src/shapes.rs -CONTAINS/extracted-> src/shapes.rs::origin
+edge src/shapes.rs -REFERENCES/ambiguous-> src/shapes.rs::%Default
+edge src/shapes.rs -REFERENCES/extracted-> src/shapes.rs::Shape
+edge src/shapes.rs -REFERENCES/extracted-> src/shapes.rs::Shape::new
+edge src/shapes.rs -REFERENCES/extracted-> src/shapes.rs::origin
+edge src/shapes.rs::<Shape as Default>::default -CALLS/extracted-> src/shapes.rs::Shape::new
+edge src/shapes.rs::Shape -CONTAINS/extracted-> src/shapes.rs::Shape.0
+edge src/shapes.rs::Shape::new -CALLS/extracted-> src/shapes.rs::Shape
+edge src/shapes.rs::Shape::new -CALLS/extracted-> src/shapes.rs::origin
+edge src/shapes.rs::impl Default for Shape -CALLS/ambiguous-> src/shapes.rs::%Default
+edge src/shapes.rs::impl Default for Shape -CALLS/extracted-> src/shapes.rs::Shape
+edge src/shapes.rs::impl Default for Shape -CONTAINS/extracted-> src/shapes.rs::<Shape as Default>::default
+edge src/shapes.rs::impl Shape -CALLS/extracted-> src/shapes.rs::Shape
+edge src/shapes.rs::impl Shape -CONTAINS/extracted-> src/shapes.rs::Shape::new
+edge src/util.rs -CONTAINS/extracted-> src/util.rs::Config
+edge src/util.rs -CONTAINS/extracted-> src/util.rs::LIMIT
+edge src/util.rs -CONTAINS/extracted-> src/util.rs::compute
+edge src/util.rs -CONTAINS/extracted-> src/util.rs::draw
+edge src/util.rs::Config -CONTAINS/extracted-> src/util.rs::Config.draw
+edge src/util.rs::compute -REFERENCES/extracted-> src/util.rs::LIMIT
+edge stage:implement -NEEDS/extracted-> stage:plan
+edge stage:implement -RUNS/extracted-> agent:worker
+edge stage:implement -RUNS/extracted-> gate:fmt
+edge stage:plan -RUNS/extracted-> agent:planner
+node adr/0001-shapes.md [artifact] 
+node agent:planner [agent] doc=.rigger/workflow.yml title=planner
+node agent:worker [agent] doc=.rigger/workflow.yml title=worker
+node docs/adr/0001-shapes.md [arch-decision] doc=docs/adr/0001-shapes.md title=Shapes are values
+node docs/architecture.md [design-doc] doc=docs/architecture.md title=Reference architecture
+node docs/architecture.md#shapes [design-doc] doc=docs/architecture.md title=Shapes
+node gate:fmt [gate] doc=.rigger/workflow.yml title=fmt
+node scripts/tool.py [file] lang=python
+node scripts/tool.py::%compute [code-entity] 
+node scripts/tool.py::Shape [code-entity] kind=type lang=python line=1 name=Shape
+node scripts/tool.py::assist [code-entity] kind=function lang=python line=5 name=assist
+node src/inner/nested.rs [file] lang=rust
+node src/inner/nested.rs::%helper [code-entity] 
+node src/inner/nested.rs::nested_value [code-entity] kind=function lang=rust line=1 name=nested_value
+node src/lib.rs [file] lang=rust
+node src/lib.rs::%compute [code-entity] 
+node src/lib.rs::%draw [code-entity] 
+node src/lib.rs::%new [code-entity] 
+node src/lib.rs::%vanish [code-entity] 
+node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39"] proven_by=1
+node src/lib.rs::inner [code-entity] kind=module lang=rust line=9 name=inner
+node src/lib.rs::inner::deep [code-entity] kind=method lang=rust line=10 name=deep
+node src/lib.rs::inner::nested [code-entity] kind=module lang=rust line=14 name=nested
+node src/lib.rs::run [code-entity] kind=function lang=rust line=17 name=run proof_evidence=["src/lib.rs:38","tests/integration.rs:3"] proven_by=2
+node src/lib.rs::shapes [code-entity] kind=module lang=rust line=4 name=shapes
+node src/lib.rs::util [code-entity] kind=module lang=rust line=5 name=util
+node src/shapes.rs [file] lang=rust
+node src/shapes.rs::%Default [code-entity] 
+node src/shapes.rs::<Shape as Default>::default [code-entity] kind=method lang=rust line=10 name=default
+node src/shapes.rs::Shape [code-entity] kind=type lang=rust line=1 name=Shape
+node src/shapes.rs::Shape.0 [code-entity] kind=field lang=rust line=1 name=0
+node src/shapes.rs::Shape::new [code-entity] kind=method lang=rust line=4 name=new
+node src/shapes.rs::draw [code-entity] kind=function lang=rust line=25 name=draw
+node src/shapes.rs::impl Default for Shape [code-entity] kind=impl lang=rust line=9 name=impl Default for Shape
+node src/shapes.rs::impl Shape [code-entity] kind=impl lang=rust line=3 name=impl Shape
+node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin
+node src/util.rs [file] lang=rust
+node src/util.rs::Config [code-entity] kind=type lang=rust line=9 name=Config
+node src/util.rs::Config.draw [code-entity] kind=field lang=rust line=10 name=draw
+node src/util.rs::LIMIT [code-entity] kind=constant lang=rust line=1 name=LIMIT
+node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute
+node src/util.rs::draw [code-entity] kind=function lang=rust line=7 name=draw
+node stage:implement [stage] doc=.rigger/workflow.yml title=implement
+node stage:plan [stage] doc=.rigger/workflow.yml title=plan
