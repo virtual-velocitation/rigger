@@ -44629,9 +44629,9 @@ mod tests {
     enum TreeChange {
         /// Leaves the tree as it found it.
         Nothing,
-        /// Writes a file and leaves it uncommitted.
-        Writes,
-        /// Writes a file and commits it.
+        /// Writes this many files, `out-<n>.rs`, and leaves them untracked.
+        Writes(usize),
+        /// Writes one file, `out-0.rs`, and commits it.
         Commits,
     }
 
@@ -44652,8 +44652,13 @@ mod tests {
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> Result<gate::GateResult, gate::ProbeFault> {
-            if !matches!(self.change, TreeChange::Nothing) {
-                std::fs::write(Path::new(dir).join("written-by-the-gate.rs"), "x\n").unwrap();
+            let written = match self.change {
+                TreeChange::Nothing => 0,
+                TreeChange::Writes(n) => n,
+                TreeChange::Commits => 1,
+            };
+            for n in 0..written {
+                std::fs::write(Path::new(dir).join(format!("out-{n}.rs")), "x\n").unwrap();
             }
             if matches!(self.change, TreeChange::Commits) {
                 run_git(dir, &["add", "-A"]);
@@ -44669,15 +44674,25 @@ mod tests {
     /// A PASS ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a passing gate the driver runs on a verb's
     /// request, THEN a gate that left the tree as it found it records a pass with an input
     /// digest, AND a gate that changed the tree while it ran (uncommitted or committed) records a
-    /// non-pass naming the change, with no digest, so it answers no later gate.
+    /// non-pass with no digest, so it answers no later gate, naming up to ten changed paths and a
+    /// count beyond them, and telling the caller to commit its own changes and ignore the gate's
+    /// output before it runs the gate again.
     #[test]
     fn a_gate_that_changes_the_tree_while_the_verb_runs_it_records_a_non_pass_with_no_digest() {
         const CHANGED: &str = "the worktree changed while the gate ran";
-        for (change, passes) in [
-            (TreeChange::Nothing, true),
-            (TreeChange::Writes, false),
-            (TreeChange::Commits, false),
-        ] {
+        const ADVICE: &str = "commit changes you made; add files the gate writes to .gitignore; \
+                              then run `rigger gate g` again";
+        let rows: [(TreeChange, bool, &[&str]); 4] = [
+            (TreeChange::Nothing, true, &[]),
+            (TreeChange::Writes(1), false, &["out-0.rs", ADVICE]),
+            (
+                TreeChange::Writes(12),
+                false,
+                &["out-0.rs", "out-9.rs", "and 2 more", ADVICE],
+            ),
+            (TreeChange::Commits, false, &["out-0.rs", ADVICE]),
+        ];
+        for (change, passes, named) in rows {
             let repo = temp_git_project_with_commit();
             let dir = repo.path().to_str().unwrap().to_string();
             let mut cfg = Config::default();
@@ -44717,6 +44732,12 @@ mod tests {
                 !passes,
                 "{change:?}: the reason names the change: {evidence}"
             );
+            for name in named {
+                assert!(
+                    evidence.contains(name),
+                    "{change:?}: the evidence says {name:?}: {evidence}"
+                );
+            }
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
             let verdict = events
                 .iter()
