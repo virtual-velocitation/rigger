@@ -43,6 +43,9 @@ impl Projection for Held {
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error> {
         Ok(self.generations.get(identity).cloned())
     }
+    fn held_identities(&self) -> Result<Vec<String>, Error> {
+        Ok(self.generations.keys().cloned().collect())
+    }
     fn rebuild_owed(&self) -> Result<bool, Error> {
         Ok(self.owed)
     }
