@@ -17,12 +17,14 @@ use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_store::code::{open_current, DirTreeSource, Mode, Opened};
 
+use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
-use crate::grounder::symbols::events::{is_dev_only, kind_str, lang_str, module_candidates};
+use crate::grounder::symbols::extract::{kind_str, lang_str};
 use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
 use crate::grounder::symbols::{extracted, registry};
-use crate::grounder::{text_of, workflow_doc, workflowdef};
+use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
@@ -233,6 +235,18 @@ fn workflow_facts(text: &str, facts: &mut FileFacts) {
         .collect();
 }
 
+/// The workflow definition's path relative to a project root, its ONE spelling: the path whose
+/// bytes the code store's extractor reads as the workflow definition.
+fn workflow_doc() -> String {
+    format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
+}
+
+/// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
+/// that are not UTF-8, the two inputs every half maps to no facts.
+fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
+    bytes.and_then(|bytes| std::str::from_utf8(bytes).ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +393,114 @@ mod tests {
         }
     }
 
+    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): over each file's real extraction, the
+    /// resolver settles one entity per path, the first by `CODE_KIND_PRECEDENCE` then the lower
+    /// line, with the winner's own kind, line and `CONTAINS` parent: `fn x` over `mod x;`, the
+    /// first of two cfg twins and of two impls with one header, the production `fn x` over a
+    /// `#[cfg(test)]` twin at a lower line, the function of `const f = function f() {}`, the field
+    /// `B` of `class A { B }` over a `namespace A.B` above it, the function of a class field
+    /// `f = function f() {}` under the field's class, and of a method's twins in two impls the
+    /// lower line's, then the other's once that one is gone.
+    #[test]
+    fn one_path_is_one_entity_the_precedence_winner_under_its_own_parent() {
+        use crate::js_ts_definition_sources::NAMESPACE_A_B_BESIDE_CLASS_A_FIELD_B;
+        use crate::rust_definition_sources::{
+            METHOD_C_IN_THE_FILE_LEVEL_IMPL, METHOD_C_IN_TWO_IMPLS,
+        };
+        use rigger_domain::code_facts::{Stamp, Tip};
+        use rigger_domain::code_view::FactsView;
+        use rigger_domain::contextgraph::REL_CONTAINS;
+        use rigger_domain::resolve::Resolver;
+
+        // (file, source, the id fragment the compared entities hold, "kind id@line in parent")
+        let cases: [(&str, &str, &str, &[&str]); 9] = [
+            (
+                "a.rs",
+                "mod x;\nfn x() {}\n",
+                "",
+                &["function a.rs::x@2 in a.rs"],
+            ),
+            (
+                "a.rs",
+                "#[cfg(unix)]\nfn x() {}\n#[cfg(not(unix))]\nfn x() {}\n",
+                "",
+                &["function a.rs::x@2 in a.rs"],
+            ),
+            (
+                "a.rs",
+                "struct T;\nimpl T {}\nimpl T {}\n",
+                "",
+                &["type a.rs::T@1 in a.rs", "impl a.rs::impl T@2 in a.rs"],
+            ),
+            (
+                "a.rs",
+                "#[cfg(test)]\nfn x() {}\nfn x() {}\n",
+                "",
+                &["function a.rs::x@3 in a.rs"],
+            ),
+            (
+                "c.ts",
+                "const f = function f() {};\n",
+                "",
+                &["function c.ts::f@1 in c.ts"],
+            ),
+            (
+                "c.ts",
+                NAMESPACE_A_B_BESIDE_CLASS_A_FIELD_B,
+                "",
+                &["type c.ts::A@2 in c.ts", "field c.ts::A.B@3 in c.ts::A"],
+            ),
+            (
+                "c.ts",
+                "class A {\n    f = function f() {};\n}\n",
+                "",
+                &["type c.ts::A@1 in c.ts", "function c.ts::A::f@2 in c.ts::A"],
+            ),
+            (
+                "a.rs",
+                METHOD_C_IN_TWO_IMPLS,
+                "::c",
+                &["method a.rs::a::B::c@4 in a.rs::a::impl B"],
+            ),
+            (
+                "a.rs",
+                METHOD_C_IN_THE_FILE_LEVEL_IMPL,
+                "::c",
+                &["method a.rs::a::B::c@8 in a.rs::impl a::B"],
+            ),
+        ];
+        let stamp = Stamp {
+            tip: Tip {
+                head: "main".into(),
+                commit: None,
+                tree: "fixture-tree".into(),
+            },
+            fingerprint: 0,
+            seq: 1,
+        };
+        for (file, source, held, winners) in cases {
+            let facts = facts_of(file, source.as_bytes());
+            let view = FactsView::new(stamp.clone(), vec![facts.clone()]);
+            let resolver = Resolver::new(&view);
+            let parents: HashMap<String, String> = resolver
+                .links(&facts, true)
+                .into_iter()
+                .filter(|l| l.rel == REL_CONTAINS)
+                .map(|l| (l.to, l.from))
+                .collect();
+            let entities: Vec<String> = resolver
+                .entities(&facts, true)
+                .into_iter()
+                .filter(|e| e.id.contains(held))
+                .map(|e| {
+                    let parent = parents.get(&e.id).map_or("-", String::as_str);
+                    format!("{} {}@{} in {parent}", e.kind, e.id, e.line)
+                })
+                .collect();
+            assert_eq!(entities, winners, "{source:?}: one entity per path");
+        }
+    }
+
     #[test]
     fn facts_mark_test_defs_and_test_mentions() {
         // (path, source, the (leaf, test) of each definition, the (name, test) of each mention,
@@ -456,6 +578,8 @@ mod tests {
 
     #[test]
     fn scope_follows_the_dev_only_path_rule() {
+        // Every DEV-ONLY PATHS pattern at its gates and edges is test scope; every production
+        // control, and the nearest path each pattern does not name, is product.
         let table = [
             ("tests/a.rs", Scope::Test),
             ("crates/x/benches/b.rs", Scope::Test),
@@ -469,6 +593,32 @@ mod tests {
             ("web/a.spec.js", Scope::Test),
             ("App.Tests/Case.cs", Scope::Test),
             ("AppTest/Case.cs", Scope::Test),
+            ("tests/foo.rs", Scope::Test),
+            ("crate/benches/b.rs", Scope::Test),
+            ("examples/demo/main.rs", Scope::Test),
+            ("web/__tests__/a.js", Scope::Test),
+            ("app/test_views.py", Scope::Test),
+            ("app/views_test.py", Scope::Test),
+            ("shim/shim.test.mjs", Scope::Test),
+            ("web/a.spec.ts", Scope::Test),
+            ("Acme.Test/A.cs", Scope::Test),
+            ("Acme.Tests/A.cs", Scope::Test),
+            ("web/a.test.js", Scope::Test),
+            ("web/a.test.cjs", Scope::Test),
+            ("web/a.test.jsx", Scope::Test),
+            ("web/a.test.tsx", Scope::Test),
+            ("web/a.test.d.ts", Scope::Test),
+            ("web/.spec.ts", Scope::Test),
+            ("pkg/_test.go", Scope::Test),
+            ("app/test_.py", Scope::Test),
+            ("app/_test.py", Scope::Test),
+            ("FooTest/A.cs", Scope::Test),
+            ("FooTests/Sub/A.cs", Scope::Test),
+            ("Test/A.cs", Scope::Test),
+            ("a/b/tests/c/d.rs", Scope::Test),
+            ("benches/b.go", Scope::Test),
+            ("tests/notes.txt", Scope::Test),
+            ("examples/README", Scope::Test),
             ("src/lib.rs", Scope::Product),
             ("src/tests.rs", Scope::Product),
             ("src/testsuite.rs", Scope::Product),
@@ -477,6 +627,37 @@ mod tests {
             ("pkg/testing.py", Scope::Product),
             ("contest/Case.cs", Scope::Product),
             ("App/AppTests.cs", Scope::Product),
+            ("build.rs", Scope::Product),
+            ("Contest/a.cs", Scope::Product),
+            ("LoadTest/run.py", Scope::Product),
+            ("FooTests/lib.rs", Scope::Product),
+            ("src/a.test.rs", Scope::Product),
+            ("src/a.spec.rs", Scope::Product),
+            ("src/benches.rs", Scope::Product),
+            ("src/examples.rs", Scope::Product),
+            ("src/__tests__.js", Scope::Product),
+            ("src/tests", Scope::Product),
+            ("testing/a.rs", Scope::Product),
+            ("mytests/a.rs", Scope::Product),
+            ("pkg/xtest.go", Scope::Product),
+            ("pkg/test_x.go", Scope::Product),
+            ("pkg/x.test.go", Scope::Product),
+            ("pkg/x_test.go.txt", Scope::Product),
+            ("app/test.py", Scope::Product),
+            ("app/tests_a.py", Scope::Product),
+            ("app/attest.py", Scope::Product),
+            ("app/a_test_b.py", Scope::Product),
+            ("app/a.spec.py", Scope::Product),
+            ("web/test.js", Scope::Product),
+            ("web/spec.ts", Scope::Product),
+            ("web/a_test.js", Scope::Product),
+            ("web/test_a.ts", Scope::Product),
+            ("web/atest.spec", Scope::Product),
+            ("src/WidgetTests.cs", Scope::Product),
+            ("Acme.Tests.Core/A.cs", Scope::Product),
+            ("Testing/A.cs", Scope::Product),
+            ("Acme.tests/A.cs", Scope::Product),
+            ("Acme.Tests/.cs", Scope::Product),
         ];
         for (path, scope) in table {
             assert_eq!(facts_of(path, b"").scope, scope, "{path}");
@@ -491,7 +672,7 @@ mod tests {
             &'static str,
             &'static [(&'static str, bool, &'static [&'static str])],
         );
-        let table: [Row; 7] = [
+        let table: [Row; 10] = [
             (
                 "src/lib.rs",
                 "mod alpha;\n",
@@ -520,6 +701,21 @@ mod tests {
                 "src/lib.rs",
                 "mod outer {\n    mod x;\n}\n",
                 &[("x", false, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+            ),
+            (
+                "src/lib.rs",
+                "#![cfg(test)]\nfn first() {}\nmod x;\n",
+                &[("x", true, &["src/x.rs", "src/x/mod.rs"])],
+            ),
+            (
+                "src/main.rs",
+                "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
+                &[("z", false, &["src/z.rs", "src/z/mod.rs"])],
+            ),
+            (
+                "src/lib.rs",
+                "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
+                &[("x", true, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
             ),
             ("src/lib.rs", "mod inline { fn f() {} }\n", &[]),
             ("web/app.ts", "namespace N { function f() {} }\n", &[]),
@@ -561,7 +757,7 @@ mod tests {
             Triples,
             bool,
         );
-        let table: [Row; 8] = [
+        let table: [Row; 9] = [
             (
                 "docs/widget-design.md",
                 b"# Widget design\n\nThe code is `src/widget.rs`.\n\n## Parts\n",
@@ -638,6 +834,17 @@ mod tests {
             (
                 ".rigger/workflow.yml",
                 b"stages: [unclosed\n",
+                Half::Workflow,
+                "",
+                &[],
+                &[],
+                &[],
+                &[],
+                false,
+            ),
+            (
+                ".rigger/workflow.yml",
+                &[0xff, 0xfe, 0x00],
                 Half::Workflow,
                 "",
                 &[],

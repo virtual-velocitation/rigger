@@ -4903,8 +4903,12 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// BINARY SELECTION (spec 75): the block prefers a `rigger` built FROM THIS TREE over
 /// whatever is first on PATH, and runs the RESOLVED binary by its path, so a worktree whose
 /// code legitimately changes a rendered fact is checked by a binary that reflects that
-/// change. PATH is the last candidate, so a team's clones need no absolute path to one
-/// developer's binary.
+/// change. The candidates come in tiers, one target dir each, in authority order: the first
+/// tier that holds a build is used, and within it the more recently modified of its release and
+/// debug builds is checked, so a stale release build never shadows a fresh debug build beside
+/// it; a lower tier never wins on recency, since the run's shared build cache can hold a newer
+/// build of another worktree's tree. PATH is the last candidate, so a team's clones need no
+/// absolute path to one developer's binary.
 ///
 /// The trailing `true` on the pass path (rather than `exit 0`) keeps the block cooperative:
 /// it contributes a zero exit when it is the last block, without hard-terminating any block a
@@ -4932,12 +4936,17 @@ fn precommit_block() -> String {
 # BINARY SELECTION (spec 75): prefer a `rigger` BUILT FROM THIS TREE over whatever happens to
 # sit first on PATH, so a worktree whose code legitimately changes a rendered fact is checked
 # by a binary that actually reflects that change instead of deadlocking against a stale PATH
-# install. Candidate order, most authoritative first: the env-provided cargo target dir
-# (release then debug), this working tree's own local target (release then debug), this
-# worktree's own unit-derived scratch cargo-target - its unit is read from the worktree
-# directory name, `rigger-wt-<unit>` (release then debug), the run's shared build-cache target
-# (debug only - unit gates build the debug profile only), and finally PATH. The check is only
-# as current as the binary that runs it, which is why the tree-built candidates come first.
+# install. The candidates come in tiers, one target dir each, most authoritative first: the
+# env-provided cargo target dir, this working tree's own local target, this worktree's own
+# unit-derived scratch cargo-target - its unit is read from the worktree directory name,
+# `rigger-wt-<unit>` - first where the binary relocates it and then where it used to live, and
+# the run's shared build-cache target (debug only - unit gates build the debug profile only).
+# The first tier that holds a build is the one used, and within it the more recently modified
+# of its release and debug builds is checked, so a stale release build never shadows a fresh
+# debug build beside it. A lower tier never wins on recency: the shared build cache can hold a
+# newer build of another worktree's tree. PATH is consulted only when no tier holds a build.
+# The check is only as current as the binary that runs it, which is why the tree-built
+# candidates come first.
 git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
 worktree_top=$(git rev-parse --show-toplevel 2>/dev/null)
 worktree_base=$(basename "$worktree_top" 2>/dev/null)
@@ -4980,22 +4989,22 @@ if [ -n "$git_common_dir" ]; then
     shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
 fi
 rigger_bin=
-for candidate in \
-    "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" \
-    "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}" \
-    "./target/release/rigger" \
-    "./target/debug/rigger" \
-    "$relocated_release" \
-    "$relocated_debug" \
-    "$unit_release" \
-    "$unit_debug" \
-    "$shared_debug" \
-; do
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-        rigger_bin="$candidate"
-        break
-    fi
-done
+# One tier is one target dir: take the more recently modified of its builds that exist. A later
+# tier is consulted only when every earlier one holds none.
+newest_of_tier() {
+    for candidate in "$@"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+            if [ -z "$rigger_bin" ] || [ "$candidate" -nt "$rigger_bin" ]; then
+                rigger_bin="$candidate"
+            fi
+        fi
+    done
+}
+newest_of_tier "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}"
+[ -n "$rigger_bin" ] || newest_of_tier "./target/release/rigger" "./target/debug/rigger"
+[ -n "$rigger_bin" ] || newest_of_tier "$relocated_release" "$relocated_debug"
+[ -n "$rigger_bin" ] || newest_of_tier "$unit_release" "$unit_debug"
+[ -n "$rigger_bin" ] || newest_of_tier "$shared_debug"
 if [ -z "$rigger_bin" ] && command -v rigger >/dev/null 2>&1; then
     rigger_bin=$(command -v rigger)
 fi
@@ -5740,17 +5749,30 @@ mod tests {
         );
     }
 
+    /// The managed block's tier calls: from the first `newest_of_tier` call to the PATH
+    /// fallback, one line per tier.
+    fn precommit_tiers(hook: &str) -> &str {
+        let start = hook
+            .find("\nnewest_of_tier \"")
+            .expect("the block calls newest_of_tier once per tier")
+            + 1;
+        let end = start
+            + hook[start..]
+                .find("if [ -z \"$rigger_bin\" ] && command -v rigger")
+                .expect("the PATH fallback follows the tiers");
+        &hook[start..end]
+    }
+
     /// spec 75, crit 1 (BINARY SELECTION, pure): the managed block must prefer a `rigger`
     /// built FROM THIS TREE over whatever happens to be first on PATH, so a worktree whose
     /// code legitimately changes a rendered fact renders with a binary that actually reflects
     /// it (rather than deadlocking against a stale PATH install). Proves, at the
-    /// `compose_precommit_bytes` seam, that the block tries every candidate in the spec's
-    /// exact order - env target dir (release then debug), local target (release then debug),
-    /// this worktree's own unit-derived scratch cargo-target (release then debug), the shared
-    /// build-cache target (debug only), PATH last - and that BOTH the render call and the
-    /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
-    /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
-    /// end-to-end fixture-driven behavior, not this test).
+    /// `compose_precommit_bytes` seam, that the block consults the candidate tiers in the
+    /// spec's order - env target dir, local target, this worktree's own unit-derived scratch
+    /// cargo-target, the shared build-cache target (debug only), PATH last - and that BOTH the
+    /// render call and the provenance line invoke the RESOLVED binary, not a bare unqualified
+    /// `rigger`. This criterion OWNS the candidate order and its rendering in the template (c2
+    /// owns the end-to-end fixture-driven behavior, not this test).
     #[test]
     fn precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding() {
         // Spec 89 moved a unit's build cache to `<cache home>/rigger/<encoded repo>/
@@ -5759,10 +5781,7 @@ mod tests {
         // of the repo root must equal `liveness::marker_filename`'s byte for byte, or the two
         // sides name different directories and the chain silently falls back to PATH.
         let hook = compose_precommit(None);
-        let loop_start = hook.find("for candidate in").unwrap();
-        let body_start = loop_start + "for candidate in".len();
-        let loop_end = body_start + hook[body_start..].find("; do").unwrap();
-        let candidates = &hook[body_start..loop_end];
+        let candidates = precommit_tiers(&hook);
         let local_debug = candidates.find("./target/debug/rigger").unwrap();
         let relocated_release = candidates
             .find("$relocated_release")
@@ -5811,58 +5830,43 @@ mod tests {
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);
 
-        // The actual TRY order is the order of the `for candidate in ...` list (shell
-        // variables like `$unit_release` are computed once, above the loop, for POSIX
-        // correctness - their VALUES, not their computation site, are what matters), bounded
-        // between "for candidate in" and its closing "; do". Slicing to exactly that region
-        // means a candidate's VALUE text appearing earlier (in its own assignment) can never
-        // be mistaken for its position in the try order.
-        let loop_start = hook
-            .find("for candidate in")
-            .expect("a for-loop iterates the candidates in order");
-        let loop_body_start = loop_start + "for candidate in".len();
-        let loop_end = hook[loop_body_start..]
-            .find("; do")
-            .map(|i| loop_body_start + i)
-            .expect("the candidate for-loop is closed with `; do`");
-        let candidate_list = &hook[loop_body_start..loop_end];
-        let idx_env_release = candidate_list
-            .find("$CARGO_TARGET_DIR/release/rigger")
-            .expect("env target dir release candidate is tried");
-        let idx_env_debug = candidate_list
-            .find("$CARGO_TARGET_DIR/debug/rigger")
-            .expect("env target dir debug candidate is tried");
-        let idx_local_release = candidate_list
-            .find("./target/release/rigger")
-            .expect("local target release candidate is tried");
-        let idx_local_debug = candidate_list
-            .find("./target/debug/rigger")
-            .expect("local target debug candidate is tried");
-        let idx_unit_release = candidate_list
-            .find("$unit_release")
-            .expect("unit-derived cargo-target release candidate is tried");
-        let idx_unit_debug = candidate_list
-            .find("$unit_debug")
-            .expect("unit-derived cargo-target debug candidate is tried");
-        let idx_shared_debug = candidate_list
-            .find("$shared_debug")
-            .expect("shared build-cache debug candidate is tried");
-        // PATH is consulted only as the fallback AFTER the candidate loop closes.
-        let idx_path_fallback = hook[loop_end..]
-            .find("command -v rigger")
-            .map(|i| loop_end + i)
-            .expect("PATH fallback candidate is tried after the loop");
+        // The candidate order is the order of the tier calls, one line per tier (shell
+        // variables like `$unit_release` are computed once, above them, for POSIX correctness -
+        // their VALUES, not their computation site, are what matters). A tier is one target
+        // dir, its release and debug builds handed to `newest_of_tier` together so the more
+        // recently modified one is taken, and every tier after the first runs only while no
+        // earlier tier has resolved a binary, so a lower tier never wins on recency.
+        let tiers: Vec<&str> = precommit_tiers(&hook)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            tiers,
+            [
+                "newest_of_tier \"${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}\" \
+                 \"${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}\"",
+                "[ -n \"$rigger_bin\" ] || newest_of_tier \"./target/release/rigger\" \
+                 \"./target/debug/rigger\"",
+                "[ -n \"$rigger_bin\" ] || newest_of_tier \"$relocated_release\" \
+                 \"$relocated_debug\"",
+                "[ -n \"$rigger_bin\" ] || newest_of_tier \"$unit_release\" \"$unit_debug\"",
+                "[ -n \"$rigger_bin\" ] || newest_of_tier \"$shared_debug\"",
+            ],
+            "the tiers must be consulted in the spec's order (env dir, local target, relocated \
+             unit target, unit-derived cargo-target, shared build-cache debug), each a later \
+             tier only while no binary is resolved; got:\n{hook}"
+        );
         assert!(
-            idx_env_release < idx_env_debug
-                && idx_env_debug < idx_local_release
-                && idx_local_release < idx_local_debug
-                && idx_local_debug < idx_unit_release
-                && idx_unit_release < idx_unit_debug
-                && idx_unit_debug < idx_shared_debug
-                && idx_shared_debug < idx_path_fallback,
-            "candidates must be TRIED in the spec's exact order (env dir release/debug, local \
-             target release/debug, unit-derived cargo-target release/debug, shared build-cache \
-             debug, PATH last); got:\n{hook}"
+            hook.contains("[ \"$candidate\" -nt \"$rigger_bin\" ]"),
+            "within a tier the more recently modified build is taken; got:\n{hook}"
+        );
+        // PATH is consulted only as the fallback, after every tier.
+        let tiers_end = hook.find("if [ -z \"$rigger_bin\" ] && command -v rigger");
+        assert!(
+            tiers_end.is_some_and(|end| hook[..end].ends_with(precommit_tiers(&hook))),
+            "PATH is tried only after every tier, and only when none resolved a binary; \
+             got:\n{hook}"
         );
 
         // The unit-derived candidates ($unit_release/$unit_debug) are POINTED at paths keyed

@@ -12,12 +12,9 @@
 //!    `project_scoped_latest_generations`) are now PUBLIC API with an EXTERNAL consumer - `src/main.rs`
 //!    reaches them as `rigger::ingest::...` across the crate boundary. Nothing drove them from
 //!    outside the crate.
-//! 2. The `<prefix>/<file>@<hash>#<i>` content key gained a READER (`derived_key_parts`) beside
-//!    its long-standing WRITER (`key_batch`). A hand-spelled key cannot prove the reader accepts
-//!    what the writer actually mints; if the two ever drift, the predicate degrades SILENTLY to
-//!    "suppresses nothing" and the log resumes growing without bound. These tests round-trip REAL
-//!    minted keys - including for paths that carry the key format's own `@` separator, a shape
-//!    only a real walk over a real tree can prove the writer ever mints.
+//! 2. The `<prefix>/<file>@<hash>#<i>` content key a derived row of the log carries has one
+//!    READER (`derived_key_parts`); the predicate reads every key through it, so a key it passes
+//!    over as malformed suppresses nothing.
 //! 3. `cmd_graph_build` - the cold build's sink - decides type-first, as that predicate does. Its
 //!    type-first behaviour is only observable end to end,
 //!    through the built binary and a store the test seeds.
@@ -26,9 +23,8 @@
 //!    a reading half that address the slot through two different constants is a boundary no
 //!    single-module test can see, and it fails silently: nothing suppresses, and the log grows.
 //! 5. The predicate is PROJECT-scoped, so a `RunStarted` in the stream it is handed must not change
-//!    its answer. The run entry's own end-to-end proof of that needs a tree to walk and is
-//!    therefore `symbols`-gated, while the predicate is compiled and called in BOTH lanes and is
-//!    the surface a future consumer meets - so the light lane, and the API edge, are pinned here.
+//!    its answer. The predicate is compiled and called in BOTH lanes and is the surface a future
+//!    consumer meets - so the light lane, and the API edge, are pinned here.
 //!
 //! Scope is strictly criterion 1. The run-scoping boundary for NON-ingest keys (criterion 2), the
 //! run-level change/revert path (criterion 3) and the store-layer append guard (criterion 4) are
@@ -322,167 +318,9 @@ fn the_replay_key_metadata_name_is_one_name_owned_beside_the_key_authority() {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The seam tests below need the extraction pass to have a tree to walk, so they are `symbols`-gated
-// exactly as the walk is. In the light lane the walk is a documented no-op that mints no key, so
-// there is no producer/consumer pair to round-trip and no batch for a build to suppress; the three
-// contract tests above stay UNGATED and keep that lane's coverage of the predicate's own boundary.
-// ---------------------------------------------------------------------------------------------
-
-/// A throwaway project that is its own git repo (so the binary resolves a stable project identity
-/// and folds from the git top-level), carrying a source file for the code half of the index and a
-/// real design doc for the design half - both halves of the derived index have work to mint.
-#[cfg(feature = "symbols")]
-fn temp_ingestable_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let _ = common::git::run_git(root, &["init", "-q"]);
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::write(
-        root.join("src/alpha.rs"),
-        "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("specs/sample.md"),
-        include_str!("../specs/29c-unified-traversal-tiers.md"),
-    )
-    .unwrap();
-    dir
-}
-
-/// Every `<prefix>/<file>@<hash>#<i>` key the SHIPPED walk-and-key authority mints for the tree at
-/// `root`, paired with the event type it was minted for. This is the WRITER half of the round-trip:
-/// it is the same public entry `rigger graph build` and the run's ingest both drive, so these are
-/// the real keys the log will carry - never a spelling this test invented.
-#[cfg(feature = "symbols")]
-fn minted(root: &std::path::Path) -> Vec<(String, String)> {
-    minted_events(root)
-        .into_iter()
-        .map(|(key, event)| (key, event.type_))
-        .collect()
-}
-
-/// The minted keys as a set, for comparison against what the predicate hands a sink back.
-#[cfg(feature = "symbols")]
-fn minted_keys(root: &std::path::Path) -> BTreeSet<String> {
-    minted(root).into_iter().map(|(k, _)| k).collect()
-}
-
-/// The recorded events, replayed as a sink would see them: each minted key stamped onto an event of
-/// the type it was minted for - the shape `rigger graph build` appends (`with_meta(replay_key)`).
-#[cfg(feature = "symbols")]
-fn as_recorded(minted: &[(String, String)]) -> Vec<Event> {
-    minted.iter().map(|(k, t)| keyed(t, k)).collect()
-}
-
-/// ROUND-TRIP CONTRACT between the key WRITER and the new key READER, over REAL keys.
-///
-/// `key_batch` mints `<prefix>/<file>@<hash>#<i>`; `project_scoped_latest_generations` now parses that
-/// same string back into (batch identity, content generation). The unit test proves the reader's
-/// rule against keys a human typed - which cannot fail if the writer's format moves. This drives
-/// the SHIPPED walk over a real tree and asserts the reader recognises EVERY key it mints: the
-/// returned suppression set is exactly the minted set, with nothing passed over as malformed.
-///
-/// That equality is the load-bearing one, because the failure it guards is SILENT. A reader that
-/// stopped recognising the writer's keys would suppress nothing, every run would re-append the
-/// whole derived index, and no test that only checks "the rule is right" would notice - the log
-/// would simply resume growing without bound, which is the defect this criterion exists to end.
-#[cfg(feature = "symbols")]
-#[test]
-fn every_content_key_the_walk_actually_mints_round_trips_through_the_predicate() {
-    let dir = temp_ingestable_project();
-    let root = dir.path();
-
-    let recorded = minted(root);
-    let keys: BTreeSet<String> = recorded.iter().map(|(k, _)| k.clone()).collect();
-    assert!(
-        !keys.is_empty(),
-        "sanity: the walk must mint content keys for a real tree"
-    );
-    assert!(
-        keys.iter().any(|k| k.starts_with("gc/")),
-        "sanity: the code half of the derived index must have minted keys; got {keys:?}"
-    );
-    assert!(
-        keys.iter().any(|k| k.starts_with("gd/")),
-        "sanity: the design half of the derived index must have minted keys; got {keys:?}"
-    );
-
-    let suppressed: BTreeSet<String> = reference_replay_keys(&as_recorded(&recorded));
-
-    assert_eq!(
-        suppressed, keys,
-        "the reader must recognise EVERY key the writer mints - a key it passes over as malformed \
-         silently stops suppressing, and the log resumes growing without bound"
-    );
-}
-
-/// ROUND-TRIP CONTRACT, generation half: the identity and generation the reader recovers from REAL
-/// minted keys must track the file's content, not merely parse. Edit one file and re-walk: the
-/// previous generation's recorded keys must suppress NONE of the new batch (so the changed file
-/// re-emits), while the untouched file's keys are still suppressed by the very same recorded
-/// stream (so it does not). This is the reader's contract over real keys; the RUN-level proof that
-/// an edit re-emits exactly that file's batch belongs to criterion 3 and is not duplicated here.
-#[cfg(feature = "symbols")]
-#[test]
-fn a_real_batchs_generation_is_recovered_from_the_key_the_walk_minted() {
-    let dir = temp_ingestable_project();
-    let root = dir.path();
-
-    let before = minted(root);
-    let recorded_before = as_recorded(&before);
-    let design_keys: BTreeSet<String> = before
-        .iter()
-        .map(|(k, _)| k.clone())
-        .filter(|k| k.starts_with("gd/"))
-        .collect();
-    assert!(
-        !design_keys.is_empty(),
-        "sanity: the untouched design half must have recorded keys to stay suppressed"
-    );
-
-    // Change ONLY the source file. Its batch bytes change, so its whole batch hashes to a new
-    // generation; the design doc is untouched and keeps its generation.
-    std::fs::write(
-        root.join("src/alpha.rs"),
-        "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\npub fn added() {}\n",
-    )
-    .unwrap();
-
-    let after: BTreeSet<String> = minted_keys(root);
-    let new_code_keys: BTreeSet<String> = after
-        .iter()
-        .filter(|k| k.starts_with("gc/"))
-        .cloned()
-        .collect();
-    assert!(
-        !new_code_keys.is_empty(),
-        "sanity: the edited source file must mint a fresh code batch"
-    );
-
-    let suppressed: BTreeSet<String> = reference_replay_keys(&recorded_before);
-
-    assert!(
-        new_code_keys.is_disjoint(&suppressed),
-        "the edited file's NEW generation must be suppressed by nothing the prior generation \
-         recorded; overlap was {:?}",
-        new_code_keys.intersection(&suppressed).collect::<Vec<_>>()
-    );
-    assert!(
-        design_keys.is_subset(&suppressed),
-        "the untouched design half must stay suppressed by the same recorded stream - one file's \
-         new generation must not disturb another file's identity"
-    );
-}
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 use crate::common;
 
-#[cfg(feature = "symbols")]
-use common::fixtures::minted_events;
 use common::fixtures::reference_replay_keys;

@@ -32,7 +32,6 @@ mod name_filter_sources;
 mod page;
 mod production_boundary;
 mod python_definition_sources;
-mod read_fault;
 mod rust_definition_sources;
 mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -58,7 +57,6 @@ pub use name_filter_sources::*;
 pub use page::*;
 pub use production_boundary::*;
 pub use python_definition_sources::*;
-pub use read_fault::*;
 pub use rust_definition_sources::*;
 pub use scratch::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

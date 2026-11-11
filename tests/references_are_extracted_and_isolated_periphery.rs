@@ -329,7 +329,7 @@ const TEST_ATTRIBUTED_SOURCE: &str = "#[cfg(test)]\nuse crate::shapes::Kestrel;\
 /// WHEN the operator runs `rigger graph build`,
 /// THEN no `REFERENCES` or `CALLS` edge stands and `draw` alone carries the test code's evidence
 /// (`proven_by`): its `use`, type reference and const read prove neither `Kestrel` nor
-/// `QUOTA_CAP`, and the production ingest emits no `ref_kind` event for any of them.
+/// `QUOTA_CAP`.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
@@ -339,7 +339,7 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
         ("src/probe.rs", TEST_REGION_SOURCE),
         ("src/gated.rs", TEST_ATTRIBUTED_SOURCE),
     ] {
-        let (project, graph) = common::cli::built_graph(&[definer, test_code]);
+        let (_project, graph) = common::cli::built_graph(&[definer, test_code]);
 
         assert_eq!(
             common::fixtures::landed(&graph),
@@ -351,14 +351,6 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
             DEFINER_ENTITIES.map(|id| common::fixtures::proven_by_attr(&graph, id)),
             [None, None, Some("1".to_string())],
             "{}: the test code's call to `draw` is its one proof",
-            test_code.0
-        );
-        let edges =
-            common::project_payloads(project.path(), rigger::contextgraph::TYPE_EDGE_INFERRED);
-        assert_eq!(
-            common::fixtures::tagged_payloads(&edges),
-            [],
-            "{}: test code emits no ref_kind event",
             test_code.0
         );
     }

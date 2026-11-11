@@ -275,16 +275,16 @@ impl Drop for GateSocket {
 }
 
 /// Ask the driver serving the socket at `path` to answer `request`: its reply, or `None` when no
-/// driver serves there (no socket file, or one nothing listens on). A socket in a directory that
+/// driver serves there (no socket file, one nothing listens on, or a connection closed before any
+/// driver read the request, [`exchange`]). A socket in a directory that
 /// is not this user's alone is refused with `PermissionDenied` ([`check_private`]), and a path
 /// longer than the OS allows a socket is `InvalidInput`.
 #[cfg(unix)]
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
-    use std::io::{BufRead, Write};
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         check_private(dir)?;
     }
-    let mut stream = match std::os::unix::net::UnixStream::connect(path) {
+    let stream = match std::os::unix::net::UnixStream::connect(path) {
         Ok(stream) => stream,
         Err(e)
             if matches!(
@@ -296,9 +296,38 @@ pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> 
         }
         Err(e) => return Err(naming_overflow(path, e)),
     };
-    stream.write_all(rigger_domain::gate_channel::to_line(request).as_bytes())?;
+    exchange(stream, request)
+}
+
+/// Send `request` over `stream`, connected to a driver's socket, and read the driver's reply:
+/// `None` when the connection closes before any driver read the request. A listener that closes
+/// with the connection still queued - a driver shutting down, or a socket a process forking at
+/// that moment holds a little longer - breaks the pipe the request is written to, or resets the
+/// connection once it was written; a driver that closes a connection with the request unread
+/// resets it too. No driver took the request then, exactly as when nothing listens. A driver
+/// that read the request and closed without replying is the end of file this answers as an error.
+#[cfg(unix)]
+fn exchange(
+    mut stream: std::os::unix::net::UnixStream,
+    request: &GateRequest,
+) -> io::Result<Option<GateReply>> {
+    use std::io::{BufRead, Write};
     let mut line = String::new();
-    io::BufReader::new(stream).read_line(&mut line)?;
+    let sent = stream
+        .write_all(rigger_domain::gate_channel::to_line(request).as_bytes())
+        .and_then(|()| io::BufReader::new(stream).read_line(&mut line));
+    match sent {
+        Ok(_) => {}
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            return Ok(None)
+        }
+        Err(e) => return Err(e),
+    }
     if line.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -408,6 +437,75 @@ mod tests {
             .expect("a live socket is not taken");
         assert_eq!(again.kind(), std::io::ErrorKind::AddrInUse);
         drop(live);
+    }
+
+    /// A REQUEST NO DRIVER READ IS NO ANSWER: GIVEN a connection closed before any driver read the
+    /// request on it - the listener closed with the connection still queued (a driver shutting
+    /// down, or a listener a process forked at that moment held a little longer), so the request
+    /// meets a broken pipe, or a driver that took the connection and closed it with the request
+    /// unread, so the reply meets a reset - THEN asking answers `None`, as when nothing listens;
+    /// GIVEN a driver that read the whole request and closed without replying, THEN asking is the
+    /// end-of-file error, since a driver took that request.
+    #[test]
+    fn a_request_no_driver_read_answers_none_and_one_read_but_unanswered_is_an_error() {
+        use std::io::{BufRead, Read};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        type Close = fn(&Path, UnixListener) -> io::Result<Option<GateReply>>;
+        /// Ask over `listener` while `driver` handles the one connection it takes.
+        fn asked_while(
+            path: &Path,
+            listener: UnixListener,
+            driver: fn(UnixStream),
+        ) -> io::Result<Option<GateReply>> {
+            std::thread::scope(|s| {
+                let asking = s.spawn(|| ask(path, &request()));
+                driver(listener.accept().unwrap().0);
+                asking.join().unwrap()
+            })
+        }
+        let rows: [(&str, Close, Result<(), io::ErrorKind>); 3] = [
+            (
+                "closed with the connection queued",
+                |path, listener| {
+                    let queued = UnixStream::connect(path).unwrap();
+                    drop(listener);
+                    exchange(queued, &request())
+                },
+                Ok(()),
+            ),
+            (
+                "taken and closed with the request unread",
+                |path, listener| {
+                    // One byte waits for the request to arrive and leaves the rest of it unread.
+                    asked_while(path, listener, |mut taken| {
+                        taken.read_exact(&mut [0]).unwrap();
+                    })
+                },
+                Ok(()),
+            ),
+            (
+                "taken, read whole and closed unanswered",
+                |path, listener| {
+                    asked_while(path, listener, |taken| {
+                        io::BufReader::new(taken)
+                            .read_line(&mut String::new())
+                            .unwrap();
+                    })
+                },
+                Err(io::ErrorKind::UnexpectedEof),
+            ),
+        ];
+        for (why, close, want) in rows {
+            let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+            private_dir(path.parent().unwrap()).unwrap();
+            let listener = UnixListener::bind(&path).unwrap();
+            match (close(&path, listener), want) {
+                (Ok(answer), Ok(())) => assert_eq!(answer, None, "{why}"),
+                (Err(e), Err(kind)) => assert_eq!(e.kind(), kind, "{why}: {e}"),
+                (got, want) => panic!("{why}: asking answered {got:?}, want {want:?}"),
+            }
+        }
     }
 
     /// ONE SOCKET PER REPO, NEVER OUT OF PATH: GIVEN two repo paths under one runtime directory,

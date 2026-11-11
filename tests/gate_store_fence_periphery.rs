@@ -177,7 +177,7 @@ use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
 use common::cli::open_graph;
-use common::fixtures::apply_code_entity;
+use common::fixtures::fold_shown_tree_finding;
 use common::fixtures::registry_entries;
 use common::fixtures::test_spawn_host;
 use common::git::git_init_quiet;
@@ -405,14 +405,18 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
 fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
     let topo = build_topology();
     let root = topo.live_events.parent().unwrap().parent().unwrap();
-    {
-        let live_graph = open_graph(root);
-        apply_code_entity(&live_graph, 1, "a.rs", "alpha", "function", 1, "rust");
-    }
+    fold_shown_tree_finding(&open_graph(root));
+    // Fixture sanity: an unfenced read of the live graph finds the finding, so the fenced miss
+    // below is the fence's doing.
+    let (out, err, ok) = common::cli::run_rigger(root, &["graph", "--show", "f-shown"]);
+    assert!(
+        ok && out.contains("show f-shown"),
+        "an unfenced read finds the live graph's finding; stderr: {err}; got:\n{out}"
+    );
     let target_dir = topo.target_dir.to_string_lossy().into_owned();
     let gate = Gate {
         id: "fence-graph-read".into(),
-        run: format!("{} graph --show alpha", rigger_bin().display()),
+        run: format!("{} graph --show f-shown", rigger_bin().display()),
         kind: Kind::Core,
         autonomy: Autonomy::Manual,
         history: vec![],
@@ -434,7 +438,7 @@ fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
     assert!(
         result.pass && result.evidence.contains("no such entity") && fence_graph.is_file(),
         "a fenced graph read must answer from a graph inside the fence ({}), never the live \
-         graph that holds `alpha`: {result:?}",
+         graph that holds the finding `f-shown`: {result:?}",
         fence_graph.display()
     );
 }

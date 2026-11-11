@@ -3,7 +3,7 @@ name = "rigger-grounder"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols grounder, grep and nop), the shared scoped project walk, the code, design-intent and workflow-definition emit passes and the project-source ingest walk."
+description = "Rigger's grounding adapters: the grounders behind the Grounder interface (the structural symbols grounder, grep and nop), the shared scoped project walk, the extraction of file bytes into code store facts, and the combined lookup."
 
 [lib]
 name = "rigger_grounder"
@@ -15,8 +15,8 @@ path = "src/lib.rs"
 # gate here, and the root forwards all three features, so every lane compiles exactly the
 # surface it did before.
 default = ["symbols", "store"]
-store = ["rigger-domain/store", "rigger-process/store", "rigger-config-files/store", "rigger-store/store"]
-core = ["rigger-domain/core", "rigger-process/core", "rigger-config-files/core", "rigger-graph-sqlite/core", "rigger-store/core"]
+store = ["rigger-domain/store", "rigger-config-files/store", "rigger-store/store"]
+core = ["rigger-domain/core", "rigger-config-files/core", "rigger-store/core"]
 symbols = [
     "dep:tree-sitter",
     "dep:tree-sitter-tags",
@@ -30,10 +30,8 @@ symbols = [
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
-# The ordered parallel map the code ingest fans out over (a same-ring edge).
-rigger-process = { path = "../rigger-process", default-features = false }
-# The workflow-definition pass reads `.rigger/workflow.yml` through the operator-tree reader (a
-# same-ring edge).
+# The workflow-definition extraction parses `.rigger/workflow.yml` through the operator-tree
+# reader (a same-ring edge).
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
 # The code store the symbols grounder reads and the scoped project walk.
 rigger-store = { path = "../rigger-store", default-features = false }
@@ -76,10 +74,6 @@ tantivy = { version = "0.24", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
-# The fold tests project the emitted events through the SQLite projector (a same-ring edge).
-# `core` above forwards to it, so this crate's core-lane tests build it in the same lane as every
-# other dependency.
-rigger-graph-sqlite = { path = "../rigger-graph-sqlite", default-features = false }
 
 [lints]
 workspace = true

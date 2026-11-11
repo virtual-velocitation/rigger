@@ -1127,7 +1127,7 @@ pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
 ];
 
 /// The neutral colour a [`DrawEntity::kind`] outside [`KIND_COLOURS`] paints with (`method`,
-/// `impl`, `module`, `other` - see `crates/rigger-grounder/src/grounder/symbols/events.rs::kind_str` - or an empty/
+/// `impl`, `module`, `other` - see `crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_str` - or an empty/
 /// unknown kind): these are structural definition kinds, not vocabulary Design's own "four kind
 /// colours" distinguishes on sight, so they share ONE default rather than growing a fifth
 /// hand-picked colour.

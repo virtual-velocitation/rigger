@@ -531,57 +531,6 @@ pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
     keys
 }
 
-/// Every event the production whole-project ingest
-/// ([`rigger::grounder::symbols::events::project_batches`]) emits for the project at `root`, its
-/// per-file batches flattened in their sorted file order.
-#[cfg(feature = "symbols")]
-pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
-    rigger::grounder::symbols::events::project_batches(root)
-        .into_iter()
-        .flat_map(|(_, batch, _)| batch)
-        .collect()
-}
-
-/// The payloads of every `type_` event the production whole-project ingest emits for `root`.
-#[cfg(feature = "symbols")]
-pub fn project_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
-    fixtures::payloads_of_type(&project_events(root.to_str().unwrap()), type_)
-}
-
-/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`
-/// ([`project_payloads`]).
-#[cfg(feature = "symbols")]
-pub fn code_entity_payloads(root: &Path) -> Vec<serde_json::Value> {
-    project_payloads(root, rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
-}
-
-/// A payload's `name` and one key's JSON value, `None` when it has no such key.
-pub type NameAndKey = (String, Option<serde_json::Value>);
-
-/// Each of `payloads` as its `name` and its `key` ([`NameAndKey`]).
-pub fn names_and_key(payloads: &[serde_json::Value], key: &str) -> Vec<NameAndKey> {
-    payloads
-        .iter()
-        .map(|payload| {
-            (
-                payload["name"].as_str().unwrap().to_string(),
-                payload.get(key).cloned(),
-            )
-        })
-        .collect()
-}
-
-/// `payload`, a `CodeEntityExtracted` payload's JSON, read as the public payload type, beside
-/// whether that type serializes back to `payload` itself.
-pub fn code_entity_round_trip(
-    payload: &serde_json::Value,
-) -> (rigger::contextgraph::CodeEntityExtracted, bool) {
-    let typed: rigger::contextgraph::CodeEntityExtracted =
-        serde_json::from_value(payload.clone()).unwrap();
-    let back = serde_json::to_value(&typed).unwrap() == *payload;
-    (typed, back)
-}
-
 /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt` (so
 /// it cannot drift from the labels), every optional field empty.
 pub fn spawn_request(

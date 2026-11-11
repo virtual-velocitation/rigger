@@ -1,8 +1,7 @@
-//! Fixtures over the `store`-gated surfaces: the sqlite-backed event log's minted events and replay
-//! keys, the machine-global instance registry, and git worktrees and their hooks.
+//! Fixtures over the `store`-gated surfaces: the sqlite-backed event log's replay keys, the
+//! machine-global instance registry, and git worktrees and their hooks.
 
 use rigger::config::RIGGER_DIR;
-use rigger::eventstore::Event;
 
 /// Race two `Worktree::create` calls against the ONE repository at `repo_path` for `rounds`
 /// rounds - disjoint branches, and dirs named `{dir_prefix}race-a-{round}` /
@@ -116,20 +115,6 @@ pub fn repo_with_refusing_hook() -> (tempfile::TempDir, String) {
     drop(wt);
     let _ = std::fs::remove_dir_all(&wt_path);
     (repo, repo_path)
-}
-
-/// Every `<prefix>/<file>@<hash>#<i>` key the SHIPPED walk-and-key authority mints for the tree at
-/// `root`, paired with the event it was minted for - the same public entry `rigger graph build`
-/// and the run's ingest both drive, so these are the real keys the log will carry.
-#[cfg(feature = "symbols")]
-pub fn minted_events(root: &std::path::Path) -> Vec<(String, Event)> {
-    let mut out: Vec<(String, Event)> = Vec::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, _| {
-        for (key, event) in batch {
-            out.push((key.clone(), (*event).clone()));
-        }
-    });
-    out
 }
 
 /// The replay key an event log row's raw metadata JSON (`meta`) carries, if any - read exactly as

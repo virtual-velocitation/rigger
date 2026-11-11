@@ -1,6 +1,6 @@
 //! The symbol extraction: a projection of the code tree into definitions, references, and a
 //! name-level, per-language cross-reference graph (architecture 5.5). Designed once for its
-//! several consumers (the code store's extractor, the emit pass, and - in spec 16 - blast-radius).
+//! several consumers (the code store's extractor and - in spec 16 - blast-radius).
 //! The grounder reads the code store's view; nothing here persists an index.
 //!
 //! Dependency direction (principle 7): the `model` is PARSER-FREE and always compiled, in
@@ -16,12 +16,11 @@ pub mod model;
 #[cfg(feature = "symbols")]
 pub mod extract;
 
-/// The code-to-events emit pass (spec 29a): lowers an extracted index into
-/// `CodeEntityExtracted` / `EdgeInferred` events the context-graph fold ingests, so code
-/// structure becomes a rebuildable projection over the log. Feature-gated with the rest of the
-/// extraction pass; the always-compiled fold arms in `contextgraph::sqlite` ingest what it emits.
+/// Project path rules read off a path alone: the dev-only path predicate and an out-of-line
+/// `mod` declaration's candidate files. Reads the registry, so it is confined to the `symbols`
+/// feature with it.
 #[cfg(feature = "symbols")]
-pub mod events;
+pub mod paths;
 
 /// The `extension -> (grammar, tag query)` registry: maps a file to the grammar the
 /// extractor injects, for the five shipped languages, with a `--language` override
@@ -87,8 +86,7 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
 /// inner none when `source` answers no text or the extraction fails. `source` is asked for the
 /// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
 /// a path's grammar is paired with the extraction its stored symbols come from, so every reader
-/// of them - the index ([`index_one_file`]) and the batch re-extracted from bytes
-/// ([`bytes_batch`](events::bytes_batch)) - reads the same symbols from the same text; a show
+/// of them reads the same symbols from the same text; a show
 /// surface's body bound resolves its grammar itself and extracts through
 /// [`extract::locate_extent`].
 #[cfg(feature = "symbols")]

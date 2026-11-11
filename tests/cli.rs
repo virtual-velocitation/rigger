@@ -2170,212 +2170,65 @@ fn graph_build_exits_clean_and_creates_the_store_in_both_lanes() {
     );
 }
 
-/// API contract of the shared ingest authority (spec 45): `rigger::ingest::ingest_project_batched` is
-/// the ONE walk-and-content-key entry BOTH the live run (`conductor`) and the cold `graph build`
-/// (`main`) call, so the generation a batch is recorded under can never fork between them.
-/// Proven at the API edge rather than only end-to-end through one caller: the function is a
-/// DETERMINISTIC function of the tree - two calls over one unchanged tree emit the identical SET
-/// of keys - and every key carries the documented `<prefix>/<file>@<hash>#<idx>` shape (`gc` for
-/// the code half, `gd` for the design half). Because the keys are a pure function of the tree,
-/// any two callers passing the same root necessarily agree; that IS the "cannot drift between
-/// the two ingest entries" contract. The incremental refresh (an unchanged file re-ingests
-/// nothing) rests on this same identical-keys property.
-#[cfg(feature = "symbols")]
-#[test]
-fn ingest_project_emits_deterministic_content_keys() {
-    use std::collections::BTreeSet;
-
-    let dir = temp_project();
-    let root = dir.path();
-    // A `.rigger/` for the symbols grounder to persist its index under, mirroring the store
-    // `graph build` creates before it walks.
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::write(
-        root.join("combat.rs"),
-        "fn helper() {}\nfn caller() { helper(); }\n",
-    )
-    .unwrap();
-    let root_str = root.to_str().unwrap();
-
-    let collect_keys = || {
-        let mut keys: BTreeSet<String> = BTreeSet::new();
-        rigger::ingest::ingest_project_batched(root_str, &[], |batch, _| {
-            for (key, _ev) in batch {
-                keys.insert(key.to_string());
-            }
-        });
-        keys
-    };
-
-    let first = collect_keys();
-    let second = collect_keys();
-
-    assert!(
-        !first.is_empty(),
-        "the symbols-lane walk must emit content keys for a .rs source file"
-    );
-    assert_eq!(
-        first, second,
-        "the shared ingest authority must key an unchanged tree identically across calls - the \
-         property that keeps the run and a cold `graph build` from forking the dedup key"
-    );
-    // Every key is `<prefix>/<file>@<hash>#<idx>` with the prefix in {gc, gd}.
-    for key in &first {
-        let (prefix, rest) = key
-            .split_once('/')
-            .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
-        assert!(
-            prefix == "gc" || prefix == "gd",
-            "key {key:?} must carry the `gc` (code) or `gd` (design) prefix"
-        );
-        let (file_hash, idx) = rest
-            .rsplit_once('#')
-            .unwrap_or_else(|| panic!("key {key:?} must end with `#<idx>`"));
-        assert!(
-            !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()),
-            "key {key:?} must end with a numeric event index"
-        );
-        assert!(
-            file_hash.contains('@'),
-            "key {key:?} must carry the `@<hash>` content fingerprint"
-        );
-    }
-    assert!(
-        first.iter().any(|k| k.starts_with("gc/")),
-        "the code half (spec 29a) must emit a `gc/` key for combat.rs; got: {first:?}"
-    );
-}
-
-/// Cross-module scope seam of the shared walk (spec 49, section 3): the ingest walk is scoped to the
-/// project's OWN sources, and because EVERY ingest half rides the ONE shared
-/// `grounder::walk_guarded` skeleton, the SHIPPED `rigger::ingest::ingest_project_batched` authority scopes
-/// BOTH halves at once - the code half (`gc`) AND the design half (`gd`). Proven at the shipped API
-/// edge over a real git repo (the way a live run and a cold `graph build` actually ingest). The
-/// fixture seeds an in-root source carrying BOTH a code entity and inline `// WHY:` rationale (so one
-/// file yields a `gc` and a `gd` key), alongside four never-source locations each seeded with the
-/// SAME shape so a leak surfaces in either half: a directory the repo's OWN committed `.gitignore`
-/// excludes (`build/`); the VCS metadata dir `.git` and rigger's runtime dir `.rigger` (the
-/// always-excluded dotdirs); and a symlink escaping the root (root confinement - the link is never
-/// followed). The DESIGN half is what the implementer's `.rs`-only ingest unit test does not
-/// exercise (its in-root source carries no rationale, so no `gd` batch is produced); driving the
-/// shipped authority proves the shared walk scopes the design half too. A leak from any excluded
-/// path into EITHER half - or a regression that hand-rolled a second, unscoped walk for one
-/// consumer - fails here.
+/// The scope of the tree a build reads (spec 49, section 3): the graph `rigger graph build` leaves
+/// holds the project's OWN sources, in both halves at once - the code half (a definition) AND the
+/// design half (an inline `// WHY:` rationale) - because both are read out of one listing of the
+/// committed tree. The fixture commits an in-root source carrying both, alongside never-source
+/// locations each seeded with the SAME shape so a leak surfaces in either half: a directory the
+/// repo's OWN committed `.gitignore` excludes (`build/`); rigger's runtime dir `.rigger` (an
+/// always-excluded dotdir); and a symlink escaping the root (root confinement - the link is never
+/// followed). A node from any excluded path, in EITHER half, fails here.
 #[cfg(all(unix, feature = "symbols"))]
 #[test]
-fn ingest_project_scopes_the_walk_to_the_project_across_both_halves() {
+fn graph_build_holds_only_the_projects_own_sources_across_both_halves() {
     use std::collections::BTreeSet;
 
     let dir = temp_project();
     let root = dir.path();
-    // The symbols grounder persists its index under `.rigger/`, exactly as `graph build`/a run do.
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    // (a) The one in-root source the walk MUST ingest, carrying BOTH a code entity (a `gc` batch)
-    // and an inline `// WHY:` rationale (a `gd` batch), so a single file proves both halves.
-    std::fs::write(
-        root.join("keep.rs"),
-        "// WHY: this in-root source is first-party; the scoped walk must ingest it\nfn kept() {}\n",
-    )
-    .unwrap();
-
-    // (b) A build tree the project declares not-source via its OWN committed `.gitignore`.
-    std::fs::write(root.join(".gitignore"), "build/\n").unwrap();
-    // Every excluded location carries the SAME `code + rationale` shape as `keep.rs`, so a leak
-    // would surface as either a `gc/<path>` or a `gd/<path>` key.
     let decoy = "// WHY: excluded - must never be ingested\nfn decoy() {}\n";
-    for excluded in ["build", ".git", ".rigger"] {
-        std::fs::create_dir_all(root.join(excluded)).unwrap();
-        std::fs::write(root.join(excluded).join("decoy.rs"), decoy).unwrap();
-    }
-
-    // (c) A symlink escaping the root: the file beyond it must never be reached through the link.
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("decoy.rs"), decoy).unwrap();
     std::os::unix::fs::symlink(outside.path(), root.join("outsider")).unwrap();
 
-    // Drive the SHIPPED ingest authority (the entry `graph build` and the live run share) and
-    // collect the FILE each emitted content key names, split by half.
-    let mut gc_files: BTreeSet<String> = BTreeSet::new();
-    let mut gd_files: BTreeSet<String> = BTreeSet::new();
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, _| {
-        for (key, _ev) in batch {
-            let (prefix, rest) = key
-                .split_once('/')
-                .unwrap_or_else(|| panic!("key {key:?} must be `<prefix>/<file>@<hash>#<idx>`"));
-            let file = rest.split('@').next().unwrap().to_string();
-            match prefix {
-                "gc" => {
-                    gc_files.insert(file);
-                }
-                "gd" => {
-                    gd_files.insert(file);
-                }
-                other => panic!("unexpected key prefix {other:?} in {key:?}"),
-            }
-        }
-    });
-
-    // Both halves ingested the in-root source: the code half emitted a `gc` key for it ...
-    assert!(
-        gc_files.contains("keep.rs"),
-        "the code half must ingest the in-root source; got gc={gc_files:?}"
+    let graph = common::cli::rebuilt_graph(
+        root,
+        &[
+            (
+                "keep.rs",
+                "// WHY: this in-root source is first-party; the build must read it\nfn kept() {}\n",
+            ),
+            (".gitignore", "build/\n"),
+            ("build/decoy.rs", decoy),
+            (".rigger/decoy.rs", decoy),
+        ],
     );
-    // ... and the design half emitted a `gd` key for its `// WHY:` rationale (the half the
-    // implementer's `.rs`-only ingest unit test does not reach).
-    assert!(
-        gd_files.contains("keep.rs"),
-        "the design half must ingest the in-root source's rationale; got gd={gd_files:?}"
+    let ids: BTreeSet<String> = graph
+        .whole()
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| node.id)
+        .collect();
+    let leaked: Vec<&String> = ids
+        .iter()
+        .filter(|id| {
+            id.contains("decoy")
+                || id.starts_with("build/")
+                || id.starts_with(".rigger/")
+                || id.starts_with("outsider")
+        })
+        .collect();
+    assert_eq!(
+        leaked,
+        Vec::<&String>::new(),
+        "no excluded path reaches either half of the graph; held: {ids:?}"
     );
-
-    // No excluded path leaked into EITHER half - not the gitignored build tree, the VCS metadata,
-    // rigger's runtime dir, nor anything reached by escaping the root through the symlink.
-    for file in gc_files.iter().chain(gd_files.iter()) {
+    for kept in ["keep.rs::kept", "keep.rs#L1"] {
         assert!(
-            !file.starts_with("build/")
-                && !file.starts_with(".git")
-                && !file.starts_with(".rigger")
-                && !file.starts_with("outsider"),
-            "an excluded path leaked into the ingest: {file:?} (gc={gc_files:?}, gd={gd_files:?})"
+            ids.contains(kept),
+            "both halves read the in-root source: {kept} is held; held: {ids:?}"
         );
     }
-    // Concretely: across BOTH halves, the walk ingested EXACTLY the one in-root source, nothing else.
-    assert_eq!(
-        &gc_files | &gd_files,
-        BTreeSet::from(["keep.rs".to_string()]),
-        "the scoped walk must ingest only the project's own in-root source; \
-         gc={gc_files:?}, gd={gd_files:?}"
-    );
-}
-
-/// Light-lane contract of the shared ingest authority (spec 45 global constraint): with the
-/// extraction pass off (`--no-default-features`), `rigger::ingest::ingest_project_batched` is a genuine
-/// NO-OP - it emits NOTHING even over a tree that carries real `.rs` source, which is why
-/// `graph build` there degrades to an empty graph rather than erroring. This asserts strictly
-/// more than the empty-tree CLI test can: real source is present, yet the light-lane authority
-/// still yields zero events, so the no-op is the lane's behavior and not merely an empty input.
-#[cfg(not(feature = "symbols"))]
-#[test]
-fn ingest_project_is_a_noop_in_the_light_lane() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::write(
-        root.join("combat.rs"),
-        "fn helper() {}\nfn caller() { helper(); }\n",
-    )
-    .unwrap();
-
-    let mut emits = 0usize;
-    rigger::ingest::ingest_project_batched(root.to_str().unwrap(), &[], |batch, _| {
-        for (_key, _ev) in batch {
-            emits += 1;
-        }
-    });
-    assert_eq!(
-        emits, 0,
-        "the light lane compiles no extraction pass, so the ingest authority must emit nothing"
-    );
 }
 
 /// Cold-checkout build resolves the whole-project root, not the cwd (spec 45): a `graph build`
@@ -20520,6 +20373,33 @@ rigger::test_cases! {
             "a rendered fact this worktree's code added\n",
             "add a rendered fact",
         );
+    /// Within one target dir the hook checks with the MORE RECENTLY MODIFIED of its two builds,
+    /// not the first in candidate order: a newer debug build beside an older, stale release
+    /// build passes the commit, though the release build is tried first and would report the
+    /// fresh docs drifted.
+    setup_precommit_hook_checks_with_a_newer_debug_build_over_an_older_release_build:
+        assert_the_hook_passes_a_matching_render_untouched(
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/debug", "target/release", false),
+            "a rendered fact this worktree's debug build added\n",
+            "add a rendered fact",
+        );
+    /// The mirror: a newer release build beside an older, stale debug build passes the commit,
+    /// so the choice follows modification time, not the last candidate that exists.
+    setup_precommit_hook_checks_with_a_newer_release_build_over_an_older_debug_build:
+        assert_the_hook_passes_a_matching_render_untouched(
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/release", "target/debug", false),
+            "a rendered fact this worktree's release build added\n",
+            "add a rendered fact",
+        );
+    /// Across target dirs the authority order stands: the worktree's own older build passes the
+    /// commit over a newer, stale build in the run's shared build cache, which may have been
+    /// built from another worktree's tree.
+    setup_precommit_hook_checks_with_the_worktrees_older_build_over_a_newer_shared_cache_build:
+        assert_the_hook_passes_a_matching_render_untouched(
+            |root| stage_the_tree_build_beside_a_stale_build(root, "target/debug", ".rigger/tmp/cargo-target/debug", true),
+            "a rendered fact this worktree's own build added\n",
+            "add a rendered fact",
+        );
 }
 
 /// Over a self-hosting repo that tracks every rendered output as a fresh render, `prepare` the
@@ -20908,9 +20788,13 @@ fn stage_tree_built_binary(root: &Path) {
 /// it is the only binary reachable at all, so a reported drift is unavoidable. Returns a `PATH`
 /// with the shim dir prepended.
 fn stage_stale_rigger_shim(root: &Path) -> String {
-    rigger_shim_on_path(
-        root,
-        "#!/bin/sh\n\
+    rigger_shim_on_path(root, STALE_RIGGER_SCRIPT)
+}
+
+/// The stale `rigger` [`stage_stale_rigger_shim`] puts on `PATH`: its `help` lists `rigger docs
+/// --check`, its `docs --check` reports both `using-rigger` outputs `drifted` and exits 1, and
+/// its `version` names itself as a stale build.
+const STALE_RIGGER_SCRIPT: &str = "#!/bin/sh\n\
 case \"$1 $2\" in\n\
   'help ')\n\
 echo '  rigger docs --check         check every rendered output against a fresh render,' 1>&2\n\
@@ -20926,8 +20810,40 @@ echo 'rigger 0.0.0-stale-test-shim'\n\
 exit 0\n\
 ;;\n\
 esac\n\
-exit 1\n",
-    )
+exit 1\n";
+
+/// Stage the tree's own build at `current/rigger` under `root` beside a stale build at
+/// `stale/rigger` - [`STALE_RIGGER_SCRIPT`], last modified an hour before the tree's build, or an
+/// hour after it when `stale_is_newer` - and return a `PATH` whose `rigger` is that same stale
+/// script. The commit passes only when the hook checks with the tree's build.
+fn stage_the_tree_build_beside_a_stale_build(
+    root: &Path,
+    current: &str,
+    stale: &str,
+    stale_is_newer: bool,
+) -> String {
+    let current_dir = root.join(current);
+    copy_the_built_binary_into(&current_dir);
+    let stale_dir = root.join(stale);
+    std::fs::create_dir_all(&stale_dir).unwrap();
+    let stale_build = stale_dir.join("rigger");
+    std::fs::write(&stale_build, STALE_RIGGER_SCRIPT).unwrap();
+    make_executable(&stale_build);
+    let current_built = std::fs::metadata(current_dir.join("rigger"))
+        .and_then(|m| m.modified())
+        .expect("the tree build's modification time");
+    let hour = std::time::Duration::from_secs(3600);
+    let stale_built = if stale_is_newer {
+        current_built + hour
+    } else {
+        current_built - hour
+    };
+    std::fs::File::options()
+        .write(true)
+        .open(&stale_build)
+        .and_then(|f| f.set_modified(stale_built))
+        .expect("set the stale build an hour from the tree build");
+    stage_stale_rigger_shim(root)
 }
 
 /// Spec 75, crit 2 (the SAME commit shape REFUSES with only a stale PATH rigger, end to end):

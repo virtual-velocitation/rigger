@@ -310,11 +310,6 @@ const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
         "lesson-split-domain-config-validate",
     ),
     (
-        "crates/rigger-grounder/src/ingest.rs",
-        "key_batch",
-        "lesson-split-domain-ingest-key-batch",
-    ),
-    (
         "crates/rigger-conductor/src/blast_radius_eval.rs",
         "corpus_gates",
         "lesson-split-domain-blast-radius-eval",

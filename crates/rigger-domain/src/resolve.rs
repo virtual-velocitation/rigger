@@ -218,6 +218,25 @@ fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
     calls
 }
 
+/// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
+/// so far, joins it.
+fn grow<'v>(
+    declared: &[(&'v str, bool, &'v str)],
+    set: &mut BTreeSet<&'v str>,
+    admits: impl Fn(&str, bool, &str, &BTreeSet<&'v str>) -> bool,
+) {
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for &(from, test, to) in declared {
+            if !set.contains(to) && admits(from, test, to, set) {
+                set.insert(to);
+                grew = true;
+            }
+        }
+    }
+}
+
 /// The rule table applied to one view.
 pub struct Resolver<'v> {
     view: &'v dyn CodeView,
@@ -232,8 +251,11 @@ pub struct Resolver<'v> {
 }
 
 impl<'v> Resolver<'v> {
-    /// The resolver of `view`. Its test files are the Test-scope files, then every file a
-    /// test-only module declaration, or any declaration in a test file, reaches.
+    /// The resolver of `view`. Its test files are the Test-scope files, then the test-module
+    /// closure: every file a test-only module declaration, or any declaration in a test file,
+    /// reaches, unless a product declaration reaches it. The product files are a fixed point
+    /// from the roots, the code files no declaration reaches outside Test scope, through every
+    /// declaration not marked test that a product file makes; a Test-scope file is never product.
     pub fn new(view: &'v dyn CodeView) -> Self {
         let mut code_files = BTreeSet::new();
         let mut test_files = BTreeSet::new();
@@ -258,15 +280,18 @@ impl<'v> Resolver<'v> {
                 }
             }
         }
-        let mut grew = true;
-        while grew {
-            grew = false;
-            for &(from, test, to) in &declared {
-                if (test || test_files.contains(from)) && test_files.insert(to) {
-                    grew = true;
-                }
-            }
-        }
+        let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
+        let mut product: BTreeSet<&str> = code_files
+            .iter()
+            .copied()
+            .filter(|path| !reached.contains(path) && !test_files.contains(path))
+            .collect();
+        grow(&declared, &mut product, |from, test, to, product| {
+            !test && product.contains(from) && !test_files.contains(to)
+        });
+        grow(&declared, &mut test_files, |from, test, to, test_files| {
+            (test || test_files.contains(from)) && !product.contains(to)
+        });
         Self {
             view,
             code_files,
@@ -1240,6 +1265,25 @@ pub(crate) mod tests {
         ]);
     }
 
+    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
+    /// line settles the id wherever it sits among them, and of twins on one line the first.
+    #[test]
+    fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
+        fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
+            (d.0, d.1)
+        }
+        assert_eq!(
+            settled(vec![("function", 9, "A"), ("function", 8, "B")], kind_line),
+            Some(("function", 8, "B")),
+            "the lower line, though it comes last"
+        );
+        assert_eq!(
+            settled(vec![("function", 1, "A"), ("function", 1, "B")], kind_line),
+            Some(("function", 1, "A")),
+            "of one line, the first"
+        );
+    }
+
     #[test]
     fn product_tiers_ignore_test_candidates() {
         check(vec![
@@ -1394,5 +1438,85 @@ pub(crate) mod tests {
                 &["src/a/a_tests.rs"],
             ),
         ]);
+    }
+
+    #[test]
+    fn the_test_module_closure_holds_only_files_no_product_declaration_reaches() {
+        // Each file: its path, its scope, and its module declarations as (test mark, target).
+        type File = (&'static str, Scope, &'static [(bool, &'static str)]);
+        // Each row: the case, the view's files, and every test file of the view.
+        type Case = (&'static str, &'static [File], &'static [&'static str]);
+        let cases: &[Case] = &[
+            (
+                "a file a product file and a test file both declare is product",
+                &[
+                    ("build.rs", Scope::Product, &[(false, "build/sv.rs")]),
+                    ("build/sv.rs", Scope::Product, &[]),
+                    ("tests/sv.rs", Scope::Test, &[(false, "build/sv.rs")]),
+                ],
+                &["tests/sv.rs"],
+            ),
+            (
+                "a file reached through a product file a test file also declares is product",
+                &[
+                    ("src/main.rs", Scope::Product, &[(false, "src/m.rs")]),
+                    ("src/m.rs", Scope::Product, &[(false, "src/m/deep.rs")]),
+                    ("src/m/deep.rs", Scope::Product, &[]),
+                    ("tests/m.rs", Scope::Test, &[(false, "src/m.rs")]),
+                ],
+                &["tests/m.rs"],
+            ),
+            (
+                "a file a test-only and a product declaration both reach is product",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/x.rs")]),
+                    ("src/main.rs", Scope::Product, &[(false, "src/x.rs")]),
+                    ("src/x.rs", Scope::Product, &[]),
+                ],
+                &[],
+            ),
+            (
+                "files only test-only declarations reach are test, and so is what they declare",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/t.rs")]),
+                    ("src/t.rs", Scope::Product, &[(false, "src/t/deep.rs")]),
+                    ("src/t/deep.rs", Scope::Product, &[]),
+                    ("tests/it.rs", Scope::Test, &[(false, "src/h.rs")]),
+                    ("src/h.rs", Scope::Product, &[]),
+                ],
+                &["src/h.rs", "src/t.rs", "src/t/deep.rs", "tests/it.rs"],
+            ),
+            (
+                "a Test-scope file a product file declares stays test",
+                &[
+                    ("src/main.rs", Scope::Product, &[(false, "tests/common.rs")]),
+                    ("tests/common.rs", Scope::Test, &[(false, "src/c.rs")]),
+                    ("src/c.rs", Scope::Product, &[]),
+                ],
+                &["src/c.rs", "tests/common.rs"],
+            ),
+        ];
+        for (name, files, want) in cases {
+            let facts = files
+                .iter()
+                .map(|(path, scope, decls)| {
+                    let mut f = code(path, "rust", *scope, vec![], vec![]);
+                    f.modules = decls
+                        .iter()
+                        .map(|(test, target)| decl("m", 0, *test, &[target]))
+                        .collect();
+                    f
+                })
+                .collect();
+            let view = FactsView::new(stamp(), facts);
+            let r = Resolver::new(&view);
+            let mut got: Vec<&str> = view
+                .files()
+                .filter(|f| r.is_test_file(f.path))
+                .map(|f| f.path)
+                .collect();
+            got.sort_unstable();
+            assert_eq!(&got, want, "{name}");
+        }
     }
 }

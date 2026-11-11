@@ -2538,8 +2538,6 @@ dependencies = [
  "grep-searcher",
  "rigger-config-files",
  "rigger-domain",
- "rigger-graph-sqlite",
- "rigger-process",
  "rigger-store",
  "serde",
  "serde_json",
