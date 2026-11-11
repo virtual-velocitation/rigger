@@ -266,7 +266,7 @@ stages:
     strategy: fan-out                       # one agent per ready unit, in worktrees
     partition: by-blast-radius              # overlapping radii never run at once
     gates: [build, test, lint, custom]      # red -> green enforced; the full final set
-    on_pass: merge                          # land + reindex + record, per unit
+    on_pass: merge                          # land + advance the code store + record, per unit
 ```
 
 **The YAML -> runtime mapping** (loader, section 4.1): each `stage` becomes a node in the
@@ -364,7 +364,7 @@ flowchart LR
     IMPL["implement<br/>(red -> green)"] --> GATES["the unit's gates"]
     GATES -->|green| REV["review panel of THIS unit<br/>(its steps in order)"]
     GATES -->|red| REMED
-    REV -->|approve| INT["integrate<br/>commit . land . emit events . reindex"]
+    REV -->|approve| INT["integrate<br/>commit . land . emit events . advance code store"]
     REV -->|reject| REMED["remediate<br/>(resume each session with the feedback;<br/>escalate after N)"]
     REMED --> IMPL
   end
@@ -633,10 +633,13 @@ affected stream only:
 
 ### 5.2 The knowledge graph: a bi-temporal projection of the target project
 
-The graph is a **read model** the projector maintains by folding the global log. It is,
-first, a **knowledge graph** - it holds a project's *knowledge*: its **code** structure,
-its **design intent**, and the **decisions** that shaped it. Event sourcing is the
-persistence mechanism underneath, not the framing.
+The graph is a **knowledge graph** - it holds a project's *knowledge*: its **code**
+structure, its **design intent**, and the **decisions** that shaped it. It has two halves,
+composed per read. The **record half** is `graph.db`, a read model the projector maintains by
+folding the global log; it holds only records (decision, finding, lesson and artifact nodes,
+`ABOUT` edges, `GOVERNS` edges from decisions, `SUPERSEDES`). The **code half** is the code
+store (section 5.5). Event sourcing is the persistence mechanism under the record half, not
+the framing.
 
 ```rust
 // crates/rigger-domain/src/contextgraph.rs
@@ -684,23 +687,24 @@ includes), not a capability removal: every excluded fact remains in the event lo
 
 ### 5.3 The derivations: coupling communities and intent concepts  **[AS-BUILT]**
 
-Two higher-altitude views of the graph are **event-sourced offline derivations** - not
-request-time computations, which would jitter the view on every poll and break the
-rebuildable-projection invariant. Each runs as a deterministic pass over the projection and
-records its result as events, so a rebuild reproduces it byte-identically:
+Two higher-altitude views of the graph are **offline derivations** - not request-time
+computations, which would jitter the view on every poll. Each is a deterministic pass computed
+when the code store advances (section 5.5) and stored in the snapshot with the facts it
+groups, so a rebuild reproduces it byte-identically; readers join the stored groupings to the
+graph per read, and no event records them:
 
 - **Coupling communities** (`rigger graph communities`, `crates/rigger-domain/src/community.rs`) - community
-  detection over the call/reference edges, seeded over a deterministic edge ordering, emitting
-  `IN_COMMUNITY` membership edges at a chosen resolution grain. This is "which functions
+  detection over the call/reference edges, seeded over a deterministic edge ordering, yielding
+  `IN_COMMUNITY` membership at a chosen resolution grain. This is "which functions
   actually work together", a different grouping from the directory tree.
 - **Intent concepts** (`rigger graph concepts`, `crates/rigger-domain/src/concepts.rs`) - a grouping over the
-  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), emitting
-  concept nodes and `REALIZES` membership edges, labelled deterministically with a
+  design-intent layer into the ideas a project is *about* ("the grounding pipeline"), yielding
+  concept nodes and `REALIZES` membership, labelled deterministically with a
   model-assisted refinement that has a deterministic fallback.
 
-Until a derivation has run, its lens renders a documented "not built yet - run the pass"
-state, never an error. The concept-graph addendum linked above covers the concept
-derivation in depth.
+A test attaches to the community or concept whose products it proves most (ties to the
+earliest), as a `tests` edge and a count on that cluster; tests are never members. The
+concept-graph addendum linked above covers the concept derivation in depth.
 
 ### 5.4 The inspector: three lenses, subject re-projection, call queries, the "why"
 
@@ -763,118 +767,32 @@ projection or running a traversal on that cadence would be a quarter-million-edg
 poll on a large repo. The full design is the graph-inspector addendum linked at the top of
 this document.
 
-### 5.5 The ingest: parallel, incremental, project-scoped  **[AS-BUILT]**
+### 5.5 The code store: commit-stamped facts, composed per read  **[AS-BUILT]**
 
-Populating the graph from a project's source is one walk-and-content-key authority
-(`crates/rigger-grounder/src/ingest.rs`, `ingest::ingest_project_batched`) that both the live run and the standalone
-`rigger graph build` (a cold checkout, no run required) share, so the generation a batch
-is recorded under can never drift between them. Four properties define it:
+The code half of the graph is a **code store**, not a projection of the log: a snapshot of
+per-file facts (definitions, references, design links) stamped with the commit it describes.
+The `CodeView` interface exposes it; a resolver turns name-references into edges at read time.
 
-- **A project-scoped walk.** It walks the project tree at the repo root and lowers each
-  file's structure (code) and rationale (design), scoped to the project - never the harness's
-  own machinery.
-- **Parallel parse with ordered emit.** The code half parses and lowers files across a
-  worker pool (one worker per logical core), yet **emits in sorted file-path order**, so the
-  event sequence a sink observes is byte-identical to a serial walk's regardless of
-  scheduling. Parallelism is a throughput win that is *observationally invisible* - the
-  rebuild-byte-identical discipline holds.
-- **Batched fold.** Each file's whole batch is recorded in ONE store append and folded in
-  ONE graph transaction, because the measured cold-build throughput was transaction-cadence
-  bound, not parse-bound - one transaction per file, not per event. Both sinks, the run's and a
-  cold `graph build`'s, append the batch's one `GenerationIngested` ledger entry and fold the
-  batch with it through the ledger form (`FoldingStore::append_entry_and_fold`).
-- **Content-keyed skip, project-scoped.** Every event carries a deterministic content key
-  `<prefix>/<file>@<hash>#<i>`, a pure function of the batch's bytes (`gc` for code, `gd` for
-  design). Neither sink records a derived event: each records the batch as ONE
-  `GenerationIngested` ledger entry, built by its one constructor under its GROUP
-  (`eventstore::META_GROUP`), the batch identity `<prefix>/<file>` cut from the key by the one key
-  parser, and a replay key naming the identity, the generation and the batch's event count. A
-  store recorded before the ledger still holds keyed derived rows, grouped the same way, and the
-  lookup reads them as recordings. The store answers, per group, the newest
-  event carrying it (`EventStore::latest_in_group`: position, type and metadata, never data) from
-  its own group index - a partial expression index on the embedded store, one link stream per
-  identity on the server-backed one - so the question "what is this file's latest recorded
-  generation?" (`ingest::latest_generation`) never reads the stream. Both sinks ask
-  `ingest::entry_of_batch` of each batch: it reads the log's
-  latest generation of the identity and the graph's current one, weighing the graph's only when
-  the graph does not owe its rebuild; a batch both hold records nothing; for any other it reads
-  the file's bytes once (none for a path that holds no file or lies outside the walk's scope),
-  extracts them, and records one entry of that extraction's generation, hashed from the bytes
-  when there are any, unless the extraction is empty or is itself the generation both hold, which
-  records nothing. The run's sink memoizes the log side for its process (`LoggedGenerations`, a
-  memo of the log and never the ledger): it asks the store's group lookup for an identity once
-  and answers that identity's later batches from the memo, which takes a lookup's answer when
-  the lookup succeeds and the entry's generation once the entry's append succeeds. The graph's
-  side is read on every batch and never remembered, so a long-lived run records again an
-  identity a rebuild left behind the next time a walk hands its batch. A cold
-  `graph build` keeps no memo: it asks the store's group lookup for each batch, binds the hash
-  to git in the tree it walks, stamps no run id, and counts in its line the batch events of
-  each entry but one that folded as a re-recording. The
-  lookup's answer applies three rules in order:
-  - **Type first.** Only the perception types - the four derived index types
-    (`CodeEntityExtracted`, `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`) and the
-    `GenerationIngested` ledger entry - answer a generation. A newest group member of any other
-    type, or one whose key does not parse, answers none, so the batch is recorded - the
-    fail-safe direction - and no domain event can be dropped by this path; the partition is a
-    property of the code, not of a naming convention.
-  - **Project scope, not run scope.** The lookup spans the project's whole stream, because a
-    file's content hash does not change because a new run started. A derived index fact is a fact
-    about the project's files; run scoping belongs to keys whose recurrence is a property of one
-    run (unit lifecycle, gate verdicts, breaker trips), and those still seed from the current run's
-    slice. So an unchanged file appends **zero** events on every subsequent run, forever - the log
-    stops re-accumulating a re-derivable index - and a step that ingests reads no derived event to
-    decide it. A lookup the store cannot answer fails the ingest; it is never read as "recorded".
-  - **Latest generation per file, never ever-recorded.** A batch is suppressed only when its hash
-    equals the hash of the LATEST batch recorded for that same file. A changed file - **including
-    one reverted to content it held at an earlier recorded generation** - differs from its latest
-    batch, so it is recorded again: either sink records a new entry. A rule that asked whether the generation was EVER recorded would match
-    the reverted content's old records, record nothing, and strand the graph on a superseded
-    version of that file. What the re-recorded batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
-    both halves: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
-    only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
-    spec 29a mechanism. The design half sets no `fresh` head; a re-emitted design batch opens a
-    newer generation of its `gd` identity, and `advance_generation` (spec 101) retires the design
-    links its earlier generation asserted, each one the newer generation asserts again revived in
-    place.
-
-  The net contract is stated against the LOG, because the log is the only thing the skip
-  decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
-  generation **as the walk lowered it** in full, and only what changed is ever re-emitted. That
-  qualifier is load-bearing and the last bullet below is why: the walk's view of a file is not always
-  the tree's. Whether the live graph then equals a cold rebuild is a property of the FOLD, not of
-  this rule - suppression withholds only an append whose content the log already records: it is
-  correct about the LOG, and a lost fold is therefore NOT self-healing by re-ingest, because the
-  skip withholds exactly the re-append that would have re-folded it; only the append-and-fold
-  authority can heal that half. In each case below, the log stays right while the GRAPH or the TREE
-  diverges from it; what follows names some of them and is not a closed enumeration.
-
-  The first of these three is retired by the walk itself; in the other two **no batch is folded
-  for the file at all**:
-
-  - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
-    batch, so a whole-project walk hands every `gc`, `gd` or `gw` identity the graph holds whose
-    path the tree no longer holds one batch more: the boundary batch for no bytes. Its fold advances
-    the identity's generation and retires the file's nodes and edges. The walk asks the tree, so a
-    deleted path gets the retirement batch.
-  - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
-    last definition and reference. Both halves drop a file whose extraction is empty, so again no
-    batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
-    live.
-  - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
-    best-effort by contract - a fold failure never fails an append that already landed durably - so
-    the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
-    it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
-
-  On the INGEST path the projection deletes nothing: the next whole-project walk RETIRES a removed
-  file's facts (`valid_to` stamped, the rows kept), and reclaiming those rows is a deliberate act
-  (`Projector::prune`), never a consequence of an ingest. The projection is not
-  delete-free overall, and the distinction is worth stating exactly: besides `prune`'s three deletes,
-  the fold's `CommunityAssigned` and `ConceptDerived` arms each DELETE the super-nodes of their own
-  grain that the same pass just left with no live member (nodes carry no `valid_to`, so removal is
-  the only way to retire one - the same node-removal primitive `prune` uses). Both are scoped by
-  their grain's id prefix and by `KIND_COMMUNITY` / `KIND_CONCEPT` and guarded on having no live
-  member, so neither can reach a file entity or its edges, and neither is reachable from an event of
-  the four derived index types.
+- **Advance.** The store advances from the operator checkout's HEAD in three places: the
+  conductor after each landed merge, `rigger graph build`, and `rigger setup`. An advance
+  parses only the files that differ from the stamped commit (in parallel, merged in sorted
+  path order so the snapshot is deterministic), recomputes the groupings (section 5.3), and
+  publishes the new snapshot atomically under the store's own lock.
+- **Compose.** A reader opens the current snapshot and joins it to the record graph per
+  read (`Composed`); the tree's kind wins for a record target the tree holds.
+- **One honesty label.** Each open compares the stamped commit to the caller's worktree.
+  Equal: the answer describes the worktree. Differing files: their nodes, and every edge to
+  them, are withheld and the label counts them. A worktree that cannot be compared (the
+  commit is absent, the index unreadable) withholds every code-half answer, fail-closed;
+  the record half still answers. The label travels with every answer (CLI, MCP, dash).
+- **Tests.** Test code is held in the snapshot and filtered by one `tests` option on every
+  reader: `exclude` (the default), `include`, `only`. A read that hides tests reports how
+  many it hid.
+- **Records only in the log.** The event log refuses the eight derived types (`CodeEntityExtracted`,
+  `EdgeInferred`, `DocConceptExtracted`, `DocLinkExtracted`, `GenerationIngested`,
+  `CommunityAssigned`, `ConceptDerived`, `ConceptRealized`); `graph.db` is rebuilt as a record-only refold, and
+  `rigger reset --derived` only deletes stores, never rewrites them. Because the store is
+  derived from a commit, losing it costs one advance.
 
 ### 5.6 The loop, concretely: emit, project, retrieve
 
@@ -907,7 +825,7 @@ Grounding seeds each agent with exactly the code and memory it needs, on two axe
 
 - **Structural (the default).** The pluggable `Grounder` trait (`ground(query, k) -> Vec<Ref>`)
   is served by the `symbols` grounder (behind the `symbols` feature): a deterministic,
-  tree-sitter-derived symbol index answering "where is this defined, what references it, what
+  tree-sitter-derived code view (the code store, section 5.5) answering "where is this defined, what references it, what
   does changing this file reach". It is the UNSET default - an unset `defaults.grounder`
   resolves to it and it ships in the default build (the `symbols` cargo feature is on by
   default) - and it serves both a precise/ranked contract for grounding and a safe contract
@@ -1087,7 +1005,7 @@ structurally.
 | A leftover / stale worktree dir blocks a fresh one | Self-healing worktree (section 4.4): reconcile from the deterministic branch, never wedge the next window |
 | Stale base (a peer landed while I ran) | Integrate does `pull --rebase` + re-runs gates; the graph's `TOUCHES` edges flag the overlap pre-merge |
 | Event store append conflict (optimistic concurrency) | `ExpectedRevision` mismatch -> `Error::Conflict { stream, expected, actual }`; re-read, re-project, retry the append |
-| Projector falls behind / crashes | The graph is a *pure projection*: rebuild it from the log from position 0; idempotent |
+| Projector falls behind / crashes | The graph is a *pure projection*: its record half is rebuilt by refolding the log from position 0 (idempotent), and the code store by one advance from HEAD |
 | Superseded decision still in the graph | Bi-temporal `valid_to` set on supersession; `subgraph` filters live edges by default |
 | Store selected but no connection string | The store resolver errors and names all three credential channels (`--conn`, `KURRENTDB_CONN`, `.rigger/store.conn`) |
 | An unreadable secret file or config | Surfaces LOUDLY; never a silent fall-through to the sqlite default that would fracture the run's store |
