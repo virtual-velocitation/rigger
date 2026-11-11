@@ -296,14 +296,14 @@ pub fn facts_view(facts: Vec<rigger::code_facts::FileFacts>) -> rigger::code_vie
 
 /// A planted Rust file at `path`, as its extractor would read it: each `(leaf, kind)` of `defs` a
 /// file-level definition on its own line from line 1, each `(caller, callee)` of `calls` a call to
-/// `callee` inside the definition named `caller` on that definition's line, and each of `uses` a
-/// file-level `use` of the name on line 1. A file under `tests/` is test scope, as the registry's
+/// `callee` inside the definition named `caller` on that definition's line, and each of `refs` a
+/// caller-less reference to the name on line 1. A file under `tests/` is test scope, as the registry's
 /// path rule reads it.
 pub fn planted_file(
     path: &str,
     defs: &[(&str, &str)],
     calls: &[(&str, &str)],
-    uses: &[&str],
+    refs: &[&str],
 ) -> rigger::code_facts::FileFacts {
     use rigger::code_facts::{Def, FileFacts, Mention, MentionKind, Scope};
     let index_of = |leaf: &str| {
@@ -323,14 +323,9 @@ pub fn planted_file(
         let at = index_of(caller) as u32;
         mention(Some(at), callee, MentionKind::Call, at + 1)
     });
-    let uses = uses.iter().map(|leaf| {
-        mention(
-            None,
-            leaf,
-            MentionKind::Tagged(rigger::contextgraph::REF_KIND_USE.to_string()),
-            1,
-        )
-    });
+    let refs = refs
+        .iter()
+        .map(|leaf| mention(None, leaf, MentionKind::Call, 1));
     FileFacts {
         path: path.to_string(),
         lang: "rust".to_string(),
@@ -352,7 +347,7 @@ pub fn planted_file(
                 test: false,
             })
             .collect(),
-        mentions: calls.chain(uses).collect(),
+        mentions: calls.chain(refs).collect(),
         ..Default::default()
     }
 }

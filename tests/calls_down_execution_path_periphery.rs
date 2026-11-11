@@ -457,8 +457,8 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
         // the SEED, and its same-file caller
         fns("src/a.rs", &["target", "local"], &[("local", "target")]),
         fns("src/b.rs", &["mid"], &[("mid", "target")]), // cross-file caller
-        planted_file("src/e.rs", &[], &[], &["target"]), // import-only
-        planted_file("src/d.rs", &[], &[], &["target"]), // import-only
+        planted_file("src/e.rs", &[], &[], &["target"]), // a caller-less reference
+        planted_file("src/d.rs", &[], &[], &["target"]), // a caller-less reference
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 
