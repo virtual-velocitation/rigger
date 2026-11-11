@@ -63,15 +63,19 @@ fn version_of(dependencies: &[(String, String)], name: &str) -> String {
 /// Given the committed manifest and lock, when the resolver is asked what each OS's build of
 /// `rigger-process` takes, then Windows alone takes `windows-sys` for its power request, macOS
 /// takes no crate for its IOKit assertion, and Linux takes `zbus` for its logind inhibitor and
-/// `tokio` for the runtime its acquire drives that client on.
+/// `tokio` for the runtime its acquire drives that client on. Every Unix build also takes `ring`
+/// for the gate socket's path rule, which Windows, with no gate socket adapter, does not.
 #[test]
 fn each_os_build_of_rigger_process_takes_its_own_keep_awake_adapters_crate_alone() {
     let rows: [(&str, &[&str]); 3] = [
         (WINDOWS, &["fs2", "rigger-domain", "rustix", "windows-sys"]),
-        ("aarch64-apple-darwin", &["fs2", "rigger-domain", "rustix"]),
+        (
+            "aarch64-apple-darwin",
+            &["fs2", "rigger-domain", "ring", "rustix"],
+        ),
         (
             "x86_64-unknown-linux-gnu",
-            &["fs2", "rigger-domain", "rustix", "tokio", "zbus"],
+            &["fs2", "rigger-domain", "ring", "rustix", "tokio", "zbus"],
         ),
     ];
     for (target, crates) in rows {
