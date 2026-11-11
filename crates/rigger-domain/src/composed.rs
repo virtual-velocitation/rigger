@@ -5,8 +5,9 @@
 //! kind carrying both halves' attrs, an alias reads as its canonical id, a record edge whose end
 //! neither half holds reaches an `artifact` node, and a decision governing a document realizes
 //! that document's concepts. A node whose file differs in the caller's worktree is withheld and
-//! counted on the honesty label, and every code-half node is when the worktree cannot be compared. The searches every reader asks ([`subgraph`], [`calls`],
-//! [`locate`]) are written once over [`Neighbors`], so they step through both halves alike.
+//! counted on the honesty label. When the worktree cannot be compared, every code-half node is
+//! withheld and counted. The searches every reader asks ([`subgraph`], [`calls`], [`locate`])
+//! are written once over [`Neighbors`], so they step through both halves alike.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
