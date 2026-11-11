@@ -1,0 +1,21 @@
+[package]
+name = "rigger-store"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's owned store: the shared file format (header, crc, sections, atomic publish, write lock) and the code store of immutable, stamped snapshots of the tree's facts."
+
+[lib]
+name = "rigger_store"
+path = "src/lib.rs"
+
+# No `store`/`core` features: the crate depends only on the domain and std, and the format it
+# owns is read by modules that compile in every lane.
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -21,7 +21,7 @@ repository = "https://github.com/virtual-velocitation/rigger"
 # edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
 # resolution behavior never depends on an implicit default.
 [workspace]
-members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash"]
+members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash", "crates/rigger-store"]
 resolver = "2"
 
 # THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
@@ -197,6 +197,9 @@ rigger-console = { path = "crates/rigger-console", default-features = false }
 # like the crates above; its own `store`/`core` features (forwarded above) gate it exactly as the
 # root gated it, and its build script embeds the console core only in the lanes that compile it.
 rigger-dash = { path = "crates/rigger-dash", default-features = false }
+# The owned store (ring 3): the shared file format and the code store. It has no lane features:
+# it depends only on the domain and std.
+rigger-store = { path = "crates/rigger-store" }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`

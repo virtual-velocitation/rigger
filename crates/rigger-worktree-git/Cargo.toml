@@ -27,6 +27,8 @@ thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+# The git tree source's tests advance a code store through it.
+rigger-store = { path = "../rigger-store" }
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
 # The adapter's tests read the run log through the SQLite store, and the shared fixtures name the

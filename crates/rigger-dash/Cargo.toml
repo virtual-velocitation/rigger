@@ -24,6 +24,7 @@ store = [
     "rigger-graph-sqlite/store",
     "rigger-process/store",
     "rigger-driver/store",
+    "rigger-worktree-git/store",
     "rigger-grounder/store",
     "rigger-conductor/store",
     "rigger-console/store",
@@ -34,6 +35,7 @@ core = [
     "rigger-graph-sqlite/core",
     "rigger-process/core",
     "rigger-driver/core",
+    "rigger-worktree-git/core",
     "rigger-grounder/core",
     "rigger-conductor/core",
     "rigger-console/core",
@@ -48,6 +50,9 @@ rigger-driver = { path = "../rigger-driver", default-features = false }
 rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-conductor = { path = "../rigger-conductor", default-features = false }
 rigger-console = { path = "../rigger-console", default-features = false }
+# The code store the composed view opens, and the git tree source it reads the tree through.
+rigger-store = { path = "../rigger-store" }
+rigger-worktree-git = { path = "../rigger-worktree-git", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

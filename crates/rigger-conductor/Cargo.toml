@@ -50,6 +50,8 @@ rigger-gates-shell = { path = "../rigger-gates-shell", default-features = false 
 rigger-driver = { path = "../rigger-driver", default-features = false }
 rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
+# The code store the conductor advances after a landed merge.
+rigger-store = { path = "../rigger-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The canary corpus items are YAML-frontmatter files.
