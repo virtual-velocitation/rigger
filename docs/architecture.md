@@ -827,10 +827,12 @@ is recorded under can never drift between them. Four properties define it:
     batch, so it is recorded again: either sink records a new entry. A rule that asked whether the generation was EVER recorded would match
     the reverted content's old records, record nothing, and strand the graph on a superseded
     version of that file. What the re-recorded batch then RETIRES is a different mechanism's doing, not this rule's, and it covers
-    only the code half: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
+    both halves: a code batch carries a `fresh` head, and the fold's two `fresh` arms are the
     only callers of `supersede_file_edges`, so the file's prior structural edges are retired by that
-    spec 29a mechanism. The design half sets no `fresh` head at all, so a re-emitted design batch
-    adds its edges without retiring the ones its earlier generation left live.
+    spec 29a mechanism. The design half sets no `fresh` head; a re-emitted design batch opens a
+    newer generation of its `gd` identity, and `advance_generation` (spec 101) retires the design
+    links its earlier generation asserted, each one the newer generation asserts again revived in
+    place.
 
   The net contract is stated against the LOG, because the log is the only thing the skip
   decides: after any mix of skipping and re-ingest, the log holds each file's LATEST content
@@ -866,10 +868,11 @@ is recorded under can never drift between them. Four properties define it:
 
   These two sit outside those three for other reasons:
 
-  - **The design half retires nothing, even when its batch IS folded.** The fold's design arms only
-    ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms alone.
-    Deleting a section from a design doc therefore re-emits and re-folds that doc's whole batch and
-    still leaves the retired `SPECIFIES` and reference edges live.
+  - **The design half retires through its generation, not a `fresh` head.** The fold's design arms
+    only ensure nodes and add edges; `supersede_file_edges` is reached from the `fresh` code arms
+    alone. Deleting a section from a design doc re-emits that doc's whole batch as a newer generation
+    of its `gd` identity, and `advance_generation` (spec 101) retires the `SPECIFIES` and reference
+    edges the earlier generation asserted and the newer one does not.
   - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
     when the project has one and only builds a fresh one when it does not, and it derives every
     event from the INDEXED symbols with no read of the file itself. On such a project the batches -
