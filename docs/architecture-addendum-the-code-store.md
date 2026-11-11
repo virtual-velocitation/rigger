@@ -375,7 +375,8 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   take LOCK (exclusive: a writer blocks; a reader tries once and, if the lock is held, answers
        from CURRENT with the label "advance in flight")
   S <- snapshot named by CURRENT; or EMPTY if there is none, its crc fails, or its fingerprint
-       differs from extract.fingerprint()
+       differs from extract.fingerprint(); a store file that exists but cannot be read is an
+       error
   if S.stamp.tip.tree == target.tree:      release LOCK; return S.stamp      (no-op)
   entries <- source.list(target.tree)                       [(path, blob)] of each in-scope file
   keep    <- S.files whose (path, blob) is in entries       (facts copied, never re-extracted)

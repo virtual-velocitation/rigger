@@ -31,6 +31,7 @@ const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
 fn stamp_at(root: &Path) -> Stamp {
     CodeStore::in_repository(root)
         .in_force()
+        .expect("the store reads")
         .unwrap_or_else(|| panic!("the store at {} holds a snapshot", root.display()))
 }
 
@@ -286,13 +287,14 @@ fn setup_advances_from_empty() {
         (row.project)(&root);
         let store = (row.store)(&root);
         assert!(
-            store.in_force().is_none(),
+            store.in_force().expect("the store reads").is_none(),
             "{}: the store starts empty",
             row.name
         );
         let first = run_rigger_ok(&root, &["setup"]);
         let stamp = store
             .in_force()
+            .expect("the store reads")
             .unwrap_or_else(|| panic!("{}: setup advances the store", row.name));
         assert_eq!(stamp.tip.commit, (row.commit)(&root), "{}", row.name);
         let described = stamp.tip.commit.as_deref().unwrap_or(&stamp.tip.tree);

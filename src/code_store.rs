@@ -48,11 +48,11 @@ impl CodeStore {
         open_store(&self.root, self.source.as_ref(), mode)
     }
 
-    /// The stamp of the snapshot in force, read without advancing; none for an empty store.
-    pub fn in_force(&self) -> Option<Stamp> {
-        Store::new(&self.root)
-            .current(FactsExtractor.fingerprint())
-            .map(|view| view.stamp().clone())
+    /// The stamp of the snapshot in force, read without advancing; none for an empty store, and
+    /// an error for a store that cannot be read.
+    pub fn in_force(&self) -> Result<Option<Stamp>, String> {
+        let current = Store::new(&self.root).current(FactsExtractor.fingerprint())?;
+        Ok(current.map(|view| view.stamp().clone()))
     }
 
     /// How `worktree` differs from the tree `opened` describes.

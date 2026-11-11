@@ -80,8 +80,11 @@ impl Store {
     }
 
     /// The snapshot CURRENT names, when it reads whole and was extracted under `fingerprint`;
-    /// none otherwise, which callers treat as an empty store.
-    pub fn current(&self, fingerprint: u64) -> Option<Snapshot> {
+    /// none when there is no such snapshot (no CURRENT, a pointer that names no snapshot, a
+    /// snapshot that fails to decode or was extracted under another fingerprint), which callers
+    /// treat as an empty store. A store file that cannot be read for a reason other than its
+    /// absence is an error.
+    pub fn current(&self, fingerprint: u64) -> Result<Option<Snapshot>, String> {
         self.current_with(fingerprint, &|path| std::fs::read(path))
     }
 
@@ -92,22 +95,31 @@ impl Store {
         &self,
         fingerprint: u64,
         read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
-    ) -> Option<Snapshot> {
+    ) -> Result<Option<Snapshot>, String> {
+        let readable = |path: &Path, bytes: std::io::Result<Vec<u8>>| match bytes {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("read {}: {e}", path.display())),
+        };
         for _ in 0..READ_ATTEMPTS {
-            let pointer = std::fs::read_to_string(self.dir.join(CURRENT)).ok()?;
+            let current = self.dir.join(CURRENT);
+            let Some(pointer) = readable(&current, std::fs::read(&current))? else {
+                return Ok(None);
+            };
+            let pointer = String::from_utf8_lossy(&pointer);
             let name = pointer.trim();
-            let seq = seq_of(name)?;
-            match read(&self.dir.join(name)) {
-                Ok(bytes) => {
-                    return Snapshot::decode(bytes).ok().filter(|snap| {
-                        snap.stamp().fingerprint == fingerprint && snap.stamp().seq == seq
-                    })
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return None,
-            }
+            let Some(seq) = seq_of(name) else {
+                return Ok(None);
+            };
+            let path = self.dir.join(name);
+            let Some(bytes) = readable(&path, read(&path))? else {
+                continue;
+            };
+            return Ok(Snapshot::decode(bytes).ok().filter(|snap| {
+                snap.stamp().fingerprint == fingerprint && snap.stamp().seq == seq
+            }));
         }
-        None
+        Ok(None)
     }
 
     /// Advances the store to `target`, waiting for the lock, and returns the snapshot in force.
@@ -133,7 +145,7 @@ impl Store {
         target: &Tip,
     ) -> Result<Snapshot, String> {
         let fingerprint = extract.fingerprint();
-        let base = match self.current(fingerprint) {
+        let base = match self.current(fingerprint)? {
             Some(snap) if snap.stamp().tip == *target => {
                 self.reap(&snap_name(snap.stamp().seq));
                 return Ok(snap);
@@ -323,7 +335,7 @@ pub(crate) fn open_current_in(
     mode: Mode,
 ) -> Result<Opened, String> {
     let head = source.head()?;
-    let current = match store.current(extract.fingerprint()) {
+    let current = match store.current(extract.fingerprint())? {
         Some(view) if view.stamp().tip == head => {
             return Ok(Opened {
                 view,
@@ -552,7 +564,10 @@ mod tests {
             let snap = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), extracted, "{name}: extracted");
             assert_eq!(snap.stamp().fingerprint, fingerprint, "{name}: fingerprint");
-            assert!(store.current(fingerprint).is_some(), "{name}: current");
+            assert!(
+                store.current(fingerprint).unwrap().is_some(),
+                "{name}: current"
+            );
         }
     }
 
@@ -641,12 +656,15 @@ mod tests {
                 .advance(&source, &ToyExtract::new(FP), &group, &tip)
                 .unwrap();
             damage(store.dir());
-            assert!(store.current(FP).is_none(), "{name}: read as absent");
+            assert!(
+                store.current(FP).unwrap().is_none(),
+                "{name}: read as absent"
+            );
             let extract = ToyExtract::new(FP);
             let repaired = store.advance(&source, &extract, &group, &tip).unwrap();
             assert_eq!(extract.calls(), rich.len(), "{name}: advanced from empty");
             assert_eq!(repaired.stamp().tip, tip, "{name}: repaired stamp");
-            assert!(store.current(FP).is_some(), "{name}: repaired");
+            assert!(store.current(FP).unwrap().is_some(), "{name}: repaired");
         }
     }
 
@@ -730,7 +748,7 @@ mod tests {
             );
             let store = Store::new(root.path());
             assert_eq!(
-                store.current(FP).map(|s| s.stamp().tip.clone()),
+                store.current(FP).unwrap().map(|s| s.stamp().tip.clone()),
                 Some(first),
                 "{name}: the old stamp stays current"
             );
@@ -809,7 +827,7 @@ mod tests {
                 "{name}: nothing published or reaped"
             );
             assert_eq!(
-                store.current(FP).map(|s| s.stamp().tip.clone()),
+                store.current(FP).unwrap().map(|s| s.stamp().tip.clone()),
                 Some(first),
                 "{name}: the old stamp stays current"
             );
@@ -826,6 +844,7 @@ mod tests {
         fn look(&self) {
             let tree = Store::new(&self.root)
                 .current(FP)
+                .unwrap()
                 .map(|s| s.stamp().tip.tree.clone());
             self.seen.lock().unwrap().push(tree);
         }
@@ -983,7 +1002,7 @@ mod tests {
                 }
                 std::fs::read(path)
             };
-            let snap = store.current_with(FP, &read);
+            let snap = store.current_with(FP, &read).unwrap();
             assert_eq!(
                 snap.map(|s| s.stamp().tip.clone()),
                 found.then(|| target.clone()),

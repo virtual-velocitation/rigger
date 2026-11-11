@@ -768,7 +768,7 @@ pub(crate) fn open_project_code_store(
 ) -> Result<Option<CodeStoreOpened>, String> {
     use rigger_domain::code_view::CodeView;
     let store = project_code_store(&cwd());
-    let before = store.in_force();
+    let before = store.in_force()?;
     let opened = store.open(mode)?;
     Ok(Some(CodeStoreOpened {
         moved: before.as_ref() != Some(opened.view.stamp()),
