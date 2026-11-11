@@ -41,6 +41,7 @@ use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
+use rigger_worktree_git::discover::{rev_parse, Location};
 
 use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
 
@@ -1399,14 +1400,7 @@ fn project_root(start: &Path) -> PathBuf {
 /// this resolves to the main checkout's root - exactly the outermost directory the
 /// store walk-up is sanctioned to reach. `None` when `start` is not inside any git repo.
 fn main_repo_root(start: &Path) -> Option<PathBuf> {
-    let out = subprocess::git_in(start)
-        .args(["rev-parse", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let common = rev_parse(start, Location::CommonDir)?;
     if common.is_empty() {
         return None;
     }
@@ -5318,13 +5312,7 @@ fn caller_tree() -> PathBuf {
 /// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
 /// worktree path) - see [`project_identity_at`].
 fn git_repo_at(root: &Path) -> String {
-    subprocess::git_in(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    rev_parse(root, Location::Toplevel).unwrap_or_default()
 }
 
 /// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a

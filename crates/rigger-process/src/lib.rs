@@ -8,6 +8,8 @@
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod file_trust;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod gate_socket;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod holders;
