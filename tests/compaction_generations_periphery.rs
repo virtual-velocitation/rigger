@@ -211,8 +211,9 @@ fn fold_in_batches(graph_db: &Path, project: &str, batches: &[Vec<Event>]) -> St
 }
 
 /// Events folded into a graph AFTER the state under test is reached, so a divergence latent in its
-/// fold state surfaces: a later file defining every name the fixtures drop, and a decision naming
-/// the dropped entity, which brings a retired node - and whatever detached from it - back.
+/// fold state surfaces: a later file defining every name the fixtures drop, a decision naming the
+/// dropped entity, which brings a retired node - and the concept it realized - back, and the
+/// entity's definition folding again, which brings back the community membership code holds.
 fn later_events() -> Vec<Event> {
     let mut events: Vec<Event> = ["gone", "alpha", "mid"]
         .into_iter()
@@ -235,6 +236,10 @@ fn later_events() -> Vec<Event> {
             .unwrap(),
         )
         .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(91)),
+    );
+    events.push(
+        Event::new(TYPE_CODE_ENTITY_EXTRACTED, entity("gone", 9))
+            .with_valid_from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(92)),
     );
     events
         .into_iter()

@@ -955,6 +955,12 @@ pub trait Projection: Send + Sync {
     /// owes its rebuild ([`rebuild_owed`](Projection::rebuild_owed)).
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
+    /// Every `<prefix>/<file>` identity this projection holds a generation for, sorted: the
+    /// identities whose nodes a whole-project walk retires when the tree no longer holds their
+    /// file. A plain read: it answers on a projection that owes its rebuild
+    /// ([`rebuild_owed`](Projection::rebuild_owed)).
+    fn held_identities(&self) -> Result<Vec<String>, Error>;
+
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
     /// (spec 101) - it was folded under an older fold rule: until `rigger setup` pays it nothing
     /// folds into it, and nothing whose answer depends on the fold may answer from it - it refuses

@@ -375,15 +375,22 @@ pub struct IngestStats {
 /// halves differ: the design half reads the live tree, while the code half reuses the `symbols`
 /// grounder's PERSISTED index when the project has one (see [`walk_batches`]) and derives its events
 /// from the indexed symbols without reading the file. So on such a project the keys track that
-/// index's view - including for a path the tree no longer holds but the index still lists, which
-/// this walk therefore still emits a batch for.
+/// index's view of each file the walk sees. A file the walk no longer sees is never lowered from
+/// the index: every identity of `held` - the identities the graph holds a generation for
+/// ([`Projection::held_identities`]) - whose file the walk no longer sees is handed the batch a
+/// sink extracts from no bytes, whatever the index lists, so its fold retires what the file
+/// asserted (see [`walk_batches`]).
 ///
 /// The code half's per-file parse/lower fans across a default-sized worker pool (one worker per
 /// logical core), but the EMIT stays in sorted file-path order - parallelism is observationally
 /// invisible. The returned [`IngestStats`] is informational.
 #[cfg(feature = "symbols")]
-pub fn ingest_project_batched(root: &str, on_batch: impl BatchSink) -> IngestStats {
-    ingest_project_batched_paced(root, crate::parallel::default_workers(), on_batch)
+pub fn ingest_project_batched(
+    root: &str,
+    held: &[String],
+    on_batch: impl BatchSink,
+) -> IngestStats {
+    ingest_project_batched_paced(root, crate::parallel::default_workers(), held, on_batch)
 }
 
 /// [`ingest_project_batched`] at a chosen parse width. The code half (spec 29a) parses/lowers its
@@ -398,25 +405,42 @@ pub fn ingest_project_batched(root: &str, on_batch: impl BatchSink) -> IngestSta
 pub fn ingest_project_batched_paced(
     root: &str,
     workers: usize,
+    held: &[String],
     on_batch: impl BatchSink,
 ) -> IngestStats {
-    walk_batches(root, workers, on_batch)
+    walk_batches(root, workers, held, on_batch)
 }
 
 /// The walk behind [`ingest_project_batched_paced`]: parse/lower the project at `root` and hand
 /// each file's WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first,
-/// then the design half, then the workflow-definition half), each batch in `#i` order. A code
-/// batch is handed with the flag the code half answers beside it, a design or
-/// workflow-definition batch with the flag clear.
+/// then the design half, then the workflow-definition half), each batch in `#i` order, then the
+/// retirement batch of each identity of `held` whose file the walk no longer sees, in `held`'s
+/// order. A code batch is handed with the flag the code half
+/// answers beside it, every other batch with the flag clear.
+///
+/// The code half lowers only the indexed files the walk sees ([`walk_sees`]), so an index that
+/// still lists a deleted file never hands that file's old batch. A retirement
+/// batch is the batch a sink extracts from no bytes under the identity's prefix ([`extraction`]),
+/// keyed as every batch is: a sink records it once, as a new generation of the identity whose
+/// fold retires every node the file's prior generation asserted, and a later walk hands the
+/// generation the log and the graph both hold, which records nothing. Which identities retire is
+/// read from `held` and the tree alone, never from the symbols index.
 #[cfg(feature = "symbols")]
-fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> IngestStats {
+fn walk_batches(
+    root: &str,
+    workers: usize,
+    held: &[String],
+    mut on_batch: impl BatchSink,
+) -> IngestStats {
     let mut batches_emitted = 0usize;
+    let walked = crate::grounder::walked_paths(std::path::Path::new(root));
+    let sees = |prefix: &str, path: &str| walk_sees(root, &walked, prefix, path);
     // The code half (spec 29a): parallel parse feeds this ordered emit. Reuses the `symbols`
     // grounder's persisted index when present (no re-parse), so in a live run this is a cheap read of
     // what the grounder already built - not a second whole-tree parse.
     let (code_batches, workers_engaged) =
         crate::grounder::symbols::events::project_batches_paced(root, workers);
-    for (file, batch, excluded) in &code_batches {
+    for (file, batch, excluded) in code_batches.iter().filter(|(file, ..)| sees("gc", file)) {
         key_batch("gc", file, batch, *excluded, &mut on_batch);
         batches_emitted += 1;
     }
@@ -437,10 +461,52 @@ fn walk_batches(root: &str, workers: usize, mut on_batch: impl BatchSink) -> Ing
         key_batch("gw", file, batch, false, &mut on_batch);
         batches_emitted += 1;
     }
+    for (prefix, path, half) in retired_identities(held, sees) {
+        key_batch(
+            prefix,
+            path,
+            &extraction(half, path, None, false),
+            false,
+            &mut on_batch,
+        );
+        batches_emitted += 1;
+    }
     IngestStats {
         batches_emitted,
         workers_engaged,
     }
+}
+
+/// Whether the walk under `root` sees the file at `path` under `prefix`: one `walked` holds
+/// ([`crate::grounder::walked_paths`]), or one the tree's read rule admits
+/// ([`crate::grounder::tree_holds`]), which is asked only of a path `walked` lacks - the workflow
+/// definition's included, since it sits under a hidden directory the walk never enters.
+#[cfg(feature = "symbols")]
+fn walk_sees(
+    root: &str,
+    walked: &std::collections::BTreeSet<String>,
+    prefix: &str,
+    path: &str,
+) -> bool {
+    walked.contains(path) || crate::grounder::tree_holds(std::path::Path::new(root), prefix, path)
+}
+
+/// The identities [`walk_batches`] retires (spec 107): each identity of `held`, in its order,
+/// whose prefix names a half and whose file the walk does not see (`sees`), as its prefix, path
+/// and half.
+#[cfg(feature = "symbols")]
+fn retired_identities(
+    held: &[String],
+    sees: impl Fn(&str, &str) -> bool,
+) -> Vec<(&str, &str, Half)> {
+    held.iter()
+        .filter_map(|identity| {
+            let (prefix, path) =
+                rigger_domain::retention::GenerationIngested::identity_parts(identity)?;
+            let half = half_of(prefix)?;
+            (!sees(prefix, path)).then_some((prefix, path, half))
+        })
+        .collect()
 }
 
 /// [`ingest_project_batched`] SCOPED to exactly the NAMED `files` (spec 92, FRESH ON EVERY
@@ -570,9 +636,9 @@ const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
 ///   COVERAGE question, never double-counted as this advisory's lag;
 /// - a file the log recorded that the read rule hands no bytes for, so this bounded sample has
 ///   nothing to re-check for it: one that no longer exists on disk, which an integration's own
-///   reindex retires directly through the boundary-sentinel supersession; one outside the
-///   walk's scope (under a hidden directory, or named by a committed `.gitignore`), which no
-///   walk reads; and one this process cannot read.
+///   reindex and every whole-project walk retire through the boundary-sentinel batch; one
+///   outside the walk's scope (under a hidden directory, or named by a committed `.gitignore`),
+///   which no walk reads; and one this process cannot read.
 ///
 /// Returns `[]` when there is nothing to sample (an empty `latest`, or every candidate already
 /// pruned by the two rules above) or when both sides hold every sampled file's generation - zero
@@ -685,11 +751,27 @@ fn half_of(prefix: &str) -> Option<Half> {
     }
 }
 
+/// The batch `half` extracts from the `bytes` of the file at `path` under the walk's flag
+/// `excluded`, as every sink and every resolution reads it (spec 107): the half's own batch for
+/// bytes, and for no bytes the one boundary event of a path that holds nothing
+/// ([`unparsed_batch`](crate::grounder::symbols::events::unparsed_batch)) whatever the half, so
+/// a file gone from the tree has a generation under every prefix, and its fold retires what the
+/// file asserted.
+#[cfg(feature = "symbols")]
+fn extraction(half: Half, path: &str, bytes: Option<&[u8]>, excluded: bool) -> Vec<Event> {
+    match bytes {
+        Some(_) => half(path, bytes, excluded),
+        None => crate::grounder::symbols::events::unparsed_batch(path),
+    }
+}
+
 /// Whether the next ingest of the file the identity `<prefix>/<path>` names records an entry for
 /// it (spec 107): whether the tree's one read rule ([`crate::grounder::tree_bytes`]) hands bytes
 /// for its path under `root` that its half extracts a batch from ([`extracts`]). An identity
-/// whose path holds no such file - gone, outside the walk's scope, unreadable - is named by no
-/// walk, and one the domain cuts into no prefix and path
+/// whose path holds no such file - gone, outside the walk's scope, unreadable - answers false:
+/// what the walk hands it is its retirement batch from no bytes ([`ingest_project_batched`]),
+/// which retires the file rather than bringing a recording of it up to date, so it is not
+/// counted here. One the domain cuts into no prefix and path
 /// ([`rigger_domain::retention::GenerationIngested::identity_parts`]) names no file.
 pub fn next_ingest_records(root: &std::path::Path, identity: &str) -> bool {
     rigger_domain::retention::GenerationIngested::identity_parts(identity).is_some_and(
@@ -744,7 +826,7 @@ pub fn resolve_entry(
         return Ok(None);
     };
     let resolved = |bytes: Option<Vec<u8>>| {
-        let batch = half(&named.file, bytes.as_deref(), named.excluded);
+        let batch = extraction(half, &named.file, bytes.as_deref(), named.excluded);
         (!batch.is_empty() && batch_generation(&batch) == named.generation).then_some(batch)
     };
     let blob = match blobs {
@@ -920,7 +1002,7 @@ pub fn entry_of_batch(
         return Ok(None);
     }
     let bytes = sink_bytes(root, prefix, path)?;
-    let batch = half(path, bytes.as_deref(), excluded);
+    let batch = extraction(half, path, bytes.as_deref(), excluded);
     let Some(generation) =
         keyed_generation(prefix, path, &batch, excluded).filter(|own| !current(own))
     else {
@@ -969,7 +1051,7 @@ fn key_batch(
 /// sink no batches. `graph build` still opens (creating) the store and degrades to an empty graph,
 /// never an error, in either lane (the batched append-and-fold kernel above stays compiled in both).
 #[cfg(not(feature = "symbols"))]
-pub fn ingest_project_batched(_root: &str, _on_batch: impl BatchSink) {}
+pub fn ingest_project_batched(_root: &str, _held: &[String], _on_batch: impl BatchSink) {}
 
 #[cfg(all(test, feature = "symbols"))]
 mod tests {
@@ -980,7 +1062,7 @@ mod tests {
     /// sees, in emit order - the observable the byte-identical contract is defined over.
     fn walk(root: &str, workers: usize) -> (Vec<(String, String, Vec<u8>)>, IngestStats) {
         let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-        let stats = ingest_project_batched_paced(root, workers, |batch, _| {
+        let stats = ingest_project_batched_paced(root, workers, &[], |batch, _| {
             for (key, ev) in batch {
                 seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
             }
@@ -1143,7 +1225,7 @@ mod tests {
         // Ingest at width 1 (scope is width-independent) and collect the FILE each emitted content
         // key names (`<prefix>/<file>@<hash>#<i>`).
         let mut files: BTreeSet<String> = BTreeSet::new();
-        ingest_project_batched_paced(root.to_str().unwrap(), 1, |batch, _| {
+        ingest_project_batched_paced(root.to_str().unwrap(), 1, &[], |batch, _| {
             for (key, _ev) in batch {
                 if let Some((_, rest)) = key.split_once('/') {
                     if let Some(file) = rest.split('@').next() {
@@ -1289,7 +1371,7 @@ mod tests {
         let root = dir.path().to_str().unwrap();
 
         let handed = handed_flags(|sink| {
-            ingest_project_batched_paced(root, 1, sink);
+            ingest_project_batched_paced(root, 1, &[], sink);
         });
         assert_eq!(handed, crate::extraction_tree::walked_handoffs());
         let set: Vec<&str> = handed
@@ -1396,7 +1478,7 @@ mod tests {
         let mut generations: Vec<String> = Vec::new();
         let mut keys: Vec<String> = Vec::new();
         let mut expected_keys: Vec<String> = Vec::new();
-        ingest_project_batched_paced(dir.path().to_str().unwrap(), 1, |batch, _| {
+        ingest_project_batched_paced(dir.path().to_str().unwrap(), 1, &[], |batch, _| {
             let events: Vec<crate::eventstore::Event> =
                 batch.iter().map(|(_, event)| (*event).clone()).collect();
             let generation = super::batch_generation(&events);
@@ -1807,6 +1889,9 @@ mod entry_of_batch_tests {
         ) -> Result<EntryFold, GraphError> {
             panic!("a sink's check folds nothing")
         }
+        fn held_identities(&self) -> Result<Vec<String>, GraphError> {
+            panic!("a sink's check enumerates no identity")
+        }
         fn current_generation(&self, identity: &str) -> Result<Option<String>, GraphError> {
             self.asked
                 .lock()
@@ -2211,27 +2296,54 @@ mod entry_of_batch_tests {
     }
 
     /// SINK OUTCOMES row 7: a `gd` file emptied after the walk - a source file whose rationale
-    /// lines are gone - one deleted after it, and a workflow definition deleted after it, extract
-    /// to the empty batch, which has no generation: nothing is recorded, nothing is hashed and
-    /// the emit succeeds.
+    /// lines are gone - extracts to the empty batch, which has no generation: nothing is recorded,
+    /// nothing is hashed and the emit succeeds. A design doc and a workflow definition deleted
+    /// after the walk extract, as a deleted `gc` file does, to the one boundary event of a path
+    /// that holds nothing, recorded with no blob and never hashed, so their nodes retire.
     #[test]
-    fn a_gd_or_gw_file_whose_own_extraction_is_empty_records_nothing_and_succeeds() {
+    fn a_gd_file_whose_own_extraction_is_empty_records_nothing_and_a_deleted_gd_or_gw_file_records_its_no_bytes_batch(
+    ) {
         let emptied = planted_extraction_tree(write_file);
         write_file(&emptied.path().join(SOURCE_PATH), b"");
         let deleted = planted_extraction_tree(write_file);
         std::fs::remove_file(deleted.path().join(DOCUMENT_PATH)).unwrap();
         std::fs::remove_file(deleted.path().join(WORKFLOW_PATH)).unwrap();
         let never = Err("the hash is never asked");
-        let cases = [
-            (emptied.path(), walked("gd", SOURCE_PATH, false)),
-            (deleted.path(), walked("gd", DOCUMENT_PATH, false)),
-            (deleted.path(), walked("gw", WORKFLOW_PATH, false)),
+        let no_bytes =
+            |path: &str| format!(r#"{{"file":"{path}","name":"","lang":"unknown","fresh":true}}"#);
+        let (document, workflow) = (no_bytes(DOCUMENT_PATH), no_bytes(WORKFLOW_PATH));
+        /// A root, the batch the walk handed under it, and the no-bytes batch it records, if any.
+        type Case<'a> = (&'a Path, Handed<'a>, Option<[(&'a str, &'a str); 1]>);
+        let cases: [Case; 3] = [
+            (emptied.path(), walked("gd", SOURCE_PATH, false), None),
+            (
+                deleted.path(),
+                walked("gd", DOCUMENT_PATH, false),
+                Some([("EdgeInferred", document.as_str())]),
+            ),
+            (
+                deleted.path(),
+                walked("gw", WORKFLOW_PATH, false),
+                Some([("EdgeInferred", workflow.as_str())]),
+            ),
         ];
-        for (root, handed) in cases {
+        for (root, handed, recorded) in cases {
             let identity = format!("{}/{}", handed.prefix, handed.path);
+            let expected = recorded.map_or(Ok(None), |batch| {
+                records(
+                    generation_ingested(
+                        handed.prefix,
+                        handed.path,
+                        &generation_of(&batch),
+                        "",
+                        false,
+                    ),
+                    &batch,
+                )
+            });
             assert_eq!(
                 answered(root, handed, Ok(Some("0ld")), holding(Some("0ld")), never),
-                (Ok(None), asked_both(&identity, &[])),
+                (expected, asked_both(&identity, &[])),
                 "{identity} under {}",
                 root.display()
             );
@@ -2517,7 +2629,7 @@ mod scoped_reindex_tests {
         std::fs::write(dir.path().join(".rigger/persona.md"), doc).unwrap();
         let root = dir.path().to_str().unwrap();
         let mut walked: Vec<String> = Vec::new();
-        ingest_project_batched_paced(root, 1, |keyed, _| {
+        ingest_project_batched_paced(root, 1, &[], |keyed, _| {
             walked.extend(keyed.iter().map(|(k, _)| k.clone()))
         });
         let mut named: Vec<String> = Vec::new();

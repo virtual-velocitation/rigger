@@ -124,12 +124,14 @@ CREATE TABLE IF NOT EXISTS passed_over (position INTEGER PRIMARY KEY, cause TEXT
 /// lines of a file (`path:line`) ABOUT or GOVERNING an artifact at the citation rather than the
 /// file. Rule 5 is a lesson's or finding's `file` read as one more location
 /// ([`locations`](super::locations)): a file folded before it holds a record naming its location
-/// by `file` with no ABOUT edge to that file. A file at an older version that folded anything owes
+/// by `file` with no ABOUT edge to that file. Rule 6 is a community membership held only by code
+/// ([`holds_attachment`]): a file folded before it keeps an `IN_COMMUNITY` edge live on a path whose
+/// code retired while a record still names it. A file at an older version that folded anything owes
 /// one cold rebuild from the log ([`Projector::rebuild`], which only `rigger setup` runs) and
 /// nothing folds into it incrementally until then. A rebuild's shadow records the rule it is
 /// folded under the same way, from the moment it is opened, so one a binary of another rule left
 /// is never resumed ([`open_shadow`]).
-pub const PROJECTION_VERSION: i64 = 5;
+pub const PROJECTION_VERSION: i64 = 6;
 
 /// The generation ledgers and their views, dropped from a file at an older [`PROJECTION_VERSION`]
 /// so [`SCHEMA`] recreates them in their current shape.
@@ -3312,6 +3314,18 @@ impl Projection for Projector {
         current_generation(&self.conn.lock().unwrap(), &self.project, identity)
     }
 
+    /// A plain read of the `generations` table, as [`current_generation`] is.
+    fn held_identities(&self) -> Result<Vec<String>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT identity FROM generations WHERE project = ?1 ORDER BY identity")
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![self.project], |r| r.get(0))
+            .map_err(be)?;
+        rows.collect::<Result<Vec<String>, _>>().map_err(be)
+    }
+
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
         let seed_json = serde_json::to_string(seed).map_err(be)?;
         let conn = self.conn.lock().unwrap();
@@ -4112,9 +4126,10 @@ fn retire_unheld_nodes(
 /// A node a live assertion still names ([`live_node_assertions`] - an identity-empty asserter such
 /// as a decision, lesson or finding naming it, or an identity at its current generation) keeps
 /// only what its live assertions say: every attrs key of `retracted` no live assertion carries is
-/// removed and its kind settles on them ([`settled_kind`]). A node nothing live asserts is RETIRED:
-/// never deleted, it moves to `retired_nodes` without the keys its superseded assertion made, and
-/// its graph-derived attachments are detached ([`detach_attachments`]). Either way, a definition
+/// removed, its kind settles on them ([`settled_kind`]) and its graph-derived attachments settle on
+/// that kind ([`revive_attachments`], [`detach_attachments`]). A node nothing live asserts is
+/// RETIRED: never deleted, it moves to `retired_nodes` without the keys its superseded assertion
+/// made, and its graph-derived attachments are detached. Either way, a definition
 /// that stops being one undoes what resolved against it ([`definition_retired`]).
 ///
 /// [`live_node_assertions`]: SCHEMA
@@ -4155,6 +4170,8 @@ fn settle_node(
                 params![id, project, kind],
             )
             .map_err(be)?;
+            revive_attachments(tx, id, kind, project)?;
+            detach_attachments(tx, id, Some(kind), at, project)?;
         }
         None => {
             tx.execute(
@@ -4169,7 +4186,7 @@ fn settle_node(
                 params![id, project],
             )
             .map_err(be)?;
-            detach_attachments(tx, id, at, project)?;
+            detach_attachments(tx, id, None, at, project)?;
         }
     }
     undo_what_resolved_against(tx, id, defined, project).map(drop)
@@ -4315,26 +4332,87 @@ fn definition_retired(tx: &Transaction, id: &str, name: &str, project: &str) -> 
     owe_proofs(tx, name)
 }
 
-/// Detach node `id`'s live graph-derived attachments - the `IN_COMMUNITY` and `REALIZES` edges a
-/// community or concept pass hung off it - as `id` retires, at `at` (spec 101, "only knowledge
-/// holds a node"): an attachment never holds a node, and one on a node the graph no longer holds
-/// is not live. Each is recorded in `detached_attachments`, from which [`ensure_node`] revives it
-/// the moment `id` is held again - the state a fold reaches whether the attachment folded before
-/// the node's latest generation or after it.
-fn detach_attachments(tx: &Transaction, id: &str, at: i64, project: &str) -> Result<(), Error> {
-    tx.execute(
-        "INSERT OR IGNORE INTO detached_attachments (project, edge_id, node_id)
-         SELECT project, id, from_id FROM edges
-          WHERE from_id = ?1 AND project = ?2 AND rel IN (?3, ?4) AND valid_to IS NULL",
-        params![id, project, REL_IN_COMMUNITY, REL_REALIZES],
-    )
-    .map_err(be)?;
-    tx.execute(
-        "UPDATE edges SET valid_to = ?3
-          WHERE from_id = ?1 AND project = ?2 AND rel IN (?4, ?5) AND valid_to IS NULL",
-        params![id, project, at, REL_IN_COMMUNITY, REL_REALIZES],
-    )
-    .map_err(be)?;
+/// The graph-derived attachments: the edges a community pass ([`REL_IN_COMMUNITY`]) or a concept
+/// pass ([`REL_REALIZES`]) hangs off a node.
+const ATTACHMENT_RELS: [&str; 2] = [REL_IN_COMMUNITY, REL_REALIZES];
+
+/// Whether a node the graph holds as `kind` holds a `rel` attachment live (spec 101, "only
+/// knowledge holds a node"): a concept's `REALIZES` rides any held node, since the intent links
+/// that derive it are knowledge, while a community's `IN_COMMUNITY` rides only a source file or a
+/// code entity, since code coupling derives it - a path whose code retired while a record still
+/// names it is held as an artifact and is in no community.
+fn holds_attachment(kind: &str, rel: &str) -> bool {
+    rel != REL_IN_COMMUNITY || [KIND_FILE, KIND_CODE_ENTITY].contains(&kind)
+}
+
+/// Detach, at `at`, node `id`'s live graph-derived attachments it no longer holds: every one when
+/// the graph no longer holds it (`held` is `None`, as `id` retires), else each its kind `held`
+/// does not hold ([`holds_attachment`]). An attachment never holds a node. Each is recorded in
+/// `detached_attachments`, from which [`revive_attachments`] revives it the moment `id` is held as
+/// a kind that holds it - the state a fold reaches whether the attachment folded before the node's
+/// latest generation or after it.
+fn detach_attachments(
+    tx: &Transaction,
+    id: &str,
+    held: Option<&str>,
+    at: i64,
+    project: &str,
+) -> Result<(), Error> {
+    for rel in ATTACHMENT_RELS
+        .into_iter()
+        .filter(|rel| !held.is_some_and(|kind| holds_attachment(kind, rel)))
+    {
+        tx.execute(
+            "INSERT OR IGNORE INTO detached_attachments (project, edge_id, node_id)
+             SELECT project, id, from_id FROM edges
+              WHERE from_id = ?1 AND project = ?2 AND rel = ?3 AND valid_to IS NULL",
+            params![id, project, rel],
+        )
+        .map_err(be)?;
+        tx.execute(
+            "UPDATE edges SET valid_to = ?3
+              WHERE from_id = ?1 AND project = ?2 AND rel = ?4 AND valid_to IS NULL",
+            params![id, project, at, rel],
+        )
+        .map_err(be)?;
+    }
+    Ok(())
+}
+
+/// Revive every detached graph-derived attachment of node `id` that the graph, holding it as
+/// `kind`, holds ([`holds_attachment`]): each comes back live and leaves `detached_attachments`,
+/// and each other stays detached.
+fn revive_attachments(tx: &Transaction, id: &str, kind: &str, project: &str) -> Result<(), Error> {
+    let detached: Vec<(i64, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT d.edge_id, e.rel FROM detached_attachments d
+                   JOIN edges e ON e.id = d.edge_id
+                  WHERE d.project = ?1 AND d.node_id = ?2",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be)?;
+        rows
+    };
+    for (edge, _) in detached
+        .into_iter()
+        .filter(|(_, rel)| holds_attachment(kind, rel))
+    {
+        tx.execute(
+            "UPDATE edges SET valid_to = NULL WHERE id = ?1",
+            params![edge],
+        )
+        .map_err(be)?;
+        tx.execute(
+            "DELETE FROM detached_attachments WHERE project = ?1 AND edge_id = ?2",
+            params![project, edge],
+        )
+        .map_err(be)?;
+    }
     Ok(())
 }
 
@@ -4450,10 +4528,11 @@ fn retire_grain(
 }
 
 /// Hang a graph-derived attachment (`rel`, [`REL_IN_COMMUNITY`] or [`REL_REALIZES`]) from `node` to
-/// its super-node `to`. On a node the graph holds it folds live through [`add_edge`]; on one it
-/// does not hold (a node whose generation was shed or retired) it creates no node and is recorded
-/// detached from the start - merged into an already-detached edge of the same key the way
-/// [`add_edge`] merges a live one - so it is live exactly when its node is.
+/// its super-node `to`. On a node the graph holds as a kind that holds it ([`holds_attachment`]) it
+/// folds live through [`add_edge`]; on any other (a node whose generation was shed or retired, or
+/// one only knowledge holds that `rel` does not ride) it creates no node and is recorded detached
+/// from the start - merged into an already-detached edge of the same key the way [`add_edge`]
+/// merges a live one - so it is live exactly when its node holds it.
 #[allow(clippy::too_many_arguments)]
 fn attach(
     tx: &Transaction,
@@ -4464,7 +4543,7 @@ fn attach(
     src: Position,
     project: &str,
 ) -> Result<(), Error> {
-    if node_row(tx, node, project)?.is_some() {
+    if node_row(tx, node, project)?.is_some_and(|n| holds_attachment(&n.kind, rel)) {
         add_edge(tx, node, to, rel, at, src, project, TIER_INFERRED)?;
         return Ok(());
     }
@@ -6459,19 +6538,17 @@ fn ensure_node(
         ],
     )
     .map_err(be)?;
-    // The node is held again: every attachment detached while it was not comes back live.
-    tx.execute(
-        "UPDATE edges SET valid_to = NULL
-          WHERE id IN (SELECT edge_id FROM detached_attachments
-                        WHERE project = ?1 AND node_id = ?2)",
-        params![project, id],
-    )
-    .map_err(be)?;
-    tx.execute(
-        "DELETE FROM detached_attachments WHERE project = ?1 AND node_id = ?2",
-        params![project, id],
-    )
-    .map_err(be)?;
+    // The node is held: every attachment detached while it was not, or while it was held as a
+    // kind that does not hold it, comes back live if its kind now holds it. The upsert never
+    // demotes a kind, so no live attachment needs detaching here.
+    let held: String = tx
+        .query_row(
+            "SELECT kind FROM nodes WHERE id = ?1 AND project = ?2",
+            params![id, project],
+            |r| r.get(0),
+        )
+        .map_err(be)?;
+    revive_attachments(tx, id, &held, project)?;
     owe_relabel_of(tx, id, false, project)?;
     record_assertion(tx, by, id, kind, attr_json.as_deref(), project)
 }
@@ -10568,15 +10645,17 @@ mod tests {
     }
 
     /// The shared-node rule (spec 116) is fold rule 2, the path-addressed node (spec 119) rule 3,
-    /// a record's reference read as the id it names rule 4 and a lesson's or finding's `file`
-    /// read as one more location rule 5: a file that folded under rule 1 took a shared node's kind
-    /// and line from the last definition folded, one that folded under rule 2 holds a nested
-    /// definition at its flat id, one that folded under rule 3 holds a record citing lines of a
-    /// file ABOUT an artifact at the citation rather than the file, and one that folded under
-    /// rule 4 holds a record naming its file by `file` with no ABOUT edge to it, so each owes its
-    /// rebuild, and one at rule 5 owes none.
+    /// a record's reference read as the id it names rule 4, a lesson's or finding's `file` read as
+    /// one more location rule 5 and a community membership held only by code rule 6: a file that
+    /// folded under rule 1 took a shared node's kind and line from the last definition folded, one
+    /// that folded under rule 2 holds a nested definition at its flat id, one that folded under
+    /// rule 3 holds a record citing lines of a file ABOUT an artifact at the citation rather than
+    /// the file, one that folded under rule 4 holds a record naming its file by `file` with no
+    /// ABOUT edge to it and one that folded under rule 5 keeps a membership on a path only a record
+    /// still names, so each owes its rebuild, and one at the current rule owes none.
     #[test]
-    fn a_graph_file_folded_at_projection_version_1_to_4_owes_its_rebuild_and_one_at_5_owes_none() {
+    fn a_graph_file_folded_at_an_older_projection_version_owes_its_rebuild_and_one_at_the_current_owes_none(
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.db");
         let p = Projector::open(path.to_str().unwrap(), "test").unwrap();
@@ -10589,11 +10668,10 @@ mod tests {
                 .unwrap();
             p.owed_because().unwrap()
         };
-        assert_eq!(owed_at(1), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(2), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(3), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(4), vec![OWED_OLDER_RULE]);
-        assert_eq!(owed_at(5), Vec::<&str>::new());
+        for version in 1..PROJECTION_VERSION {
+            assert_eq!(owed_at(version), vec![OWED_OLDER_RULE], "rule {version}");
+        }
+        assert_eq!(owed_at(PROJECTION_VERSION), Vec::<&str>::new());
     }
 
     /// The owed mark an older binary's lost fold left belongs to the graph file beside it: once
@@ -20012,6 +20090,11 @@ mod tests {
                     Some("h1".to_string()),
                     "the generation is read from a graph that owes its rebuild"
                 );
+                assert_eq!(
+                    p.held_identities().unwrap(),
+                    vec![crate::test_support::gc_identity("src/f.rs")],
+                    "the identities are read from a graph that owes its rebuild"
+                );
             }
 
             /// A fresh file-backed graph whose fold of `entry` with `batch` fails with `why`, with
@@ -20079,6 +20162,22 @@ mod tests {
                 assert_eq!(generation_of_f(&ours), Some("h1".to_string()));
                 assert_eq!(generation_of_f(&theirs), None);
                 assert_eq!(ours.current_generation("gd/src/f.rs").unwrap(), None);
+            }
+
+            #[test]
+            fn held_identities_answers_only_the_asking_projects_own_identities() {
+                let (_dir, ours, theirs) = crate::test_support::ours_and_theirs();
+                holding_h1(&ours);
+                assert_eq!(
+                    (
+                        ours.held_identities().unwrap(),
+                        theirs.held_identities().unwrap()
+                    ),
+                    (
+                        vec![crate::test_support::gc_identity("src/f.rs")],
+                        Vec::<String>::new()
+                    )
+                );
             }
 
             /// Every table of the projection that carries a `project` column (spec 117, A

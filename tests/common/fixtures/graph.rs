@@ -131,6 +131,9 @@ macro_rules! projection_folds_no_entry {
         ) -> Result<Option<String>, rigger::contextgraph::Error> {
             Ok(None)
         }
+        fn held_identities(&self) -> Result<Vec<String>, rigger::contextgraph::Error> {
+            Ok(Vec::new())
+        }
         fn apply_generation(
             &self,
             _entry: &rigger::eventstore::Event,

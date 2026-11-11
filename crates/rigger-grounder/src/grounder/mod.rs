@@ -119,6 +119,26 @@ where
     ControlFlow::Continue(())
 }
 
+/// The path of `file`, a file a walk under `root` visited, relative to `root`: the ONE spelling
+/// every walk's leaf action names a file by, so a path one walk answers is the path another holds.
+pub(crate) fn relative_path(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The path of every file [`walk_guarded`] visits under `root`, relative to it
+/// ([`relative_path`]): the tree as every walk sees it, in one pass.
+pub(crate) fn walked_paths(root: &Path) -> std::collections::BTreeSet<String> {
+    let mut paths = std::collections::BTreeSet::new();
+    let _ = walk_guarded(root, &mut |file| {
+        paths.insert(relative_path(root, file));
+        ControlFlow::Continue(())
+    });
+    paths
+}
+
 /// The workflow definition's path relative to a project root, its ONE spelling: the path the
 /// workflow-definition pass reads and attributes every entity it extracts to (the `doc` attr on
 /// every folded node), and the one path [`in_walk_scope`] admits for `gw`.
@@ -158,11 +178,16 @@ pub fn in_walk_scope(root: &Path, prefix: &str, path: &str) -> bool {
 /// holds the bytes or it holds none. The regular-file test comes before the read because `gw`'s
 /// scope is the path alone: a FIFO there would hold the read waiting for a writer.
 pub fn tree_bytes(root: &Path, prefix: &str, path: &str) -> Option<Vec<u8>> {
-    let file = root.join(path);
-    if !in_walk_scope(root, prefix, path) || !file.is_file() {
+    if !tree_holds(root, prefix, path) {
         return None;
     }
-    std::fs::read(file).ok()
+    std::fs::read(root.join(path)).ok()
+}
+
+/// Whether the tree holds a file at `path` (relative to `root`) that an ingest under `prefix`
+/// reads: a regular file [`in_walk_scope`] admits, the only kind [`tree_bytes`] reads.
+pub fn tree_holds(root: &Path, prefix: &str, path: &str) -> bool {
+    in_walk_scope(root, prefix, path) && root.join(path).is_file()
 }
 
 /// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
@@ -332,11 +357,7 @@ fn search_file(
         Ok(c) => c,
         Err(_) => return, // binary or unreadable
     };
-    let rel = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .into_owned();
+    let rel = relative_path(Path::new(root), path);
     for (i, line) in content.lines().enumerate() {
         if refs.len() >= k {
             return;
