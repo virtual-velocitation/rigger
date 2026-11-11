@@ -1,4 +1,13 @@
 use super::*;
+use rigger_domain::code_view::{Tests, ViewFilter};
+
+/// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
+/// every reader shares, else the refusal that names the three.
+fn tests_option(verb: &str, raw: Option<&String>) -> Result<Tests, String> {
+    raw.ok_or_else(|| format!("{verb}: --tests expects exclude, include or only"))?
+        .parse()
+        .map_err(|e| format!("{verb}: --tests: {e}"))
+}
 
 pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
@@ -17,9 +26,14 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     let mut show = String::new();
     let mut lookup = Vec::new();
     let mut depth: i64 = 2;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--tests" => {
+                i += 1;
+                tests = tests_option("graph", args.get(i))?;
+            }
             "--lookup" => {
                 while args.get(i + 1).is_some_and(|a| !a.starts_with("--")) {
                     i += 1;
@@ -46,10 +60,10 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // body, beside `--around`'s structural neighborhood. Dispatched before the `--around` guard so
     // a `--show` query needs no `--around`.
     if !show.is_empty() {
-        return cmd_graph_show(&show);
+        return cmd_graph_show(&show, tests);
     }
     if !lookup.is_empty() {
-        return cmd_graph_lookup(&lookup);
+        return cmd_graph_lookup(&lookup, tests);
     }
     if around.is_empty() {
         return Err(
@@ -58,7 +72,7 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     }
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(Default::default())?;
+    let graph = read.open(ViewFilter { tests })?;
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
     // the interface, an alias to its canonical id, else the query as typed. Its one site read
     // answers the queried node's unresolved leaves.
@@ -231,13 +245,13 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 
 /// `rigger graph --lookup <term>...`: the combined lookup, the same reply `rigger_graph`'s
 /// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
-fn cmd_graph_lookup(terms: &[String]) -> Res {
+fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     use rigger::lookup::Lookup as _;
     let lookup = rigger::lookup::TreeLookup::new(caller_tree());
     let reply = match owning_graph_to_read() {
         Ok(records) => {
             let read = ReadGraph::new(&records, caller_tree());
-            let graph = contextgraph::open_unowed(&records, &read, Default::default());
+            let graph = contextgraph::open_unowed(&records, &read, ViewFilter { tests });
             lookup.lookup(terms, graph.as_deref().map_err(|e| e.0.clone()))?
         }
         Err(e) => lookup.lookup(
@@ -249,10 +263,10 @@ fn cmd_graph_lookup(terms: &[String]) -> Res {
     Ok(())
 }
 
-fn cmd_graph_show(entity: &str) -> Res {
+fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let records = owning_graph_to_read()?;
     let read = ReadGraph::new(&records, caller_tree());
-    let graph = read.open(Default::default())?;
+    let graph = read.open(ViewFilter { tests })?;
     let located = graph.locate(entity)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());

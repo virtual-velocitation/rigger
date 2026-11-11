@@ -106,3 +106,64 @@ fn an_uncomparable_worktree_withholds_every_code_hit() {
         );
     }
 }
+
+/// GIVEN a built project whose product function `alpha` has a same-named test beside it, WHEN
+/// `rigger graph --lookup alpha` is read under each `--tests` setting, THEN `exclude` (the
+/// default) answers the product hit and counts the test hit apart, `include` answers both and
+/// marks the test, `only` answers the test alone, and a value that is none of the three is
+/// refused naming the three.
+#[test]
+fn graph_takes_a_tests_option() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn alpha() { crate_alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let product = "src/lib.rs:1 src/lib.rs::alpha (function)";
+    let test = "tests/t.rs:2 tests/t.rs::alpha (function) [test]";
+    let not_shown = "1 test hit not shown";
+    // (the arguments, what the graph half holds, what it does not)
+    let cases: [(&[&str], &[&str], &[&str]); 4] = [
+        (
+            &["graph", "--lookup", "alpha"],
+            &[product, not_shown],
+            &[test],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "include"],
+            &[product, test],
+            &[not_shown],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "only"],
+            &[test],
+            &[product, not_shown],
+        ),
+        (
+            &["graph", "--lookup", "alpha", "--tests", "exclude"],
+            &[product, not_shown],
+            &[test],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let (out, err, ok) = run_rigger(root, args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        for line in holds {
+            assert!(out.contains(line), "{args:?} holds {line:?}:\n{out}");
+        }
+        for line in lacks {
+            assert!(!out.contains(line), "{args:?} lacks {line:?}:\n{out}");
+        }
+    }
+    let (_, err, ok) = run_rigger(root, &["graph", "--lookup", "alpha", "--tests", "some"]);
+    assert!(!ok);
+    assert!(
+        err.contains("--tests: `tests` is one of exclude, include or only, not \"some\""),
+        "{err}"
+    );
+}
