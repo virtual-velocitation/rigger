@@ -124,20 +124,20 @@ pub struct Honesty {
 
 /// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id's text after the
 /// first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
-fn binds_leaf(node: &Node, leaf: &str) -> bool {
+pub(crate) fn binds_leaf(node: &Node, leaf: &str) -> bool {
     node_name(node) == Some(leaf) || id_binds_leaf(&node.id, leaf)
 }
 
 /// Whether the text of `id` after its first `::` is `leaf` or `leaf` behind the
 /// [`PLACEHOLDER_SIGIL`].
-fn id_binds_leaf(id: &str, leaf: &str) -> bool {
+pub(crate) fn id_binds_leaf(id: &str, leaf: &str) -> bool {
     split_id(id)
         .1
         .is_some_and(|rest| rest == leaf || rest.strip_prefix(PLACEHOLDER_SIGIL) == Some(leaf))
 }
 
 /// The edges sorted by ends then relation, one per (from, to, relation), the first kept.
-fn ordered(mut edges: Vec<Edge>) -> Vec<Edge> {
+pub(crate) fn ordered(mut edges: Vec<Edge>) -> Vec<Edge> {
     edges.sort_by(|a, b| (&a.from, &a.to, &a.rel).cmp(&(&b.from, &b.to, &b.rel)));
     edges.dedup_by(|b, a| (&a.from, &a.to, &a.rel) == (&b.from, &b.to, &b.rel));
     edges
@@ -263,7 +263,7 @@ impl Indexed {
     }
 
     /// Whether this graph holds a node `id`.
-    fn holds(&self, id: &str) -> bool {
+    pub(crate) fn holds(&self, id: &str) -> bool {
         self.place(id).is_some()
     }
 }
@@ -315,7 +315,12 @@ impl Neighbors for Indexed {
 /// `graph` with the view's `groupings` joined on: each community and concept a node carrying the
 /// pass's resolution, hash and label, and an inferred `IN_COMMUNITY` or `REALIZES` edge from
 /// each member `graph` holds as a kind that holds it ([`holds_attachment`]).
-fn joined(mut graph: Graph, groupings: &Groupings, proofs: &[ProofCall], tests: Tests) -> Graph {
+pub(crate) fn joined(
+    mut graph: Graph,
+    groupings: &Groupings,
+    proofs: &[ProofCall],
+    tests: Tests,
+) -> Graph {
     let kinds: BTreeMap<String, String> = graph
         .nodes
         .iter()
@@ -356,6 +361,109 @@ fn joined(mut graph: Graph, groupings: &Groupings, proofs: &[ProofCall], tests: 
     graph
 }
 
+/// The code half as [`Composed`] reads it: its neighbours, and what composing the halves reads
+/// beside them. [`Whole`] resolves the view whole when it is opened; [`crate::near::Near`]
+/// resolves only the ids it is asked about.
+pub trait CodeHalf: Neighbors {
+    /// Whether the half holds a node `id`.
+    fn holds(&self, id: &str) -> bool;
+    /// The concepts the view groups `member` into, in grouping order, when the half holds it.
+    fn concepts_of(&self, member: &str) -> Vec<String>;
+    /// The members of `concept` the half holds, in grouping order.
+    fn concept_members(&self, concept: &str) -> Vec<String>;
+    /// The test entities the filter hides, in id order.
+    fn hidden_tests(&self) -> Vec<Node>;
+}
+
+/// The code half resolved whole: every node and edge the view resolves to, with its groupings
+/// joined on.
+pub struct Whole {
+    code: Indexed,
+    /// Each concept's members and each member's concepts, as the view grouped them.
+    concept_members: BTreeMap<String, Vec<String>>,
+    concepts_of: BTreeMap<String, Vec<String>>,
+    hidden_tests: Vec<Node>,
+}
+
+impl Whole {
+    /// `view` resolved whole under `filter`.
+    pub(crate) fn new(view: &dyn CodeView, filter: ViewFilter) -> Self {
+        let groupings = view.groupings();
+        let code_graph = CodeGraph::new(view, filter);
+        let resolved = code_graph.resolved();
+        let proofs = code_graph.resolver().proof_calls();
+        let code = Indexed::new(
+            joined(resolved.graph, groupings, proofs, filter.tests),
+            Vec::new(),
+        );
+        let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for c in &groupings.concepts {
+            for m in c.members.iter().filter(|m| code.holds(m)) {
+                concept_members
+                    .entry(c.id.clone())
+                    .or_default()
+                    .push(m.clone());
+                concepts_of.entry(m.clone()).or_default().push(c.id.clone());
+            }
+        }
+        Whole {
+            code,
+            concept_members,
+            concepts_of,
+            hidden_tests: resolved.hidden_tests,
+        }
+    }
+}
+
+impl Neighbors for Whole {
+    fn node(&self, id: &str) -> Result<Option<Node>, Error> {
+        self.code.node(id)
+    }
+    fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        self.code.out(id)
+    }
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        self.code.incoming(id)
+    }
+    fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
+        self.code.members(file)
+    }
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error> {
+        self.code.leaf_nodes(leaf)
+    }
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        self.code.of_kind(kind)
+    }
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error> {
+        self.code.unresolved(node)
+    }
+    fn aliases(&self) -> Result<Vec<(String, String)>, Error> {
+        self.code.aliases()
+    }
+    fn whole(&self) -> Result<Graph, Error> {
+        self.code.whole()
+    }
+}
+
+impl CodeHalf for Whole {
+    fn holds(&self, id: &str) -> bool {
+        self.code.holds(id)
+    }
+    fn concepts_of(&self, member: &str) -> Vec<String> {
+        self.concepts_of.get(member).cloned().unwrap_or_default()
+    }
+    fn concept_members(&self, concept: &str) -> Vec<String> {
+        self.concept_members
+            .get(concept)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn hidden_tests(&self) -> Vec<Node> {
+        self.hidden_tests.clone()
+    }
+}
+
 /// One id's node from both halves: the code half's kind with the record half's attrs merged
 /// under its own, or whichever half holds it.
 fn merge(code: Option<Node>, record: Option<Node>) -> Option<Node> {
@@ -391,74 +499,77 @@ enum Way {
     In,
 }
 
-/// The record half and a view's code half read as one context graph.
-pub struct Composed<'r> {
+/// The record half and a view's code half `C` read as one context graph.
+pub struct Composed<'r, C = Whole> {
     records: &'r dyn Neighbors,
-    code: Indexed,
+    code: C,
     /// Each recorded alias's canonical id.
     canonical: BTreeMap<String, String>,
     /// Each canonical id's recorded aliases.
     aliased: BTreeMap<String, Vec<String>>,
-    /// Each concept's members and each member's concepts, as the view grouped them.
-    concept_members: BTreeMap<String, Vec<String>>,
-    concepts_of: BTreeMap<String, Vec<String>>,
     /// The code-half nodes the caller's worktree may not match.
     stale: Withheld,
     label: Label,
     /// The ids withheld so far because they are [`Withheld`].
     withheld: Mutex<BTreeSet<String>>,
-    /// The test entities the filter hides, for the readers that count test hits.
-    hidden_tests: Vec<Node>,
 }
 
 impl<'r> Composed<'r> {
-    /// The record half `records` composed with `view` under `filter`, labelled by `honesty`.
+    /// The record half `records` composed with `view` resolved whole under `filter`, labelled by
+    /// `honesty`: the graph a reader of the whole graph reads.
     pub fn new(
         records: &'r dyn Neighbors,
         view: &dyn CodeView,
         filter: ViewFilter,
         honesty: Honesty,
     ) -> Result<Self, Error> {
-        let groupings = view.groupings();
-        let code_graph = CodeGraph::new(view, filter);
-        let resolved = code_graph.resolved();
-        let hidden_tests = resolved.hidden_tests;
-        let proofs = code_graph.resolver().proof_calls();
-        let code = Indexed::new(
-            joined(resolved.graph, groupings, proofs, filter.tests),
-            Vec::new(),
-        );
+        Self::over(
+            records,
+            Whole::new(view, filter),
+            &view.stamp().tip,
+            honesty,
+        )
+    }
+
+    /// The record half `records` composed with `view` under `filter`, labelled by `honesty`, its
+    /// code half resolved only near the ids it is asked about (section 6.3): the graph a reader
+    /// of a neighbourhood reads. Its answers are [`Self::new`]'s.
+    pub fn near(
+        records: &'r dyn Neighbors,
+        view: &'r dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+    ) -> Result<impl ContextGraph + 'r, Error> {
+        let code = crate::near::Near::new(view, filter);
+        Composed::over(records, code, &view.stamp().tip, honesty)
+    }
+}
+
+impl<'r, C: CodeHalf> Composed<'r, C> {
+    /// `records` composed with `code`, a view of the tree `tip`, labelled by `honesty`.
+    fn over(
+        records: &'r dyn Neighbors,
+        code: C,
+        tip: &Tip,
+        honesty: Honesty,
+    ) -> Result<Self, Error> {
         let mut canonical = BTreeMap::new();
         let mut aliased: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (alias, id) in records.aliases()? {
             aliased.entry(id.clone()).or_default().push(alias.clone());
             canonical.insert(alias, id);
         }
-        let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for c in &groupings.concepts {
-            for m in c.members.iter().filter(|m| code.holds(m)) {
-                concept_members
-                    .entry(c.id.clone())
-                    .or_default()
-                    .push(m.clone());
-                concepts_of.entry(m.clone()).or_default().push(c.id.clone());
-            }
-        }
         // A worktree that cannot be compared fails closed: no code hit is known fresh.
         let stale = Withheld::of(honesty.diff);
-        let label = Label::describing(&view.stamp().tip, honesty.worktree, &stale, honesty.behind);
+        let label = Label::describing(tip, honesty.worktree, &stale, honesty.behind);
         Ok(Composed {
             records,
             code,
             canonical,
             aliased,
-            concept_members,
-            concepts_of,
             stale,
             label,
             withheld: Mutex::new(BTreeSet::new()),
-            hidden_tests,
         })
     }
 
@@ -526,14 +637,14 @@ impl<'r> Composed<'r> {
                         continue;
                     }
                     let e = self.canon_edge(e);
-                    for c in self.concepts_of.get(&e.to).into_iter().flatten() {
-                        found.push(attachment(&e, c));
+                    for c in self.code.concepts_of(&e.to) {
+                        found.push(attachment(&e, &c));
                     }
                 }
             }
             Way::In => {
-                for m in self.concept_members.get(id).into_iter().flatten() {
-                    for spelling in self.spellings(m) {
+                for m in self.code.concept_members(id) {
+                    for spelling in self.spellings(&m) {
                         for e in self.records.incoming(spelling)? {
                             if e.rel == REL_GOVERNS {
                                 found.push(attachment(&self.canon_edge(e), id));
@@ -600,7 +711,7 @@ impl<'r> Composed<'r> {
     }
 }
 
-impl Neighbors for Composed<'_> {
+impl<C: CodeHalf> Neighbors for Composed<'_, C> {
     fn node(&self, id: &str) -> Result<Option<Node>, Error> {
         Ok(self.merged(id)?.filter(|n| !self.withholds(n)))
     }
@@ -669,8 +780,8 @@ impl Neighbors for Composed<'_> {
         for e in code.edges.into_iter().chain(records.edges) {
             let e = self.canon_edge(e);
             if e.rel == REL_GOVERNS {
-                for c in self.concepts_of.get(&e.to).into_iter().flatten() {
-                    edges.push(attachment(&e, c));
+                for c in self.code.concepts_of(&e.to) {
+                    edges.push(attachment(&e, &c));
                 }
             }
             edges.push(e);
@@ -705,7 +816,7 @@ impl Neighbors for Composed<'_> {
     }
 }
 
-impl ContextGraph for Composed<'_> {
+impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error> {
         subgraph(self, seed, depth)
     }
@@ -736,10 +847,10 @@ impl ContextGraph for Composed<'_> {
             return Ok(Vec::new());
         }
         Ok(self
-            .hidden_tests
-            .iter()
+            .code
+            .hidden_tests()
+            .into_iter()
             .filter(|n| !self.withholds(n))
-            .cloned()
             .collect())
     }
     fn whole(&self) -> Result<Graph, Error> {

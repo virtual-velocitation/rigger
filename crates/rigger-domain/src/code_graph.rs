@@ -30,21 +30,63 @@ pub struct CodeGraph<'v> {
 /// product fact asserts it, and each edge's tier and test-ness by its ends and relation. It is
 /// put in id order once, when it becomes a graph.
 #[derive(Default)]
-struct Builder {
+pub(crate) struct Builder {
     index: FxHashMap<String, usize>,
     nodes: Vec<Node>,
     product: Vec<bool>,
     edges: FxHashMap<(usize, &'static str, usize), (&'static str, bool)>,
 }
 
+/// What reading a file asserts, in the order read: each node with its kind, attributes and
+/// test-ness, and each edge with its tier and test-ness. The whole graph's [`Builder`] folds every
+/// assertion; a neighbourhood folds the ones that touch the ids it is asked for.
+pub(crate) trait Asserts {
+    /// Asserts the node `id` of `kind` with `attrs`.
+    fn node(
+        &mut self,
+        id: &str,
+        kind: &'static str,
+        attrs: impl IntoIterator<Item = (&'static str, String)>,
+        test: bool,
+    );
+    /// Asserts the edge `from` -`rel`-> `to` of `tier`.
+    fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool);
+}
+
+impl Asserts for Builder {
+    fn node(
+        &mut self,
+        id: &str,
+        kind: &'static str,
+        attrs: impl IntoIterator<Item = (&'static str, String)>,
+        test: bool,
+    ) {
+        self.place(id, kind, attrs, test);
+    }
+    fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool) {
+        Builder::link(self, from, rel, to, tier, test);
+    }
+}
+
+/// Whether a node the filter `tests` is applied to is shown: a product node unless tests are
+/// shown alone, a test node unless tests are excluded, and, shown alone, a product node a test
+/// edge reaches.
+pub(crate) fn shown(tests: Tests, product: bool, reached: bool) -> bool {
+    match tests {
+        Tests::Exclude => product,
+        Tests::Include => true,
+        Tests::Only => !product || reached,
+    }
+}
+
 impl Builder {
     /// Asserts the node `id` of `kind` with `attrs`; a specific kind replaces `artifact`. Returns
     /// the node's place.
-    fn node<const N: usize>(
+    fn place(
         &mut self,
         id: &str,
         kind: &str,
-        attrs: [(&str, String); N],
+        attrs: impl IntoIterator<Item = (&'static str, String)>,
         test: bool,
     ) -> usize {
         let at = match self.index.get(id) {
@@ -73,11 +115,18 @@ impl Builder {
     /// Asserts the edge `from` -`rel`-> `to` of `tier` and its ends; a product assertion of an
     /// edge replaces a test one.
     fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool) {
-        let from = self.node(from, KIND_ARTIFACT, [], test);
-        let to = self.node(to, KIND_ARTIFACT, [], test);
+        let from = self.place(from, KIND_ARTIFACT, [], test);
+        let to = self.place(to, KIND_ARTIFACT, [], test);
         let held = self.edges.entry((from, rel, to)).or_insert((tier, test));
         if held.1 && !test {
             *held = (tier, false);
+        }
+    }
+
+    /// The node `id`, when one is asserted, carrying the proofs whose `evidence` lands on it.
+    pub(crate) fn prove(&mut self, id: &str, evidence: &[String]) {
+        if let Some(&at) = self.index.get(id) {
+            prove(&mut self.nodes[at], evidence);
         }
     }
 
@@ -85,7 +134,7 @@ impl Builder {
     /// test nodes and edges are dropped; included, all are kept; only, the test edges and the
     /// nodes test code asserts or those edges reach. Nodes come in id order, edges in ends then
     /// relation order.
-    fn into_graph(self, tests: Tests) -> Graph {
+    pub(crate) fn into_graph(self, tests: Tests) -> Graph {
         let Builder {
             nodes,
             product,
@@ -123,11 +172,7 @@ impl Builder {
         let mut slots: Vec<Option<Node>> = nodes.into_iter().map(Some).collect();
         let nodes = order
             .into_iter()
-            .filter(|&at| match tests {
-                Tests::Exclude => product[at],
-                Tests::Include => true,
-                Tests::Only => !product[at] || reached[at],
-            })
+            .filter(|&at| shown(tests, product[at], reached[at]))
             .filter_map(|at| {
                 let mut n = slots[at].take()?;
                 if !product[at] {
@@ -191,26 +236,14 @@ impl<'v> CodeGraph<'v> {
                 continue;
             };
             if f.half == Half::Code {
-                self.code(&facts, tests, &mut b, &mut hidden_tests);
+                self.code(&facts, tests, &mut b, Some(&mut hidden_tests));
                 proofs.extend(self.resolver.file_proofs(&facts));
             }
-            let (nodes, links) = self.resolver.intent(&facts);
-            for n in nodes {
-                b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
-            }
-            for l in links {
-                b.link(&l.from, l.rel, &l.to, l.tier, l.test);
-            }
+            self.intent(&facts, &mut b);
         }
         self.resolver.settle_proofs(proofs);
         for (id, evidence) in self.resolver.proofs() {
-            if let Some(&at) = b.index.get(&id) {
-                let n = &mut b.nodes[at];
-                n.attrs
-                    .insert("proven_by".to_string(), evidence.len().to_string());
-                let evidence = serde_json::to_string(&evidence).expect("strings serialize");
-                n.attrs.insert("proof_evidence".to_string(), evidence);
-            }
+            b.prove(&id, &evidence);
         }
         hidden_tests.sort_by(|a, b| a.id.cmp(&b.id));
         Resolved {
@@ -219,9 +252,15 @@ impl<'v> CodeGraph<'v> {
         }
     }
 
-    /// The file node, entities, placeholders and edges of the code file `facts`.
-    /// The test entities it hides go to `hidden` when tests are not shown.
-    fn code(&self, facts: &FileFacts, tests: bool, b: &mut Builder, hidden: &mut Vec<Node>) {
+    /// The file node, entities, placeholders and edges of the code file `facts`, asserted to `b`.
+    /// The test entities it hides go to `hidden`, when one is given, when tests are not shown.
+    pub(crate) fn code(
+        &self,
+        facts: &FileFacts,
+        tests: bool,
+        b: &mut impl Asserts,
+        mut hidden: Option<&mut Vec<Node>>,
+    ) {
         let file_test = self.resolver.is_test_file(&facts.path);
         if tests || !file_test {
             b.node(
@@ -241,15 +280,9 @@ impl<'v> CodeGraph<'v> {
         }
         for e in self.resolver.entities(facts, true) {
             if e.test && !tests {
-                hidden.push(Node {
-                    id: e.id.clone(),
-                    kind: KIND_CODE_ENTITY.to_string(),
-                    attrs: entity_attrs(facts, e)
-                        .into_iter()
-                        .map(|(k, v)| (k.to_string(), v))
-                        .chain([("test".to_string(), "true".to_string())])
-                        .collect(),
-                });
+                if let Some(hidden) = hidden.as_deref_mut() {
+                    hidden.push(hidden_node(facts, e));
+                }
                 continue;
             }
             let test = e.test;
@@ -268,6 +301,58 @@ impl<'v> CodeGraph<'v> {
                 b.link(from, rel, to, tier, test);
             });
     }
+
+    /// The design and workflow nodes and edges of `facts`, asserted to `b`.
+    pub(crate) fn intent(&self, facts: &FileFacts, b: &mut impl Asserts) {
+        let (nodes, links) = self.resolver.intent(facts);
+        for n in nodes {
+            b.node(&n.id, n.kind, [("title", n.title), ("doc", n.doc)], n.test);
+        }
+        for l in links {
+            b.link(&l.from, l.rel, &l.to, l.tier, l.test);
+        }
+    }
+
+    /// The test entities of every code file, which a filter that excludes tests hides, in id
+    /// order; none when tests are shown.
+    pub(crate) fn hidden_tests(&self) -> Vec<Node> {
+        if self.filter.tests != Tests::Exclude {
+            return Vec::new();
+        }
+        let mut hidden = Vec::new();
+        for f in self.view.files().filter(|f| f.half == Half::Code) {
+            if let Some(facts) = self.view.file(f.path) {
+                for e in self.resolver.entities(&facts, true) {
+                    if e.test {
+                        hidden.push(hidden_node(&facts, e));
+                    }
+                }
+            }
+        }
+        hidden.sort_by(|a, b| a.id.cmp(&b.id));
+        hidden
+    }
+}
+
+/// The test entity `e` of `facts` as the node a filter that excludes tests hides.
+fn hidden_node(facts: &FileFacts, e: Entity) -> Node {
+    Node {
+        id: e.id.clone(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: entity_attrs(facts, e)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .chain([("test".to_string(), "true".to_string())])
+            .collect(),
+    }
+}
+
+/// `node` carrying the proofs whose `evidence` lands on it: their count and their evidence.
+pub(crate) fn prove(node: &mut Node, evidence: &[String]) {
+    node.attrs
+        .insert("proven_by".to_string(), evidence.len().to_string());
+    let evidence = serde_json::to_string(evidence).expect("strings serialize");
+    node.attrs.insert("proof_evidence".to_string(), evidence);
 }
 
 #[cfg(test)]

@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef};
@@ -37,7 +37,7 @@ use crate::contextgraph::{
 };
 
 /// The node kinds a design concept or a workflow node may name.
-const INTENT_KINDS: [&str; 7] = [
+pub(crate) const INTENT_KINDS: [&str; 7] = [
     KIND_DESIGN_DOC,
     KIND_ARCH_DECISION,
     KIND_HANDBOOK_RULE,
@@ -226,7 +226,7 @@ pub struct Resolver<'v> {
     /// Every test file: Test-scope by path, or in the test-module closure.
     test_files: BTreeSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
-    candidates: RefCell<HashMap<String, Rc<Vec<Candidate<'v>>>>>,
+    candidates: RefCell<HashMap<String, Arc<Vec<Candidate<'v>>>>>,
     /// The test calls that prove a product definition, walked once per resolver.
     proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
@@ -299,9 +299,9 @@ impl<'v> Resolver<'v> {
     /// Every entity id the leaf `leaf` names in the view's code, in id order. An id a product
     /// definition holds is product, settled over its product definitions; one only test
     /// definitions hold is test.
-    pub fn candidates(&self, leaf: &str) -> Rc<Vec<Candidate<'v>>> {
+    pub fn candidates(&self, leaf: &str) -> Arc<Vec<Candidate<'v>>> {
         if let Some(held) = self.candidates.borrow().get(leaf) {
-            return Rc::clone(held);
+            return Arc::clone(held);
         }
         let mut by_id: BTreeMap<(&'v str, &'v str), Vec<(DefRef<'v>, bool)>> = BTreeMap::new();
         for d in self.view.defs_named(leaf) {
@@ -328,10 +328,10 @@ impl<'v> Resolver<'v> {
                 })
             })
             .collect();
-        let found = Rc::new(found);
+        let found = Arc::new(found);
         self.candidates
             .borrow_mut()
-            .insert(leaf.to_string(), Rc::clone(&found));
+            .insert(leaf.to_string(), Arc::clone(&found));
         found
     }
 
@@ -579,6 +579,30 @@ impl<'v> Resolver<'v> {
                 })
             })
             .collect()
+    }
+
+    /// The evidence of the proofs landing on the definition `id`, whose definitions are named
+    /// `leaves`, in [`Self::proofs`] order: each test call of one of `leaves` in a code file that
+    /// the proof rule resolves onto `id`, read from the mentions of those leaves alone.
+    pub fn proof_evidence(&self, id: &str, leaves: &[&str]) -> Vec<String> {
+        let mut calls = Vec::new();
+        for &leaf in leaves {
+            for m in self.view.mentions_named(leaf) {
+                let path = m.file.path;
+                let test = m.test || self.is_test_file(path);
+                if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
+                    continue;
+                }
+                if self.proof(path, leaf).as_deref() == Some(id) {
+                    calls.push(ProofCall {
+                        target: id.to_string(),
+                        caller: String::new(),
+                        evidence: format!("{path}:{}", m.line),
+                    });
+                }
+            }
+        }
+        proof_order(calls).into_iter().map(|c| c.evidence).collect()
     }
 
     /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls
