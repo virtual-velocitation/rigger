@@ -99,6 +99,9 @@ pub use rigger_driver::reaped_child;
 pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::ingest;
+/// The combined lookup engine `rigger graph --lookup` and `rigger_graph`'s `lookup` answer through.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_grounder::lookup;
 /// The gate request channel's adapters: the driver's socket and the verb's request over it.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::gate_socket;

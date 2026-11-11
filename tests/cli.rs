@@ -18353,8 +18353,9 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
 /// path (docs_context -> render -> write) the real `rigger docs` binary drives, so it reaches the two
 /// consumer-facing files an author commits and ships. Driving the built binary and reading the
 /// WRITTEN skill and handbook proves the "Looking things up" guidance actually LANDS in what
-/// consumers get: the knowledge graph is the lookup surface, its three verbs each carry their
-/// one-line job (`rigger graph --around` structure, `rigger graph --show` text, `rigger peers`
+/// consumers get: the knowledge graph is the lookup surface, the combined lookup (`rigger graph
+/// --lookup`) leads it, its three narrower verbs each carry their one-line job (`rigger graph
+/// --around` structure, `rigger graph --show` text, `rigger peers`
 /// memory), and grep over the project's sources is a fallback worth REPORTING via a `grep-fallback:`
 /// progress line. The implementer's in-process `discipline_carries_three_verb_lookup_guidance` unit
 /// test pins the render output; this periphery layer pins that the write path in the built binary
@@ -18364,11 +18365,15 @@ fn docs_ships_graph_hygiene_guidance_to_consumers() {
 fn docs_ships_three_verb_lookup_guidance_to_consumers() {
     let [skill, handbook] = consumer_docs_written_by_the_binary();
 
-    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: all
-    // three verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
+    // BOTH consumer-facing outputs, as WRITTEN by the built binary, carry the lookup guidance: the
+    // combined lookup and all three narrower verbs with their one-line jobs, and the grep-fallback reporting instruction. Both render
     // from the single `discipline_body` authority, so the skill and the handbook chapter ship the
     // guidance identically.
     for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains("rigger graph --lookup"),
+            "{label} shipped by `rigger docs` must name the combined lookup `rigger graph --lookup`"
+        );
         assert!(
             out.contains("rigger graph --around"),
             "{label} shipped by `rigger docs` must name the STRUCTURE verb `rigger graph --around`"
@@ -25966,9 +25971,10 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
 #[test]
 fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_not() {
     let reinstalled = "installed the graph-first lookup hook into the existing settings.json - \
-                       a Grep tool call or `grep` command over src/, tests/, or workflows/ now \
-                       bounces toward rigger_ground/rigger_graph (end a `grep` command with a \
-                       `# --literal` comment to proceed anyway)";
+                       a Grep tool call, or a `grep` command or `sed` or `awk` pattern search, \
+                       over src/, tests/, or workflows/ now bounces toward the combined lookup, \
+                       rigger_graph `lookup` (end the command with a `# --literal` comment to \
+                       proceed anyway)";
     let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
     // (whether the workflow keeps `defaults.grep_guard`, the one lookup-hook line setup reports)
     for (declared, report) in [(true, reinstalled), (false, removal)] {
@@ -26458,12 +26464,13 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
-/// The reason `rigger grep-guard` denies a grep with: the graph call that answers a name lookup,
-/// then the guard's rule and its escape hatch.
-const GREP_GUARD_DENIAL: &str = "A name lookup is a graph call: who calls <name> is rigger_graph \
-     `around` <name>, and where <name> is defined is rigger_graph `show` <name>. A grep, or a sed \
-     or awk pattern search, is for literal text - end the command with a `# --literal` comment to \
-     proceed";
+/// The reason `rigger grep-guard` denies a grep with: the combined lookup and the graph calls that
+/// answer a name lookup, then the guard's rule and its escape hatch.
+const GREP_GUARD_DENIAL: &str = "A name lookup is a graph call: rigger_graph `lookup` <term>... \
+     answers a name, path or word from the graph, your working tree and the project's prose in one \
+     call; who calls <name> is rigger_graph `around` <name>, and where <name> is defined is \
+     rigger_graph `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end \
+     the command with a `# --literal` comment to proceed";
 
 /// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
 /// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.

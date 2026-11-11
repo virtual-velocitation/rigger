@@ -73,6 +73,15 @@ tree-sitter-python = { version = "0.23", optional = true }
 ignore = "0.4"
 # The symbols index persist's advisory lock (`flock` under the hood).
 fs2 = "0.4"
+# The combined lookup (`lookup`): fst's Levenshtein automaton resolves a term against the graph's
+# entity names, the ripgrep libraries scan the caller's working tree live, and tantivy ranks the
+# prose in an in-memory index (its RAM directory only, so its default mmap/compression features
+# stay off).
+fst = { version = "0.4", features = ["levenshtein"] }
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+tantivy = { version = "0.24", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

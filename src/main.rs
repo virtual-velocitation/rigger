@@ -205,6 +205,7 @@ new run, or `rigger run` reaching done does. Refuses,\n                         
 recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
+rigger graph --lookup <term>... answer each term from the graph, your tree and its prose\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
 (the text half of lookup; resolves a full id, a bare name or a path)\n  \

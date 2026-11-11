@@ -3431,6 +3431,27 @@ impl Projection for Projector {
     fn locate(&self, entity: &str) -> Result<Located, Error> {
         Projector::locate(self, entity)
     }
+
+    /// Overrides the trait default with this project's nodes of `kind`, read as [`whole`]
+    /// reads its nodes and ordered by id.
+    ///
+    /// [`whole`]: Projector::whole
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, attrs FROM nodes
+                 WHERE project = ?1 AND kind = ?2
+                 ORDER BY id",
+            )
+            .map_err(be)?;
+        let nodes = stmt
+            .query_map(params![self.project, kind], row_to_node)
+            .map_err(be)?
+            .collect::<Result<_, _>>()
+            .map_err(be);
+        nodes
+    }
 }
 
 fn row_to_node(r: &rusqlite::Row) -> rusqlite::Result<Node> {
@@ -12293,6 +12314,34 @@ mod tests {
              got {:?}",
             clean.attrs
         );
+    }
+
+    /// `nodes_of_kind` lists exactly the nodes of the kind it is asked for, ordered by id and
+    /// scoped to the projector's own project: code entities, the decision a fold projects and
+    /// none for a kind nothing folded.
+    #[test]
+    fn nodes_of_kind_lists_one_kind_ordered_by_id_within_the_project() {
+        let backend = tempfile::tempdir().unwrap();
+        let db = backend.path().join("graph.db");
+        let p = Projector::open(db.to_str().unwrap(), "alpha").unwrap();
+        let other = Projector::open(db.to_str().unwrap(), "beta").unwrap();
+        apply_code_entity(&p, 1, "b.rs", "beta_fn", "function", 1, "rust");
+        apply_code_entity(&p, 2, "a.rs", "alpha_fn", "function", 2, "rust");
+        apply_decision_by(&p, 3, "d1", "keep the walk scoped", &[], "planner");
+        apply_code_entity(&other, 1, "c.rs", "other_fn", "function", 1, "rust");
+        let cases: [(&str, &[&str]); 3] = [
+            (KIND_CODE_ENTITY, &["a.rs::alpha_fn", "b.rs::beta_fn"]),
+            (KIND_DECISION, &["d1"]),
+            (KIND_LESSON, &[]),
+        ];
+        for (kind, ids) in cases {
+            let listed: Vec<String> = Projection::nodes_of_kind(&p, kind)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            assert_eq!(listed, ids, "{kind}");
+        }
     }
 
     /// spec 58 criterion 1: `locate` is the show surface's single resolution authority. Over the

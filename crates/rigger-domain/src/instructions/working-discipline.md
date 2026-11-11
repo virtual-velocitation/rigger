@@ -127,8 +127,10 @@ helpers rigger scaffolds into `.claude/agents/`:
   resort, used only when the graph returned nothing, and always reported.
   Give each instance one node and one question; merge the answers yourself and never redo
   them. A `GAP:` line in an answer is a knowledge-graph gap: record it with `rigger_emit` as a
-  DecisionMade so it surfaces for a spec. Look things up in the knowledge graph, not by
-  grepping the project's sources. If the graph cannot answer and you fall back to grep over the
+  DecisionMade so it surfaces for a spec. Look things up with the combined lookup
+  (`rigger_graph` `lookup`, or `rigger graph --lookup <term>...`), which answers from the
+  knowledge graph, your working tree and the project's prose in one call, not by grepping the
+  project's sources. If the graph cannot answer and you fall back to grep over the
   project's sources, record it with a progress line `grep-fallback: <what the graph did not
   answer>` through the progress verb your task or your tool list names - one line before moving
   on - so the gap is visible in the log; filtering your own build or gate output is not a

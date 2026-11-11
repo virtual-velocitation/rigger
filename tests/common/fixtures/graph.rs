@@ -146,8 +146,8 @@ macro_rules! projection_folds_no_entry {
     };
 }
 
-/// The read half of a `Projection` double no test reads: asking it for a subgraph or a mention
-/// fails the test. Expanded inside that double's `impl Projection` block.
+/// The read half of a `Projection` double no test reads: asking it for a subgraph, a mention or
+/// a kind's nodes fails the test. Expanded inside that double's `impl Projection` block.
 #[macro_export]
 macro_rules! projection_is_never_read {
     () => {
@@ -161,11 +161,17 @@ macro_rules! projection_is_never_read {
         fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
             panic!("this double is never read")
         }
+        fn nodes_of_kind(
+            &self,
+            _kind: &str,
+        ) -> Result<Vec<rigger::contextgraph::Node>, rigger::contextgraph::Error> {
+            panic!("this double is never read")
+        }
     };
 }
 
-/// What a `Projection` double answers with nothing - an empty subgraph, an unresolved mention and
-/// no rebuild owed - with the ledger half of a double that folds no entry
+/// What a `Projection` double answers with nothing - an empty subgraph, an unresolved mention, no
+/// node of any kind and no rebuild owed - with the ledger half of a double that folds no entry
 /// (`projection_folds_no_entry`), expanded inside that double's `impl Projection` block.
 #[macro_export]
 macro_rules! projection_reads_nothing {
@@ -179,6 +185,12 @@ macro_rules! projection_reads_nothing {
         }
         fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
             Ok(None)
+        }
+        fn nodes_of_kind(
+            &self,
+            _kind: &str,
+        ) -> Result<Vec<rigger::contextgraph::Node>, rigger::contextgraph::Error> {
+            Ok(Vec::new())
         }
         fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
             Ok(false)

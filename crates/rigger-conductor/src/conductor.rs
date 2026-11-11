@@ -14852,7 +14852,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
 
 /// The note the TRIMMED implement slice renders IN PLACE OF the capped decisions/lessons/findings
 /// sections (spec 36): the implement prompt stops PUSHING the large, ~85%-truncated reference blob
-/// and says the history is retrievable, not inlined. The three verbs that retrieve it are named by
+/// and says the history is retrievable, not inlined. The verbs that retrieve it are named by
 /// the shared [`write_lookup_pointer`] appended right after (spec 58), so this note and the pointer
 /// stay one story - `rigger peers` is the memory verb that returns the newest omitted decisions /
 /// lessons / findings scoped to the files, and `rigger graph --show` reads any one by id. A fixed
@@ -14868,8 +14868,10 @@ fn write_peers_pointer(b: &mut String) {
     write_lookup_pointer(b);
 }
 
-/// The three-verb LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph
-/// naming the knowledge graph's three verbs with their one-line jobs. `rigger graph --around`
+/// The LOOKUP pointer EVERY grounding slice carries (spec 58): one framing paragraph naming the
+/// knowledge graph's four verbs with their one-line jobs. `rigger graph --lookup` answers each
+/// term at once from the graph, a live scan of the spawn's own working tree and the project's
+/// ranked prose, and leads as the one call most lookups need; `rigger graph --around`
 /// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
 /// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
 /// prior decisions, findings, and lessons about the files). It names the tools and one worked
@@ -14882,8 +14884,10 @@ fn write_peers_pointer(b: &mut String) {
 /// gate rejects U+2014), and it names only first-party tools.
 fn write_lookup_pointer(b: &mut String) {
     b.push_str(
-        "\nThe knowledge graph answers lookups through three verbs: `rigger graph --around \
-         <file|entity>` (structure: callers, callees, neighbors), `rigger graph --show <entity>` \
+        "\nThe knowledge graph answers lookups through four verbs: `rigger graph --lookup \
+         <term>...` (each term at once from the graph, a live scan of your working tree and the \
+         project's ranked prose), `rigger graph --around <file|entity>` (structure: callers, \
+         callees, neighbors), `rigger graph --show <entity>` \
          (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
          lessons). Who calls <name>: `rigger graph --around <name>`. Where is <name> defined: \
          `rigger graph --show <name>`.\n",
@@ -16002,6 +16006,12 @@ mod tests {
             }
             fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
                 Ok(None)
+            }
+            fn nodes_of_kind(
+                &self,
+                _kind: &str,
+            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
+                Ok(Vec::new())
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
@@ -21851,19 +21861,20 @@ mod tests {
     }
 
     /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, over spec 58's pointer: the grounding
-    /// pointer renders exactly one framing paragraph naming the THREE lookup verbs with their
-    /// one-line jobs - `rigger graph --around` (structure), `rigger graph --show` (text),
-    /// `rigger peers` (memory) - and EVERY spawn's grounding carries it once: the trimmed
+    /// pointer renders exactly one framing paragraph naming the FOUR lookup verbs with their
+    /// one-line jobs - `rigger graph --lookup` (graph, tree and prose at once), `rigger graph
+    /// --around` (structure), `rigger graph --show` (text), `rigger peers` (memory) - and EVERY
+    /// spawn's grounding carries it once: the trimmed
     /// IMPLEMENT slice AND the full REVIEW slice alike. Neither slice says how to use grep or
     /// asks for a `grep-fallback:` record: that method is the `working-discipline` built-in's.
     #[test]
-    fn the_lookup_pointer_names_only_the_three_verbs_on_every_slice() {
+    fn the_lookup_pointer_names_only_the_four_verbs_on_every_slice() {
         let mut pointer = String::new();
         write_lookup_pointer(&mut pointer);
         assert_eq!(
             pointer,
             format!("\n{}\n", crate::test_support::LOOKUP_POINTER),
-            "the pointer is one paragraph naming the three verbs and their jobs"
+            "the pointer is one paragraph naming the four verbs and their jobs"
         );
 
         let dir = tempfile::tempdir().unwrap();
@@ -23646,6 +23657,12 @@ mod tests {
             }
             fn resolve(&self, mention: &str) -> Result<Option<String>, contextgraph::Error> {
                 self.inner.resolve(mention)
+            }
+            fn nodes_of_kind(
+                &self,
+                kind: &str,
+            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
+                self.inner.nodes_of_kind(kind)
             }
         }
 

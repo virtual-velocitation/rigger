@@ -56,9 +56,12 @@ pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 pub const FAN_OUT_HEADING: &str = "## Fan out the mechanical work";
 
 /// The two lookup-method sentences the fan-out section's `lookup` bullet ends with, in its order:
-/// the graph before grep, then the `grep-fallback:` record a grep over the project's sources owes.
+/// the combined lookup before grep, then the `grep-fallback:` record a grep over the project's
+/// sources owes.
 pub const LOOKUP_METHOD: [&str; 2] = [
-    "Look things up in the knowledge graph, not by grepping the project's sources.",
+    "Look things up with the combined lookup (`rigger_graph` `lookup`, or `rigger graph --lookup \
+     <term>...`), which answers from the knowledge graph, your working tree and the project's \
+     prose in one call, not by grepping the project's sources.",
     "If the graph cannot answer and you fall back to grep over the project's sources, record it \
      with a progress line `grep-fallback: <what the graph did not answer>` through the progress \
      verb your task or your tool list names - one line before moving on - so the gap is visible \

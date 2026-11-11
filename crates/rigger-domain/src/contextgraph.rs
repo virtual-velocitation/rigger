@@ -1024,6 +1024,11 @@ pub trait Projection: Send + Sync {
     fn locate(&self, _entity: &str) -> Result<Located, Error> {
         Ok(Located::None)
     }
+
+    /// Every node of `kind` this projection holds, ordered by id: the names the combined lookup
+    /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
+    /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.
+    fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error>;
 }
 
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
@@ -1910,6 +1915,9 @@ mod around_neighborhood {
             Ok(false)
         }
         crate::projection_folds_no_entry!();
+        fn nodes_of_kind(&self, _kind: &str) -> Result<Vec<Node>, Error> {
+            Ok(Vec::new())
+        }
         fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
             Ok(Graph {
                 nodes: vec![

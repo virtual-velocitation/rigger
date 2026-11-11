@@ -177,7 +177,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "The knowledge graph is the lookup surface - reach for it before grepping the project's \
-         sources. Three verbs answer the three questions you have about the code: `rigger graph \
+         sources. One call answers most lookups: `rigger graph --lookup <term>...` (the \
+         `rigger_graph` tool's `lookup`) answers each term at once from the graph (definition \
+         site, callers, callees), a live scan of your working tree and the project's ranked prose \
+         (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
+         source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
          `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
@@ -1772,7 +1776,8 @@ mod tests {
     }
 
     /// Spec 58, criterion 3 (the habit half): the shared discipline body carries the same
-    /// three-verb lookup guidance the grounding pointer does - `rigger graph --around` (structure),
+    /// lookup guidance the grounding pointer does - `rigger graph --lookup` (graph, tree and prose
+    /// at once) first, then `rigger graph --around` (structure),
     /// `rigger graph --show` (text), `rigger peers` (memory) - states the rule plainly (the graph
     /// is the lookup surface; grep on the project's sources is a fallback worth reporting, not a
     /// habit), and names the fallback-reporting instruction (`grep-fallback:` via `rigger
@@ -1785,6 +1790,10 @@ mod tests {
             ("skill", render_using_rigger_skill(&ctx)),
             ("handbook", render_handbook_discipline(&ctx)),
         ] {
+            assert!(
+                out.contains("rigger graph --lookup"),
+                "{label} must name the combined lookup `rigger graph --lookup`"
+            );
             assert!(
                 out.contains("rigger graph --around"),
                 "{label} must name the STRUCTURE verb `rigger graph --around`"

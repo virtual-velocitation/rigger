@@ -40,6 +40,9 @@ pub mod ingest;
 /// same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
+/// The combined lookup interface: the `Lookup` trait one call answers graph, text and prose through.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod lookup;
 pub mod metrics;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;

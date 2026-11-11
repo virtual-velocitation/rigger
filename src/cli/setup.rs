@@ -671,6 +671,12 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
         .collect())
 }
 
+/// What setup's report of an installed lookup hook says the hook does: the searches it bounces
+/// and the combined lookup it bounces them toward, then its escape hatch.
+const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
+     pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
+     rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
 /// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
@@ -824,16 +830,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     match lookup_hook {
-        InstallOutcome::Installed => println!(
-            "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
-             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (end \
-             a `grep` command with a `# --literal` comment to proceed anyway)"
-        ),
+        InstallOutcome::Installed => {
+            println!("installed the graph-first lookup hook - {LOOKUP_HOOK_BOUNCES}")
+        }
         InstallOutcome::Refreshed if grep_guard => println!(
-            "installed the graph-first lookup hook into the existing settings.json - a Grep \
-             tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
-             rigger_ground/rigger_graph (end a `grep` command with a `# --literal` comment to \
-             proceed anyway)"
+            "installed the graph-first lookup hook into the existing settings.json - \
+             {LOOKUP_HOOK_BOUNCES}"
         ),
         InstallOutcome::Refreshed => {
             println!("removed the graph-first lookup hook: `defaults.grep_guard` is not declared")
