@@ -280,11 +280,10 @@ impl Drop for GateSocket {
 /// longer than the OS allows a socket is `InvalidInput`.
 #[cfg(unix)]
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
-    use std::io::{BufRead, Write};
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         check_private(dir)?;
     }
-    let mut stream = match std::os::unix::net::UnixStream::connect(path) {
+    let stream = match std::os::unix::net::UnixStream::connect(path) {
         Ok(stream) => stream,
         Err(e)
             if matches!(
@@ -296,6 +295,16 @@ pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> 
         }
         Err(e) => return Err(naming_overflow(path, e)),
     };
+    exchange(stream, request)
+}
+
+/// Send `request` over `stream`, connected to a driver's socket, and read the driver's reply.
+#[cfg(unix)]
+fn exchange(
+    mut stream: std::os::unix::net::UnixStream,
+    request: &GateRequest,
+) -> io::Result<Option<GateReply>> {
+    use std::io::{BufRead, Write};
     stream.write_all(rigger_domain::gate_channel::to_line(request).as_bytes())?;
     let mut line = String::new();
     io::BufReader::new(stream).read_line(&mut line)?;
@@ -408,6 +417,48 @@ mod tests {
             .expect("a live socket is not taken");
         assert_eq!(again.kind(), std::io::ErrorKind::AddrInUse);
         drop(live);
+    }
+
+    /// A REQUEST NO DRIVER READ IS NO ANSWER: GIVEN a connection closed before any driver read the
+    /// request on it - the listener closed with the connection still queued (a driver shutting
+    /// down, or a listener a process forked at that moment held a little longer), so the request
+    /// meets a broken pipe, or a driver that took the connection and closed it with the request
+    /// unread, so the reply meets a reset - THEN asking answers `None`, as when nothing listens.
+    #[test]
+    fn a_request_no_driver_read_answers_none() {
+        use std::io::Read;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        type Close = fn(&Path, UnixListener) -> io::Result<Option<GateReply>>;
+        let rows: [(&str, Close); 2] = [
+            ("closed with the connection queued", |path, listener| {
+                let queued = UnixStream::connect(path).unwrap();
+                drop(listener);
+                exchange(queued, &request())
+            }),
+            (
+                "taken and closed with the request unread",
+                |path, listener| {
+                    std::thread::scope(|s| {
+                        let asking = s.spawn(|| ask(path, &request()));
+                        // One byte waits for the request to arrive and leaves the rest of it unread.
+                        let (mut taken, _) = listener.accept().unwrap();
+                        taken.read_exact(&mut [0]).unwrap();
+                        drop(taken);
+                        asking.join().unwrap()
+                    })
+                },
+            ),
+        ];
+        for (why, close) in rows {
+            let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+            private_dir(path.parent().unwrap()).unwrap();
+            let listener = UnixListener::bind(&path).unwrap();
+            match close(&path, listener) {
+                Ok(answer) => assert_eq!(answer, None, "{why}"),
+                Err(e) => panic!("{why}: asking answered {:?}: {e}", e.kind()),
+            }
+        }
     }
 
     /// ONE SOCKET PER REPO, NEVER OUT OF PATH: GIVEN two repo paths under one runtime directory,
