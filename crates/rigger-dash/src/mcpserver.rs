@@ -713,16 +713,10 @@ pub const RIGGER_GRAPH_TESTS: &str =
 pub fn tests_filter(arg: Option<&Value>) -> Result<ViewFilter, String> {
     let tests = match arg {
         None => Tests::Exclude,
-        Some(v) => match v.as_str() {
-            Some("exclude") => Tests::Exclude,
-            Some("include") => Tests::Include,
-            Some("only") => Tests::Only,
-            _ => {
-                return Err(format!(
-                    "rigger_graph: `tests` is one of exclude, include or only, not {v}"
-                ))
-            }
-        },
+        Some(v) => {
+            let spelled = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+            spelled.parse().map_err(|e| format!("rigger_graph: {e}"))?
+        }
     };
     Ok(ViewFilter { tests })
 }
@@ -2377,6 +2371,76 @@ mod tests {
     /// ([`shown_graph_answer`]).
     fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
         shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
+    }
+
+    /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens
+    /// under, or the refusal that names the three spellings.
+    #[test]
+    fn mcp_graph_tool_accepts_tests() {
+        use crate::contextgraph::sqlite::Projector;
+        use rigger_domain::code_view::ViewFilter;
+        use std::sync::Mutex;
+
+        struct Spy<'a> {
+            inner: crate::test_support::RecordsOnly<'a>,
+            seen: Mutex<Vec<Tests>>,
+        }
+        impl crate::contextgraph::OpenGraph for Spy<'_> {
+            fn open(
+                &self,
+                filter: ViewFilter,
+            ) -> Result<Box<dyn crate::contextgraph::ContextGraph + '_>, crate::contextgraph::Error>
+            {
+                self.seen.lock().unwrap().push(filter.tests);
+                self.inner.open(filter)
+            }
+        }
+
+        let schema = graph_tool();
+        assert_eq!(
+            schema["inputSchema"]["properties"]["tests"]["enum"],
+            json!(["exclude", "include", "only"])
+        );
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let grounder = crate::grounder::Nop;
+        let cases = [
+            (None, Ok(Tests::Exclude)),
+            (Some(json!("exclude")), Ok(Tests::Exclude)),
+            (Some(json!("include")), Ok(Tests::Include)),
+            (Some(json!("only")), Ok(Tests::Only)),
+            (
+                Some(json!("some")),
+                Err("rigger_graph: `tests` is one of exclude, include or only, not \"some\""),
+            ),
+            (
+                Some(json!(3)),
+                Err("rigger_graph: `tests` is one of exclude, include or only, not \"3\""),
+            ),
+        ];
+        for (tests, expected) in cases {
+            let context = Spy {
+                inner: crate::test_support::RecordsOnly(&graph),
+                seen: Mutex::new(Vec::new()),
+            };
+            let server = Server::new(&store, "run")
+                .with_graph(&graph)
+                .with_context(&context)
+                .with_grounder(Ok(&grounder));
+            let mut args = json!({"show": "nope"});
+            if let Some(tests) = &tests {
+                args["tests"] = tests.clone();
+            }
+            let reply = call(&server, &tools_call("rigger_graph", args));
+            let seen = context.seen.lock().unwrap().clone();
+            match expected {
+                Ok(want) => assert_eq!(seen, [want], "{tests:?}: {reply}"),
+                Err(message) => {
+                    assert!(seen.is_empty(), "{tests:?} must be refused before a read");
+                    assert_eq!(reply["error"]["message"], message, "{tests:?}");
+                }
+            }
+        }
     }
 
     /// The MCP `show` of an id the graph no longer holds falls back to the run store's log, as the

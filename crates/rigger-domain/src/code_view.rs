@@ -154,6 +154,23 @@ pub enum Tests {
     Only,
 }
 
+/// The one parser of the `tests` setting every reader takes (the dash's `tests=`, the MCP tools'
+/// `tests`, the CLI's `--tests`): `exclude`, `include` or `only`.
+impl std::str::FromStr for Tests {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "exclude" => Ok(Tests::Exclude),
+            "include" => Ok(Tests::Include),
+            "only" => Ok(Tests::Only),
+            other => Err(format!(
+                "`tests` is one of exclude, include or only, not {other:?}"
+            )),
+        }
+    }
+}
+
 /// What a reader asks of a view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewFilter {
@@ -424,6 +441,27 @@ mod tests {
         ];
         for (name, filter, expected) in cases {
             assert_eq!(filter.tests, expected, "{name}");
+        }
+    }
+
+    /// Each row: a `tests` setting as a reader spells it and what it parses to.
+    #[test]
+    fn tests_setting_parses_one_way_for_every_reader() {
+        let cases = [
+            ("exclude", Ok(Tests::Exclude)),
+            ("include", Ok(Tests::Include)),
+            ("only", Ok(Tests::Only)),
+            (
+                "Include",
+                Err("`tests` is one of exclude, include or only, not \"Include\"".to_string()),
+            ),
+            (
+                "",
+                Err("`tests` is one of exclude, include or only, not \"\"".to_string()),
+            ),
+        ];
+        for (spelled, expected) in cases {
+            assert_eq!(spelled.parse::<Tests>(), expected, "{spelled:?}");
         }
     }
 }
