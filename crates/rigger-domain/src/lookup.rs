@@ -2,7 +2,7 @@
 //! text scan of the caller's working tree and ranked prose together. The engine lives in
 //! `rigger-grounder`; the MCP server and the CLI hold it behind this trait.
 
-use crate::contextgraph::Projection;
+use crate::contextgraph::ContextGraph;
 
 /// The combined lookup over one working tree, the caller's own.
 pub trait Lookup: Send + Sync {
@@ -14,6 +14,6 @@ pub trait Lookup: Send + Sync {
     fn lookup(
         &self,
         terms: &[String],
-        graph: Result<&dyn Projection, String>,
+        graph: Result<&dyn ContextGraph, String>,
     ) -> Result<String, String>;
 }

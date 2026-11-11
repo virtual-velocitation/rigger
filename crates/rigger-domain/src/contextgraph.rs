@@ -1,6 +1,6 @@
 //! The context graph's domain model and its port: the node, edge and relation vocabulary, the
 //! graph and call-graph values, the event types and payloads the offline passes record, and the
-//! `Projection` trait, plus the pure query engine over a projected [`Graph`] (`query`). The
+//! `RecordFold`, `ContextGraph` and `Neighbors` traits, plus the pure query engine over a projected [`Graph`] (`query`). The
 //! sqlite projector lives in `rigger-graph-sqlite`.
 
 use std::collections::BTreeMap;
@@ -128,6 +128,15 @@ pub const NON_TARGET_KINDS: [&str; 3] =
 pub fn is_call_target(kind: Option<&str>) -> bool {
     kind.is_none_or(|k| !NON_TARGET_KINDS.contains(&k))
 }
+
+/// Whether a node of `kind` holds a grouping attachment of relation `rel`: a community's
+/// `IN_COMMUNITY` edge only from a `file` or a `code-entity`, a concept's `REALIZES` from any
+/// member. The fold detaches and revives by it, and the composed view joins the tree's groupings
+/// by it.
+pub fn holds_attachment(kind: &str, rel: &str) -> bool {
+    rel != REL_IN_COMMUNITY || [KIND_FILE, KIND_CODE_ENTITY].contains(&kind)
+}
+
 /// A source file container node (spec 29a): the `<rel-path>` node that holds a file's top-level
 /// extracted definitions through `CONTAINS`, each nested one hanging off its parent instead
 /// (spec 119, CONTAINS IS STRUCTURE). Folded alongside the entities, so a query can reach a
@@ -359,9 +368,9 @@ impl Graph {
 
 /// The direction of a directed `CALLS` traversal (spec 52). `Down` follows CALLEES - the
 /// EXECUTION PATH, "what does this call, transitively"; `Up` follows CALLERS - the CALL SITES,
-/// "who calls this". A [`Projection::calls`] walk is depth-bounded and layered in exactly one
+/// "who calls this". A [`ContextGraph::calls`] walk is depth-bounded and layered in exactly one
 /// direction, over the caller-attributed `CALLS` edges (spec 37) the undirected
-/// [`subgraph`](Projection::subgraph) can only reach neighbor-wise.
+/// [`subgraph`](ContextGraph::subgraph) can only reach neighbor-wise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     /// Callees: the transitive execution path out of the seed.
@@ -414,7 +423,7 @@ pub struct CallGraph {
 
 /// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup). A
 /// PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
-/// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
+/// [`ContextGraph::locate`] returns the same kind of type every sibling `ContextGraph` method does,
 /// never a concrete adapter's own type):
 /// `rigger_graph_sqlite::contextgraph::sqlite::Projector::locate` resolves the query for the show
 /// surfaces (`rigger graph --show` and `rigger_graph`'s `show`) - a full `<file>::<path>` node id,
@@ -739,12 +748,12 @@ pub enum Fold {
     /// 124). A projection that records positions it passed over may also answer here an
     /// event of its own recorded passed over, before or by this fold, with that position's cause:
     /// that event is not in the graph, and which of its batch's other events are committed when
-    /// it answers is the projection's transaction cadence ([`Projection::apply_batch`]).
+    /// it answers is the projection's transaction cadence ([`RecordFold::apply_batch`]).
     NotFolded(String),
 }
 
 /// What became of folding one ledger entry of perception (a `GenerationIngested` event) with its
-/// batch ([`Projection::apply_generation`]): the one answer naming which of the fold's three
+/// batch ([`RecordFold::apply_generation`]): the one answer naming which of the fold's three
 /// outcomes happened, so no caller infers it from an earlier read.
 #[must_use = "the outcome says whether the entry's batch was asked for"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -757,22 +766,22 @@ pub enum EntryFold {
     ReRecording,
     /// The entry's position was recorded and its batch was asked for, once. A resolved batch
     /// folded at the entry's position and installed its generation; an unresolved one, answered
-    /// so rather than passed over ([`Projection::apply_generation`]), folded nothing and left the
+    /// so rather than passed over ([`RecordFold::apply_generation`]), folded nothing and left the
     /// identity's facts and current generation as they stood.
     BatchAsked,
 }
 
-/// The function [`Projection::apply_generation`] asks for an entry's batch, at most once: the
+/// The function [`RecordFold::apply_generation`] asks for an entry's batch, at most once: the
 /// batch's events, `None` when no source resolves the entry, or an error, which fails the fold.
 /// It runs inside the fold's transaction, while the projection is held for that write, or just
-/// before that transaction opens, as [`Projection::apply_generation`] says: it must not read or
+/// before that transaction opens, as [`RecordFold::apply_generation`] says: it must not read or
 /// fold the projection it is handed to, and must do no slow work there.
 pub type EntryBatch<'a> = Box<dyn FnOnce() -> Result<Option<Vec<Event>>, Error> + 'a>;
 
-/// The permission to fold into a [`Projection`] through [`Projection::apply`] and
-/// [`Projection::apply_batch`]: its field is private to this module, so only [`Fold::of`] and
+/// The permission to fold into a [`RecordFold`] through [`RecordFold::apply`] and
+/// [`RecordFold::apply_batch`]: its field is private to this module, so only [`Fold::of`] and
 /// [`Fold::of_batch`] can hand one over, and every fold through them is therefore one whose
-/// outcome is reported. [`Projection::apply_generation`] takes none: its outcome is reported by
+/// outcome is reported. [`RecordFold::apply_generation`] takes none: its outcome is reported by
 /// convention of its one production caller, the ledger form of the folding store, which answers
 /// the [`Fold`] and the [`EntryFold`] of every entry it appends.
 #[derive(Debug, Clone, Copy)]
@@ -780,20 +789,20 @@ pub struct FoldAccess(());
 
 impl Fold {
     /// Fold `event` into `graph`, or say why it was not folded.
-    pub fn of<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+    pub fn of<'g, G: std::ops::Deref<Target = dyn RecordFold + 'g>>(
         graph: Result<G, Error>,
         event: &Event,
     ) -> Self {
         Self::settle(graph.and_then(|g| g.apply(event, FoldAccess(()))))
     }
 
-    /// Fold `events` into the graph `graph` yields through [`Projection::apply_batch`], or say why
+    /// Fold `events` into the graph `graph` yields through [`RecordFold::apply_batch`], or say why
     /// they were not folded - the graph could not be had, or refused them, or one of them is a
     /// position the graph recorded passed over, whose cause is answered: which of the batch's
     /// other events the graph has committed when it answers is its transaction cadence, as
-    /// [`Projection::apply_batch`] says. No events is nothing to fold, so it is folded without
+    /// [`RecordFold::apply_batch`] says. No events is nothing to fold, so it is folded without
     /// opening the graph.
-    pub fn of_batch<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+    pub fn of_batch<'g, G: std::ops::Deref<Target = dyn RecordFold + 'g>>(
         graph: impl FnOnce() -> Result<G, Error>,
         events: &[Event],
     ) -> Self {
@@ -804,7 +813,7 @@ impl Fold {
     }
 
     /// The outcome of a fold that answered `folded`: folded, or not folded for the error's reason.
-    /// The ledger form of the folding store settles [`Projection::apply_generation`]'s answer
+    /// The ledger form of the folding store settles [`RecordFold::apply_generation`]'s answer
     /// through it, as [`Fold::of`] and [`Fold::of_batch`] settle theirs.
     pub fn settle(folded: Result<(), Error>) -> Self {
         match folded {
@@ -816,7 +825,7 @@ impl Fold {
 
 /// The graph a surface was wired with, as a fold takes it: a surface wired with none folds
 /// nothing and says so.
-pub fn wired(graph: Option<&dyn Projection>) -> Result<&dyn Projection, Error> {
+pub fn wired(graph: Option<&dyn RecordFold>) -> Result<&dyn RecordFold, Error> {
     graph.ok_or_else(|| Error("no context graph is wired".to_string()))
 }
 
@@ -850,7 +859,7 @@ macro_rules! owed_older_rule {
     };
 }
 
-/// Why a graph owes its rebuild ([`Projection::rebuild_owed`]): it records an older fold rule.
+/// Why a graph owes its rebuild ([`RecordFold::rebuild_owed`]): it records an older fold rule.
 pub const OWED_OLDER_RULE: &str = owed_older_rule!();
 
 /// The one spelling of [`OWED_LOST_FOLD`], a literal so [`REBUILD_OWED_FOR_LOST_FOLD`] is composed
@@ -879,11 +888,11 @@ macro_rules! rebuild_owed_for {
 /// folds in order, or its record of what it folded runs past the log's end, as when the log is
 /// replaced beneath it, or that record is of another log, as when the event store is switched
 /// beneath it. Never a cause the graph records: the graph owes no rebuild for it
-/// ([`Projection::rebuild_owed`]), and the one fold refused for it is one meeting a record of
+/// ([`RecordFold::rebuild_owed`]), and the one fold refused for it is one meeting a record of
 /// another log ([`REBUILD_OWED_FOR_LOST_FOLD`]).
 pub const OWED_LOST_FOLD: &str = owed_lost_fold!();
 
-/// What a projection that owes its rebuild ([`Projection::rebuild_owed`]) answers in place of a
+/// What a projection that owes its rebuild ([`RecordFold::rebuild_owed`]) answers in place of a
 /// fold, and what every command that depends on the fold says when it refuses: the one spelling of
 /// the refusal, naming the one cause the graph records a rebuild owed for, the older fold rule
 /// ([`OWED_OLDER_RULE`]), and the one command that pays it.
@@ -901,15 +910,16 @@ pub fn rebuild_owed_refusal(command: &str) -> String {
     format!("{command}: {REBUILD_OWED}")
 }
 
-/// Projection is the context-graph read model. `apply` folds one event; `subgraph`
-/// and `resolve` query it, returning only currently valid edges.
-pub trait Projection: Send + Sync {
+/// The record fold: folds the event log's records into the record graph (graph.db). The code
+/// generation methods are transitional: the code store's stamp and advance replace them, and the
+/// fold that answers them is deleted with them.
+pub trait RecordFold: Send + Sync {
     /// Fold a single event into the graph, idempotently per global position. Reached only through
     /// [`Fold::of`], which holds the [`FoldAccess`] it takes.
     fn apply(&self, e: &Event, access: FoldAccess) -> Result<(), Error>;
 
     /// Fold a whole batch of events into the graph, idempotently per global position - the
-    /// batched analogue of [`apply`](Projection::apply). The graph it leaves is exactly what
+    /// batched analogue of [`apply`](RecordFold::apply). The graph it leaves is exactly what
     /// applying each event in order would produce; the only difference is transaction CADENCE,
     /// which the implementation chooses. One exception to the answer: an implementation that
     /// records positions passed over may meet one of the batch's own positions recorded so, and
@@ -917,7 +927,7 @@ pub trait Projection: Send + Sync {
     /// the batch's other events it has committed when it answers is its transaction cadence, which
     /// the sqlite `Projector`'s own `apply_batch` doc states for each of its paths.
     ///
-    /// The default folds each event through [`apply`](Projection::apply) (one transaction per
+    /// The default folds each event through [`apply`](RecordFold::apply) (one transaction per
     /// event), so an implementation with no cheaper batch path is unaffected and every `apply`
     /// still runs. The sqlite `rigger_graph_sqlite::contextgraph::sqlite::Projector` OVERRIDES it,
     /// at the transaction cadence its own `apply_batch` doc states: folding many events per commit
@@ -946,19 +956,19 @@ pub trait Projection: Send + Sync {
     /// must not read or fold this projection, and must do no slow work there; which of the two the
     /// sqlite `Projector` does on each of its paths its own `apply_generation` doc states. A ledger
     /// entry folds with a batch it is handed only here: an implementor that folds refuses one
-    /// handed to [`apply`](Projection::apply) or [`apply_batch`](Projection::apply_batch), or
+    /// handed to [`apply`](RecordFold::apply) or [`apply_batch`](RecordFold::apply_batch), or
     /// folds it there with the batch its own source derives for it. It takes no [`FoldAccess`].
     fn apply_generation(&self, entry: &Event, batch: EntryBatch<'_>) -> Result<EntryFold, Error>;
 
     /// The generation this projection currently holds for the `<prefix>/<file>` identity
     /// `identity`, or `None` when it holds none. A plain read: it answers on a projection that
-    /// owes its rebuild ([`rebuild_owed`](Projection::rebuild_owed)).
+    /// owes its rebuild ([`rebuild_owed`](RecordFold::rebuild_owed)).
     fn current_generation(&self, identity: &str) -> Result<Option<String>, Error>;
 
     /// Every `<prefix>/<file>` identity this projection holds a generation for, sorted: the
     /// identities whose nodes a whole-project walk retires when the tree no longer holds their
     /// file. A plain read: it answers on a projection that owes its rebuild
-    /// ([`rebuild_owed`](Projection::rebuild_owed)).
+    /// ([`rebuild_owed`](RecordFold::rebuild_owed)).
     fn held_identities(&self) -> Result<Vec<String>, Error>;
 
     /// Whether this projection says, without reading the log, that it owes one rebuild from it
@@ -968,7 +978,11 @@ pub trait Projection: Send + Sync {
     /// misses is found by `rigger setup`, or by the next fold through a folding store, which read
     /// the projection's record of what it folded against the log.
     fn rebuild_owed(&self) -> Result<bool, Error>;
+}
 
+/// The context graph a reader queries: the record graph and the tree's code view read as one
+/// ([`crate::composed::Composed`]). Every answer holds only currently valid edges.
+pub trait ContextGraph: Send + Sync {
     /// The connected subgraph reachable from any seed within depth hops (the FEED arc / an
     /// agent's blast radius), following only currently valid edges and THE MEMBER RULE's two
     /// hops (spec 119): a reached file reaches its members ([`query::member_file`]) and a reached
@@ -976,7 +990,7 @@ pub trait Projection: Send + Sync {
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;
 
     /// A directed, depth-bounded traversal over the caller-attributed `CALLS` edges (spec 52),
-    /// beside the undirected [`subgraph`](Projection::subgraph). `direction` picks callees
+    /// beside the undirected [`subgraph`](ContextGraph::subgraph). `direction` picks callees
     /// ([`Direction::Down`] - the execution path) or callers ([`Direction::Up`] - the call sites);
     /// `depth` clamps the hop distance; `tier_floor` is the LOWEST edge confidence tier the walk
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
@@ -1007,7 +1021,7 @@ pub trait Projection: Send + Sync {
 
     /// Resolve `entity` by name/id in the CURRENT tree (spec 92, criterion 4's fix round): the
     /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
-    /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
+    /// caller holding only `&dyn RecordFold` (`mcpserver::Server`, wired via
     /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
     /// can serve it without reaching for the concrete
     /// `rigger_graph_sqlite::contextgraph::sqlite::Projector` across the crate boundary - the DI
@@ -1025,20 +1039,53 @@ pub trait Projection: Send + Sync {
         Ok(Located::None)
     }
 
-    /// Every node of `kind` this projection holds, ordered by id: the names the combined lookup
+    /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
     /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
     /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error>;
+
+    /// Every node and edge of the graph, nodes in id order.
+    fn whole(&self) -> Result<Graph, Error>;
+
+    /// The honesty label (spec 6.1): the tree the answers describe and how the caller's worktree
+    /// differs from it, with the count of nodes withheld so far for differing.
+    fn stamp_label(&self) -> crate::composed::Label;
+}
+
+/// One half of the context graph as a breadth-first search steps through it: the record graph
+/// (graph.db) or the code half a code view resolves to. Every read answers only live edges. The
+/// one search over both halves ([`crate::composed::Composed`]) is written over this interface.
+pub trait Neighbors: Send + Sync {
+    /// The node `id`, or `None` when this half holds none.
+    fn node(&self, id: &str) -> Result<Option<Node>, Error>;
+    /// The live edges from `id`.
+    fn out(&self, id: &str) -> Result<Vec<Edge>, Error>;
+    /// The live edges into `id`.
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error>;
+    /// The nodes whose [`query::member_file`] is `file` (THE MEMBER RULE).
+    fn members(&self, file: &str) -> Result<Vec<Node>, Error>;
+    /// The nodes a leaf binds: those whose [`query::node_name`] is `leaf`, and those whose id's
+    /// text after its first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error>;
+    /// Every node of `kind`, ordered by id.
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error>;
+    /// The sorted unresolved reference leaves of the `file` node `node` (spec 117); none for any
+    /// other node.
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error>;
+    /// Every recorded alias, as (alias, canonical id).
+    fn aliases(&self) -> Result<Vec<(String, String)>, Error>;
+    /// Every node and live edge of this half.
+    fn whole(&self) -> Result<Graph, Error>;
 }
 
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
-/// undirected [`Projection::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
-/// the same depth ([`Projection::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
+/// undirected [`ContextGraph::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
+/// the same depth ([`ContextGraph::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
 /// once. The subgraph alone never reaches a caller in another file - that caller's `CALLS` edge
 /// lands on a placeholder in its OWN file's namespace - so without the callers walk "who calls
 /// this" had no answer from the neighborhood (gap 104). The callers walk resolves those
 /// placeholders by name and stops at an ambiguous name rather than guessing.
-pub fn around(p: &dyn Projection, seed: &[String], depth: i64) -> Result<Graph, Error> {
+pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph, Error> {
     let mut g = p.subgraph(seed, depth)?;
     let callers = p.calls(seed, Direction::Up, depth, TIER_INFERRED)?;
     let mut node_ids: std::collections::BTreeSet<String> =
@@ -1751,14 +1798,14 @@ mod asserted_fact_tests {
     }
 }
 
-/// spec 92, criterion 4's fix round: [`Projection::locate`]'s DEFAULT (the sqlite `Projector`
+/// spec 92, criterion 4's fix round: [`ContextGraph::locate`]'s DEFAULT (the sqlite `Projector`
 /// is the only implementor that overrides it) - proven against a minimal double that
 /// implements only the trait's REQUIRED methods, so it inherits the default rather than
 /// re-declaring it.
 #[cfg(test)]
 mod locate_default {
-    use super::{Located, Projection};
-    use crate::test_support::MinimalProjection;
+    use super::{ContextGraph, Located};
+    use crate::test_support::MinimalGraph;
 
     /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
     /// erroring or panicking - the same honesty the
@@ -1766,7 +1813,7 @@ mod locate_default {
     /// unmatched query, just for every query on a projection that never indexed definitions at all.
     #[test]
     fn a_projection_with_no_override_reports_none_never_errors() {
-        assert_eq!(MinimalProjection.locate("anything").unwrap(), Located::None);
+        assert_eq!(MinimalGraph.locate("anything").unwrap(), Located::None);
     }
 }
 
@@ -1775,32 +1822,32 @@ mod locate_default {
 mod fold_outcome {
     use super::{
         fold_clause, fold_loss_clause, rebuild_owed_refusal, wired, Error, Fold, FoldAccess,
-        Projection, REBUILD_OWED,
+        RecordFold, REBUILD_OWED,
     };
     use crate::eventstore::Event;
-    use crate::test_support::MinimalProjection;
+    use crate::test_support::MinimalFold;
     use std::sync::Mutex;
 
     /// A projection that refuses every fold with `graph: refused`.
     struct Refusing;
 
-    impl Projection for Refusing {
+    impl RecordFold for Refusing {
         fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), Error> {
             Err(Error("refused".to_string()))
         }
-        crate::projection_reads_nothing!();
+        crate::record_fold_owes_nothing!();
     }
 
     /// A projection recording the position of every event its default batch fold hands `apply`.
     #[derive(Default)]
     struct Recording(Mutex<Vec<u64>>);
 
-    impl Projection for Recording {
+    impl RecordFold for Recording {
         fn apply(&self, e: &Event, _access: FoldAccess) -> Result<(), Error> {
             self.0.lock().unwrap().push(e.position);
             Ok(())
         }
-        crate::projection_reads_nothing!();
+        crate::record_fold_owes_nothing!();
     }
 
     fn at(position: u64) -> Event {
@@ -1821,7 +1868,7 @@ mod fold_outcome {
         assert_eq!(Fold::of_batch(|| wired(None), &[]), Fold::Folded);
         assert_eq!(
             Fold::of_batch(
-                || -> Result<&dyn Projection, Error> { panic!("no events open no graph") },
+                || -> Result<&dyn RecordFold, Error> { panic!("no events open no graph") },
                 &[]
             ),
             Fold::Folded
@@ -1852,14 +1899,14 @@ mod fold_outcome {
 
     #[test]
     fn one_event_folds_or_reports_why_the_graph_could_not_be_had_or_refused() {
-        let folded: Result<&dyn Projection, Error> = Ok(&MinimalProjection);
+        let folded: Result<&dyn RecordFold, Error> = Ok(&MinimalFold);
         assert_eq!(Fold::of(folded, &at(1)), Fold::Folded);
-        let refusing: Result<&dyn Projection, Error> = Ok(&Refusing);
+        let refusing: Result<&dyn RecordFold, Error> = Ok(&Refusing);
         assert_eq!(
             Fold::of(refusing, &at(1)),
             Fold::NotFolded("graph: refused".to_string())
         );
-        let unopened: Result<&dyn Projection, Error> = Err(Error("unopenable".to_string()));
+        let unopened: Result<&dyn RecordFold, Error> = Err(Error("unopenable".to_string()));
         assert_eq!(
             Fold::of(unopened, &at(1)),
             Fold::NotFolded("graph: unopenable".to_string())
@@ -1907,14 +1954,8 @@ mod around_neighborhood {
         requests: Mutex<Vec<(Direction, i64, String)>>,
     }
 
-    impl Projection for CallerProjection {
-        fn apply(&self, _e: &Event, _access: FoldAccess) -> Result<(), Error> {
-            Ok(())
-        }
-        fn rebuild_owed(&self) -> Result<bool, Error> {
-            Ok(false)
-        }
-        crate::projection_folds_no_entry!();
+    impl ContextGraph for CallerProjection {
+        crate::context_graph_holds_no_tree!();
         fn nodes_of_kind(&self, _kind: &str) -> Result<Vec<Node>, Error> {
             Ok(Vec::new())
         }

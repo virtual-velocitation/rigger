@@ -1030,7 +1030,7 @@ pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
 /// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops, a
 /// reached file also reaching its members and a reached member its file one hop on (spec 119,
 /// THE MEMBER RULE, by [`member_file`]), returning the reachable nodes and the TIER-TAGGED edges
-/// among them. This mirrors [`crate::contextgraph::Projection::subgraph`]'s traversal
+/// among them. This mirrors [`crate::contextgraph::ContextGraph::subgraph`]'s traversal
 /// (both-direction, valid-only, the two member hops, node-and-edge-in-set) applied to the graph
 /// the dash already loaded, so the route stays a pure
 /// read over the projected inputs - the panel never re-queries the store. An unknown seed or an

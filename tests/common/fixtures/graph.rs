@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use rigger::contextgraph::query::{card, path_leaf, split_id};
 use rigger::contextgraph::{
-    CallEdge, CallGraph, Direction, Edge, Graph, Node, Projection, CODE_KIND_MODULE, KIND_ARTIFACT,
-    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
-    KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS, REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY,
-    REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, ContextGraph, Direction, Edge, Graph, Node, CODE_KIND_MODULE,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
+    KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS, REL_CONTAINS, REL_GOVERNS,
+    REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -120,10 +120,10 @@ pub fn pair_map(pairs: &[(String, String)]) -> BTreeMap<String, String> {
     pairs.iter().cloned().collect()
 }
 
-/// The ledger half of a `Projection` double that folds no ledger entry: it holds no generation
-/// and refuses the ledger fold. Expanded inside that double's `impl Projection` block.
+/// The ledger half of a `RecordFold` double that folds no ledger entry: it holds no generation
+/// and refuses the ledger fold. Expanded inside that double's `impl RecordFold` block.
 #[macro_export]
-macro_rules! projection_folds_no_entry {
+macro_rules! record_fold_folds_no_entry {
     () => {
         fn current_generation(
             &self,
@@ -146,35 +146,42 @@ macro_rules! projection_folds_no_entry {
     };
 }
 
-/// The read half of a `Projection` double no test reads: asking it for a subgraph, a mention or
-/// a kind's nodes fails the test. Expanded inside that double's `impl Projection` block.
+/// A `RecordFold` double that owes no rebuild, with the ledger half of a double that folds no
+/// entry (`record_fold_folds_no_entry`), expanded inside that double's `impl RecordFold` block.
 #[macro_export]
-macro_rules! projection_is_never_read {
+macro_rules! record_fold_owes_nothing {
     () => {
-        fn subgraph(
-            &self,
-            _seed: &[String],
-            _depth: i64,
-        ) -> Result<rigger::contextgraph::Graph, rigger::contextgraph::Error> {
-            panic!("this double is never read")
+        fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
+            Ok(false)
         }
-        fn resolve(&self, _mention: &str) -> Result<Option<String>, rigger::contextgraph::Error> {
-            panic!("this double is never read")
+        $crate::record_fold_folds_no_entry!();
+    };
+}
+
+/// The whole graph and label of a `ContextGraph` double holding no tree: an empty graph and a
+/// label that describes no tree and withholds nothing. Expanded inside that double's `impl ContextGraph` block.
+#[macro_export]
+macro_rules! context_graph_holds_no_tree {
+    () => {
+        fn whole(&self) -> Result<rigger::contextgraph::Graph, rigger::contextgraph::Error> {
+            Ok(rigger::contextgraph::Graph::default())
         }
-        fn nodes_of_kind(
-            &self,
-            _kind: &str,
-        ) -> Result<Vec<rigger::contextgraph::Node>, rigger::contextgraph::Error> {
-            panic!("this double is never read")
+        fn stamp_label(&self) -> rigger::composed::Label {
+            rigger::composed::Label {
+                describes: "the double".to_string(),
+                worktree: "the double's worktree".to_string(),
+                compared: rigger::composed::Compared::Differ(0),
+                behind: None,
+                withheld: 0,
+            }
         }
     };
 }
 
-/// What a `Projection` double answers with nothing - an empty subgraph, an unresolved mention, no
-/// node of any kind and no rebuild owed - with the ledger half of a double that folds no entry
-/// (`projection_folds_no_entry`), expanded inside that double's `impl Projection` block.
+/// What a `ContextGraph` double answers with nothing - an empty subgraph, an unresolved mention
+/// and no node of any kind - expanded inside that double's `impl ContextGraph` block.
 #[macro_export]
-macro_rules! projection_reads_nothing {
+macro_rules! context_graph_reads_nothing {
     () => {
         fn subgraph(
             &self,
@@ -192,18 +199,15 @@ macro_rules! projection_reads_nothing {
         ) -> Result<Vec<rigger::contextgraph::Node>, rigger::contextgraph::Error> {
             Ok(Vec::new())
         }
-        fn rebuild_owed(&self) -> Result<bool, rigger::contextgraph::Error> {
-            Ok(false)
-        }
-        $crate::projection_folds_no_entry!();
+        $crate::context_graph_holds_no_tree!();
     };
 }
 
-/// A `Projection` implementing only the trait's REQUIRED methods, each trivially, so every
-/// provided method (`locate`, `calls`, ...) is the trait DEFAULT under test.
-pub struct MinimalProjection;
+/// A `RecordFold` implementing only the trait's REQUIRED methods, each trivially, so every
+/// provided method (`apply_batch`, ...) is the trait DEFAULT under test.
+pub struct MinimalFold;
 
-impl rigger::contextgraph::Projection for MinimalProjection {
+impl rigger::contextgraph::RecordFold for MinimalFold {
     fn apply(
         &self,
         _e: &rigger::eventstore::Event,
@@ -211,7 +215,44 @@ impl rigger::contextgraph::Projection for MinimalProjection {
     ) -> Result<(), rigger::contextgraph::Error> {
         Ok(())
     }
-    projection_reads_nothing!();
+    record_fold_owes_nothing!();
+}
+
+/// A `ContextGraph` implementing only the trait's REQUIRED methods, each answering nothing, so
+/// every provided method (`locate`, `calls`) is the trait DEFAULT under test.
+pub struct MinimalGraph;
+
+impl rigger::contextgraph::ContextGraph for MinimalGraph {
+    context_graph_reads_nothing!();
+}
+
+/// The record half `records` read as a context graph with no tree beside it: the composed view
+/// over an empty code view, whose label describes the empty tree.
+pub fn records_graph(
+    records: &dyn rigger::contextgraph::Neighbors,
+) -> rigger::composed::Composed<'_> {
+    let stamp = rigger::code_facts::Stamp {
+        tip: rigger::code_facts::Tip {
+            head: "main".to_string(),
+            commit: None,
+            tree: "empty".to_string(),
+        },
+        fingerprint: 0,
+        seq: 0,
+    };
+    let view = rigger::code_view::FactsView::new(stamp, Vec::new());
+    let honesty = rigger::composed::Honesty {
+        worktree: "the worktree".to_string(),
+        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        behind: None,
+    };
+    rigger::composed::Composed::new(
+        records,
+        &view,
+        rigger::code_view::ViewFilter::default(),
+        honesty,
+    )
+    .expect("an empty view composes")
 }
 
 /// The id of spoke `i` of a many-spoke graph fixture: a code entity in `file`, zero-padded so the
@@ -247,13 +288,13 @@ pub fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
 }
 
 /// The call walk of `p` from `seed` in `direction`, five hops deep, at the inferred floor.
-pub fn call_walk(p: &dyn Projection, seed: &str, direction: Direction) -> CallGraph {
+pub fn call_walk(p: &dyn ContextGraph, seed: &str, direction: Direction) -> CallGraph {
     p.calls(&[seed.to_string()], direction, 5, TIER_INFERRED)
         .unwrap()
 }
 
 /// The ids of the files the UP view of `p` from `seed` lists referenced but not called.
-pub fn referenced_not_called_ids(p: &dyn Projection, seed: &str) -> Vec<String> {
+pub fn referenced_not_called_ids(p: &dyn ContextGraph, seed: &str) -> Vec<String> {
     let up = call_walk(p, seed, Direction::Up);
     up.referenced_not_called.into_iter().map(|n| n.id).collect()
 }
