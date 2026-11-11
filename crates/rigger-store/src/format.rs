@@ -17,6 +17,7 @@
 use crate::sync_dir::sync_dir;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -154,7 +155,8 @@ pub fn write_container(
 #[derive(Debug)]
 pub struct Container<'a> {
     pub payload: &'a [u8],
-    sections: Vec<(u16, &'a [u8])>,
+    bytes: &'a [u8],
+    sections: Vec<(u16, Range<usize>)>,
 }
 
 impl<'a> Container<'a> {
@@ -175,34 +177,44 @@ impl<'a> Container<'a> {
         if cur.u32()? != crc32(covered) {
             return Err("the header crc differs".into());
         }
-        let mut sections: Vec<(u16, &'a [u8])> = Vec::with_capacity(usize::from(count));
+        let mut sections: Vec<(u16, Range<usize>)> = Vec::with_capacity(usize::from(count));
         for _ in 0..count {
             let kind = cur.u16()?;
             let offset = usize::try_from(cur.u64()?).map_err(|e| e.to_string())?;
             let length = usize::try_from(cur.u64()?).map_err(|e| e.to_string())?;
             let crc = cur.u32()?;
-            let section = offset
+            let range = offset
                 .checked_add(length)
-                .and_then(|end| bytes.get(offset..end))
+                .filter(|&end| end <= bytes.len())
+                .map(|end| offset..end)
                 .ok_or_else(|| format!("section {kind} lies outside the file"))?;
-            if crc32(section) != crc {
+            if crc32(&bytes[range.clone()]) != crc {
                 return Err(format!("section {kind}'s crc differs"));
             }
             if sections.iter().any(|(k, _)| *k == kind) {
                 return Err(format!("section {kind} appears twice"));
             }
-            sections.push((kind, section));
+            sections.push((kind, range));
         }
-        Ok(Self { payload, sections })
+        Ok(Self {
+            payload,
+            bytes,
+            sections,
+        })
+    }
+
+    /// Where section `kind` lies in the file.
+    pub fn section_range(&self, kind: u16) -> Result<Range<usize>, String> {
+        self.sections
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, range)| range.clone())
+            .ok_or_else(|| format!("section {kind} is missing"))
     }
 
     /// The bytes of section `kind`.
     pub fn section(&self, kind: u16) -> Result<&'a [u8], String> {
-        self.sections
-            .iter()
-            .find(|(k, _)| *k == kind)
-            .map(|(_, bytes)| *bytes)
-            .ok_or_else(|| format!("section {kind} is missing"))
+        self.section_range(kind).map(|range| &self.bytes[range])
     }
 }
 
@@ -276,9 +288,7 @@ impl WriteLock {
         match file.try_lock() {
             Ok(()) => Ok(Some(Self { _file: file })),
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
-            Err(std::fs::TryLockError::Error(e)) => {
-                Err(format!("lock {}: {e}", path.display()))
-            }
+            Err(std::fs::TryLockError::Error(e)) => Err(format!("lock {}: {e}", path.display())),
         }
     }
 }
@@ -316,7 +326,11 @@ mod tests {
             b"TEST",
             3,
             b"payload",
-            &[(7, b"seven".to_vec()), (2, Vec::new()), (9, b"nine".to_vec())],
+            &[
+                (7, b"seven".to_vec()),
+                (2, Vec::new()),
+                (9, b"nine".to_vec()),
+            ],
         );
         let parsed = Container::parse(&bytes, b"TEST", 3).expect("parses");
         assert_eq!(parsed.payload, b"payload");
