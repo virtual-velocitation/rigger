@@ -8,7 +8,9 @@
 
 use crate::common;
 use common::cli::{cargo_project, loaded_config, run_rigger};
-use common::fixtures::{container_runtime, with_kurrentdb, TEST_CONTAINER_LABEL};
+use common::fixtures::{
+    container_labels_and_host_ports, with_kurrentdb_container, TEST_CONTAINER_LABEL,
+};
 use common::git::{commit_files, git_ok, git_out, init_repo};
 use common::repo::{repo_root, stub_path};
 use common::shell_outcome;
@@ -525,38 +527,23 @@ fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age
 /// Skips, as the fixture does, where no container runtime is reachable.
 #[test]
 fn the_kurrentdb_fixture_labels_its_container_for_the_snippet() {
-    use testcontainers::bollard::query_parameters::ListContainersOptionsBuilder;
-    use testcontainers::bollard::Docker;
-    with_kurrentdb(|conn| {
+    with_kurrentdb_container(|conn, id| {
         let port: u16 = conn
             .rsplit_once(':')
             .and_then(|(_, rest)| rest.split('?').next())
             .and_then(|port| port.parse().ok())
             .unwrap_or_else(|| panic!("no host port in the connection string {conn}"));
-        let containers = container_runtime()
-            .block_on(async {
-                let all = ListContainersOptionsBuilder::default().all(true).build();
-                Docker::connect_with_defaults()?
-                    .list_containers(Some(all))
-                    .await
-            })
-            .expect("the container runtime lists its containers");
-        let server = containers
-            .iter()
-            .find(|c| {
-                c.ports
-                    .iter()
-                    .flatten()
-                    .any(|p| p.public_port == Some(port))
-            })
-            .unwrap_or_else(|| panic!("no container publishes the server's port {port}"));
+        let (labels, host_ports) = container_labels_and_host_ports(id)
+            .expect("the container runtime inspects the fixture's container");
+        assert!(
+            host_ports.contains(&port),
+            "the container {id} must publish the server's port {port}; it publishes {host_ports:?}"
+        );
         let (key, value) = TEST_CONTAINER_LABEL;
-        let labels = server.labels.clone().unwrap_or_default();
         assert_eq!(
             labels.get(key).map(String::as_str),
             Some(value),
-            "the KurrentDB container {:?} must carry the label {key}={value}; its labels: {labels:?}",
-            server.id
+            "the KurrentDB container {id} must carry the label {key}={value}; its labels: {labels:?}",
         );
     });
 }
