@@ -142,14 +142,14 @@ fn ingested_subgraph(
     seeds: &[&str],
     depth: i64,
 ) -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::ContextGraph;
-
     let records = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-    let view = common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, files);
-    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
-    common::fixtures::view_graph(&records, &view)
-        .subgraph(&seeds, depth)
-        .unwrap()
+    common::fixtures::files_subgraph(
+        &records,
+        &rigger_grounder::facts::FactsExtractor,
+        files,
+        seeds,
+        depth,
+    )
 }
 
 /// One expectation on the ingested subgraph's nodes, each naming an id and the rule it pins.

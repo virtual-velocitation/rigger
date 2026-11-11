@@ -288,6 +288,21 @@ pub fn files_view(
     rigger::code_view::FactsView::new(view_stamp("files", extract.fingerprint(), 1), facts)
 }
 
+/// The subgraph `depth` hops around `seeds` that `records` composed with the code view of a tree
+/// holding exactly `files` ([`files_view`], read by `extract`) serves: the extractor and
+/// composition an end-to-end test drives.
+pub fn files_subgraph(
+    records: &dyn rigger::contextgraph::Neighbors,
+    extract: &impl rigger::code_view::Extract,
+    files: &[(&str, &str)],
+    seeds: &[&str],
+    depth: i64,
+) -> Graph {
+    let view = files_view(extract, files);
+    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
+    ContextGraph::subgraph(&view_graph(records, &view), &seeds, depth).unwrap()
+}
+
 /// The code view of a tree whose files hold exactly `facts`, planted as an extractor would read
 /// them: the facts a reader's rule is exercised over without a language's extractor.
 pub fn facts_view(facts: Vec<rigger::code_facts::FileFacts>) -> rigger::code_view::FactsView {
