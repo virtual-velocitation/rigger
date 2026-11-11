@@ -320,6 +320,29 @@ pub(crate) fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::
     Ok(cfg)
 }
 
+/// The refusal a run started outside a rigger project gives: `cwd` holds no workflow file, so
+/// there is nothing to drive.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{command}: not a rigger project - {cwd} has no {RIGGER_DIR}/{WORKFLOW_FILE}; run \
+     `rigger setup` in the project root first, or run from the directory that holds it"
+)]
+struct NotAProject {
+    command: &'static str,
+    cwd: String,
+}
+
+/// Refuse, creating nothing, unless `cwd` holds a rigger project's workflow file.
+fn refuse_outside_a_project(cwd: &Path, command: &'static str) -> Res {
+    if cwd.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file() {
+        return Ok(());
+    }
+    Err(Box::new(NotAProject {
+        command,
+        cwd: cwd.display().to_string(),
+    }))
+}
+
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
     run_cli(&parsed, &*sleep_hold())
@@ -810,6 +833,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // FIRST - see `resolve_main_worktree_or_refuse`'s doc comment.
     let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
+    refuse_outside_a_project(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -971,17 +995,22 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the
     // project's gate request socket ([`rigger::gate_socket::socket_path`]) carries each
     // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
-    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only.
+    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only. A
+    // project with no repository has no unit worktree a request could come from, so it binds none.
     let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-    let socket = rigger::gate_socket::socket_path(Path::new(&root))
-        .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
-        .inspect_err(|e| {
-            stderr_line(&format!(
-                "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs for \
-                 information only and records nothing"
-            ))
+    let socket = (!root.is_empty())
+        .then(|| {
+            rigger::gate_socket::socket_path(Path::new(&root))
+                .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
+                .inspect_err(|e| {
+                    stderr_line(&format!(
+                        "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs \
+                         for information only and records nothing"
+                    ))
+                })
+                .ok()
         })
-        .ok();
+        .flatten();
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);

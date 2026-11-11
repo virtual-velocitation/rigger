@@ -7921,6 +7921,85 @@ fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
     assert_eq!(std::fs::read_to_string(&stale).unwrap(), "stale");
 }
 
+/// `rigger run` and the project it runs in: given a directory with no `.rigger/workflow.yml`,
+/// plain or a git repository, when the run starts, then it refuses as not a rigger project,
+/// creating nothing and saying nothing of gate requests; given a project with no repository, it
+/// runs, and with no unit worktree to serve it binds no gate request socket and says nothing of
+/// one.
+#[cfg(unix)]
+#[test]
+fn a_run_outside_a_rigger_project_refuses_and_a_project_with_no_repository_serves_no_gate_socket() {
+    const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+        worker: UNISOLATED_WORKER,
+        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+               on_pass: merge\n",
+    };
+    struct Case {
+        name: &'static str,
+        git: bool,
+        project: bool,
+    }
+    let cases = [
+        Case {
+            name: "an empty directory",
+            git: false,
+            project: false,
+        },
+        Case {
+            name: "a git repository with no rigger project",
+            git: true,
+            project: false,
+        },
+        Case {
+            name: "a rigger project with no repository",
+            git: false,
+            project: true,
+        },
+    ];
+    for case in &cases {
+        let name = case.name;
+        let dir = match case.git {
+            true => temp_git_project_with_commit(),
+            false => temp_repoless_project(),
+        };
+        let root = dir.path();
+        if case.project {
+            write_workflow_fixture(root, &MERGING_WORKFLOW);
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = run_recording(root, &["run"], scratch.path());
+        assert!(
+            !err.contains("gate requests"),
+            "{name}: nothing is said of gate requests: {err}"
+        );
+        if case.project {
+            assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+            assert!(
+                out.contains("done: every unit integrated\n"),
+                "{name}: the run is done: {out}"
+            );
+            continue;
+        }
+        assert!(!ok, "{name}: the run refuses; stdout: {out}");
+        assert!(
+            err.starts_with("rigger: rigger run: not a rigger project - "),
+            "{name}: the refusal names the missing project: {err}"
+        );
+        assert!(
+            err.contains(".rigger/workflow.yml") && err.contains("`rigger setup`"),
+            "{name}: the refusal names the missing file and the remedy: {err}"
+        );
+        assert!(
+            !root.join(".rigger").exists(),
+            "{name}: the refusal creates nothing"
+        );
+        assert!(
+            !fake.path().join("bin/argv").exists(),
+            "{name}: no agent is launched"
+        );
+    }
+}
+
 /// Spec 105's store hand-off: given a run, when the operator selects a store, then every launch
 /// carries the selection's handed environment: nothing for the local store, the connection
 /// string for a server selected by flag alone.
