@@ -1786,6 +1786,10 @@ mod tests {
             ("handbook", render_handbook_discipline(&ctx)),
         ] {
             assert!(
+                out.contains("rigger graph --lookup"),
+                "{label} must name the combined lookup `rigger graph --lookup`"
+            );
+            assert!(
                 out.contains("rigger graph --around"),
                 "{label} must name the STRUCTURE verb `rigger graph --around`"
             );

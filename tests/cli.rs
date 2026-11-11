@@ -18091,6 +18091,10 @@ fn docs_ships_three_verb_lookup_guidance_to_consumers() {
     // guidance identically.
     for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
         assert!(
+            out.contains("rigger graph --lookup"),
+            "{label} shipped by `rigger docs` must name the combined lookup `rigger graph --lookup`"
+        );
+        assert!(
             out.contains("rigger graph --around"),
             "{label} shipped by `rigger docs` must name the STRUCTURE verb `rigger graph --around`"
         );
@@ -26179,12 +26183,13 @@ fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_j
     run_hook_verb(process_cwd, &args, payload)
 }
 
-/// The reason `rigger grep-guard` denies a grep with: the graph call that answers a name lookup,
-/// then the guard's rule and its escape hatch.
-const GREP_GUARD_DENIAL: &str = "A name lookup is a graph call: who calls <name> is rigger_graph \
-     `around` <name>, and where <name> is defined is rigger_graph `show` <name>. A grep, or a sed \
-     or awk pattern search, is for literal text - end the command with a `# --literal` comment to \
-     proceed";
+/// The reason `rigger grep-guard` denies a grep with: the combined lookup and the graph calls that
+/// answer a name lookup, then the guard's rule and its escape hatch.
+const GREP_GUARD_DENIAL: &str = "A name lookup is a graph call: rigger_graph `lookup` <term>... \
+     answers a name, path or word from the graph, your working tree and the project's prose in one \
+     call; who calls <name> is rigger_graph `around` <name>, and where <name> is defined is \
+     rigger_graph `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end \
+     the command with a `# --literal` comment to proceed";
 
 /// Asserts `out` (a [`run_grep_guard`] result) is the empty object `{}`: the hook passes a
 /// grep carrying the `# --literal` comment through with no verdict and no `updatedInput`.

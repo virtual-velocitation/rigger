@@ -21843,19 +21843,20 @@ mod tests {
     }
 
     /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS, over spec 58's pointer: the grounding
-    /// pointer renders exactly one framing paragraph naming the THREE lookup verbs with their
-    /// one-line jobs - `rigger graph --around` (structure), `rigger graph --show` (text),
-    /// `rigger peers` (memory) - and EVERY spawn's grounding carries it once: the trimmed
+    /// pointer renders exactly one framing paragraph naming the FOUR lookup verbs with their
+    /// one-line jobs - `rigger graph --lookup` (graph, tree and prose at once), `rigger graph
+    /// --around` (structure), `rigger graph --show` (text), `rigger peers` (memory) - and EVERY
+    /// spawn's grounding carries it once: the trimmed
     /// IMPLEMENT slice AND the full REVIEW slice alike. Neither slice says how to use grep or
     /// asks for a `grep-fallback:` record: that method is the `working-discipline` built-in's.
     #[test]
-    fn the_lookup_pointer_names_only_the_three_verbs_on_every_slice() {
+    fn the_lookup_pointer_names_only_the_four_verbs_on_every_slice() {
         let mut pointer = String::new();
         write_lookup_pointer(&mut pointer);
         assert_eq!(
             pointer,
             format!("\n{}\n", crate::test_support::LOOKUP_POINTER),
-            "the pointer is one paragraph naming the three verbs and their jobs"
+            "the pointer is one paragraph naming the four verbs and their jobs"
         );
 
         let dir = tempfile::tempdir().unwrap();

@@ -5967,10 +5967,11 @@ mod tests {
         // its escape hatch, word for word.
         assert_eq!(
             GREP_GUARD_MESSAGE,
-            "A name lookup is a graph call: who calls <name> is rigger_graph `around` <name>, and \
-             where <name> is defined is rigger_graph `show` <name>. A grep, or a sed or awk \
-             pattern search, is for literal text - end the command with a `# --literal` comment \
-             to proceed",
+"A name lookup is a graph call: rigger_graph `lookup` <term>... answers a name, path or \
+             word from the graph, your working tree and the project's prose in one call; who calls \
+             <name> is rigger_graph `around` <name>, and where <name> is defined is rigger_graph \
+             `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end the \
+             command with a `# --literal` comment to proceed",
             "the grep-guard's deny message"
         );
     }

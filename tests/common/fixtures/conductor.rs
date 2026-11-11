@@ -11,10 +11,12 @@ use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 use super::{agent, gate_def, gate_def_inputs, test_spawn_host};
 
 /// The one paragraph the lookup pointer every grounding slice carries renders, between its
-/// leading and trailing newline: the knowledge graph's three verbs, each with its one-line job,
-/// then one worked example each of "who calls" and "where is it defined".
-pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through three verbs: \
-     `rigger graph --around <file|entity>` (structure: callers, callees, neighbors), `rigger \
+/// leading and trailing newline: the knowledge graph's four verbs, the combined lookup first, each
+/// with its one-line job, then one worked example each of "who calls" and "where is it defined".
+pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through four verbs: \
+     `rigger graph --lookup <term>...` (each term at once from the graph, a live scan of your \
+     working tree and the project's ranked prose), `rigger graph --around <file|entity>` \
+     (structure: callers, callees, neighbors), `rigger \
      graph --show <entity>` (text: definition site and body), `rigger peers <file>...` (memory: \
      decisions, findings, lessons). Who calls <name>: `rigger graph --around <name>`. Where is \
      <name> defined: `rigger graph --show <name>`.";

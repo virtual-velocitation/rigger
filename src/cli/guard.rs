@@ -1041,22 +1041,28 @@ mod tests {
         }
     }
 
-    /// The denial answers the question the search was asking before it names the escape: who
-    /// calls a name is `rigger_graph` around it and where a name is defined is `rigger_graph`
-    /// show it, both ahead of the `# --literal` comment.
+    /// The denial answers the question the search was asking before it names the escape: the
+    /// combined lookup first, then who calls a name is `rigger_graph` around it and where a name
+    /// is defined is `rigger_graph` show it, all ahead of the `# --literal` comment.
     #[test]
     fn grep_guard_message_names_the_graph_call_before_the_literal_escape() {
         let escape = GREP_GUARD_MESSAGE
             .find("# --literal")
             .expect("the message names the escape");
-        for call in ["rigger_graph `around` <name>", "rigger_graph `show` <name>"] {
+        let mut previous = 0;
+        for call in [
+            "rigger_graph `lookup` <term>...",
+            "rigger_graph `around` <name>",
+            "rigger_graph `show` <name>",
+        ] {
             let at = GREP_GUARD_MESSAGE
                 .find(call)
                 .unwrap_or_else(|| panic!("the message names {call:?}: {GREP_GUARD_MESSAGE}"));
             assert!(
-                at < escape,
-                "{call:?} comes before the escape: {GREP_GUARD_MESSAGE}"
+                previous <= at && at < escape,
+                "{call:?} comes in order, before the escape: {GREP_GUARD_MESSAGE}"
             );
+            previous = at;
         }
     }
 
