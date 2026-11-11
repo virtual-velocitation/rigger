@@ -2352,12 +2352,10 @@ mod tests {
         );
     }
 
-    /// `rigger_graph`'s `show` selector on the lookup surface: seeds one real code-entity
-    /// definition into a `Projector` (the same `CodeEntityExtracted` fold a real extraction
-    /// pass produces) and drives it through `Server::call_tool`, proving the trait's new
-    /// [`ContextGraph::locate`] reaches a real caller holding only `&dyn RecordFold` - the DI
-    /// extension this fix round adds, reusing the SAME `graph` port `with_graph` already wires
-    /// for the event fold, rather than a second implementation reaching for the concrete
+    /// `rigger_graph`'s `show` selector on the lookup surface: plants one code-entity
+    /// definition in the code view beside a `Projector` and drives it through
+    /// `Server::call_tool`, proving [`ContextGraph::locate`] reaches a real caller holding only the
+    /// context the server was given, rather than a second implementation reaching for the concrete
     /// `sqlite::Projector` from outside the crate.
     #[test]
     fn lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method() {
