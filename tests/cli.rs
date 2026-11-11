@@ -17049,6 +17049,32 @@ fn serving_dash(root: &Path, port: u16) -> std::process::Child {
     dash
 }
 
+/// GIVEN a committed project whose code store is built, WHEN `rigger dash` serves it from the
+/// project's own directory, so it reads `graph.db` by its relative path `.rigger/graph.db`, THEN
+/// the graph route's overview holds the committed file's cluster: the checkout a relative path
+/// names is the directory the dash runs in, never an empty path no repository is read from.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    common::fixtures::git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let port = free_loopback_port();
+    let mut dash = serving_dash(root, port);
+    let graph = http_get_path(port, "/api/graph");
+    let _ = dash.kill();
+    let _ = dash.wait();
+
+    let graph = graph.expect("the dash never served /api/graph");
+    assert!(
+        graph.contains(r#"{"key":"src/lib.rs","count":"#),
+        "the overview holds the committed file's cluster; got: {graph}"
+    );
+}
+
 /// Record the dash breadcrumbs a dash-starting path leaves under `root`'s `.rigger/`: the
 /// `dash.url` it serves at and the `dash.marker` naming `marker_port` and `pid` (the on-disk
 /// marker format is `port\npid\n`, `dash::DashMarker::serialize`).
