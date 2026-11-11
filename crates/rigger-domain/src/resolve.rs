@@ -107,6 +107,11 @@ impl Pool {
     fn admits(self, c: &Candidate) -> bool {
         self == Pool::All || !c.test
     }
+
+    /// Whether a call from this pool may land on `c`: the pool admits it and it is a call target.
+    fn calls(self, c: &Candidate) -> bool {
+        self.admits(c) && is_call_target(Some(c.kind))
+    }
 }
 
 /// One entity id a leaf names, settled over the definitions that share it.
@@ -323,15 +328,16 @@ impl<'v> Resolver<'v> {
     fn call_targets(&self, leaf: &str, pool: Pool) -> Vec<Candidate<'v>> {
         self.candidates(leaf)
             .iter()
-            .filter(|c| pool.admits(c) && is_call_target(Some(c.kind)))
+            .filter(|c| pool.calls(c))
             .cloned()
             .collect()
     }
 
     /// The call rule: the target and tier of a call to `leaf` from `file`.
     fn call(&self, file: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
-        let targets = self.call_targets(leaf, pool);
-        let here: Vec<&Candidate> = targets.iter().filter(|c| c.file == file).collect();
+        let candidates = self.candidates(leaf);
+        let targets: Vec<&Candidate> = candidates.iter().filter(|c| pool.calls(c)).collect();
+        let here: Vec<&&Candidate> = targets.iter().filter(|c| c.file == file).collect();
         if let [one] = here.as_slice() {
             return (one.id.clone(), TIER_EXTRACTED);
         }
@@ -366,8 +372,11 @@ impl<'v> Resolver<'v> {
 
     /// The proof rule: the product definition a test call to `leaf` from `file` proves.
     fn proof(&self, file: &str, leaf: &str) -> Option<String> {
-        let targets = self.call_targets(leaf, Pool::Product);
-        let targets: Vec<&Candidate> = targets.iter().collect();
+        let candidates = self.candidates(leaf);
+        let targets: Vec<&Candidate> = candidates
+            .iter()
+            .filter(|c| Pool::Product.calls(c))
+            .collect();
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
@@ -454,11 +463,14 @@ impl<'v> Resolver<'v> {
             });
         }
         // A product reference is held only by a product edge, so showing tests changes no
-        // product edge.
+        // product edge. A call's reference runs from the file, so only one from the file is held;
+        // each target maps to whether a product call references it.
+        let mut referenced: HashMap<&str, bool> = HashMap::new();
+        for l in links.iter().filter(|l| l.rel == REL_REFERENCES) {
+            *referenced.entry(l.to.as_str()).or_default() |= !l.test;
+        }
         let held = |from: &str, to: &str, test: bool| {
-            links.iter().any(|l: &Link| {
-                l.rel == REL_REFERENCES && l.from == from && l.to == to && (test || !l.test)
-            })
+            from == file && referenced.get(to).is_some_and(|&product| test || product)
         };
         let mut tagged = Vec::new();
         for m in &facts.mentions {
