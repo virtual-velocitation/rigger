@@ -112,11 +112,27 @@ fn unread_view() -> FactsView {
 struct Sight<'v> {
     view: &'v dyn CodeView,
     withheld: Withheld,
+    /// Whether this sight serves the withheld code files instead: what a read counts as withheld.
+    inverted: bool,
 }
 
 impl<'v> Sight<'v> {
     fn new(view: &'v dyn CodeView, withheld: Withheld) -> Self {
-        Sight { view, withheld }
+        Sight {
+            view,
+            withheld,
+            inverted: false,
+        }
+    }
+
+    /// The code files this sight withholds, served as a sight of their own, so a read counts the
+    /// hits it withheld by the same pass that finds the hits it serves.
+    fn withheld_part(&self) -> Sight<'v> {
+        Sight {
+            view: self.view,
+            withheld: self.withheld.clone(),
+            inverted: true,
+        }
     }
 
     /// Whether the file at `path` is withheld from this read.
@@ -125,7 +141,7 @@ impl<'v> Sight<'v> {
     }
 
     fn serves(&self, file: &FileRef<'_>) -> bool {
-        file.half == Half::Code && !self.withholds(file.path)
+        file.half == Half::Code && self.withholds(file.path) == self.inverted
     }
 
     /// Whether the radius must text-search the names the view resolves: some file is withheld, so
@@ -605,7 +621,7 @@ impl Grounder for Symbols {
         // matching token, then definition-over-reference - NOT deduplicated by entity (that is
         // `ground_ranked`'s page-shape concern), so this stays the SAME row-per-location
         // contract `grounded_seed` (conductor.rs) relies on for prompt-seed file diversity.
-        let ((rows, tests_hidden), label) = self.read_labelled(|sight| {
+        let ((rows, tests_hidden, withheld), mut label) = self.read_labelled(|sight| {
             let hits = scored_hits(sight, &terms);
             let hidden = hidden_test_hits(&hits, tests);
             let rows = hits
@@ -618,8 +634,9 @@ impl Grounder for Symbols {
                     text: h.name,
                 })
                 .collect();
-            (rows, hidden)
+            (rows, hidden, withheld_hits(sight, &terms, tests))
         });
+        label.withheld = withheld;
         Grounded {
             rows,
             label: Some(label),
@@ -773,11 +790,13 @@ impl Grounder for Symbols {
         tests: Tests,
     ) -> Grounded<Option<Vec<RankedRef>>> {
         let terms = query_terms(query);
-        let ((rows, tests_hidden), label) = self.read_labelled(|sight| {
+        let ((rows, tests_hidden, withheld), mut label) = self.read_labelled(|sight| {
             let rows =
                 (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests));
-            (rows, hidden_test_hits(&scored_hits(sight, &terms), tests))
+            let hidden = hidden_test_hits(&scored_hits(sight, &terms), tests);
+            (rows, hidden, withheld_hits(sight, &terms, tests))
         });
+        label.withheld = withheld;
         Grounded {
             rows,
             label: Some(label),
@@ -815,6 +834,14 @@ impl Grounder for Symbols {
     fn has_strong_match(&self, query: &str, _k: usize) -> bool {
         self.read(|sight| has_strong(sight, &query_terms(query)))
     }
+}
+
+/// How many hits of `terms` the files `sight` withholds held: the hits its answer under `tests`
+/// would have shown or reported hidden, found by the pass that finds the hits it serves.
+fn withheld_hits(sight: &Sight<'_>, terms: &[&str], tests: Tests) -> usize {
+    (scored_hits(&sight.withheld_part(), terms).iter())
+        .filter(|h| h.test || tests.admits(h.test))
+        .count()
 }
 
 /// How many of `hits` are test locations `tests` leaves out of an answer: none unless it excludes
@@ -2870,36 +2897,78 @@ mod tests {
         assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
     }
 
-    /// Every answer's label states what was withheld. Each row: the worktree's difference and the
-    /// label's text after `describes <tree>`.
+    /// Every answer's label states what was withheld, and counts the hits of that answer the
+    /// differing files withheld: the hits it would have shown or reported hidden, in the same read.
+    /// The view holds `alpha` defined and called in `src/a.rs` and the test `alpha_test` in
+    /// `tests/t.rs`; the query is `alpha`. Each row: the worktree's difference, the filter, the
+    /// label's text after `describes <tree>` (the same on the plain and the ranked page) and the
+    /// test hits reported hidden.
     #[test]
-    fn grounding_labels_state_what_was_withheld() {
-        let files = vec![code_file(
-            "src/a.rs",
-            "rust",
-            Scope::Product,
-            vec![hand_def("alpha", 1)],
-            vec![],
-        )];
+    fn grounding_labels_count_the_hits_they_withheld() {
+        let files = vec![
+            code_file(
+                "src/a.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("alpha", 1)],
+                vec![hand_ref("alpha", 5)],
+            ),
+            code_file(
+                "tests/t.rs",
+                "rust",
+                Scope::Test,
+                vec![hand_def("alpha_test", 1)],
+                vec![],
+            ),
+        ];
+        let a = &["src/a.rs"][..];
+        let t = &["tests/t.rs"][..];
         let cases = [
-            ("agreeing", differing(&[], &[]), ""),
+            ("agreeing", differing(&[], &[]), Tests::Exclude, "", 1),
             (
-                "one file differs",
-                differing(&["src/a.rs"], &[]),
-                "; 1 file in W differs",
+                "the product file differs",
+                differing(a, &[]),
+                Tests::Exclude,
+                "; 1 file in W differs; 2 withheld",
+                1,
             ),
             (
-                "two files differ",
-                differing(&["src/a.rs"], &["src/b.rs"]),
-                "; 2 files in W differ",
+                "an untracked differing file holds no hit",
+                differing(a, &["src/b.rs"]),
+                Tests::Include,
+                "; 2 files in W differ; 2 withheld",
+                0,
+            ),
+            (
+                "a differing test file's hit is withheld, not hidden",
+                differing(t, &[]),
+                Tests::Exclude,
+                "; 1 file in W differs; 1 withheld",
+                0,
+            ),
+            (
+                "a product hit the test view would not show is not counted",
+                differing(a, &[]),
+                Tests::Only,
+                "; 1 file in W differs",
+                0,
+            ),
+            (
+                "the test view counts its withheld test hit",
+                differing(t, &[]),
+                Tests::Only,
+                "; 1 file in W differs; 1 withheld",
+                0,
             ),
             (
                 "not comparable",
                 Err("no such commit".to_string()),
-                "; W cannot be compared",
+                Tests::Include,
+                "; W cannot be compared; 3 withheld",
+                0,
             ),
         ];
-        for (name, diff, after_tree) in cases {
+        for (name, diff, tests, after_tree, hidden) in cases {
             let g = Symbols::over(
                 "W",
                 Box::new(Fixed {
@@ -2907,16 +2976,21 @@ mod tests {
                     diff,
                 }),
             );
-            let label = g
-                .ground_labelled("alpha", 8, Tests::Include)
-                .label
-                .expect("labelled")
-                .to_string();
+            let expected = format!("describes {}{after_tree}", stamp().tip.tree);
+            let plain = g.ground_labelled("alpha", 8, tests);
             assert_eq!(
-                label,
-                format!("describes {}{after_tree}", stamp().tip.tree),
+                plain.label.expect("labelled").to_string(),
+                expected,
                 "{name}"
             );
+            assert_eq!(plain.tests_hidden, hidden, "{name}: hidden");
+            let ranked = g.ground_ranked_labelled("alpha", 8, tests);
+            assert_eq!(
+                ranked.label.expect("labelled").to_string(),
+                expected,
+                "{name}: ranked"
+            );
+            assert_eq!(ranked.tests_hidden, hidden, "{name}: ranked hidden");
         }
     }
 

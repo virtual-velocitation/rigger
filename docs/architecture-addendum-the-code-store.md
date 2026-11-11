@@ -533,13 +533,13 @@ open(caller worktree W, filter)
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
                      K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
                      own state never differs; every node in a differing file, and every edge
-                     with such an endpoint, is withheld, and K counts the nodes withheld so far
+                     with such an endpoint, is withheld, and K counts the withheld hits
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
   diff fails (the stamp commit is not in W's object store, or W's index cannot be read)
                   -> label "describes <commit>; W cannot be compared; K withheld"; it fails
                      closed: every node of the code half, and every edge with such an
-                     endpoint, is withheld, and K counts the nodes withheld so far; the
+                     endpoint, is withheld, and K counts the withheld hits; the
                      record half still answers
 ```
 
@@ -549,6 +549,10 @@ node the file its id names, and a community or concept every file its attributes
 members', which give its label and hash, and its attached tests', which give its test count). A
 differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
 doubt. Only code-half nodes are withheld: a record is never stale.
+
+K is the number of hits of this answer that were withheld, counted in the read that answered: the
+nodes it would have answered or reported hidden (`--around`, `--show`, `--lookup`, the MCP graph
+tool, the dash) and the locations `rigger ground` would have shown or reported hidden.
 
 W is the caller's worktree: the git top-level of the cwd, else the cwd. Every reader names it by
 that one rule (graph, ground, lookup, MCP, dash), so a read from a subdirectory counts the whole

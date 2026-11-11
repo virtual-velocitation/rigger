@@ -51,7 +51,8 @@ pub struct Label {
     pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
-    /// The nodes withheld so far because their file differs or the worktree cannot be compared.
+    /// The hits of the answer withheld because their file differs or the worktree cannot be
+    /// compared: the nodes of a graph read, the locations of a grounding.
     pub withheld: usize,
 }
 
