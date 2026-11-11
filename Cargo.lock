@@ -2391,6 +2391,7 @@ dependencies = [
  "rigger-graph-sqlite",
  "rigger-grounder",
  "rigger-process",
+ "rigger-store",
  "rigger-store-sqlite",
  "rigger-worktree-git",
  "rusqlite",
@@ -2418,6 +2419,7 @@ dependencies = [
  "rigger-graph-sqlite",
  "rigger-grounder",
  "rigger-process",
+ "rigger-store",
  "rigger-store-sqlite",
  "rigger-worktree-git",
  "ring",
@@ -2460,7 +2462,9 @@ dependencies = [
  "rigger-graph-sqlite",
  "rigger-grounder",
  "rigger-process",
+ "rigger-store",
  "rigger-store-sqlite",
+ "rigger-worktree-git",
  "serde",
  "serde_json",
  "serial_test",
@@ -2528,7 +2532,6 @@ dependencies = [
 name = "rigger-grounder"
 version = "0.1.0"
 dependencies = [
- "fs2",
  "fst",
  "grep-matcher",
  "grep-regex",
@@ -2538,6 +2541,7 @@ dependencies = [
  "rigger-domain",
  "rigger-graph-sqlite",
  "rigger-process",
+ "rigger-store",
  "serde",
  "serde_json",
  "tantivy",
@@ -2567,6 +2571,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rigger-store"
+version = "0.1.0"
+dependencies = [
+ "rigger-domain",
+ "tempfile",
+]
+
+[[package]]
 name = "rigger-store-sqlite"
 version = "0.1.0"
 dependencies = [
@@ -2589,6 +2601,7 @@ dependencies = [
  "rigger-domain",
  "rigger-driver",
  "rigger-process",
+ "rigger-store",
  "serde_json",
  "tempfile",
  "thiserror",

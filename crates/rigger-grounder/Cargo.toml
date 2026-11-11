@@ -35,6 +35,8 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # The workflow-definition pass reads `.rigger/workflow.yml` through the operator-tree reader (a
 # same-ring edge).
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
+# The owned format's atomic publish and write lock the symbols index persists through.
+rigger-store = { path = "../rigger-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
@@ -71,8 +73,6 @@ tree-sitter-python = { version = "0.23", optional = true }
 # disabled) so the scoping is machine-independent and the same tree yields a
 # byte-identical graph.
 ignore = "0.4"
-# The symbols index persist's advisory lock (`flock` under the hood).
-fs2 = "0.4"
 # The combined lookup (`lookup`): fst's Levenshtein automaton resolves a term against the graph's
 # entity names, the ripgrep libraries scan the caller's working tree live, and tantivy ranks the
 # prose in an in-memory index (its RAM directory only, so its default mmap/compression features

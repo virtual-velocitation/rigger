@@ -15,6 +15,7 @@
 
 use crate::config::RIGGER_DIR;
 use crate::grounder::symbols::model::SymbolIndex;
+use rigger_store::format::{with_write_lock, write_atomic};
 use std::path::{Path, PathBuf};
 
 /// The on-disk index file, under the project's per-machine grounding state
@@ -56,35 +57,6 @@ pub fn content_hash(src: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// Acquire the cross-process EXCLUSIVE write lock guarding [`index_path`], run `write` under it,
-/// then release. This is the ONE cross-process write-lock authority both [`save`] (publish a whole
-/// snapshot) and [`reindex_under_lock`] (reload-modify-publish) go through, so there is a single
-/// `flock` discipline over the index, not two parallel ones. The lock is an `fs2` exclusive
-/// advisory lock, non-optional in both feature lanes - the lock this store and `acquire_step_lock`
-/// share. The graph rebuild lock (`Projector::lock_rebuild`) takes std's `File::try_lock` instead,
-/// on the same `flock(2)` primitive. The lock file is created if absent; the lock releases when
-/// `lock` drops (or the process dies), so a crashed writer never wedges the next one. A write error
-/// is reported over an unlock error.
-fn with_write_lock<F>(dir: &str, write: F) -> Result<(), String>
-where
-    F: FnOnce() -> Result<(), String>,
-{
-    use fs2::FileExt;
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path(dir))
-        .map_err(|e| format!("symbols: open lock: {e}"))?;
-    lock.lock_exclusive()
-        .map_err(|e| format!("symbols: lock index: {e}"))?;
-    let result = write();
-    // Release explicitly for clarity (drop would too).
-    let _ = FileExt::unlock(&lock);
-    result
-}
-
 /// Serialize the index deterministically to [`index_path`], creating the parent dir. The bytes are
 /// byte-stable across processes because `SymbolIndex` is `BTreeMap`-backed (see the module docs);
 /// we never iterate a `HashMap` here.
@@ -108,7 +80,7 @@ pub fn save(idx: &SymbolIndex, dir: &str) -> Result<(), String> {
     }
     // Serialize BEFORE touching disk so a serialization failure aborts with no partial artifact.
     let bytes = serde_json::to_vec_pretty(idx).map_err(|e| format!("symbols: serialize: {e}"))?;
-    with_write_lock(dir, || write_atomic(&path, &bytes))
+    with_write_lock(&lock_path(dir), || write_atomic(&path, &bytes))
 }
 
 /// Freshen the persisted index under ONE continuously-held write lock, closing the cross-process
@@ -135,7 +107,7 @@ where
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("symbols: mkdir: {e}"))?;
     }
-    with_write_lock(dir, || {
+    with_write_lock(&lock_path(dir), || {
         // Reload the persisted base under the held lock so the caller's delta applies to the LATEST
         // on-disk state, folding in a concurrent writer rather than overwriting it. Keep the
         // in-memory base when nothing is persisted / it is unreadable (a cold or torn store) - the
@@ -149,41 +121,6 @@ where
         let bytes =
             serde_json::to_vec_pretty(base).map_err(|e| format!("symbols: serialize: {e}"))?;
         write_atomic(&path, &bytes)
-    })
-}
-
-/// Publish `bytes` at `path` atomically: write to a sibling temp file, fsync it, then `rename` it
-/// over `path`. `rename(2)` within one directory is atomic, so a concurrent reader observes either
-/// the whole old file or the whole new one, never the truncating write in progress. The temp is
-/// per-pid so two writers' temps never collide (though [`save`]'s lock already serializes them),
-/// and is cleaned up on a rename failure so the dir is not littered with a stale `.tmp`.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| format!("symbols: {} has no parent dir", path.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| format!("symbols: {} has no file name", path.display()))?;
-    let tmp = dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp)
-            .map_err(|e| format!("symbols: create temp {}: {e}", tmp.display()))?;
-        f.write_all(bytes)
-            .map_err(|e| format!("symbols: write temp {}: {e}", tmp.display()))?;
-        // fsync so the bytes hit disk before the rename publishes the file; otherwise a crash right
-        // after the rename could leave the new name pointing at empty data.
-        f.sync_all()
-            .map_err(|e| format!("symbols: fsync temp {}: {e}", tmp.display()))?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!(
-            "symbols: rename {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        )
     })
 }
 
