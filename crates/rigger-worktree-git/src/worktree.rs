@@ -2738,21 +2738,44 @@ pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
     run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
-pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
+/// Which of a git run's streams its answer holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitOutput {
+    /// Standard output on success; standard error on failure.
+    Stdout,
+    /// Standard output followed by standard error, on success and on failure.
+    StdoutAndStderr,
+}
+
+/// The one runner of `git <args>` in `dir`: `Ok` when git succeeds, `Err` when it fails or
+/// cannot start, each holding the bytes `output` names (a start failure holds its message).
+pub fn git_output(
+    dir: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+    output: GitOutput,
+) -> Result<Vec<u8>, Vec<u8>> {
     let out = crate::subprocess::git_in(dir)
         .args(args)
         .output()
-        .map_err(|e| e.to_string())?;
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+        .map_err(|e| e.to_string().into_bytes())?;
+    let answer = match (output, out.status.success()) {
+        (GitOutput::Stdout, true) => out.stdout,
+        (GitOutput::Stdout, false) => out.stderr,
+        (GitOutput::StdoutAndStderr, _) => [out.stdout, out.stderr].concat(),
+    };
     if out.status.success() {
-        Ok(combined)
+        Ok(answer)
     } else {
-        Err(combined)
+        Err(answer)
     }
+}
+
+/// `git <args>` in `dir`, answering standard output and standard error together as text.
+pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    git_output(dir, args, GitOutput::StdoutAndStderr)
+        .map(text)
+        .map_err(text)
 }
 
 /// Resolve the run's scratch root - where transient worktrees live. Precedence:
@@ -3185,6 +3208,48 @@ mod tests {
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
+
+    #[test]
+    fn git_output_answers_the_streams_its_mode_names() {
+        // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
+        let rows: [(&str, &[&str], GitOutput, bool, &str); 4] = [
+            (
+                "stdout on success",
+                &["--version"],
+                GitOutput::Stdout,
+                true,
+                "git version",
+            ),
+            (
+                "stderr on failure",
+                &["var", "NOPE"],
+                GitOutput::Stdout,
+                false,
+                "usage",
+            ),
+            (
+                "both on success",
+                &["--version"],
+                GitOutput::StdoutAndStderr,
+                true,
+                "git version",
+            ),
+            (
+                "both on failure",
+                &["var", "NOPE"],
+                GitOutput::StdoutAndStderr,
+                false,
+                "usage",
+            ),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        for (name, args, mode, ok, holds) in rows {
+            let answer = git_output(dir.path(), args, mode);
+            assert_eq!(answer.is_ok(), ok, "{name}");
+            let text = String::from_utf8_lossy(answer.as_ref().unwrap_or_else(|e| e)).to_string();
+            assert!(text.contains(holds), "{name}: {text}");
+        }
+    }
 
     /// What [`hash_blob`] answers for `bytes` under `root`: the object id, or the error's text.
     fn hashed(root: &std::path::Path, bytes: &[u8]) -> Result<String, String> {

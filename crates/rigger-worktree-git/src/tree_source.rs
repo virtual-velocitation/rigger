@@ -2,6 +2,7 @@
 //! from git's objects - the checked-out commit's tree, its listing and the blobs themselves - so
 //! a tree's facts never depend on what the worktree holds.
 
+use crate::worktree::{git_output, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
 use std::path::{Path, PathBuf};
@@ -25,20 +26,14 @@ impl GitTreeSource {
     /// The standard output of `git <args>` run in `dir`, or the failure naming the command and
     /// what git said.
     fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-        let out = crate::subprocess::git_in(dir)
-            .args(args)
-            .output()
-            .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
-        if out.status.success() {
-            Ok(out.stdout)
-        } else {
-            Err(format!(
+        git_output(dir, args, GitOutput::Stdout).map_err(|said| {
+            format!(
                 "git {} in {}: {}",
                 args.join(" "),
                 dir.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ))
-        }
+                String::from_utf8_lossy(&said).trim()
+            )
+        })
     }
 
     /// The trimmed answer of `git <args>` in the repository, or none when git refuses it.
