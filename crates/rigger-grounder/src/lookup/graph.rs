@@ -209,7 +209,9 @@ fn neighbours(walk: &CallGraph) -> Vec<Site> {
 /// checked once per lookup: the generation the tree's bytes extract to, under the exclusion flag
 /// clear (a file the walk excludes is ingested with no entity, so a file holding a hit was
 /// ingested with the flag clear), against the generation the graph holds for it. A file the tree
-/// does not hold extracts to the batch for no bytes, which no file holding a hit was ingested as.
+/// does not hold never holds a hit: a whole-project walk retires such a file by folding the batch
+/// for no bytes, the very generation its absence extracts to, and a node a record still names
+/// stays in the graph at that file.
 #[cfg(feature = "symbols")]
 struct Freshness<'a> {
     root: &'a Path,
@@ -232,7 +234,8 @@ impl<'a> Freshness<'a> {
         let (root, graph) = (self.root, self.graph);
         let holds = *self.checked.entry(file.to_string()).or_insert_with(|| {
             let held = graph.current_generation(&crate::ingest::code_identity(file));
-            matches!(held, Ok(Some(held)) if held == crate::ingest::tree_generation(root, file, false))
+            crate::grounder::tree_holds(root, "gc", file)
+                && matches!(held, Ok(Some(held)) if held == crate::ingest::tree_generation(root, file, false))
         });
         if !holds {
             withheld.insert(file.to_string());

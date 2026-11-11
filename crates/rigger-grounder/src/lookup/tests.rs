@@ -14,12 +14,12 @@ use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
-#[cfg(feature = "symbols")]
-use crate::contextgraph::KIND_CODE_ENTITY;
 use crate::contextgraph::{
     CallGraph, CallNode, Candidate, Direction, EntryBatch, EntryFold, Error, FoldAccess, Graph,
     Located, Node, Projection, KIND_DECISION, REBUILD_OWED,
 };
+#[cfg(feature = "symbols")]
+use crate::contextgraph::{KIND_ARTIFACT, KIND_CODE_ENTITY};
 use rigger_domain::eventstore::Event;
 
 /// A graph held in memory: its nodes, the generation it holds per identity, whether it owes its
@@ -434,9 +434,12 @@ fn ingested(files: &[(&str, &str)], held: Held) -> (tempfile::TempDir, Held) {
 /// A graph over a tree whose `kept.rs` is unchanged since the graph ingested it, `edited.rs` was
 /// edited since and `gone.rs` deleted since, and whose `added.rs` is new since; each defines a
 /// `widget_*` function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`.
+/// Its `retired.rs` was deleted and a whole-project walk retired it: the graph holds the batch
+/// for no bytes, and only a record still names its `widget_retired`, which the graph locates by
+/// its exact id.
 #[cfg(feature = "symbols")]
 fn diverged() -> (tempfile::TempDir, Held) {
-    let (dir, graph) = ingested(
+    let (dir, mut graph) = ingested(
         &[
             ("kept.rs", "fn widget_kept() {}\n"),
             ("edited.rs", "fn widget_edited() { widget_kept() }\n"),
@@ -462,6 +465,17 @@ fn diverged() -> (tempfile::TempDir, Held) {
         "fn widget_renamed() { widget_kept() }\n",
     );
     write(dir.path(), "added.rs", "fn widget_added() {}\n");
+    let retired = "retired.rs::widget_retired".to_string();
+    graph.generations.insert(
+        crate::ingest::code_identity("retired.rs"),
+        crate::ingest::tree_generation(dir.path(), "retired.rs", false),
+    );
+    graph.nodes.push(Node {
+        id: retired.clone(),
+        kind: KIND_ARTIFACT.to_string(),
+        attrs: BTreeMap::new(),
+    });
+    graph.located.insert(retired.clone(), vec![retired]);
     (dir, graph)
 }
 
@@ -471,13 +485,14 @@ fn diverged() -> (tempfile::TempDir, Held) {
 type FreshnessCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
 
 /// A file changed, deleted or added in the caller's tree is answered from the tree by the text
-/// half and withheld by the graph half, with an unchanged file's hit kept.
+/// half and withheld by the graph half, with an unchanged file's hit kept; a deleted file the
+/// graph has retired is withheld too.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
     let (dir, graph) = diverged();
     let lookup = TreeLookup::new(dir.path());
-    let cases: [FreshnessCase; 4] = [
+    let cases: [FreshnessCase; 5] = [
         (
             "widget_kept",
             &["kept.rs:1 kept.rs::widget_kept (function)"],
@@ -495,6 +510,12 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
             &[],
             &[&format!("{WITHHELD}: gone.rs")],
             &["no line of your tree holds widget_gone"],
+        ),
+        (
+            "retired.rs::widget_retired",
+            &[],
+            &[&format!("{WITHHELD}: retired.rs")],
+            &[],
         ),
         (
             "widget_added",
