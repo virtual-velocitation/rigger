@@ -949,8 +949,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
          --derived`'s own migration is specifically built to avoid. A store \
          file that is genuinely corrupt is an incident to fix at its root, never a reason \
          to reach for a database client.\n",
-        "rigger-build-graph if `graph.db` needs regenerating rather than pruning; \
-         rigger-reindex if only the symbols index is stale.\n",
+        "rigger-build-graph if `graph.db` needs regenerating rather than pruning.\n",
     )
 }
 
@@ -982,41 +981,8 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n",
-        "rigger-reindex for a narrower staleness problem - one that is really about the \
-         symbols grounding index, not the whole structural graph; rigger-reset-store for \
-         pruning `graph.db`'s dead-run accumulation rather than rebuilding it.\n",
-    )
-}
-
-/// Render the `rigger-reindex` skill (spec 68, criterion 2): the targeted refresh for the
-/// symbols grounding index. `ctx` is accepted only to match the registry's uniform
-/// signature; nothing here is drift-prone enough to interpolate from it.
-fn render_reindex_skill(_ctx: &DocsContext) -> String {
-    render_operation_skill(
-        "rigger-reindex",
-        "Refresh the symbols grounding index - a `rigger graph`/`rigger ground` \
-         lookup that names an entity the current tree no longer holds, or the \
-         index-staleness advisory from `rigger validate`. Read this before rebuilding the \
-         whole graph over an index-freshness problem.",
-        &[],
-        &[
-            "`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
-             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
-             for an index that has drifted from files you just changed (a unit's own commit, a \
-             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
-             store from the structural context graph, so it costs only the named files, never a \
-             walk of the whole tree.\n",
-            "Name every file whose content changed since the index was last built; an unnamed \
-             file's stale entry is left exactly as it was.\n",
-        ],
-        "Do not reach for a whole-graph rebuild (see rigger-build-graph) or a store wipe to \
-         fix a lookup that is really an index-freshness problem: naming the stale files and \
-         reindexing exactly them is both cheaper and more targeted than rebuilding the whole \
-         structural graph over a handful of drifted entries. Reserve a whole-graph rebuild \
-         for when the graph itself is missing or empty, not for a symbols lookup that just \
-         needs the files it names re-parsed.\n",
-        "rigger-build-graph for the whole-project structural graph; rigger-reset-store for \
-         the stores' own hygiene.\n",
+        "rigger-reset-store for pruning `graph.db`'s dead-run accumulation rather than \
+         rebuilding it.\n",
     )
 }
 
@@ -1340,7 +1306,7 @@ impl SkillEntry {
 }
 
 /// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline),
-/// `planning-a-spec` (the authoring discipline), the five-member per-operation family
+/// `planning-a-spec` (the authoring discipline), the four-member per-operation family
 /// (spec 68, criterion 2), the three watch-discipline skills (spec 69, criterion 1) and
 /// `spec-preflight` (spec 112, criterion 4) - one skill per operation, joining this same list
 /// by appending entries, never by adding a second, independently-walked enumeration.
@@ -1361,10 +1327,6 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         SkillEntry {
             name: "rigger-build-graph",
             body: DocBody::Rendered(render_build_graph_skill),
-        },
-        SkillEntry {
-            name: "rigger-reindex",
-            body: DocBody::Rendered(render_reindex_skill),
         },
         SkillEntry {
             name: "rigger-resume-a-run",
@@ -1909,19 +1871,18 @@ mod tests {
     }
 
     /// Spec 68, criterion 2 (extended by spec 69, criterion 1 with the three watch-discipline
-    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the five-member
+    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the four-member
     /// per-operation family, the three watch skills AND the preflight skill are IN the
     /// registry, each name present exactly once, alongside (not instead of) `using-rigger`
     /// and `planning-a-spec`.
     #[test]
-    fn registry_names_all_five_per_operation_skills_exactly_once_each() {
+    fn registry_names_all_four_per_operation_skills_exactly_once_each() {
         let names: Vec<&str> = skill_registry().iter().map(|e| e.name).collect();
         for expected in [
             "using-rigger",
             "planning-a-spec",
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
             "rigger-watch-a-run",
@@ -1937,8 +1898,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            11,
-            "the registry must have exactly 11 entries; got {names:?}"
+            10,
+            "the registry must have exactly 10 entries; got {names:?}"
         );
     }
 
@@ -1955,10 +1916,6 @@ mod tests {
                 &["disk usage", "bloat advisory", "rigger validate"],
             ),
             ("rigger-build-graph", &["empty", "first setup"]),
-            (
-                "rigger-reindex",
-                &["no longer holds", "index-staleness advisory"],
-            ),
             (
                 "rigger-resume-a-run",
                 &["dead driver", "in flight", "stale heartbeat"],
@@ -2021,7 +1978,6 @@ mod tests {
         for name in [
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
         ] {
@@ -2057,7 +2013,6 @@ mod tests {
         let family = [
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
         ];
@@ -2124,7 +2079,6 @@ mod tests {
         let anchors: &[(&str, &str)] = &[
             ("rigger-reset-store", "rigger reset --derived"),
             ("rigger-build-graph", "rigger graph build"),
-            ("rigger-reindex", "rigger reindex <file>"),
             ("rigger-resume-a-run", "adopts the existing run"),
             ("rigger-handle-an-escalation", "the unit's durable branch"),
         ];

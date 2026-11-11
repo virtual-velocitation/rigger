@@ -10967,18 +10967,11 @@ impl RunCtx<'_> {
             postmerge_reclaim = Some((self.postmerge_unit_dir(&st.name), scratch));
         }
         // The merged tree passed (or there was nothing to merge): the integration LANDS. Only
-        // NOW - once the tree the run branch carries is the verified one - reindex and record the
-        // artifact graph edges. A blocked integration does neither, so a rolled-back merge leaves
-        // no phantom FILE_TOUCHED for a unit whose work never landed.
+        // NOW - once the tree the run branch carries is the verified one - advance the code store
+        // and record the artifact graph edges. A blocked integration does neither, so a
+        // rolled-back merge leaves no phantom FILE_TOUCHED for a unit whose work never landed.
         //
-        // The reindex runs FIRST (spec 101): it can fail after the landing (a batch's group
-        // lookup goes unanswered), and the step that resumes the landed unit re-runs this whole
-        // tail. The reindex's own emits are keyed, so re-running it appends nothing twice, but the
-        // FILE_TOUCHED emits below are not - so they come only after every fallible reindex step
-        // has succeeded, and a failed reindex leaves none of them for the resume to append a
-        // second time.
-        //
-        // Every one of them reads ONE file set: the range that landed, from the run branch's tip
+        // The emits read ONE file set: the range that landed, from the run branch's tip
         // before this call's first landing to the landed tip. It holds the unit's own paths AND
         // every path a regeneration committed at landing (which rewrites files beyond the
         // conflicted one), and a fresh landing and a resumed one derive it alike.
@@ -10987,9 +10980,6 @@ impl RunCtx<'_> {
             crate::worktree::DiffMode::MergeBase,
         )?;
         if !commit.is_empty() {
-            if let Some(g) = self.deps.grounder {
-                g.reindex(&self.deps.repo, &landed);
-            }
             // FRESH ON EVERY INTEGRATION: the code store advances to the head the merge just
             // made, so every reader after it describes the landed tree.
             self.advance_code_store();
@@ -41506,7 +41496,7 @@ mod tests {
         std::fs::write(dir.path().join("tests.rs"), "fn tests() {}\n").unwrap();
         std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
         let grounder =
-            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
+            crate::grounder::symbols::grounder::Symbols::in_directory(dir.path().to_str().unwrap());
         let graph = SpyGraph::default();
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
@@ -41570,7 +41560,7 @@ mod tests {
     }
 
     /// MEASUREMENT, run explicitly over a real tree, every radius taken through
-    /// [`RunCtx::grounded_blast_radius_at`] with the tree's symbols index and its `.rigger/graph.db`
+    /// [`RunCtx::grounded_blast_radius_at`] with the tree's code store and its `.rigger/graph.db`
     /// present (`RIGGER_MEASURE_ROOT`), exactly as a run grounds a unit.
     ///
     /// With `RIGGER_MEASURE_LANDED` (a JSON list of `{id, criteria, edited}`: landed units, their
@@ -41603,7 +41593,7 @@ mod tests {
             !graph.rebuild_owed().unwrap(),
             "the measured graph owes its rebuild"
         );
-        let symbols = crate::grounder::symbols::grounder::Symbols::open(&root, None);
+        let symbols = crate::grounder::symbols::grounder::Symbols::in_directory(&root);
         let structural_only = StructuralOnly(&symbols);
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
@@ -41887,7 +41877,7 @@ mod tests {
             .unwrap();
         }
         let root = dir.path().to_str().unwrap();
-        let symbols = Symbols::open(root, None);
+        let symbols = Symbols::in_directory(root);
 
         // A non-producer stage grounds on its `coverage`, so this grounds every path on `target`
         // (named in a code span, as a criterion names code).
@@ -42214,7 +42204,7 @@ mod tests {
             .unwrap();
         }
         let grounder =
-            crate::grounder::symbols::grounder::Symbols::open(dir.path().to_str().unwrap(), None);
+            crate::grounder::symbols::grounder::Symbols::in_directory(dir.path().to_str().unwrap());
         let probe = OverlapProbe::meeting(2);
         let integrated = probe_one_wave(
             2,

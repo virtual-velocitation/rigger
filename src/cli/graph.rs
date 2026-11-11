@@ -786,97 +786,19 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     let grounder = select_grounder(&name)?;
     if k > 0 && !grounder.has_strong_match(query, k) {
         println!("no entity matches strongly for {query:?}");
-        return Ok(());
-    }
-    for r in grounder.ground_ranked(query, k) {
-        println!(
-            "{}:{}: {} (degree {})",
-            r.loc.file, r.loc.line, r.loc.text, r.degree
-        );
-    }
-    Ok(())
-}
-
-/// `rigger reindex <file>...` - incrementally re-index the named files in the
-/// project's persisted grounding index. It resolves the grounder from
-/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, after
-/// turbovec's retirement, resolves IDENTICALLY to [`select_grounder`]: the `symbols`
-/// grounder's `open` only LOADS the persisted index (it does not freshen the whole
-/// tree), so the named files are re-parsed exactly ONCE here rather than once by a
-/// load-time freshen and again by the reindex. It then calls [`Grounder::reindex`] on
-/// the changed files, so the `symbols` grounder drops each file's old symbols, re-parses
-/// its current content, and persists the delta to `.rigger/symbols/` - a later `rigger
-/// ground` (and the review tier the workflow runs after a unit lands) then reflects the
-/// just-integrated code WITHOUT re-indexing the whole repo. For the grep / nop
-/// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
-/// harmless there. Files are repo-relative, matching how the grounder records and
-/// grounds them. At least one file is required.
-pub(crate) fn cmd_reindex(args: &[String]) -> Res {
-    if args.is_empty() {
-        return Err("reindex: expected at least one file: rigger reindex <file>...".into());
-    }
-    // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
-    // is present, else the unset default (symbols). The grounder is rooted at `.`,
-    // so the persisted index it loads/updates is this project's `.rigger/symbols/`.
-    let name = config_store::load(".")
-        .map(|cfg| cfg.workflow.defaults.grounder)
-        .unwrap_or_default();
-    // Use the reindex-specific constructor: it loads the persisted index WITHOUT a
-    // whole-tree freshen, so `reindex` re-parses ONLY the named files - never those
-    // files twice (once by a load-time freshen, once by the reindex below).
-    let grounder = select_reindex_grounder(&name)?;
-    grounder.reindex(".", args);
-    println!(
-        "reindexed {} file(s) in the grounding index: {}",
-        args.len(),
-        args.join(", ")
-    );
-    Ok(())
-}
-
-/// `rigger symbols-index [<dir>]` - the criterion-3 fresh-process determinism harness for the
-/// `symbols` structural index (spec 15, unit 3). It builds the whole-project symbol index over
-/// `<dir>` (default `.`) via [`rigger::grounder::symbols::build_index`] and persists it with
-/// [`rigger::grounder::symbols::store::save`], then prints the persisted path and file count.
-///
-/// It is DELIBERATELY independent of [`select_grounder`] / `defaults.grounder`: it drives unit
-/// 3's own build+persist path directly, so a determinism test can re-index the SAME tree in two
-/// SEPARATE `rigger` processes and diff the persisted `index.json` byte-for-byte - the
-/// cross-process check the in-process lib test structurally cannot make, since one process
-/// shares a single hash seed. Keeping this off the grounder-selection wiring also keeps the
-/// spec-15 unit DAG acyclic (this harness needs only unit 3's code, never unit 4's selection).
-///
-/// Feature-gated on `symbols`: a build without it has no structural index, so the command
-/// errors loudly rather than pretending to build one (the same no-silent-degrade rule the
-/// grounder selection follows).
-pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
-    #[cfg(feature = "symbols")]
-    {
-        if args.len() > 1 {
-            return Err(format!(
-                "symbols-index: expected at most a directory, got {} arguments",
-                args.len()
-            )
-            .into());
+    } else {
+        for r in grounder.ground_ranked(query, k) {
+            println!(
+                "{}:{}: {} (degree {})",
+                r.loc.file, r.loc.line, r.loc.text, r.degree
+            );
         }
-        let dir = args.first().map(String::as_str).unwrap_or(".");
-        let idx = rigger::grounder::symbols::build_index(dir, None);
-        rigger::grounder::symbols::store::save(&idx, dir)?;
-        println!(
-            "symbols index: {} file(s) -> {}",
-            idx.files().len(),
-            rigger::grounder::symbols::store::index_path(dir).display()
-        );
-        Ok(())
     }
-    #[cfg(not(feature = "symbols"))]
-    {
-        let _ = args;
-        Err(
-            "symbols-index requires the `symbols` feature; rebuild with the default features"
-                .into(),
-        )
+    // The honesty label (6.1) travels with every answer; stderr keeps the rows themselves clean.
+    if let Some(label) = grounder.label() {
+        eprintln!("{label}");
     }
+    Ok(())
 }
 
 /// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
@@ -977,14 +899,4 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
         );
         Ok(())
     })
-}
-
-/// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to
-/// [`select_grounder`]: the only case that ever differed was turbovec (whose freshening `new`
-/// had to be swapped for `new_for_reindex` to avoid a double-embed). The surviving grounders
-/// have no such distinction - `Symbols::open` only LOADS the persisted index (it does not
-/// freshen the whole tree), and grep / nop have no index at all - so there is one selection
-/// authority, not two to keep in sync by hand.
-fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    select_grounder(name)
 }

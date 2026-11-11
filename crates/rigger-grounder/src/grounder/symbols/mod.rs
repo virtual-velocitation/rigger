@@ -1,6 +1,7 @@
-//! The symbol index: a projection of the code tree into definitions, references, and a
+//! The symbol extraction: a projection of the code tree into definitions, references, and a
 //! name-level, per-language cross-reference graph (architecture 5.5). Designed once for its
-//! several consumers (the grounder, persistence, and - in spec 16 - blast-radius).
+//! several consumers (the code store's extractor, the emit pass, and - in spec 16 - blast-radius).
+//! The grounder reads the code store's view; nothing here persists an index.
 //!
 //! Dependency direction (principle 7): the `model` is PARSER-FREE and always compiled, in
 //! both feature lanes, so a build without the `symbols` feature - which never links
@@ -9,11 +10,6 @@
 //! `symbols` feature, confined to `extract` (and, in later units, the registry).
 
 pub mod model;
-
-/// Persist + load the index (unit 3). UNGATED like `model`: it is a projection of the
-/// parser-free model onto disk, names no `tree_sitter::` type, and its cross-process
-/// determinism-by-construction tests therefore run in BOTH feature lanes.
-pub mod store;
 
 /// Tags-based extraction over an INJECTED `(grammar, tag query)` pair - the ONE place
 /// tree-sitter is touched. Feature-gated: the light lane drops it entirely.
@@ -34,29 +30,38 @@ pub mod events;
 #[cfg(feature = "symbols")]
 pub mod registry;
 
-/// The `symbols` grounder (unit 4): the `Grounder` port over the persisted index, ranking a
-/// definition-name match above a reference above an incidental prose mention. It consumes the
-/// gated extraction path (`build_index`/`index_one_file`), so it is confined to the `symbols`
-/// feature; `main::select_grounder` wires it when the feature is built, and `grounder_for`
-/// returns a loud error when it is not.
+/// The `symbols` grounder (unit 4): the `Grounder` port over the code store's view of the head,
+/// ranking a definition-name match above a reference above an incidental prose mention. It is
+/// confined to the `symbols` feature, as the code store's extractor is; `main::select_grounder`
+/// wires it when the feature is built, and `grounder_for` returns a loud error when it is not.
 #[cfg(feature = "symbols")]
 pub mod grounder;
 
-// UNGATED: [`staleness`]/[`compare_to_tree`] below (spec 68) need these too, and stay ungated
-// themselves - see their own docs - so the imports they share with the gated `build_index` path
-// live here, unconditionally, rather than duplicated under a second `#[cfg(feature = "symbols")]`
-// block (which would conflict with this one under a `symbols` build).
-use crate::grounder::symbols::model::SymbolIndex;
-use crate::grounder::walked_paths;
-use std::collections::BTreeSet;
-use std::path::Path;
-
 #[cfg(feature = "symbols")]
-use crate::grounder::symbols::model::Lang;
+use crate::grounder::symbols::model::{Lang, SymbolIndex};
 #[cfg(feature = "symbols")]
 use crate::grounder::{relative_path, walk_guarded};
 #[cfg(feature = "symbols")]
 use std::ops::ControlFlow;
+#[cfg(feature = "symbols")]
+use std::path::Path;
+
+/// A line-ending-normalized content hash: `"a\r\nb\r\n"` and `"a\nb\n"` hash identically, so the
+/// SAME source keys the SAME entry whether it was checked out with CRLF (Windows) or LF (Unix).
+/// Uses a fixed-seed FNV-1a - deliberately chosen over `DefaultHasher` (whose seed the stdlib does
+/// NOT guarantee stable across builds) - so the value is a stable content key across processes,
+/// builds, and machines.
+pub fn content_hash(src: &str) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let normalized = src.replace("\r\n", "\n");
+    let mut hash = FNV_OFFSET;
+    for byte in normalized.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
 /// (`walk_guarded`, the same walk grep and the ingests use, so they never diverge on
@@ -106,362 +111,44 @@ pub(crate) fn extracted<S: AsRef<str>>(
 }
 
 /// Extract the single file at relative path `rel` (under `root`) into `idx`, keyed by `rel`, if
-/// the registry resolves a grammar for it. This is the ONE per-file indexing authority: the
-/// whole-tree `build_index` and the incremental `reindex_files` both freshen a file through here,
-/// so a file is indexed identically whether the whole tree is built or one file is re-parsed. The
-/// file is read only once a grammar resolves, and its symbols are [`extracted`] from that text.
+/// the registry resolves a grammar for it. This is the ONE per-file indexing authority of the
+/// whole-tree `build_index`. The file is read only once a grammar resolves, and its symbols are
+/// [`extracted`] from that text.
 ///
-/// The miss arms keep the incremental index equal to a fresh `build_index` over the current tree,
+/// The miss arms keep the index equal to what a fresh `build_index` over the current tree holds,
 /// and none of them crashes the walk:
 /// - an UNRESOLVED extension leaves `idx` untouched and the file unread, whether or not it could
 ///   be read - a fresh build never indexes such a file;
 /// - under a grammar, a file that can no longer be READ (deleted, unreadable or not UTF-8) or that
 ///   fails to EXTRACT (a tags-query failure) has its entry REMOVED via
-///   [`SymbolIndex::remove_file`], so reindexing a deleted file purges its stale symbols rather
-///   than grounding a file a fresh build never visits;
+///   [`SymbolIndex::remove_file`];
 /// - a parse that recovers to NO symbols still returns `Ok` and INSERTS an empty entry (replacing
-///   any prior one), so a file edited down to its last symbol overwrites to empty rather than
-///   keeping stale defs.
-///
-/// A file that is successfully indexed also has its CONTENT HASH recorded (spec 68), via
-/// `store::content_hash` - the one hash primitive, the SAME one the live grounder's reindex
-/// freshening gate hashes with - over the same text the extraction read, so `rigger validate`'s
-/// staleness advisory can later rehash a small sample of the tree and diff it against these
-/// persisted values without a full-tree rehash. A removed entry drops its hash too
-/// ([`SymbolIndex::remove_file`]).
+///   any prior one).
 #[cfg(feature = "symbols")]
 pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lang: Option<Lang>) {
     let read = || std::fs::read_to_string(Path::new(root).join(rel)).ok();
     match extracted(rel, read, override_lang) {
         None => {}
-        Some(Some((src, fs))) => {
-            idx.insert_hashed_file(rel.to_string(), fs, store::content_hash(&src));
-        }
+        Some(Some((_, fs))) => idx.insert_file(rel.to_string(), fs),
         Some(None) => idx.remove_file(rel),
     }
 }
 
-/// Re-extract ONLY `files` into `idx`, replacing each named file's entry and leaving every
-/// other file's symbols intact - the incremental freshening `reindex` runs after a unit
-/// integrates (re-parse the just-changed files, not the whole tree). Each file is freshened
-/// through the shared [`index_one_file`] authority, NOT a second extract loop, so a file is
-/// indexed IDENTICALLY whether the whole tree is built (`build_index`) or one file is
-/// re-parsed here (one mutation authority; the two paths cannot drift). A named file under a
-/// grammar that can no longer be read (deleted or unreadable) or that fails to extract has its
-/// entry REMOVED, so reindexing a deletion leaves the index equal to a fresh `build_index` over
-/// the surviving tree; a file with an unregistered extension leaves `idx` untouched and is not
-/// read, exactly as `index_one_file` does on the whole-tree walk.
-#[cfg(feature = "symbols")]
-pub fn reindex_files(
-    root: &str,
-    idx: &mut SymbolIndex,
-    files: &[String],
-    override_lang: Option<Lang>,
-) {
-    for rel in files {
-        index_one_file(root, rel, idx, override_lang);
-    }
-}
-
-/// What comparing the persisted index against the current tree found - the evidence `rigger
-/// validate`'s INDEX STALENESS advisory (spec 68, Design) warns from. An empty `IndexDrift`
-/// (every field empty) means the index and the tree agree, as far as [`staleness`]'s
-/// cost-bounded check can tell.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct IndexDrift {
-    /// Paths in the current tree (at an extension the index already covers) that the persisted
-    /// index does not yet hold - files added since the index was last built.
-    pub added: Vec<String>,
-    /// Paths the persisted index still holds that no longer exist in the current tree - files
-    /// deleted since the index was last built.
-    pub removed: Vec<String>,
-    /// Sampled paths present in BOTH sets whose CURRENT content hash disagrees with the hash
-    /// the index recorded for them - the content drift a path-set comparison alone cannot see
-    /// (an edit that neither adds nor removes a file).
-    pub changed: Vec<String>,
-}
-
-impl IndexDrift {
-    /// Whether this comparison found any disagreement at all.
-    pub fn is_stale(&self) -> bool {
-        !self.added.is_empty() || !self.removed.is_empty() || !self.changed.is_empty()
-    }
-}
-
-/// The pure comparison core of the index-staleness check (spec 68): given the persisted
-/// `index`, the CURRENT tree's paths at the extensions the index already covers (gathered by
-/// the caller - [`staleness`] is the one production caller), and a small deterministic SAMPLE
-/// of `(rel_path, current content_hash)` pairs for paths present in both sets, report the
-/// disagreement. A sampled path the index never recorded a hash for (an index persisted before
-/// [`SymbolIndex::insert_hashed_file`] existed) is never flagged as changed - [`SymbolIndex::hash_for`]
-/// answers `None`, and there is nothing honest to compare that `None` against.
-pub fn compare_to_tree(
-    index: &SymbolIndex,
-    tree_paths: &BTreeSet<String>,
-    sample: &[(String, String)],
-) -> IndexDrift {
-    let indexed: BTreeSet<String> = index.files().keys().cloned().collect();
-    let added: Vec<String> = tree_paths.difference(&indexed).cloned().collect();
-    let removed: Vec<String> = indexed.difference(tree_paths).cloned().collect();
-    let changed: Vec<String> = sample
-        .iter()
-        .filter(|(p, hash)| index.hash_for(p).is_some_and(|h| h != hash))
-        .map(|(p, _)| p.clone())
-        .collect();
-    IndexDrift {
-        added,
-        removed,
-        changed,
-    }
-}
-
-/// How many files' current content [`staleness`] rehashes to check for drift, at most (spec 68,
-/// Design: "path-set comparison plus existing content hashes of a SMALL DETERMINISTIC sample,
-/// never a full-tree rehash"). Deterministic because the sample is drawn from the sorted
-/// intersection of two `BTreeSet`s, so the SAME tree state yields the SAME sample on every run -
-/// never a randomly-chosen subset that would make one `rigger validate` flag drift another run
-/// over the identical tree does not.
-const STALENESS_SAMPLE_SIZE: usize = 8;
-
-/// `rigger validate`'s INDEX STALENESS check (spec 68, VALIDATE ADVISORIES): compare the
-/// `symbols` index persisted at `root` against the CURRENT tree, cost-bounded exactly as the
-/// Design specifies:
-/// - a path-set comparison restricted to the extensions the persisted index ALREADY covers -
-///   never a scan for every extension the tree-sitter registry could resolve, which is why this
-///   function (and [`compare_to_tree`]) stay UNGATED: they need no grammar, so this check runs
-///   identically with or without the `symbols` feature;
-/// - a REHASH of only a small deterministic sample ([`STALENESS_SAMPLE_SIZE`]) of files already
-///   present in both the index and the tree, via [`store::content_hash`] - the SAME primitive
-///   the live grounder's reindex freshening gate hashes with (one measurement authority) -
-///   never a full-tree rehash.
-///
-/// `None` when there is nothing to warn about: no persisted index (nothing ever built, or an
-/// unreadable/corrupt file - there is nothing honest to compare against), or a comparison that
-/// found no disagreement.
-pub fn staleness(root: &str) -> Option<IndexDrift> {
-    let idx = store::load(root)?;
-    // The extensions the index already covers - derived from the index itself, never from the
-    // tree-sitter registry, which is exactly what keeps this function ungated.
-    let extension_of = |p: &str| {
-        Path::new(p)
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned())
-    };
-    let extensions: BTreeSet<String> = idx.files().keys().filter_map(|p| extension_of(p)).collect();
-    if extensions.is_empty() {
-        // Nothing persisted to compare an extension against - an empty index is never "stale".
-        return None;
-    }
-    let root_path = Path::new(root);
-    let tree_paths: BTreeSet<String> = walked_paths(root_path)
-        .into_iter()
-        .filter(|rel| extension_of(rel).is_some_and(|ext| extensions.contains(&ext)))
-        .collect();
-    let indexed: BTreeSet<String> = idx.files().keys().cloned().collect();
-    // The sample: the sorted INTERSECTION's first `STALENESS_SAMPLE_SIZE` paths (deterministic -
-    // see the constant's docs), each rehashed from its CURRENT content. A file that cannot be
-    // read right now (a race with a delete) is simply left out of the sample rather than
-    // manufacturing a spurious "changed" - the path-set comparison already covers a genuine
-    // deletion via `removed`.
-    let sample: Vec<(String, String)> = indexed
-        .intersection(&tree_paths)
-        .take(STALENESS_SAMPLE_SIZE)
-        .filter_map(|rel| {
-            let content = std::fs::read_to_string(root_path.join(rel)).ok()?;
-            Some((rel.clone(), store::content_hash(&content)))
-        })
-        .collect();
-    let drift = compare_to_tree(&idx, &tree_paths, &sample);
-    drift.is_stale().then_some(drift)
-}
-
 #[cfg(test)]
-mod staleness_tests {
-    use super::*;
-    use crate::grounder::symbols::model::{FileSymbols, Kind};
+mod content_hash_tests {
+    use super::content_hash;
 
-    /// Persist an index directly (no tree-sitter needed - this whole check is ungated), one
-    /// entry per `(path, hash)`, each carrying a single trivial def so `files()` is non-empty.
-    fn persist(root: &str, entries: &[(&str, &str)]) {
-        let mut idx = SymbolIndex::default();
-        for (path, hash) in entries {
-            idx.insert_hashed_file(
-                (*path).to_string(),
-                FileSymbols {
-                    lang: crate::grounder::symbols::model::Lang::Rust,
-                    defs: vec![crate::grounder::symbols::model::Def {
-                        kind: Kind::Function,
-                        name: "f".into(),
-                        line: 1,
-                        end_line: 1,
-                        path: "f".into(),
-                        parent: None,
-                        is_test: false,
-                        is_out_of_line_module: false,
-                        path_override: None,
-                        enclosing_inline_module_path: None,
-                    }],
-                    refs: vec![],
-                    partial: false,
-                },
-                (*hash).to_string(),
-            );
-        }
-        store::save(&idx, root).unwrap();
+    #[test]
+    fn content_hash_is_line_ending_normalized() {
+        assert_eq!(content_hash("a\r\nb\r\n"), content_hash("a\nb\n"));
     }
 
     #[test]
-    fn no_persisted_index_is_never_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        assert_eq!(staleness(root), None);
-    }
-
-    #[test]
-    fn an_unchanged_tree_matching_the_index_is_not_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let content = "fn one() {}\n";
-        std::fs::write(dir.path().join("a.rs"), content).unwrap();
-        persist(root, &[("a.rs", &store::content_hash(content))]);
-        assert_eq!(staleness(root), None);
-    }
-
-    /// A tree of `on_disk` `(path, content)` files, over an index persisted with `indexed`
-    /// `(path, content)` entries (each under its content's hash), reads as drift (`why`) whose
-    /// path sets are exactly `added` and `removed`.
-    fn assert_path_drift(
-        on_disk: &[(&str, &str)],
-        indexed: &[(&str, &str)],
-        added: &[&str],
-        removed: &[&str],
-        why: &str,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        for (path, content) in on_disk {
-            std::fs::write(dir.path().join(path), content).unwrap();
-        }
-        let hashes: Vec<(&str, String)> = indexed
-            .iter()
-            .map(|(path, content)| (*path, store::content_hash(content)))
-            .collect();
-        let entries: Vec<(&str, &str)> = hashes.iter().map(|(p, h)| (*p, h.as_str())).collect();
-        persist(root, &entries);
-        let drift = staleness(root).expect(why);
-        assert_eq!(drift.added, added);
-        assert_eq!(drift.removed, removed);
-    }
-
-    crate::test_cases! {
-        a_file_added_to_the_tree_since_the_index_was_built_is_flagged: assert_path_drift(
-            &[("a.rs", "fn one() {}\n"), ("b.rs", "fn two() {}\n")],
-            &[("a.rs", "fn one() {}\n")],
-            &["b.rs"],
-            &[],
-            "a new file must be flagged as drift",
-        );
-        a_file_removed_from_the_tree_since_the_index_was_built_is_flagged: assert_path_drift(
-            &[("a.rs", "fn one() {}\n")],
-            &[("a.rs", "fn one() {}\n"), ("gone.rs", "fn gone() {}\n")],
-            &[],
-            &["gone.rs"],
-            "a deleted file must be flagged as drift",
-        );
-    }
-
-    #[test]
-    fn edited_content_with_no_path_change_is_flagged_via_the_sample_rehash() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        // The index was built over the ORIGINAL content...
-        persist(root, &[("a.rs", &store::content_hash("fn one() {}\n"))]);
-        // ...but the file on disk has since changed - same path, different bytes.
-        std::fs::write(dir.path().join("a.rs"), "fn onemodified() {}\n").unwrap();
-        let drift = staleness(root).expect("edited content must be flagged as drift");
-        assert_eq!(drift.changed, vec!["a.rs".to_string()]);
-        assert!(drift.added.is_empty());
-        assert!(drift.removed.is_empty());
-    }
-
-    #[test]
-    fn a_path_the_index_never_recorded_a_hash_for_is_never_flagged_as_changed() {
-        // Simulates an index persisted before the hash field existed (or a hash that was, for
-        // any reason, never recorded): `hash_for` answers `None`, and `compare_to_tree` must
-        // never treat a missing "before" value as evidence of change.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(
-            "a.rs".to_string(),
-            FileSymbols {
-                lang: crate::grounder::symbols::model::Lang::Rust,
-                defs: vec![],
-                refs: vec![],
-                partial: false,
-            },
-        );
-        // Deliberately `insert_file`, never `insert_hashed_file`: no hash is recorded.
-        store::save(&idx, root).unwrap();
-        assert_eq!(staleness(root), None);
-    }
-
-    #[test]
-    fn the_sample_is_capped_and_deterministic() {
-        // Persist more files than STALENESS_SAMPLE_SIZE, all unchanged; staleness must still
-        // report no drift - the sample is bounded, not a full-tree rehash, and every unchanged
-        // file it happens to draw agrees.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let mut entries: Vec<(String, String)> = Vec::new();
-        for i in 0..(STALENESS_SAMPLE_SIZE * 2) {
-            let name = format!("f{i}.rs");
-            let content = format!("fn f{i}() {{}}\n");
-            std::fs::write(dir.path().join(&name), &content).unwrap();
-            entries.push((name, store::content_hash(&content)));
-        }
-        let refs: Vec<(&str, &str)> = entries
-            .iter()
-            .map(|(p, h)| (p.as_str(), h.as_str()))
-            .collect();
-        persist(root, &refs);
-        assert_eq!(staleness(root), None);
-    }
-
-    #[test]
-    fn the_sample_cap_limits_how_many_actually_changed_files_are_rehashed_and_reported() {
-        // Persist more files than STALENESS_SAMPLE_SIZE, then change EVERY one of them on disk
-        // (unlike `the_sample_is_capped_and_deterministic` above, where every file stays
-        // unchanged and so proves nothing about whether the cap is applied at all - a version
-        // with `.take(STALENESS_SAMPLE_SIZE)` deleted would pass that test identically). Here a
-        // full-tree rehash would flag every file as changed; only the capped SAMPLE may be
-        // rehashed and reported, so this test fails if the cap is removed.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let mut entries: Vec<(String, String)> = Vec::new();
-        for i in 0..(STALENESS_SAMPLE_SIZE * 2) {
-            let name = format!("f{i:02}.rs");
-            let original = format!("fn f{i}() {{}}\n");
-            entries.push((name, store::content_hash(&original)));
-        }
-        let refs: Vec<(&str, &str)> = entries
-            .iter()
-            .map(|(p, h)| (p.as_str(), h.as_str()))
-            .collect();
-        persist(root, &refs);
-        // Every persisted file now has DIFFERENT content on disk than what was indexed.
-        for (name, _) in &entries {
-            std::fs::write(dir.path().join(name), format!("fn {name}_changed() {{}}\n")).unwrap();
-        }
-        let drift = staleness(root).expect("every file actually changed; must be flagged stale");
-        assert_eq!(
-            drift.changed.len(),
-            STALENESS_SAMPLE_SIZE,
-            "only the capped sample may be rehashed and reported as changed, even though every \
-             file in the tree actually drifted - a full rehash would report all {} of them",
-            STALENESS_SAMPLE_SIZE * 2
-        );
+    fn content_hash_is_a_stable_fixed_seed_value() {
+        // FNV-1a's offset basis is the hash of the empty string: pinning it catches a seed or
+        // algorithm change, which would move every key derived from it across builds.
+        assert_eq!(content_hash(""), "cbf29ce484222325");
+        assert_ne!(content_hash("a"), content_hash("b"));
     }
 }
 
@@ -481,22 +168,22 @@ mod tests {
     }
 
     #[test]
-    fn reindex_replaces_only_the_named_file() {
+    fn indexing_a_file_again_replaces_only_that_file() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
         std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
         let mut idx = build_index(root, None);
-        // Change only a.rs; reindex just that file.
+        // Change only a.rs; index just that file again.
         std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
-        reindex_files(root, &mut idx, &["a.rs".into()], None);
+        index_one_file(root, "a.rs", &mut idx, None);
         assert_eq!(defs_named(&idx, "oneprime").len(), 1); // a.rs's new symbol is in
         assert!(defs_named(&idx, "one").is_empty()); // a.rs's old symbol is gone (entry replaced)
         assert_eq!(defs_named(&idx, "two").len(), 1); // b.rs untouched
     }
 
     #[test]
-    fn reindex_over_a_deleted_file_removes_its_symbols_and_equals_a_fresh_build() {
+    fn indexing_a_deleted_file_removes_its_symbols_and_equals_a_fresh_build() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn gone_symbol() {}\n").unwrap();
@@ -504,11 +191,10 @@ mod tests {
         let mut idx = build_index(root, None);
         assert_eq!(defs_named(&idx, "gone_symbol").len(), 1);
 
-        // Delete a.rs, then reindex JUST it - the incremental freshening a post-integrate reindex
-        // runs. The gone file's stale symbols must be PURGED, not left grounding a file that no
-        // longer exists.
+        // Delete a.rs, then index JUST it again. The gone file's stale symbols must be PURGED,
+        // not left describing a file that no longer exists.
         std::fs::remove_file(dir.path().join("a.rs")).unwrap();
-        reindex_files(root, &mut idx, &["a.rs".into()], None);
+        index_one_file(root, "a.rs", &mut idx, None);
 
         // The deleted file's symbol is gone and its entry is dropped; the untouched file stands.
         assert!(defs_named(&idx, "gone_symbol").is_empty());
@@ -516,7 +202,7 @@ mod tests {
         assert_eq!(defs_named(&idx, "kept_symbol").len(), 1);
 
         // The incremental index over the deletion EQUALS a fresh whole-tree build over the
-        // surviving tree - the invariant reindex must hold (it never visits the gone file either).
+        // surviving tree (which never visits the gone file either).
         let fresh = build_index(root, None);
         assert_eq!(idx, fresh);
     }
@@ -534,20 +220,20 @@ mod tests {
         let forced = idx.clone();
         assert_eq!(defs_named(&idx, "in_prose").len(), 1);
 
-        reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        index_one_file(root, "notes.txt", &mut idx, None);
         assert_eq!(idx, forced, "a file no grammar resolves is untouched");
 
         // A directory at the path cannot be read as text under any uid.
         std::fs::remove_file(dir.path().join("notes.txt")).unwrap();
         std::fs::create_dir(dir.path().join("notes.txt")).unwrap();
-        reindex_files(root, &mut idx, &["notes.txt".into()], None);
+        index_one_file(root, "notes.txt", &mut idx, None);
         assert_eq!(
             idx, forced,
             "no grammar resolves, so the unreadable path is never asked for"
         );
 
         // The same unreadable path under a grammar has its entry removed.
-        reindex_files(root, &mut idx, &["notes.txt".into()], Some(Lang::Rust));
+        index_one_file(root, "notes.txt", &mut idx, Some(Lang::Rust));
         assert_eq!(
             idx,
             SymbolIndex::default(),
@@ -581,35 +267,6 @@ mod tests {
             .map(|d| (d.name.as_str(), d.kind, d.line))
             .collect();
         assert_eq!(defs, [("one", Kind::Function, 1)]);
-    }
-
-    #[test]
-    fn index_one_file_records_the_content_hash_alongside_the_symbols() {
-        // spec 68: a successfully indexed file's content hash is persisted alongside its
-        // symbols, keyed by store::content_hash - the ONE hash primitive - so `rigger
-        // validate`'s staleness advisory can rehash a small sample later and diff against it.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
-        let idx = build_index(root, None);
-        assert_eq!(
-            idx.hash_for("a.rs"),
-            Some(store::content_hash("fn one() {}\n").as_str())
-        );
-
-        // Reindexing after content changes updates the recorded hash to match.
-        let mut idx = idx;
-        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
-        reindex_files(root, &mut idx, &["a.rs".into()], None);
-        assert_eq!(
-            idx.hash_for("a.rs"),
-            Some(store::content_hash("fn oneprime() {}\n").as_str())
-        );
-
-        // A deleted file's hash is dropped along with its symbols.
-        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
-        reindex_files(root, &mut idx, &["a.rs".into()], None);
-        assert_eq!(idx.hash_for("a.rs"), None);
     }
 
     #[test]

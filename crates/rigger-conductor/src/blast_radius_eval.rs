@@ -351,7 +351,7 @@ mod corpus_gates {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let queries = build_adversarial_corpus(root);
-        let symbols = Symbols::open(root.to_str().unwrap(), None);
+        let symbols = Symbols::in_directory(root.to_str().unwrap());
         let grep = Grep {
             root: root.to_str().unwrap().to_string(),
         };
@@ -478,7 +478,7 @@ mod corpus_gates {
     /// baseline is grep's own `blast_radius` run UNCAPPED (its full radius); the subject is the
     /// symbols safe superset.
     fn measure(root: &Path) -> (Vec<UnitRadius>, Vec<UnitRadius>) {
-        let symbols = Symbols::open(root.to_str().unwrap(), None);
+        let symbols = Symbols::in_directory(root.to_str().unwrap());
         let grep = Grep {
             root: root.to_str().unwrap().to_string(),
         };

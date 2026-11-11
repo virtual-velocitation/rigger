@@ -3,7 +3,7 @@ name = "rigger-grounder"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols index, grep and nop), the shared scoped project walk, the code, design-intent and workflow-definition emit passes and the project-source ingest walk."
+description = "Rigger's grounding adapters: the grounders behind the Grounder port (the structural symbols grounder, grep and nop), the shared scoped project walk, the code, design-intent and workflow-definition emit passes and the project-source ingest walk."
 
 [lib]
 name = "rigger_grounder"
@@ -35,7 +35,7 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # The workflow-definition pass reads `.rigger/workflow.yml` through the operator-tree reader (a
 # same-ring edge).
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
-# The owned format's atomic publish and write lock the symbols index persists through.
+# The code store the symbols grounder reads and the scoped project walk.
 rigger-store = { path = "../rigger-store", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

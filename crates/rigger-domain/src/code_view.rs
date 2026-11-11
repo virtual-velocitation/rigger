@@ -5,7 +5,7 @@
 
 use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp, Tip};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 /// A file in a view, without its facts.
@@ -91,6 +91,73 @@ pub struct WorktreeDiff {
     pub changed: Vec<String>,
     /// Paths the worktree holds that the tree does not.
     pub untracked: Vec<String>,
+}
+
+impl WorktreeDiff {
+    /// The files that differ, less those outside the tree's scope ([`in_scope`]): rigger's own
+    /// state holds no fact, so it never counts as a difference.
+    pub fn files_in_scope(self) -> BTreeSet<String> {
+        (self.changed.into_iter())
+            .chain(self.untracked)
+            .filter(|f| in_scope(f))
+            .collect()
+    }
+}
+
+/// The files of a view a reader does not serve because its worktree may not match them: the ONE
+/// withholding rule every reader of a view applies (invariant 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Withheld {
+    /// The worktree's files that differ from the view's tree.
+    Files(BTreeSet<String>),
+    /// Every file: the worktree cannot be compared with the tree, or the view cannot be read.
+    All,
+}
+
+impl Withheld {
+    /// What `diff` puts in doubt: the files that differ, or everything when the worktree cannot
+    /// be compared.
+    pub fn of(diff: Result<WorktreeDiff, String>) -> Self {
+        match diff {
+            Ok(diff) => Withheld::Files(diff.files_in_scope()),
+            Err(_) => Withheld::All,
+        }
+    }
+
+    /// Whether the file at `path` is withheld.
+    pub fn withholds_file(&self, path: &str) -> bool {
+        match self {
+            Withheld::All => true,
+            Withheld::Files(files) => files.contains(path),
+        }
+    }
+
+    /// Whether the worktree agrees with the view on every file: nothing is withheld.
+    pub fn withholds_nothing(&self) -> bool {
+        matches!(self, Withheld::Files(files) if files.is_empty())
+    }
+
+    /// Whether some files, but not all, are withheld because they differ.
+    pub fn has_differing_files(&self) -> bool {
+        matches!(self, Withheld::Files(files) if !files.is_empty())
+    }
+}
+
+/// The code view of the head a reader in a worktree reads, and how that worktree differs from it.
+pub struct Head {
+    pub view: Box<dyn CodeView>,
+    /// How the worktree differs from the view's tree, or why it cannot be compared.
+    pub diff: Result<WorktreeDiff, String>,
+    /// Why the view is behind the tree it was opened for, when it is.
+    pub behind: Option<String>,
+}
+
+/// Opens the code view of the head for a reader (7.3). The composition root implements it. A
+/// reader that lives across merges opens once per read, so each answer describes the store as it
+/// stands then.
+pub trait OpenCodeView: Send + Sync {
+    /// The view of the head as it stands now, compared with `worktree`, or why it cannot be read.
+    fn head(&self, worktree: &Path) -> Result<Head, String>;
 }
 
 /// One tree's facts, stamped with the tree they describe.
@@ -390,6 +457,87 @@ mod tests {
                 .collect();
             assert_eq!(&found_defs, defs, "defs named {leaf}");
             assert_eq!(&found_mentions, mentions, "mentions named {leaf}");
+        }
+    }
+
+    /// Each row: how a worktree differs, the files it withholds and whether it withholds the file
+    /// `src/a.rs`.
+    #[test]
+    fn a_diff_withholds_its_differing_files_or_all_when_uncomparable() {
+        let differing = |changed: &[&str]| {
+            Ok(WorktreeDiff {
+                changed: changed.iter().map(|f| f.to_string()).collect(),
+                untracked: vec![".rigger/events.db".to_string()],
+            })
+        };
+        let cases = [
+            ("agreeing", differing(&[]), false, true, false),
+            (
+                "another file differs",
+                differing(&["src/b.rs"]),
+                false,
+                false,
+                true,
+            ),
+            (
+                "this file differs",
+                differing(&["src/a.rs"]),
+                true,
+                false,
+                true,
+            ),
+            (
+                "uncomparable",
+                Err("no commit".to_string()),
+                true,
+                false,
+                false,
+            ),
+        ];
+        for (name, diff, withholds_a, nothing, differing_files) in cases {
+            let withheld = Withheld::of(diff);
+            assert_eq!(withheld.withholds_file("src/a.rs"), withholds_a, "{name}");
+            assert_eq!(withheld.withholds_nothing(), nothing, "{name}");
+            assert_eq!(withheld.has_differing_files(), differing_files, "{name}");
+        }
+    }
+
+    /// Each row: how a worktree differs and the files that count as differing.
+    #[test]
+    fn a_diff_counts_only_the_files_the_tree_covers() {
+        let diff = |changed: &[&str], untracked: &[&str]| WorktreeDiff {
+            changed: changed.iter().map(|f| f.to_string()).collect(),
+            untracked: untracked.iter().map(|f| f.to_string()).collect(),
+        };
+        let cases = [
+            ("no difference", diff(&[], &[]), vec![]),
+            (
+                "changed and untracked together",
+                diff(&["src/b.rs"], &["src/a.rs"]),
+                vec!["src/a.rs", "src/b.rs"],
+            ),
+            (
+                "a file in both lists counts once",
+                diff(&["src/a.rs"], &["src/a.rs"]),
+                vec!["src/a.rs"],
+            ),
+            (
+                "rigger's own state is out of scope",
+                diff(
+                    &[".rigger/events.db"],
+                    &[".rigger/store/code/CURRENT", "README.md"],
+                ),
+                vec!["README.md"],
+            ),
+            (
+                "the workflow definition is in scope",
+                diff(&[".rigger/workflow.yml"], &[]),
+                vec![".rigger/workflow.yml"],
+            ),
+        ];
+        for (name, diff, expected) in cases {
+            let files: Vec<String> = diff.files_in_scope().into_iter().collect();
+            assert_eq!(files, expected, "{name}");
         }
     }
 

@@ -289,14 +289,6 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // INDEX STALENESS advisory (spec 68, VALIDATE ADVISORIES): warn when the persisted
-    // `symbols` grounding index has drifted from the tree and name `rigger reindex`. Cost-
-    // bounded and ungated (Design) - see `grounder::symbols::staleness`'s own docs for the
-    // measurement itself. `None` when there is no persisted index (nothing to compare
-    // against) or no disagreement; this never fails validate.
-    if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
-        eprintln!("{}", index_staleness_message(&drift));
-    }
     // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
     // the event log still holds a derived event and name `rigger reset --derived`, the migration
     // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
@@ -461,39 +453,6 @@ fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
     advisories
 }
 
-/// The INDEX STALENESS advisory line (spec 68, VALIDATE ADVISORIES), rendered from an already-
-/// computed [`rigger::grounder::symbols::IndexDrift`] (the pure formatting stays separate from
-/// the gathering in [`rigger::grounder::symbols::staleness`], exactly like
-/// [`build_environment_report`] above). Names counts per kind of disagreement - never just a
-/// bare "it drifted" - and the fix, `rigger reindex`.
-fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> String {
-    let mut parts = Vec::new();
-    if !drift.added.is_empty() {
-        parts.push(format!(
-            "{} file(s) on disk not yet in the index",
-            drift.added.len()
-        ));
-    }
-    if !drift.removed.is_empty() {
-        parts.push(format!(
-            "{} indexed file(s) no longer on disk",
-            drift.removed.len()
-        ));
-    }
-    if !drift.changed.is_empty() {
-        parts.push(format!(
-            "{} sampled file(s) whose content changed",
-            drift.changed.len()
-        ));
-    }
-    format!(
-        "warning: the symbols grounding index ({}) has drifted from the tree ({}). Run \
-         `rigger reindex <file>...` to refresh it.",
-        rigger::grounder::symbols::store::index_path(".").display(),
-        parts.join(", "),
-    )
-}
-
 /// The LOG BLOAT advisory line (spec 107), rendered from an already-read
 /// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
 /// `None` for a count holding no derived event; any other names what the log still holds and
@@ -551,8 +510,7 @@ fn retired_entities_advisory(n: usize) -> Option<String> {
 /// the shape of, `Projector` is the only [`RecordFold`] this binary ever opens), so this needs no
 /// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
 /// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
-/// error after that point, exactly like the log-bloat and index-staleness advisories above
-/// swallow one.
+/// error after that point, exactly like the log-bloat advisory above swallows one.
 fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
     let graph = standing_graph(graph_db, project)?;
     retired_entities_advisory(graph.retired_code_entity_count().ok()?)
@@ -1876,26 +1834,7 @@ mod tests {
         assert!(model_drift_advisory(&metrics::ModelDrift::default()).is_none());
     }
 
-    // --- Spec 68, VALIDATE ADVISORIES: the two pure formatters (INDEX STALENESS, LOG BLOAT) ---
-
-    #[test]
-    fn index_staleness_message_names_every_kind_of_disagreement_and_the_fix() {
-        let drift = rigger::grounder::symbols::IndexDrift {
-            added: vec!["new.rs".to_string()],
-            removed: vec!["gone.rs".to_string()],
-            changed: vec!["edited.rs".to_string()],
-        };
-        let msg = index_staleness_message(&drift);
-        assert!(msg.starts_with("warning:"), "advisory: {msg}");
-        assert!(
-            msg.contains('1'),
-            "the message must carry the per-kind counts: {msg}"
-        );
-        assert!(
-            msg.contains("rigger reindex"),
-            "the message must name the fix: {msg}"
-        );
-    }
+    // --- Spec 68, VALIDATE ADVISORIES: the LOG BLOAT advisory's pure formatter ---
 
     #[test]
     fn bloat_advisory_is_none_for_a_count_holding_no_derived_event_and_names_any_other() {

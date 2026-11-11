@@ -854,31 +854,16 @@ is recorded under can never drift between them. Four properties define it:
   - **A file the walk no longer sees.** Retiring a file's structure is driven by that file's OWN
     batch, so a whole-project walk hands every `gc`, `gd` or `gw` identity the graph holds whose
     path the tree no longer holds one batch more: the boundary batch for no bytes. Its fold advances
-    the identity's generation and retires the file's nodes and edges. The walk asks the tree before
-    the persisted symbols index (the last bullet below), so a deleted path that index still lists
-    gets the retirement batch, never the index's stale one.
+    the identity's generation and retires the file's nodes and edges. The walk asks the tree, so a
+    deleted path gets the retirement batch.
   - **A file the walk still sees that now extracts to NOTHING** - an ordinary edit that removes its
     last definition and reference. Both halves drop a file whose extraction is empty, so again no
     batch is emitted, no `supersede_file_edges` runs, and that file's prior entities and edges stay
-    live. "Extracts to nothing" is measured on what the walk lowered, so on a persisted-index project
-    an edit that empties a file leaves the code half emitting the index's batch until the index is
-    refreshed. Skipping is not what strands them: re-appending the whole index would not have
-    retired them either.
+    live.
   - **A batch whose APPEND landed but whose FOLD did not.** `append_and_fold_batch` folds
     best-effort by contract - a fold failure never fails an append that already landed durably - so
     the log is right and the graph is behind. The append IS recorded, so a later run correctly skips
     it; healing that half is the append-and-fold authority's obligation, not the skip rule's.
-
-  This one sits outside those three for another reason:
-
-  - **A code walk lowered from a PERSISTED symbols index.** The code half loads a persisted index
-    when the project has one and only builds a fresh one when it does not, and it derives every
-    event from the INDEXED symbols with no read of the file itself. On such a project the batches -
-    and therefore the content the suppression decision is made against - describe what that index
-    holds rather than what the tree currently holds, so a suppression decision IS made and it is made
-    against stale content. This is also why the three above are stated walk-relative: a file an edit
-    emptied still yields a NON-empty batch while the index lists it.
-    Refreshing the index is `rigger reindex`'s job, not this rule's.
 
   On the INGEST path the projection deletes nothing: the next whole-project walk RETIRES a removed
   file's facts (`valid_to` stamped, the rows kept), and reclaiming those rows is a deliberate act

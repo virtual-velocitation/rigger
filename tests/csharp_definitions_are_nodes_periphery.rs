@@ -1,19 +1,16 @@
 //! Periphery (contract and integration) tests for spec 116 criterion 8, C# DEFINITIONS ARE
 //! NODES: every C# definition type is a definition of its kind and leaf. The crate's own tests
-//! pin the rule on the extracted symbols; these run OUTSIDE the crate and guard the two
-//! boundaries the rule crosses on its way to an operator:
+//! pin the rule on the extracted symbols; these run OUTSIDE the crate and guard the
+//! boundary the rule crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds from the C# definitions fixture: each definition is a
 //!    node carrying its kind string and line under an id that is the file and its path, each leaf
 //!    in it verbatim (a dotted namespace, `~Foo`, `+`, `this`, `implicit operator int`), a
 //!    method-local variable is no node, and each reference hangs off the caller the fixture gives
-//!    it;
-//!  - the persisted symbol index: the variant name `Property`, which the kind a C# property
-//!    takes is written under and read back from.
+//!    it.
 
 #[cfg(feature = "symbols")]
 use crate::common;
-use crate::symbol_index;
 
 rigger::test_cases! {
     /// GIVEN a project whose one C# file is the C# definitions fixture,
@@ -113,12 +110,5 @@ rigger::test_cases! {
             ],
             "every definition of the built graph at its path, none for a method-local variable or \
              const, and no placeholder",
-        );
-    /// The persisted index writes a property under the variant name `Property`, and reads it back
-    /// as the kind it was saved as.
-    the_property_kind_persists_under_its_variant_name_and_reloads:
-        symbol_index::assert_kinds_persist_under_their_variant_names(
-            "a.cs",
-            &[(rigger::grounder::symbols::model::Kind::Property, "p", "Property")],
         );
 }

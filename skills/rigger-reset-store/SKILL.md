@@ -26,7 +26,7 @@ Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any
 
 ## See also
 
-rigger-build-graph if `graph.db` needs regenerating rather than pruning; rigger-reindex if only the symbols index is stale.
+rigger-build-graph if `graph.db` needs regenerating rather than pruning.
 
 
 ## Operator binary boundary
