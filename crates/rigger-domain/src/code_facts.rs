@@ -23,15 +23,22 @@ pub enum Scope {
     Test,
 }
 
-/// The tree a snapshot describes, and the extractor and sequence number that produced it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Stamp {
+/// The tree a source names: the commit checked out, or a directory's content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tip {
     /// The ref the operator checkout has checked out, for display.
     pub head: String,
-    /// The commit the snapshot describes; none when the tree is read from a directory.
+    /// The commit; none when the tree is read from a directory.
     pub commit: Option<String>,
     /// The root tree id; for a directory source, a hash over the sorted (path, content hash) pairs.
     pub tree: String,
+}
+
+/// The tree a snapshot describes, and the extractor and sequence number that produced it. Only
+/// `advance` builds one, from a [`Tip`] and what only it knows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stamp {
+    pub tip: Tip,
     /// The extractor fingerprint: changes whenever any extractor's output can change.
     pub fingerprint: u64,
     /// The snapshot's sequence number.

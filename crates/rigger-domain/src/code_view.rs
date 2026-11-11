@@ -3,7 +3,7 @@
 //! ([`Extract`], [`Group`]), the filter a reader applies ([`ViewFilter`]) and the in-memory view
 //! ([`FactsView`]). A store holds no language knowledge: extraction and grouping are passed in.
 
-use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp};
+use crate::code_facts::{FileFacts, Half, MentionKind, Scope, Stamp, Tip};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
@@ -108,8 +108,8 @@ pub trait CodeView: Send + Sync {
 
 /// Where a tree is read from: a git repository, or a directory with no git.
 pub trait TreeSource {
-    /// The checked-out commit and its tree. `fingerprint` and `seq` are the caller's to fill.
-    fn head(&self) -> Result<Stamp, String>;
+    /// The checked-out commit and its tree.
+    fn head(&self) -> Result<Tip, String>;
     /// Every file of `tree`.
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;
     /// The paths that differ between two trees.
@@ -302,8 +302,17 @@ mod tests {
     #[test]
     fn facts_view_finds_defs_and_mentions_by_leaf() {
         // Fed out of path order, so the view's own ordering is under test.
+        let stamp = Stamp {
+            tip: Tip {
+                head: "main".into(),
+                commit: None,
+                tree: "t".into(),
+            },
+            fingerprint: 0,
+            seq: 1,
+        };
         let view = FactsView::new(
-            Stamp::default(),
+            stamp,
             vec![
                 file(
                     "tests/t.rs",
