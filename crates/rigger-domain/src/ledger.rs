@@ -184,14 +184,12 @@ pub struct RunState {
     /// Folding the durable `BudgetExhausted` event would falsely re-report a halt the operator
     /// has since resolved by raising the budget (a resume then schedules the work and never
     /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
-    /// `rigger step` copies it onto its printed `Step` so the thin driver stops loudly on a
-    /// halt instead of reading convergence.
     pub budget_halt: Option<String>,
     /// Whether THIS run process's conductor pass PARKED a spawn - stopped at a request with
     /// no result - so it reached no fixpoint. Like [`budget_halt`](RunState::budget_halt) it
-    /// is a fact of the live pass, never folded by [`project`]: a result a courier records
-    /// after the pass parked it is in the log the step reads back, yet the pass never folded
-    /// it, so only this says the run still owes the work that result unlocks.
+    /// is a fact of the live pass, never folded by [`project`]: a result recorded after the
+    /// pass parked its spawn is in the log read back afterwards, yet the pass never folded it,
+    /// so only this says the run still owes the work that result unlocks.
     pub parked: bool,
     /// Unit ids currently awaiting a human: a `ManualReview` was emitted for the unit and
     /// the run does not (yet) class it terminal - the manual-review half of the
@@ -200,14 +198,6 @@ pub struct RunState {
     /// terminal exclusion needs the FINAL folded state: a unit that is manual-reviewed and
     /// then integrated must leave the inbox.
     pub manual_review: Vec<String>,
-    /// The push-side anomalies THIS run process's step surfaced (spec 69: the watching
-    /// discipline's step wire). Like [`budget_halt`](RunState::budget_halt) this is NOT
-    /// folded from the durable log by [`project`] - it is a fact of the transition this
-    /// process's `conductor::run` just drove (a before/after comparison over its own
-    /// in-process run), so `project` leaves it empty and only the live run stamps it.
-    /// `rigger step` copies it onto its printed `Step` (spec 69, criterion 5's OWN wire
-    /// stamp; the driver's narration of it is a later criterion).
-    pub attention: Vec<AttentionEntry>,
     /// This run's id (spec 82, criterion 1), folded from its `RunStarted` body - the same
     /// `run` field `runscope::current_run_id` reads via a separate whole-stream scan.
     /// [`RunState::release_ready`] reads it internally to derive this run's per-run-unique PR
@@ -263,9 +253,7 @@ impl Hold {
 
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
     /// cause alone when that action is empty, as an operator hold held with an empty reason has:
-    /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry, the step a
-    /// held run prints (`spawn::step_of_hold`) and the note a relaunched session reads name a
-    /// hold by.
+    /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry and the note a relaunched session reads name a hold by.
     pub fn reason(&self) -> String {
         let latest = &self.latest;
         if latest.action.is_empty() {
@@ -345,11 +333,11 @@ pub fn holds(run_events: &[Event]) -> Vec<HoldSpan> {
     spans
 }
 
-/// One of the watching-discipline signals `AttentionEntry::kind` carries: spec 69's five,
-/// spec 112's spec-defect stop ([`ATTENTION_SPEC_DEFECT`]) and spec 105's hold and release
-/// ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`]). Closed vocabulary (never inferred
-/// downstream) - kept as `&str` constants rather than an enum so the wire value and the Rust
-/// match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
+/// One of the signals `AttentionEntry::kind` carries: an escalation, a spec-defect stop
+/// ([`ATTENTION_SPEC_DEFECT`], spec 112), a budget halt, a reject recurrence, and a hold and its
+/// release ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`], spec 105). Closed vocabulary (never
+/// inferred downstream) - kept as `&str` constants rather than an enum so the wire value and the
+/// Rust match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
 /// of sync.
 pub const ATTENTION_ESCALATED: &str = "escalated";
 /// The run is held (spec 105): run-scoped, its detail the hold's [`Hold::reason`], one per hold
@@ -365,25 +353,17 @@ pub const ATTENTION_RELEASED: &str = "released";
 pub const ATTENTION_SPEC_DEFECT: &str = "spec-defect";
 pub const ATTENTION_HALTED: &str = "halted";
 pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
-pub const ATTENTION_BUDGET_FINAL_TENTH: &str = "budget-final-tenth";
-pub const ATTENTION_STALLED_FRONTIER: &str = "stalled-frontier";
 
-/// The canonical kind order (spec 69, criterion 5; spec 112, criterion 5; spec 105): held,
-/// escalated, spec-defect, halted, reject-recurrence, budget-final-tenth, stalled-frontier,
-/// released. `conductor::compute_attention` and the console's dock sort their entries by it (a
-/// STABLE sort, so entries of the SAME kind keep their lexical unit order); `rigger step`
-/// (main.rs) re-sorts `attention` by it after appending the hung-liveness half of signal 2, which
-/// `main.rs` computes separately and merges in - see `compute_attention`'s own doc comment for
-/// why. An unknown kind (never produced today) sorts last rather than panicking.
+/// The canonical kind order: held, escalated, spec-defect, halted, reject-recurrence, released.
+/// The console's dock sorts its entries by it (a STABLE sort, so entries of the SAME kind keep
+/// their lexical unit order). An unknown kind sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 8] = [
+    const ORDER: [&str; 6] = [
         ATTENTION_HELD,
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
         ATTENTION_HALTED,
         ATTENTION_REJECT_RECURRENCE,
-        ATTENTION_BUDGET_FINAL_TENTH,
-        ATTENTION_STALLED_FRONTIER,
         ATTENTION_RELEASED,
     ];
     ORDER.iter().position(|k| *k == kind).unwrap_or(usize::MAX)
@@ -410,12 +390,10 @@ pub fn hold_attention(spans: &[HoldSpan]) -> Option<Vec<AttentionEntry>> {
     Some(entries)
 }
 
-/// One push-side anomaly a step surfaced (spec 69): the wire carries what an unattended
-/// run needs read, so an orchestrator never has to poll the log for it. `kind` is one of
-/// the `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind
-/// and is empty (omitted from the wire) for a run-scoped one (`held`, `halted`,
-/// `budget-final-tenth`, `released`); `detail` is the human-readable why, so a later criterion's
-/// narrator line needs no further log lookup to render one line naming event + unit.
+/// One anomaly a person needs to read (the console's needs-you dock). `kind` is one of the
+/// `ATTENTION_*` constants above; `unit` names the subject for a unit-scoped kind and is empty
+/// (omitted from the wire) for a run-scoped one (`held`, `halted`, `released`); `detail` is the
+/// human-readable why, so one line names the event and unit with no further log lookup.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct AttentionEntry {
     pub kind: &'static str,
@@ -425,7 +403,7 @@ pub struct AttentionEntry {
 }
 
 impl AttentionEntry {
-    /// A unit-scoped entry (escalated / spec-defect / reject-recurrence / stalled-frontier).
+    /// A unit-scoped entry (escalated / spec-defect / reject-recurrence).
     pub fn unit_scoped(
         kind: &'static str,
         unit: impl Into<String>,
@@ -438,7 +416,7 @@ impl AttentionEntry {
         }
     }
 
-    /// A run-scoped entry (held / halted / budget-final-tenth / released) - no single unit is the
+    /// A run-scoped entry (held / halted / released) - no single unit is the
     /// subject.
     pub fn run_scoped(kind: &'static str, detail: impl Into<String>) -> Self {
         Self::unit_scoped(kind, String::new(), detail)
@@ -920,26 +898,6 @@ impl RunState {
         )
     }
 
-    /// The ids of every unit that ESCALATED - it exhausted remediation and went terminal
-    /// WITHOUT integrating (§4.6, spec 19c unit 1). Lexically ordered (the `units` map is a
-    /// [`BTreeMap`] keyed by id) so the set is deterministic for the serialized wire.
-    ///
-    /// This is the honest wedge set: a fixpoint reached with any escalated unit is NOT a
-    /// clean completion, so `rigger step` copies this onto its printed `Step` and the thin
-    /// driver stops loudly on a wedged terminus, exactly as it does for a budget halt. It is
-    /// deliberately `Escalated`-ONLY, not "every unit that never integrated": a
-    /// terminal-by-design unit (`on_pass: none`) rests unintegrated at a clean fixpoint by
-    /// intent and must NOT be surfaced as a wedge (finding
-    /// adv-u1-approved-not-integrated-false-positive-on-onpass-none) - only a unit that gave
-    /// up at the retry bound is a genuine wedge.
-    pub fn escalated_units(&self) -> Vec<String> {
-        self.units
-            .values()
-            .filter(|u| u.status == Status::Escalated)
-            .map(|u| u.id.clone())
-            .collect()
-    }
-
     /// The halt of the spec-defect stop this run carries (spec 112, criterion 5): the first
     /// unit's, in lexical order, [`Unit::spec_defect_reason`], or `None`.
     pub fn spec_defect_reason(&self) -> Option<&str> {
@@ -1042,7 +1000,7 @@ mod tests {
         // Spec 88, criterion 3 (ESCALATION RESUMES): `rigger resume-unit` appends
         // `UnitResumed` on top of an escalated unit. The unit must re-enter
         // remediation exactly as a mid-remediation `Failed` unit does - `is_terminal`
-        // false, so a fresh `rigger step` seeds it into scheduling instead of
+        // false, so a relaunched `rigger run` seeds it into scheduling instead of
         // skipping it forever - and it carries the grant so `rigger status` can name
         // it and the conductor can widen this ONE unit's remediation bound.
         let events = vec![

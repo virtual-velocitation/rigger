@@ -220,27 +220,9 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
 /// endpoint - the recognition rides the root page every dash already serves.
 pub const DASH_HEADER: &str = "X-Rigger-Dash";
 
-/// The response header carrying the pid of whichever process is ACTUALLY holding the accept
-/// loop that answered this response (spec 62 round 2:
-/// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Every dash response carries it
-/// (see `Response::write_to`), stamped fresh from `std::process::id()` at write time by the
-/// process that is genuinely serving - never a value plumbed in from outside. This is what lets
-/// [`dash_serving_pid_on`] answer "who is REALLY serving this port" directly from the wire,
-/// rather than a caller having to assume its own locally-spawned child is the one that bound it:
-/// in a fixed-address singleton race (spec 50, criterion 4) the LOSING side's own spawned
-/// `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits without ever
-/// binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING is serving,
-/// never that it was the caller's own spawn - the caller needs the served pid itself to attribute
-/// a marker correctly.
-pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
-
 /// Connects to loopback `port`, issues a bare `GET /`, and reads the response HEAD (the status
 /// line and headers) into a buffer - the ONE probe-a-loopback-port-for-a-bounded-dash-response
-/// implementation both [`dash_serving_on`] and [`dash_serving_pid_on`] drive
-/// (arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop, spec 62 round 2): before this
-/// extraction each carried its own copy of this exact connect/write-timeout/deadline/cap/read-loop
-/// machinery, a second parallel implementation of the same concern the one-mutation-authority
-/// rule exists to prevent.
+/// implementation.
 ///
 /// Bounded THREE independent ways so a dead, slow, or hostile holder can NEVER stall the caller:
 ///   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
@@ -255,9 +237,7 @@ pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 ///
 /// `stop_early` is consulted after every chunk arrives; the instant it returns `true` the
 /// accumulated head is returned WITHOUT waiting for the rest of the header block - this is what
-/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`], while
-/// [`dash_serving_pid_on`] (which needs the FULL block, since [`DASH_HEADER_PID`] can arrive on a
-/// LATER line) passes a predicate that never fires early.
+/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`].
 ///
 /// Returns `Err(ProbeMiss::Silent)` when the port accepted the connection (or the connect itself
 /// timed out) but no header block arrived before the deadline - a holder that is alive but busy,
@@ -406,81 +386,6 @@ pub fn dash_serving_on(port: u16) -> bool {
     dash_answer_on(port) == DashAnswer::Serving
 }
 
-/// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
-/// there (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Confirms
-/// dash-ness the SAME way [`dash_serving_on`] does - the [`DASH_HEADER`] marker must be present,
-/// so an unrelated listener holding the port is never mistaken for a dash naming a pid - and
-/// then reads [`DASH_HEADER_PID`]'s value off that SAME response. This is what lets a caller ask
-/// the port itself who is REALLY serving it, instead of assuming its own locally-spawned child
-/// is the one that bound it: in a fixed-address singleton race (spec 50, criterion 4) the LOSING
-/// side's own spawned `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits
-/// without ever binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING
-/// is serving, never that it was the caller's own spawn.
-///
-/// `None` is returned not only when nothing (or something non-dash) answers, but ALSO in the
-/// STEADY STATE when a genuine rigger dash answers [`DASH_HEADER`] but never sends
-/// [`DASH_HEADER_PID`] at all - a build that predates this header, or a foreign dash-shaped
-/// responder. Callers must never treat that `None` as narrowly timing-related and fall back to a
-/// GUESSED value of their own, the way a round-2 draft of `spawn_run_dashboard_detached` once did
-/// (spec 62 round 2 fix point, adj-u62c1r2-verdict-reject-version-skew-fallback - rejected): the
-/// ONLY production caller instead records the documented [`UNATTRIBUTED_PID`] sentinel on this
-/// `None`, never a value it cannot prove.
-///
-/// Shares [`probe_dash_head`] with [`dash_serving_on`] but passes a `stop_early` that never fires:
-/// [`DASH_HEADER_PID`] can arrive on a LATER line than [`DASH_HEADER`], so extracting a value
-/// needs the full header block every time, unlike `dash_serving_on`'s early exit. Bounded
-/// identically to `dash_serving_on` otherwise (the same connect/write timeouts, the same overall
-/// deadline, and the same total-byte cap, because both run through the same probe), so this can
-/// never hang or misbehave where that proven probe would not - a dead, slow, or hostile holder
-/// still resolves to `None` within the same bound.
-pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
-    let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
-    let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
-    let head = probe_dash_head(port, |_| false).ok()?;
-    if !head_has_header_line(&head, dash_needle.as_bytes()) {
-        return None; // not a rigger dash at all - never guess a pid from an unrelated listener
-    }
-    header_line_value(&head, pid_needle.as_bytes())?
-        .parse()
-        .ok()
-}
-
-/// The value substring of the FIRST line in `head` whose NAME matches `needle_lower` (e.g.
-/// `x-rigger-dash-pid:`), trimmed - or `None` when no line matches. Case-insensitive and
-/// anchored to a line start, mirroring [`head_has_header_line`]'s own matching exactly so the
-/// two can never disagree about which line is "the" header.
-fn header_line_value<'a>(head: &'a [u8], needle_lower: &[u8]) -> Option<&'a str> {
-    if needle_lower.is_empty() {
-        return None;
-    }
-    let mut start = 0usize;
-    loop {
-        if start >= head.len() {
-            return None;
-        }
-        let line_end = head[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map(|rel| start + rel)
-            .unwrap_or(head.len());
-        let line = &head[start..line_end];
-        if line.len() >= needle_lower.len()
-            && line[..needle_lower.len()]
-                .iter()
-                .zip(needle_lower)
-                .all(|(b, n)| b.to_ascii_lowercase() == *n)
-        {
-            return std::str::from_utf8(&line[needle_lower.len()..])
-                .ok()
-                .map(str::trim);
-        }
-        if line_end >= head.len() {
-            return None;
-        }
-        start = line_end + 1;
-    }
-}
-
 /// Whether any LINE of the HTTP response head in `head` BEGINS with `needle_lower` - the
 /// lowercased header-name prefix (e.g. `x-rigger-dash:`). The match is case-insensitive and
 /// ANCHORED to a line start (byte 0, or just after a `\n`), so the marker is recognized only as a
@@ -553,20 +458,18 @@ pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
 }
 
 /// The per-project record of the run dashboard currently serving a project: the loopback
-/// PORT it bound and the PID of its process. The step drive path writes it when it starts a
-/// dash and reads it before starting one, so at most one run dashboard serves a project at a
-/// time (spec 39, criterion 1: idempotent start on step). It sits alongside the dash-url
-/// breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so it
-/// round-trips with no serde and compiles identically in BOTH feature lanes.
+/// PORT it bound and the PID of its process. `rigger status` ([`dash_status`]) and `rigger watch`
+/// read it to report whether that dash still answers. It sits alongside the
+/// dash-url breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so
+/// it round-trips with no serde and compiles identically in BOTH feature lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DashMarker {
     /// The loopback port the recorded dash bound.
     pub port: u16,
     /// The PID of the recorded dash process. Informational only for display (e.g. `rigger
-    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness /
-    /// idempotency decision made OVER a marker ([`dash_start_needed`]'s `still_serving`,
-    /// [`dash_status`]) re-probes the marker's PORT, never this field, so a stale or
-    /// unattributable value here can never wrongly suppress or fabricate a start. May be
+    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness
+    /// decision made OVER a marker ([`dash_status`]) re-probes the marker's PORT, never this
+    /// field, so a stale or unattributable value here can never fabricate a liveness verdict. May be
     /// [`UNATTRIBUTED_PID`] when the port was confirmed serving but the real serving process
     /// could not be identified - never a guessed real pid.
     pub pid: u32,
@@ -574,27 +477,10 @@ pub struct DashMarker {
 
 /// The documented sentinel [`DashMarker::pid`] value recorded when a dash is confirmed serving
 /// a port but the real serving process's pid could not be attributed (spec 62 round 4,
-/// adj-u62c1r3-verdict-reject-idempotency-regression) - `spawn_run_dashboard_detached`'s only
-/// production write site for it. `0` is never a real OS pid (the kernel reserves it; no process
-/// is ever assigned it), so it can never collide with, or be mistaken for, an actual serving
-/// process, so a liveness check naturally reads it as not alive - the safe direction.
-///
-/// Recording THIS rather than refusing to write any marker at all is what keeps the step path's
-/// idempotent no-op working even when the winning dash's pid can never be named: the marker's
-/// PORT (which `dash_start_needed`/`dash_marker_serving` actually probe; neither ever reads this
-/// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
-/// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
-/// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
-/// step forever.
-///
-/// Self-heal (spec 62 criterion 2, u62c2) is scoped to DEAD or stale markers only
-/// (`d-u62c1-unattributable-serving-disposition`): it never proactively revisits a marker whose
-/// port is STILL serving, sentinel pid or not - `dash_start_needed`'s still-serving short-circuit
-/// answers `false` before `start()` is ever called, so nothing rewrites the on-disk record while
-/// THIS exact dash instance keeps answering. Correction to a real pid, if one ever becomes
-/// attributable, can only happen on this same instance's NEXT full stop-then-restart cycle (a
-/// fresh `start()` call reached once the port genuinely stops answering) - never while it keeps
-/// serving.
+/// adj-u62c1r3-verdict-reject-idempotency-regression). `0` is never a real OS pid (the kernel
+/// reserves it; no process is ever assigned it), so it can never collide with, or be mistaken for,
+/// an actual serving process, so a liveness check naturally reads it as not alive - the safe
+/// direction. A reader filters it out rather than naming pid 0.
 pub const UNATTRIBUTED_PID: u32 = 0;
 
 /// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
@@ -621,9 +507,8 @@ impl DashMarker {
     }
 
     /// Parse a marker from its on-disk record, or `None` when it is malformed. A corrupt or
-    /// truncated marker reads as "no dash recorded" so the step path starts a fresh dash
-    /// rather than trusting garbage - the safe direction (start-if-unsure never suppresses a
-    /// real dash).
+    /// truncated marker reads as "no dash recorded" rather than trusting garbage - the safe
+    /// direction (start-if-unsure never suppresses a real dash).
     pub fn parse(s: &str) -> Option<DashMarker> {
         let mut lines = s.lines();
         let port = lines.next()?.trim().parse().ok()?;
@@ -638,8 +523,8 @@ impl DashMarker {
     }
 
     /// Write the marker to `path`, overwriting any prior record. Best-effort at the call
-    /// site: a failed write only means a later step cannot discover this dash and may start
-    /// a second one, never a broken step.
+    /// site: a failed write only means a later reader cannot discover this dash and a later
+    /// start may start a second one, never a broken run.
     pub fn write(&self, path: &Path) -> io::Result<()> {
         std::fs::write(path, self.serialize())
     }
@@ -767,13 +652,11 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// The raw `(pid, rendered message)` pair [`describe_held_port_if_confirmed`] resolves from a
 /// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
 /// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
-/// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
-/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`, extracted out of `spawn_run_dashboard_detached`
-/// in this same round - see that function's own doc, adj-u62c3r4-independently-confirmed-stale-caller-doc):
-/// when its own `wait_for_dash_bind` gives up, it must tell a genuinely competing external process
-/// apart from its OWN just-spawned child having merely bound the port slower than the startup
-/// window allows - a distinction only the raw pid (compared against the spawn's already-known
-/// pid, its `spawned_pid` parameter), never the rendered message text, can carry.
+/// discovered pid ITSELF, not only the human-readable message about it: a caller that spawned
+/// its own dash and saw no bind within its startup window must tell a genuinely competing
+/// external process apart from its OWN just-spawned child having merely bound the port slower
+/// than that window allows - a distinction only the raw pid (compared against the spawn's
+/// already-known pid), never the rendered message text, can carry.
 /// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
 /// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
 /// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
@@ -797,25 +680,20 @@ pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
 /// `pub` (cross-crate: `src/main.rs` is a separate binary crate that depends on this library) -
 /// its production caller chain is [`describe_held_port`] -> `cmd_dash`'s manual `rigger dash` CLI
 /// arm (`src/cli/dashboard.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
-/// genuine `AddrInUse` from that call's OWN bind attempt. This function's `None`-gates-a-claim
-/// discipline was originally written for a DIFFERENT caller - the step-path auto-start, which has
-/// no such upstream confirmation available (its bind attempt runs inside a detached child whose
-/// `io::Error` never reaches the parent, `Stdio::null()`, spec 44) - but round 4
-/// (adj-u62c3r3-verdict-reject-child-self-attribution) rewired that caller,
-/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`), to call [`held_port_holder`] directly instead
-/// of through this function, since it also needs the raw pid (to rule out self-attribution; see
-/// [`held_port_holder`]'s own doc), not just a rendered message. The gate itself did not move -
-/// it lives in [`held_port_holder`], which both callers ultimately share - only which named
-/// function each caller reaches it through did. This wrapper is kept for
-/// [`describe_held_port`]'s already-confirmed case and any future confirmed-precondition caller
-/// that only needs the message, never the pid.
+/// genuine `AddrInUse` from that call's OWN bind attempt. The `None`-gates-a-claim discipline
+/// lives in [`held_port_holder`], so a caller with no such upstream confirmation (a bind attempt
+/// inside a detached child whose `io::Error` never reaches the parent, `Stdio::null()`, spec 44)
+/// reaches the same gate by calling [`held_port_holder`] directly when it also needs the raw pid
+/// (to rule out self-attribution; see [`held_port_holder`]'s own doc). This wrapper serves
+/// [`describe_held_port`]'s already-confirmed case and any confirmed-precondition caller that
+/// only needs the message, never the pid.
 pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
     held_port_holder(addr).map(|(_, msg)| msg)
 }
 
 /// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
-/// shape any dash-starting path writes - [`crate`]'s `spawn_run_dashboard` and
-/// `spawn_run_dashboard_detached` both format it this way). `None` for anything that does not
+/// shape the dash-starting path writes - `src/cli/run.rs`'s `spawn_run_dashboard` formats it
+/// this way). `None` for anything that does not
 /// parse as `scheme://host:port...` with a valid `u16` port, so a malformed or foreign URL is
 /// treated as unparseable rather than guessed at - the safe direction [`dash_status`] takes for
 /// every other ambiguous input.
@@ -896,16 +774,12 @@ pub enum DashStatus {
 /// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
 /// (spec 69, criterion 4). Pure, so both the trusted-URL and the caught-lie outcomes are
 /// provable without a real dashboard process; the production caller (`rigger status`) injects
-/// [`dash_answer_on`] directly - the SAME underlying probe the step path's own idempotent-start
-/// decision ([`dash_start_needed`]) verifies through, so `rigger status` and the step path can
-/// never disagree about whether a recorded dash is alive.
+/// [`dash_answer_on`] directly.
 ///
 /// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker only PROVES `recorded_url`'s
-/// liveness when its port MATCHES the port embedded in that URL - two independent
-/// dash-starting paths write `dash.url` and `dash.marker` separately (one writes a URL alone
-/// on a free-searched port, the other writes both together on a fixed port) and neither is
-/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
-/// different dashes.
+/// liveness when its port MATCHES the port embedded in that URL - `dash.url` and `dash.marker`
+/// are separate breadcrumbs and neither is ever cleared, so a project can be left with
+/// breadcrumbs naming two different dashes.
 ///
 /// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix stopped a
 /// mismatched marker's OWN liveness standing in as proof about `recorded_url`, but then fell
@@ -915,13 +789,12 @@ pub enum DashStatus {
 /// THIS url. So a genuinely dead `recorded_url` paired with a mismatched-but-otherwise-live
 /// marker sailed straight through as trusted, unverified. The fix: probe `url_port(&url)`
 /// itself directly whenever no MATCHING marker exists to prove it. A marker that is truly
-/// ABSENT still skips the probe and stays trusted unconditionally (the guard-bound `rigger run`
-/// dash never writes one at all, so treating its absence as suspicious would
-/// falsely distrust the one path that is documented to have none - spec 62 owns making that
-/// path write one, not this criterion). A mismatched marker no longer gets that free pass: its
-/// port differs from `port`, so the branch below probes `port` (the URL's own) regardless, and
-/// only a genuinely matching marker's pid is ever named in the [`DashStatus::NotServing`] this
-/// returns - a mismatched marker's pid is never printed as though it belonged to this URL.
+/// ABSENT still skips the probe and stays trusted unconditionally (the `rigger run` dash writes
+/// none, so treating its absence as suspicious would falsely distrust every run's dash). A
+/// mismatched marker gets no such free pass: its port differs from `port`, so the branch below
+/// probes `port` (the URL's own) regardless, and only a genuinely matching marker's pid is ever
+/// named in the [`DashStatus::NotServing`] this returns - a mismatched marker's pid is never
+/// printed as though it belonged to this URL.
 pub fn dash_status(
     recorded_url: Option<String>,
     marker: Option<DashMarker>,
@@ -959,35 +832,15 @@ pub fn dash_status(
             // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
             // the display construction site, never inside `pid_if_port_matches` itself, via the one
             // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
-            // real process - `spawn_run_dashboard_detached` (`src/cli/run.rs`) records it only to keep
-            // the marker's PORT usable for idempotency, and documents that no reader may treat it as
-            // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
-            // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
-            // "never lies about the dash" text.
+            // real process - a marker records it only to keep its PORT usable for idempotency, and
+            // `UNATTRIBUTED_PID`'s doc says no reader may treat it as a real pid. Printing it
+            // unfiltered here would render "marker names dead pid 0" for a process that was never
+            // assigned that pid - a literal violation of spec 69 criterion 4's "never lies about
+            // the dash" text.
             DashStatus::NotServing {
                 pid: displayable_pid(pid),
             }
         }
-    }
-}
-
-/// The idempotency decision for the step drive path (spec 39, criterion 1): given the
-/// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
-/// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
-/// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
-/// `false`, so the second and every later `step` of a run is a no-op, never a second dash
-/// or a port fight. `still_serving` is injected so the decision is provable without a real
-/// dash process; production passes a probe over [`dash_serving_on`] (a marker left by a
-/// self-reaped or pid-recycled dash must never masquerade as still serving on a bare pid
-/// check) - the SAME underlying probe [`dash_status`]'s truthful presentation verifies
-/// through, so the two decisions can never disagree about whether a recorded dash is alive.
-pub fn dash_start_needed(
-    marker: Option<DashMarker>,
-    still_serving: impl Fn(DashMarker) -> bool,
-) -> bool {
-    match marker {
-        Some(m) => !still_serving(m),
-        None => true,
     }
 }
 
@@ -1023,8 +876,8 @@ pub fn dash_start_needed(
 ///   singleton SURVIVE one project's run ending while another's is still live: that other instance
 ///   keeps the count positive.
 /// - `ever_seen_live`: whether the watcher has observed a live instance on any prior poll. This is
-///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton the step
-///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
+///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton a run
+///   just started reads zero live instances until that run writes its registry entry,
 ///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
 ///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
 ///   uncertainty (never yet seen a live instance) is to keep serving. Scoped to the REGISTRY only
@@ -1389,7 +1242,7 @@ pub struct TreeNode {
     /// The node's display label (spec id, unit id, stage name, role, or agent handle).
     pub label: String,
     /// The spine level: `spec` | `unit` | `stage` | `role` | `agent` | `driver`. A `driver`
-    /// node is the collapsed courier line for a driver-run step (Gates, Integrate).
+    /// node is the single collapsed line for a stage the driver runs itself (Gates, Integrate).
     pub kind: String,
     /// The node's live status, rolled up from its subtree (`running` / `done` / `failed`
     /// for the machinery levels; the unit's own live status - `building` / `reviewing` /
@@ -2218,16 +2071,15 @@ where
 /// Project the run into the tree the dash renders as its SPINE. One root per spec (units
 /// group by their id's spec prefix); under each unit its present lifecycle stages; under each
 /// worker stage the roles; under each role its agents (one per recorded spawn). `Gates` and
-/// `Integrate` are run by the stepwise driver itself (no worker agent), so each collapses to a
-/// single `driver` line instead of a node per courier step.
+/// `Integrate` are run by the driver itself (no worker agent), so each collapses to a single
+/// `driver` line instead of a node per sub-step.
 ///
 /// Pure and side-effect free: it reads the already-projected `run`, the already-classified
 /// live `blockers` (so a unit's status is the SAME line `rigger status` shows, never
 /// re-derived here), and the recorded spawns in `events`. A spawn with no result - or whose
-/// LATEST result is a step-synthesized liveness fault (a re-park the driver treats as still
-/// hung) - is RUNNING, and the whole path down to it is marked auto-expand; its answered /
-/// errored state is read per-spawn from `spawn::result_of` (last-write-wins), never a second
-/// fold over the raw event stream.
+/// LATEST result is a liveness fault (the host launches such a spawn again) - is RUNNING, and the
+/// whole path down to it is marked auto-expand; its answered / errored state is read per-spawn from
+/// `spawn::result_of` (last-write-wins), never a second fold over the raw event stream.
 pub fn build_run_tree(
     events: &[Event],
     run: &ledger::RunState,
@@ -2486,9 +2338,8 @@ fn role_stage(
     }
 }
 
-/// A driver-run stage (`Gates` / `Integrate`): the stepwise driver runs it with no worker
-/// agent, so its couriers collapse to a SINGLE `driver` line rather than one node per courier
-/// step - the spec-30 "step couriers collapse to a single driver line" behavior.
+/// A driver-run stage (`Gates` / `Integrate`): the driver runs it with no worker agent, so it
+/// collapses to a SINGLE `driver` line rather than one node per sub-step (spec 30).
 fn driver_stage(label: &str, driver_status: &str) -> TreeNode {
     let driver = TreeNode {
         label: "driver".into(),
@@ -3127,23 +2978,17 @@ impl Response {
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
     /// the body ends at the connection close (no keep-alive bookkeeping). Every response
     /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
-    /// an already-serving singleton on the port (spec 50, criterion 1), AND the
-    /// [`DASH_HEADER_PID`] marker naming THIS process's own pid (`std::process::id()`, read
-    /// fresh at write time - never plumbed in from outside) so a caller can learn WHO is
-    /// actually serving, not merely THAT something is (spec 62 round 2:
-    /// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race).
+    /// an already-serving singleton on the port (spec 50, criterion 1).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             {}: {}\r\n{}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
             DASH_HEADER,
             env!("CARGO_PKG_VERSION"),
-            DASH_HEADER_PID,
-            std::process::id(),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -3705,8 +3550,8 @@ fn write_sse(
 
 /// Write the retained-window refusal [`serve_console_stream`]'s own guard sends, and close
 /// the connection - a real, parseable HTTP response (via the same [`Response::write_to`]
-/// every other route answers through, so it carries the same [`DASH_HEADER`]/
-/// [`DASH_HEADER_PID`] markers), never a bare socket drop. `410 Gone` names the position
+/// every other route answers through, so it carries the same [`DASH_HEADER`]
+/// marker), never a bare socket drop. `410 Gone` names the position
 /// itself as no longer obtainable (as opposed to `404`, which would say the RESOURCE - the
 /// stream endpoint - does not exist, which is false) and points the reader at the recovery
 /// this guard exists to trigger: re-fetch the snapshot and resume from its head.
@@ -3788,11 +3633,9 @@ fn serve_console_stream<F>(
 
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\
-         {}: {}\r\n{}: {}\r\nConnection: close\r\n\r\n",
+         {}: {}\r\nConnection: close\r\n\r\n",
         DASH_HEADER,
         env!("CARGO_PKG_VERSION"),
-        DASH_HEADER_PID,
-        std::process::id(),
     );
     if stream.write_all(header.as_bytes()).is_err() || stream.flush().is_err() {
         return;
@@ -4596,11 +4439,6 @@ mod tests {
             .unwrap_or_else(|_| panic!("{hang}"))
     }
 
-    /// `dash_serving_pid_on` against a listener answering `reply` reports `expected`.
-    fn assert_pid_probe(reply: impl Into<Vec<u8>>, expected: Option<u32>, why: &str) {
-        assert_eq!(dash_serving_pid_on(serve_reply(reply)), expected, "{why}");
-    }
-
     /// Spec 50, criterion 1: `dash_serving_on` recognizes ONLY a rigger dash (by its
     /// [`DASH_HEADER`]). A raw listener that answers WITHOUT that header is not mistaken for a
     /// dash, so a genuine conflict with an unrelated process is never swallowed as a false
@@ -4686,99 +4524,23 @@ mod tests {
         );
     }
 
-    crate::test_cases! {
-        /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
-        /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
-        /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
-        /// serving a port without assuming it is whichever process the caller itself happens to have
-        /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
-        /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
-        /// only be explained by the probe reading the header off the wire, not by any coincidental
-        /// match with `std::process::id()`.
-        dash_serving_pid_on_reports_the_pid_a_real_dash_response_names: assert_pid_probe(
-            // 424242 is deliberately NOT this test process's own pid.
-            format!(
-                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                 424242\r\nConnection: close\r\n\r\n"
-            ),
-            Some(424_242),
-            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid",
-        );
-        /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
-        /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
-        /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
-        /// `head_block_ended` - a response whose header block is genuinely LARGER than the
-        /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
-        /// small, or the comparison direction flipped) truncates the head BEFORE the real
-        /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
-        ///
-        /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
-        /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
-        /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
-        /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
-        /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
-        /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
-        /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
-        /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
-        /// read call first crosses it - strictly before the padding ends, while the correct cap
-        /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
-        /// completion exactly once `head_block_ended` sees the real trailing blank line.
-        dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls: assert_pid_probe(
-            // 424243 is deliberately NOT this test process's own pid.
-            format!(
-                "HTTP/1.1 200 OK\r\nX-Padding: {}\r\n{DASH_HEADER}: \
-                 probe\r\n{DASH_HEADER_PID}: 424243\r\nConnection: \
-                 close\r\n\r\n",
-                "A".repeat(2000)
-            ),
-            Some(424_243),
-            "a head spanning many read() calls must still be fully assembled and parsed - \
-             a premature length-cap break truncates it before the real header lines arrive",
-        );
-        /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
-        /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
-        /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
-        /// same-shaped header by coincidence-free construction here (it sends none).
-        dash_serving_pid_on_is_none_for_a_non_dash_listener: assert_pid_probe(
-            NON_DASH_REPLY,
-            None,
-            "a non-dash listener must never be reported as naming a serving pid",
-        );
-        /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
-        /// lens periphery: neither the mutation-efficacy accounting recorded in
-        /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
-        /// exact path - the mutation tool's default mutator set never touches a `Result::ok()`
-        /// call on a std `.parse()`, so this arm is invisible to that tool and only a hand-written
-        /// test
-        /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
-        /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
-        /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
-        /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
-        /// pid a caller could act on. A round-2 draft of the one production call site,
-        /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
-        /// this exact `None` was what let that (since-rejected,
-        /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
-        /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
-        /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
-        /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
-        /// from unparseable input, regardless of what any caller later does with the `None`.
-        dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number: assert_pid_probe(
-            format!(
-                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                 not-a-number\r\nConnection: close\r\n\r\n"
-            ),
-            None,
-            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
-             coerce to a default pid",
-        );
-    }
-
-    /// Nothing listening at all must resolve to `None`, never a stale or default pid - mirrors
-    /// `dash_serving_on`'s false-on-no-connection direction.
+    /// The probe's read loop assembles a head larger than its fixed 512-byte read buffer: a
+    /// ~2KB padding header ahead of the real [`DASH_HEADER`] line forces at least 4 `read` calls
+    /// before the marker arrives, so a byte cap below ~2030 (or a flipped cap comparison) stops
+    /// the loop short of the marker and the dash reads as not serving, while the real cap (8192)
+    /// is never reached.
     #[test]
-    fn dash_serving_pid_on_is_none_when_nothing_answers() {
-        let port = free_port_from(45000).expect("a free loopback port must be available");
-        assert_eq!(dash_serving_pid_on(port), None);
+    fn dash_serving_on_assembles_a_head_that_spans_many_read_calls() {
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nX-Padding: {}\r\n{DASH_HEADER}: probe\r\nConnection: \
+             close\r\n\r\n",
+            "A".repeat(2000)
+        );
+        assert!(
+            dash_serving_on(serve_reply(reply)),
+            "a head spanning many read() calls must still be fully assembled - a premature \
+             length-cap break truncates it before the DASH_HEADER line arrives"
+        );
     }
 
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
@@ -5531,7 +5293,7 @@ mod tests {
             ("agent", "attempt#0")
         );
 
-        // Gates is driver-run: its couriers collapse to a single "driver" line.
+        // Gates is driver-run: it collapses to a single "driver" line.
         let gates = &unit_a.children[1];
         assert_eq!(
             gates.children.len(),
@@ -8506,8 +8268,8 @@ mod tests {
 
     #[test]
     fn dash_marker_parse_rejects_a_malformed_record() {
-        // A corrupt/truncated marker reads as "no dash recorded" (None), so the step path
-        // starts a fresh dash rather than trusting garbage.
+        // A corrupt/truncated marker reads as "no dash recorded" (None) rather than trusting
+        // garbage.
         assert_eq!(DashMarker::parse(""), None, "empty is not a marker");
         assert_eq!(
             DashMarker::parse("7431"),
@@ -8677,10 +8439,9 @@ mod tests {
         /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
         /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
         /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
-        /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
-        /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/cli/run.rs`,
-        /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
-        /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
+        /// never promote an unconfirmed holder to a claim regardless of who calls it, so a caller
+        /// whose bind attempt runs in a detached child with no observable `io::Error` at all (no
+        /// upstream confirmation of its own to lean on) can use [`held_port_holder`] directly
         /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
         /// this test process's own pid.
         describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed:
@@ -8710,26 +8471,6 @@ mod tests {
             None,
             "a port nothing holds must never be described as held - the exact false-positive \
              this round's fix exists to close"
-        );
-    }
-
-    #[test]
-    fn dash_start_needed_is_true_when_none_serving_and_false_when_one_serves() {
-        let m = DashMarker { port: 7442, pid: 7 };
-        // No marker at all -> a step must start one.
-        assert!(
-            dash_start_needed(None, |_| panic!("must not probe when there is no marker")),
-            "no recorded dash -> start one"
-        );
-        // A marker whose dash is NOT serving (e.g. a crashed/reaped dash) -> start a fresh one.
-        assert!(
-            dash_start_needed(Some(m), |_| false),
-            "a stale marker (dash gone) -> start a fresh one"
-        );
-        // A marker whose dash IS still serving -> no-op (the idempotent short-circuit).
-        assert!(
-            !dash_start_needed(Some(m), |_| true),
-            "a live recorded dash -> start NO second one"
         );
     }
 

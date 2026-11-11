@@ -17,8 +17,8 @@ const DASH_REAP_STALE_ENV: &str = "RIGGER_DASH_REAP_STALE_SECS";
 pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
-    // (spec 39, criterion 3) - passed only by the DETACHED step-path spawn, never the
-    // guard-bound `rigger run` dash (which keeps its `ReapedChild`).
+    // (spec 39, criterion 3) - never passed by the guard-bound `rigger run` dash (which keeps
+    // its `ReapedChild`).
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
     let mut reap_on_idle = false;
@@ -62,7 +62,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
     // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
     // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
-    // `reclaim_spawn_scratch`/`cmd_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
+    // `reclaim_spawn_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
     // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`
     // fleet AND a passing `Config::validate` just to learn these two fields; `arch-u83c3-dash-
     // scratch-defaults-not-migrated` found `cmd_dash` was left on the old pattern, silently
@@ -96,8 +96,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             String::new()
         } else {
             // The dash only READS this root (marker probes); it never places work under it,
-            // so it resolves without creating - creation is the step's, and creation is
-            // where the cache home's orphan-root reclaim runs.
+            // so it resolves without creating - creation is the run's (`scratch_root_from_env`),
+            // and creation is where the cache home's orphan-root reclaim runs.
             rigger::worktree::scratch_root_path_from_env(&repo, &workdir)
         }
     };
@@ -285,10 +285,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 }
                 Err(e) => Err(e.into()),
                 Ok(dash::SingletonBind::Bound(listener)) => {
-                    // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): the
-                    // detached step-path SINGLETON is started with `--reap-on-idle`, so a
-                    // background thread polls the machine-global instance registry AND the
-                    // agent-liveness markers of THIS project plus EVERY OTHER registered project
+                    // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): a
+                    // SINGLETON started with `--reap-on-idle` runs a background thread that polls
+                    // the machine-global instance registry AND the agent-liveness markers of THIS
+                    // project plus EVERY OTHER registered project
                     // (round 2's cross-project widening - `watch_and_self_reap_on_idle`'s own doc
                     // comment), exiting this process only once NONE of that shows anything live -
                     // leaving no orphaned dash on a quiet machine, while surviving one project's
@@ -297,7 +297,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // project's own registry entry ages out. This retargets spec 39's per-run
                     // liveness trigger at the machine-level singleton; it is driven by the
                     // registry plus every known project's own agent-liveness check, NOT by any
-                    // single `step` process exiting. Read-only: the watcher only reads the
+                    // single run's process exiting. Read-only: the watcher only reads the
                     // registry and stats marker files. The guard-bound `rigger run` dash
                     // omits the flag and keeps its `ReapedChild` reaping
                     // instead. Started ONLY on the branch that actually binds and serves - a
@@ -386,7 +386,7 @@ fn foreign_instance_scratch_root(root: &str) -> String {
 }
 
 /// The dash self-reap watcher loop (spec 50, criterion 5; spec 62, criterion 5), run on a
-/// background thread inside the detached step-path SINGLETON dash. On each `poll` tick it reads
+/// background thread inside a `--reap-on-idle` SINGLETON dash. On each `poll` tick it reads
 /// the machine-global instance registry read-only ([`rigger::registry::read_live`], which prunes
 /// entries whose heartbeat has aged past `idle_window`) AND scans for a fresh in-flight AGENT
 /// liveness marker ([`rigger::liveness::any_marker_fresh`], the SAME marker mechanism `rigger
@@ -402,7 +402,7 @@ fn foreign_instance_scratch_root(root: &str) -> String {
 /// ANY registered project whose courier cadence has lapsed even as THAT project's own registry
 /// entry ages out (spec 62 criterion 5's headline, now closed for every registered project, not
 /// only the launching one), and reaps only on a genuinely idle machine - driven by the registry
-/// plus every known project's own agent-liveness check, NOT by any single `step` process
+/// plus every known project's own agent-liveness check, NOT by any single run's process
 /// exiting. The `ever_seen_live` latch is the startup-race guard (a just-ensured singleton must
 /// not reap before its ensuring run writes its entry); it stays scoped to the registry,
 /// unchanged by the agent-liveness addition.
@@ -462,11 +462,8 @@ fn watch_and_self_reap_on_idle(
                 )
             });
         if dash::should_reap_singleton(live.len(), ever_seen_live, agent_live) {
-            // Self-reap: exit the whole process so the detached singleton leaves no orphan on a
-            // quiet machine. The stale `.rigger/dash.marker` this leaves behind is deliberately NOT
-            // removed - a next run's first `step` already tolerates it (`dash_start_needed` probes
-            // the recorded pid, sees it dead, and starts a fresh dash), and removing it here would
-            // race a successor dash that may already have rewritten the marker with its own live pid.
+            // Self-reap: exit the whole process so the singleton leaves no orphan on a quiet
+            // machine.
             std::process::exit(0);
         }
     }
@@ -590,9 +587,9 @@ fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Ev
 
 /// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
 /// `events` (the current run's slice), read HERE in Rust so the dash PRESENTS it (spec 14) -
-/// the same stat the retired probe did, done by rigger rather than a spawned agent. Each marker
-/// is read under the root its request recorded, `scratch_root` only for one that recorded none
-/// (spec 101); a spawn found under neither has no age.
+/// a stat of each marker's modification time, done by rigger rather than a spawned agent. Each
+/// marker is read under the root its request recorded, `scratch_root` only for one that recorded
+/// none (spec 101); a spawn found under neither has no age.
 fn dash_read_liveness(
     events: &[Event],
     scratch_root: &str,
@@ -802,8 +799,8 @@ fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::
 /// registers into `.mcp.json`. With `--spawn <id>` (spec 104, THE SPAWN MCP SERVER,
 /// criterion 3), the launched agent's own spawn-bound surface instead - every write it
 /// serves (`rigger_emit`, `rigger_progress`) attributed to `id` BY CONSTRUCTION, over the
-/// SAME progress-store + scratch-root resolution `cmd_progress`/`cmd_scratch` already use,
-/// never a second parallel one.
+/// SAME progress-store + scratch-root resolution `cmd_progress` already uses, never a second
+/// parallel one.
 pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let spawn = parse_mcp_spawn_flag(args)?;
     over_the_run_store(|loc, selection, store| {

@@ -1,5 +1,5 @@
 //! Spec 79 criterion 2, THE BARE-REMOVAL AUDIT: the whole-tree companion to criterion 1's
-//! reap-before-removal rewiring (`sweep_terminal`, `clear_worktree_dir`, `reclaim_cache_sibling`,
+//! reap-before-removal rewiring (`clear_worktree_dir`, `reclaim_cache_sibling`,
 //! `reclaim_worktree_on_branch`, `Worktree::discard`, `Worktree::remove` -
 //! crates/rigger-worktree-git/src/worktree.rs). This test walks every `.rs` file
 //! under `src/` and fails, naming file and line, on any `fs::remove_dir_all(...)` or
@@ -15,8 +15,8 @@
 //! 1. ROUTED: the removal's own enclosing function calls one of the reap authorities
 //!    (`reap::reap_authorized`, `reap::reap_processes_rooted_under`,
 //!    `worktree::reap_dir_before_removal`) - or, for a call SITE that merely delegates to one
-//!    of the two sanctioned wrapper helpers (`reap_then_remove_dir`/`reap_then_remove_worktree`
-//!    in `src/main.rs`) rather than removing directly, that wrapper call itself - on a line
+//!    of the sanctioned wrapper helper (`reap_then_remove_dir`
+//!    in crates/rigger-process/src/reap.rs) rather than removing directly, that wrapper call itself - on a line
 //!    STRICTLY BEFORE the removal's own line (never merely "anywhere in the same function",
 //!    ROUND-2 FIX: a prior round of this file accepted unordered co-occurrence, which marked
 //!    the exact inverted remove-then-reap anti-pattern spec 79's own Design text forbids as
@@ -62,8 +62,8 @@
 //! - The REAP_AUTHORITIES coverage window (see [`reap_authorities_window_start`]'s own doc) is
 //!   bounded by a nearer preceding BARE `fs::remove_dir_all` in the same function, but
 //!   deliberately NOT by a preceding `git worktree remove` attempt ([`worktree_remove_shape`]):
-//!   this codebase's own real routed sites (`clear_worktree_dir`, `reap_then_remove_worktree`)
-//!   reap once, then try a `git worktree remove`, falling back to a bare removal of the SAME
+//!   this codebase's own real routed site (`clear_worktree_dir`)
+//!   reaps once, then tries a `git worktree remove`, falling back to a bare removal of the SAME
 //!   directory only on failure - an alternate form of the one already-reaped removal, not a
 //!   second resource. Extending the same boundary logic to a preceding `worktree_remove_shape`
 //!   targeting a genuinely DIFFERENT directory (a shape no real site in this tree exhibits
@@ -108,15 +108,13 @@ use source_audit::{
 
 /// The reap authorities a covered removal site's enclosing function calls (spec 79's Design
 /// and `u79c1-rewiring-complete-and-exemption-marker`): the two direct calls every routed
-/// worktree.rs site makes, plus the two `src/main.rs` wrapper helpers spec 79's Design section
-/// names by name as the sanctioned reap-then-remove path for a call site that delegates to
-/// them instead of removing directly (`plan-u79c2-scope-and-gate`'s own allow-list wording).
-const REAP_AUTHORITIES: [&str; 5] = [
+/// worktree.rs site makes, plus the wrapper helper spec 79's Design section names as the
+/// sanctioned reap-then-remove path for a call site that delegates to it instead of removing directly (`plan-u79c2-scope-and-gate`'s own allow-list wording).
+const REAP_AUTHORITIES: [&str; 4] = [
     "reap_processes_rooted_under(",
     "reap_authorized(",
     "reap_dir_before_removal(",
     "reap_then_remove_dir(",
-    "reap_then_remove_worktree(",
 ];
 
 /// The claimed-exemption marker this audit verifies (u79c1's own convention): every real
@@ -165,7 +163,7 @@ fn enclosing_fn_span(lines: &[&str], sigs: &[usize], at: usize) -> Option<(usize
 /// own doc comment, mirrored by `Worktree::create`'s: "Pass `""` when the caller has no such
 /// root... the reap becomes a no-op") - a bare `&str` argument, so the no-op form is the
 /// literal token `""` itself. The other root-taking authorities
-/// (`reap_processes_rooted_under`, `reap_then_remove_dir`, `reap_then_remove_worktree`) take
+/// (`reap_processes_rooted_under`, `reap_then_remove_dir`) take
 /// a `&Path`, so their real-tree no-op equivalent would be a WRAPPED expression like
 /// `Path::new("")`, never the bare literal this defect was reproduced against; generalizing
 /// the check to a wrapped form was not reproduced against any real call site in this tree
@@ -497,8 +495,8 @@ fn comment_text(line: &str) -> Option<&str> {
 ///
 /// Deliberately NARROWER than the sibling [`exemption_window`] bound used for the
 /// EXEMPTION_MARKER check just above, which ALSO resets on a preceding [`worktree_remove_shape`]
-/// line: this codebase's own real routed sites (`clear_worktree_dir` in `crates/rigger-worktree-git/src/worktree.rs`,
-/// `reap_then_remove_worktree` in `src/main.rs`) reap ONCE, then attempt a `git worktree
+/// line: this codebase's own real routed site (`clear_worktree_dir` in
+/// `crates/rigger-worktree-git/src/worktree.rs`) reaps ONCE, then attempts a `git worktree
 /// remove`, falling back to a bare `fs::remove_dir_all` of the SAME directory only when that
 /// attempt fails - an ALTERNATE textual form of the one removal the single preceding reap call
 /// already covers, not a second, independently-scoped resource; resetting the bound on that
@@ -941,8 +939,8 @@ fn f(dir_a: &str, dir_b: &str) {
         );
 
         /// ROUND-5 FIX regression guard: the windowing fix above must NOT sever a real,
-        /// already-shipped idiom this exact tree uses twice (`reap_then_remove_worktree` in
-        /// `src/main.rs`, `clear_worktree_dir` in `crates/rigger-worktree-git/src/worktree.rs`) - reap once, attempt a `git
+        /// already-shipped idiom this exact tree uses (`clear_worktree_dir` in
+        /// `crates/rigger-worktree-git/src/worktree.rs`) - reap once, attempt a `git
         /// worktree remove`, and fall back to a bare `fs::remove_dir_all` of the SAME directory
         /// only when that attempt fails. The one preceding reap call must still cover the bare
         /// fallback even though a [`worktree_remove_shape`] line (itself also a removal-shaped scan

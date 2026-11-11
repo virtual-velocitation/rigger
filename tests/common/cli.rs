@@ -129,17 +129,26 @@ pub fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &serde_json:
     );
 }
 
-/// Answer the parked planner spawn `spawn` as a courier does: its proposal of the one
-/// [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), handed to `agent`, then its result.
-pub fn plan_the_widget(root: &Path, spawn: &str, agent: &str) {
-    let unit = serde_json::json!({
+/// The planner's proposal of the one [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), covering
+/// [`WIDGET_CRITERION`](super::fixtures::WIDGET_CRITERION), handed to `agent`.
+pub fn widget_unit(agent: &str) -> serde_json::Value {
+    serde_json::json!({
         "id": super::fixtures::WIDGET_UNIT,
         "agent": agent,
         "criterion": super::fixtures::WIDGET_CRITERION,
         "needs": [],
-    });
-    propose_unit_via_rigger_emit(root, spawn, &unit);
-    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
+    })
+}
+
+/// The shell an arm of [`install_fake_claude`] runs to record `unit` as the running spawn's
+/// `UnitProposed`, as a planner's bound record tool records it: the built binary's `rigger emit
+/// --spawn "$RIGGER_SPAWN"`, its output kept out of the session's answer, and a refused record
+/// failing the launch.
+pub fn emit_unit_proposed(unit: &serde_json::Value) -> String {
+    format!(
+        "    '{bin}' emit --spawn \"$RIGGER_SPAWN\" UnitProposed '{unit}' >&2 || exit 1\n",
+        bin = super::rigger_bin().display()
+    )
 }
 
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
@@ -2012,11 +2021,6 @@ pub fn ingested_count(stdout: &str) -> usize {
         .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
 }
 
-/// Write a heartbeat marker at `marker` whose mtime is an hour old - a stale liveness mark.
-pub fn plant_stale_marker(marker: &Path) {
-    plant_marker(marker, 3600);
-}
-
 /// Write a heartbeat marker at `marker` last touched `secs_ago` seconds ago, so a liveness
 /// reader judges a known age against its bound (0 is a marker touched right now).
 pub fn plant_marker(marker: &Path, secs_ago: u64) {
@@ -2031,9 +2035,9 @@ pub fn plant_marker(marker: &Path, secs_ago: u64) {
         .unwrap();
 }
 
-/// The `SpawnResult` body `rigger step`'s sweep records on `spawn_id` once its liveness marker
-/// went stale - the step's liveness fault, built by the product's own constructor: a diagnosis
-/// of a silent worker, not the spawn's end.
+/// The `SpawnResult` body the host records on `spawn_id` once its liveness marker went stale -
+/// its liveness fault, built by the product's own constructor: a diagnosis of a silent worker,
+/// not the spawn's end.
 pub fn liveness_fault_body(spawn_id: &str) -> String {
     serde_json::to_string(&rigger::spawn::SpawnResult::liveness_fault(
         spawn_id, "hung", "infra",
@@ -2048,7 +2052,7 @@ pub fn real_result_body(spawn_id: &str) -> String {
 }
 
 /// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
-/// in for a `rigger step` holding it for its whole duration. The lock lasts until the returned
+/// in for a `rigger run` holding it for its whole duration. The lock lasts until the returned
 /// file is dropped.
 pub fn hold_step_lock(root: &Path) -> std::fs::File {
     use fs2::FileExt;
@@ -2172,14 +2176,6 @@ pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
     write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
 }
 
-/// One real `rigger step` over `root`, which must exit 0 (`what` names the step in the failure);
-/// returns its trimmed stdout - the step's one JSON line.
-pub fn step_line(root: &Path, what: &str) -> String {
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "{what}; stderr: {err}");
-    out.trim().to_string()
-}
-
 /// `rigger validate` over `root` once `rigger init` has scaffolded it and `seed` has planted what
 /// the test examines; asserts both exit 0 (an advisory never fails validate) and returns
 /// validate's (stdout, stderr).
@@ -2249,8 +2245,8 @@ pub fn write_spec_project(
 /// recognizes: one the binary's grounder registry rejects.
 const REJECTED_GROUNDER: &str = "no-such-grounder";
 
-/// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a run entry
-/// (`rigger step`, `rigger run`) that gets past its run start - its run minted or adopted - then
+/// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a `rigger run`
+/// that gets past its run start - its run minted or adopted - then
 /// stops selecting the grounder, before it drives an agent, so a run start that should have refused fails its test instead of hanging it.
 pub fn stopping_at_the_grounder(workflow: &str) -> String {
     let stopping = workflow.replace("grounder: nop", &format!("grounder: {REJECTED_GROUNDER}"));
@@ -2378,9 +2374,8 @@ stages:
 /// The escalating twin of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]: the same shape, but its one gate
 /// always fails and `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the
 /// FIRST failed attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a
-/// single implementer result whose gate goes red - never a park, and never a crash, which is
-/// infrastructure and charges no attempt - is enough to drive the unit terminal without ever
-/// integrating.
+/// single implementer attempt whose gate goes red - never a crash, which is infrastructure and
+/// charges no attempt - is enough to drive the unit terminal without ever integrating.
 pub const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
@@ -2397,28 +2392,31 @@ stages:
 "#,
 };
 
-/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine
-/// terminal escalation through the REAL two-process replay lifecycle (park, then an
-/// out-of-process result its gate fails), and assert the fixpoint before returning - every
-/// `resume-unit` test builds on this SAME real, git-backed escalated unit.
+/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine terminal
+/// escalation through `rigger run` on the default scratch root - its implementer writes a change
+/// in the unit worktree and the red gate fails it - and assert the escalated end state from the
+/// run's output and its log before returning. Every `resume-unit` test builds on this SAME real,
+/// git-backed escalated unit.
 pub fn escalate_solo_unit(root: &Path) {
     write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 parks the implementer; got: {out:?}"
-    );
-    let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
-    assert!(ok, "recording the result must succeed; stderr: {err}");
-    let (out, err, ok) = run_rigger(root, &["step"]);
+    let arm = "  *\"Do the unit.\"*)\n    echo \"pub fn work() {}\" >> work.rs\n    ;;\n";
+    let (out, err, ok, _fake) =
+        run_on_arms(root, &["run"], &super::default_scratch_root(root), arm);
     assert!(
         ok,
-        "an escalation-fixpoint step still exits 0; stderr: {err}"
+        "a run that ends in an escalation still exits 0; stderr: {err}"
+    );
+    let solo = out.lines().find(|l| l.trim_start().starts_with("solo "));
+    assert!(
+        solo.is_some_and(|l| l.contains("escalated"))
+            && out.contains("incomplete: not every unit integrated"),
+        "the red gate must exhaust remediation into an escalated end state; got: {out:?}"
     );
     assert!(
-        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
-        "the red gate must exhaust remediation into an escalated fixpoint; got: {out:?}"
+        read_run_events(root)
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the escalation is on the log"
     );
 }
 
@@ -2511,4 +2509,110 @@ pub fn bloat_lines(stderr: &str) -> Vec<&str> {
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
     text.lines().filter(|line| keep(line)).collect()
+}
+
+/// Install a fake `claude` on a fresh directory: the checked-in stream-json stand-in
+/// `claude-code-arms-agent.sh`, answering each spawn from the shell `case` `arms` over its system
+/// prompt (the content of the file its `--system-prompt-file` names; each arm is
+/// `*MARKER*) ... ;;`, and what it prints is the session's `result`), failing loudly on any
+/// prompt no arm names. Only the arms are written here ([`super::fixtures::write_claude_arms`]),
+/// beside the stand-in's symlink in the directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
+/// resolves the stand-in first.
+pub fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env =
+        super::repo::stub_path(fakebin.path(), "claude", Some("claude-code-arms-agent.sh"));
+    super::fixtures::write_claude_arms(&fakebin.path().join("bin"), arms);
+    (fakebin, path_env)
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
+/// directory of the fake, its argv, its working directory, its first user message, the
+/// `KURRENTDB_CONN` it was started with (`unset` when none) and the agent streams its scratch root
+/// holds while it runs, then writes the change a merging stage lands.
+pub const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
+    printf '%s\n' "$first" > "$here/first-message"
+    printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
+    ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with [`RECORDING_WORKER_ARM`]'s fake
+/// `claude` first on PATH: [`run_on_arms`]'s four values, the directory holding what the arm
+/// recorded last.
+pub fn run_recording(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms(cwd, args, scratch, RECORDING_WORKER_ARM)
+}
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with a fake `claude` answering from
+/// `arms` ([`install_fake_claude`]) first on PATH: its stdout, stderr and success, then the
+/// directory holding the fake, which keeps it alive.
+pub fn run_on_arms(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let (out, err, ok) = run_rigger_envs(cwd, args, &fake_claude_env(&path_env, scratch));
+    (out, err, ok, fakebin)
+}
+
+/// The environment a run of [`install_fake_claude`]'s fake takes: `path_env` and the scratch root
+/// `scratch`.
+pub fn fake_claude_env<'a>(path_env: &'a str, scratch: &'a Path) -> [(&'a str, &'a str); 2] {
+    [
+        ("PATH", path_env),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ]
+}
+
+/// How many 25 ms polls [`run_on_arms_beside`] gives a run: two minutes.
+pub const POLLS_BESIDE_A_RUN: u32 = 4800;
+
+/// [`run_on_arms`] with `beside` called over the fake's directory at each poll of the running
+/// `rigger`, so a test acts on a live run from no thread of its own: a run still waiting past
+/// [`POLLS_BESIDE_A_RUN`] is ended through its handle and panics here, never hanging the suite.
+pub fn run_on_arms_beside(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+    beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms_beside_with(cwd, args, &[], scratch, arms, beside)
+}
+
+/// [`run_on_arms_beside`] with the extra environment `envs` set after the fake's own.
+pub fn run_on_arms_beside_with(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    scratch: &Path,
+    arms: &str,
+    mut beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let mut all = fake_claude_env(&path_env, scratch).to_vec();
+    all.extend_from_slice(envs);
+    let (out, err, ok) = run_rigger_within(cwd, args, &all, POLLS_BESIDE_A_RUN, |_| {
+        beside(fakebin.path())
+    })
+    .expect("the run ends once its holds are released");
+    (out, err, ok, fakebin)
+}
+
+/// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.
+pub fn plant_stale_stream(scratch: &Path) -> std::path::PathBuf {
+    let stale = scratch.join("agent-stream/old-run/old-spawn.0.jsonl");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+    stale
 }

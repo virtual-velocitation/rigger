@@ -214,6 +214,7 @@ mod review_steps_periphery;
 mod rigger_run_base_gate_env_periphery;
 mod run_boundary_lookup_periphery;
 mod run_hold_periphery;
+mod run_root_resolution_periphery;
 mod run_scoping_survives_periphery;
 #[cfg(feature = "symbols")]
 mod run_sink_periphery;
@@ -228,8 +229,6 @@ mod spawn_timing_periphery;
 mod spec_critique_periphery;
 mod spec_lint;
 mod statusline_command_periphery;
-mod step_attention_periphery;
-mod step_root_resolution_periphery;
 mod step_sheds_the_freshen;
 mod stop_failure_hook_periphery;
 mod store_append_order_periphery;

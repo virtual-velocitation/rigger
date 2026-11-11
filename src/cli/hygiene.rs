@@ -50,7 +50,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         ResetEnv::resolved(&mut env, &loc)?;
     }
     // Before ANY prune reads a stream name: run the one-time spec-09 identity migration, exactly
-    // as `run` / `step` / `workflow` / `playbooks` do before they open their store. Both prunes
+    // as `run` / `playbooks` do before they open their store. Both prunes
     // address this project's history BY ITS CURRENT IDENTITY, and a store bloated enough to need
     // compacting is by construction an OLD store whose history was written under the pre-identity
     // basename namespace. Without this, `reset` would match no stream at all on exactly the log it
@@ -107,8 +107,8 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // verifies nothing - the operator owns that risk once they pass it).
         //
         // The step lock the guard took is held until the migration returns, so its verdict that
-        // no `rigger step` or `rigger run` is running stays true while the log is rewritten: a
-        // step or run started meanwhile refuses on the held lock; only a step's courier retries.
+        // no `rigger run` is running stays true while the log is rewritten: a run started
+        // meanwhile refuses on the held lock.
         let _step_lock = if modes.force_live {
             None
         } else {
@@ -654,21 +654,17 @@ fn reclamation_lines(reclamation: &rigger::eventstore::sqlite::Reclamation) -> V
 /// refusal itself is spec 71, criterion 2's). The recorded incident this guard exists to prevent
 /// is a compaction that ran WHILE a writer was still appending, and each fact is a writer proving
 /// it is alive right now:
-///   - `step_lock_held`: a `rigger step` or a `rigger run` is running right now, a step possibly
-///     mid-wave before it has even parked a spawn, a run for its whole life, hung or not (see
-///     [`acquire_step_lock`]).
-///   - `live_spawns`: an in-flight spawn of the current run - no recorded result, or only the
-///     step's liveness fault, which a resumed worker outlives - whose liveness marker is younger
-///     than its own wall-clock bound ([`rigger::liveness::live_spawns`]): a worker still running
-///     its own `rigger emit`/`rigger result` couriers even with no `step`/`run` process
-///     alive.
+///   - `step_lock_held`: a `rigger run` is running right now, for its whole life, hung or not
+///     (see [`acquire_step_lock`]).
+///   - `live_spawns`: an in-flight spawn of the current run - no recorded result, or only a
+///     liveness fault, which a resumed worker outlives - whose liveness marker is younger than
+///     its own wall-clock bound ([`rigger::liveness::live_spawns`]): a worker still writing to
+///     the store even with no `run` process alive.
 ///   - `driver_registrations`: entries in the machine-global instance registry (spec 50) for THIS
 ///     project's exact store whose DRIVER heartbeat is younger than
-///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): an in-process
-///     `rigger run` (which holds `step.lock` too), or a
-///     driver between two of its `rigger step`s (every step registers as the run's driver, so its
-///     last stamp counts for the idle window), elsewhere on this machine. A courier's discovery
-///     refresh is not one.
+///     [`rigger::registry::DEFAULT_IDLE_MS`] ([`live_driver_registrations`]): a `rigger run`
+///     (which holds `step.lock` too) elsewhere on this machine. A courier's discovery refresh is
+///     not one.
 ///
 /// Unit terminality is NOT a liveness signal, and neither is an in-flight spawn on its own,
 /// without a marker inside its bound: a run whose driver died leaves both behind forever, and
@@ -685,10 +681,8 @@ fn live_writer_reasons(
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if step_lock_held {
-        reasons.push(
-            "a `rigger step` or `rigger run` is running right now (it holds .rigger/step.lock)"
-                .to_string(),
-        );
+        reasons
+            .push("a `rigger run` is running right now (it holds .rigger/step.lock)".to_string());
     }
     if !live_spawns.is_empty() {
         let named: Vec<String> = live_spawns.iter().map(live_spawn_named).collect();
@@ -703,7 +697,7 @@ fn live_writer_reasons(
         reasons.push(format!(
             "{driver_registrations} driver registration(s) for this project's store in the \
              machine-global instance registry (spec 50) heartbeat within the last {}s - a \
-             `run`/`step` may be advancing this run elsewhere on this machine",
+             `rigger run` may be advancing this run elsewhere on this machine",
             rigger::registry::DEFAULT_IDLE_MS / 1000,
         ));
     }
@@ -711,9 +705,9 @@ fn live_writer_reasons(
 }
 
 /// One live spawn as a refusal names it: its id, how long ago its marker was touched, and the
-/// bound that keeps it live. An unbounded spawn's marker never goes stale (the step's own sweep
-/// never calls it hung either), so the only thing that ends it is its recorded result - named
-/// here, since that is the operator's way past it once its worker is gone.
+/// bound that keeps it live. An unbounded spawn's marker never goes stale, so the only thing that
+/// ends it is its recorded result - named here, since that is the operator's way past it once its
+/// worker is gone.
 fn live_spawn_named(s: &rigger::liveness::LiveSpawn) -> String {
     let ago = s.silent_for.as_secs();
     if s.bound.is_zero() {
@@ -791,14 +785,12 @@ fn refuse_derived_reset_if_live(
 ///   - a run-stream read failure (a malformed spawn request, or a malformed result where a
 ///     marker inside its bound needs it read) propagates as a command error rather than folding
 ///     into "no in-flight spawns" - this guard may only REFUSE, never approve an act it could not
-///     actually verify was safe (mirrors [`rigger::liveness::terminal_and_no_live_worker`]'s
-///     convention on the opposite rail: an unreadable stream is never read as "nobody is here").
+///     actually verify was safe (an unreadable stream is never read as "nobody is here").
 ///   - a step-lock probe error that is NOT the lock actually being held (e.g. a permission
-///     fault) also propagates as a command error rather than being misread as "a step or a run
-///     is running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held
+///     fault) also propagates as a command error rather than being misread as "a run is
+///     running": only [`STEP_BUSY_TOKEN`] in the probe's own error names a genuinely held
 ///     lock, so an operator troubleshooting an unrelated IO fault gets that fault's own message
-///     instead of a misdiagnosis pointing them at a `rigger step` or `rigger run` that is not
-///     actually running.
+///     instead of a misdiagnosis pointing them at a `rigger run` that is not actually running.
 pub(super) fn refuse_if_live(
     loc: &StoreLocation,
     selection: &StoreSelection,
@@ -835,7 +827,7 @@ impl LiveWriterFacts {
     /// Nothing is driving the run: none of the facts that make it live holds - the one
     /// definition the live-run refusal ([`refuse_if_live`]) passes on and `reset --runs` closes
     /// by ([`close_landed_units`]). A non-terminal unit, a spawn with no marker, or a
-    /// spawn whose marker has outlived its bound (whether it has no result or only the step's
+    /// spawn whose marker has outlived its bound (whether it has no result or only its
     /// liveness fault) is not a driver - it is exactly what a dead driver leaves behind.
     fn driver_dead(&self) -> bool {
         self.reasons().is_empty()
@@ -843,15 +835,13 @@ impl LiveWriterFacts {
 }
 
 /// [`LiveWriterFacts`] as [`live_writer_facts`] probed them, with the step lock the probe took.
-/// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger step`
-/// and no `rigger run` is running stays true while the caller acts on it: a step started meanwhile
-/// refuses with [`STEP_BUSY_TOKEN`] and its courier retries, and a run started meanwhile refuses
-/// with it until the operator re-runs it, so neither runs against the close, the compaction or the
+/// The lock is HELD for as long as the probe lives, so the probe's verdict that no `rigger run`
+/// is running stays true while the caller acts on it: a run started meanwhile refuses with
+/// [`STEP_BUSY_TOKEN`] until the operator re-runs it, so none runs against the close, the compaction or the
 /// rebuild the caller makes under the probe.
 struct LiveWriterProbe {
     facts: LiveWriterFacts,
-    /// The step lock this probe holds; `None` exactly when a `rigger step` or a `rigger run`
-    /// already held it (`facts.step_lock_held`).
+    /// The step lock this probe holds; `None` exactly when a `rigger run` already held it (`facts.step_lock_held`).
     step_lock: Option<HeldLock>,
 }
 
@@ -866,13 +856,12 @@ fn live_writer_facts(
     env: &ResetEnv,
     events: &[Event],
 ) -> Result<LiveWriterProbe, Box<dyn std::error::Error>> {
-    // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration
-    // and `rigger run` for its whole life, resolved at THIS STORE's own directory (never the
+    // A non-blocking probe of the SAME advisory lock `rigger run` holds for its whole life, resolved at THIS STORE's own directory (never the
     // process cwd) - `reset --derived` is run from a nested worktree just as every other courier
     // is (see `require_store_dir`), and a cwd-relative probe would open a `.rigger/step.lock`
     // under the WRONG (or nonexistent) directory there. Acquiring it proves nobody else holds it,
     // and the probe keeps holding it so that stays true while the caller acts. A failure whose
-    // message names the busy token proves a step or a run IS running; any OTHER failure (a
+    // message names the busy token proves a run IS running; any OTHER failure (a
     // permission fault, a read-only filesystem) is a real fault this command cannot silently
     // misdiagnose as "held", so it propagates instead.
     let step_lock = match acquire_step_lock(&loc.dir) {
@@ -881,8 +870,8 @@ fn live_writer_facts(
         Err(e) => return Err(e),
     };
 
-    // The current run's spawns under the one live-spawn rule `rigger step`'s halted-spawn
-    // checkpoint also applies: no real result, and a marker inside the spawn's own bound.
+    // The current run's spawns under the one live-spawn rule the halted-spawn checkpoint also
+    // applies: no real result, and a marker inside the spawn's own bound.
     let live_spawns = rigger::liveness::live_spawns(
         runscope::current_run(events),
         &env.scratch_root,
@@ -989,8 +978,8 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         let boundary = superseded_edge_boundary(&events);
 
         let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
-        // The probe's step lock is held until the close returns, so no `rigger step` or `rigger
-        // run` starts against a run this reset is closing; the graph prune below takes no part in
+        // The probe's step lock is held until the close returns, so no `rigger run` starts against
+        // a run this reset is closing; the graph prune below takes no part in
         // it.
         let probe = live_writer_facts(loc, selection, env, &events)?;
         close_landed_units(loc, store, &graph, &events, &probe.facts)?;
@@ -1037,11 +1026,11 @@ pub(crate) fn pruned_line(stats: &PruneStats) -> String {
 /// touched.
 ///
 /// A spawn that has not ended is resumed whatever its marker says: one with no result stays in
-/// the step's wave, and one answered only by the step's liveness fault is hung - the step halts on
-/// it and the replay driver re-parks it - so closing its unit would hand a relaunched driver a
-/// spawn of an integrated unit. A pending spawn leaves the landed units open silently; a hung one
-/// leaves them open naming each with the hung spawns and their remedy, a real result recorded
-/// with `rigger result`. The spawns are read before the liveness test, so a spawn event the log
+/// the pending wave, and one answered only by a liveness fault is hung - a relaunched driver
+/// launches it again - so closing its unit would hand a relaunched driver a spawn of an
+/// integrated unit. A pending spawn leaves the landed units open silently; a hung one leaves them
+/// open naming each with the hung spawns and their remedy, a real result recorded with `rigger
+/// result`. The spawns are read before the liveness test, so a spawn event the log
 /// cannot decode fails the command rather than reading as "nothing awaits".
 fn close_landed_units(
     loc: &StoreLocation,
@@ -1765,7 +1754,7 @@ mod tests {
             vec![
                 "3 driver registration(s) for this project's store in the machine-global \
                  instance registry (spec 50) heartbeat within the last 900s - a \
-                 `run`/`step` may be advancing this run elsewhere on this machine"
+                 `rigger run` may be advancing this run elsewhere on this machine"
             ]
         );
     }
@@ -1885,7 +1874,7 @@ mod tests {
     }
 
     /// The live-run refusal names every live reason at once, in the order the probe lists them
-    /// and joined with "; ": with a `rigger step` holding the lock and a driver of this store
+    /// and joined with "; ": with a `rigger run` holding the lock and a driver of this store
     /// fresh in the registry, the text the refusal words is handed both reasons as one.
     #[test]
     fn the_live_run_refusal_joins_every_live_reason_in_the_order_the_probe_lists_them() {
@@ -1919,9 +1908,9 @@ mod tests {
     }
 
     /// The step lock the live-writer probe takes is held for as long as the probe lives - through
-    /// the close and the compaction its caller runs under it - so a `rigger step` started
-    /// meanwhile refuses with the busy token its courier retries on, and never runs against the
-    /// prune; once the probe drops, the next step acquires the lock.
+    /// the close and the compaction its caller runs under it - so a `rigger run` started
+    /// meanwhile refuses with the busy token and never runs against the prune; once the probe
+    /// drops, the next run acquires the lock.
     #[test]
     fn the_live_writer_probe_holds_the_step_lock_until_it_drops() {
         let dir = tempfile::tempdir().unwrap();
@@ -1930,12 +1919,12 @@ mod tests {
         let probe = live_writer_facts(&loc, &StoreSelection::Sqlite, &env, &[]).unwrap();
         let racing = acquire_step_lock(&loc.dir).map(drop);
         drop(probe);
-        let err = racing.expect_err("a step started under the probe must refuse");
+        let err = racing.expect_err("a run started under the probe must refuse");
         assert!(
             err.to_string().contains(STEP_BUSY_TOKEN),
-            "the racing step's refusal carries the busy token its courier retries on: {err}"
+            "the racing run's refusal carries the busy token: {err}"
         );
-        acquire_step_lock(&loc.dir).expect("the next step acquires once the probe drops");
+        acquire_step_lock(&loc.dir).expect("the next run acquires once the probe drops");
     }
 
     /// A malformed event in the current run's slice (the `Err(_)` sentinel of the in-flight-spawn

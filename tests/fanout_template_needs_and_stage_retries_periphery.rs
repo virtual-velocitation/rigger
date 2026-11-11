@@ -1,124 +1,63 @@
-//! Periphery for spec 91, criterion 1 - the two generic conductor rules: (1) a `needs`
-//! entry that names the fan-out implement TEMPLATE is satisfied exactly when every unit
-//! the template expanded into has integrated, and stays unsatisfied while any member is
-//! open or reached a terminal-but-not-integrated state; (2) a stage may set its own
-//! `max_retries`, overriding `defaults.max_retries` for the units it governs.
+//! Periphery for spec 91, criterion 1: the two generic conductor rules. (1) A `needs` entry that
+//! names the fan-out implement TEMPLATE is satisfied exactly when every live unit the template
+//! expanded into has integrated, and stays unsatisfied while any member is open or reached a
+//! terminal-but-not-integrated state. (2) A stage may set its own `max_retries`, overriding
+//! `defaults.max_retries` for the units it governs.
 //!
-//! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `src/conductor.rs`'s own
-//! `mod tests` already proves both rules:
+//! `src/conductor.rs`'s own `mod tests` proves both rules in one process, over a hand-built
+//! config, a stub driver and an in-memory store:
 //!   - `a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates`
-//!     drives the real `run()` wiring end to end for rule 1's happy path.
+//!     drives the `run()` wiring for rule 1's happy path;
 //!   - `a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates`
-//!     proves rule 1 at the pure `ready_stages`/`wave_ready` level, including a partially-
-//!     integrated group and an escalated (terminal, non-integrated) member.
-//!   - `a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge`
-//!     (round 2, closing `adj-u91c1-verdict-reject` /
-//!     `arch-u91c1-fanout-members-orphans-a-superseded-baseline`) proves rule 1 survives a
-//!     planner supersede of a fan-out member, end to end through the real `run()` wiring.
-//!   - `a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling`
-//!     (round 3, closing `adj-u91c1-r2-verdict-reject` /
-//!     `arch-u91c1-r2-need-satisfied-ignores-real-split-siblings`) proves `need_satisfied`
-//!     requires EVERY live sibling sharing a criterion id to integrate - not merely the
-//!     first one a `BTreeMap` iterates to - over a hand-built `stages`/`integrated`/
-//!     `terminal` map, both directions (early integration, permanent escalation).
+//!     proves rule 1 over `ready_stages`/`wave_ready`, including a partially integrated group and
+//!     an escalated member;
+//!   - `a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge` proves
+//!     rule 1 survives a planner supersede of a fan-out member;
+//!   - `a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling` proves
+//!     `need_satisfied` requires every live sibling sharing a criterion id to integrate, in both
+//!     directions (one sibling integrated while its partner is still open, and a partner that
+//!     escalates);
 //!   - `a_stages_own_max_retries_overrides_the_run_default_for_its_units` proves rule 2's
-//!     precedence arithmetic (`max_retries_for`) directly, including the resume-grant-still-
-//!     wins interaction.
+//!     precedence (`max_retries_for`), including the resume grant.
 //!
-//! Every one of those runs in ONE process: a `cfg`/`Deps` built by hand, a `Stub` driver
-//! that never parks, an in-memory `Store::open(":memory:")`. None of them closes these
-//! periphery gaps:
-//!   1. Nothing proves `max_retries:` is actually a STAGE-LEVEL YAML KEY a workflow author
-//!      can write and have it parsed by the real deserializer - every implementer fixture
-//!      constructs a `Stage { max_retries: N, .. }` literal in Rust, never parsing
-//!      `max_retries: N` out of `workflow.yml` text.
-//!   2. Nothing proves the override actually changes ESCALATION TIMING through the
-//!      compiled binary's real remediation loop (spawn, gate, remediate, re-spawn or
-//!      escalate) - the implementer's test calls the private `max_retries_for` directly and
-//!      never drives `run_stage`'s loop at all.
-//!   3. Nothing proves rule 1 holds across the REAL multi-process shape a fan-out unit
-//!      actually takes: the template's baseline units park across separate `rigger step`
-//!      invocations, integrate through REAL git worktrees and a REAL merge onto the run
-//!      branch (never a `Stub` driver that answers synchronously in one call), and only
-//!      then does a downstream `needs: [<template>]` stage become ready - in the SAME
-//!      compiled binary a real operator runs.
-//!   4. Nothing proves the escalated-member case (rule 1's other half) stops a downstream
-//!      stage from ever appearing in a REAL `rigger step`'s printed wave, as opposed to a
-//!      pure function returning the right boolean.
-//!   5. Nothing proves the round-2 supersede fix (gap 3's SAME class of concern, for the
-//!      supersede path specifically) survives a REAL git-backed integrate: the round-2
-//!      regression test passes `deps.repo: String::new()` - no real git at all, so its
-//!      `on_pass: merge` stages never actually merge anything - and answers through a
-//!      private, hand-emitting `Stub`, never the crate's own public `AgentDriver` trait a
-//!      real embedder implements. Nothing proves the criterion-id-keyed live-owner
-//!      resolution `need_satisfied` now does survives an ACTUAL worktree-create -> commit
-//!      -> merge cycle for the unit that supersedes a fan-out baseline, as opposed to an
-//!      in-memory `Stub` answering synchronously.
-//!   6. Nothing proves the round-3 real-split-sibling fix (`need_satisfied` resolving
-//!      EVERY live owner of a criterion id, not merely the first one `stages.iter()`
-//!      reaches) survives a REAL SPLIT produced by a genuine multi-process planner
-//!      courier and REAL git merges (or a REAL escalation) for each sibling - the
-//!      round-3 regression test itself proves the fixed arithmetic in one process over a
-//!      hand-built `stages`/`integrated`/`terminal` map, never through `rigger step`,
-//!      `rigger emit`, or `rigger result` process boundaries, and never through an
-//!      actual worktree-create -> commit -> merge (or escalate) cycle for either sibling.
-//!   7. (Round 4, closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-
-//!      fixtures`, upheld by the round-3 REJECT under the controlling ruling
-//!      `op-u91c1-round-3-template-need-is-a-predicate-over-all-live-owners`, whose
-//!      literal round-3 done-when enumerated five shapes and round 3 shipped only three.)
-//!      Nothing proves `need_satisfied`'s live-owner predicate generalizes past N=2 (an
-//!      ADDED third sub-unit to a same-episode split), and nothing proves a same-id REFINE
-//!      followed by a DISTINCT id's SUPERSEDE of that same criterion resolves correctly -
-//!      both through the real binary boundary, never a hand-built map.
-//!
-//! This file closes all seven, through the compiled binary or the crate's public `run`/
-//! `AgentDriver` API (gap 5, which needs a real git repo and a real superseding proposal),
-//! with real git worktrees/merges wherever the scenario needs them, and real `rigger
-//! step`/`rigger emit --spawn`/`rigger result` process boundaries for gaps 1-4, 6, and 7 -
-//! gaps 6 and 7's real splits/refines/supersedes are produced by `rigger emit --spawn
-//! <spawn-id> UnitProposed` calls (`cmd_emit`, `src/main.rs`: the established
-//! native-courier idiom a scripted, non-MCP-tooled planner uses to record a decision,
-//! threading its own spawn id into `META_SPAWN` exactly as a live MCP-tooled agent's
-//! stamped emit does) - gap 6 and gap 7's added-sub-unit case issue every call from the
-//! SAME parked `plan` spawn so every proposal shares one episode identity; gap 7's
-//! refine-then-supersede case issues its final (superseding) call from a DIFFERENT,
-//! synthetic spawn id (`plan/replan#1`) stamped the same native-courier way, so it falls
-//! into a strictly later episode without ever being a real parked `rigger step`-driven
-//! re-plan - a real multi-process planner idiom this file did not use for gap 5, which
-//! instead drives the public `AgentDriver` trait directly.
+//! What none of them reach, and this file drives:
+//!   1. `max_retries:` as a stage-level key in `workflow.yml` text, parsed by the real
+//!      deserializer, changing when a `rigger run` escalates through its remediation loop, in
+//!      both directions (lowering and raising the bound).
+//!   2. Rule 1 through the compiled binary: fan-out members that integrate through real git
+//!      worktrees and merges onto the run branch, and a downstream `needs: [<template>]` stage
+//!      the run starts only after every member's integration is on the log, or never starts at
+//!      all once a member escalates.
+//!   3. Rule 1 over the live owners a real planner leaves: a split proposed through `rigger emit
+//!      --spawn <plan-spawn> UnitProposed` from the planner's own spawn (two and three
+//!      same-episode siblings, and a sibling that escalates), and a same-id refine later
+//!      superseded by a distinct id from a later episode.
+//!   4. Rule 1 across a planner supersede through the crate's public `run`/`AgentDriver` API
+//!      over a real git repo, so the superseding unit's worktree-create, commit and merge cycle
+//!      is real.
 //!
 //! NOT OWNED HERE: the pure `ready_stages`/`wave_ready`/`max_retries_for`/`need_satisfied`
-//! arithmetic itself (private to `conductor.rs`, exhaustively covered by its own colocated
-//! tests), and the resume-grant-vs-stage-override interaction (pure arithmetic over
-//! already-parsed structs, no new I/O boundary - covered by the implementer's own
-//! `a_stages_own_max_retries_overrides_the_run_default_for_its_units`).
+//! arithmetic itself (private to `conductor.rs`, covered by its own tests above), including the
+//! window in which one split sibling has integrated while its partner is still open.
 
 use crate::common;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use common::cli::propose_unit_via_rigger_emit;
-use common::cli::run_rigger;
-use common::cli::seed_run_events;
-use common::cli::temp_repoless_project;
+use common::cli::{read_run_events, run_on_arms, temp_repoless_project};
 use common::fixtures::test_spawn_host;
+use common::fixtures::{stand_in_launches, RECORD_EACH_LAUNCH};
 use common::fixtures::{unit_proposal, ProposingPlannerDriver};
-use common::git::temp_git_project_with_commit;
+use common::git::{git_out, temp_git_project_with_commit};
 use rigger::conductor::{run, Deps};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::json;
 
 /// Write the `worker` agent file with `isolation` frontmatter lines (each ending in `\n`):
-///
-/// - [`GIT_WORKER`]: a real, isolated (git-worktree-backed) worker - no `isolation: none` -
-///   so its stage's `on_pass: merge` reaches a genuine git merge onto the run branch.
-///   Mirrors `tests/common/cli.rs`'s `REVIEWLESS_GIT_UNIT_WORKFLOW`'s own agent file.
-/// - [`REPOLESS_WORKER`]: a repo-less (`isolation: none`) worker for the offline escalation
-///   scenarios, which never need a real worktree. Mirrors `tests/cli.rs`'s
-///   `FAILING_GATE_ESCALATING_WORKFLOW`'s own agent file.
+/// [`GIT_WORKER`] for a git-worktree-backed worker whose `on_pass: merge` reaches a real merge
+/// onto the run branch, [`REPOLESS_WORKER`] for a repo-less one.
 fn write_worker_agent(root: &Path, isolation: &str) {
     let agents = root.join(".rigger").join("agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -137,250 +76,380 @@ const GIT_WORKER: &str = "";
 /// The repo-less worker's isolation frontmatter.
 const REPOLESS_WORKER: &str = "isolation: none\n";
 
-// -----------------------------------------------------------------------------------------
-// Rule 1, gap 3/4 (happy path): a `needs: [implement]` stage becomes ready, through the
-// real compiled binary and real git merges, only once EVERY fan-out baseline unit has
-// actually integrated - never on the first one alone.
-// -----------------------------------------------------------------------------------------
+/// A canonical scratch root of its own, kept alive by the returned guard.
+fn scratch_root() -> (tempfile::TempDir, PathBuf) {
+    let held = tempfile::tempdir().unwrap();
+    let scratch = std::fs::canonicalize(held.path()).unwrap();
+    (held, scratch)
+}
 
-/// Two Done-when criteria decompose into two real baseline units under the `implement`
-/// fan-out template (`strategy: fan-out`, `on_pass: merge`, real git isolation). `checkin`
-/// names the TEMPLATE ("implement") in its own `needs`. Drives three real `rigger step
-/// --spec spec.md` invocations with real `rigger result` posts and real git merges in
-/// between, proving: both baseline units park in the SAME first wave; `checkin` is absent
-/// from every wave until the SECOND (final) baseline unit integrates; and `checkin`'s own
-/// implementer parks in the very step that crosses that threshold.
-#[test]
-fn checkin_becomes_ready_only_once_both_real_fanout_baseline_units_have_integrated() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_worker_agent(root, GIT_WORKER);
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  implement:
-    agent: worker
-    strategy: fan-out
-    gates: [ok]
-    on_pass: merge
-  checkin:
-    agent: worker
-    needs: [implement]
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("spec.md"),
-        "# Spec\n\n## Done when\n\n- [ ] alpha lands cleanly\n- [ ] beta lands too\n",
-    )
-    .unwrap();
+/// What one `rigger run` answered: its stdout, stderr and success, and the spawn of every launch
+/// the fake host put on record, in spawn order.
+struct Run {
+    out: String,
+    err: String,
+    ok: bool,
+    launched: Vec<String>,
+}
 
-    let unit_a = "unit-1-alpha-lands-cleanly";
-    let unit_b = "unit-2-beta-lands-too";
-
-    // Step 1: both criteria decompose into baseline units from the SAME template in the
-    // same wave (neither needs the other), so both implementers park together; `checkin`
-    // needs the template and neither member has integrated yet, so it is absent.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "the first spec-driven step must succeed; stderr:\n{err}"
-    );
-    for id in [unit_a, unit_b] {
-        assert!(
-            out.contains(&format!(r#""id":"{id}/implementer#0""#)),
-            "both real fan-out baseline units must park in the first wave; got:\n{out}"
-        );
+impl Run {
+    /// Whether the run state it printed shows `unit` at `state`.
+    fn shows(&self, unit: &str, state: &str) -> bool {
+        self.out
+            .lines()
+            .any(|line| line.split_whitespace().collect::<Vec<_>>() == [unit, state])
     }
-    assert!(
-        !out.contains("checkin"),
-        "checkin needs the template and NO member has integrated yet, so it must not \
-         appear anywhere in the first wave; got:\n{out}"
-    );
+}
 
-    // Land unit A for real: write its diff into the REAL worktree the park already
-    // created, post its result, then step again so the real merge lands.
-    let wt_a = common::default_scratch_root(root).join(format!("rigger-wt-{unit_a}"));
-    assert!(
-        wt_a.exists(),
-        "a parked implementer must already have its unit worktree on disk: {}",
-        wt_a.display()
-    );
-    std::fs::write(wt_a.join("a.rs"), "pub fn a() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", &format!("{unit_a}/implementer#0"), "landed a"],
-    );
-    assert!(ok, "recording unit A's result must succeed; stderr: {err}");
+/// `rigger <args>` over `root` under a scratch root of its own, the fake host answering from
+/// `arms`.
+fn run_over(root: &Path, args: &[&str], arms: &str) -> Run {
+    let (_held, scratch) = scratch_root();
+    let (out, err, ok, fake) = run_on_arms(root, args, &scratch, arms);
+    let on_record = fake.path().join("bin/launches");
+    let launched = if on_record.exists() {
+        stand_in_launches(&on_record)
+            .into_iter()
+            .map(|l| l.spawn)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Run {
+        out,
+        err,
+        ok,
+        launched,
+    }
+}
 
-    // Step 2: unit A's implementer replays and its real merge lands (UnitIntegrated for
-    // unit A). Unit B's implementer is still outstanding (parked, no result yet) so
-    // nothing new happens for it. `checkin` still needs unit B, so it must still be
-    // absent - the partial-fan-out half of rule 1, now proven at the real binary boundary.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "the second step must succeed; stderr:\n{err}");
-    assert!(
-        !out.contains("checkin"),
-        "checkin needs BOTH baseline units and only unit A has integrated so far, so it \
-         must still be absent from every wave; got:\n{out}"
-    );
-
-    // Land unit B for real, the same way.
-    let wt_b = common::default_scratch_root(root).join(format!("rigger-wt-{unit_b}"));
-    assert!(
-        wt_b.exists(),
-        "unit B's parked implementer must already have its unit worktree on disk: {}",
-        wt_b.display()
-    );
-    std::fs::write(wt_b.join("b.rs"), "pub fn b() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", &format!("{unit_b}/implementer#0"), "landed b"],
-    );
-    assert!(ok, "recording unit B's result must succeed; stderr: {err}");
-
-    // Step 3: unit B's real merge lands (UnitIntegrated for unit B). Both members of the
-    // template have now integrated, so `checkin`'s `needs: [implement]` is satisfied and
-    // its own implementer must park in this SAME step - the threshold-crossing step.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "the third step must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"checkin/implementer#0""#),
-        "once BOTH real fan-out baseline units have integrated, checkin's needs edge on \
-         the template must be satisfied and its own implementer must park in this same \
-         step; got:\n{out}"
-    );
+/// The file a member's implementer writes and its merge lands: its spawn id with every
+/// character but a lowercase letter or digit made `_`, then `.rs`.
+fn landed_file(spawn: &str) -> String {
+    format!(
+        "{}.rs",
+        spawn.replace(
+            |c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()),
+            "_"
+        )
+    )
 }
 
 // -----------------------------------------------------------------------------------------
-// Rule 1, gap 4: an escalated (terminal, never-integrated) fan-out member must permanently
-// block a downstream `needs: [<template>]` stage, through a real `rigger step`'s printed
-// wave - never merely a pure function returning the right boolean.
+// Rule 1: a `needs: [implement]` stage starts only once every live owner of the template's
+// criteria has integrated, and never once one escalates.
 // -----------------------------------------------------------------------------------------
 
-/// One Done-when criterion decomposes into exactly one baseline unit under the `implement`
-/// template, whose only gate always fails with a remediation bound of one - it escalates on
-/// its very first failed attempt and never integrates. `checkin` names the template in its
-/// `needs`. Proves that the run's escalated fixpoint carries the baseline unit's id, never
-/// `checkin`'s - `checkin`'s implementer must never appear in any real step's wave at all.
-#[test]
-fn checkin_never_becomes_ready_when_its_only_fanout_member_escalates_instead_of_integrating() {
-    let dir = temp_repoless_project();
-    let root = dir.path();
-    write_worker_agent(root, REPOLESS_WORKER);
+/// The one-criterion spec text every planned split below decomposes: exactly one deterministic
+/// baseline unit, so the planner's proposals are the only source of a second live owner for its
+/// criterion id.
+const SPLIT_CRITERION: &str = "the auth module lands";
+
+/// Which planning episode a proposal comes from.
+#[derive(Clone, Copy)]
+enum Episode {
+    /// The planner's own spawn.
+    Own,
+    /// A strictly later episode, `plan/replan#1`.
+    Later,
+}
+
+/// One planner proposal for [`SPLIT_CRITERION`]: its episode, unit id and gate.
+type Proposal = (Episode, &'static str, &'static str);
+
+/// The fan-out workflow: when `planned`, a `plan` stage (`produces: dag`) the template's units
+/// need; `implement`, the fan-out template, gated `template_gate`; and `checkin`, `needs:
+/// [implement]`, the edge under test. One git-isolated agent plays every role; the run-wide
+/// remediation bound of one escalates a member on its first failed gate.
+fn write_fan_out_workflow(root: &Path, planned: bool, template_gate: &str) {
+    write_worker_agent(root, GIT_WORKER);
+    let plan = if planned {
+        "  plan:\n    agent: worker\n    produces: dag\n"
+    } else {
+        ""
+    };
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
-        r#"defaults:
+        format!(
+            r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
 gates:
-  bad: { run: "false", kind: core }
+  ok: {{ run: "true", kind: core }}
+  bad: {{ run: "false", kind: core }}
 stages:
-  implement:
+{plan}  implement:
     agent: worker
     strategy: fan-out
-    gates: [bad]
-    on_pass: none
+    gates: [{template_gate}]
+    on_pass: merge
   checkin:
     agent: worker
     needs: [implement]
-    gates: [bad]
-    on_pass: none
-"#,
+    gates: [ok]
+    on_pass: merge
+"#
+        ),
     )
     .unwrap();
-    std::fs::write(
-        root.join("spec.md"),
-        "# Spec\n\n## Done when\n\n- [ ] gamma never lands\n",
-    )
-    .unwrap();
-
-    let unit = "unit-1-gamma-never-lands";
-
-    // Step 1: the sole baseline unit's implementer parks; checkin needs the template and
-    // the member has not even attempted a gate yet, so it is absent.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "the first spec-driven step must succeed; stderr:\n{err}"
-    );
-    assert!(
-        out.contains(&format!(r#""id":"{unit}/implementer#0""#)),
-        "the sole fan-out baseline unit must park in the first wave; got:\n{out}"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "checkin must not appear before its only member has even attempted a gate; \
-         got:\n{out}"
-    );
-
-    seed_run_events(
-        root,
-        &[(
-            "SpawnResult",
-            &format!(r#"{{"id":"{unit}/implementer#0","output":"attempted"}}"#),
-        )],
-    );
-
-    // Step 2: the gate fails, the remediation bound of one means this first failure IS
-    // the escalation - the baseline unit goes terminal WITHOUT ever integrating.
-    // `checkin`'s needs edge names the template and its only member never integrated, so
-    // it must never appear - not in this step's wave, and not in the escalated set either.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "a step that reaches an escalated fixpoint still exits 0; stderr:\n{err}"
-    );
-    assert!(
-        out.contains(&format!(r#""escalated":["{unit}"]"#)),
-        "the run must reach a fixpoint with the baseline unit escalated; got:\n{out}"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "checkin's only fan-out member escalated instead of integrating, so checkin must \
-         never appear anywhere - not spawned, and not itself in the escalated set; \
-         got:\n{out}"
-    );
 }
 
-// -----------------------------------------------------------------------------------------
-// Rule 1, gap 5 (round-2 regression fix, `adj-u91c1-verdict-reject` /
-// `arch-u91c1-fanout-members-orphans-a-superseded-baseline`): a real planner's `UnitProposed`
-// superseding one fan-out baseline member must not orphan a downstream `needs: [<template>]`
-// stage - proven through a REAL git-backed integrate (real worktrees, real commits, real
-// merges), never the round-2 fix's own regression test
-// (`a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge`,
-// src/conductor.rs `mod tests`), which passes `deps.repo: String::new()` - no real git at
-// all, so its `on_pass: merge` stages never actually merge anything - and answers through a
-// private, hand-emitting `Stub`, never the crate's own public `AgentDriver` trait a real
-// embedder implements. This proves the criterion-id-keyed live-owner resolution
-// `need_satisfied`'s round-2 fix added survives an ACTUAL worktree-create -> commit -> merge
-// cycle for the SUPERSEDING unit, not merely an in-memory `Stub` answering synchronously.
-// -----------------------------------------------------------------------------------------
+/// The worker's arm: the planner's spawn records each of `proposals` through `rigger emit
+/// --spawn` against the store in `root`, in order; every other spawn writes its
+/// [`landed_file`] for its stage's merge to land.
+fn fan_out_arm(root: &Path, proposals: &[Proposal]) -> String {
+    let bin = common::rigger_bin();
+    let emits: Vec<String> = proposals
+        .iter()
+        .map(|(episode, id, gate)| {
+            let spawn = match episode {
+                Episode::Own => r#""$RIGGER_SPAWN""#,
+                Episode::Later => "'plan/replan#1'",
+            };
+            let body = serde_json::json!({
+                "id": id, "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate],
+            });
+            format!(
+                "'{}' emit --spawn {spawn} UnitProposed '{body}'",
+                bin.display()
+            )
+        })
+        .collect();
+    let plan = if emits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "      plan/*) (cd '{}' && {}) >&2 ;;\n",
+            root.display(),
+            emits.join(" && ")
+        )
+    };
+    format!(
+        r#"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    case "$RIGGER_SPAWN" in
+{plan}      *) echo 'pub fn done() {{}}' > "$(printf '%s' "$RIGGER_SPAWN" | tr -c 'a-z0-9' _).rs" ;;
+    esac
+    echo done
+    ;;
+"#
+    )
+}
 
-/// Proves the round-2 fix (`fanout_criteria` resolving a needs edge by each criterion's
-/// LIVE `stages` owner, never a frozen unit-id snapshot) end to end through a REAL git
-/// repo: `checkin` (`needs: [implement]`) must still integrate once the SUPERSEDING unit
-/// for criterion A (a planner-proposed id the deterministic baseline decomposition never
-/// produced) and criterion B's ordinary baseline BOTH land through real, separate git
-/// merges onto the base branch.
+/// The log position of the first event of type `kind` whose `id` is `unit`.
+fn position_of(events: &[rigger::eventstore::Event], kind: &str, unit: &str) -> Option<u64> {
+    events
+        .iter()
+        .filter(|e| e.type_ == kind)
+        .find(|e| {
+            serde_json::from_slice::<serde_json::Value>(&e.data).unwrap()["id"].as_str()
+                == Some(unit)
+        })
+        .map(|e| e.position)
+}
+
+/// Given a spec of `criteria`, the fan-out template gated `template_gate` and, when any, a
+/// planner that records `proposals`, when `rigger run` drives the spec, then: each unit of
+/// `integrated` launches once and integrates, its file landed on the run branch; each unit of
+/// `escalated` launches once, escalates and lands nothing; no unit of `never` ever starts; and
+/// `checkin` starts only after every unit of `integrated` has integrated, then integrates, when
+/// nothing escalated, and never starts or launches at all when anything did.
+fn a_run_over_a_fan_out(
+    criteria: &[&str],
+    template_gate: &str,
+    proposals: &[Proposal],
+    integrated: &[&str],
+    escalated: &[&str],
+    never: &[&str],
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let planned = !proposals.is_empty();
+    write_fan_out_workflow(root, planned, template_gate);
+    let done_when: String = criteria.iter().map(|c| format!("- [ ] {c}\n")).collect();
+    std::fs::write(
+        root.join("spec.md"),
+        format!("# Spec\n\n## Done when\n\n{done_when}"),
+    )
+    .unwrap();
+
+    let run = run_over(root, &["run", "spec.md"], &fan_out_arm(root, proposals));
+    let events = read_run_events(root);
+    let dump = || {
+        format!(
+            "stdout:\n{}\nstderr:\n{}\nlaunched: {:?}",
+            run.out, run.err, run.launched
+        )
+    };
+    assert!(run.ok, "the run ends cleanly; {}", dump());
+
+    let ready = escalated.is_empty();
+    let mut expected: Vec<String> = integrated
+        .iter()
+        .chain(escalated)
+        .map(|unit| format!("{unit}/implementer#0"))
+        .collect();
+    if planned {
+        expected.push("plan/implementer#0".to_string());
+    }
+    if ready {
+        expected.push("checkin/implementer#0".to_string());
+    }
+    expected.sort();
+    assert_eq!(run.launched, expected, "the spawns the run launches");
+
+    for unit in integrated {
+        assert!(
+            run.shows(unit, "integrated"),
+            "{unit} integrates; {}",
+            dump()
+        );
+        assert_eq!(
+            git_out(
+                root,
+                &[
+                    "show",
+                    &format!(
+                        "rigger-run:{}",
+                        landed_file(&format!("{unit}/implementer#0"))
+                    )
+                ]
+            ),
+            "pub fn done() {}",
+            "{unit}'s merge lands its file on the run branch"
+        );
+    }
+    for unit in escalated {
+        assert!(run.shows(unit, "escalated"), "{unit} escalates; {}", dump());
+        assert!(
+            position_of(&events, "UnitIntegrated", unit).is_none(),
+            "{unit} escalated without ever integrating"
+        );
+    }
+    for unit in never {
+        assert_eq!(
+            position_of(&events, "UnitStarted", unit),
+            None,
+            "{unit} was superseded before it was ever scheduled, so it never starts"
+        );
+    }
+
+    let checkin = position_of(&events, "UnitStarted", "checkin");
+    if ready {
+        let last_member = integrated
+            .iter()
+            .map(|unit| position_of(&events, "UnitIntegrated", unit).unwrap())
+            .max()
+            .unwrap();
+        assert!(
+            checkin.is_some_and(|started| started > last_member),
+            "checkin starts only after every live owner of the template's criteria has \
+             integrated (the last at {last_member}); checkin started at {checkin:?}"
+        );
+        assert!(
+            run.shows("checkin", "integrated"),
+            "checkin integrates; {}",
+            dump()
+        );
+    } else {
+        assert_eq!(
+            checkin,
+            None,
+            "a member escalated instead of integrating, so checkin never starts; {}",
+            dump()
+        );
+    }
+}
+
+rigger::test_cases! {
+    /// Two Done-when criteria decompose into two baseline units of the template, which both
+    /// integrate through real merges before `checkin` starts.
+    checkin_becomes_ready_only_once_both_real_fanout_baseline_units_have_integrated:
+        a_run_over_a_fan_out(
+            &["alpha lands cleanly", "beta lands too"],
+            "ok",
+            &[],
+            &["unit-1-alpha-lands-cleanly", "unit-2-beta-lands-too"],
+            &[],
+            &[],
+        );
+    /// The template's only member escalates on its first failed gate, so `checkin` never
+    /// starts and is not itself escalated.
+    checkin_never_becomes_ready_when_its_only_fanout_member_escalates_instead_of_integrating:
+        a_run_over_a_fan_out(
+            &["gamma never lands"],
+            "bad",
+            &[],
+            &[],
+            &["unit-1-gamma-never-lands"],
+            &[],
+        );
+    /// A same-episode two-way split: `checkin` waits for the second sibling, not only the one
+    /// that sorts first.
+    checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet:
+        a_run_over_a_fan_out(
+            &[SPLIT_CRITERION],
+            "ok",
+            &[(Episode::Own, "split-a-1", "ok"), (Episode::Own, "split-a-2", "ok")],
+            &["split-a-1", "split-a-2"],
+            &[],
+            &[],
+        );
+    /// A same-episode split whose second sibling escalates keeps `checkin` from ever starting,
+    /// though the first sibling integrated.
+    checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead:
+        a_run_over_a_fan_out(
+            &[SPLIT_CRITERION],
+            "ok",
+            &[(Episode::Own, "split-a-1", "ok"), (Episode::Own, "split-a-2", "bad")],
+            &["split-a-1"],
+            &["split-a-2"],
+            &[],
+        );
+    /// A three-way split: the predicate holds over every live owner, not a pair.
+    checkin_stays_unready_until_every_member_of_a_same_episode_three_way_split_has_integrated:
+        a_run_over_a_fan_out(
+            &[SPLIT_CRITERION],
+            "ok",
+            &[
+                (Episode::Own, "split-a-1", "ok"),
+                (Episode::Own, "split-a-2", "ok"),
+                (Episode::Own, "split-a-3", "ok"),
+            ],
+            &["split-a-1", "split-a-2", "split-a-3"],
+            &[],
+            &[],
+        );
+    /// A same-id refine of `auth-v1` folds into one unit, a distinct `auth-v2` from a later
+    /// episode supersedes it before it is scheduled, and `checkin` tracks only `auth-v2`.
+    checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_proposal:
+        a_run_over_a_fan_out(
+            &[SPLIT_CRITERION],
+            "ok",
+            &[
+                (Episode::Own, "auth-v1", "ok"),
+                (Episode::Own, "auth-v1", "ok"),
+                (Episode::Later, "auth-v2", "ok"),
+            ],
+            &["auth-v2"],
+            &[],
+            &["auth-v1"],
+        );
+}
+
+/// A planner supersede of a fan-out baseline, through the crate's public `run`/`AgentDriver` API
+/// over a real git repo: `checkin` (`needs: [implement]`) integrates once the superseding unit
+/// for criterion A (an id the deterministic baseline decomposition never produced) and
+/// criterion B's ordinary baseline both land through real, separate git merges, because a needs
+/// edge resolves each criterion by its live owner, never a frozen unit-id snapshot.
 #[test]
 fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_via_real_git_merges(
 ) {
     let repo = temp_git_project_with_commit();
 
     let mut cfg = Config::default();
-    // Spec 89 criterion 2 ruling item 2: this is the one test in this file that drives a real
-    // repo (every other Deps here uses `repo: String::new()`, so its fan-out unit worktree
-    // must never reach the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    // The fan-out unit worktrees of a real repo stay under the test's own workdir, never the
+    // ambient cache home.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     for id in ["planner", "worker"] {
         cfg.agents.insert(
@@ -458,58 +527,50 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
     };
     let rs = run(&cfg, &deps).unwrap();
 
-    // Exactly 4 units ever ran: "plan", "checkin", the real superseding unit, and criterion
-    // B's ordinary baseline - NEVER a 5th (criterion A's own deterministic baseline
-    // surviving ALONGSIDE the unit that superseded it, the round-1 defect this proves
-    // fixed).
+    // Exactly 4 units ran: "plan", "checkin", the superseding unit and criterion B's ordinary
+    // baseline. A 5th would be criterion A's own baseline surviving beside the unit that
+    // superseded it.
     assert_eq!(
         rs.units.len(),
         4,
-        "plan + checkin + exactly 2 implement-derived units (the real superseding unit for \
-         criterion A, the ordinary baseline for criterion B) - a 5th would mean criterion \
-         A's baseline survived alongside its superseding unit; units: {:?}",
+        "plan + checkin + exactly 2 implement-derived units (the superseding unit for \
+         criterion A, the ordinary baseline for criterion B); units: {:?}",
         rs.units.keys().collect::<Vec<_>>()
     );
     assert_eq!(
         rs.units[superseding_id].status,
         ledger::Status::Integrated,
-        "the real planner-proposed unit superseding criterion A's baseline must integrate \
-         through a real git merge"
+        "the planner-proposed unit superseding criterion A's baseline integrates through a real \
+         git merge"
     );
 
-    // Find criterion B's ordinary baseline by elimination - its deterministic slug is
-    // derived from criterion text this test does not hand-compute - and confirm it
-    // integrated too.
+    // Criterion B's ordinary baseline, found by elimination: its deterministic slug derives
+    // from criterion text this test does not hand-compute.
     let crit_b_baseline = rs
         .units
         .keys()
         .find(|k| k.as_str() != "plan" && k.as_str() != "checkin" && k.as_str() != superseding_id)
         .cloned()
-        .expect("criterion B's ordinary baseline must exist as a 4th unit");
+        .expect("criterion B's ordinary baseline exists as a 4th unit");
     assert_eq!(
         rs.units[&crit_b_baseline].status,
         ledger::Status::Integrated,
-        "criterion B's ordinary baseline must integrate through a real git merge"
+        "criterion B's ordinary baseline integrates through a real git merge"
     );
 
-    // THE ASSERTION THAT WAS RED before the round-2 fix: checkin needs the fan-out
-    // template, whose live owner for criterion A is now the REAL superseding unit - an id
-    // the deterministic baseline decomposition never produced. A frozen unit-id snapshot
-    // could never see it integrate; checkin would never even appear in `rs.units` (the run
-    // silently converges one wave early instead, exactly as
-    // arch-u91c1-fanout-members-orphans-a-superseded-baseline described).
+    // checkin needs the fan-out template, whose live owner for criterion A is the superseding
+    // unit: a frozen unit-id snapshot could never see it integrate, and the run would converge
+    // one wave early with no checkin at all.
     assert_eq!(
         rs.units.get("checkin").map(|u| u.status),
         Some(ledger::Status::Integrated),
-        "checkin must become ready and integrate once every criterion's CURRENT live owner \
-         has integrated through a REAL git merge, even when a real planner supersede \
-         changed which unit id owns criterion A; got units: {:?}",
+        "checkin becomes ready and integrates once every criterion's live owner has integrated \
+         through a real git merge; units: {:?}",
         rs.units.keys().collect::<Vec<_>>()
     );
 
-    // Non-vacuity: the base repo's working tree really carries every landed unit's own
-    // real committed file after the real merges, not merely an in-memory status
-    // transition.
+    // The base repo's working tree carries every landed unit's committed file after the real
+    // merges, not merely an in-memory status transition.
     for name in [superseding_id, crit_b_baseline.as_str(), "checkin"] {
         let file_name = format!(
             "{}.rs",
@@ -518,512 +579,22 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         let landed = repo.path().join(&file_name);
         assert!(
             landed.exists(),
-            "unit {name:?}'s real committed file must have landed on the base after its \
-             real merge: {}",
+            "unit {name:?}'s committed file lands on the base after its merge: {}",
             landed.display()
         );
     }
 }
 
 // -----------------------------------------------------------------------------------------
-// Rule 1, gap 6 (round-3 fix, closing `adj-u91c1-r2-verdict-reject` /
-// `arch-u91c1-r2-need-satisfied-ignores-real-split-siblings`): a REAL SPLIT - a same-episode
-// planner proposal that adds a SECOND live unit sharing one criterion id alongside the
-// first (spec 31/72's real-split guarantee: `harvest_proposed` never reaps a genuinely-new
-// same-episode sibling, only a strictly-earlier-episode owner) - must require EVERY live
-// sibling under that criterion id to integrate before a downstream `needs: [<template>]`
-// stage becomes ready. Round 2's own fix (`need_satisfied`'s `stages.iter().find(..)`
-// resolution) silently satisfied - or silently NEVER satisfied - the whole entry on
-// whichever sibling `BTreeMap` iteration reaches first, ignoring every other live sibling
-// entirely; round 3 replaced it with `.filter(..).all(..)`. The round-3 regression test
-// proving this (`a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling`,
-// `src/conductor.rs` `mod tests`) answers through a hand-built `stages`/`integrated`/
-// `terminal` map in one process - never a real planner proposal, never a real gate, never a
-// real git merge or a real escalation. The two tests below close that: a REAL split is
-// produced by a native courier's `rigger emit --spawn <plan-spawn-id> UnitProposed` (see
-// `propose_real_split` below) called TWICE from the SAME parked `plan` spawn so both
-// proposals share one episode identity, and each split unit's own real gate outcome and
-// real git merge (or real escalation) is driven through a genuine `rigger step`/`rigger
-// result` process boundary - never the crate's private `Stub`/`AgentDriver` in-process seam
-// gap 5 above already covers.
+// Rule 2: a stage's own `max_retries:` key, parsed from `workflow.yml` text, overrides
+// `defaults.max_retries` for that stage's units through a run's remediation loop, in both
+// directions.
 // -----------------------------------------------------------------------------------------
 
-/// The one-criterion spec text every real-split test below decomposes: exactly one
-/// deterministic baseline unit, so the planner's real split is the ONLY source of a second
-/// live owner for its criterion id (never a second baseline from a second criterion).
-const SPLIT_CRITERION: &str = "the auth module lands";
-
-fn write_split_criterion_spec(root: &Path) {
-    std::fs::write(
-        root.join("spec.md"),
-        format!("# Spec\n\n## Done when\n\n- [ ] {SPLIT_CRITERION}\n"),
-    )
-    .unwrap();
-}
-
-/// The fan-out workflow every real-split test below shares: `plan` (agent: worker, the
-/// producer), `implement` (the fan-out template, needs the producer implicitly via
-/// `baseline_units`), `checkin` (`needs: [implement]`, the edge under test). One agent id
-/// ("worker", real git isolation) plays every role - the planner's own real actions here
-/// are driven by the TEST's calls to `rigger emit`/`rigger result`, never by an LLM, so a
-/// single agent identity suffices exactly as it does for `write_worker_agent(.., GIT_WORKER)`'s other
-/// callers above.
-fn write_split_fanout_workflow(root: &Path) {
-    write_worker_agent(root, GIT_WORKER);
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"defaults:
-  grounder: nop
-  budget: 60
-  max_retries: 1
-gates:
-  ok: { run: "true", kind: core }
-  bad: { run: "false", kind: core }
-stages:
-  plan:
-    agent: worker
-    produces: dag
-  implement:
-    agent: worker
-    strategy: fan-out
-    gates: [ok]
-    on_pass: merge
-  checkin:
-    agent: worker
-    needs: [implement]
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
-}
-
-/// A same-episode REAL SPLIT of `SPLIT_CRITERION`'s deterministic baseline into one live
-/// sibling per `(id, gate)` pair in `members`, each proposed as a separate `rigger emit
-/// --spawn` call from the SAME parked `plan` spawn so every sibling shares one episode
-/// identity - the shape `harvest_proposed` never reaps a genuinely-new same-episode sibling
-/// for (spec 31/72), then records `plan`'s own result so its real (empty, since a planner
-/// writes no files) worktree merges and integrates. Generalized over N members (round 4,
-/// closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-fixtures`'s
-/// added-sub-unit shape, which needs N=3+ to distinguish `need_satisfied`'s genuine
-/// `.filter(..).all(..)` predicate from an accidental pairwise-only check that happens to
-/// also pass at N=2) so a 2-way call site never duplicates a 3-way one.
-fn propose_real_n_way_split(root: &Path, members: &[(&str, &str)]) {
-    let plan_spawn = "plan/implementer#0";
-    for (id, gate) in members {
-        propose_unit_via_rigger_emit(
-            root,
-            plan_spawn,
-            &json!({"id": id, "agent": "worker", "criterion": SPLIT_CRITERION, "gates": [gate]}),
-        );
-    }
-    let (_o, err, ok) = run_rigger(root, &["result", plan_spawn, "proposed a real split"]);
-    assert!(
-        ok,
-        "recording plan's own result must succeed; stderr: {err}"
-    );
-}
-
-/// The N=2 case of [`propose_real_n_way_split`]: `split-a-1` (gate `gate_a1`) and
-/// `split-a-2` (gate `gate_a2`).
-fn propose_real_split(root: &Path, gate_a1: &str, gate_a2: &str) {
-    propose_real_n_way_split(root, &[("split-a-1", gate_a1), ("split-a-2", gate_a2)]);
-}
-
-/// Write a trivial file into `unit`'s real worktree (already created by its parked
-/// implementer) and post its `rigger result`, landing a genuine git commit that its stage's
-/// `on_pass: merge` then merges for real. Factors out the land-a-real-unit shape repeated
-/// inline above (unit A/B, split-a-1/split-a-2) for the round-4 fixtures below, so the N-way
-/// and refine-then-supersede tests do not re-duplicate it a third and fourth time (the
-/// non-blocking round-3 finding `sdet-u91c1-r3-new-dup-cluster-between-its-own-two-
-/// periphery-tests-non-blocking` flagged exactly this inline shape recurring across a
-/// round's own new tests).
-fn land_real_unit(root: &Path, unit: &str) {
-    let wt = common::default_scratch_root(root).join(format!("rigger-wt-{unit}"));
-    assert!(
-        wt.exists(),
-        "{unit} must already have its real worktree on disk: {}",
-        wt.display()
-    );
-    let file_name = format!(
-        "{}.rs",
-        unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-    );
-    std::fs::write(wt.join(&file_name), "pub fn done() {}\n").unwrap();
-    let (_o, err, ok) = run_rigger(
-        root,
-        &[
-            "result",
-            &format!("{unit}/implementer#0"),
-            &format!("landed {unit}"),
-        ],
-    );
-    assert!(ok, "recording {unit}'s result must succeed; stderr: {err}");
-}
-
-/// A real 2-way split of `SPLIT_CRITERION`'s baseline (`split-a-2` gated `gate_a2`), stepped to
-/// where the BTreeMap-key-first sibling `split-a-1` (which sorts before `split-a-2`, the exact
-/// one round 2's `.find()` locked onto) has integrated through a real git merge while
-/// `split-a-2` has posted no result - checkin appearing at no point along the way.
-fn a_split_with_only_its_first_sibling_integrated(gate_a2: &str) -> tempfile::TempDir {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_split_fanout_workflow(root);
-    write_split_criterion_spec(root);
-
-    // Step 1: only "plan" is ready (the baseline needs the producer); no split proposed
-    // yet.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 1 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"plan/implementer#0""#),
-        "plan must park first; got:\n{out}"
-    );
-    assert!(
-        !out.contains("split-a") && !out.contains("checkin"),
-        "neither split sibling nor checkin exists before the planner proposes; got:\n{out}"
-    );
-
-    // A REAL split: split-a-1 passes "ok", split-a-2 runs `gate_a2`, both from the SAME
-    // plan episode.
-    propose_real_split(root, "ok", gate_a2);
-
-    // Step 2: plan's own real (empty) worktree merges trivially and integrates; BOTH real
-    // split siblings are now live (superseding the deterministic baseline) and ready - both
-    // park in this same step.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 2 must succeed; stderr:\n{err}");
-    for id in ["split-a-1/implementer#0", "split-a-2/implementer#0"] {
-        assert!(
-            out.contains(&format!(r#""id":"{id}""#)),
-            "both real split siblings must park together in the step their planner \
-             proposal lands; got:\n{out}"
-        );
-    }
-    assert!(
-        !out.contains("checkin"),
-        "checkin must not appear before either split sibling has even attempted its gate; \
-         got:\n{out}"
-    );
-
-    // Land ONLY split-a-1 for real.
-    land_real_unit(root, "split-a-1");
-
-    // Step 3: split-a-1's real merge lands (Integrated); split-a-2 has posted no result yet
-    // and stays outstanding, so checkin must NOT appear even though the BTreeMap-key-first
-    // sibling has genuinely integrated through a real git merge - its real-split partner
-    // has not.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 3 must succeed; stderr:\n{err}");
-    assert!(
-        root.join("split_a_1.rs").exists(),
-        "split-a-1's real merge must have actually landed its file on the base"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "split-a-2 (a real split sibling under the SAME criterion id as split-a-1) has not \
-         integrated yet - checkin's needs edge must stay unsatisfied even though split-a-1, \
-         the BTreeMap-key-first sibling, has genuinely integrated through a real git merge; \
-         got:\n{out}"
-    );
-    dir
-}
-
-/// checkin's needs edge must NEVER become satisfied while ANY live real-split sibling has
-/// not integrated - even after its `BTreeMap`-key-first sibling (`split-a-1`, which sorts
-/// before `split-a-2`) has ALREADY integrated through a real git merge. Proves the round-3
-/// fix's early-satisfaction direction (`sdet-u91c1-r2-confirms-split-sibling-orphan`'s exact
-/// repro) through a real multi-step `rigger step` process and real git merges, not a
-/// hand-built map in one call.
-#[test]
-fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet() {
-    let dir = a_split_with_only_its_first_sibling_integrated("ok");
-    let root = dir.path();
-
-    // Land split-a-2 too, the same way.
-    land_real_unit(root, "split-a-2");
-
-    // Step 4: split-a-2's real merge lands too. NOW every live owner of the criterion has
-    // integrated, so checkin's needs edge is satisfied and its own implementer parks.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 4 must succeed; stderr:\n{err}");
-    assert!(
-        root.join("split_a_2.rs").exists(),
-        "split-a-2's real merge must have actually landed its file on the base"
-    );
-    assert!(
-        out.contains(r#""id":"checkin/implementer#0""#),
-        "once BOTH real split siblings have integrated through real git merges, checkin's \
-         needs edge must be satisfied and its own implementer must park; got:\n{out}"
-    );
-}
-
-/// The reverse direction (round-3's own reverse-direction regression test,
-/// `adv-u91c1-r2-confirms-split-sibling-reverse-direction`): a real-split sibling that
-/// permanently ESCALATES (terminal, never integrating) must keep checkin unready forever -
-/// even when its `BTreeMap`-key-first partner has ALREADY integrated through a real git
-/// merge - through a real multi-step `rigger step` process and a real remediation-bound
-/// escalation, never a hand-built terminal set in one call.
-#[test]
-fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead() {
-    // split-a-2's gate always fails ("bad").
-    let dir = a_split_with_only_its_first_sibling_integrated("bad");
-    let root = dir.path();
-
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", "split-a-2/implementer#0", "attempted split a2"],
-    );
-    assert!(
-        ok,
-        "recording split-a-2's result must succeed; stderr: {err}"
-    );
-
-    // Step 4: split-a-2's "bad" gate fails and the run-wide max_retries: 1 means this FIRST
-    // failure IS the escalation - it goes terminal WITHOUT ever integrating. THE ASSERTION
-    // THAT WAS RED before the round-3 fix (in the OPPOSITE direction from the test above):
-    // checkin must never appear at all - not spawned, and not itself in the escalated set
-    // either - even though its BTreeMap-key-first sibling genuinely integrated through a
-    // real git merge.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        ok,
-        "a step that reaches an escalated fixpoint still exits 0; stderr:\n{err}"
-    );
-    assert!(
-        out.contains(r#""escalated":["split-a-2"]"#),
-        "split-a-2 must reach the escalated fixpoint on its first failed attempt (the run's \
-         own max_retries: 1); got:\n{out}"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "split-a-2 (a real split sibling under the SAME criterion id as split-a-1) \
-         escalated without ever integrating - checkin must never appear anywhere, even \
-         though split-a-1, the BTreeMap-key-first sibling, genuinely integrated through a \
-         real git merge; got:\n{out}"
-    );
-    assert!(
-        !root.join("split_a_2.rs").exists(),
-        "split-a-2 escalated without ever merging - its file must never have landed"
-    );
-}
-
-// -----------------------------------------------------------------------------------------
-// Round 4 (closing `sdet-u91c1-r3-missing-added-subunit-and-refine-then-supersede-
-// fixtures`, upheld by the round-3 REJECT under the controlling ruling
-// `op-u91c1-round-3-template-need-is-a-predicate-over-all-live-owners`): that ruling's
-// literal round-3 done-when enumerated FIVE shapes needing a real-binary-boundary fixture -
-// supersede, a real split in both orderings, an ADDED sub-unit, and a REFINE-then-SUPERSEDE
-// - and round 3 shipped only three of them (supersede, kept green from round 2; both
-// real-split orderings, new that round). The two tests below close the remaining two,
-// through the same real `rigger emit --spawn`/`rigger step`/`rigger result` process
-// boundaries and real git merges gap 6 above already established.
-// -----------------------------------------------------------------------------------------
-
-/// Added-sub-unit: the round-3 real-split fixtures above only ever exercise N=2 live
-/// siblings under one criterion id - not enough to distinguish `need_satisfied`'s genuine
-/// `stages.iter().filter(..).all(..)` predicate (correct for ANY N) from an accidental
-/// pairwise-only check that also happens to pass at N=2 (e.g. "the first two owners", or a
-/// `.find()`-then-compare-the-next-one shape). This ADDS a third live sub-unit to a
-/// same-episode split - an N-way (N=3) fan-out, via [`propose_real_n_way_split`] - and
-/// lands the three siblings OUT of id order (first, then third - skipping the middle -
-/// before finally landing the middle one) so a check that only ever compares "the first
-/// N-1 lexically" or "any 2 of 3" could not pass by accident the way it might at a
-/// convenient N=2, id-ordered landing sequence.
-#[test]
-fn checkin_stays_unready_until_every_member_of_a_same_episode_three_way_split_has_integrated() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_split_fanout_workflow(root);
-    write_split_criterion_spec(root);
-
-    // Step 1: only "plan" is ready; no split proposed yet.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 1 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"plan/implementer#0""#),
-        "plan must park first; got:\n{out}"
-    );
-
-    // A REAL three-way split, all three siblings sharing one episode.
-    propose_real_n_way_split(
-        root,
-        &[
-            ("split-a-1", "ok"),
-            ("split-a-2", "ok"),
-            ("split-a-3", "ok"),
-        ],
-    );
-
-    // Step 2: plan's own real (empty) worktree merges trivially and integrates; all three
-    // real split siblings are now live and ready - all three park in this same step.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 2 must succeed; stderr:\n{err}");
-    for id in [
-        "split-a-1/implementer#0",
-        "split-a-2/implementer#0",
-        "split-a-3/implementer#0",
-    ] {
-        assert!(
-            out.contains(&format!(r#""id":"{id}""#)),
-            "all three same-episode split siblings must park together in the step their \
-             planner proposal lands; got:\n{out}"
-        );
-    }
-    assert!(
-        !out.contains("checkin"),
-        "checkin must not appear before any of the three split siblings has even attempted \
-         its gate; got:\n{out}"
-    );
-
-    // Land split-a-1 (the first).
-    land_real_unit(root, "split-a-1");
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 3 must succeed; stderr:\n{err}");
-    assert!(
-        !out.contains("checkin"),
-        "only one of three siblings has integrated so far - checkin must stay unready; \
-         got:\n{out}"
-    );
-
-    // Land split-a-3 (the third - SKIPPING split-a-2, the middle one). Two of the three
-    // siblings have now integrated, but NOT all three - the exact shape a hardcoded
-    // "any 2" or "the first two" predicate would wrongly satisfy.
-    land_real_unit(root, "split-a-3");
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 4 must succeed; stderr:\n{err}");
-    assert!(
-        !out.contains("checkin"),
-        "two of three same-episode split siblings have integrated (split-a-1 and \
-         split-a-3), but split-a-2 has not - checkin's needs edge must still be unsatisfied; \
-         got:\n{out}"
-    );
-
-    // Land split-a-2 (the middle one, last). NOW every live owner of the criterion has
-    // integrated, so checkin's needs edge is satisfied.
-    land_real_unit(root, "split-a-2");
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 5 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"checkin/implementer#0""#),
-        "once ALL THREE real split siblings have integrated through real git merges, \
-         checkin's needs edge must be satisfied and its own implementer must park; \
-         got:\n{out}"
-    );
-}
-
-/// Refine-then-supersede: a same-id `UnitProposed` REFINE (a re-emit of `auth-v1`'s id,
-/// still within its own originating episode `plan/implementer#0`) followed by a DISTINCT
-/// id's SUPERSEDING proposal (`auth-v2`, echoing the same criterion from a later episode,
-/// `plan/replan#1` - a synthetic id stamped via `rigger emit --spawn` exactly like every
-/// other native-courier proposal in this file, never a real parked `rigger step`-driven
-/// re-plan) - proving `harvest_proposed`'s fold correctly applies BOTH the same-id fold
-/// path and the cross-episode supersede path in sequence for one criterion, through the
-/// real binary boundary: `auth-v1` is refined, then removed before it ever parks (its
-/// worktree must never even exist), and `checkin`'s needs edge tracks only the surviving
-/// superseding unit, `auth-v2`.
-#[test]
-fn checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_proposal() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_split_fanout_workflow(root);
-    write_split_criterion_spec(root);
-
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 1 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"plan/implementer#0""#),
-        "plan must park first; got:\n{out}"
-    );
-
-    let plan_spawn = "plan/implementer#0";
-    // Propose auth-v1 for the criterion (the ADD path: supersedes the deterministic
-    // baseline).
-    propose_unit_via_rigger_emit(
-        root,
-        plan_spawn,
-        &json!({"id": "auth-v1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
-    );
-    // REFINE auth-v1: a second same-id UnitProposed from the SAME episode - the fold path,
-    // never a second unit.
-    propose_unit_via_rigger_emit(
-        root,
-        plan_spawn,
-        &json!({"id": "auth-v1", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
-    );
-    // SUPERSEDE: a DISTINCT id for the SAME criterion, proposed from a LATER episode -
-    // auth-v1 (unintegrated, non-terminal, and from the strictly-earlier
-    // `plan/implementer#0` episode) is removed; auth-v2 becomes the sole live owner.
-    propose_unit_via_rigger_emit(
-        root,
-        "plan/replan#1",
-        &json!({"id": "auth-v2", "agent": "worker", "criterion": SPLIT_CRITERION, "gates": ["ok"]}),
-    );
-    let (_o, err, ok) = run_rigger(
-        root,
-        &["result", plan_spawn, "proposed, refined, then superseded"],
-    );
-    assert!(
-        ok,
-        "recording plan's own result must succeed; stderr: {err}"
-    );
-
-    // Step 2: plan's own real (empty) worktree merges trivially and integrates. auth-v1 was
-    // superseded before this wave ever ran, so it never parks at all - only auth-v2 does.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 2 must succeed; stderr:\n{err}");
-    assert!(
-        out.contains(r#""id":"auth-v2/implementer#0""#),
-        "the surviving superseding unit auth-v2 must park; got:\n{out}"
-    );
-    assert!(
-        !out.contains("auth-v1"),
-        "auth-v1 was superseded before ever becoming ready and must never appear in any \
-         wave; got:\n{out}"
-    );
-    assert!(
-        !common::default_scratch_root(root)
-            .join("rigger-wt-auth-v1")
-            .exists(),
-        "auth-v1 was superseded before it was ever scheduled, so it must never have gotten \
-         its own worktree"
-    );
-    assert!(
-        !out.contains("checkin"),
-        "checkin must not appear before auth-v2 has even attempted its gate; got:\n{out}"
-    );
-
-    // Land auth-v2 for real.
-    land_real_unit(root, "auth-v2");
-
-    // Step 3: auth-v2's real merge lands (Integrated). checkin's needs edge tracks the
-    // surviving superseding unit, never the refined-then-superseded auth-v1, so it becomes
-    // ready now.
-    let (out, err, ok) = run_rigger(root, &["step", "--spec", "spec.md"]);
-    assert!(ok, "step 3 must succeed; stderr:\n{err}");
-    assert!(
-        root.join("auth_v2.rs").exists(),
-        "auth-v2's real merge must have actually landed its file on the base"
-    );
-    assert!(
-        out.contains(r#""id":"checkin/implementer#0""#),
-        "once the surviving superseding unit has integrated through a real git merge, \
-         checkin's needs edge must be satisfied and its own implementer must park; \
-         got:\n{out}"
-    );
-}
-
-// -----------------------------------------------------------------------------------------
-// Rule 2: a stage's own `max_retries:` YAML key, actually parsed by the real deserializer,
-// overrides `defaults.max_retries` for that stage's units through the real remediation
-// loop - proven in both directions (lowering and raising the effective bound).
-// -----------------------------------------------------------------------------------------
-
-/// A repoless `solo` stage whose always-failing gate runs under `defaults.max_retries:
-/// {default}` but the stage's own YAML `max_retries: {stage}`: the unit must park and fail
-/// exactly `stage` attempts, retrying (a fresh attempt parks, no escalation) after every
-/// failure but the last, and escalate on that last one - through the real remediation loop's
-/// spawn/gate/retry cycle, never merely the pure `max_retries_for` arithmetic.
+/// Given a repo-less `solo` stage whose gate always fails, under `defaults.max_retries:
+/// {default}` and the stage's own `max_retries: {stage}`, when `rigger run` drives it, then the
+/// unit is launched and fails exactly `stage` attempts, each a fresh implementer, and escalates
+/// after the last: the stage's key governs, never the run-wide default.
 fn a_stages_own_max_retries_bounds_the_attempts(default: u32, stage: u32) {
     let dir = temp_repoless_project();
     let root = dir.path();
@@ -1048,60 +619,41 @@ stages:
     )
     .unwrap();
 
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr:\n{err}");
+    let arm = format!("  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    echo attempted\n    ;;\n");
+    let run = run_over(root, &["run"], &arm);
     assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && !out.contains("escalated"),
-        "the first step only parks attempt 0; got:\n{out}"
+        run.ok && run.shows("solo", "escalated"),
+        "the run escalates the unit and ends cleanly; stdout:\n{}\nstderr:\n{}",
+        run.out,
+        run.err
     );
-
-    for attempt in 0..stage {
-        seed_run_events(
-            root,
-            &[(
-                "SpawnResult",
-                &format!(r#"{{"id":"solo/implementer#{attempt}","output":"attempted"}}"#),
-            )],
-        );
-        let (out, err, ok) = run_rigger(root, &["step"]);
-        assert!(
-            ok,
-            "every step, an escalated fixpoint included, exits 0; stderr:\n{err}"
-        );
-        let next = attempt + 1;
-        if next < stage {
-            assert!(
-                out.contains(&format!(r#""id":"solo/implementer#{next}""#))
-                    && !out.contains("escalated"),
-                "with the stage's own max_retries: {stage} in force, failure {next} must \
-                 RETRY (a fresh attempt {next} parks) rather than escalate - the run-wide \
-                 default of {default} does not govern this stage; got:\n{out}"
-            );
-        } else {
-            assert!(
-                out.contains(r#""escalated":["solo"]"#),
-                "failure {next} must escalate, exactly matching the stage's own \
-                 max_retries: {stage} parsed from real workflow.yml text (never the run-wide \
-                 default of {default}); got:\n{out}"
-            );
-        }
-    }
+    let attempts: Vec<String> = (0..stage)
+        .map(|attempt| format!("solo/implementer#{attempt}"))
+        .collect();
+    assert_eq!(
+        run.launched, attempts,
+        "with the stage's own max_retries: {stage} in force, every failure but the last \
+         relaunches a fresh attempt and the last escalates; the run-wide default of {default} \
+         does not govern this stage"
+    );
+    let failed = read_run_events(root)
+        .iter()
+        .filter(|e| e.type_ == "UnitFailed")
+        .count();
+    assert_eq!(
+        failed, stage as usize,
+        "the unit fails exactly {stage} attempts before it escalates"
+    );
 }
 
 rigger::test_cases! {
-    /// `defaults.max_retries: 5` (generous) but the stage itself sets `max_retries: 1` - the
-    /// unit must escalate on its FIRST failed attempt, exactly as if the run-wide default were
-    /// 1, never surviving to a second attempt the way a plain (unoverridden) default of 5
-    /// would allow. Proves the YAML-parsed stage-level key genuinely LOWERS the effective
-    /// bound below a higher run default, through the real remediation loop.
+    /// `defaults.max_retries: 5` but the stage sets `max_retries: 1`: the unit escalates on its
+    /// first failed attempt, never surviving to a second.
     a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default:
         a_stages_own_max_retries_bounds_the_attempts(5, 1);
-    /// `defaults.max_retries: 1` (which alone would escalate on the first failed attempt, per
-    /// `FAILING_GATE_ESCALATING_WORKFLOW`'s own established shape in `tests/cli.rs`) but
-    /// the stage itself sets `max_retries: 3` - the unit must survive TWO failed attempts,
-    /// escalating only on the third. Proves the YAML-parsed stage-level key genuinely RAISES
-    /// the effective bound above a lower run default, through the real remediation loop's
-    /// repeated spawn/gate/retry cycle (never merely the pure `max_retries_for` arithmetic).
+    /// `defaults.max_retries: 1` (which alone escalates on the first failed attempt) but the
+    /// stage sets `max_retries: 3`: the unit survives two failed attempts and escalates on the
+    /// third.
     a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default:
         a_stages_own_max_retries_bounds_the_attempts(1, 3);
 }

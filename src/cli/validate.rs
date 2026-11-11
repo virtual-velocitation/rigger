@@ -276,7 +276,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
-    // deletes anything (cleanup stays with the step-start sweep).
+    // deletes anything.
     // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
     // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
     // degrading to a wrong-store read that would misreport live worktrees/branches as residue
@@ -882,7 +882,7 @@ fn residue_advisories(
 /// rooted under the scratch root: a leak the teardown reap missed, or a process left running
 /// while no teardown is active. ONE advisory per process, each naming its pid and command, so
 /// an operator can see and reclaim it - surfaced only, like the residue block, never a hard
-/// failure and never a kill (the teardown reap in `src/worktree.rs` / `cmd_step` is the only
+/// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
 /// kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
 /// empty where the dir or `/proc` is absent, this is a graceful no-op (empty, never an error)
@@ -899,7 +899,7 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
             format!(
                 "warning: process rooted under the scratch root (surfaced only - validate \
                  never reaps it): {named} - its cwd is under {}; it outlives a dir rigger owns \
-                 until the next teardown or step reaps it.",
+                 until the next teardown reaps it.",
                 scratch_root.display()
             )
         })

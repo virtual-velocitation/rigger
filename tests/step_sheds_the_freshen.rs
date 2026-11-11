@@ -13,7 +13,7 @@
 //! both over a real temporary project - the outside-in periphery approach, over the library's
 //! public surface, exactly as the step wires them:
 //!
-//!   1. PER-STEP GROUNDER CONSTRUCTION. `rigger step` builds the configured grounder via
+//!   1. PER-STEP GROUNDER CONSTRUCTION. `rigger run` builds the configured grounder via
 //!      `main::select_grounder`, whose UNSET / empty default resolves to the structural
 //!      `symbols` grounder - `Symbols::open(root, None)`. A freshen-on-open that touched the
 //!      embedding index would read/rewrite `.rigger/grounding/`.

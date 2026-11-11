@@ -34,8 +34,7 @@
 //!
 //! Test 2 also pins a boundary BUG this file's own construction surfaced: `behind_the_tree_
 //! advisory` calls the real `git_is_ancestor` UNCONDITIONALLY on every `rigger validate`
-//! invocation (never guarded the way `workflow_drift_advisory` guards its own use of the same
-//! helper behind "a drift was already detected"), with THIS binary's own build commit as the
+//! invocation, with THIS binary's own build commit as the
 //! id to resolve - which is absent from the git history of every target project that is not
 //! rigger's own source tree, i.e. nearly every real caller. `git_is_ancestor` used to run its
 //! `git merge-base --is-ancestor` child with `.status()`, which INHERITS the parent's stdio,

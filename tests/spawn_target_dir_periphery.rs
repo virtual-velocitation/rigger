@@ -24,7 +24,7 @@
 //! 1. `a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree`: a
 //!    real `driver::cli::Driver` spawns a real fixture-script "agent"
 //!    (`tests/fixtures/cargo-build-agent.sh`) with its cwd set to a REAL git worktree
-//!    (`worktree::Worktree::create`, the same entry point `rigger step` uses) and
+//!    (`worktree::Worktree::create`, the same entry point `rigger run` uses) and
 //!    `SpawnOpts.env` carrying the SAME `CARGO_TARGET_DIR` value production code derives
 //!    for that worktree (`worktree::unit_cache_sibling`). The agent runs a genuine `cargo
 //!    build` against a minimal crate seeded into the worktree; the test reads the REAL

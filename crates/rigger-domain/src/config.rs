@@ -201,9 +201,9 @@ pub struct AgentDef {
     pub recurse: bool,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): a spawn of this
     /// agent whose liveness marker stays silent, outside any hold of the run, for longer
-    /// than this is treated by `rigger step` as a hung/infra fault, and its host stops a
-    /// session silent past it the same way. `None` (unset in the agent's frontmatter)
-    /// inherits `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
+    /// than this is a hung/infra fault: its host stops a session silent past it and records
+    /// the liveness fault. `None` (unset in the agent's frontmatter) inherits
+    /// `defaults.max_wall_clock`, folded in at [`load`] time; a resolved `0`
     /// (or absent default) means unbounded - the agent is never timed out. Per-role by
     /// construction: each agent's own value overrides the workflow default.
     #[serde(default)]
@@ -1197,10 +1197,10 @@ pub struct Workflow {
     /// ride this committed file; only the CHOICE and an optional non-secret host/port URL do.
     #[serde(default)]
     pub store: StoreConfig,
-    /// The always-on dashboard opt-out (spec 50, criterion 4). The step path ENSURES the
-    /// machine-level singleton dash is up on every run unless this opts out: the documented
-    /// `dash: off` (or the `false`/`no` synonyms, matched case- and whitespace-insensitively)
-    /// suppresses the ensure entirely, so a headless or CI run proceeds with NO dash and NO
+    /// The always-on dashboard opt-out (spec 50, criterion 4). `rigger run` starts a run
+    /// dashboard on every run unless this opts out: the documented `dash: off` (or the
+    /// `false`/`no` synonyms, matched case- and whitespace-insensitively) suppresses the start
+    /// entirely, so a headless or CI run proceeds with NO dash and NO
     /// port bind. Empty (the default) / `on` / any other value keeps the always-on promise, so
     /// a workflow that says nothing about the dash still gets one. Resolved through the single
     /// authority [`dash_enabled`](Self::dash_enabled). Modeled as a `String` (like `grounder`,
@@ -1253,12 +1253,12 @@ impl Workflow {
     }
 
     /// Whether the always-on dash auto-ensure is enabled for this workflow (spec 50, criterion
-    /// 4) - the SINGLE resolution authority the step-path opt-out reads. ON unless the workflow
-    /// explicitly opts out: `off` (the documented form) or its `false`/`no` synonyms, matched
-    /// case- and whitespace-insensitively, resolve to OFF; an unset/empty `dash` and every other
-    /// value resolve to ON, so a workflow that says nothing about the dash keeps the always-on
-    /// promise. Living here (not inlined at the call site) keeps the on-by-default rule in one
-    /// place and cannot drift between callers.
+    /// 4) - the SINGLE resolution authority `rigger run`'s dash opt-out reads. ON unless the
+    /// workflow explicitly opts out: `off` (the documented form) or its `false`/`no` synonyms,
+    /// matched case- and whitespace-insensitively, resolve to OFF; an unset/empty `dash` and every
+    /// other value resolve to ON, so a workflow that says nothing about the dash keeps the
+    /// always-on promise. Living here (not inlined at the call site) keeps the on-by-default rule
+    /// in one place and cannot drift between callers.
     pub fn dash_enabled(&self) -> bool {
         !matches!(
             self.dash.trim().to_ascii_lowercase().as_str(),

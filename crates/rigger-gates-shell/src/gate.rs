@@ -18,8 +18,8 @@ pub use rigger_domain::gate::*;
 /// A gate that runs INSIDE a unit's worktree is handed a unit-keyed `target_dir` (Gap 19)
 /// so divergent unit trees never share one build cache - a compile error a gate sees is
 /// then always that unit's own, never a concurrent neighbour poisoning a shared target. A
-/// gate on the single integrated tree (the deferred phase-boundary gate, and the courier's
-/// inline `rigger step` gates) is handed "" and keeps inheriting the shared cache.
+/// gate on the single integrated tree (the deferred phase-boundary gate) is handed "" and
+/// keeps inheriting the shared cache.
 ///
 /// The SAME non-empty `target_dir` signal also fences the gate's own store resolution
 /// (spec 70 criterion 3, "the gate store fence"): [`ExecRunner::run`] pins

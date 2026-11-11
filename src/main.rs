@@ -35,13 +35,9 @@ mod test_support;
 /// it against drift.
 const SUBCOMMANDS: &[&str] = &[
     "run",
-    "step",
     "resume-unit",
     "hold",
     "release",
-    "reported",
-    "prompt",
-    "scratch",
     "graph",
     "stats",
     "canary",
@@ -77,7 +73,7 @@ const SUBCOMMANDS: &[&str] = &[
 /// The subcommands whose arguments are not their own flags, so a `-h` or `--help` among them is
 /// one of those arguments, handed over like any other, never a request for help:
 /// - `emit`, `result` and `progress` take a payload recorded as given: an event's type and JSON
-///   body, an agent's output or failure text and its JSON meta, an activity line.
+///   body, an agent's output or failure text, an activity line.
 /// - `ground` takes a free-text query, and `--help` is a fair thing to look up.
 /// - `mcp`, `grep-guard`, `guard-write` and `hook` are launched by the host, from the argv its
 ///   server or hook registration composes, and the host reads their answer. `guard-write` fails
@@ -135,13 +131,9 @@ fn main() {
     }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
-        "step" => cmd_step(&args[2..]),
         "resume-unit" => cmd_resume_unit(&args[2..]),
         "hold" => cmd_hold(&args[2..]),
         "release" => cmd_release(&args[2..]),
-        "reported" => cmd_reported(&args[2..]),
-        "prompt" => cmd_prompt(&args[2..]),
-        "scratch" => cmd_scratch(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
         "canary" => cmd_canary(&args[2..]),
@@ -202,17 +194,8 @@ const USAGE_TEXT: &str =
     "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
-rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
-[--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
-as JSON. --base (default origin/main) anchors a NEW run\n                              \
-branch; if it is unresolvable the branch is created off\n                              \
-HEAD. An existing run branch is reused, never reset.\n                              \
---fresh begins a NEW run for the spec even if the latest\n                              \
-matches (pass on the first step to restart a wedged run);\n                              \
---rebase-definition accepts a drifted definition and\n                              \
-continues, else a live-run step HALTS on definition drift\n  \
 rigger resume-unit <unit>   give an escalated unit of the current run more attempts\n            \
-[--attempts <n>]  (default 1) on its same branch: the next `rigger step`\n                              \
+[--attempts <n>]  (default 1) on its same branch: the next `rigger run`\n                              \
 re-parks its implementer there. Refuses, recording\n                              \
 nothing, when the unit is not escalated or its branch\n                              \
 is gone\n  \
@@ -222,18 +205,6 @@ new run, or `rigger run` reaching done does. Refuses,\n                         
 recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
-rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
-this project's run stream (else non-zero). A read-only check\n                              \
-of whether a spawn reported yet; the death courier records\n                              \
-atomically instead via `rigger result --if-absent`\n  \
-rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
-The step wave is a slim manifest; each worker fetches its\n                              \
-own prompt from the log by spawn id (spawn-by-reference);\n                              \
-it refuses a spawn that already ended on a real result\n  \
-rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\n                              \
-(the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
-a worker points agent-created scratch and manual\n                              \
-CARGO_TARGET_DIR there instead of an unbucketed literal\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
 (the text half of lookup; resolves a full id, a bare name or a path)\n  \
@@ -310,13 +281,11 @@ rigger progress <id> <act>  record one live progress line for spawn <id> to the\
 separate .rigger/progress.db (never the run stream), so an\n                              \
 observer can see what a working agent is doing between\n                              \
 milestones - `rigger status` and the dash present it\n  \
-rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
-step advances past it: <out> (or stdin) is the agent's output\n                              \
-(with --error, its failure message). It refuses to replace\n                              \
-the result of a spawn that already ended unless\n                              \
---supersede (the explicit repair); a step's liveness\n                              \
-fault is always replaceable. --if-absent records only\n                              \
-if the id has no result; --meta <json> adds bookkeeping\n  \
+rigger result <id> [out]    record a spawn's outcome to the run log, which the next\n                              \
+`rigger run` answers that spawn from: <out> (or stdin) is\n                              \
+the agent's output (with --error, its failure message). It\n                              \
+refuses to replace the result of a spawn that already\n                              \
+ended unless --supersede, the repair a reviewer halt names\n  \
 rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
 context graph, scoped to the given files (the CLI form of\n                              \
 rigger_peers)\n  \
@@ -332,7 +301,7 @@ alive and every spawn of the run has ended on a real\n                          
 result, it also closes the current run's units whose\n                              \
 branch work is landed on rigger-run, appending the\n                              \
 UnitIntegrated a hand landing never recorded; a dead run's\n                              \
-hung spawn (answered only by the step's liveness fault)\n                              \
+hung spawn (answered only by its liveness fault)\n                              \
 keeps them open and is named with its remedy,\n                              \
 `rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
 the pruned copy a rebuild's stopped swap\n                              \

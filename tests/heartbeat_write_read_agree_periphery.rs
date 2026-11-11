@@ -19,9 +19,9 @@
 //!
 //! This file drives the compiled `rigger status` binary, from a cwd inside a REAL git-linked
 //! worktree nested under a REAL owning repo (the deterministic shape a run's unit worktrees
-//! take), against a marker written at the exact path the real writer (`rigger step`'s own
-//! `scratch_root`/`marker_path` composition - the wire `WaveItem::marker_path` a spawn's
-//! framing points its `touch` instruction at) would have stamped it. Two regressions this
+//! take), against a marker written at the exact path the real writer (`rigger run`'s own
+//! `scratch_root`/`marker_path` composition - the path a spawn's framing points its `touch`
+//! instruction at) would have stamped it. Two regressions this
 //! guards against, both reproducing spec 83's own Problem statement ("the per-spawn liveness
 //! marker the sweep would consult is absent even while the agent is demonstrably alive"):
 //! resolving the scratch root from the process's raw cwd (`git_repo()`) instead of the
@@ -66,7 +66,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// A throwaway MAIN repo with one commit (so `git worktree add` has a base to branch from) -
-/// the OWNING root a run's driver (`rigger step`, always invoked from the repo root) stamps
+/// the OWNING root a run's driver (`rigger run`, always invoked from the repo root) stamps
 /// a spawn's liveness marker under.
 fn main_repo_with_commit() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("create temp project");
@@ -161,7 +161,7 @@ fn run_rigger(dir: &Path, args: &[&str]) -> Output {
         .expect("failed to spawn the rigger binary")
 }
 
-/// The scratch root the REAL writer (`rigger step`) resolves for a spawn placed at
+/// The scratch root the REAL writer (`rigger run`) resolves for a spawn placed at
 /// `owning_root` under a `configured` `defaults.workdir` (pass `""` for the unconfigured,
 /// default-rung case), using the env-override-free precedence rung (`env_override: None`) -
 /// the SAME rung [`run_rigger`] guarantees for the spawned reader by clearing
@@ -193,8 +193,8 @@ fn real_scratch_root(owning_root: &Path, configured: &str) -> String {
 
 /// Write a liveness marker at the path the REAL writer computes for `owning_root` with the
 /// configured `defaults.workdir` `workdir` (empty: the default rung) - the same `scratch_root` +
-/// `marker_path` composition `rigger step` stamps a wave item's `marker_path` with (the wire path
-/// a spawn's framing points the worker's `touch` at).
+/// `marker_path` composition `rigger run` stamps a spawn's marker path with (the path a spawn's
+/// framing points the worker's `touch` at).
 fn write_real_marker(owning_root: &Path, workdir: &str) -> PathBuf {
     let scratch_root = real_scratch_root(owning_root, workdir);
     let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)

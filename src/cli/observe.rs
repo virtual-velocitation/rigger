@@ -113,11 +113,11 @@ fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
         dash::DashStatus::Serving(url) => Some(format!("dashboard: {url}")),
         dash::DashStatus::NotServing { pid: Some(pid) } => Some(format!(
             "dashboard: not serving (marker names dead pid {pid}) - run 'rigger dash' or the \
-             next step restarts it"
+             next 'rigger run' restarts it"
         )),
         dash::DashStatus::NotServing { pid: None } => Some(
             "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or the \
-             next step restarts it"
+             next 'rigger run' restarts it"
                 .to_string(),
         ),
         dash::DashStatus::Unresponsive { url, pid } => Some(format!(
@@ -299,14 +299,12 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
         Err(_) => Vec::new(),
     };
 
-    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
-    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
-    // configured remediation bound is read from the SAME config (via the shared
-    // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
-    // `#n/max` line matches the depth the run actually escalates at. An age reads through the
-    // run's hold intervals, so a step after a released hold reads the time outside it; the
-    // workflow's marker race reads `liveness_age_s` and would otherwise take a held step for a
-    // dead one (spec 105 LIVENESS).
+    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here. The configured
+    // remediation bound is read from the SAME config (via the shared `scratch_defaults`, spec
+    // 83 criterion 2 round 2) so the current-blocker classifier's `#n/max` line matches the
+    // depth the run actually escalates at. An age reads through the run's hold intervals, so an
+    // age read after a released hold counts only the time outside it and a held spawn never
+    // reads as a dead one (spec 105 LIVENESS).
     let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
     let liveness_ages: std::collections::HashMap<String, u64> = liveness_ages_for_wave(
@@ -324,13 +322,12 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
     // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
-    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME
-    // underlying probe [`dash_marker_serving`] wraps for the step path's own idempotent-start
-    // decision, so this surface and the step path can never disagree about whether a recorded
-    // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` / `rigger
-    // serve` dash writes none) is unverifiable, not dead, and stays trusted exactly as before
-    // this criterion; a marker naming a DIFFERENT dash than the recorded URL (round 3,
-    // adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT "nothing to check" either -
+    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME probe
+    // `rigger watch` consumes, so the two surfaces can never disagree about whether a recorded
+    // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` dash writes none)
+    // is unverifiable, not dead, and stays trusted; a marker naming a DIFFERENT dash than the
+    // recorded URL (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT
+    // "nothing to check" either -
     // `dash_status` probes the URL's own port directly in that case, never the marker's
     // unrelated one. Computed HERE, before the `--json` early return below, so `--json`
     // carries the same truth as the human table (round 2: the prior placement after the
@@ -768,7 +765,7 @@ mod tests {
             dash_status_line(&dash::DashStatus::NotServing { pid: Some(4242) }),
             Some(
                 "dashboard: not serving (marker names dead pid 4242) - run 'rigger dash' or \
-                 the next step restarts it"
+                 the next 'rigger run' restarts it"
                     .to_string()
             ),
             "a matching marker proven dead names the pid and both self-heal paths, never a \
@@ -778,7 +775,7 @@ mod tests {
             dash_status_line(&dash::DashStatus::NotServing { pid: None }),
             Some(
                 "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or \
-                 the next step restarts it"
+                 the next 'rigger run' restarts it"
                     .to_string()
             ),
             "a directly-proven-dead url with no matching marker names both self-heal paths \

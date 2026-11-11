@@ -20,7 +20,7 @@ use rigger::contextgraph::{
 };
 use rigger::dash;
 use rigger::driver::cli;
-use rigger::driver::replay::{reclaim_spawn_registered_scratch, spawn_scratch_path, ReplayDriver};
+use rigger::driver::replay::{reclaim_spawn_registered_scratch, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{DerivedCount, Store},
@@ -71,42 +71,41 @@ pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
 
-/// The breadcrumb file, under [`RIGGER_DIR`], where a run driver records the URL of the
+/// The breadcrumb file, under [`RIGGER_DIR`], where `rigger run` records the URL of the
 /// dashboard it auto-started (spec 19b, unit 1), so `rigger status` - a separate process -
-/// can surface it. Read-only discoverability; a stale file after a finished run is a
-/// lifecycle concern owned by unit 3's reaping, not this unit's start + discoverability.
+/// can surface it. Read-only discoverability: the file outlives a finished run, and the next
+/// run that starts a dash overwrites it.
 const DASH_URL_FILE: &str = "dash.url";
 
 /// The per-project dash marker file, under [`RIGGER_DIR`] alongside [`DASH_URL_FILE`]: the
-/// port + pid of the run dashboard currently serving this project (a [`dash::DashMarker`]).
-/// The step drive path reads it before spawning and writes it after, so the first `step` of
-/// a run starts a dashboard and every later `step` finds it recorded and starts none - at
-/// most one run dashboard per project (spec 39, criterion 1: idempotent start on step).
+/// port + pid of a dashboard serving this project (a [`dash::DashMarker`]). `rigger status`
+/// and `rigger watch` read it to probe a recorded dash; the guard-bound dash `rigger run`
+/// starts writes none, so an absent file is the ordinary state during a run.
 const DASH_MARKER_FILE: &str = "dash.marker";
 
-/// The per-project breadcrumb, under [`RIGGER_DIR`], naming the run id whose OWN step path most
-/// recently attempted a dash ensure (spec 69, round-8 fix for
+/// The per-project breadcrumb, under [`RIGGER_DIR`], naming the run id whose OWN drive most
+/// recently attempted a dash start (spec 69, round-8 fix for
 /// adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap). Written by
-/// [`record_dash_attempt`] on EVERY [`ensure_run_dashboard`] / [`start_run_dashboard`] call that
-/// is not itself suppressed by the opt-out - regardless of whether that attempt started a new
-/// dash, found one already serving, or failed - because all three outcomes mean the same thing
-/// for this breadcrumb's purpose: THIS run's own step path just vouched for the dash, so a probe
-/// that later finds it dead is this run's concern to report, not a maybe-inherited artifact.
+/// [`record_dash_attempt`] on EVERY [`start_run_dashboard`] call that is not itself suppressed
+/// by the opt-out - regardless of whether that attempt started a dash or failed - because both
+/// outcomes mean the same thing for this breadcrumb's purpose: THIS run's own drive just vouched
+/// for the dash, so a probe that later finds it dead is this run's concern to report, not a
+/// maybe-inherited artifact.
 ///
 /// This exists because [`watch::WatchInputs::dash_breadcrumb_written_at`] /
 /// [`watch::WatchInputs::run_started_at`]'s wall-clock `written < started` comparison, though
-/// empirically correct against the real call order in every one of the three drivers (RunStarted
-/// mints via [`enforce_definition_pin`] / [`fresh_run_if_requested`] BEFORE the dash-ensure call
-/// in the very same function - never the other way around, verified against the compiled binary,
+/// empirically correct against the real call order in `rigger run` (RunStarted mints via
+/// [`enforce_definition_pin`] / [`fresh_run_if_requested`] BEFORE the dash-start call in the
+/// very same function - never the other way around, verified against the compiled binary,
 /// not merely read from source), is still reasoning about ORDER to infer OWNERSHIP - exactly the
 /// kind of proxy round 3-7's own reject history shows is easy to get backwards (round 7's own
 /// review asserted the opposite order from what the binary actually does). This breadcrumb
 /// replaces that inference with the fact itself for the common case: an EXPLICIT run-id match,
-/// immune to clock skew or a future refactor that reorders the mint relative to the dash-ensure
+/// immune to clock skew or a future refactor that reorders the mint relative to the dash-start
 /// call. It only ever WIDENS reporting (see `detect`'s `breadcrumb_predates_this_run`): a match
 /// forces reporting regardless of what the timestamps say; a miss (absent file, or one naming an
 /// older/different run - including every existing seeded-event test, which never calls the real
-/// dash-ensure path at all and so never writes this file) falls back to the pre-existing
+/// dash-start path at all and so never writes this file) falls back to the pre-existing
 /// timestamp comparison unchanged, so no established suppression regresses.
 const DASH_ATTEMPT_FILE: &str = "dash.attempt";
 
@@ -115,17 +114,16 @@ const DASH_ATTEMPT_FILE: &str = "dash.attempt";
 /// and machine moves instead of tracking the volatile directory basename.
 const PROJECT_ID_FILE: &str = "project.id";
 
-/// The run branch the stepwise driver accumulates a run on: every unit worktree is
-/// branched from it and every approved unit is merged back into it.
+/// The run branch `rigger run` accumulates a run on: every unit worktree is branched from it
+/// and every approved unit is merged back into it.
 const RUN_BRANCH: &str = "rigger-run";
 
-/// The default ref the run branch is anchored to when `rigger step` (or the driver)
-/// is not given `--base`, and ONLY when the run branch does not exist yet - once
-/// [`RUN_BRANCH`] exists it is reused as the run's anchor and the base is not consulted
-/// (see [`Worktree::ensure_run_branch`]). If this default does not resolve (a repo with
-/// no remote, a `master`-default repo, or a pre-fetch clone) the run branch is created
-/// off the current HEAD instead, so isolation is still established. Mirrored by the
-/// driver's own default.
+/// The default ref the run branch is anchored to when `rigger run` is not given `--base`,
+/// and ONLY when the run branch does not exist yet - once [`RUN_BRANCH`] exists it is
+/// reused as the run's anchor and the base is not consulted (see
+/// [`Worktree::ensure_run_branch`]). If this default does not resolve (a repo with no
+/// remote, a `master`-default repo, or a pre-fetch clone) the run branch is created off
+/// the current HEAD instead, so isolation is still established.
 const DEFAULT_BASE_REF: &str = "origin/main";
 
 /// Where `rigger docs` writes the rendered handbook discipline chapter, relative to the
@@ -216,10 +214,10 @@ struct RunArgs {
     /// on the new definition, instead of HALTING loudly. The operator's explicit "I meant to
     /// edit the definition mid-campaign" escape.
     rebase_definition: bool,
-    /// `--base <ref>` (spec 18, criterion 6): the run-branch base a run entry anchors on,
-    /// exactly as `rigger step --base` does. `None` when the flag is absent, so the effective
-    /// base resolves (via [`resolve_run_base`]) to the `RIGGER_BASE` env override or the
-    /// load-bearing [`DEFAULT_BASE_REF`] (`origin/main`) - the default stays unchanged.
+    /// `--base <ref>` (spec 18, criterion 6): the run-branch base the run anchors on. `None`
+    /// when the flag is absent, so the effective base resolves (via [`resolve_run_base`]) to
+    /// the `RIGGER_BASE` env override or the load-bearing [`DEFAULT_BASE_REF`] (`origin/main`)
+    /// - the default stays unchanged.
     base: Option<String>,
 }
 
@@ -966,7 +964,7 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
 /// R9): the basename of the git repo top-level, falling back to the current
 /// directory's name, falling back to "rigger". Never empty.
 ///
-/// Anchored at the process cwd, which is correct for the RUN DRIVER (`run`/`step`): it
+/// Anchored at the process cwd, which is correct for the RUN DRIVER (`rigger run`): it
 /// creates the store under the cwd's `.rigger/`, so the cwd's git
 /// top-level is the identity that scopes it. The store-opening COURIERS must NOT use
 /// this - a courier can run from a cwd that is not the store's owner (a nested git
@@ -1075,9 +1073,9 @@ fn canonical_definition_text(s: &str) -> String {
 /// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
 /// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
 ///
-/// This is the hash a run pins at start and a live-run step re-checks; a mismatch on a live run
-/// HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not the
-/// parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
+/// This is the hash a run pins at start and every relaunch of a live run re-checks; a mismatch on a
+/// live run HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not
+/// the parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
 /// conservative: it needs no serialization of the config and errs toward halting, and the
 /// `--rebase-definition` escape makes an intended edit a one-flag continue.
 fn definition_hash(
@@ -1512,14 +1510,13 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
-/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step` and `rigger run`
-/// each call this at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
-/// of silently proceeding on the linked tree's own toplevel
-/// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
-/// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
-/// already holds it there in the main tree). Evidence (2026-09-11): the driver stopped after 28
-/// waves for exactly this reason, when a courier's `rigger step` ran with its cwd drifted into
-/// a unit worktree.
+/// THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger run` and `rigger critique`
+/// each call this at their own entry so a LINKED git worktree is refused up front, naming both
+/// trees, instead of silently proceeding on the linked tree's own toplevel and later failing
+/// deep inside branch setup with git's own opaque "'rigger-run' is already used by worktree
+/// ..." (a linked worktree cannot itself hold the run branch checked out - git already holds it
+/// there in the main tree). A command started with its cwd drifted into a unit worktree is the
+/// shape this refuses.
 ///
 /// Compares [`main_repo_root`] (the git-common-dir-derived main checkout, correct even from
 /// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
@@ -1559,8 +1556,8 @@ fn run_stream_of(identity: &str) -> String {
     format!("{}{}", Namespaced::prefix_for(identity), conductor::STREAM)
 }
 
-/// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
-/// `reported`) must see it: the `.rigger` directory that actually holds the store (found
+/// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`) must see
+/// it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
 /// its namespaced streams - bound to the store's OWNING ROOT, not the process cwd.
 ///
@@ -1620,10 +1617,10 @@ impl StoreLocation {
     /// [`identity`](Self::identity) binds to (the parent of the resolved `.rigger/`), NEVER
     /// the process's raw cwd (`git_repo()`). A courier invoked from a nested unit worktree -
     /// the documented, walk-up-supported shape [`require_store_dir`] exists for - has a
-    /// DIFFERENT git toplevel than the main repo a driver's `rigger step` (always run from the
-    /// repo root) stamped a spawn's liveness marker under; resolving the scratch root from
-    /// that raw cwd instead of this owning root is exactly how `rigger status`/`rigger watch`
-    /// used to read back "no marker" for an agent that was demonstrably alive and heartbeating
+    /// DIFFERENT git toplevel than the main repo whose scratch root the `rigger run` host
+    /// (always run from the repo root) touches a spawn's liveness marker under; resolving the
+    /// scratch root from that raw cwd instead of this owning root makes `rigger status`/`rigger
+    /// watch` read back "no marker" for an agent that is demonstrably alive and heartbeating
     /// (spec 83's Problem statement). Empty when `dir` has no parent (pathological - the
     /// resolved dir is always `<root>/.rigger`), mirroring [`identity`](Self::identity)'s own
     /// fallback shape.
@@ -1638,17 +1635,17 @@ impl StoreLocation {
 
 /// The shared `defaults.workdir`/`defaults.max_retries` resolver EVERY production reader of
 /// those two fields delegates to (spec 83 criterion 2): [`cmd_status`], [`watch_poll`],
-/// [`reclaim_spawn_scratch`], and [`cmd_scratch`] (round 2 + round 3's `loc`, resolved by
-/// [`require_store_dir`]'s owning-root walk), plus [`cmd_dash`] and `cmd_replay` (round 3,
-/// each passing a `StoreLocation` built from ITS OWN pre-existing repo/cwd resolution -
+/// [`reclaim_spawn_scratch`] and `rigger mcp --spawn` ([`cmd_mcp`]) (round 2 + round 3's `loc`,
+/// resolved by [`require_store_dir`]'s owning-root walk), plus [`cmd_dash`] and `cmd_replay` (round
+/// 3, each passing a `StoreLocation` built from ITS OWN pre-existing repo/cwd resolution -
 /// `cmd_dash`'s raw process cwd and `cmd_replay`'s [`git_repo`] - unchanged by this function;
 /// see each caller's own doc comment for why). Every caller reads via
 /// [`config_store::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
 /// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
 /// just to learn two string/int fields - a committed `.rigger/workflow.yml` may declare a gate
 /// whose `requires` names an executable, which `validate` rejects whenever it is off PATH,
-/// so ANY environment invoking one of these commands without it on PATH used to silently lose
-/// a configured `defaults.workdir` (and `defaults.max_retries`) via each call site's own
+/// so ANY environment invoking one of these commands without it on PATH would silently lose a
+/// configured `defaults.workdir` (and `defaults.max_retries`) via a call site's own
 /// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
 /// `require_store_dir` callers, `loc.dir` is `<owning-root>/.rigger` - the SAME owning root
 /// [`StoreLocation::repo_root`] resolves the scratch root from, never a nested unit
@@ -1689,8 +1686,8 @@ fn server_store_location(cwd: &Path) -> StoreLocation {
 #[error("{0}")]
 struct NoStoreFound(String);
 
-/// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
-/// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
+/// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`) must
+/// use, REFUSING rather than fabricating a fresh empty store when neither
 /// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
 /// commands refuse (or walk up) instead of fabricating a fresh `.rigger/events.db` when run
 /// from a cwd with no existing store").
@@ -1704,13 +1701,13 @@ struct NoStoreFound(String);
 /// the project root; refusing (when no ancestor has one) surfaces the wrong-cwd mistake
 /// instead of silently swallowing the write. The returned [`StoreLocation`] additionally
 /// binds identity to the resolved root, so a walked-up write lands in the stream the
-/// conductor reads (see [`StoreLocation::identity`]). The run driver (`run`/`step`)
-/// is deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the
-/// first step of a fresh project.
+/// conductor reads (see [`StoreLocation::identity`]). The run driver (`rigger run`) is
+/// deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the first
+/// run of a fresh project.
 fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     // The gate store fence (spec 70 criterion 3): the gate runner (`gate::ExecRunner::run`)
     // pins STORE_FENCE_ENV around a unit-worktree gate's spawned process so a store-opening
-    // courier command IT runs (a test invoking `rigger emit`/`result`/`peers`/`reported`)
+    // courier command IT runs (a test invoking `rigger emit`/`result`/`peers`)
     // resolves to the fenced scratch dir named here, never walking up into the repo's LIVE
     // run stream. Checked BEFORE store_selection/the walk so a fenced courier never even
     // reads the real backend config or touches the ambient filesystem above `cwd` - a
@@ -1835,45 +1832,23 @@ fn store_file(dir: &Path, name: &str) -> String {
 }
 
 /// The stderr advisories `rigger result` prints from a single pre-write read of the run
-/// stream, BEFORE it records (spec 05, done-when: "`rigger result` prints stderr
-/// advisories for an orphan id and for superseding an existing result"). Two independent
-/// notes, both purely advisory - the record still lands, because pre-recording a result
-/// before its spawn request is parked is legitimate, and a record that reaches here over a
-/// standing result is a deliberate `--supersede` or replaces the step's liveness fault
-/// ([`result_refusal`] refuses every other). ORPHAN: no `SpawnRequested` with this id is
-/// in the stream, so nothing is parked under it - a typoed id would otherwise silently
-/// strand the real spawn while the orphan result records against an id the run never
-/// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N),
-/// so this write replaces the earlier outcome.
+/// stream, BEFORE it records. Two independent notes, both purely advisory - the record still
+/// lands, because a record that reaches here over a standing result is a deliberate
+/// `--supersede` ([`result_refusal`] refuses every other). ORPHAN: no `SpawnRequested` with
+/// this id is in the stream, so nothing is parked under it - a typoed id would otherwise
+/// silently strand the real spawn while the orphan result records against an id the run never
+/// requested. SUPERSEDE: a `SpawnResult` for this id is already recorded (at position N), so
+/// this write replaces the earlier outcome.
 ///
 /// Pure over the already-read events (no I/O) so both rules are unit-testable without a
 /// store, mirroring the other `rigger result` seams ([`parse_result_args`]/[`build_result`]).
-/// `will_supersede` is false on the `--if-absent` path (weave with unit-10): the CAS
-/// refuses to overwrite, so a supersede note would claim a replacement that never
-/// happens - only the orphan rule applies there.
-fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<String> {
+fn result_advisories(events: &[Event], id: &str) -> Vec<String> {
     let mut notes = Vec::new();
     if !spawn::is_recorded(events, id) {
-        // The orphan note never claims a recording it might not make (spec 08 item 5). On
-        // the plain (unconditional) path - `will_supersede` is true, since that path always
-        // overwrites - the record always lands, so it states the recording. On the
-        // `--if-absent` path (`will_supersede` is false) the CAS records ONLY if the spawn
-        // is still unanswered, so it states that condition rather than asserting a recording
-        // an already-answered spawn would leave untouched.
-        notes.push(if will_supersede {
-            format!(
-                "result: note: no spawn request is recorded for {id:?}; recording an orphan \
-                 result (nothing is parked under this id)"
-            )
-        } else {
-            format!(
-                "result: note: no spawn request is recorded for {id:?}; --if-absent records \
-                 only if the spawn is unanswered"
-            )
-        });
-    }
-    if !will_supersede {
-        return notes;
+        notes.push(format!(
+            "result: note: no spawn request is recorded for {id:?}; recording an orphan \
+             result (nothing is parked under this id)"
+        ));
     }
     if let Some(e) = spawn::latest_results_lenient(events).get(id) {
         notes.push(format!(
@@ -1885,12 +1860,9 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
     notes
 }
 
-/// Why spawn `id` must not run or record again, once it has ENDED ([`spawn::ended_by`]: a real
-/// result, never the step's liveness fault): `spawn <id> already ended (result at position N)`,
-/// naming the result that ended it; `None` while it has not ended. A driver resume replays its
-/// cached courier steps and re-spawns their wave's workers, so this is the one predicate both
-/// `rigger prompt` and `rigger result` refuse on - a stale worker can neither fetch its task
-/// again nor overwrite the result that stands.
+/// Why spawn `id` must not record again, once it has ENDED ([`spawn::ended_by`]: a real
+/// result, never a liveness fault): `spawn <id> already ended (result at position N)`, naming
+/// the result that ended it; `None` while it has not ended.
 fn ended_refusal(events: &[Event], id: &str) -> Result<Option<String>, serde_json::Error> {
     if spawn::ended_by(events, id)?.is_none() {
         return Ok(None);
@@ -1905,8 +1877,8 @@ fn ended_refusal(events: &[Event], id: &str) -> Result<Option<String>, serde_jso
 
 /// Why a plain `rigger result` for spawn `id` must not record: the spawn already ENDED
 /// ([`ended_refusal`]) and the operator did not pass `--supersede`, the explicit repair that
-/// replaces a standing result. `None` when it may record: nothing ended the spawn yet, only the
-/// step's liveness fault answers it (the real result replaces that), or `supersede`.
+/// replaces a standing result. `None` when it may record: nothing ended the spawn yet, only a
+/// liveness fault answers it (the real result replaces that), or `supersede`.
 fn result_refusal(
     events: &[Event],
     id: &str,
@@ -1919,65 +1891,21 @@ fn result_refusal(
         .map(|refusal| format!("result: {refusal}; pass --supersede to replace it")))
 }
 
-/// `rigger step [--spec <path>]` - advance the run one frontier (§4, spec 04).
-///
-/// Drives `conductor::run` with the REPLAY driver over this project's namespaced run
-/// stream: every already-recorded spawn is replayed from the log and every unrecorded
-/// one at the frontier is parked as a `SpawnRequested` event. When every in-flight
-/// spawn is parked the conductor unwinds cleanly and returns, so the process ends with
-/// the run's whole state in the log - a later step, after a courier records results via
-/// `rigger result`, replays past them.
-///
-/// It then prints ONE line of JSON on stdout: the WAVE it newly parked plus a `done`
-/// flag (`{"wave":[<SpawnRequest>...],"done":<bool>}`), computed by the pure
-/// [`spawn::step_result`] seam from the stream read before and after the run (decision
-/// `d-step-wave-delta`). Two ready units with disjoint blast radii - which the
-/// conductor's blast-radius partition keeps in one wave - park their spawns together and
-/// appear in the same wave, so fan-out falls out of the run structure. The thin driver
-/// runs the wave's agents in parallel and steps again until `done`.
-///
-/// Composition mirrors `run_cli` (the per-project namespaced sqlite run stream, the
-/// grounder from `defaults.grounder`, the context-graph projector) so a step sees
-/// exactly the state a `rigger run` would.
-///
-/// `--base <ref>` (default `origin/main`) anchors the run branch. Before driving the
-/// conductor - which branches every unit worktree off HEAD and merges every approved
-/// unit back into the current branch - the step ensures [`RUN_BRANCH`] exists AND is
-/// checked out, so that isolation boundary is the run branch and never the operator's
-/// own branch. `cmd_step` has no separate setup step, so this cannot be skipped when the
-/// base is missing: if [`RUN_BRANCH`] does not
-/// exist yet it is created off `--base`, or off the current HEAD when `--base` does not
-/// resolve (a repo with no remote, a `master`-default repo, or a pre-fetch clone) - a
-/// fallback that keeps isolation. A step will therefore switch
-/// the repo's checkout to [`RUN_BRANCH`] as a deliberate side effect; if that checkout
-/// fails (e.g. a dirty tree, or the run branch is checked out in another worktree) the
-/// step aborts with a clear error BEFORE it prints any JSON - run-branch setup is a
-/// precondition, not something to proceed past.
-///
-/// An EXISTING run branch is reused, never reset (see [`Worktree::ensure_run_branch`]),
-/// so prior steps' integrations survive and the run continues from where it left off.
-/// Because of that, `--base` only takes effect when the run branch is first created;
-/// once [`RUN_BRANCH`] exists, an explicit `--base` is ignored (re-anchoring would orphan
-/// the integrated units), and the step says so on stderr rather than silently. A
-/// repo-less invocation skips run-branch setup entirely.
-/// The busy-refusal token a `rigger step` or a `rigger run` started beside a held step lock
-/// prints (see [`acquire_step_lock`]). A DRIVER couriering steps keys on this exact substring to
-/// tell a benign "wait, another step holds the lock" from a real step failure - so it backs off
-/// and retries `rigger step` instead of tearing the run down. Kept as a named constant so
-/// the conductor side and the driver prompt can never drift apart.
-const STEP_BUSY_TOKEN: &str = "another `rigger step` is already running";
+/// The busy-refusal token a `rigger run` started beside a held step lock prints (see
+/// [`acquire_step_lock`]). Every caller that tells "the lock is held" from any other failure of
+/// the take (the live-run probes of `rigger reset` and `rigger setup`) keys on this exact
+/// substring, so it is one named constant.
+const STEP_BUSY_TOKEN: &str = "another `rigger run` is already running";
 
-/// Acquire the exclusive advisory lock that SERIALIZES `rigger step` and `rigger run`, returning it
-/// held as a [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile
-/// never keeps it held, and by the OS when the process dies, so a crashed step or run never wedges
-/// the next. A step holds it for the step, a run for its whole life (spec 105). A NON-blocking
-/// take: if a step or a run already holds it, refuse fast and loudly ([`STEP_BUSY_TOKEN`]) rather
-/// than blocking - a driver whose courier gets a step's refusal backs off and retries, which keeps
-/// the run flowing without ever running two steps at once, while a run's refusal stands until the
-/// operator re-runs it. See the call sites for why two at once corrupt the run.
+/// Acquire the exclusive advisory lock that SERIALIZES `rigger run`s, returning it held as a
+/// [`HeldLock`] guard - released when it drops, explicitly, so a child forked meanwhile never
+/// keeps it held, and by the OS when the process dies, so a crashed run never wedges the next. A
+/// run holds it for its whole life (spec 105). A NON-blocking take: if a run already holds it,
+/// refuse fast and loudly ([`STEP_BUSY_TOKEN`]) rather than blocking, and the refusal stands until
+/// the operator re-runs it. See the call sites for why two at once corrupt the run.
 ///
 /// `rigger_dir` is the `.rigger` directory the lock file (`step.lock`) lives under, so a caller
-/// resolves it exactly as it resolves every other store file: `cmd_step` always runs against the
+/// resolves it exactly as it resolves every other store file: the driver always runs against the
 /// CWD-relative [`RIGGER_DIR`] (it just ensured that directory exists), while a probe run from a
 /// nested worktree - [`refuse_derived_reset_if_live`]'s live-writer guard (spec 71, criterion 2) -
 /// passes the STORE'S resolved [`StoreLocation::dir`] instead. A caller that instead hardcoded
@@ -1988,94 +1916,13 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<HeldLock, Box<dyn std::error::
     let path = rigger_dir.join("step.lock");
     HeldLock::try_take(&path)?.ok_or_else(|| {
         format!(
-            "{STEP_BUSY_TOKEN} in this repo, or a `rigger run` is (lock {}). Refusing to run \
-             concurrently: two would race the run-branch checkout and the unit worktrees \
-             branched off HEAD, corrupting the run. Wait for the running one to finish and \
-             retry.",
+            "{STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run concurrently: two \
+             would race the run-branch checkout and the unit worktrees branched off HEAD, \
+             corrupting the run. Wait for the running one to finish and retry.",
             path.display()
         )
         .into()
     })
-}
-
-/// The step-start sweep's liveness decision (spec 64, criterion 4 fix): given the outcome of
-/// reading the CURRENT run's stream, decide the live branches `cmd_step` hands to
-/// `worktree::sweep_terminal` - or that the sweep must not run at all. Pulled out of [`cmd_step`]
-/// (which is not reachable through the crate API - `main.rs` is a binary) purely so this
-/// decision is independently unit-testable; the `sweep_terminal` call itself stays inline in
-/// `cmd_step` (see the call site's comment for why).
-///
-/// Fails CLOSED (`None`) on an unreadable stream, mirroring the fail-closed convention
-/// `reclaim_orphan_scratch` and `terminal_and_no_live_worker` already use elsewhere in
-/// `cmd_step`: liveness can only be UNDER- not OVER-determined, so when `store.read_stream`
-/// errors (a real failure class under WAL-mode concurrent writers - see `SQLITE_BUSY_SNAPSHOT` in
-/// `eventstore/sqlite.rs`) this returns `None` and prints a warning, which the caller reads as
-/// "skip the sweep entirely" - never as an empty live set. An empty live set means "nobody is
-/// live" (still runs the sweep, reclaiming everything the ancestry rule would), the OPPOSITE of
-/// "we don't know who is live" - conflating the two is exactly the rejected bug this closes: it
-/// would silently revert to the pre-c4 ancestry-only rule that force-removes a live unit's
-/// empty-diff worktree mid-review.
-fn live_branches_for_sweep(
-    read: Result<Vec<Event>, rigger::eventstore::Error>,
-) -> Option<std::collections::HashSet<String>> {
-    match read {
-        Ok(events) => Some(current_run_units(&events).live_branches),
-        Err(e) => {
-            eprintln!("rigger step: scratch sweep skipped (liveness unreadable): {e}");
-            None
-        }
-    }
-}
-
-/// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
-/// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
-/// scratch entry git may still track. A killed step can leave a `rigger-wt-<slug>` worktree
-/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
-/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
-/// git never tracked makes that command fail, so it falls through to the plain removal, and any
-/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
-/// at the next step start. Best-effort - a failed reclaim never aborts the sweep.
-/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = !repo.is_empty()
-        && subprocess::git_in(repo)
-            .args(["worktree", "remove", "--force"])
-            .arg(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    if !deregistered {
-        let _ = std::fs::remove_dir_all(dir);
-    }
-}
-
-/// The pure read-model core of `rigger reported`: open the embedded `events.db` at `path`,
-/// read `project`'s run stream through the per-project [`Namespaced`] decorator, and return
-/// the LATEST recorded result for `id` (or `None` when the spawn is still unreported).
-///
-/// Split from [`cmd_reported`] (which owns only the I/O boundary and the exit-code decision)
-/// so the namespace-scoped read and its absent-db / unreported edges are unit-testable
-/// against any backing file, project name, and id - without depending on the process cwd or
-/// a real git repo for identity (mirrors [`stats_lines`], decision `d-stats-read-seam`).
-///
-/// An absent `events.db` (a never-run project) reads as `None` - guarded BEFORE
-/// [`Store::open`], which would otherwise create the file - so the guard treats a spawn with
-/// no store exactly like a spawn with no result: unreported. The [`Namespaced`] read scopes
-/// to `proj-<project>-run`, so a result another project wrote never masks this one.
-fn result_of_at(
-    path: &str,
-    project: &str,
-    id: &str,
-    sel: &StoreSelection,
-) -> Result<Option<spawn::SpawnResult>, Box<dyn std::error::Error>> {
-    let Some((events, _)) = with_project_store(path, project, sel, |store| {
-        runscope::read::read_current_run(store, conductor::STREAM)
-    })?
-    else {
-        return Ok(None);
-    };
-    Ok(spawn::result_of(&events, id).map_err(|e| e.to_string())?)
 }
 
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
@@ -2130,8 +1977,8 @@ fn with_project_store<T>(
 /// does not resolve but the current HEAD IS a real commit, the HEAD fallback anchors the run
 /// branch on the operator's own branch: a REACHABLE base the run branch descends from, so a PR
 /// still applies. That case proceeds (and [`warn_on_run_branch_divergence`] advises it) - the
-/// established CLI contract (`step_creates_run_branch_off_head_when_base_unresolvable`) depends
-/// on it. A would-be [`RunBranchSetup::CreatedFromBase`] has a resolvable base and proceeds; a
+/// worktree contract (`ensure_run_branch_creates_off_head_when_base_unresolvable`) depends on
+/// it. A would-be [`RunBranchSetup::CreatedFromBase`] has a resolvable base and proceeds; a
 /// would-be [`RunBranchSetup::Reused`] means the run already exists (its base was vetted at
 /// creation), so it is NEVER refused - re-refusing on resume-by-replay would wedge a live run.
 ///
@@ -2168,7 +2015,7 @@ fn refuse_when_base_unreachable(repo: &str, cmd: &str, base: &str, setup: RunBra
 ///
 /// This runs BEFORE the run branch is anchored, gated on the PLANNED anchor
 /// ([`Worktree::planned_run_branch_setup`], a side-effect-free peek) rather than an
-/// already-created branch. That ordering is what makes the refusal actionable: a refused step
+/// already-created branch. That ordering is what makes the refusal actionable: a refused run
 /// creates no run branch, so the operator who obeys the message and retries with a corrected
 /// `--base` re-runs this check (which then passes) and anchors the run FRESH on the right base -
 /// it can never end up stuck on the wrong-base branch a post-anchor check would have left behind.
@@ -2176,10 +2023,11 @@ fn refuse_when_base_unreachable(repo: &str, cmd: &str, base: &str, setup: RunBra
 /// `setup` (the planned anchor) gates WHEN this runs. Only a run branch that WOULD be freshly
 /// [`RunBranchSetup::CreatedFromBase`] is at "before a run parks its first unit" with a base that
 /// is known to resolve. A would-be REUSED branch means one already exists - a real run is already
-/// under way (re-checking every step would spuriously refuse a spec of not-yet-created files
-/// mid-run) - and a would-be HEAD fallback ([`RunBranchSetup::CreatedFromHead`]) has no resolvable
-/// base to look paths up in. Both skip. `cmd` labels the command in the refusal and the advisory
-/// (matching [`anchor_run_branch`] / [`warn_on_run_branch_divergence`]). Spec 18, criterion 7.
+/// under way (re-checking every relaunch would spuriously refuse a spec of not-yet-created
+/// files mid-run) - and a would-be HEAD fallback ([`RunBranchSetup::CreatedFromHead`]) has no
+/// resolvable base to look paths up in. Both skip. `cmd` labels the command in the refusal and the
+/// advisory (matching [`anchor_run_branch`] / [`warn_on_run_branch_divergence`]). Spec 18,
+/// criterion 7.
 fn refuse_when_base_lacks_spec_paths(
     repo: &str,
     cmd: &str,
@@ -2711,7 +2559,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
 
     // 2. Materialize the candidate config at <rev> in a throwaway checkout. `workdir` is read
     //    via the SAME shared, validate-independent `scratch_defaults` resolver
-    //    `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`/`cmd_scratch`/`cmd_dash` all use
+    //    `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`/`cmd_dash` all use
     //    (spec 83 criterion 2, round 3) - never `config::load`, which additionally requires a
     //    fully loadable `.rigger/agents/` fleet AND a passing `Config::validate` just to learn
     //    this one string field; `adv-u83c3r2-cmd-replay-fourth-unmigrated-site` found this was
@@ -2757,7 +2605,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         //    (a pure offline re-fold), the ReplayDriver answers each spawn from the seeded
         //    results, and ReplayRunner guarantees a candidate-config-only gate never shells out.
         //    No worker ever touches a liveness marker here, so no marker root is recorded.
-        let driver = ReplayDriver::new(&iso, "");
+        let driver = ReplayDriver::new(&iso);
         // A replay walks no tree (`repo` is empty), so its hash is never asked; asked, it fails
         // naming why rather than hash under the working directory.
         let hash_blob = hash_blob_in("");
@@ -3063,10 +2911,10 @@ impl Runner for ReplayRunner {
     }
 }
 
-/// The URL of the dash a driver auto-started for THIS run, recorded in `.rigger/`[`DASH_URL_FILE`]
-/// (spec 19b, unit 1 discoverability). Absent when no driver started one (e.g. `rigger status`
-/// run before any run began), in which case `rigger status` shows no dashboard line. Purely a
-/// read: `rigger status` never starts or stops a dash.
+/// The URL of the dash `rigger run` auto-started for THIS run, recorded in
+/// `.rigger/`[`DASH_URL_FILE`] (spec 19b, unit 1 discoverability). Absent when no run started
+/// one (e.g. `rigger status` run before any run began), in which case `rigger status` shows no
+/// dashboard line. Purely a read: `rigger status` never starts or stops a dash.
 fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
     let url = std::fs::read_to_string(loc.file(DASH_URL_FILE)).ok()?;
     let url = url.trim().to_string();
@@ -3076,22 +2924,22 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
 /// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2), read
 /// through `holds`: the ONE age-map builder `cmd_status` and `watch_poll` both call - no second,
 /// independently re-derived copy of this loop to drift out of step with the first. The two do
-/// not share one reading: `cmd_status` passes its run's hold intervals, so a step after a
-/// released hold reads the time outside it, and `watch_poll` passes an empty slice, which reads
-/// wall-clock age, so an open hold cannot hide a dead supervisor from it.
+/// not share one reading: `cmd_status` passes its run's hold intervals, so an age read after a
+/// released hold counts only the time outside it, and `watch_poll` passes an empty slice, which
+/// reads wall-clock age, so an open hold cannot hide a dead supervisor from it.
 ///
 /// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
 /// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
 /// walk-up-supported shape [`require_store_dir`] exists for) has a DIFFERENT git toplevel than
-/// the main repo a driver's `rigger step` (which always runs from the repo root) stamped the
-/// marker under, so resolving the scratch root from the raw cwd silently looks in a tree
-/// nothing ever wrote to - an alive, heartbeating agent then reads back with NO liveness age
-/// at all, exactly spec 83's own Problem statement ("the per-spawn liveness marker the sweep
-/// would consult is absent even while the agent is demonstrably alive"). An empty `repo` (no
+/// the main repo whose scratch root the `rigger run` host (which always runs from the repo
+/// root) touches the marker under, so resolving the scratch root from the raw cwd silently
+/// looks in a tree nothing ever wrote to - an alive, heartbeating agent then reads back with
+/// NO liveness age at all, exactly spec 83's own Problem statement (the per-spawn liveness
+/// marker is absent even while the agent is demonstrably alive). An empty `repo` (no
 /// owning root resolved at all) degrades to no ages, mirroring every other repo-less reader.
 ///
 /// That resolution is only the FALLBACK: a spawn whose request in `events` (the run's slice)
-/// recorded the scratch root its step stamped the marker under is read there
+/// recorded the scratch root its marker lives under is read there
 /// ([`rigger::liveness::MarkerRoots`], spec 101), whatever this process's own environment
 /// resolves.
 fn liveness_ages_for_wave(
@@ -3116,8 +2964,8 @@ fn liveness_ages_for_wave(
 /// The scratch root a store's runs stamp their spawns' liveness markers under, for `repo` - the
 /// store's resolved OWNING root ([`StoreLocation::repo_root`], see [`liveness_ages_for_wave`] for
 /// why never the process cwd) - and its configured `workdir`: the ONE resolution every marker
-/// reader outside `rigger step` (status, watch, the liveness probe of `rigger reset` and of
-/// `rigger setup`'s new rebuild) shares, as the
+/// reader outside the `rigger run` host (status, watch, the liveness probe of `rigger reset` and
+/// of `rigger setup`'s new rebuild) shares, as the
 /// fallback for a spawn whose request recorded no root of its own
 /// ([`rigger::liveness::MarkerRoots`]). Read-only: it
 /// resolves the root without creating it, so a report never conjures a scratch root nor runs the
@@ -3179,8 +3027,8 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 /// One poll's worth of I/O for [`cmd_watch`]: reads the run's event slice (scoped
 /// exactly as `rigger status` scopes it), which is also the scope store integrity is
 /// judged over (`rigger validate` keeps the whole-store order-signature
-/// detector, spec 71), tries the step lock non-blocking (free = no `rigger step` or
-/// `rigger run` holds it right now), gathers each currently-parked spawn's heartbeat-marker age
+/// detector, spec 71), tries the step lock non-blocking (free = no `rigger run` holds it
+/// right now), gathers each currently-parked spawn's heartbeat-marker age
 /// exactly as `cmd_status` does, and probes the dash's liveness with a real serve check
 /// (the recorded marker's port when one exists, else the recorded `dash.url`'s own port;
 /// see the dash-probe comment inline below for why both breadcrumbs matter), then hands
@@ -3319,7 +3167,7 @@ fn watch_poll_over(
     // command reads the run, never the whole log): a disordered tail of the run stream is
     // reported here, and `rigger validate` keeps the whole-store detector (spec 71).
 
-    // No step and no run holds the step lock right now: a non-blocking try-lock that succeeds
+    // No `rigger run` holds the step lock right now: a non-blocking try-lock that succeeds
     // means free. Dropped immediately either way, so this probe never holds the lock.
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
@@ -3345,12 +3193,10 @@ fn watch_poll_over(
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
     // a dead or hung-holder pid never reads as serving, exactly like c4's status truth.
     //
-    // Only ONE of the two real dash-launching drivers (`rigger step`, via
-    // `ensure_run_dashboard`) ever writes a marker; `rigger run`
-    // (`spawn_run_dashboard`/`spawn_run_dashboard_detached`) records ONLY the
-    // `dash.url` breadcrumb. Without a fallback, a marker-absent project always read
-    // as `NotRecorded` regardless of whether a dash was ever actually up - silently
-    // blind for `rigger run` (round-3 reject cause
+    // `rigger run` (`start_run_dashboard`/`spawn_run_dashboard`) writes no marker; it records
+    // the `dash.url` and `dash.attempt` breadcrumbs only. Without a fallback, a marker-absent
+    // project would read as `NotRecorded` regardless of whether a dash was ever actually up -
+    // silently blind for `rigger run` (round-3 reject cause
     // adv-u69c1r3-watch-once-inherits-marker-absent-blindspot). So when no marker
     // exists, probe the PORT EMBEDDED IN THE RECORDED URL directly instead - the same
     // safe, timeout-bounded `dash::dash_answer_on` probe, just without a pid to name. Only
@@ -3459,7 +3305,7 @@ fn watch_poll_over(
         },
         // No URL recorded: a marker alone stays this probe's own authority. `dash_status`
         // deliberately reads url-first and would call this Absent, but a marker-only dash
-        // is real (the step path writes a marker; the dead-marker contract in
+        // is real (a recorded `dash.marker` names one; the dead-marker contract in
         // `rigger-restore-the-dash` pins that `rigger watch --once` reports it), so
         // suppressing it here would hide a genuinely dead dash.
         (None, Some(m)) => (
@@ -3473,11 +3319,11 @@ fn watch_poll_over(
     };
 
     // Round-8 fix (spec 69, adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether
-    // THIS project's CURRENTLY WATCHED run's own step path attempted a dash ensure THIS run - an
+    // THIS project's CURRENTLY WATCHED run's own drive attempted a dash start THIS run - an
     // explicit run-id match against `DASH_ATTEMPT_FILE` ([`record_dash_attempt`]'s write site),
     // not an inference from timestamps. A match means Signal 3 must never suppress: this run's
-    // own step path just vouched for the dash. An absent file or one naming a different run (every
-    // existing seeded-event test included, since none of them drive the real dash-ensure call)
+    // own drive just vouched for the dash. An absent file or one naming a different run (every
+    // existing seeded-event test included, since none of them drive the real dash-start call)
     // means this signal alone is silent and `detect` falls back to the pre-existing
     // `dash_breadcrumb_written_at`/`run_started_at` comparison unchanged.
     let dash_attempted_this_run = std::fs::read_to_string(loc.file(DASH_ATTEMPT_FILE))
@@ -3516,11 +3362,11 @@ fn json_type_name(v: &serde_json::Value) -> &'static str {
 /// Format `spec::spec_lint_advisories`' output (spec 18 Unit 4 / spec 66 criterion 3's
 /// classification, untouched here) as the `"warning: spec {path}: {advisory}"` lines
 /// `rigger validate` prints. The ONE formatter both the pre-launch `cmd_validate` below
-/// AND the in-run `load_criteria` call site (spec 66 criterion 4 - reached by `rigger
-/// run` and `rigger step` alike, since both route through that one function) build their warning lines from - never a second, parallel
-/// aggregation or a re-derived wording, so the two lint surfaces cannot silently diverge.
-/// Pure (no I/O), so the sharing is pinned by a direct unit test on this function, not
-/// only inferred from a subprocess capture of either call site.
+/// AND the in-run `load_criteria` call site (spec 66 criterion 4 - reached by `rigger run`
+/// and `rigger critique` alike, since both route through that one function) build their
+/// warning lines from - never a second, parallel aggregation or a re-derived wording, so the two
+/// lint surfaces cannot silently diverge. Pure (no I/O), so the sharing is pinned by a direct unit
+/// test on this function, not only inferred from a subprocess capture of either call site.
 fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
     spec::spec_lint_advisories(text)
         .into_iter()
@@ -3534,7 +3380,8 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
 // no longer live, orphaned build caches, shadow `events.db` stores (the misfiling hazard
 // proven by adversary finding adv9-shadow-store-reopens-defect), and dead `rigger/u/*`
 // branches - as warnings that NEVER fail validation and NEVER delete anything. Cleanup
-// stays with the step-start sweep (`worktree::sweep_terminal`); this half only reports.
+// belongs to the teardown reaps (`Worktree::remove`, `reclaim_run_scratch`) and `rigger
+// reset`; this half only reports.
 
 /// The leftover artifacts a `rigger validate` residue scan found under the scratch root
 /// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
@@ -3578,11 +3425,11 @@ struct RunUnits {
     dead_slugs: std::collections::HashSet<String>,
     /// The [`crate::liveness::marker_filename`]-encoded leaf name of every spawn the
     /// CURRENT run has REQUESTED but has NOT YET ANSWERED - "in-flight" in the exact sense
-    /// [`crate::liveness::sweep`] already folds its own set from. A spawn drops out the
-    /// instant ANY result lands on it - success, reject, `--error`, or the liveness-fault
-    /// result `sweep` itself records the moment a marker goes stale - so a HUNG spawn's
-    /// registered scratch leaf reads as dead here the same step `sweep` retires it, with no
-    /// second, independently-derived notion of "in flight".
+    /// the spawn log records it. A spawn drops out the instant ANY result lands on it -
+    /// success, reject, `--error`, or the liveness-fault result the host records when it stops
+    /// a session silent past its `max_wall_clock` - so a stalled spawn's registered scratch leaf
+    /// reads as dead here as soon as that fault is recorded, with no second,
+    /// independently-derived notion of "in flight".
     live_spawn_leaf_names: std::collections::HashSet<String>,
     /// The [`crate::liveness::marker_filename`]-encoded run-id leaf of the CURRENT run
     /// itself (`None` when no run has ever started) - the exact subdir name
@@ -3618,9 +3465,8 @@ fn current_run_units(events: &[Event]) -> RunUnits {
         // still running after the deciding verdict already integrated it - the observed
         // `u81c1` bug); `spawn_fence` closes that gap by consulting the unit's LATEST
         // requested spawn directly, so `dead_slugs`/`live_branches` stay the ONE liveness
-        // authority every consumer (`sweep_terminal`, `reclaim_orphan_scratch` via
-        // `worktree_belongs_to_live`) already reads, rather than leaving a second notion of
-        // "in flight" for callers to reconcile themselves.
+        // authority the residue scan (`worktree_belongs_to_live`) reads, rather than leaving a
+        // second notion of "in flight" for callers to reconcile themselves.
         let fenced_live = run.is_terminal(&u.id)
             && matches!(
                 rigger::worktree::spawn_fence(scoped, &u.id),
@@ -3636,10 +3482,10 @@ fn current_run_units(events: &[Event]) -> RunUnits {
             out.live_branches.insert(u.branch.clone());
         }
     }
-    // Mirrors `liveness::sweep`'s own in-flight fold: every requested spawn `result_of`
-    // has not yet answered. `spawn::recorded`/`spawn::result_of` failing (a malformed
-    // event) is treated as "not in flight" - the conservative direction for an ADVISORY
-    // surface: a read failure never overstates what is still live.
+    // The in-flight fold: every requested spawn `result_of` has not yet answered.
+    // `spawn::recorded`/`spawn::result_of` failing (a malformed event) is treated as "not in
+    // flight" - the conservative direction for an ADVISORY surface: a read failure never overstates
+    // what is still live.
     if let Ok(requested) = spawn::recorded(scoped) {
         for id in requested.keys() {
             if matches!(spawn::result_of(scoped, id), Ok(None)) {
@@ -3661,126 +3507,6 @@ fn live_slugs(
         .iter()
         .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
         .collect()
-}
-
-/// Orphan-sweep backstop (spec 34, criterion 2): reclaim every scratch entry under `root`
-/// that NO live unit of the current run owns - the ownership backstop that makes the
-/// clean-up guarantee independent of agent goodwill. Two shapes are reclaimed: a
-/// `rigger-wt-<slug>` worktree and a per-unit cache - a `cargo-target-<slug>` build cache (Gap
-/// 19) or a `rigger-gate-<slug>` gate scratch root (spec 113) - whose `<slug>` names no live unit -
-/// a prior run's killed-process leftover, or an ad-hoc
-/// `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
-/// build-cache leak spec 34 names). Both are removed only when they are NOT live-owned,
-/// decided by the SAME [`worktree_belongs_to_live`] predicate `rigger validate`'s residue
-/// report reads over the current run's [`RunUnits`] - one definition of "live-owned", not a
-/// parallel notion.
-///
-/// The never-delete-live-owned invariant (spec 34 Global Constraint) is what the liveness key
-/// buys: a LIVE unit's worktree/cache is spared, and so are the shared live-spawn areas this
-/// backstop deliberately never touches - `agent-scratch` (probe repos and verify builds an
-/// in-flight worker parks there), `agent-live` (per-spawn liveness markers), and the bare
-/// shared `cargo-target`/`target` a live spawn may still be building into (the driver's
-/// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
-/// once no spawn is live, never by this per-step backstop, so it can never delete a target a
-/// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
-///
-/// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
-/// `rigger/u/<slug>` stages - config, never the event log, the SAME set `cmd_step` also hands
-/// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
-/// below) to a unit this run's definition actually declares.
-///
-/// Returns how many entries were reclaimed.
-fn reclaim_orphan_scratch(
-    repo: &str,
-    root: &str,
-    run_units: &RunUnits,
-    declared_units: &std::collections::HashSet<String>,
-) -> usize {
-    let live = live_slugs(&run_units.live_branches);
-    let declared_slugs = live_slugs(declared_units);
-    let root_path = std::path::Path::new(root);
-    let mut removed = 0;
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return 0;
-    };
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else { continue };
-        if !ft.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let path = entry.path();
-        if name.starts_with(rigger::worktree::UNIT_WORKTREE_PREFIX) {
-            // A leftover unit worktree no live unit owns. Reap any process still rooted in it
-            // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
-            // left it registered.
-            //
-            // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), round 2 fix
-            // (sdet-u89c1-sweep-terminal-discards-halted-tree, generalized): this backstop is a
-            // SECOND worktree-disposition authority alongside `sweep_terminal` - both run from
-            // `cmd_step`, strictly before `conductor::run` ever gets a chance to capture a
-            // halted spawn's abandoned edit as its own `wip` commit - and `reap_then_remove_
-            // worktree`'s own `git worktree remove --force` "also tolerates a dirty tree" (its
-            // doc comment), i.e. force-discards one. "Not live-owned" alone is exactly the
-            // shape a store/worktree desync (a restored snapshot, or this project's very first
-            // step) leaves a genuine, not-yet-recorded unit in, so a STILL-DIRTY candidate whose
-            // slug this workflow DECLARES is spared here too, regardless of liveness - mirroring
-            // `sweep_terminal_logged`'s identical guard. Gated on `declared_slugs`: dirtiness
-            // alone is not evidence of a halted spawn - a genuinely dead, undeclared branch that
-            // happens to also carry untracked content is still reclaimed exactly as before this
-            // criterion. The status read is scoped to a REAL linked worktree only
-            // (`path.join(".git")` present) - a bare directory git never tracked has no `.git`
-            // of its own, and running `git status` from inside one climbs to whatever repo
-            // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
-            // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
-            // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
-            //
-            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
-            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
-            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
-            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
-            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
-            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
-            // spare) on the identical unreadable-status error, despite this comment already
-            // claiming the two mirror each other. Sharing the one primitive - and picking the
-            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
-            // explicitly - makes that divergence structurally impossible to reintroduce.
-            let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
-            let dirty = declared_slugs.contains(slug)
-                && path.join(".git").exists()
-                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
-            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                reap_then_remove_worktree(repo, &path, root_path);
-                removed += 1;
-            }
-        } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
-            // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
-            // (`review-target-<slug>`), or its gate scratch root (`rigger-gate-<slug>`, spec 113).
-            // Mirror the worktree liveness check on the
-            // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
-            // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
-            // `-<slug>` tail) never matches and is spared.
-            let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
-            if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path, root_path);
-                removed += 1;
-            }
-        } else if is_build_cache_tombstone(&name) {
-            // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable
-            // residue an interrupted `reclaim_shared_build_cache` delete can leave behind
-            // (a killed process, a filesystem error mid-`remove_dir_all`). NO liveness
-            // check, unlike every other arm here - the rename that created this name is
-            // the LAST thing that will ever reference it by path, so it is always safe to
-            // reap unconditionally (spec 77 Design: "correct precisely because nothing can
-            // ever want it back").
-            reap_then_remove_dir(&path, root_path);
-            removed += 1;
-        }
-        // Any other entry (agent-scratch, agent-live, a bare cargo-target/target, a review
-        // worktree) is either a live-shared area or not rigger's slug-keyed scratch: spared
-        // here and reclaimed, if ever, by the run-level fixpoint/teardown - never this backstop.
-    }
-    removed
 }
 
 /// Scan `scratch_root` (a filesystem read, no mutation) plus the given local `rigger/u/*`
@@ -3815,13 +3541,12 @@ fn scan_residue(
             } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
                 // A per-unit build cache (`cargo-target-<slug>`, Gap 19), review cache
                 // (`review-target-<slug>`) or gate scratch root (`rigger-gate-<slug>`, spec 113).
-                // It is reclaimed with
-                // its unit's worktree on BOTH the graceful (`Worktree::remove`) and crash
-                // (`sweep_terminal`) paths, so it is residue ONLY when that worktree is no
-                // longer live - a leftover a crash stranded between removing the worktree and
-                // reclaiming the cache, or from an older run. A LIVE unit's cache is in use,
-                // not residue. Mirror the worktree liveness check on the reconstructed
-                // `rigger-wt-<slug>` name so the cache and its worktree stay in lockstep.
+                // It is reclaimed with its unit's worktree by `Worktree::remove` at the end of
+                // the unit's stage, so it is residue ONLY when that worktree is not live -
+                // a leftover a crash stranded before that removal ran, or from an older run. A LIVE
+                // unit's cache is in use, not residue. Mirror the worktree liveness check on the
+                // reconstructed `rigger-wt-<slug>` name so the cache and its worktree stay in
+                // lockstep.
                 let wt_name = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
                 if !worktree_belongs_to_live(&wt_name, live_slugs, dead_slugs) {
                     report.caches.push((name, dir_size_bytes(&entry.path())));
@@ -3958,7 +3683,7 @@ fn dir_size_bytes(path: &Path) -> u64 {
 /// shared-cache build holds the guard SHARED right now). Distinct from an `io::Error`,
 /// which this fn reserves for a genuine, unexpected filesystem failure (the caller decides
 /// how to report each: a loud, non-zero-exit refusal for the operator-invoked `rigger reset
-/// --build-cache`, a silent best-effort skip for the run-teardown sweep).
+/// --build-cache`, a silent best-effort skip for the run-teardown reclaim).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildCacheReclaim {
     Reclaimed(u64),
@@ -3969,9 +3694,7 @@ enum BuildCacheReclaim {
 /// process- and time-qualified so concurrent or rapid-succession reclaims (of a cache a
 /// build recreated in between) can never collide on one name - no lock is held across the
 /// delete, so uniqueness here is what keeps two tombstones from ever fighting over the same
-/// path. Named for [`is_build_cache_tombstone`] to recognize (spec 77 Design: "a failed
-/// tombstone delete leaves an ENUMERABLE residue shape the orphan sweep reaps
-/// unconditionally").
+/// path.
 fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
     let name = cache
         .file_name()
@@ -3984,22 +3707,10 @@ fn build_cache_tombstone_path(cache: &Path) -> PathBuf {
     cache.with_file_name(format!("{name}.tombstone-{}-{nanos}", std::process::id()))
 }
 
-/// Whether `name` (a bare filename, no path) is a [`build_cache_tombstone_path`] residue -
-/// the enumerable shape a reclaim's own failed (or killed-mid-flight) delete can leave
-/// behind. Nothing ever references a tombstone by path again once the rename lands (the
-/// reclaim that created it either deletes it itself or is gone), so ANY match here is safe
-/// to reap unconditionally - no liveness check needed, unlike the live cache name itself.
-fn is_build_cache_tombstone(name: &str) -> bool {
-    name.starts_with(&format!(
-        "{}.tombstone-",
-        rigger::worktree::SHARED_BUILD_CACHE_NAME
-    ))
-}
-
 /// Reclaim the shared gate build cache at `cache` (spec 77 criterion 5, BOUNDED SHARED
 /// CACHE) - the ONE mutation authority over this resource: both the operator-invoked
 /// `rigger reset --build-cache` ([`reset_build_cache`]) and the best-effort run-teardown
-/// sweep ([`reclaim_run_scratch`]) call this, so the safety protocol can never diverge
+/// reclaim ([`reclaim_run_scratch`]) call this, so the safety protocol can never diverge
 /// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
 /// a liveness guard claims).
 ///
@@ -4026,8 +3737,7 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// A failed rename (still holding the lock, released before returning) changes nothing on
 /// disk and surfaces the `io::Error`; the delete itself is best-effort
 /// (`reap_then_remove_dir`'s own swallowed-`Result` convention) - a failed or
-/// killed-mid-flight delete leaves an enumerable tombstone [`is_build_cache_tombstone`]
-/// recognizes, never a silently unrecoverable leak.
+/// killed-mid-flight delete leaves the `<cache>.tombstone-<pid>-<nanos>` sibling on disk.
 ///
 /// `scratch_root` is the resolved scratch root `cache` was itself joined onto by every real
 /// caller (`cache = scratch.join(SHARED_BUILD_CACHE_NAME)`) - it authorizes the tombstone
@@ -4136,9 +3846,9 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
 /// dead entries `rigger reset --build-cache` removes one by one ([`reclaim_dead_footprint`]) -
 /// the SAME entries whose bytes `dead_bytes` counts, so the advisory and the reaper read one
 /// accounting (gap 96). It is empty for a category that verb does not reclaim entry by entry:
-/// store and backups (never auto-deleted), worktrees (git-registered, reclaimed by `rigger
-/// step`), and the shared build cache (reclaimed whole, under its guard, by
-/// [`reclaim_shared_build_cache`]).
+/// store and backups (never auto-deleted), worktrees (git-registered, removed by hand - see
+/// [`FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED`]), and the shared build cache (reclaimed whole, under its
+/// guard, by [`reclaim_shared_build_cache`]).
 #[derive(Debug, Clone, PartialEq)]
 struct FootprintCategory {
     name: &'static str,
@@ -4164,29 +3874,21 @@ struct DeadEntry {
 /// is reported) or fixed, never per-project configurable.
 const FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT: u64 = 50;
 
-/// Reclaim hint for dead worktrees: reclaimed automatically the moment
-/// [`reclaim_orphan_scratch`] next runs (every `rigger step`), which deregisters each from git
-/// as it removes it - so a dead entry an operator sees here is transient, not a leak requiring
-/// manual action - naming both the automatic path and the manual fallback for an operator who
-/// is not mid-run.
+/// Reclaim hint for dead worktrees: no rigger verb reclaims a dead unit worktree, so the hint
+/// names the manual path - remove the listed dirs, then let git drop their registrations.
 const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
-    "reclaimed automatically by the next `rigger step`, or remove the listed dirs directly";
+    "remove the listed dirs directly, then `git worktree prune` drops their registrations";
 
 /// Reclaim hint for dead per-unit caches (gap 96): `rigger reset --build-cache` reclaims them
-/// now, and the next `rigger step`'s orphan backstop ([`reclaim_orphan_scratch`]) would too -
-/// an operator with no run in flight needs the verb, not a step that may never come.
-const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str =
-    "`rigger reset --build-cache` reclaims it now (the next `rigger step` also does)";
+/// now.
+const FOOTPRINT_RECLAIM_HINT_UNIT_CACHES: &str = "`rigger reset --build-cache` reclaims it now";
 
-/// Reclaim hint for the registered-scratch-roots category (spec 77 criterion 6): unlike
-/// the unit-scoped categories above, a dead spawn leaf is NOT swept by `rigger step`'s
-/// per-step orphan backstop (`reclaim_orphan_scratch`'s own doc comment names `agent-scratch`
-/// as an area it deliberately never touches) - it is reclaimed by `reclaim_spawn_scratch`,
-/// which `cmd_result` calls unconditionally for the spawn id it is given, regardless of
-/// outcome (spec 34 criterion 1, spec 77 criterion 3). Naming that real path rather than
-/// `rigger step` keeps the advisory accurate for the orphan case this category exists to
-/// surface (a hung, never-retried spawn whose result is never reported, its scratch left
-/// behind) - nothing reclaims it until an explicit `rigger result` names it.
+/// Reclaim hint for the registered-scratch-roots category (spec 77 criterion 6): a dead spawn
+/// leaf is reclaimed when its spawn's result records - the host reclaims it for every spawn it
+/// ends, and `rigger result` for the spawn id it is given, regardless of outcome (spec 34
+/// criterion 1, spec 77 criterion 3). The orphan case this category exists to surface is a
+/// hung, never-retried spawn whose result is never recorded, its scratch left behind: nothing
+/// reclaims it until a recorded result names it, or the operator verb runs.
 const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
     "`rigger reset --build-cache` reclaims it now (recording `rigger result` for the owning spawn also does)";
 
@@ -4194,15 +3896,14 @@ const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
 /// dir (or bare file) directly under `agent-scratch` that carries NO run/spawn structure at
 /// all - the ad-hoc leak the AGENT SCRATCH IS SPAWN-OWNED Design bullet names by example
 /// (`agent-scratch/u77c4-target`, a `CARGO_TARGET_DIR` an agent pointed directly under
-/// `agent-scratch` instead of through `rigger scratch <spawn>`'s own `<run>/<spawn>`
-/// container). Unlike the two hints above, NEITHER the per-step orphan backstop
-/// ([`reclaim_orphan_scratch`], which never descends into `agent-scratch`) NOR the per-spawn
-/// reclaim on `rigger result` ([`reclaim_spawn_scratch`], keyed on a spawn id this shape does
-/// not carry) will EVER reach it automatically - so this names the operator verb that does.
+/// `agent-scratch` instead of through the `rigger_scratch` tool's own `<run>/<spawn>`
+/// container). The per-spawn reclaim on a recorded result ([`reclaim_spawn_scratch`]) is keyed
+/// on a spawn id this shape does not carry, so it will NEVER reach it automatically - this names
+/// the operator verb that does.
 const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
     "no run or spawn owns this, so nothing reclaims it automatically - `rigger reset \
-     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at `rigger \
-     scratch <spawn>`'s own container instead of a hardcoded agent-scratch/<name> literal";
+     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at the \
+     `rigger_scratch` tool's own container instead of a hardcoded agent-scratch/<name> literal";
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
 /// shapes [`scan_residue`] already classifies: `rigger-wt-<slug>` worktrees,
@@ -5026,7 +4727,7 @@ fn precommit_block() -> String {
 # install. Candidate order, most authoritative first: the env-provided cargo target dir
 # (release then debug), this working tree's own local target (release then debug), this
 # worktree's own unit-derived scratch cargo-target - its unit is read from the worktree
-# directory name, `rigger-wt-<unit>` (release then debug), the run's shared step-cache target
+# directory name, `rigger-wt-<unit>` (release then debug), the run's shared build-cache target
 # (debug only - unit gates build the debug profile only), and finally PATH. The check is only
 # as current as the binary that runs it, which is why the tree-built candidates come first.
 git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
@@ -5364,17 +5065,15 @@ fn write_docs(root: &Path) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error
 /// sourced so every such surface says the exact same thing rather than each inventing its
 /// own wording.
 ///
-/// Callers: `run_cli` (`rigger run <spec>`) and `cmd_step` (`rigger step --spec <spec>`) are
-/// the surfaces that GENUINELY hold a spec path at the real pre-launch moment in production,
-/// so they are the ones that make this criterion's "reaches every consumer" promise true.
-/// `cmd_step` prints the reminder on STDERR (unlike `run_cli`, which uses stdout) because its
-/// stdout carries exactly one line of `{wave,done}` JSON a caller parses, and the reminder
-/// must never share that line.
+/// Callers: `run_cli` (`rigger run <spec>`) is the surface that GENUINELY holds a spec path at
+/// the real pre-launch moment in production, so it is the one that makes this criterion's
+/// "reaches every consumer" promise true; it prints the reminder on stdout.
 /// `cmd_prime` also calls this when given an explicit spec arg, but its own sole AUTOMATIC
-/// caller - the installed Claude Code SessionStart hook (`crates/rigger-driver/src/hooks.rs`) - always invokes it
-/// with zero args (the hook fires before any spec is ever chosen), so `cmd_prime`'s spec-arg
-/// branch is exercised only by a hand-typed `rigger prime <spec>`, never by that hook. It is
-/// kept (harmless, tested) for that manual use, not as this criterion's production path.
+/// caller - the installed agent-host SessionStart hook (`crates/rigger-driver/src/hooks.rs`) -
+/// always invokes it with zero args (the hook fires before any spec is ever chosen), so
+/// `cmd_prime`'s spec-arg branch is exercised only by a hand-typed `rigger prime <spec>`, never by
+/// that hook. It is kept (harmless, tested) for that manual use, not as this criterion's production
+/// path.
 fn spec_lint_next_step(spec_path: &str) -> String {
     format!(
         "next: `rigger validate {spec_path}` checks the spec's shape (multi-behavior \
@@ -5486,10 +5185,9 @@ mod tests {
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
-    use crate::test_support::pgid_of;
-    use crate::test_support::run_git;
     use crate::test_support::write_file;
     use crate::test_support::CwdGuard;
+    use rigger::spawn::SpawnEvent;
     use std::process::Command;
 
     /// The hash bound to no tree - an empty root, as a replay's run is handed - fails naming why
@@ -5627,6 +5325,96 @@ mod tests {
             prompt: prompt.to_string(),
             ..Default::default()
         }
+    }
+
+    /// The run history a `rigger result` for `u/implementer#0` is checked against.
+    #[derive(Clone, Copy)]
+    enum ResultHistory {
+        /// No request and no result: the id is an orphan.
+        Orphan,
+        /// The request is parked and unanswered.
+        Parked,
+        /// The request ended on a real result at position 7.
+        Ended,
+        /// The request is answered only by a liveness fault at position 4.
+        LivenessFaulted,
+        /// No request, but a result at position 3: an orphan that already has a result.
+        OrphanEnded,
+    }
+
+    /// What `rigger result u/implementer#0` (with or without `--supersede`) meets over `history`:
+    /// the refusal it stops on ([`result_refusal`]), else the advisories it prints
+    /// ([`result_advisories`]); each wanted fragment names one note, in order.
+    fn assert_result_guard(
+        history: ResultHistory,
+        supersede: bool,
+        want_refusal: Option<&str>,
+        want_notes: &[&str],
+    ) {
+        let req = test_request("u", "impl", "implementer", 0, "do it");
+        let at = |res: spawn::SpawnResult, position| {
+            let mut e = res.to_event().unwrap();
+            e.position = position;
+            e
+        };
+        let events = match history {
+            ResultHistory::Orphan => vec![],
+            ResultHistory::Parked => vec![req.to_event().unwrap()],
+            ResultHistory::Ended => vec![
+                req.to_event().unwrap(),
+                at(spawn::SpawnResult::ok(&req.id, "first"), 7),
+            ],
+            ResultHistory::LivenessFaulted => vec![
+                req.to_event().unwrap(),
+                at(
+                    spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra"),
+                    4,
+                ),
+            ],
+            ResultHistory::OrphanEnded => vec![at(spawn::SpawnResult::ok(&req.id, "prev"), 3)],
+        };
+        let refusal = result_refusal(&events, &req.id, supersede).unwrap();
+        assert_eq!(refusal.as_deref(), want_refusal, "the refusal");
+        if refusal.is_some() {
+            return;
+        }
+        let notes = result_advisories(&events, &req.id);
+        assert_eq!(notes.len(), want_notes.len(), "the advisories: {notes:?}");
+        for (note, want) in notes.iter().zip(want_notes) {
+            assert!(note.contains(want), "{note:?} names {want:?}");
+        }
+    }
+
+    rigger::test_cases! {
+        /// No request is recorded for the id, so it records with exactly the orphan note.
+        result_advisories_flags_an_orphan_id_with_no_spawn_request: assert_result_guard(
+            ResultHistory::Orphan, false, None, &["no spawn request is recorded for \"u/implementer#0\""],
+        );
+        /// The normal path: a parked, unanswered spawn records with no note.
+        result_advisories_is_silent_for_a_parked_unanswered_spawn: assert_result_guard(
+            ResultHistory::Parked, false, None, &[],
+        );
+        /// Once a spawn ENDED on a real result, a plain record is refused, naming the standing
+        /// result's position and the override, so a stale result never overwrites it.
+        result_refuses_a_second_result_without_supersede: assert_result_guard(
+            ResultHistory::Ended,
+            false,
+            Some("result: spawn u/implementer#0 already ended (result at position 7); pass --supersede to replace it"),
+            &[],
+        );
+        /// `--supersede` records over the standing result, with the note naming its position.
+        result_advisories_flags_a_supersede_with_the_prior_result_position: assert_result_guard(
+            ResultHistory::Ended, true, None, &["already has a recorded result at position 7; this record supersedes it"],
+        );
+        /// A liveness fault is a diagnosis of a silent agent, never its end, so the real result
+        /// replaces it with no override.
+        a_real_result_still_replaces_a_recorded_liveness_fault: assert_result_guard(
+            ResultHistory::LivenessFaulted, false, None, &["at position 4"],
+        );
+        /// A result recorded against an id the run never requested: both notes fire.
+        result_advisories_flags_both_orphan_and_supersede: assert_result_guard(
+            ResultHistory::OrphanEnded, true, None, &["no spawn request is recorded", "at position 3"],
+        );
     }
 
     // --- Spec 66, criterion 5: DISCOVERABILITY - `rigger prime` names the spec lint ---
@@ -5811,7 +5599,7 @@ mod tests {
     /// `compose_precommit_bytes` seam, that the block tries every candidate in the spec's
     /// exact order - env target dir (release then debug), local target (release then debug),
     /// this worktree's own unit-derived scratch cargo-target (release then debug), the shared
-    /// step-cache target (debug only), PATH last - and that BOTH the render call and the
+    /// build-cache target (debug only), PATH last - and that BOTH the render call and the
     /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
     /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
     /// end-to-end fixture-driven behavior, not this test).
@@ -5910,7 +5698,7 @@ mod tests {
             .expect("unit-derived cargo-target debug candidate is tried");
         let idx_shared_debug = candidate_list
             .find("$shared_debug")
-            .expect("shared step-cache debug candidate is tried");
+            .expect("shared build-cache debug candidate is tried");
         // PATH is consulted only as the fallback AFTER the candidate loop closes.
         let idx_path_fallback = hook[loop_end..]
             .find("command -v rigger")
@@ -5925,12 +5713,12 @@ mod tests {
                 && idx_unit_debug < idx_shared_debug
                 && idx_shared_debug < idx_path_fallback,
             "candidates must be TRIED in the spec's exact order (env dir release/debug, local \
-             target release/debug, unit-derived cargo-target release/debug, shared step-cache \
+             target release/debug, unit-derived cargo-target release/debug, shared build-cache \
              debug, PATH last); got:\n{hook}"
         );
 
         // The unit-derived candidates ($unit_release/$unit_debug) are POINTED at paths keyed
-        // by the worktree directory name `rigger-wt-<unit>`, and the shared step-cache
+        // by the worktree directory name `rigger-wt-<unit>`, and the shared build-cache
         // candidate ($shared_debug) is a DISTINCT debug-only path with no `-$unit` segment.
         assert!(
             hook.contains("rigger-wt-*")
@@ -5942,7 +5730,7 @@ mod tests {
         assert!(
             hook.contains("/.rigger/tmp/cargo-target/debug/rigger")
                 && !hook.contains("/.rigger/tmp/cargo-target/release/rigger"),
-            "the shared step-cache candidate is DEBUG ONLY (unit gates build the debug profile \
+            "the shared build-cache candidate is DEBUG ONLY (unit gates build the debug profile \
              only); got:\n{hook}"
         );
 
@@ -6242,7 +6030,7 @@ mod tests {
         for cmd in SUBCOMMANDS {
             assert!(!cmd.is_empty(), "a command name is empty");
         }
-        for expected in ["run", "step", "validate", "setup", "docs", "version"] {
+        for expected in ["run", "validate", "setup", "docs", "version"] {
             assert!(
                 SUBCOMMANDS.contains(&expected),
                 "SUBCOMMANDS must name the {expected:?} dispatch arm"
@@ -6407,7 +6195,7 @@ mod tests {
             ),
             (
                 "rigger-resume-a-run",
-                &["status", "run", "step"],
+                &["status", "run"],
             ),
             (
                 "rigger-handle-an-escalation",
@@ -6616,7 +6404,7 @@ mod tests {
         let criteria = vec!["the file crates/foo/src/bar.rs exports Zed".to_string()];
         let err = refuse_when_base_lacks_spec_paths(
             repo,
-            "rigger step",
+            "rigger run",
             "HEAD",
             RunBranchSetup::CreatedFromBase,
             &criteria,
@@ -6644,7 +6432,7 @@ mod tests {
             assert!(
                 refuse_when_base_lacks_spec_paths(
                     repo,
-                    "rigger step",
+                    "rigger run",
                     "HEAD",
                     *setup,
                     &[criterion.to_string()],
@@ -6710,7 +6498,7 @@ mod tests {
         let empty_repo = empty_root.to_str().unwrap();
         let err = refuse_when_base_unreachable(
             empty_repo,
-            "rigger step",
+            "rigger run",
             "origin/main",
             RunBranchSetup::CreatedFromHead,
         )
@@ -6735,7 +6523,7 @@ mod tests {
         assert!(
             refuse_when_base_unreachable(
                 live_repo,
-                "rigger step",
+                "rigger run",
                 "origin/main",
                 RunBranchSetup::CreatedFromHead,
             )
@@ -6749,7 +6537,7 @@ mod tests {
         assert!(
             refuse_when_base_unreachable(
                 live_repo,
-                "rigger step",
+                "rigger run",
                 "main",
                 RunBranchSetup::CreatedFromBase,
             )
@@ -6757,13 +6545,8 @@ mod tests {
             "a reachable base must pass the loop-readiness gate"
         );
         assert!(
-            refuse_when_base_unreachable(
-                empty_repo,
-                "rigger step",
-                "main",
-                RunBranchSetup::Reused,
-            )
-            .is_ok(),
+            refuse_when_base_unreachable(empty_repo, "rigger run", "main", RunBranchSetup::Reused,)
+                .is_ok(),
             "a reused run branch must never be refused (resume-safe), even on an empty repo"
         );
     }
@@ -6891,10 +6674,9 @@ mod tests {
         // (Integrated), the pre-spec-83 signal `dead_slugs` used exclusively - but a
         // straggler spawn for the SAME unit (a slower review lens still working after the
         // deciding verdict already integrated it) is still unanswered. The fence must keep
-        // its branch OUT of `dead_slugs` and IN `live_branches`, so neither
-        // `sweep_terminal`'s ancestry sweep nor `reclaim_orphan_scratch`'s backstop
-        // (`worktree_belongs_to_live`, keyed off these exact two sets) can remove its
-        // worktree out from under the straggler.
+        // its branch OUT of `dead_slugs` and IN `live_branches`, so the residue scan
+        // (`worktree_belongs_to_live`, keyed off these exact two sets) never reports its
+        // worktree as removable while the straggler still works in it.
         let events = [
             Event::new(
                 runscope::TYPE_RUN_STARTED,
@@ -6958,8 +6740,8 @@ mod tests {
     fn current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run() {
         // spec 77 criterion 6, `adj-u77c6-verdict-reject-unflaggable-highest-stakes-
         // category`: the registered-scratch-roots dead-share accounting needs a SPAWN-
-        // level liveness set, folded the same conservative way `liveness::sweep` folds its
-        // own in-flight set - requested, no result yet - and scoped to the CURRENT run
+        // level liveness set, folded conservatively - requested, no result yet - and scoped
+        // to the CURRENT run
         // exactly like `live_branches`/`dead_slugs` above.
         let prior_spawn = test_request("unit-prior", "impl", "implementer", 0, "p")
             .to_event()
@@ -7002,44 +6784,6 @@ mod tests {
         );
         assert!(!run.live_spawn_leaf_names.contains(&want_answered));
         assert!(!run.live_spawn_leaf_names.contains(&want_prior));
-    }
-
-    /// Spec 64, criterion 4 fix (the rejected round): an unreadable run stream must make the
-    /// step-start sweep decision fail CLOSED (`None`, read by `cmd_step` as "skip the sweep
-    /// call entirely"), never degrade to `Some(HashSet::new())` - the rejected bug, which
-    /// `sweep_terminal` would still run with an EMPTY live set, silently reverting to the
-    /// pre-c4 ancestry-only rule that force-removes a live unit's empty-diff worktree mid-review.
-    /// `Err` is asserted first (the exact arm the prior round shipped with zero coverage of);
-    /// `Ok` is asserted too, so this also pins that a readable stream still hands back the SAME
-    /// fold `current_run_units` computes elsewhere in this function - one liveness authority,
-    /// not a second one reimplemented here.
-    #[test]
-    fn live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one() {
-        let err = live_branches_for_sweep(Err(rigger::eventstore::Error::Backend(
-            "simulated read failure (e.g. SQLITE_BUSY_SNAPSHOT under a concurrent writer)"
-                .to_string(),
-        )));
-        assert_eq!(
-            err, None,
-            "an unreadable run stream must decide None (skip the sweep outright), never \
-             Some(empty set) - the rejected silent degrade that still runs the sweep"
-        );
-
-        let events = vec![
-            Event::new(
-                runscope::TYPE_RUN_STARTED,
-                br#"{"run":"r1","criteria":["c"]}"#.to_vec(),
-            ),
-            Event::new(
-                ledger::TYPE_UNIT_STARTED,
-                br#"{"id":"unit-6","branch":"rigger/u/unit-6"}"#.to_vec(),
-            ),
-        ];
-        assert_eq!(
-            live_branches_for_sweep(Ok(events)),
-            Some(slugs(["rigger/u/unit-6"])),
-            "a readable stream decides Some(the current_run_units fold) - the sweep still runs"
-        );
     }
 
     #[test]
@@ -7685,7 +7429,7 @@ mod tests {
         // category with a reclaim command, never folded into a dead-run bucket" - the exact
         // defect the AGENT SCRATCH IS SPAWN-OWNED Design bullet names by example
         // (`agent-scratch/u77c4-target`, a CARGO_TARGET_DIR an agent pointed directly under
-        // `agent-scratch` instead of through `rigger scratch <spawn>`'s own <run>/<spawn>
+        // `agent-scratch` instead of through the `rigger_scratch` tool's own <run>/<spawn>
         // container).
         let root = tempfile::tempdir().unwrap();
         let scratch = root.path().join("scratch");
@@ -7876,294 +7620,6 @@ mod tests {
         );
     }
 
-    // ---- spec 34 (criterion 2): the orphan-sweep backstop reclaim seam --------------
-
-    #[test]
-    fn reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas() {
-        // spec 34 (criterion 2): the ORPHAN-SWEEP reclaims every scratch entry no LIVE unit of
-        // the current run owns - a prior run's stranded worktree/cache, or a `cargo-target-<slug>`
-        // an agent wrote outside its assigned path - keyed on the SAME liveness-ownership
-        // predicate the residue report reads. The never-delete-live-owned rail (spec 34 Global
-        // Constraint): a LIVE unit's worktree/cache is spared, proving the sweep can never remove
-        // scratch a live spawn/run owns; the shared live-spawn areas (`agent-scratch`,
-        // `agent-live`, the bare `cargo-target` a live spawn builds into) are spared too.
-        let dir = tempfile::tempdir().unwrap();
-        let scratch = dir.path();
-
-        // A LIVE unit (`rigger/u/live-unit`, non-terminal) owns a worktree + per-unit cache.
-        write_file(
-            &scratch.join("rigger-wt-live-unit").join("keep.txt"),
-            &[0u8; 8],
-        );
-        write_file(
-            &scratch.join("cargo-target-live-unit").join("live.rlib"),
-            &[0u8; 8],
-        );
-        // A DEAD (terminal) unit's stranded worktree + per-unit cache - residue.
-        write_file(
-            &scratch.join("rigger-wt-dead-unit").join("stale.txt"),
-            &[0u8; 8],
-        );
-        write_file(
-            &scratch.join("cargo-target-dead-unit").join("dead.rlib"),
-            &[0u8; 8],
-        );
-        // Each unit's gate scratch root (`rigger-gate-<slug>`, spec 113) is a per-unit cache
-        // like its `cargo-target-<slug>` sibling: the live unit's spared, the dead one's
-        // reclaimed. A directory of another prefix matches no arm and stays.
-        write_file(
-            &scratch.join("rigger-gate-live-unit").join("rerun.list"),
-            &[0u8; 8],
-        );
-        write_file(
-            &scratch.join("rigger-gate-dead-unit").join("rerun.list"),
-            &[0u8; 8],
-        );
-        write_file(
-            &scratch.join("mutation-tool-dead-unit").join("rerun.list"),
-            &[0u8; 8],
-        );
-        // An ad-hoc `cargo-target-<slug>` an agent wrote outside its assigned path (no live
-        // owner) - the unbounded per-agent build-cache leak spec 34 names.
-        write_file(
-            &scratch.join("cargo-target-adhoc-x1").join("junk.rlib"),
-            &[0u8; 8],
-        );
-        // A prior run's killed-process leftover worktree (no live unit) - residue.
-        write_file(
-            &scratch
-                .join("rigger-wt-old-run-deadbeef")
-                .join("leftover.txt"),
-            &[0u8; 8],
-        );
-        // The shared live-spawn areas a running spawn is still using - MUST be spared.
-        write_file(
-            &scratch
-                .join("agent-scratch")
-                .join("probe")
-                .join("Cargo.toml"),
-            b"[package]",
-        );
-        write_file(&scratch.join("agent-live").join("run").join("marker"), b"");
-        write_file(&scratch.join("cargo-target").join("shared.rlib"), &[0u8; 8]);
-
-        let run_units = RunUnits {
-            live_branches: slugs(["rigger/u/live-unit"]),
-            dead_slugs: slugs(["dead-unit"]),
-            live_spawn_leaf_names: slugs([]),
-            current_run_scratch_leaf: None,
-        };
-        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
-        // which is all the synthetic (non-registered) worktree dirs here need.
-        let removed = reclaim_orphan_scratch(
-            "",
-            scratch.to_str().unwrap(),
-            &run_units,
-            &std::collections::HashSet::new(),
-        );
-        assert_eq!(
-            removed, 5,
-            "exactly the five non-live-owned entries are reclaimed"
-        );
-        assert!(
-            scratch.join("rigger-gate-live-unit").exists(),
-            "the LIVE unit's gate scratch root is spared"
-        );
-        assert!(
-            !scratch.join("rigger-gate-dead-unit").exists(),
-            "the DEAD unit's gate scratch root is reclaimed"
-        );
-        assert!(
-            scratch.join("mutation-tool-dead-unit").exists(),
-            "a directory of another prefix matches no arm and is never reclaimed"
-        );
-
-        // Live-owned scratch: spared.
-        assert!(
-            scratch.join("rigger-wt-live-unit").exists(),
-            "the LIVE unit's worktree is spared (keyed on liveness)"
-        );
-        assert!(
-            scratch.join("cargo-target-live-unit").exists(),
-            "the LIVE unit's per-unit build cache is in use, not residue"
-        );
-        // Shared live-spawn areas: spared (reclaimed by the run teardown, never this backstop).
-        assert!(
-            scratch.join("agent-scratch").exists(),
-            "agent-scratch (in-flight worker probe/build area) is spared"
-        );
-        assert!(
-            scratch.join("agent-live").exists(),
-            "agent-live (per-spawn liveness markers) is spared"
-        );
-        assert!(
-            scratch.join("cargo-target").exists(),
-            "the bare shared cargo-target a live spawn may still build into is spared"
-        );
-        // Non-live-owned scratch: reclaimed.
-        assert!(
-            !scratch.join("rigger-wt-dead-unit").exists(),
-            "the DEAD unit's worktree is reclaimed"
-        );
-        assert!(
-            !scratch.join("cargo-target-dead-unit").exists(),
-            "the DEAD unit's per-unit cache is reclaimed"
-        );
-        assert!(
-            !scratch.join("cargo-target-adhoc-x1").exists(),
-            "an ad-hoc cargo-target outside a spawn's assigned path is reclaimed"
-        );
-        assert!(
-            !scratch.join("rigger-wt-old-run-deadbeef").exists(),
-            "a prior run's leftover worktree is reclaimed"
-        );
-
-        // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
-        assert_eq!(
-            reclaim_orphan_scratch(
-                "",
-                scratch.to_str().unwrap(),
-                &run_units,
-                &std::collections::HashSet::new(),
-            ),
-            0,
-            "the sweep is idempotent - a clean root reclaims nothing"
-        );
-    }
-
-    #[test]
-    fn reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty() {
-        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix: this backstop is a
-        // SECOND, independent worktree-disposition authority alongside `sweep_terminal` (both
-        // run from `cmd_step`, before `conductor::run` ever gets a chance to capture a halted
-        // spawn's abandoned edit as its own `wip` commit) - so the SAME "never force-remove a
-        // dirty candidate" guard `sweep_terminal_logged` now carries must apply here too, or a
-        // unit's tree can still be discarded through this door alone. `reap_then_remove_worktree`
-        // itself runs `git worktree remove --force`, which "also tolerates a dirty tree" (its
-        // own doc comment) - i.e. force-discards it. Not-yet-live is exactly the "no spawn
-        // recorded yet" shape (a store/worktree desync, or this project's very first step): the
-        // worktree here is real, dirty, and NOT in `live_branches` at all.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_committed_repo(root, "README.md", "seed\n");
-        let repo = root.to_str().unwrap();
-
-        let wt_dir = root.join("rigger-wt-halted-unit");
-        Worktree::create(repo, wt_dir.to_str().unwrap(), "rigger/u/halted-unit", "").unwrap();
-        write_file(&wt_dir.join("halted-work.txt"), b"abandoned mid-edit\n");
-
-        let run_units = RunUnits {
-            live_branches: slugs([]),
-            dead_slugs: slugs([]),
-            live_spawn_leaf_names: slugs([]),
-            current_run_scratch_leaf: None,
-        };
-        // Declared (round 3 fix): this workflow's own current definition still names
-        // "halted-unit" as one of its units - the signal that distinguishes it from
-        // `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` below's genuinely
-        // dead, undeclared one.
-        let declared_units = slugs(["rigger/u/halted-unit"]);
-        let removed =
-            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
-        assert_eq!(
-            removed, 0,
-            "a dirty, non-live-owned, but DECLARED worktree is spared, never force-removed"
-        );
-        assert!(
-            wt_dir.join("halted-work.txt").exists(),
-            "the abandoned edit must survive the sweep untouched"
-        );
-
-        // The paired negative-space case: once the SAME worktree is clean (its work
-        // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
-        // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
-        // non-liveness, is what changed.
-        run_git(&wt_dir, &["add", "-A"]);
-        run_git(&wt_dir, &["commit", "-q", "-m", "resolved"]);
-        let removed =
-            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
-        assert_eq!(
-            removed, 1,
-            "a CLEAN non-live-owned worktree is still reclaimed as before"
-        );
-        assert!(!wt_dir.exists(), "the clean worktree is gone");
-    }
-
-    #[test]
-    fn reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree() {
-        // Spec 89, criterion 1, round 3 fix: the negative-space twin of the test above.
-        // Dirtiness ALONE is not proof of a halted spawn - a genuinely dead, UNDECLARED branch
-        // (a prior run's leftover, a hand-made fixture) that happens to also carry untracked
-        // content is still reclaimed exactly as it was before this criterion, matching
-        // `sweep_terminal`'s own identical `declared_units` gate.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        init_committed_repo(root, "README.md", "seed\n");
-        let repo = root.to_str().unwrap();
-
-        let wt_dir = root.join("rigger-wt-undeclared-orphan");
-        Worktree::create(
-            repo,
-            wt_dir.to_str().unwrap(),
-            "rigger/u/undeclared-orphan",
-            "",
-        )
-        .unwrap();
-        write_file(&wt_dir.join("stray.txt"), b"unrelated debris\n");
-
-        let run_units = RunUnits {
-            live_branches: slugs([]),
-            dead_slugs: slugs([]),
-            live_spawn_leaf_names: slugs([]),
-            current_run_scratch_leaf: None,
-        };
-        // Declares an UNRELATED unit only - never "undeclared-orphan".
-        let declared_units = slugs(["rigger/u/halted-unit"]);
-        let removed =
-            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
-        assert_eq!(
-            removed, 1,
-            "a dirty, non-live-owned, and UNDECLARED worktree is still reclaimed"
-        );
-        assert!(
-            !wt_dir.exists(),
-            "the undeclared, unrelated worktree is gone"
-        );
-    }
-
-    #[test]
-    fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
-        // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
-        // leaves an ENUMERABLE residue shape the orphan sweep reaps unconditionally -
-        // correct precisely because nothing can ever want it back". A tombstone
-        // (`reclaim_shared_build_cache`'s own rename target) is never referenced by path
-        // again once the rename lands, so - unlike every other entry this sweep classifies -
-        // it needs NO liveness check at all: it is reaped every time, regardless of any
-        // `RunUnits` liveness state.
-        let dir = tempfile::tempdir().unwrap();
-        let scratch = dir.path();
-        let tombstone = scratch.join("cargo-target.tombstone-12345-67890");
-        write_file(&tombstone.join("stranded.rlib"), &[0u8; 16]);
-        // The LIVE bare cache must still be spared alongside it - the tombstone shape is a
-        // distinct, disjoint name (a `.tombstone-` suffix), never confused with the live
-        // cache's own bare name.
-        write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
-
-        let run_units = RunUnits::default();
-        let removed = reclaim_orphan_scratch(
-            "",
-            scratch.to_str().unwrap(),
-            &run_units,
-            &std::collections::HashSet::new(),
-        );
-        assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
-        assert!(!tombstone.exists(), "the stray tombstone must be reaped");
-        assert!(
-            scratch.join("cargo-target").exists(),
-            "the live bare cache must be spared - its name is disjoint from the tombstone shape"
-        );
-    }
-
     // ---- store-open hardening: walk up to an existing store, never fabricate one ----
 
     #[test]
@@ -8249,16 +7705,17 @@ mod tests {
 
     #[test]
     fn reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir() {
-        // spec 23: the fixpoint scratch-area sweep (cmd_step) reaps every process rooted in a
-        // scratch dir BEFORE removing it, so a build or tool a worker left running under
+        // spec 23: the run's scratch-area reclaim (`reclaim_run_scratch`, through
+        // `remove_agent_area_entries`) reaps every process rooted in a scratch dir BEFORE
+        // removing it, so a build or tool a worker left running under
         // agent-scratch does not outlive the deleted dir. A process rooted OUTSIDE the swept dir
         // is untouched (the safety boundary). The inside child IGNORES SIGTERM, so only the
         // SIGKILL escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism at
         // this second teardown point (the first is Worktree::remove). `reap_then_remove_dir`
         // requires the swept dir to be strictly under the given `authorized_root` (here, the
-        // `.rigger/tmp` its production caller resolves it under), so the fixture mirrors that
-        // exact layout - mirroring where `cmd_step` actually points `reap_then_remove_dir` in
-        // production.
+        // `.rigger/tmp` its production caller resolves it under), so the fixture sweeps
+        // `.rigger/tmp/agent-scratch` itself; in production `remove_agent_area_entries` sweeps
+        // each entry inside that dir under the same root.
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().canonicalize().unwrap();
         git_init_quiet(&root_path);
@@ -8326,16 +7783,14 @@ mod tests {
     #[test]
     fn find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it() {
         // Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): a unit's real
-        // git-linked worktree no longer nests under `<repo>/.rigger/tmp` - it lives
-        // wherever the relocated (cache-home) scratch root resolves, which is now OUTSIDE
-        // the repo's own directory tree entirely. A worker's own courier calls (`rigger
-        // prompt`/`result`/`emit`/`scratch`/`progress`/`peers`) run from INSIDE that
-        // worktree (each is documented as "invoked BY THE WORKER from inside its unit
-        // worktree"), so `find_store_dir_from` must still resolve the repo's real store
-        // even though a plain filesystem `.parent()` climb from the worktree never
-        // physically passes through the repo root any more - the exact regression a
-        // naive relocation would otherwise ship silently (every courier call from a real
-        // relocated worktree would refuse "no rigger store found").
+        // git-linked worktree does not nest under `<repo>/.rigger/tmp` - it lives wherever
+        // the relocated (cache-home) scratch root resolves, which is OUTSIDE the repo's own
+        // directory tree entirely. A worker's own courier calls (`rigger
+        // result`/`emit`/`progress`/`peers`) run from INSIDE that worktree, so
+        // `find_store_dir_from` must still resolve the repo's real store even though a plain
+        // filesystem `.parent()` climb from the worktree never physically passes through the
+        // repo root - the exact regression a naive relocation would otherwise ship silently (every
+        // courier call from a real relocated worktree would refuse "no rigger store found").
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         init_committed_repo(root, "README", "x");
@@ -8534,143 +7989,7 @@ mod tests {
 
     // ---- `rigger result` stderr advisories: orphan id and superseding result ----
 
-    #[test]
-    fn result_advisories_flags_an_orphan_id_with_no_spawn_request() {
-        // No SpawnRequested is recorded for the id -> exactly the orphan advisory.
-        let notes = result_advisories(&[], "u/implementer#0", true);
-        assert_eq!(notes.len(), 1, "only the orphan note; got {notes:?}");
-        assert!(notes[0].contains("no spawn request is recorded"));
-        assert!(notes[0].contains("u/implementer#0"));
-    }
-
-    #[test]
-    fn result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent() {
-        // Spec 08 item 5: the plain (unconditional) record path keeps its "recording an
-        // orphan result" wording, while the `--if-absent` path (`will_supersede` false)
-        // states the conditional and NEVER claims a recording it may not make.
-        let plain = result_advisories(&[], "u/implementer#0", true);
-        assert_eq!(plain.len(), 1, "only the orphan note; got {plain:?}");
-        assert!(
-            plain[0].contains("recording an orphan result"),
-            "the plain path states the recording; got {plain:?}"
-        );
-
-        let if_absent = result_advisories(&[], "u/implementer#0", false);
-        assert_eq!(
-            if_absent.len(),
-            1,
-            "only the orphan note; got {if_absent:?}"
-        );
-        assert!(
-            if_absent[0].contains("--if-absent records only if the spawn is unanswered"),
-            "the --if-absent path states the conditional; got {if_absent:?}"
-        );
-        assert!(
-            !if_absent[0].contains("recording an orphan result"),
-            "the --if-absent path must NOT claim a recording; got {if_absent:?}"
-        );
-    }
-
-    #[test]
-    fn result_advisories_is_silent_for_a_parked_unanswered_spawn() {
-        // A parked spawn (its request is recorded) with no result yet needs no advisory:
-        // this is the normal courier path.
-        let req = test_request("u", "impl", "implementer", 0, "do it");
-        let ev = req.to_event().unwrap();
-        let notes = result_advisories(std::slice::from_ref(&ev), &req.id, true);
-        assert!(
-            notes.is_empty(),
-            "a parked-but-unanswered spawn needs no note; got {notes:?}"
-        );
-    }
-
-    #[test]
-    fn result_advisories_flags_a_supersede_with_the_prior_result_position() {
-        // Request recorded (no orphan) AND a prior result at a known position -> exactly
-        // the supersede advisory, naming that position.
-        let req = test_request("u", "impl", "implementer", 0, "do it");
-        let req_ev = req.to_event().unwrap();
-        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
-        res_ev.position = 7;
-        let notes = result_advisories(&[req_ev, res_ev], &req.id, true);
-        assert_eq!(notes.len(), 1, "only the supersede note; got {notes:?}");
-        assert!(notes[0].contains("already has a recorded result at position 7"));
-        assert!(notes[0].contains("supersedes"));
-    }
-
-    #[test]
-    fn result_advisories_suppresses_the_supersede_note_when_not_superseding() {
-        // The `--if-absent` path (weave with unit-10): the CAS never overwrites, so a
-        // supersede note would claim a replacement that never happens. Only the orphan
-        // rule applies; a request-and-result pair yields no note at all.
-        let req = test_request("u", "impl", "implementer", 0, "do it");
-        let req_ev = req.to_event().unwrap();
-        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
-        res_ev.position = 7;
-        let notes = result_advisories(&[req_ev, res_ev], &req.id, false);
-        assert!(
-            notes.is_empty(),
-            "no supersede note on the non-superseding path; got {notes:?}"
-        );
-    }
-
-    #[test]
-    fn result_advisories_flags_both_orphan_and_supersede() {
-        // A result recorded against an id the run never requested: BOTH notes fire.
-        let mut res_ev = spawn::SpawnResult::ok("typo/id#0", "prev")
-            .to_event()
-            .unwrap();
-        res_ev.position = 3;
-        let notes = result_advisories(std::slice::from_ref(&res_ev), "typo/id#0", true);
-        assert_eq!(notes.len(), 2, "orphan + supersede; got {notes:?}");
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("no spawn request is recorded")));
-        assert!(notes.iter().any(|n| n.contains("at position 3")));
-    }
-
     // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
-
-    /// Gap 108: once a spawn has ENDED on a real result, a plain `rigger result` for it is refused,
-    /// naming the standing result's position and the `--supersede` override, so a replayed stale
-    /// worker can never overwrite it; `--supersede` (an explicit operator repair) records.
-    #[test]
-    fn result_refuses_a_second_result_without_supersede() {
-        let req = test_request("u", "impl", "implementer", 0, "do it");
-        let mut res_ev = spawn::SpawnResult::ok(&req.id, "first").to_event().unwrap();
-        res_ev.position = 7;
-        let events = [req.to_event().unwrap(), res_ev];
-
-        let refused = result_refusal(&events, &req.id, false)
-            .unwrap()
-            .expect("a second result for an ended spawn is refused");
-        assert!(
-            refused.contains("already ended (result at position 7)")
-                && refused.contains("--supersede"),
-            "the refusal names the standing result and the override; got {refused}"
-        );
-        assert_eq!(
-            result_refusal(&events, &req.id, true).unwrap(),
-            None,
-            "--supersede records over the standing result"
-        );
-    }
-
-    /// Gap 108 guard: the step's liveness fault is the sweep's diagnosis of a silent worker, never
-    /// its end, so the worker's real result still replaces it with no override.
-    #[test]
-    fn a_real_result_still_replaces_a_recorded_liveness_fault() {
-        let req = test_request("u", "impl", "implementer", 0, "do it");
-        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
-            .to_event()
-            .unwrap();
-        fault.position = 4;
-        assert_eq!(
-            result_refusal(&[req.to_event().unwrap(), fault], &req.id, false).unwrap(),
-            None,
-            "a real result replaces a liveness fault"
-        );
-    }
 
     /// The two checked-in workflows that ship with the repo - the self-hosted
     /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
@@ -10731,9 +10050,8 @@ mod tests {
         );
     }
 
-    /// A run with no recorded spawn requests at all (the pre-stepwise / cli-driver-only
-    /// shape) renders a clear "no recorded spawns" line rather than an empty section or a
-    /// spurious unpaired count.
+    /// A run with no recorded spawn requests at all renders a clear "no recorded spawns" line
+    /// rather than an empty section or a spurious unpaired count.
     #[test]
     fn format_stats_spawn_timing_reports_no_spawns_when_none_recorded() {
         let out = format_stats(&Metrics::default()).join("\n");
@@ -11107,36 +10425,36 @@ mod tests {
         );
     }
 
-    /// `rigger step` SERIALIZES: while one step holds the lock, a second concurrent step
-    /// REFUSES (with the driver-recognizable busy token) instead of running - so the run
-    /// advances one step at a time and two steps never race the shared run state. And the
-    /// refusal is not permanent: once the first releases, a later step acquires at once.
+    /// `rigger run` SERIALIZES: while one run holds the lock, a second concurrent run
+    /// REFUSES (with the recognizable busy token) instead of running - so two drivers never
+    /// race the shared run state. And the refusal is not permanent: once the first releases, a
+    /// later run acquires at once.
     #[test]
     #[serial_test::serial(cwd)]
-    fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
+    fn a_second_concurrent_rigger_run_refuses_and_the_lock_frees_on_release() {
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
         let _restore = CwdGuard(prev);
         std::env::set_current_dir(dir.path()).unwrap();
         std::fs::create_dir_all(RIGGER_DIR).unwrap();
 
-        // First step holds the exclusive lock for its whole duration.
+        // The first run holds the exclusive lock for its whole duration.
         let held =
-            acquire_step_lock(Path::new(RIGGER_DIR)).expect("the first step must acquire the lock");
-        // A second concurrent step must REFUSE fast (not block, not double-run) and carry the
-        // token the driver keys on to back off rather than tear the run down.
+            acquire_step_lock(Path::new(RIGGER_DIR)).expect("the first run must acquire the lock");
+        // A second concurrent run must REFUSE fast (not block, not double-run) and carry the
+        // token the live-run probes key on.
         let err = acquire_step_lock(Path::new(RIGGER_DIR))
-            .expect_err("a second concurrent step must refuse");
+            .expect_err("a second concurrent run must refuse");
         assert!(
             err.to_string().contains(STEP_BUSY_TOKEN),
             "the refusal must carry the busy token for the driver: {err}"
         );
         // Releasing the first frees the lock AT ONCE, whatever copies of its descriptor stand:
         // a child process forked by any thread of this process holds a copy of every descriptor
-        // until its exec closes the close-on-exec ones, so closing the step's own copy alone
-        // would leave the lock held through that window and a later step would be refused as
+        // until its exec closes the close-on-exec ones, so closing the run's own copy alone
+        // would leave the lock held through that window and a later run would be refused as
         // busy. The copy below stands in for such a child's: the released lock is free for the
-        // very next step, with no retry.
+        // very next run, with no retry.
         let forked_copy = held.file().try_clone().unwrap();
         drop(held);
         let next = acquire_step_lock(Path::new(RIGGER_DIR));
@@ -11388,173 +10706,6 @@ mod tests {
             "the same-batch suspect pair AND the never-answered u3 park must both surface as \
              unpaired, disclosed together:\n{out}"
         );
-    }
-
-    rigger::test_cases! {
-        /// `result_of_at` (the read behind `rigger reported`, and the same latest-result read
-        /// `spawn_store::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
-        /// (`None`) and does NOT create the file: a never-run project has no result for any spawn,
-        /// and opening would create the db, masking the edge. A `None` here makes `rigger reported`
-        /// exit non-zero, correctly reporting the spawn as still unanswered.
-        result_of_at_absent_db_reads_as_unreported_and_creates_no_file:
-            assert_absent_db_reads_none(
-            |path| result_of_at(path, "proj-x", "u/impl#0", &StoreSelection::Sqlite),
-            "result_of_at",
-            "unreported",
-        );
-    }
-
-    /// An `events.db` in a fresh dir whose `project` run holds one successful result for `id`.
-    /// Returns the dir (to keep it alive) and the db's path.
-    fn db_with_one_result(project: &str, id: &str, output: &str) -> (tempfile::TempDir, String) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db").to_str().unwrap().to_string();
-        seed_run(
-            &path,
-            project,
-            &[spawn::SpawnResult::ok(id, output).to_event().unwrap()],
-        );
-        (dir, path)
-    }
-
-    /// A spawn with no recorded result reads as UNREPORTED (`None`) even when the db exists and
-    /// holds OTHER events (including other spawns' results): `result_of_at` matches on the exact
-    /// spawn id, so an unanswered spawn is correctly treated as still-parked.
-    #[test]
-    fn result_of_at_unrecorded_spawn_reads_as_unreported() {
-        // A different spawn HAS a result; the one we ask about does not.
-        let (_dir, path) = db_with_one_result("proj-me", "u/other#0", "done");
-        let got = result_of_at(&path, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
-            .expect("read is not an error");
-        assert!(
-            got.is_none(),
-            "a spawn with no result of its own must read as unreported (None)"
-        );
-    }
-
-    /// A recorded self-report reads back as `Some` - the anti-clobber invariant the review
-    /// rejected the unguarded death courier for. A worker that self-reported (success OR its own
-    /// failure) is ANSWERED, so `rigger reported` exits 0 and the death courier's atomic
-    /// `rigger result <id> --if-absent --error` records nothing: the worker's own result is
-    /// never overwritten by a courier `--error`.
-    #[test]
-    fn result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let path_str = path.to_str().unwrap();
-
-        seed_run(
-            path_str,
-            "proj-me",
-            &[
-                spawn::SpawnResult::ok("u/impl#0", "implemented and reported")
-                    .to_event()
-                    .unwrap(),
-            ],
-        );
-
-        let got = result_of_at(path_str, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
-            .expect("read is not an error")
-            .expect("a recorded result must read back as Some, not None");
-        assert_eq!(got.id, "u/impl#0");
-        assert!(
-            !got.is_error(),
-            "a self-reported success must read back as a success (so the guard skips --error)"
-        );
-        assert_eq!(got.output, "implemented and reported");
-    }
-
-    /// The read is namespace-scoped: a result ANOTHER project wrote to the same shared backend
-    /// must not make this project's spawn look reported. Proves the [`Namespaced`] decorator is
-    /// on the guard's read path, so a spawn id colliding across projects cannot cross-answer.
-    #[test]
-    fn result_of_at_is_namespace_scoped() {
-        // proj-other recorded a result for an id that ALSO exists in proj-me's run.
-        let (_dir, path) = db_with_one_result("proj-other", "u/impl#0", "theirs");
-
-        // proj-me, reading the same file, sees its OWN (empty) namespace: still unreported.
-        let mine = result_of_at(&path, "proj-me", "u/impl#0", &StoreSelection::Sqlite)
-            .expect("read is not an error");
-        assert!(
-            mine.is_none(),
-            "another project's result must not leak in - the read must be namespace-scoped"
-        );
-
-        // Sanity: the owner DOES see it, so the None above is the namespace boundary, not a miss.
-        let theirs = result_of_at(&path, "proj-other", "u/impl#0", &StoreSelection::Sqlite)
-            .expect("read is not an error");
-        assert!(
-            theirs.is_some(),
-            "the project that owns the result must see it"
-        );
-    }
-
-    // --- Spec 44, criterion 3: the always-on dash is SESSION-DETACHED from `rigger step` ---
-
-    /// The load-bearing detachment proof: `detach_process_group` puts a spawned child in its OWN
-    /// process group - a group whose PGID equals the child's own PID (it is the group leader) and
-    /// which DIFFERS from this test process's process group. That different group is exactly what
-    /// lets the detached dash survive the teardown of the parent `rigger step` command's process
-    /// group (spec 44): a group-scoped teardown of the parent's group never reaches the child's
-    /// own group. Uses a controlled, fully-reaped `sleep` child so the test is deterministic and
-    /// leaks nothing.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn detach_process_group_places_the_child_in_its_own_process_group() {
-        let parent_pgid = pgid_of(std::process::id());
-
-        let mut cmd = Command::new("sleep");
-        cmd.arg("30")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        subprocess::detach_process_group(&mut cmd);
-        let mut child = cmd.spawn().expect("spawn a controlled child");
-        let child_pgid = pgid_of(child.id());
-
-        assert_eq!(
-            child_pgid,
-            child.id(),
-            "a detached child is its OWN process-group leader (PGID == its PID)"
-        );
-        assert_ne!(
-            child_pgid, parent_pgid,
-            "a detached child is in a DIFFERENT process group than its parent - so a teardown of \
-             the parent command's process group cannot reap it"
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    /// The control that makes the assertion above meaningful: WITHOUT `detach_process_group`, a
-    /// spawned child INHERITS the parent's process group. So the detachment is load-bearing - it
-    /// is precisely what moves the child out of `rigger step`'s group. If this ever failed
-    /// (child already in its own group with no detach), the detached-case assertion would prove
-    /// nothing.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_child_spawned_without_detachment_inherits_the_parent_process_group() {
-        let parent_pgid = pgid_of(std::process::id());
-
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn a controlled child");
-        let child_pgid = pgid_of(child.id());
-
-        assert_eq!(
-            child_pgid, parent_pgid,
-            "a child spawned WITHOUT detachment stays in the parent's process group - the very \
-             group whose teardown would otherwise reap the dash; detach_process_group is what \
-             breaks it out"
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
     }
 
     // --- Spec 69, criterion 2: THE WATCHDOG (`rigger watch --once`, wired end to end) ---
@@ -11815,18 +10966,19 @@ mod tests {
     /// courier invoked from a nested unit worktree is the DOCUMENTED, walk-up-supported shape
     /// [`require_store_dir`] exists for (see its own doc comment: "most plausibly a unit
     /// worktree"), and that worktree's OWN git toplevel is a DIFFERENT directory than the main
-    /// repo a driver's `rigger step` (which always runs from the repo root) stamped the marker
-    /// under - so a cwd-based resolution looks for the marker in a scratch tree nothing ever
-    /// wrote to, while the real marker sits fresh under the actual owning root (spec 83's own
-    /// Problem statement: "the per-spawn liveness marker the sweep would consult is absent
-    /// even while the agent is demonstrably alive").
+    /// repo whose scratch root the `rigger run` host (which always runs from the repo root)
+    /// touches the marker under - so a cwd-based resolution looks for the marker in a scratch
+    /// tree nothing ever wrote to, while the real marker sits fresh under the actual owning
+    /// root (spec 83's own Problem statement: the per-spawn liveness marker is absent even while
+    /// the agent is demonstrably alive).
     ///
     /// This test never touches the process's real cwd (which would race every other parallel
     /// test) - it points a fabricated `StoreLocation` at a tempdir wholly unrelated to wherever
     /// `cargo test` itself runs from, so ANY cwd-based resolution (this crate's own
     /// `git_repo()`) necessarily disagrees with it, exactly reproducing the divergence live
     /// rigger hit - pinned at the real writer (`scratch_root_from_env` + `marker_path`, the
-    /// SAME functions `cmd_step` stamps a wave item's marker path with) and the real reader
+    /// SAME functions `rigger run` resolves its scratch root with and its host touches a
+    /// spawn's marker at) and the real reader
     /// (`liveness_ages_for_wave` via `StoreLocation::repo_root`), never a mock of either side.
     #[test]
     fn store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found(
@@ -11836,10 +10988,10 @@ mod tests {
         std::fs::create_dir_all(&rigger_dir).unwrap();
         let loc = StoreLocation { dir: rigger_dir };
 
-        // The REAL writer computation - byte-identical to what `cmd_step` stamps onto a wave
-        // item's `marker_path` (the absolute path the thin driver frames the worker's `touch`
-        // instruction around): the scratch root resolved from the owning root, then the
-        // single marker-path authority.
+        // The REAL writer computation - byte-identical to the marker path the `rigger run` host
+        // touches for a spawn ([`project_scratch_root`], then the host's `marker_path` call):
+        // the scratch root resolved from the owning root, then the single marker-path
+        // authority.
         let run_id = "r-seam";
         let spawn_id = "u-seam/implementer#0";
         let scratch_root =

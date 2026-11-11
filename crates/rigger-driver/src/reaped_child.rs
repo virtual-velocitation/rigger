@@ -1,8 +1,7 @@
-//! The supervised child-process guard (workspace split: moved from the dash, whose auto-started
-//! child it first wrapped, beside the agent host that reaps through it too), and the one timed
-//! line reader over a child's stream, [`line_channel`]. The root `rigger` crate re-exports the
-//! module as `rigger::reaped_child` and the guard under its historical `rigger::dash::ReapedChild`
-//! path.
+//! The supervised child-process guard the auto-started dashboard and the agent host both reap
+//! through, and the one timed line reader over a child's stream, [`line_channel`]. The root
+//! `rigger` crate re-exports the module as `rigger::reaped_child` and the guard under
+//! `rigger::dash::ReapedChild`.
 
 /// A supervised handle over a long-lived `rigger` child PROCESS - the auto-started
 /// dashboard, and any future `rigger` child a run spawns. When this guard is dropped,

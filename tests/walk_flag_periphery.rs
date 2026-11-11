@@ -11,7 +11,7 @@
 //!
 //! What this file OWNS: the flag each public walk hands and each public code-half function
 //! answers, from outside. NOT OWNED: what a sink does with the flag - the run's sink records it in
-//! its ledger entry, which the step test below reads back, while `rigger graph build` and the lag
+//! its ledger entry, which the run test below reads back, while `rigger graph build` and the lag
 //! advisory take it and ignore it, and what they record is held by the tests that drive the
 //! binary over the same tree.
 
@@ -432,20 +432,20 @@ fn without_the_extraction_pass_neither_walk_hands_a_flagged_sink_any_batch() {
 }
 
 /// Given a project holding the extraction tree's source file and the out-of-line test module it
-/// declares, when the operator runs `rigger step` over a log that records nothing, then the run's
+/// declares, when the operator runs `rigger run` over a log that records nothing, then the run's
 /// sink - handed each batch beside its flag - records one ledger entry per batch the walk mints,
 /// in the walk's order and no derived event, each entry carrying the flag its batch was handed
 /// with: the test module's code batch alone is recorded flagged, under the generation the tree's
 /// fixture records and the blob of the module's bytes.
 #[cfg(feature = "symbols")]
 #[test]
-fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
+fn a_run_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
     use common::cli::{
-        identified_git_project, init_event_log, read_run_events, step_line, write_workflow,
+        identified_git_project, init_event_log, read_run_events, run_on_arms, write_workflow,
     };
     use common::fixtures::{
-        entry_records, generation_ingested, git_hash_object, walked_git_entry_records,
-        TEST_MODULE_BODY,
+        entry_records, generation_ingested, git_hash_object, stand_in_launches,
+        walked_git_entry_records, RECORD_EACH_LAUNCH, TEST_MODULE_BODY,
     };
 
     let dir = identified_git_project();
@@ -462,7 +462,18 @@ fn a_step_records_the_flag_each_batch_was_handed_with_in_its_ledger_entry() {
     let _ = common::git::run_git(root, &["commit", "-q", "-m", "tree"]);
     let walked = walked_git_entry_records(root);
 
-    step_line(root, "the step that ingests the tree");
+    let arms = format!("  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    echo done\n    ;;\n");
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+    assert!(
+        ok,
+        "the run that ingests the tree; stdout: {out}; stderr: {err}"
+    );
+    let launched: Vec<String> = stand_in_launches(&fake.path().join("bin/launches"))
+        .into_iter()
+        .map(|launch| launch.spawn)
+        .collect();
+    assert_eq!(launched, ["a/implementer#0"], "the run launches its stage");
 
     let log = read_run_events(root);
     assert_eq!(entry_records(&log), walked);

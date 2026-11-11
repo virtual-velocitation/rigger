@@ -935,8 +935,8 @@ impl Grounder for Symbols {
     ///    [`ScoredHit::name`] (the entity actually matched) instead closes that gap.
     /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name, Lang)`)
     ///    rather than [`commonness_map`] (raw def+call-ref occurrence count): a single-definition,
-    ///    heavily-referenced entity (`criterion_stable_id`, `sweep_terminal` - this repo's own
-    ///    Done-when audit fixtures) is completely unambiguous and must never be misclassified
+    ///    heavily-referenced entity (`criterion_stable_id` - one of this repo's own Done-when
+    ///    audit fixtures) is completely unambiguous and must never be misclassified
     ///    as tree-wide-common merely because it is called often.
     /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
     ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
@@ -2246,10 +2246,10 @@ mod tests {
 
     /// Spec 92 criterion 3 remediation (adj-u92c3-verdict-reject): the reject's own live repro
     /// against the real project tree - `criterion_stable_id` (1 definition, 37 references) and
-    /// `sweep_terminal` (1 definition, 93 references) both wrongly printed "no entity matches
-    /// strongly". A single-definition entity is UNAMBIGUOUS no matter how many places call it;
-    /// the old cutoff conflated one entity's own reference VOLUME with tree-wide name
-    /// AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
+    /// another single-definition entity (1 definition, 93 references) both wrongly printed "no
+    /// entity matches strongly". A single-definition entity is UNAMBIGUOUS no matter how many
+    /// places call it; the old cutoff conflated one entity's own reference VOLUME with tree-wide
+    /// name AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
     /// shape at a scale that clears `AMBIGUITY_PERCENTILE` under the OLD (broken) raw
     /// occurrence-count cutoff, proving the fix measures ambiguity, not popularity.
     #[test]

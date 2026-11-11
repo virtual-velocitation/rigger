@@ -1,16 +1,16 @@
 //! Periphery (contract / API / integration) tests for spec 101 criterion 3: THE LATEST GENERATION
 //! IS A GROUP LOOKUP. Every recording of a batch - the one ledger entry either ingest sink
-//! records (spec 107), `rigger graph build`'s or the run's `rigger step`'s, and the keyed derived
+//! records (spec 107), `rigger graph build`'s or `rigger run`'s, and the keyed derived
 //! rows of a store recorded before the ledger - carries its batch identity as its `group`, and
 //! both ingest sinks ask the store's group lookup for an identity's latest recorded generation
 //! instead of reading the stream.
 //!
-//! The inside-out proofs count a step's reads over a `:memory:` store inside the crate and pin
+//! The inside-out proofs count a run's reads over a `:memory:` store inside the crate and pin
 //! each backend's lookup through the contract suite. What they are structurally blind to, and
 //! what this file drives, is the shipped composition:
 //!
 //! 1. THE TWO SINKS ACROSS PROCESSES. A `rigger graph build` records a generation, a later
-//!    `rigger step` - another process, another sink - must answer it through the lookup and
+//!    `rigger run` - another process, another sink - must answer it through the lookup and
 //!    record nothing for it, and must record exactly one entry for each batch that moved.
 //! 2. THE UPGRADE. A log recorded before the stamp carries keys but no group. The first ingest
 //!    over it records the live index once, one grouped ledger entry per batch, and every later
@@ -33,10 +33,10 @@ use std::collections::BTreeMap;
 mod ingest_sinks {
     use super::*;
     use common::cli::{
-        graph_build_line, identified_git_project, init_event_log, read_run_events, run_rigger,
-        step_line, with_pre_ledger_run_store, with_run_store, write_workflow,
+        graph_build_line, identified_git_project, init_event_log, read_run_events, run_on_arms,
+        run_rigger, with_pre_ledger_run_store, with_run_store, write_workflow,
     };
-    use common::fixtures::gc_identity;
+    use common::fixtures::{gc_identity, stand_in_launches, RECORD_EACH_LAUNCH};
     use common::git::run_git;
     use rigger::eventstore::Event;
     use std::path::Path;
@@ -64,23 +64,75 @@ mod ingest_sinks {
     /// One batch of a [`walk`]: its identity, its generation and its keys.
     type Batch = (String, String, Vec<String>);
 
-    /// An ingest sink, as the binary ships it: `rigger graph build` or the run's `rigger step`.
-    /// Each records a batch as one ledger entry.
+    /// An ingest sink, as the binary ships it: `rigger graph build` or `rigger run`, whose first
+    /// prompt walks and ingests the tree. Each records a batch as one ledger entry.
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Sink {
         Build,
-        Step,
+        Run,
+    }
+
+    /// What one drive of a sink answered: its stdout, its stderr, its success, and the spawns the
+    /// fake host launched for it, in spawn order (none for a build).
+    struct Driven {
+        out: String,
+        err: String,
+        ok: bool,
+        launches: Vec<String>,
+    }
+
+    /// The fake host's one arm: the run's worker answers its unit, each launch on record.
+    fn worker_arm() -> String {
+        format!("  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    echo done\n    ;;\n")
     }
 
     impl Sink {
-        /// The command that drives the sink.
-        fn args(self) -> &'static [&'static str] {
+        /// Drive the sink over `root` once, a run under a fake host and a scratch root of its own.
+        fn drive(self, root: &Path) -> Driven {
             match self {
-                Sink::Build => &["graph", "build"],
-                Sink::Step => &["step"],
+                Sink::Build => {
+                    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+                    Driven {
+                        out,
+                        err,
+                        ok,
+                        launches: Vec::new(),
+                    }
+                }
+                Sink::Run => {
+                    let scratch = tempfile::tempdir().unwrap();
+                    let (out, err, ok, fake) =
+                        run_on_arms(root, &["run"], scratch.path(), &worker_arm());
+                    let on_record = fake.path().join("bin/launches");
+                    let launches = if on_record.exists() {
+                        stand_in_launches(&on_record)
+                            .into_iter()
+                            .map(|launch| launch.spawn)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    Driven {
+                        out,
+                        err,
+                        ok,
+                        launches,
+                    }
+                }
             }
         }
     }
+
+    /// `rigger run` over `root`, which must succeed (`what` names it in the failure): the spawns
+    /// it launched.
+    fn run_ok(root: &Path, what: &str) -> Vec<String> {
+        let run = Sink::Run.drive(root);
+        assert!(run.ok, "{what}; stdout: {}; stderr: {}", run.out, run.err);
+        run.launches
+    }
+
+    /// The one launch a run that reaches the stage makes: its implementer's first attempt.
+    const LAUNCHED: [&str; 1] = ["a/implementer#0"];
 
     /// The replay keys of what a sink records for `batches`, in order: the one key of each
     /// batch's entry - its identity, its generation and its event count.
@@ -199,8 +251,8 @@ mod ingest_sinks {
         let _ = run_git(root, &["commit", "-q", "-m", "tree"]);
     }
 
-    /// A project that is its own git repo, carrying a one-stage workflow whose spawn a step parks (so
-    /// a step builds a prompt, and so walks and ingests the tree), the store the binary appends to,
+    /// A project that is its own git repo, carrying a one-stage workflow whose spawn a run launches
+    /// (so a run builds a prompt, and so walks and ingests the tree), the store the binary appends to,
     /// and a real design doc that never changes, so the untouched half covers both ingest prefixes.
     fn ingestable_project() -> tempfile::TempDir {
         let dir = identified_git_project();
@@ -281,20 +333,20 @@ mod ingest_sinks {
 
     /// GIVEN a project whose `unchanged.rs`, `changed.rs` and `reverted.rs` a `rigger graph build`
     /// recorded, and whose `reverted.rs` a second build recorded at a newer generation,
-    /// WHEN `changed.rs` is edited, `reverted.rs` goes back to its first content and a `rigger step`
+    /// WHEN `changed.rs` is edited, `reverted.rs` goes back to its first content and a `rigger run`
     /// ingests the tree,
-    /// THEN the step records exactly one ledger entry for the changed file and one for the reverted
+    /// THEN the run records exactly one ledger entry for the changed file and one for the reverted
     /// file, in walk order and no derived event - each entry's generation its batch's, its blob that
     /// of the file's bytes, grouped by its batch identity; the reverted entry names a generation
     /// the log already records; the store's group lookup then answers every walked identity with
-    /// the tree's current generation; and a second `rigger step` - a fresh process meeting every
+    /// the tree's current generation; and a relaunched `rigger run` - a fresh process meeting every
     /// identity for the first time - records nothing at all.
     ///
-    /// The unchanged file and the design doc were recorded by the OTHER sink, so the step sparing them
+    /// The unchanged file and the design doc were recorded by the OTHER sink, so the run sparing them
     /// is the group lookup, and the graph the build folded, answering across sinks and processes,
     /// which no in-crate test can see.
     #[test]
-    fn a_step_over_an_unchanged_a_changed_and_a_reverted_file_appends_exactly_the_moved_batches_grouped(
+    fn a_run_over_an_unchanged_a_changed_and_a_reverted_file_appends_exactly_the_moved_batches_grouped(
     ) {
         let dir = ingestable_project();
         let root = dir.path();
@@ -339,12 +391,15 @@ mod ingest_sinks {
                 .filter(|(answer, (_, g, _))| answer.as_deref() == Some(g.as_str()))
                 .count(),
             now.len() - 2,
-            "before the step, every identity but the changed and the reverted one is recorded at its \
+            "before the run, every identity but the changed and the reverted one is recorded at its \
              current generation"
         );
 
         let before = read_run_events(root).len();
-        step_line(root, "the step that ingests the moved tree");
+        assert_eq!(
+            run_ok(root, "the run that ingests the moved tree"),
+            LAUNCHED
+        );
         let recorded = appended(root, before);
         let moved = batches_where(&now, |identity| {
             identity == gc_identity(CHANGED) || identity == gc_identity(REVERTED)
@@ -353,7 +408,7 @@ mod ingest_sinks {
         assert_eq!(
             common::fixtures::entry_records(&recorded),
             entries_of(root, &moved),
-            "the step records one entry for the changed batch and one for the reverted, from the \
+            "the run records one entry for the changed batch and one for the reverted, from the \
              bytes it read, each under its identity as its group, and no other perception"
         );
         assert_eq!(
@@ -372,15 +427,15 @@ mod ingest_sinks {
             now.iter()
                 .map(|(_, g, _)| Some(g.clone()))
                 .collect::<Vec<_>>(),
-            "after the step the group lookup answers every walked identity at its current generation"
+            "after the run the group lookup answers every walked identity at its current generation"
         );
 
         let settled = read_run_events(root).len();
-        step_line(root, "the step over the settled tree");
+        run_ok(root, "the relaunched run over the settled tree");
         assert_eq!(
             meta_of(&appended(root, settled), META_REPLAY_KEY),
             Vec::<String>::new(),
-            "a later step's lookups answer every batch as recorded, so it records nothing"
+            "a relaunched run's lookups answer every batch as recorded, so it records nothing"
         );
     }
 
@@ -456,15 +511,15 @@ mod ingest_sinks {
 
     /// GIVEN a project whose store cannot answer a group lookup (its group index is unusable) while
     /// every other read still answers,
-    /// WHEN a `rigger step` parks a stage and so walks and ingests the tree,
-    /// THEN the step FAILS rather than parking its stage: the run sink never reads an unanswered
-    /// lookup as "nothing to record", so the step exits non-zero naming the read that failed and the
-    /// store's error, prints no step line, and records no perception;
-    /// AND once the store answers again, the next `rigger step` succeeds and records the whole walk,
-    /// one entry per batch, grouped and in walk order - the failed step recorded nothing that spares
-    /// a batch it never recorded.
+    /// WHEN a `rigger run` reaches a stage and so walks and ingests the tree,
+    /// THEN the run FAILS rather than launching the stage: the run sink never reads an unanswered
+    /// lookup as "nothing to record", so the run exits non-zero naming the read that failed and the
+    /// store's error, launches nothing, and records no perception;
+    /// AND once the store answers again, a relaunched `rigger run` succeeds, launches the stage and
+    /// records the whole walk, one entry per batch, grouped and in walk order - the failed run
+    /// recorded nothing that spares a batch it never recorded.
     #[test]
-    fn a_step_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
+    fn a_run_whose_group_lookup_is_unanswered_fails_and_appends_nothing() {
         let dir = ingestable_project();
         let root = dir.path();
         tree(root, &[(UNCHANGED, "pub fn kept() {}\n")]);
@@ -473,19 +528,28 @@ mod ingest_sinks {
         break_group_index(root);
         let before = read_run_events(root).len();
 
-        let (out, err, ok) = run_rigger(root, &["step"]);
+        let Driven {
+            out,
+            err,
+            ok,
+            launches,
+        } = Sink::Run.drive(root);
         assert!(
             !ok,
-            "a step whose lookup cannot be answered must fail; stdout: {out}; stderr: {err}"
+            "a run whose lookup cannot be answered must fail; stdout: {out}; stderr: {err}"
         );
-        assert_eq!(out.trim(), "", "a failed step prints no step line");
+        assert_eq!(
+            launches,
+            Vec::<String>::new(),
+            "a failed run launches nothing"
+        );
         assert!(
             err.contains(&common::cli::refusal_line(&format!(
                 "conductor: the log's latest generation of {} could not be read: event store: no \
                  query solution",
                 now[0].0
             ))),
-            "the step fails naming the read and the store's lookup error; stderr: {err}"
+            "the run fails naming the read and the store's lookup error; stderr: {err}"
         );
         assert_eq!(
             meta_of(&appended(root, before), META_REPLAY_KEY),
@@ -496,12 +560,15 @@ mod ingest_sinks {
         // Drop the unusable group index, so the next open of the store rebuilds the real one.
         execute(root, "DROP INDEX idx_events_group");
         let failed = read_run_events(root).len();
-        step_line(root, "the step once the store answers again");
+        assert_eq!(
+            run_ok(root, "the relaunched run once the store answers again"),
+            LAUNCHED
+        );
         let recorded = appended(root, failed);
         assert_eq!(
             meta_of(&recorded, META_REPLAY_KEY),
             all,
-            "the next step records every batch the failed step could not, in walk order"
+            "the relaunched run records every batch the failed run could not, in walk order"
         );
         assert_eq!(meta_of(&recorded, META_GROUP), identities_of(&all));
         assert_eq!(
@@ -563,10 +630,9 @@ mod ingest_sinks {
     /// Asserts, of the refused run: it FAILS naming the store's refusal, and every other batch -
     /// the ones after the refusal included - is recorded, grouped and in walk order. Of the next
     /// run: it succeeds and records exactly the refused batch, grouped, because the failed run
-    /// recorded nothing that spares it. Returns both runs' stdout and the refused batch's event
-    /// count, for the sink's own report lines.
-    fn refuse_then_accept(sink: Sink) -> (String, String, usize) {
-        let args = sink.args();
+    /// recorded nothing that spares it. Returns both drives and the refused batch's event count,
+    /// for the sink's own report lines.
+    fn refuse_then_accept(sink: Sink) -> (Driven, Driven, usize) {
         let dir = ingestable_project();
         let root = dir.path();
         let now = tree_with_a_refused_file(root);
@@ -577,14 +643,16 @@ mod ingest_sinks {
         refuse_appends_of(root, &refused);
         let before = read_run_events(root).len();
 
-        let (refused_out, err, ok) = run_rigger(root, args);
+        let refused_drive = sink.drive(root);
         assert!(
-            !ok,
-            "rigger {args:?} whose append is refused must fail; stdout: {refused_out}; stderr: {err}"
+            !refused_drive.ok,
+            "{sink:?} whose append is refused must fail; stdout: {}; stderr: {}",
+            refused_drive.out, refused_drive.err
         );
         assert!(
-            err.contains(REFUSAL),
-            "rigger {args:?} names the store's refusal; stderr: {err}"
+            refused_drive.err.contains(REFUSAL),
+            "{sink:?} names the store's refusal; stderr: {}",
+            refused_drive.err
         );
         let recorded = appended(root, before);
         assert_eq!(
@@ -597,10 +665,11 @@ mod ingest_sinks {
         // Let the store record every append again.
         execute(root, "DROP TRIGGER refuse_group");
         let failed = read_run_events(root).len();
-        let (next_out, err, ok) = run_rigger(root, args);
+        let next_drive = sink.drive(root);
         assert!(
-            ok,
-            "rigger {args:?} once the store accepts appends must succeed; stderr: {err}"
+            next_drive.ok,
+            "{sink:?} once the store accepts appends must succeed; stderr: {}",
+            next_drive.err
         );
         let recorded = appended(root, failed);
         assert_eq!(
@@ -609,7 +678,7 @@ mod ingest_sinks {
             "the next run records exactly the batch the store refused"
         );
         assert_eq!(meta_of(&recorded, META_GROUP), identities_of(&refused_keys));
-        (refused_out, next_out, events_of(&refused_batch))
+        (refused_drive, next_drive, events_of(&refused_batch))
     }
 
     /// GIVEN a project whose store refuses to append one file's batch while every lookup answers,
@@ -621,32 +690,37 @@ mod ingest_sinks {
     /// entry and reports exactly that batch's event count.
     #[test]
     fn a_graph_build_whose_append_is_refused_fails_and_the_next_build_records_the_refused_batch() {
-        let (refused_out, next_out, refused) = refuse_then_accept(Sink::Build);
+        let (refused_drive, next_drive, refused) = refuse_then_accept(Sink::Build);
         assert_eq!(
-            refused_out.trim(),
+            refused_drive.out.trim(),
             "",
             "a failed build reports no ingested count"
         );
         assert_eq!(
-            next_out,
+            next_drive.out,
             graph_build_line(refused, ""),
             "the next build reports exactly the refused batch's events"
         );
     }
 
     /// GIVEN a project whose store refuses to append one file's batch while every lookup answers,
-    /// WHEN a `rigger step` parks a stage and so walks and ingests the tree,
-    /// THEN the step FAILS naming the refusal and prints no step line, and records one entry for
-    /// every other batch;
-    /// AND once the store accepts appends, the next `rigger step` - its lookup asking a store that
-    /// never recorded the batch - records exactly the refused batch's entry and parks its stage.
+    /// WHEN a `rigger run` reaches a stage and so walks and ingests the tree,
+    /// THEN the run FAILS naming the refusal and launches nothing, and records one entry for every
+    /// other batch;
+    /// AND once the store accepts appends, a relaunched `rigger run` - its lookup asking a store
+    /// that never recorded the batch - records exactly the refused batch's entry and launches its
+    /// stage.
     #[test]
-    fn a_step_whose_append_is_refused_fails_and_the_next_step_records_the_refused_batch() {
-        let (refused_out, next_out, _) = refuse_then_accept(Sink::Step);
-        assert_eq!(refused_out.trim(), "", "a failed step prints no step line");
-        assert!(
-            next_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
-            "the next step parks its stage; stdout: {next_out}"
+    fn a_run_whose_append_is_refused_fails_and_a_relaunched_run_records_the_refused_batch() {
+        let (refused_drive, next_drive, _) = refuse_then_accept(Sink::Run);
+        assert_eq!(
+            refused_drive.launches,
+            Vec::<String>::new(),
+            "a failed run launches nothing"
+        );
+        assert_eq!(
+            next_drive.launches, LAUNCHED,
+            "the relaunched run launches its stage"
         );
     }
 
@@ -655,7 +729,7 @@ mod ingest_sinks {
     /// WHEN `rigger graph build` runs over it,
     /// THEN the group lookup found no generation for any identity, so the build records the live
     /// index once, one grouped ledger entry per batch in walk order, and reports every batch
-    /// event; and a `rigger step` after it - the other sink, in another process - records
+    /// event; and a `rigger run` after it - the other sink, in another process - records
     /// nothing, because every lookup now answers the build's entry and the graph holds the
     /// generation the build folded.
     ///
@@ -719,11 +793,11 @@ mod ingest_sinks {
         );
 
         let settled = read_run_events(root).len();
-        step_line(root, "the step after the build");
+        assert_eq!(run_ok(root, "the run after the build"), LAUNCHED);
         assert_eq!(
             meta_of(&appended(root, settled), META_REPLAY_KEY),
             Vec::<String>::new(),
-            "the step answers every batch from the build's entries and records nothing"
+            "the run answers every batch from the build's entries and records nothing"
         );
     }
 
@@ -858,12 +932,12 @@ mod ingest_sinks {
     /// Asserts that of whichever sink runs first; then that the group lookup answers every walked
     /// identity at its current generation, the spared one from an entry; then, of the second
     /// sink, another process: it records nothing, the log and `graph.db` both holding every
-    /// generation. Returns both sinks' stdout and the count of batch events the first recorded,
-    /// for each sink's own report line.
+    /// generation. Returns both drives and the count of batch events the first recorded, for each
+    /// sink's own report line.
     fn sinks_over_an_entry_at_the_current_generation(
         first: Sink,
         second: Sink,
-    ) -> (String, String, usize) {
+    ) -> (Driven, Driven, usize) {
         let dir = ingestable_project();
         let root = dir.path();
         tree(
@@ -924,10 +998,11 @@ mod ingest_sinks {
         assert_ne!(spared_events, 0, "sanity: the spared batch holds events");
 
         let before = read_run_events(root).len();
-        let (first_out, err, ok) = run_rigger(root, first.args());
+        let first_drive = first.drive(root);
         assert!(
-            ok,
-            "{first:?} must succeed; stdout: {first_out}; stderr: {err}"
+            first_drive.ok,
+            "{first:?} must succeed; stdout: {}; stderr: {}",
+            first_drive.out, first_drive.err
         );
         let recorded = appended(root, before);
         assert_eq!(
@@ -957,36 +1032,33 @@ mod ingest_sinks {
         );
 
         let settled = read_run_events(root).len();
-        let (second_out, err, ok) = run_rigger(root, second.args());
+        let second_drive = second.drive(root);
         assert!(
-            ok,
-            "{second:?} must succeed; stdout: {second_out}; stderr: {err}"
+            second_drive.ok,
+            "{second:?} must succeed; stdout: {}; stderr: {}",
+            second_drive.out, second_drive.err
         );
         assert_eq!(
             meta_of(&appended(root, settled), META_REPLAY_KEY),
             Vec::<String>::new(),
             "the second sink records nothing: the log and graph.db both hold every generation"
         );
-        (first_out, second_out, events_of(&now))
+        (first_drive, second_drive, events_of(&now))
     }
 
     /// GIVEN a log holding a ledger entry of one file at the tree's current generation, a stale
     /// entry of another, and a third file whose entry a derived row of an old generation follows,
     /// none folded into `graph.db`,
-    /// WHEN `rigger step` ingests the tree,
-    /// THEN the step parks its stage and records one entry for every batch, the first file's
+    /// WHEN `rigger run` ingests the tree,
+    /// THEN the run launches its stage and records one entry for every batch, the first file's
     /// among them - the log holds its generation and `graph.db` does not - and a
     /// `rigger graph build` after it records nothing and reports nothing ingested.
     #[test]
-    fn a_step_records_again_the_generation_the_log_holds_and_graph_db_does_not() {
-        let (step_out, build_out, _) =
-            sinks_over_an_entry_at_the_current_generation(Sink::Step, Sink::Build);
-        assert!(
-            step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
-            "the step parks its stage; stdout: {step_out}"
-        );
+    fn a_run_records_again_the_generation_the_log_holds_and_graph_db_does_not() {
+        let (run, build, _) = sinks_over_an_entry_at_the_current_generation(Sink::Run, Sink::Build);
+        assert_eq!(run.launches, LAUNCHED, "the run launches its stage");
         assert_eq!(
-            build_out,
+            build.out,
             graph_build_line(0, ""),
             "the build after it reports nothing ingested"
         );
@@ -996,19 +1068,19 @@ mod ingest_sinks {
     /// WHEN `rigger graph build` ingests the tree,
     /// THEN the build records one entry for every batch, the first file's among them - the log
     /// holds its generation and `graph.db` does not - and reports every batch event, and a
-    /// `rigger step` after it parks its stage and records nothing.
+    /// `rigger run` after it launches its stage and records nothing.
     #[test]
     fn a_graph_build_records_again_the_generation_the_log_holds_and_graph_db_does_not() {
-        let (build_out, step_out, events) =
-            sinks_over_an_entry_at_the_current_generation(Sink::Build, Sink::Step);
+        let (build, run, events) =
+            sinks_over_an_entry_at_the_current_generation(Sink::Build, Sink::Run);
         assert_eq!(
-            build_out,
+            build.out,
             graph_build_line(events, ""),
             "the build reports every batch event, the spared batch's among them"
         );
-        assert!(
-            step_out.starts_with("{\"wave\":[{\"id\":\"a/implementer#0\""),
-            "the step after it parks its stage; stdout: {step_out}"
+        assert_eq!(
+            run.launches, LAUNCHED,
+            "the run after it launches its stage"
         );
     }
 }

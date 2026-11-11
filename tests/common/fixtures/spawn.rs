@@ -218,7 +218,21 @@ pub struct StandInLaunch {
     pub cwd: String,
     /// The arguments it was started with.
     pub argv: Vec<String>,
+    /// The system prompt it was served, when its arm recorded it ([`RECORD_EACH_LAUNCH`]).
+    pub system_prompt: Option<String>,
+    /// Its first user message, the stream-json line carrying the task it was served
+    /// ([`first_message_task`]), when its arm recorded it ([`RECORD_EACH_LAUNCH`]).
+    pub first_message: Option<String>,
 }
+
+/// The opening of an arm of the `claude-code-arms-agent.sh` stand-in whose launches all stay on
+/// record, through the stand-in's `record_launch`: the launch leaves its argv, working directory
+/// and spawn in a directory of its own under `launches`, with the system prompt and first user
+/// message it was served beside them, which [`stand_in_launches`] reads back.
+pub const RECORD_EACH_LAUNCH: &str = r#"    record_launch "$here/launches" "$@"
+    printf '%s' "$sp" > "$here/launches/$$/system-prompt"
+    printf '%s' "$first" > "$here/launches/$$/first-message"
+"#;
 
 /// Each launch put on record under `dir`, in the order of its spawn.
 pub fn stand_in_launches(dir: &std::path::Path) -> Vec<StandInLaunch> {
@@ -227,15 +241,37 @@ pub fn stand_in_launches(dir: &std::path::Path) -> Vec<StandInLaunch> {
         .map(|launch| {
             let launch = launch.unwrap().path();
             let read = |name: &str| std::fs::read_to_string(launch.join(name)).unwrap();
+            let served = |name: &str| std::fs::read_to_string(launch.join(name)).ok();
             StandInLaunch {
                 spawn: read("spawn"),
                 cwd: read("cwd").trim_end().to_string(),
                 argv: recorded_argv(&launch.join("argv")),
+                system_prompt: served("system-prompt"),
+                first_message: served("first-message"),
             }
         })
         .collect();
     launches.sort_by(|a, b| a.spawn.cmp(&b.spawn));
     launches
+}
+
+/// The task the one launch of `spawn` recorded under `dir` was served, its first user message's
+/// content ([`first_message_task`]): panics naming the spawns on record unless exactly one launch
+/// ran as `spawn` and its arm recorded the message.
+pub fn served_task(dir: &std::path::Path, spawn: &str) -> String {
+    let launches = stand_in_launches(dir);
+    let named: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+    match launches
+        .iter()
+        .filter(|l| l.spawn == spawn)
+        .collect::<Vec<_>>()[..]
+    {
+        [StandInLaunch {
+            first_message: Some(first),
+            ..
+        }] => first_message_task(first),
+        _ => panic!("one launch of {spawn} recording its task; on record: {named:?}"),
+    }
 }
 
 /// Write `dir/claude-arms`, the shell `case` over the system prompt `$sp` the checked-in

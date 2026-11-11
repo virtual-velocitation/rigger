@@ -76,15 +76,6 @@ impl Drop for CwdGuard {
     }
 }
 
-/// The process-group id of live process `pid`, read from `/proc/<pid>/stat`.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub fn pgid_of(pid: u32) -> u32 {
-    rigger::reap::stat_field_after_comm(pid, 2)
-        .unwrap_or_else(|| panic!("/proc/{pid}/stat has a pgrp field after comm"))
-        .parse()
-        .expect("pgrp is a base-10 integer")
-}
-
 /// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL escalation
 /// can end it - exercising the full SIGTERM-then-SIGKILL reap, not just a plain `sleep` a bare
 /// SIGTERM would already end.

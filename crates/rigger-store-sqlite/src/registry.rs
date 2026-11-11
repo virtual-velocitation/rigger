@@ -83,12 +83,11 @@ impl StoreIdentity {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Writer {
-    /// A process that drives the run for as long as it lives - `rigger run` and `rigger step` -
-    /// re-stamping from a heartbeat thread while it holds the
-    /// run, so its `heartbeat_ms` is also its driver-liveness stamp. The DEFAULT, and what an
-    /// entry written before the role was recorded reads as: an unknown writer is taken for a
-    /// live driver, which can only delay a dead-driver judgment by the idle window, never
-    /// approve one.
+    /// A process that drives the run for as long as it lives - `rigger run` - re-stamping from
+    /// a heartbeat thread while it holds the run, so its `heartbeat_ms` is also its
+    /// driver-liveness stamp. The DEFAULT, and what an entry written before the role was
+    /// recorded reads as: an unknown writer is taken for a live driver, which can only delay a
+    /// dead-driver judgment by the idle window, never approve one.
     #[default]
     Driver,
     /// A one-shot courier verb (`emit`, `result`, `progress`, `hook stop-failure`) re-stamping
@@ -242,12 +241,13 @@ static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 ///
 /// The temp file name is PER-WRITER unique (`.{id}.{pid}.{nonce}.tmp`), not the shared `.{id}.tmp`:
 /// two writers of the SAME id can now run concurrently - a run driver's periodic heartbeat thread
-/// (§50) overlapping a `rigger step`, or two `rigger` invocations for one project+store - and a
-/// shared temp path would let one writer's `rename` fire while the other's `write` was mid-flight,
-/// so the second `rename` would hit a temp its peer already moved away (`ENOENT`) and fail the
-/// write. A unique temp per writer removes the shared name they could race on; both renames target
-/// the same final path, which is itself an atomic last-writer-wins swap. A reader only ever reads
-/// `*.json`, so the `.tmp` files are invisible to it (and a crashed writer's leftover temp likewise).
+/// (§50) overlapping a courier verb's re-stamp, or two `rigger` invocations for one
+/// project+store - and a shared temp path would let one writer's `rename` fire while the other's
+/// `write` was mid-flight, so the second `rename` would hit a temp its peer already moved away
+/// (`ENOENT`) and fail the write. A unique temp per writer removes the shared name they could race
+/// on; both renames target the same final path, which is itself an atomic last-writer-wins swap. A
+/// reader only ever reads `*.json`, so the `.tmp` files are invisible to it (and a crashed writer's
+/// leftover temp likewise).
 ///
 /// A COURIER's write carries forward the driver heartbeat the entry on disk already holds
 /// ([`carry_driver_heartbeat`]), so couriers re-stamping discovery never erase the record of a

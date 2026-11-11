@@ -255,7 +255,7 @@ struct Fence {
 }
 
 /// Create a real `kind` worktree at `<scratch root>/<leaf>` on `branch` through the SAME
-/// `Worktree::create` entry point `rigger step` uses (not a hand-built directory), run the real
+/// `Worktree::create` entry point `rigger run` uses (not a hand-built directory), run the real
 /// fenced courier `gate` in it with the fence `fence` derives from the worktree dir, then tear it
 /// down through the real `Worktree::remove` path (the production teardown entry point - never a
 /// call into the private `reclaim_cache_sibling`). Asserts the courier succeeded and left a real

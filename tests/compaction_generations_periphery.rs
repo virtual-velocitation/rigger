@@ -16,7 +16,7 @@
 //!      counts read back by cause, `graph.db.lock`, and a run live beside it: `rigger setup`
 //!      refuses a new rebuild - one whose pay starts a fresh shadow and folds the log from its
 //!      start: a cause owed beside no shadow, a tail standing or not, or a standing shadow that is
-//!      not resumable, an older-rule binary's among them - while a `rigger step` holds
+//!      not resumable, an older-rule binary's among them - while a `rigger run` holds
 //!      `.rigger/step.lock`, an unanswered spawn's liveness marker on the log setup selects is
 //!      inside its bound or a driver registration of the store heartbeats inside the idle window,
 //!      leaving the rebuild owed and its standing state as it stood, and beside a held step lock
@@ -1776,7 +1776,7 @@ fn live_reasons(err: &str, step: bool, spawn: bool, registered: bool) -> String 
     if registered {
         reasons.push(format!(
             "1 driver registration(s) for this project's store in the machine-global instance \
-             registry (spec 50) heartbeat within the last {}s - a `run`/`step` may be \
+             registry (spec 50) heartbeat within the last {}s - a `rigger run` may be \
              advancing this run elsewhere on this machine",
             idle_window_secs()
         ));
@@ -1811,13 +1811,13 @@ fn driver_traces(root: &Path, spawn: bool, registered: bool) -> DriverTraces {
 /// `standing` says - whose rebuild pay is NEW, starting a fresh shadow and folding the log from
 /// its start, for the cause the line `cause` names, or for none the file owes when `cause` is
 /// none, and whose run [`RUN`] left [`SPAWN`] unanswered, when the operator runs `rigger setup`
-/// while the run is live by the signals a case names - a `rigger step` holding
+/// while the run is live by the signals a case names - a `rigger run` holding
 /// `.rigger/step.lock` when `step`, the spawn's liveness marker touched just now when `spawn` and
 /// the store's driver registration heard from just now when `registered`, each other trace
 /// [`driver_traces`] leaves dead - then setup refuses the rebuild beside the live run: it exits
 /// non-zero with the refusal naming exactly the live signals and the way past it, says nothing of
 /// rebuilding, and writes nothing to `graph.db` or to the shadow beside it, the rebuild state
-/// standing as it stood; and once the step releases the lock and every trace the driver left is
+/// standing as it stood; and once the run releases the lock and every trace the driver left is
 /// dead, `rigger setup` pays the rebuild, printing the `cause` line, when there is one, before it
 /// says it rebuilt, and the file is exactly the graph a fresh fold of the log reaches.
 fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
@@ -1871,9 +1871,9 @@ fn rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
 }
 
 rigger::test_cases! {
-    /// A `rigger step` holds its lock, the spawn's marker and the registration dead: the refusal
+    /// A `rigger run` holds its lock, the spawn's marker and the registration dead: the refusal
     /// names the held lock alone.
-    rigger_setup_refuses_a_new_rebuild_while_a_step_holds_its_lock_and_pays_it_once_released:
+    rigger_setup_refuses_a_new_rebuild_while_a_run_holds_its_lock_and_pays_it_once_released:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |_| {},
             (false, false),
@@ -1919,9 +1919,9 @@ rigger::test_cases! {
         );
     /// A rebuild stopped after its swap left its tail standing, and the swapped-in file records
     /// the fold rule before the current one, so it owes that rule's rebuild: the pay starts a
-    /// fresh shadow rather than finishing the tail, and with a `rigger step` holding its lock the
+    /// fresh shadow rather than finishing the tail, and with a `rigger run` holding its lock the
     /// refusal names the held lock alone.
-    rigger_setup_refuses_an_older_rule_cause_over_a_standing_tail_while_a_step_holds_its_lock:
+    rigger_setup_refuses_an_older_rule_cause_over_a_standing_tail_while_a_run_holds_its_lock:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |store| {
                 store.stop_a_rebuild_at_read(2);
@@ -1935,8 +1935,8 @@ rigger::test_cases! {
         );
     /// A rebuild stopped before its swap left its shadow standing as a rule-1 binary leaves one,
     /// recording no fold rule, so the pay discards it and starts a fresh shadow, and with a
-    /// `rigger step` holding its lock the refusal names the held lock alone.
-    rigger_setup_refuses_to_refold_a_shadow_an_older_rule_binary_left_while_a_step_holds_its_lock:
+    /// `rigger run` holding its lock the refusal names the held lock alone.
+    rigger_setup_refuses_to_refold_a_shadow_an_older_rule_binary_left_while_a_run_holds_its_lock:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |store| {
                 store.stop_a_rebuild_at_read(1);
@@ -1951,8 +1951,8 @@ rigger::test_cases! {
     /// A rebuild stopped as it opened its shadow, before it opened its rebuild state there, left
     /// the shadow recording the current fold rule with no run attribution to resume from, beside
     /// the file that owes the older rule's rebuild: the pay discards it and starts a fresh shadow,
-    /// and with a `rigger step` holding its lock the refusal names the held lock alone.
-    rigger_setup_refuses_to_refold_a_shadow_holding_no_rebuild_state_while_a_step_holds_its_lock:
+    /// and with a `rigger run` holding its lock the refusal names the held lock alone.
+    rigger_setup_refuses_to_refold_a_shadow_holding_no_rebuild_state_while_a_run_holds_its_lock:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |store| leave_a_shadow_with_no_rebuild_state(store.root()),
             (true, false),
@@ -1964,9 +1964,9 @@ rigger::test_cases! {
     /// An earlier setup rebuilt the file, so it owes nothing and the pay names no cause, and a
     /// rebuild a binary of a newer fold rule stopped before its swap left its shadow standing, its
     /// rebuild state whole: the shadow was not folded under the current rule, so the pay discards
-    /// it and starts a fresh shadow, and with a `rigger step` holding its lock the refusal names
+    /// it and starts a fresh shadow, and with a `rigger run` holding its lock the refusal names
     /// the held lock alone.
-    rigger_setup_refuses_to_refold_a_newer_rule_shadow_beside_a_file_owing_nothing_while_a_step_holds_its_lock:
+    rigger_setup_refuses_to_refold_a_newer_rule_shadow_beside_a_file_owing_nothing_while_a_run_holds_its_lock:
         rigger_setup_refuses_a_new_rebuild_while_the_run_is_live(
             |store| {
                 setup_ok(store.root(), &[]);
@@ -2018,7 +2018,7 @@ fn rigger_setup_refuses_a_new_rebuild_in_a_store_whose_owning_root_has_no_utf8_p
 /// Given an operator store whose `graph.db` a release at fold rule 1 folded, in the state `stand`
 /// leaves it - its rebuild state, a shadow beside the file and a rebuild cursor in it, as
 /// `standing` says, standing work its pay finishes without starting a fresh shadow, or none -
-/// when the operator runs `rigger setup` while a `rigger step` holds `.rigger/step.lock`, then
+/// when the operator runs `rigger setup` while a `rigger run` holds `.rigger/step.lock`, then
 /// setup is not refused: it says it rebuilds and that it rebuilt exactly
 /// as `lines` says, and leaves the file holding no rebuild state, under the current fold rule,
 /// its `caught_up` cursor at the log's head and exactly the graph a fresh fold of the log reaches.
@@ -4814,7 +4814,7 @@ fn setup_whose_rebuild_meets_a_storage_error_fails_and_the_next_setup_folds_the_
     the_next_setup_pays_the_missing_event(root, lost);
 }
 
-/// Given a project whose run stream grew only through rigger's own verbs - `rigger step` minting
+/// Given a project whose run stream grew only through rigger's own verbs - `rigger run` minting
 /// the run and driving its unit to an escalation, and `rigger resume-unit` granting it another
 /// attempt - when the operator runs `rigger setup`, then setup rebuilds nothing: every event a verb
 /// appended is folded, so the graph's ledger holds every position the log does, and nothing was
@@ -4869,7 +4869,7 @@ fn resume_unit_into_a_graph_it_cannot_open_is_on_the_log_and_reported_not_folded
 }
 
 /// A git project scaffolded with the escalating one-unit workflow, stopping at the grounder
-/// ([`stopping_at_the_grounder`]): a `--fresh` step or run mints its boundary, re-pins the
+/// ([`stopping_at_the_grounder`]): a `--fresh` run mints its boundary, re-pins the
 /// definition and then fails at the grounder, before it drives anything or serves stdin.
 fn fresh_run_project() -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
@@ -4879,8 +4879,7 @@ fn fresh_run_project() -> tempfile::TempDir {
     dir
 }
 
-/// Given a project, when the operator begins a new run with `args` (`rigger step --fresh`, or
-/// `rigger run --fresh` on either driver), then the boundary it mints and every other event it
+/// Given a project, when the operator begins a new run with `args` (`rigger run --fresh`), then the boundary it mints and every other event it
 /// appends before it drives are folded: the graph's ledger holds every position the log does.
 fn a_fresh_runs_mint_is_folded(args: &[&str]) {
     let dir = fresh_run_project();
@@ -4934,17 +4933,9 @@ fn a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
 }
 
 rigger::test_cases! {
-    /// `rigger step --fresh` mints its boundary through the step's folding store.
-    a_fresh_steps_mint_is_folded: a_fresh_runs_mint_is_folded(&["step", "--fresh"]);
     /// `rigger run --fresh` mints its boundary through a folding store.
     a_fresh_run_mints_through_a_folding_store:
         a_fresh_runs_mint_is_folded(&["run", "--base", "HEAD", "--fresh"]);
-    /// `rigger step --fresh` opens the graph before it mints.
-    a_fresh_step_on_an_owed_graph_refuses_before_it_mints:
-        a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
-            &["step", "--fresh"],
-            "step",
-        );
     /// `rigger run --fresh` opens the graph before it mints.
     a_fresh_run_on_an_owed_graph_refuses_before_it_mints:
         a_fresh_run_on_a_graph_that_owes_its_rebuild_refuses_before_it_mints(
@@ -5039,33 +5030,37 @@ fn a_graph_build_behind_a_held_lock_folds_its_entries_once_it_is_released() {
     );
 }
 
-/// Given a run whose `graph.db` another writer holds locked past the busy timeout while `rigger
-/// step` records the run's events, when the step runs, then it waits under the ceiling, advances
-/// the run and, once the lock is released, folds every event it recorded and says nothing of the
-/// fold; no `graph.db.owed` is written (spec 124, AN APPENDER WAITS UNDER THE CEILING AND NEVER
-/// MARKS).
+/// Given a project whose `graph.db` holds a folded decision and another writer holds locked past
+/// the busy timeout from before `rigger run` starts, when the run drives its one `on_pass: none`
+/// unit to verified, then it waits under the
+/// ceiling, records every event of the run and, once the lock is released, folds each of them and
+/// says nothing of the fold; no `graph.db.owed` is written (spec 124, AN APPENDER WAITS UNDER THE
+/// CEILING AND NEVER MARKS).
 #[test]
-fn a_step_behind_a_held_lock_folds_the_events_it_records_once_it_is_released() {
+fn a_run_behind_a_held_lock_folds_the_events_it_records_once_it_is_released() {
     let dir = common::cli::temp_repoless_project();
     let root = dir.path();
     common::cli::seed_store(root);
     common::cli::write_workflow(root, "");
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok && !err.contains("run event(s)"),
-        "the first step parks the stage's spawn and, its events folded, says nothing of the \
-         fold; stdout: {out} stderr: {err}"
-    );
-    let (_, err, ok) = run_rigger(root, &["result", "a/implementer#0", "done"]);
-    assert!(ok, "the spawn's result is recorded; stderr: {err}");
-
+    emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
-    let (out, err, ok) = with_graph_locked_for(&graph_db, || run_rigger(root, &["step"]));
+    let (out, err, ok, _fake) = with_graph_locked_for(&graph_db, || {
+        common::cli::run_on_arms(
+            root,
+            &["run"],
+            &common::default_scratch_root(root),
+            "  *\"Do the unit.\"*)\n    echo \"did $RIGGER_SPAWN\"\n    ;;\n",
+        )
+    });
     assert_eq!(
-        (ok, out.as_str(), err.contains("run event(s)")),
-        (true, "{\"wave\":[],\"done\":true}\n", false),
-        "the step replays the result, finishes the run and, its events folded once the lock was \
-         released, says nothing of the fold; stderr: {err}"
+        (
+            ok,
+            out.contains("  a                    verified\n"),
+            err.contains("run event(s)")
+        ),
+        (true, true, false),
+        "the run verifies its unit and, its events folded once the lock was released, says \
+         nothing of the fold; stdout: {out} stderr: {err}"
     );
     assert_eq!(
         (unfolded_run_events(root), mark_stands_beside(&graph_db)),

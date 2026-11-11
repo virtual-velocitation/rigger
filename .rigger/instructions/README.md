@@ -19,5 +19,5 @@ to control their order.
 
 Run `rigger instructions` to read exactly what your agents are held to.
 
-These files are part of a run's definition pin: editing one mid-run halts the next step
+These files are part of a run's definition pin: editing one mid-run halts the run
 as a definition drift. Edit them between runs, or continue with `--rebase-definition`.

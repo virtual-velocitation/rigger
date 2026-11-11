@@ -1192,17 +1192,16 @@ impl EventStore for Store {
         super::refuse_derived(events)?;
         let mut guard = self.conn.lock().unwrap();
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
-        // front so a second connection (a separate process - the death courier racing
-        // the worker's self-report) QUEUES on `busy_timeout` instead of starting a read
-        // snapshot it must later upgrade. A deferred read->write upgrade under WAL with a
-        // concurrent writer cannot be resolved by the busy handler (SQLITE_BUSY_SNAPSHOT)
-        // and surfaces as a hard `database is locked` backend error; taking the write lock
-        // immediately makes concurrent appenders serialize cleanly, so a stale expectation
-        // surfaces as the port's `Error::Conflict` (which callers retry) and never as a
-        // spurious lock error. This is what the module header promises ("concurrent
-        // appenders queue instead of deadlocking on the SQLITE_BUSY class") and what the
-        // optimistic-concurrency contract needs to hold across connections, not just
-        // within one in-process `Store`.
+        // front so a second connection (a separate process - the host's liveness-fault
+        // record racing the worker's self-report) QUEUES on `busy_timeout` instead of
+        // starting a read snapshot it must later upgrade. A deferred read->write upgrade
+        // under WAL with a concurrent writer cannot be resolved by the busy handler
+        // (SQLITE_BUSY_SNAPSHOT) and surfaces as a hard `database is locked` backend error; taking
+        // the write lock immediately makes concurrent appenders serialize cleanly, so a stale
+        // expectation surfaces as the port's `Error::Conflict` (which callers retry) and never as a
+        // spurious lock error. This is what the module header promises ("concurrent appenders queue
+        // instead of deadlocking on the SQLITE_BUSY class") and what the optimistic-concurrency
+        // contract needs to hold across connections, not just within one in-process `Store`.
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
@@ -1912,8 +1911,9 @@ mod tests {
     #[test]
     fn concurrent_cross_connection_appends_serialize_without_spurious_lock_errors() {
         // Two SEPARATE connections (two `Store` handles on one on-disk db - the
-        // two-process shape of the death courier racing a worker's self-report) append
-        // to the SAME stream at once, with NO shared in-process mutex to serialize them.
+        // two-process shape of a host's liveness-fault record racing a worker's
+        // self-report) append to the SAME stream at once, with NO shared in-process mutex to
+        // serialize them.
         // Under the default BEGIN DEFERRED a read->write upgrade with a concurrent writer
         // under WAL cannot be resolved by `busy_timeout` (SQLITE_BUSY_SNAPSHOT) and
         // surfaces as a hard `database is locked` backend error the optimistic layer

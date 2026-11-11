@@ -41,7 +41,7 @@ pub type UnitStatuses = BTreeMap<String, &'static str>;
 /// and the statusline"): every [`AttentionEntry`] CURRENTLY outstanding, read
 /// fresh from the log on every call.
 ///
-/// This is deliberately a different computation from `rigger step`'s push-side
+/// This is deliberately a different computation from the push-side
 /// [`ledger::RunState::attention`] crossings: that field fires ONCE, on the
 /// transition a single live `conductor::run` call observed (spec 69's "once
 /// per threshold crossing", for a driver's narrator) and cannot be
@@ -71,8 +71,8 @@ impl Dock {
 /// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's five crossing
 /// signals - the two that are genuinely crossings with no persisting "still true" state of their
 /// own (the budget's final-tenth threshold, a frontier stall reported only once) stay push-side,
-/// on `rigger step`'s wire, not here, and spec 105's `released` stays off the dock too
-/// (spec 106's `rigger attention --follow` delivers it, never a step's wire):
+/// not here, and spec 105's `released` stays off the dock too (spec 106's
+/// `rigger attention --follow` delivers it):
 ///
 /// - **held** - the run's open hold, when its latest `RunHeld` carries `needs_person` (an
 ///   operator hold's does): the last hold [`ledger::holds`] walks while it is unreleased, listed
@@ -1181,8 +1181,8 @@ mod tests {
 
     /// PALETTE_COMMANDS, agents: one entry per DISTINCT spawn id a recorded
     /// `SpawnRequested` names - proven with two units' worth of spawns AND a repeated
-    /// round (the same id parked twice, exactly what a courier retry or a replayed
-    /// step can do) to prove this dedups by id itself, sorted, rather than emitting a
+    /// round (the same id parked twice, exactly what a retried or a resumed run can
+    /// do) to prove this dedups by id itself, sorted, rather than emitting a
     /// row per event.
     #[test]
     fn palette_commands_lists_every_distinct_recorded_agent() {

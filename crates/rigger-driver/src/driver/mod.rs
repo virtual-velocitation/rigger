@@ -1,7 +1,8 @@
 //! Agent drivers: adapters implementing the conductor's AgentDriver port. `claude_code` is the
 //! headless-session host `rigger run` and `rigger critique` launch their agents through;
-//! `cli` is the blocking one-shot host `rigger canary` probes with; `replay` is the stepwise
-//! path `rigger step` drives.
+//! `cli` is the blocking one-shot host `rigger canary` probes with; `replay` answers a spawn
+//! from the run's log or parks an unrecorded one, the read the headless host makes before
+//! every launch (`replay::read_or_park`).
 //!
 //! Both process hosts launch a headless `claude` session, so what such a session needs
 //! beyond its protocol (permissions, MCP server, settings, helpers) is composed here once,

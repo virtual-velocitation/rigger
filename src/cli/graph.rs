@@ -621,7 +621,7 @@ fn locate_definition_extent(
 /// The light lane compiles no extraction pass, so `graph build` there records nothing, degrades
 /// to an empty graph (it still creates the store) and exits 0, never an error.
 fn cmd_graph_build(_args: &[String]) -> Res {
-    // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
+    // Bootstrap the store like `run` does (create-or-open under the cwd's `.rigger/`), NOT the
     // courier `require_store_dir` walk-up that refuses when none exists.
     std::fs::create_dir_all(RIGGER_DIR)?;
     let selection = store_selection(None, None)?;
@@ -1064,13 +1064,13 @@ pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
 /// the append), is a clear error to stderr with a non-zero exit.
 pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
-    // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`
-    // is otherwise unattributable once the conductor replays it (the conductor never touched
+    // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. An agent's `rigger emit` is
+    // otherwise unattributable once the conductor reads it back (the conductor never touched
     // it), so the verdict-channel-mismatch backstop (spec 18, unit 3) could not tell a GATING
-    // adjudicator's OWN approve from a concurrent sibling's by position alone. The workflow
-    // threads the worker's own spawn id here, exactly as the cli emit callback and the workflow
-    // MCP server stamp their emits, so the recording the ReplayDriver later folds already
-    // names its emitting spawn and is correlated by identity, never a shared-stream position.
+    // adjudicator's OWN approve from a concurrent sibling's by position alone. A caller threads
+    // the worker's own spawn id here, exactly as the cli emit callback and the spawn MCP server
+    // stamp their emits, so the recording the conductor later reads already names its emitting
+    // spawn and is correlated by identity, never a shared-stream position.
     // Without the flag, the spawn id the host exported to its worker
     // ([`SPAWN_ENV`](rigger::driver::SPAWN_ENV)) stamps the emit, so an agent session's emit is
     // attributed even when it never passes the flag; the operator's own shell exports none.

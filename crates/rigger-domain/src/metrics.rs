@@ -38,8 +38,8 @@
 //!   the ledger fold ignores it) that this fold counts DIRECTLY as one review reject.
 //!   It is an EXACT signal (the conductor emits it only on an adjudicator reject), not
 //!   the lossy empty-`agent` heuristic, and being an in-process `UnitStatus` it
-//!   survives on a live driver - unlike the adjudicator `SpawnResult`, which only the
-//!   courier records.
+//!   survives on a live driver - unlike the adjudicator `SpawnResult`, which only an
+//!   out-of-process driver records.
 //!
 //! The empty-`agent` signal is a **lossy heuristic, not an exact classifier**: an
 //! empty agent is *necessary* for a fan-out / review-only stage but not
@@ -73,15 +73,14 @@
 //!   survival cannot be computed without a recorded verdict. This is a real per-driver
 //!   limitation, not a defect: the render discloses it (an all-zero-upheld panel over a
 //!   run with findings but no recorded verdicts is this path, not reviewer failure).
-//! - **Out-of-process (`rigger run`'s headless host, the courier path):** the
+//! - **Out-of-process (`rigger run`'s headless host):** the
 //!   reviewer runs as its own process and emits its finding through `rigger_emit` or
 //!   `rigger emit`, which stamp no `META_ACTOR`; the adjudicator's verdict IS recorded, as
-//!   the `SpawnResult` the host records from the session's stream or the courier writes with
-//!   `rigger result`. So the finding's own **`by`** field is the attribution, and the
-//!   conductor's `review_protocol` makes every out-of-process reviewer carry its ROLE
-//!   token there. On THIS path attribution and the verdict co-occur, so all three folds
-//!   produce real values - which is the single production path the folds are measured on
-//!   (see `courier_path_single_log_feeds_all_three_actor_keyed_folds`).
+//!   the `SpawnResult` the host records from the session's stream or `rigger result` writes. So the
+//!   finding's own **`by`** field is the attribution, and the conductor's `review_protocol` makes
+//!   every out-of-process reviewer carry its ROLE token there. On THIS path attribution and the
+//!   verdict co-occur, so all three folds produce real values - which is the single production path
+//!   the folds are measured on (see `courier_path_single_log_feeds_all_three_actor_keyed_folds`).
 //!
 //! Carrying the reviewer's **role token** (`lens:<agent-id>` / `adversary`, with a `@k` suffix
 //! from a kind's second step on, the same [`crate::spawn::spawn_id`] role the per-tier
@@ -149,13 +148,12 @@ pub const META_MODEL_ALIAS: &str = "model_alias";
 
 /// The metadata key carrying the RESOLVED model id that actually ran a spawn (spec 05
 /// line 52). Unlike the requested [`META_MODEL_ALIAS`], the resolved id is known only
-/// AFTER the agent runs: the worker reports it via `rigger result --meta
-/// '{"resolved_model": ...}'` (see [`spawn::META_RESOLVED_MODEL`](crate::spawn::META_RESOLVED_MODEL)),
-/// it lands in the spawn's [`SpawnResult`](crate::spawn::SpawnResult) `meta`, the replay
-/// driver surfaces it on `AgentResult::resolved_model`, and the conductor copies it here
-/// onto the unit events it emits once it has consumed that spawn's result (green/verified
-/// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
-/// worker reported none.
+/// AFTER the agent runs: the headless host reads it off the session's stream (see
+/// [`spawn::META_RESOLVED_MODEL`](crate::spawn::META_RESOLVED_MODEL)), it lands in the spawn's
+/// [`SpawnResult`](crate::spawn::SpawnResult) `meta`, the driver surfaces it on
+/// `AgentResult::resolved_model`, and the conductor copies it here onto the unit events it
+/// emits once it has consumed that spawn's result (green/verified for the implementer,
+/// reviewed for the adjudicator). Empty (and so omitted) when none was reported.
 pub const META_MODEL_RESOLVED: &str = "model_resolved";
 
 /// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
@@ -179,7 +177,7 @@ pub const META_WORKTREE_SHA: &str = "worktree_sha";
 /// exactly as the single-lane `verified`-then-`UnitFailed` pair is, WITHOUT a resume-corrupting
 /// lifecycle status (addresses adv-u13-speculation-losers-invisible-to-review-metrics). It is
 /// recorded IN-PROCESS by the conductor (like every `UnitStatus`), so it survives on a live
-/// driver - unlike the adjudicator `SpawnResult` verdict, which only the courier/replay path
+/// driver - unlike the adjudicator `SpawnResult` verdict, which only the out-of-process path
 /// records (adj-u1-verdict-reject-disjoint-attribution), so a fold keyed on that would be
 /// always-zero in production.
 pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
@@ -522,7 +520,7 @@ pub struct ReviewQuality {
     /// upheld findings, every step of a kind under its tier, sorted by tier.
     pub tier_cost: BTreeMap<String, TierCost>,
     /// Adjudicator verdicts RECORDED as a `SpawnResult` and parsed for their upheld/cause
-    /// (the headless host and the courier path record these; the cli driver does not).
+    /// (the headless host and `rigger result` record these; the cli driver does not).
     /// This is the numerator source for every upheld-based fold, so when it is `0` there simply is no
     /// verdict on this run's driver to compute survival/precision/cost-per-upheld from -
     /// the render discloses that rather than showing a misleading `0%` survival.
@@ -960,7 +958,7 @@ pub fn project(events: &[Event]) -> Metrics {
                 // so a non-adjudicator result yields `None`); the context-graph finding-expiry
                 // reads the SAME parse, so the metric and the graph never diverge.
                 if let Some(adj) = res.adjudication() {
-                    // A verdict was RECORDED on this run's driver (the courier path):
+                    // A verdict was RECORDED on this run's driver (the out-of-process path):
                     // the upheld-based folds have a numerator source to fold from.
                     metrics.review_quality.adjudications += 1;
                     for fid in adj.upheld {
@@ -1442,10 +1440,10 @@ impl ModelDrift {
 /// Fold the whole event stream into the cross-run resolved-model [`ModelDrift`] (spec 13b,
 /// unit 1). Every conductor-emitted event carries its run id ([`META_RUN_ID`]); a spawn's
 /// unit-lifecycle events additionally carry the requested alias ([`META_MODEL_ALIAS`]) and
-/// the resolved model the spawn ran as ([`META_MODEL_RESOLVED`], reported by the worker via
-/// `rigger result --meta`). This fold groups the resolved-model stamps by run, keyed by
+/// the resolved model the spawn ran as ([`META_MODEL_RESOLVED`], read by the headless host off
+/// the session's stream). This fold groups the resolved-model stamps by run, keyed by
 /// alias (last stamp wins within a run), then compares the two most recent runs that stamped
-/// ANY resolved model - so a run that recorded none (e.g. a workflow-driver run, which
+/// ANY resolved model - so a run that recorded none (e.g. a cli-driver run, which
 /// never learns the resolved id) is transparent to the comparison rather than masking a
 /// re-point across the runs that DID record one. An alias present in BOTH with a different
 /// resolved id is a re-point; a tier only the current run recorded (no prior baseline) is a
@@ -2810,7 +2808,7 @@ mod tests {
     #[test]
     fn courier_path_single_log_feeds_all_three_actor_keyed_folds() {
         // The REALISTIC production shape (spec 11 remediation): a single OUT-OF-PROCESS
-        // (courier / workflow) driver run. Every finding is emitted through `rigger emit`
+        // driver run. Every finding is emitted through `rigger emit`
         // so it carries NO `META_ACTOR` - only the `by` role token the conductor's
         // `review_protocol` told the reviewer to stamp - and the adjudicator's verdict is
         // recorded as its `SpawnResult` (the ONLY place the verdict lands out-of-process).

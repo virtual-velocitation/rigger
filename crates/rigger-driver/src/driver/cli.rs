@@ -160,9 +160,9 @@ impl AgentDriver for Driver {
     ) -> Result<AgentResult, Error> {
         let launched = self.launch(agent, prompt, opts);
         // The spawn's terminus: its process exited (or never started), whatever its outcome,
-        // and this host hands the result straight back in-process, never through the `rigger
-        // result` courier that reclaims a stepwise spawn's scratch - so reclaim the spawn's own
-        // scratch here, before anything below can return early.
+        // and this host hands the result straight back in-process, never through `rigger
+        // result` (which reclaims the scratch of a spawn it records) - so reclaim the spawn's
+        // own scratch here, before anything below can return early.
         reclaim_finished_spawn_scratch(opts);
         let (out, session) = launched?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -175,9 +175,9 @@ impl AgentDriver for Driver {
         // check so a partially-failed run still records what the agent decided.
         bridge_emits(&stdout, emit)?;
         // A blocking subprocess driver does not learn the resolved model id (spec 05 line
-        // 52 sources it from the worker's `rigger result --meta` on the stepwise path), so
-        // it leaves it empty and the metadata is then omitted. The session it ran as rides
-        // back for the conductor to record, so a later attempt can continue it.
+        // 52; the headless host reads it off the session's stream), so it leaves it empty and
+        // the metadata is then omitted. The session it ran as rides back for the conductor to
+        // record, so a later attempt can continue it.
         let result = AgentResult {
             output: stdout,
             resolved_model: String::new(),
@@ -208,8 +208,8 @@ fn is_emit_type(type_: &str) -> bool {
 ///
 /// An emit line is a single-line JSON object carrying its own `type` (one of
 /// `DecisionMade` / `ReviewFinding` / `UnitProposed`) and a `data` object - the
-/// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli and
-/// workflow paths record byte-identical events. Lines that are not JSON, not
+/// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli path and
+/// the MCP tool record byte-identical events. Lines that are not JSON, not
 /// objects, or not one of the emit types are skipped (an agent prints plenty of
 /// other text). A flat object from an agent printing the fields beside `type`, with
 /// no `data` wrapper, is tolerated: the object minus `type` becomes the data.
@@ -260,7 +260,7 @@ fn bridge_emits(
 /// argument at `MAX_ARG_STRLEN` (131072 bytes), which a plan-critique task or a full persona
 /// crosses. The host writes the persona file from `opts.system_prompt` - the conductor's
 /// single persona source (`SpawnOpts::system_prompt`, set from `AgentDef::prompt`) - NOT from
-/// `agent.prompt`, so the cli and workflow paths thread the SAME persona and cannot diverge.
+/// `agent.prompt`, so the cli and headless hosts thread the SAME persona and cannot diverge.
 /// An empty persona omits the flag (the agent runs with the default system prompt).
 /// `opts.attempt` selects the cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
 /// agent runs on the rung it escalated to for this remediation attempt.
@@ -624,7 +624,7 @@ thinking out loud, not json\n\
     #[test]
     fn a_finished_spawn_reclaims_its_own_scratch_and_spares_an_unfinished_siblings() {
         // The per-spawn scratch lifecycle on the blocking host (spec 34 criterion 1's two
-        // halves): this host records no result through the courier, so its own terminus
+        // halves): this host records no result through `rigger result`, so its own terminus
         // reclaims the `agent-scratch` leaf rigger names for the spawn, under the scratch root
         // its worktree sits in - while a sibling spawn of the same run that has not finished
         // keeps its own.
@@ -860,7 +860,7 @@ thinking out loud, not json\n\
         // conductor's single persona source - and reaches the session through the file
         // `--system-prompt-file` names; the grounded task travels on stdin, so `-p` carries
         // no positional prompt. The persona is NOT read from agent.prompt here, so the cli
-        // path uses the same persona source the workflow path does.
+        // path uses the same persona source the headless host does.
         let a = AgentDef {
             id: "impl".into(),
             model: "sonnet".into(),

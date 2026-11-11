@@ -22,8 +22,8 @@ use common::cli::{
     assert_selected_server, critique_finding_id, declare_grep_guard, emit, no_result_failure,
     pin_identity, read_run_events, recorded_progress, resolve, rigger_file, run_payloads,
     run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
-    seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project,
+    seed_critique_spawn, seed_on_the_run, seed_store, temp_project, temp_repoless_project,
+    write_spec_project,
 };
 use common::fixtures::{
     composed_system_prompt, git_ok, held_event, sorted_dir_names, temp_git_project_with_commit,
@@ -2141,41 +2141,6 @@ fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
         ]
     );
     assert_eq!(review_findings(root), reject_copies(SPEC, 2, SPEC_REL));
-}
-
-/// Given one spawn id parked twice on the project's run stream with different prompts, another
-/// spawn parked between the two parks, when a worker fetches each spawn's prompt, then the run's
-/// fold over the one per-event request decode answers the re-parked id with the request parked
-/// last and the other spawn with its own: the critique count reads every park, while the run's
-/// fold collapses a re-parked id to its last request.
-#[test]
-fn a_spawn_id_parked_twice_on_the_run_answers_with_the_request_parked_last() {
-    let dir = temp_project();
-    let root = dir.path();
-    let parked = |id: &str, prompt: &str| {
-        json!({"id": id, "unit": "u", "stage": "implement", "prompt": prompt}).to_string()
-    };
-    let first = parked("u/implementer#0", "the first park");
-    let other = parked("u/sdet-author#0", "the other spawn");
-    let last = parked("u/implementer#0", "the last park");
-    seed_run_events(
-        root,
-        &[
-            (TYPE_SPAWN_REQUESTED, &first),
-            (TYPE_SPAWN_REQUESTED, &other),
-            (TYPE_SPAWN_REQUESTED, &last),
-        ],
-    );
-    assert_eq!(
-        run_rigger_ok(root, &["prompt", "u/implementer#0"]),
-        "the last park\n",
-        "a re-parked id answers with the request written last"
-    );
-    assert_eq!(
-        run_rigger_ok(root, &["prompt", "u/sdet-author#0"]),
-        "the other spawn\n",
-        "a spawn parked between the two parks keeps its own request"
-    );
 }
 
 /// Given a project with no git repository holding critique-named liveness and transcript

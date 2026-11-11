@@ -169,11 +169,6 @@ fn discipline_body(ctx: &DocsContext) -> String {
     );
     let _ = writeln!(
         s,
-        "- Hand-driving `rigger step` in a shell. The driver owns stepping; a hand step \
-         races the driver and can double-spawn or wedge the frontier."
-    );
-    let _ = writeln!(
-        s,
         "- Hand-implementing a unit the loop parked. That leaves the loop still stuck for \
          the next unit and forks the code from the log - fix the loop instead (see below).\n"
     );
@@ -220,10 +215,9 @@ fn discipline_body(ctx: &DocsContext) -> String {
          live query reads, so the file grows on disk without bound even though the live \
          graph the loop grounds on does not. Keep it lean before a large run with `rigger \
          reset --runs`, which prunes that dead-run accumulation and reclaims the disk it \
-         held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene \
-         through a real command, NOT a hand-driven `rigger step`: hand-stepping races the \
-         driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
-         --runs` is a one-shot prune you run BEFORE launching the loop.\n"
+         held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene: \
+         `rigger reset --runs` is a one-shot prune you run BEFORE launching the loop, never \
+         against a live one.\n"
     );
     let _ = writeln!(s, "## Event log hygiene: the one-time migration\n");
     let _ = writeln!(
@@ -266,15 +260,15 @@ fn discipline_body(ctx: &DocsContext) -> String {
          BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: the \
          migration leaves revision gaps by design, and a writer whose cursor was built before it \
          ran could reissue a gap and reorder the log, so it refuses while the run is live - a \
-         `rigger step` holds its lock, an in-flight spawn (one with no recorded result, or only \
-         the step's liveness fault) has a liveness marker younger than its wall-clock bound, or \
+         `rigger run` holds its lock, an in-flight spawn (one with no recorded result, or only \
+         its liveness fault) has a liveness marker younger than its wall-clock bound, or \
          a driver registration for this store has a heartbeat inside the idle window - naming \
          what it found. A run whose driver died is not live: units it left non-terminal never \
          block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
          it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
-         result to end it. Every `rigger step` and `rigger run` registers as the run's \
-         driver, so the last step's stamp counts as a live driver for the idle window; a \
+         result to end it. Every `rigger run` registers as the run's driver, so the last \
+         run's stamp counts as a live driver for the idle window; a \
          courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
          does. `--force-live` overrides the refusal for an operator certain no writer is using \
          the store; it checks nothing.\n"
@@ -891,7 +885,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-reset-store",
         "Store hygiene for rigger's own state - growing .rigger/ disk usage, \
-         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
+         the bloat advisory from `rigger validate`, or replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand.",
         &[
             "rigger keeps three stores under `.rigger/`, and only one of them holds anything \
@@ -915,18 +909,18 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
-             (no `rigger step` or `rigger run` holds the lock, no in-flight spawn's liveness \
+             (no `rigger run` holds the lock, no in-flight spawn's liveness \
              marker is younger than its wall-clock bound, no driver registration for the store \
              has a heartbeat inside the idle window) and every spawn of the run has ended on a \
              real result, it also closes the current run's units whose branch work is already \
              landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
              conductor mints, so `rigger status` stops reporting the finished run as working. It \
-             only appends; a live run is left untouched. A spawn answered only by the step's \
-             liveness fault has not ended - the step halts on it and a relaunched driver re-parks \
-             it - so a dead run with a hung spawn stays open and the reset names it: record its \
-             real result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
-             step` registers as the run's driver just as `run` does, so a hand-landed \
-             unit closes once the last step's stamp is older than the idle window; a courier's \
+             only appends; a live run is left untouched. A spawn answered only by its liveness \
+             fault has not ended - the run halts on it and a relaunched driver re-parks it - so \
+             a dead run with a hung spawn stays open and the reset names it: record its real \
+             result with `rigger result <id>`, then rerun `rigger reset --runs`. Every `rigger \
+             run` registers as the run's driver, so a hand-landed unit closes once the last \
+             run's stamp is older than the idle window; a courier's \
              (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
              own courier just before the reset never holds it back.",
             "- `rigger reset --derived` migrates `events.db`, once: for each file it rewrites the \
@@ -1063,10 +1057,7 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so.\n",
         ],
-        "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
-         driver owns stepping, and a hand step races it, which can double-spawn a unit or \
-         wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively \
-         just because a run looks stuck: on a merely-interrupted run it abandons the \
+        "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
          nothing - reserve it for the genuinely wedged-terminal case above.\n",
         "rigger-handle-an-escalation for the run-level and unit-level terminal states \
@@ -1218,10 +1209,8 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              that line alone. `rigger watch --once` IS the accurate check: it verifies the \
              recorded marker by actually probing its port, and prints a `dash liveness` line \
              naming the dead PID when nothing answers there - trust that over a bare status \
-             line. `rigger run` never writes that marker (only `rigger step` does) - for a \
-             `rigger run` driver `rigger watch` falls back to probing \
-             the recorded dash URL's OWN port directly, and its `dash liveness` line still \
-             fires, just without a pid to name.\n",
+             line. With no marker recorded, `rigger watch` probes the recorded dash URL's OWN port \
+             directly, and its `dash liveness` line still fires, just without a pid to name.\n",
             "Restart with a plain `rigger dash` (no flags needed for the default address). The \
              singleton bind then does the right thing either way: if the address is genuinely \
              free it binds and serves; if a live rigger dash is already there after all, it \
@@ -1234,15 +1223,14 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              prints that exact PID on its dash-liveness line. RESUME that \
              process if it is merely stopped (a suspended terminal, a paused container), or KILL \
              it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
-             line actually name - then restart with `rigger dash`. When NO marker was ever \
-             recorded (a `rigger run` driver), `rigger watch`'s line names no pid at all \
+             line actually name - then restart with `rigger dash`. When NO marker is recorded, \
+             `rigger watch`'s line names no pid at all \
              - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
              genuinely-live dash, and a bind failure against a real non-dash holder is then a \
              manual, outside-`rigger` situation, never one to guess a pid for.\n",
         ],
-        "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb the step \
-         path itself writes and overwrites, and a hand-edited value only makes the next real \
-         dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
+        "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb rigger reads to \
+         name a pid, and a hand-edited value only names the wrong one. And never kill a process by PORT-ADJACENT \
          GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
          the marker and `rigger watch`'s own line name, never a guess, and never one you \
          found some other way when the line names none at all.\n",

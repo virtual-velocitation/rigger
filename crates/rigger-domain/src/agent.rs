@@ -52,8 +52,8 @@ error_from_display!(
 pub struct AgentResult {
     pub output: String,
     /// The RESOLVED model id that actually ran this spawn (spec 05 line 52), or empty when
-    /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
-    /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
+    /// unknown. The replay driver surfaces it from the recorded result's metadata
+    /// ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
     /// The headless host reads it off the session's stream; the cli driver does not learn it
     /// and leaves it empty.
@@ -106,9 +106,9 @@ pub struct HelperCopy {
 /// Per-spawn options, built through [`SpawnOpts::new`] from a resolved [`SpawnHost`].
 pub struct SpawnOpts {
     /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
-    /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
-    /// answer an already-recorded spawn from the log or to park an unrecorded one; every other
-    /// driver names the spawn by it. Empty for a caller that does not use stepwise replay.
+    /// [`spawn_id`](crate::spawn::spawn_id)). The replay driver and the headless host key on it
+    /// to answer an already-recorded spawn from the log or to park an unrecorded one; every other
+    /// driver names the spawn by it. Empty for a caller that does not replay from the log.
     pub id: String,
     /// The unit this spawn belongs to - the parked request's `unit` (and the display
     /// label's unit half). Empty when the caller does not park.
@@ -140,7 +140,7 @@ pub struct SpawnOpts {
     /// stage (§6). False for a single-worker stage.
     pub parallel: bool,
     /// The agent's blast-radius: the grounded seed files this spawn is scoped to
-    /// (§5.3), carried onto the parked spawn request and its wave item. A subprocess driver
+    /// (§5.3), carried onto the parked spawn request. A subprocess driver
     /// cannot do mid-run injection and ignores it.
     pub blast_radius: Vec<String>,
     /// The id of the run this spawn belongs to (spec 06, unit 1), set by the conductor
@@ -253,12 +253,12 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
         blast_radius: opts.blast_radius.clone(),
         max_wall_clock: agent.max_wall_clock,
         // The live work-line (spec 19a, c4): copy the conductor-threaded unit criterion onto
-        // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
-        // prints from it - carry the WORK the thin driver narrates.
+        // the parked request so the persisted `SpawnRequested` carries the WORK every reader of
+        // the request shows.
         title: opts.title.clone(),
         // The routed review roster (spec 67, criterion 4): copy the conductor-threaded
         // adversary/adjudicator roster onto the parked request, the same additive seam
-        // `title` establishes, so the wave carries it for a driver to render.
+        // `title` establishes, so the persisted request carries it for a reader to render.
         reviews: opts.reviews.clone(),
         // The build location the conductor chose (`spawn_env`), recorded so a driver that
         // cannot set the worker's environment names the same directory.
@@ -305,13 +305,12 @@ pub trait AgentDriver: Send + Sync {
 /// adapter to tell a park from a failure.
 pub const PARKED_MARKER: &str = "\u{1}rigger:spawn-parked\u{1}";
 
-/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: a
-/// stepwise/replay driver persisted the unrecorded spawn request, or the held-run decorator
-/// found the serving session closed. On this signal the conductor
-/// unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step ends once every
-/// in-flight spawn is parked; a later step replays the result the courier records, or a
-/// relaunch serves the spawn again. This is a normal failure, so a spawn that never parks is
-/// entirely unaffected.
+/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: the
+/// replay driver persisted the unrecorded spawn request. On this signal the conductor unwinds
+/// the unit CLEANLY - no `UnitFailed`, no remediation - and its pass ends once every in-flight
+/// spawn is parked; a later pass over the same log replays the result recorded for the spawn
+/// (`rigger result`). This is a normal failure, so a spawn that never parks is entirely
+/// unaffected.
 pub fn parked_spawn(id: &str) -> Error {
     Error(format!(
         "{PARKED_MARKER} spawn {id:?} parked: nothing serves it in-process"

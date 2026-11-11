@@ -251,13 +251,11 @@ impl Anomaly {
 /// caller's I/O (a marker-or-URL read plus a real serve probe) and handed in already
 /// classified - `detect` never touches a socket or a file.
 ///
-/// TWO breadcrumbs can independently record a dash, and only ONE of the three real
-/// dash-launching drivers writes both: the `rigger step` drive path writes a
-/// per-project MARKER (port + pid) alongside the URL, but `rigger run` and `rigger
-/// serve` (`spawn_run_dashboard`/`spawn_run_dashboard_detached`'s guard-bound callers)
-/// write ONLY the URL breadcrumb, never a marker - so the caller's probe falls back to
-/// the URL's own port when no marker exists, and [`NotServing`](DashProbe::NotServing)
-/// carries `pid: None` in that case rather than inventing one.
+/// TWO breadcrumbs can independently record a dash: a per-project MARKER (port + pid) and
+/// the URL breadcrumb. `rigger run` (`spawn_run_dashboard`) writes ONLY the URL breadcrumb,
+/// never a marker - so the caller's probe falls back to the URL's own port when no marker
+/// exists, and [`NotServing`](DashProbe::NotServing) carries `pid: None` in that case rather
+/// than inventing one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DashProbe {
     /// Neither a marker nor a URL was ever recorded for this project - a headless run
@@ -330,8 +328,8 @@ pub struct WatchInputs<'a> {
     pub now: SystemTime,
     /// When the run's last event was recorded, or `None` for an empty run.
     pub last_event_at: Option<SystemTime>,
-    /// Whether the step lock is free: true when no `rigger step` holds it and no `rigger run`
-    /// does, which holds it for its whole life, so a hung run keeps the alert silent.
+    /// Whether the step lock is free: true when no `rigger run` holds it. A run holds it for
+    /// its whole life, so a hung run keeps the alert silent.
     pub step_lock_free: bool,
     /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY PARKED
     /// frontier, on wall clock: unlike `rigger status`'s, no open hold is subtracted. Empty when
@@ -372,17 +370,17 @@ pub struct WatchInputs<'a> {
     /// [`Self::dash_attempted_this_run`] does not already prove otherwise.
     pub dash_breadcrumb_written_at: Option<SystemTime>,
     /// Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap): whether the
-    /// CURRENTLY WATCHED run's own step path itself attempted a dash ensure THIS run - an
-    /// EXPLICIT per-run fact (a run-id match against the caller's `DASH_ATTEMPT_FILE` read,
-    /// `main.rs::record_dash_attempt`'s write site), never inferred from wall-clock order.
+    /// CURRENTLY WATCHED run itself attempted a dash start THIS run - an EXPLICIT per-run fact
+    /// (a run-id match against the caller's `DASH_ATTEMPT_FILE` read, `record_dash_attempt`'s
+    /// write site in `src/cli/run.rs`), never inferred from wall-clock order.
     ///
     /// [`Self::dash_breadcrumb_written_at`] vs [`Self::run_started_at`] answers "did this
     /// breadcrumb predate this run" by ORDER, which the round-7 review's own (mistaken, see
     /// `DASH_ATTEMPT_FILE`'s doc) causality claim shows is easy to reason about backwards even
     /// when the order itself is right - it is still an INFERENCE about ownership, not the fact
     /// itself. This field is the fact itself: `true` only when the run this watch is scoped to
-    /// (`run_events`'s own current run id) is the SAME run whose step path most recently
-    /// attempted the ensure, regardless of what any file's mtime says. When `true`, `detect`
+    /// (`run_events`'s own current run id) is the SAME run that most recently attempted the
+    /// dash start, regardless of what any file's mtime says. When `true`, `detect`
     /// NEVER suppresses Signal 3 for a `NotServing` probe - this run vouched for the dash, so a
     /// dead dash is this run's own concern to report, full stop. When `false` (no attempt was
     /// ever recorded for this exact run - the shape every pre-round-8 test in this file and
@@ -567,14 +565,14 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             // freshness: either side unknown (no run has started yet in this project - the
             // `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_
             // marker` integration test's own shape, `rigger watch --once` run before any
-            // `rigger step` - or the breadcrumb's mtime could not be read) still reports,
+            // `rigger run` - or the breadcrumb's mtime could not be read) still reports,
             // exactly as it did before this fix; only a PROVEN-earlier breadcrumb is new
             // grounds to suppress.
             //
             // Round-8 fix (adv-u69c1r7-mint-order-bug-is-structural-not-a-coverage-gap):
             // `dash_attempted_this_run` short-circuits the whole comparison to FALSE (never
-            // suppress) when this exact run's own step path is EXPLICITLY known to have
-            // attempted the dash ensure - a run-id fact, not a timestamp inference. Only when
+            // suppress) when this exact run is EXPLICITLY known to have attempted the dash
+            // start - a run-id fact, not a timestamp inference. Only when
             // that explicit fact is absent (the pre-round-8 shape every existing test still
             // builds) does the mtime comparison run at all, so it is now a fallback, not the
             // sole authority; see `WatchInputs::dash_attempted_this_run`'s doc for why an
@@ -1181,8 +1179,8 @@ mod tests {
         /// breadcrumb mtime strictly OLDER than `run_started_at`, which alone would suppress per
         /// the pre-existing fallback comparison. The only difference: `dash_attempted_this_run`
         /// is `true` here - an explicit, run-id-matched fact (in production,
-        /// `main.rs::watch_poll` setting it means `DASH_ATTEMPT_FILE` names THIS exact run,
-        /// written by `record_dash_attempt` from `ensure_run_dashboard`/`start_run_dashboard`).
+        /// `watch_poll` setting it means `DASH_ATTEMPT_FILE` names THIS exact run, written by
+        /// `record_dash_attempt` from `start_run_dashboard`).
         /// This proves the explicit fact WINS over the timestamp fallback: a real per-run
         /// attempt is never suppressed by a stale-looking mtime pair, however that pair arose (a
         /// coarse filesystem clock, a future refactor that reorders the mint relative to the
@@ -1295,7 +1293,7 @@ mod tests {
     /// The burden of proof runs toward REPORTING, not suppressing: only a breadcrumb
     /// DEFINITIVELY (both sides known) older than this run's own start is grounds to
     /// suppress. Either side unknown - no run has started yet in this project (the
-    /// realistic case: a dash breadcrumb exists but `rigger step` never has, exactly the
+    /// realistic case: a dash breadcrumb exists but `rigger run` never has, exactly the
     /// shape `watch_once_output_matches_what_restore_the_dash_promises_about_a_dead_
     /// marker`, tests/cli.rs, drives through the real binary), or the breadcrumb's mtime
     /// could not be read - must still report, exactly as Signal 3 always has.

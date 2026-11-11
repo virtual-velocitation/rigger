@@ -1,23 +1,24 @@
-//! The replay AgentDriver: the stepwise core (§4, spec 04). `conductor::run`'s
-//! imperative control flow stays intact, but every `spawn` call is answered from the
-//! event log instead of running an agent in-process:
+//! The replay AgentDriver (§4, spec 04). `conductor::run`'s imperative control flow stays
+//! intact, but every `spawn` call is answered from the event log instead of running an agent
+//! in-process:
 //!
 //! - If the log already holds the RESULT for this spawn's deterministic id, return it
-//!   immediately (replay) - so a step re-running the conductor over recorded history
+//!   immediately (replay) - so a pass re-running the conductor over recorded history
 //!   reconstructs the same state without re-running the agent.
 //! - If not, PARK the call: persist the spawn request as a [`TYPE_SPAWN_REQUESTED`]
 //!   event and signal the parked frontier. The conductor unwinds the unit CLEANLY (no
 //!   `UnitFailed`, no remediation - see [`parked_spawn`]/[`is_parked`]), so when every
 //!   in-flight spawn in the wave is parked the run loop finds no newly-ready unit and
-//!   returns: the step's state is entirely in the log, so the process simply ends.
+//!   returns: the pass's state is entirely in the log, so the process simply ends.
 //!
 //! This extends `ledger::RunState::apply`'s pure-fold principle to the conductor's
-//! control flow. Parking is IDEMPOTENT: a step that re-runs the conductor over recorded
+//! control flow. Parking is IDEMPOTENT: a pass that re-runs the conductor over recorded
 //! history appends no duplicate spawn request (it parks only an id that is not already
 //! recorded), so the same run stream can be replayed any number of times.
 //!
 //! The blocking drivers read the [`SpawnOpts`] id, never its unit/stage: `cli` never parks, and
-//! `workflow` parks only a spawn its closed session leaves unserved, which a relaunch serves.
+//! the headless host records an unrecorded request through `read_or_park` and then launches
+//! it rather than signalling a park.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -50,8 +51,8 @@ pub const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 /// (`cmd_result`) derive the SAME path (spec 34, criterion 1: per-spawn reclamation on
 /// completion) - a re-hardcoded layout on either side could never make the assign and the
 /// reclaim diverge. It nests UNDER `agent-scratch` (the scratch parent the clean-fixpoint
-/// reclaim already clears and the orphan-sweep backstop already covers) so per-spawn reclaim
-/// composes with them instead of introducing a second scratch tree. The `run_id` component
+/// reclaim already clears) so per-spawn reclaim composes with it instead of introducing a
+/// second scratch tree. The `run_id` component
 /// gives the scratch RUN IDENTITY: a re-run that reuses a unit-title slug computes the same
 /// spawn id, but a different run gets a different subdir, so one run never reclaims another's
 /// scratch. Both id components are made filesystem-safe by the ONE such rule,
@@ -100,9 +101,8 @@ fn spawn_scratch_root(opts: &SpawnOpts) -> Option<String> {
 ///
 /// The ONE reap authority every production site that ends a spawn converges on, so none can
 /// diverge on what "reclaim a spawn's scratch" means: the `rigger result` courier (success,
-/// reject, `--error`, and any outcome the death courier records through it) and `rigger
-/// step`'s liveness sweep (a hung spawn it records a fault for in-process) in the binary, and
-/// the terminus of each blocking host that records or returns a result without that courier
+/// reject, `--error`) and `rigger critique` in the binary, and the terminus of each blocking
+/// host that records or returns a result without that courier
 /// ([`reclaim_finished_spawn_scratch`] for the cli host, the headless host's own scratch root
 /// for `claude_code`). Lives beside [`spawn_scratch_path`] so assign and reclaim share one file.
 ///
@@ -113,8 +113,7 @@ fn spawn_scratch_root(opts: &SpawnOpts) -> Option<String> {
 /// A leaf an agent registered a git worktree inside is still removed whole: the nested
 /// worktree is not the leaf itself, so a `git worktree remove` of the leaf would fail and fall
 /// back to this same removal; the dangling admin entry it leaves is pruned by the next `git
-/// worktree prune` the worktree lifecycle runs (the step-start terminal sweep, and every
-/// unit-worktree clear on any host).
+/// worktree prune` the worktree lifecycle runs (every unit-worktree clear on any host).
 pub fn reclaim_spawn_registered_scratch(scratch_root: &str, run_id: &str, spawn_id: &str) {
     if let Some(path) = spawn_scratch_path(scratch_root, run_id, spawn_id) {
         crate::reap::reap_then_remove_dir(&path, Path::new(scratch_root));
@@ -133,8 +132,9 @@ pub(crate) fn blocking_spawn_scratch_dir(opts: &SpawnOpts) -> Option<PathBuf> {
 /// exited, whatever its outcome), reclaim the scratch rigger names for it under the scratch
 /// root its worktree sits in ([`spawn_scratch_root`]). A blocking host hands its result
 /// straight back to the conductor in-process, never through the `rigger result` courier that
-/// reclaims a stepwise spawn's scratch, so without this every leaf would live for the life of
-/// the clone. A worktree-less spawn has nothing to reclaim. Best-effort, like every reclaim.
+/// reclaims the scratch of a spawn it records, so without this every leaf would live for the
+/// life of the clone. A worktree-less spawn has nothing to reclaim. Best-effort, like every
+/// reclaim.
 pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
     if let Some(root) = spawn_scratch_root(opts) {
         reclaim_spawn_registered_scratch(&root, &opts.run_id, &opts.id);
@@ -180,7 +180,7 @@ pub(crate) enum Logged {
 ///
 /// A recorded result ANSWERS: the agent already ran, so its outcome is returned without
 /// running it again, a recorded failure as that failure (never a fabricated success). EXCEPT a
-/// LIVENESS fault (spec 10, unit 3): the agent hung or died and a courier recorded an infra
+/// LIVENESS fault (spec 10, unit 3): the agent hung or died and its host recorded an infra
 /// fault on its id to make that visible, which is not the spawn ending, so it answers nothing
 /// and the spawn is run again; a real result recorded later (last-write-wins) is a genuine
 /// answer and supersedes it.
@@ -231,23 +231,18 @@ pub(crate) fn answered(res: spawn::SpawnResult) -> Result<AgentResult, Error> {
 /// already-recorded spawn or parks an unrecorded one.
 ///
 /// It holds the SAME event store the conductor drives (`Deps::store`), so a spawn it
-/// parks is visible to the next step process (and to a concurrent sibling spawn in the
-/// same wave) the moment it is appended.
+/// parks is visible to a concurrent sibling spawn in the same wave the moment it is appended.
+/// It drives `rigger replay`'s offline re-fold, where no worker touches a liveness marker, so
+/// it records no marker root on a request it parks.
 pub struct ReplayDriver<'a> {
     store: &'a dyn EventStore,
-    /// The scratch root the parking step stamps each spawn's liveness marker under, recorded
-    /// on every request it parks ([`crate::spawn::META_MARKER_ROOT`]); empty records none.
-    marker_root: &'a str,
 }
 
 impl<'a> ReplayDriver<'a> {
     /// Build a replay driver over `store` - the run's event log, the single source of
-    /// truth for whether a spawn is already recorded (replay) or not (park) - that records
-    /// `marker_root`, the scratch root its step stamps liveness markers under, on each spawn
-    /// it parks (spec 101: where a spawn's marker lives is log-carried state). An empty
-    /// `marker_root` (a re-drive with no worker to touch a marker) records none.
-    pub fn new(store: &'a dyn EventStore, marker_root: &'a str) -> ReplayDriver<'a> {
-        ReplayDriver { store, marker_root }
+    /// truth for whether a spawn is already recorded (replay) or not (park).
+    pub fn new(store: &'a dyn EventStore) -> ReplayDriver<'a> {
+        ReplayDriver { store }
     }
 }
 
@@ -262,7 +257,7 @@ impl AgentDriver for ReplayDriver<'_> {
         // would replay are already in the log.
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        match read_or_park(self.store, agent, prompt, opts, self.marker_root)? {
+        match read_or_park(self.store, agent, prompt, opts, "")? {
             Logged::Ended(res) => return answered(res),
             // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
             // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
@@ -285,7 +280,7 @@ impl AgentDriver for ReplayDriver<'_> {
         }
 
         // Signal the parked frontier. The conductor unwinds this unit cleanly (no
-        // UnitFailed) and the step process ends once every in-flight spawn is parked.
+        // UnitFailed) and the pass ends once every in-flight spawn is parked.
         Err(parked_spawn(&opts.id))
     }
 }
@@ -297,10 +292,8 @@ mod tests {
     use crate::config::{Config, Stage};
     use crate::eventstore::sqlite::Store;
     use crate::gate::ExecRunner;
-    use crate::spawn::{
-        lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_ADVERSARY, ROLE_IMPLEMENTER,
-    };
-    use crate::test_support::{bare_deps, no_emit, run_isolated, test_spawn_host};
+    use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
+    use crate::test_support::{no_emit, run_isolated, test_spawn_host};
 
     /// An agent `id` on `sonnet` granted `tools`.
     fn sonnet_agent(id: &str, tools: &[&str]) -> AgentDef {
@@ -385,7 +378,7 @@ mod tests {
         // lands in a rigger-owned per-spawn location that `rigger result` reclaims on
         // completion, not an ad-hoc top-level target the reclaim can never find.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let scratch = tempfile::tempdir().unwrap();
         // The conductor assigns an isolated spawn a worktree `<scratch_root>/rigger-wt-<slug>`
         // (`unit_worktree_dir`); its parent is the run's scratch root.
@@ -431,7 +424,7 @@ mod tests {
         // `dir`), so there is no run scratch root to key a per-spawn dir on: parking must
         // still succeed and must not panic deriving a parent of the empty path.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let opts = SpawnOpts {
             run_id: "r1".into(),
             ..opts_for("u/implementer#0")
@@ -462,7 +455,7 @@ mod tests {
         };
         let parked_model = |attempt: u32, id: &str| -> String {
             let store = Store::open(":memory:").unwrap();
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let opts = SpawnOpts {
                 id: id.to_string(),
                 unit: "u".into(),
@@ -502,7 +495,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let got = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect("a recorded success is answered, not parked");
@@ -525,7 +518,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a recorded failure replays AS a failure");
@@ -537,7 +530,7 @@ mod tests {
 
     #[test]
     fn re_parks_a_liveness_fault_instead_of_charging_it_as_a_failure() {
-        // A step recorded a liveness fault on a hung spawn (spec 10, unit 3). Unlike a
+        // The host recorded a liveness fault on a hung spawn (spec 10, unit 3). Unlike a
         // worker-reported failure, this must NOT replay as a charged error - the agent's
         // process hung, not the unit's code. The driver RE-PARKS it (a clean unwind, no
         // remediation), and appends no duplicate request.
@@ -550,7 +543,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a liveness fault re-parks (a clean unwind), never a charged error");
@@ -581,8 +574,8 @@ mod tests {
     fn a_non_infra_labeled_liveness_fault_is_still_re_parked_no_charge() {
         // Follow-up (b) / sdet-u3-classify-hung-reclassification-cosmetic: the taxonomy class
         // on a liveness fault is a DISPLAY LABEL only; the no-charge re-park is UNIFORM. A
-        // hung spawn a workflow deliberately RELABELED (here "product", not the infra
-        // default) must STILL re-park (a clean unwind), never replay as a charged error - a
+        // liveness fault carrying a non-infra label (here "product", not the infra class the
+        // host records) must STILL re-park (a clean unwind), never replay as a charged error - a
         // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
         // charged. This pins the corrected module doc (class is a label, treatment is uniform).
         let store = Store::open(":memory:").unwrap();
@@ -593,7 +586,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("a liveness fault re-parks whatever class labels it, never a charge");
@@ -617,24 +610,25 @@ mod tests {
     fn a_liveness_fault_re_parks_no_charge_across_run_boundaries_then_recovers() {
         // sdet-u3-nocharge-repark-secondstep-and-recovery-untested (follow-up c): drive the
         // no-charge re-park through conductor::run ACROSS the replay boundary (several run()
-        // over one store, as successive `rigger step` processes do) AND the recovery - not the
-        // isolated single-driver.spawn the other test covers. A liveness fault (as the sweep
-        // records) must, on EVERY subsequent run, re-park the spawn (a clean unwind) and
-        // append NO UnitFailed - a hung agent never charges the unit - and append no duplicate
-        // SpawnRequested; then a real result recorded later supersedes it and the unit advances.
+        // over one store, as successive passes over one log do) AND the recovery - not the
+        // isolated single-driver.spawn the other test covers. A liveness fault (as the headless
+        // host records for a silent session) must, on EVERY subsequent run, re-park the spawn
+        // (a clean unwind) and append NO UnitFailed - a hung agent never charges the unit - and
+        // append no duplicate SpawnRequested; then a real result recorded later supersedes it and
+        // the unit advances.
         let store = Store::open(":memory:").unwrap();
         let cfg = config_with(vec![stage("u", "worker")]);
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
 
         // Step 1: conductor::run parks the implementer frontier.
-        replay_step(&store, &cfg).expect("a parked frontier is not a run failure");
+        replay_pass(&store, &cfg).expect("a parked frontier is not a run failure");
         assert!(spawn::is_recorded(
             &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
             &id
         ));
 
-        // The sweep records a liveness fault on the hung spawn (a SpawnResult, never a
-        // UnitFailed) - exactly what liveness::sweep does on a stale marker.
+        // A liveness fault is recorded on the hung spawn (a SpawnResult, never a UnitFailed) -
+        // what the headless host records for a session silent past `max_wall_clock`.
         spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra"),
@@ -644,7 +638,7 @@ mod tests {
         // Steps 2 and 3: each run REPLAYS the fault, re-parks (no UnitFailed, no duplicate
         // SpawnRequested), and the unit never advances past implement to `verified`.
         for _ in 0..2 {
-            replay_step(&store, &cfg).expect("re-parking a liveness fault is a clean unwind");
+            replay_pass(&store, &cfg).expect("re-parking a liveness fault is a clean unwind");
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
             assert!(
                 !events
@@ -671,7 +665,7 @@ mod tests {
 
         // Recovery: a real result recorded later (last-write-wins) supersedes the fault.
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
-        replay_step(&store, &cfg).expect("a recovered spawn replays and the run advances");
+        replay_pass(&store, &cfg).expect("a recovered spawn replays and the run advances");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
             events.iter().any(|e| {
@@ -691,15 +685,15 @@ mod tests {
     #[test]
     fn parks_an_unrecorded_spawn_and_signals_the_frontier() {
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
 
         let err = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect_err("an unrecorded spawn parks and signals the frontier");
         assert!(is_parked(&err), "the park signal is recognizable as a park");
 
-        // The request became a durable fact the courier (and the next step) reads back,
-        // carrying everything the thin driver needs.
+        // The request became a durable fact a later pass reads back, carrying everything a
+        // host needs to launch it.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let parked = spawn::recorded(&events).unwrap();
         assert_eq!(parked.len(), 1);
@@ -716,7 +710,7 @@ mod tests {
         // A step re-running the conductor over recorded history must append no duplicate
         // SpawnRequested for the same id (finding adv-park-not-idempotent).
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
 
         for _ in 0..3 {
             let err = driver
@@ -739,13 +733,13 @@ mod tests {
     #[test]
     fn recording_a_result_flips_a_parked_spawn_to_replayed() {
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
 
         // First: parked (no result yet).
         let first = driver.spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit);
         assert!(is_parked(&first.unwrap_err()));
 
-        // The courier records the outcome; now the same spawn is answered from the log.
+        // `rigger result` records the outcome; now the same spawn is answered from the log.
         spawn_store::record_result(&store, &spawn::SpawnResult::ok("u/implementer#0", "done"))
             .unwrap();
         let answered = driver
@@ -779,7 +773,7 @@ mod tests {
 
         // The same-id adjudicator spawn in the new run PARKS (runs its new reviewer), it
         // does NOT replay run 1's stale "reject".
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let err = driver
             .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
             .expect_err("a prior run's result must not answer a fresh run's same-id spawn");
@@ -821,7 +815,7 @@ mod tests {
         // answered from the log every time; the unit reaches `verified` and, on_pass
         // being `none`, stays there without integrating).
         for _ in 0..3 {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -872,10 +866,10 @@ mod tests {
     #[test]
     fn a_replayed_spawn_stamps_the_model_alias_and_resolved_id_on_its_unit_events() {
         // spec 05 line 52: every spawn's recorded events carry the requested model ALIAS
-        // and the RESOLVED model id that ran - the latter reported by the worker via
-        // `rigger result --meta` and COPIED by the conductor onto the spawn's unit events.
-        // Here the courier has recorded the implementer's success together with the
-        // resolved id it reported through `--meta`; replaying the recorded spawn must stamp
+        // and the RESOLVED model id that ran - the latter recorded on the spawn's result and
+        // COPIED by the conductor onto the spawn's unit events. Here the implementer's
+        // success is recorded together with its resolved id; replaying the recorded spawn
+        // must stamp
         // BOTH the requested alias and the resolved id onto the unit events the conductor
         // emits for that spawn.
         use crate::conductor::{META_MODEL_ALIAS, META_MODEL_RESOLVED};
@@ -893,7 +887,7 @@ mod tests {
         )
         .unwrap();
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -932,7 +926,7 @@ mod tests {
         assert_eq!(
             green.meta.get(META_MODEL_RESOLVED).map(String::as_str),
             Some("claude-opus-4-8-20260101"),
-            "green carries the resolved model id the worker reported via --meta"
+            "green carries the resolved model id the worker reported in its result meta"
         );
 
         // The verified status (emitted after the gates, still for the same spawn) carries
@@ -984,7 +978,7 @@ mod tests {
         // Driving conductor::run with the replay driver over an EMPTY log parks the
         // frontier and returns cleanly: the step's whole state is in the log.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let cfg = config_with(vec![stage("u", "worker")]);
         let deps = Deps {
             store: &store,
@@ -1022,7 +1016,7 @@ mod tests {
 
         // Step 1: park the implementer frontier.
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1044,13 +1038,13 @@ mod tests {
             &id
         ));
 
-        // A courier records the implementer's result.
+        // The implementer's result is recorded.
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Step 2: the same conductor run REPLAYS the recorded implementer and advances
         // past it (through gates + the empty review) to `verified`.
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1090,7 +1084,7 @@ mod tests {
         // Two independent units (no dependency between them) are ready in the same wave;
         // both park their spawns in one step, so fan-out falls out of the structure.
         let store = Store::open(":memory:").unwrap();
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let cfg = config_with(vec![stage("a", "worker"), stage("b", "worker")]);
         let deps = Deps {
             store: &store,
@@ -1125,14 +1119,14 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_breaker_binds_across_step_processes() {
+    fn the_budget_breaker_binds_across_driver_processes() {
         // spec 04, criterion 5 / finding adv-budget-per-step-resets: the spawn-budget
         // breaker counts spawn requests from the LOG, so it binds across the separate
-        // processes a stepwise run spans. An earlier step already parked (and a courier
-        // answered) one spawn, spending a budget of 1. A FRESH process - its in-memory
-        // counter starting at zero - must still fold that spent spawn from the log and
-        // refuse the next unit's spawn, aborting with BudgetExhausted. If the count reset
-        // per process (the pre-fix bug), the new unit would park and the run would spawn
+        // processes one run's log spans (a resumed run is one). An earlier step already
+        // parked (and recorded a result for) one spawn, spending a budget of 1. A FRESH
+        // process - its in-memory counter starting at zero - must still fold that spent spawn
+        // from the log and refuse the next unit's spawn, aborting with BudgetExhausted. If the
+        // count reset per process, the new unit would park and the run would spawn
         // unboundedly across steps.
         let store = Store::open(":memory:").unwrap();
         // Run scoping (spec 06, unit 1): the earlier step's spawn belongs to THIS run, so
@@ -1147,7 +1141,7 @@ mod tests {
         let mut cfg = config_with(vec![stage("u", "worker")]);
         cfg.workflow.defaults.budget = 1;
 
-        let driver = ReplayDriver::new(&store, "");
+        let driver = ReplayDriver::new(&store);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -1201,7 +1195,7 @@ mod tests {
         cfg.workflow.defaults.budget = 1;
 
         for _ in 0..2 {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1265,7 +1259,7 @@ mod tests {
 
         // Step 1: the single unit's implementer parks (spending the whole budget of 1).
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1289,14 +1283,14 @@ mod tests {
             ),
             "step 1 parked the implementer, spending the budget"
         );
-        // A courier answers it.
+        // A recorded result answers it.
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Step 2: a fresh process whose folded count already equals the budget. The
         // recorded spawn must still REPLAY (it is free) and the unit must advance to
         // `verified` - the breaker must not abort this replay-only step.
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1370,7 +1364,7 @@ mod tests {
 
         // Step 1: the implementer parks, spending the whole budget of 1.
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1394,14 +1388,14 @@ mod tests {
             ),
             "step 1 parked the implementer, spending the budget"
         );
-        // A courier answers the implementer.
+        // A recorded result answers the implementer.
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented"))
             .unwrap();
 
         // Step 2: a fresh process whose folded count already equals the budget. The
         // implementer replays free to `verified`, then the review-tier lens is refused.
         {
-            let driver = ReplayDriver::new(&store, "");
+            let driver = ReplayDriver::new(&store);
             let deps = Deps {
                 store: &store,
                 driver: &driver,
@@ -1482,10 +1476,10 @@ mod tests {
         cfg
     }
 
-    /// Run one `rigger step`: a fresh ReplayDriver over `store`, driving `conductor::run`
-    /// to its parked frontier (or its loud halt).
-    fn replay_step(store: &Store, cfg: &Config) -> Result<(), Error> {
-        let driver = ReplayDriver::new(store, "");
+    /// One replay pass: a fresh ReplayDriver over `store`, driving `conductor::run` to its
+    /// parked frontier (or its loud halt).
+    fn replay_pass(store: &Store, cfg: &Config) -> Result<(), Error> {
+        let driver = ReplayDriver::new(store);
         let deps = Deps {
             store,
             driver: &driver,
@@ -1502,23 +1496,23 @@ mod tests {
         run_isolated(cfg, &deps).map(|_| ())
     }
 
-    /// A courier answering a parked spawn: record its result. An empty `output` is the
-    /// degenerate infrastructure answer `build_result` records for an empty reviewer.
-    fn courier_records(store: &Store, id: &str, output: &str) {
+    /// A worker answering a parked spawn: record its result. An empty `output` is the
+    /// degenerate infrastructure answer an empty reviewer leaves.
+    fn answer_spawn(store: &Store, id: &str, output: &str) {
         spawn_store::record_result(store, &spawn::SpawnResult::ok(id, output)).unwrap();
     }
 
     /// Records unit `u`'s implementer and `sdet` lens as answered substantively.
     fn u_implemented_and_lens_answered(store: &Store) {
-        courier_records(store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(
+        answer_spawn(store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        answer_spawn(
             store,
             &spawn_id("u", &lens_role("sdet"), 0),
             "lens: no blocker",
         );
     }
 
-    /// Parks unit `unit`'s first `role` spawn in the current run, as a courier would.
+    /// Parks unit `unit`'s first `role` spawn in the current run, as the replay driver does.
     fn park(store: &Store, unit: &str, role: &str, prompt: &str) {
         spawn_store::park_in_run(
             store,
@@ -1557,7 +1551,7 @@ mod tests {
         cfg: &Config,
         why: &str,
     ) -> Vec<crate::eventstore::Event> {
-        let err = replay_step(store, cfg).expect_err(why);
+        let err = replay_pass(store, cfg).expect_err(why);
         assert!(
             err.0
                 .contains("the gate reads the result channel, not emitted events")
@@ -1594,13 +1588,13 @@ mod tests {
 
     #[test]
     fn a_degenerate_adjudicator_halts_across_replay_steps_then_recovers_when_healthy() {
-        // Gap 18 / adj-u2gap18 fixes 2+3, driven on the PRODUCTION stepwise/replay driver
-        // across the park/replay boundary - the untested wedge the reject named (done-when
-        // line 37 requires a test INCLUDING replay):
+        // Gap 18 / adj-u2gap18 fixes 2+3, driven on the replay driver across the park/replay
+        // boundary - the untested wedge the reject named (done-when line 37 requires a test
+        // INCLUDING replay):
         //  - the adjudicator's ORIGINAL spawn and both respawns are each answered EMPTY by a
         //    courier (`build_result` records an empty success), so the run replays them to
         //    the respawn bound and HALTS loudly, naming the dead adjudicator;
-        //  - the retry ids are DETERMINISTIC across the separate step processes (each
+        //  - the retry ids are DETERMINISTIC across separate passes over the log (each
         //    respawn parks under its `~retry{n}` id and is answered independently);
         //  - the halt charges the unit no attempt and emits no misattributing lesson;
         //  - RECOVERY is real, not the dead "just re-run": results are last-write-wins, so
@@ -1620,45 +1614,45 @@ mod tests {
             spawn::is_recorded(&events, id)
         };
 
-        // Step 1: the implementer parks; a courier answers it.
-        replay_step(&store, &cfg).expect("a parked frontier is not a run failure");
+        // Step 1: the implementer parks; a recorded result answers it.
+        replay_pass(&store, &cfg).expect("a parked frontier is not a run failure");
         assert!(parked(&impl_id), "step 1 parks the implementer");
-        courier_records(&store, &impl_id, "implemented");
+        answer_spawn(&store, &impl_id, "implemented");
 
-        // Step 2: the implementer replays to `verified`, then the LENS parks. A courier
-        // answers it with a substantive review, so the halt below is provably the
+        // Step 2: the implementer replays to `verified`, then the LENS parks. A recorded
+        // result answers it with a substantive review, so the halt below is provably the
         // ADJUDICATOR's, not the lens's.
-        replay_step(&store, &cfg).unwrap();
+        replay_pass(&store, &cfg).unwrap();
         assert!(parked(&lens_id), "step 2 parks the lens");
-        courier_records(&store, &lens_id, "lens: reviewed, no blocker");
+        answer_spawn(&store, &lens_id, "lens: reviewed, no blocker");
 
-        // Step 3: the adjudicator's ORIGINAL spawn parks; the courier answers it EMPTY.
-        replay_step(&store, &cfg).unwrap();
+        // Step 3: the adjudicator's ORIGINAL spawn parks; `rigger result` answers it EMPTY.
+        replay_pass(&store, &cfg).unwrap();
         assert!(
             parked(&adj0),
             "step 3 parks the adjudicator's original spawn"
         );
-        courier_records(&store, &adj0, "");
+        answer_spawn(&store, &adj0, "");
 
         // Step 4: retry0 replays EMPTY -> degenerate -> the `~retry1` respawn parks.
-        replay_step(&store, &cfg).unwrap();
+        replay_pass(&store, &cfg).unwrap();
         assert!(
             parked(&adj1),
             "step 4 parks the deterministic ~retry1 respawn"
         );
-        courier_records(&store, &adj1, "  \n ");
+        answer_spawn(&store, &adj1, "  \n ");
 
         // Step 5: retry0+retry1 replay EMPTY -> the `~retry2` respawn parks.
-        replay_step(&store, &cfg).unwrap();
+        replay_pass(&store, &cfg).unwrap();
         assert!(
             parked(&adj2),
             "step 5 parks the deterministic ~retry2 respawn"
         );
-        courier_records(&store, &adj2, "");
+        answer_spawn(&store, &adj2, "");
 
         // Step 6: retry0+retry1+retry2 ALL replay EMPTY -> the respawn bound is exhausted
         // and the run HALTS loudly, naming the dead adjudicator.
-        let err = replay_step(&store, &cfg)
+        let err = replay_pass(&store, &cfg)
             .expect_err("an all-degenerate adjudicator halts the run across replay steps");
         assert!(
             err.0.contains("\"judge\"") && err.0.contains("adjudicator"),
@@ -1694,11 +1688,11 @@ mod tests {
         // RECOVERY: the operator's adjudicator is healthy now. Re-drive it and record a
         // SUBSTANTIVE approve for the latest retry id; results are last-write-wins, so this
         // supersedes the recorded empty - the honest recovery the halt message names.
-        courier_records(&store, &adj2, r#"{"verdict":"approve"}"#);
+        answer_spawn(&store, &adj2, r#"{"verdict":"approve"}"#);
 
         // Step 7: the run replays retry0+retry1 (empty, degenerate) then retry2 (now the
         // SUBSTANTIVE approve) -> the review folds normally, NO halt.
-        replay_step(&store, &cfg).expect("a corrected retry result recovers the run - no halt");
+        replay_pass(&store, &cfg).expect("a corrected retry result recovers the run - no halt");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
             folded_reviewed(&events),
@@ -1708,27 +1702,27 @@ mod tests {
 
     #[test]
     fn a_recorded_empty_lens_result_is_valid_on_replay_not_degenerate() {
-        // adj-u2gap18 fix 1 on the PRODUCTION replay driver: the misclassification is
+        // adj-u2gap18 fix 1 on the replay driver: the misclassification is
         // reachable WITHOUT any broken reviewer. A healthy lens emits its findings to the
         // graph and self-reports an EMPTY success; on the replay driver that empty recorded
         // result must fold as VALID (the graph is the channel), never a degenerate respawn
-        // that could eventually halt. Every spawn's result is pre-recorded (as couriers
-        // would across steps): the lens answered EMPTY, the adjudicator approved. The single
-        // replay step must reach `reviewed` with NO lens respawn and NO halt.
+        // that could eventually halt. Every spawn's result is pre-recorded (as `rigger
+        // result` records them across steps): the lens answered EMPTY, the adjudicator
+        // approved. The single replay step must reach `reviewed` with NO lens respawn and NO halt.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
-        // Begin the run before the couriers record (production ordering): the run-scoped
+        // Begin the run before any result is recorded (production ordering): the run-scoped
         // replay lookup answers only results inside the current run's slice.
         crate::run_store::ensure_started(&store, &[]).unwrap();
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
-        courier_records(
+        answer_spawn(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        answer_spawn(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
+        answer_spawn(
             &store,
             &spawn_id("u", ROLE_ADJUDICATOR, 0),
             r#"{"verdict":"approve"}"#,
         );
 
-        replay_step(&store, &cfg)
+        replay_pass(&store, &cfg)
             .expect("an empty lens result is valid on the replay driver, not a halt");
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -1746,7 +1740,7 @@ mod tests {
 
     #[test]
     fn an_emit_only_approve_gating_persona_hard_errors_on_the_replay_driver() {
-        // Spec 18, unit 3 done-when (line 43) on the PRODUCTION stepwise/replay driver -
+        // Spec 18, unit 3 done-when (line 43) on the replay driver -
         // the REAL failure path the in-process Stub fixtures cannot reach (the reject the
         // prior attempt earned: the backstop was captured SOLELY from the in-process emit
         // callback, so it was RUNTIME-DEAD here). A gating adjudicator that ran OUT OF
@@ -1757,12 +1751,12 @@ mod tests {
         // message - sourcing the emitted approve from the store, correlated to this spawn by
         // its [`META_SPAWN`] stamp (the native courier's `rigger emit --spawn <id>` records it
         // at emit time) - instead of folding the empty verdict as a reject and remediating.
-        // The couriers seed the store EXACTLY as they do across steps: each spawn parked then
+        // The couriers seed the store EXACTLY as a run records it: each spawn parked then
         // answered, the adjudicator's STAMPED emit landing between its own SpawnRequested and
         // SpawnResult.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
-        // Production ordering: the run starts before any courier records (the run-scoped
+        // Production ordering: the run starts before any result is recorded (the run-scoped
         // replay lookup answers only results inside the current run's slice).
         crate::run_store::ensure_started(&store, &[]).unwrap();
 
@@ -1776,7 +1770,7 @@ mod tests {
         let adj_id = spawn_id("u", ROLE_ADJUDICATOR, 0);
         park(&store, "u", ROLE_ADJUDICATOR, "adjudicate");
         emit_stamped_approve(&store, &adj_id);
-        courier_records(
+        answer_spawn(
             &store,
             &adj_id,
             "I have reviewed the unit and it looks good to me.",
@@ -1838,7 +1832,7 @@ mod tests {
         // NO approve of its own - a GENUINE verdict-less result. The sibling's approve lands at
         // a position within `u`'s (park, result] span, so a position window WOULD misattribute
         // it; the stamp is what keeps it the sibling's.
-        courier_records(
+        answer_spawn(
             &store,
             &u_adj,
             "I reviewed the unit; it is not acceptable as-is.",
@@ -1847,7 +1841,7 @@ mod tests {
         // Replaying `u`'s recorded result must NOT hard-error: the sibling's approve is stamped
         // with the SIBLING's id, so it is never attributed to `u`, whose verdict-less result
         // re-parks its review, not the verdict-channel-mismatch halt.
-        replay_step(&store, &cfg).expect(
+        replay_pass(&store, &cfg).expect(
             "a concurrent sibling's approve must not turn a unit's genuine verdict-less \
              result into a run-halting verdict-channel mismatch",
         );
@@ -1903,7 +1897,7 @@ mod tests {
 
         // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
         // persona.
-        courier_records(
+        answer_spawn(
             &store,
             &u_adj,
             "I have reviewed the unit and it looks good to me.",
@@ -1959,7 +1953,7 @@ mod tests {
 
         // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
         // persona.
-        courier_records(
+        answer_spawn(
             &store,
             &u_adj,
             "I have reviewed the unit and it looks good to me.",
@@ -1973,113 +1967,5 @@ mod tests {
             "a closed sibling window overlapping this unit's own approve must not suppress the \
              emit-only-approve backstop on the replay driver",
         );
-    }
-
-    /// A replay driver whose courier answers `answered` the moment this step re-parks it: the
-    /// worker's result lands while the step's conductor pass is still running, after the pass
-    /// already read the log and parked the spawn.
-    struct AnsweredMidPass<'a> {
-        replay: ReplayDriver<'a>,
-        store: &'a Store,
-        answered: String,
-    }
-
-    impl AgentDriver for AnsweredMidPass<'_> {
-        fn spawn(
-            &self,
-            agent: &AgentDef,
-            prompt: &str,
-            opts: &SpawnOpts,
-            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            let out = self.replay.spawn(agent, prompt, opts, emit);
-            if opts.id == self.answered && matches!(&out, Err(e) if is_parked(e)) {
-                courier_records(self.store, &opts.id, "lens: no blocker");
-            }
-            out
-        }
-    }
-
-    /// One `rigger step` pass over `store` through `driver`, printed as the step prints it.
-    fn step_through(store: &Store, cfg: &Config, driver: &dyn AgentDriver) -> spawn::Step {
-        let rs = run_isolated(cfg, &bare_deps(store, driver, &ExecRunner, ""))
-            .expect("a parked frontier is not a run failure");
-        let (events, _) = crate::run::read::read_current_run(store, STREAM).unwrap();
-        spawn::step_of_pass(&events, rs).unwrap()
-    }
-
-    /// Unit `u` in review with two lenses and an adversary: both lenses parked, `arch`
-    /// answered, and the returned step's pass re-parking `sdet` while its result lands - the
-    /// result is in the log the step reads back, yet the pass never folded it.
-    fn step_with_a_lens_answered_mid_pass() -> (Config, Store, spawn::Step) {
-        let mut cfg = reviewed_unit_cfg();
-        cfg.agents.insert("arch".into(), named("arch"));
-        cfg.agents.insert("devil".into(), named("devil"));
-        let review = &mut cfg.workflow.stages.get_mut("u").unwrap().review;
-        review.lenses = vec!["arch".into(), "sdet".into()];
-        review.adversary = "devil".into();
-        let arch = spawn_id("u", &lens_role("arch"), 0);
-        let sdet = spawn_id("u", &lens_role("sdet"), 0);
-
-        let store = store_with_implemented_unit(&cfg);
-        replay_step(&store, &cfg).unwrap();
-        let parked =
-            spawn::recorded(&store.read_stream(STREAM, 0, Direction::Forward).unwrap()).unwrap();
-        assert!(
-            parked.contains_key(&arch) && parked.contains_key(&sdet),
-            "both lenses park in one step"
-        );
-        courier_records(&store, &arch, "lens: no blocker");
-
-        let racing = AnsweredMidPass {
-            replay: ReplayDriver::new(&store, ""),
-            store: &store,
-            answered: sdet,
-        };
-        let step = step_through(&store, &cfg, &racing);
-        assert!(
-            step.wave.is_empty(),
-            "every request holds a result: {step:?}"
-        );
-        (cfg, store, step)
-    }
-
-    #[test]
-    fn a_lens_answered_during_the_pass_that_parked_it_is_not_a_fixpoint() {
-        // The pass never folded the late lens, so the adversary it owes is undispatched: the
-        // step must not print done, or the driver ends the run with the unit mid-review.
-        let (cfg, store, step) = step_with_a_lens_answered_mid_pass();
-        assert!(
-            !step.done,
-            "a pass that parked a spawn is not a fixpoint, whatever the log holds after it"
-        );
-
-        let next = step_through(&store, &cfg, &ReplayDriver::new(&store, ""));
-        let adversary = spawn_id("u", ROLE_ADVERSARY, 0);
-        assert!(
-            next.wave.iter().any(|w| w.id == adversary),
-            "the next step folds both lenses and dispatches the adversary: {next:?}"
-        );
-        assert!(!next.done);
-    }
-
-    #[test]
-    fn a_lens_answered_during_the_pass_that_parked_it_keeps_the_run_scratch() {
-        // The same race must not read as a terminal run to the scratch teardown either: the
-        // adversary about to run still needs the shared build cache and agent scratch.
-        let (_, store, step) = step_with_a_lens_answered_mid_pass();
-        let (events, _) = crate::run::read::read_current_run(&store, STREAM).unwrap();
-        assert!(
-            !crate::liveness::terminal_and_no_live_worker(&events, &step).unwrap(),
-            "a pass that parked a spawn leaves the run advancing, so its scratch stays"
-        );
-    }
-
-    /// A store whose unit `u` has parked and recorded its implementer, ready for review.
-    fn store_with_implemented_unit(cfg: &Config) -> Store {
-        let store = Store::open(":memory:").unwrap();
-        replay_step(&store, cfg).unwrap();
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        store
     }
 }

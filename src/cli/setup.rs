@@ -214,17 +214,17 @@ fn init_project(
     // breadcrumbs, and the per-machine store-connection secret file, when they are not already
     // ignored or tracked. `.claude/` is the machine-local install;
     // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
-    // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
-    // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
-    // ("untracked working tree files would be overwritten"). `.rigger/dash.attempt` (spec 69,
-    // round-8 fix) is a THIRD runtime breadcrumb of the identical shape - `ensure_run_dashboard`
-    // / `start_run_dashboard` rewrite it on every dash-ensure call exactly as they rewrite the
-    // other two - so it collides the same way if left untracked-and-not-ignored, and is ignored
-    // here for the same reason. `.rigger/store.conn` is the store resolver's per-machine secret
-    // file (spec 48 rung 3): it carries the connection string's credentials, so it is git-ignored
-    // BY CONSTRUCTION - a developer's credentials can never ride a committed file. Record WHICH
-    // patterns were appended so the summary reports the real gitignore change and nothing it did
-    // not do.
+    // (spec 39), which `rigger status` and `rigger watch` read - left untracked-and-not-ignored
+    // they get swept into a unit worktree's commit by `git add` and then collide with the live
+    // dash's rewrites when the conductor merges the unit ("untracked working tree files would be
+    // overwritten"). `.rigger/dash.attempt` (spec 69, round-8 fix) is a THIRD runtime breadcrumb of
+    // the identical shape - `start_run_dashboard` rewrites it on every dash start exactly as it
+    // rewrites `dash.url` - so it collides the same way if left untracked-and-not-ignored, and is
+    // ignored here for the same reason. `.rigger/store.conn` is the store resolver's per-machine
+    // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
+    // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
+    // Record WHICH patterns were appended so the summary reports the real gitignore change and
+    // nothing it did not do.
     let mut gitignore_added = Vec::new();
     for pattern in [
         ".claude/",
@@ -607,8 +607,8 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     })
 }
 
-/// The workflow file an earlier `rigger setup` installed for the in-session workflow driver,
-/// relative to the project root. That driver is removed, so setup deletes it, but only when
+/// The workflow file an earlier `rigger setup` installed for an in-session workflow driver
+/// rigger does not ship, relative to the project root. Setup deletes it, but only when
 /// [`RETIRED_PROVENANCE`] beside it shows rigger installed it ([`remove_retired_driver_files`]).
 const RETIRED_WORKFLOW: &str = ".claude/workflows/rigger.js";
 
@@ -674,8 +674,8 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
 /// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
-/// earlier setup installed for the removed in-session workflow driver. After it runs the user
-/// drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
+/// earlier setup installed for an in-session workflow driver rigger does not ship. After it runs
+/// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
     let root = Path::new(".");
@@ -1721,7 +1721,7 @@ to control their order.
 
 Run `rigger instructions` to read exactly what your agents are held to.
 
-These files are part of a run's definition pin: editing one mid-run halts the next step
+These files are part of a run's definition pin: editing one mid-run halts the run
 as a definition drift. Edit them between runs, or continue with `--rebase-definition`.
 ";
 
@@ -2170,9 +2170,10 @@ mod tests {
     use crate::test_support::{production_boundary, production_files};
 
     rigger::test_cases! {
-        /// `rigger setup` deletes what an earlier setup installed for the removed in-session
-        /// driver - the workflow with its provenance under `.claude/workflows/`, the `.rigger/shim`
-        /// tree, and the directory those files leave empty - naming each, and touches nothing else.
+        /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
+        /// does not ship - the workflow with its provenance under `.claude/workflows/`, the
+        /// `.rigger/shim` tree, and the directory those files leave empty - naming each, and
+        /// touches nothing else.
         retired_driver_files_are_all_removed: assert_retired_driver_removal(
             &[
                 ".claude/workflows/rigger.js",
@@ -2312,9 +2313,9 @@ mod tests {
 
     /// A new rebuild of `graph.db` - a file made beside a log that holds a position, whose
     /// seeding finds its empty ledger a lost fold, so its pay starts a fresh shadow - holds the
-    /// step lock its live-run probe took until the rebuild returns: a `rigger step` started at
+    /// step lock its live-run probe took until the rebuild returns: a `rigger run` started at
     /// either read of the log the rebuild folds, the shadow's and the tail's, refuses with the
-    /// busy token its courier retries on, and the next step acquires the lock once it returns.
+    /// busy token, and the next one acquires the lock once the rebuild returns.
     #[test]
     fn a_new_rebuild_holds_the_step_lock_its_probe_took_until_the_rebuild_returns() {
         let dir = tempfile::tempdir().unwrap();
@@ -2348,7 +2349,7 @@ mod tests {
         assert_eq!(
             (rebuilt, racing, next),
             (true, vec![Err(true), Err(true)], Ok(())),
-            "a step started at the shadow's read or the tail's refuses with the busy token, and \
+            "a run started at the shadow's read or the tail's refuses with the busy token, and \
              the next one acquires the lock once the rebuild returns"
         );
     }
@@ -3317,8 +3318,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
-        /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
+        /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the dash has two runtime breadcrumbs
+        /// under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
         /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
         /// commit by `git add`, then collide with the live dash's rewrites when the conductor
         /// merges the unit (`git merge` aborts with "untracked working tree files would be

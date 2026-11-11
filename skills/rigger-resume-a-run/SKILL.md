@@ -19,7 +19,7 @@ A run that is HELD, not dead, launches nothing until the hold ends, and its driv
 
 ## Anti-move
 
-Never hand-drive `rigger step` yourself in a shell to "help it along" - the driver owns stepping, and a hand step races it, which can double-spawn a unit or wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the adoptable state your relaunch would otherwise have continued from, in exchange for nothing - reserve it for the genuinely wedged-terminal case above.
+Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the adoptable state your relaunch would otherwise have continued from, in exchange for nothing - reserve it for the genuinely wedged-terminal case above.
 
 ## See also
 

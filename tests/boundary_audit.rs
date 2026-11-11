@@ -816,7 +816,6 @@ const GRAPH_OPENS: &[&str] = &[
     "src/cli/mod.rs:open_graph_for_write",
     "src/cli/mod.rs:open_graph_to_read",
     "src/cli/mod.rs:standing_graph",
-    "src/cli/run.rs:cmd_step",
     "src/cli/run.rs:fold_recorded_result",
     "src/cli/run.rs:run_cli",
     "src/cli/setup.rs:rebuild_owed_graph",
