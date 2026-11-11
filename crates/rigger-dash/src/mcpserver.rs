@@ -10,10 +10,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 
 use crate::contextgraph::query::whole_graph_degree;
-use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Located, Projection};
+use crate::contextgraph::{
+    entity_site, open_unowed, site_fields, wired, EntitySite, Fold, Located, OpenGraph, RecordFold,
+};
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
 use crate::sidecar::{Peer, PeerDecision, PeerFinding, PeerLesson, RankedPeer, Sidecar};
+use rigger_domain::code_view::{Tests, ViewFilter};
 use rigger_domain::lookup::Lookup;
 
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
@@ -64,7 +67,11 @@ pub struct Server<'a> {
     /// agents that ground afterwards (the adversary / adjudicator). Without this, an
     /// emit would write findings only to the log and the side-car, and the graph - the
     /// system's cross-agent memory - would never see them.
-    graph: Option<&'a dyn Projection>,
+    graph: Option<&'a dyn RecordFold>,
+    /// Opens the context graph `rigger_graph` reads, once per call, wired via
+    /// [`with_context`](Server::with_context). `None` when none is wired: `rigger_graph` then
+    /// answers [`NO_GRAPH_WIRED`].
+    context: Option<&'a dyn OpenGraph>,
     /// The read-only grounder port `rigger_ground` answers through (spec 92, criterion 4's fix
     /// round), wired via [`with_grounder`] (or a resolution failure recorded through its `Err`
     /// arm) - the SAME port `rigger ground` resolves, so one dispatch and read loop answers
@@ -126,6 +133,7 @@ impl<'a> Server<'a> {
             store,
             stream: stream.to_string(),
             graph: None,
+            context: None,
             grounder: None,
             grounder_unavailable: None,
             lookup: None,
@@ -143,11 +151,17 @@ impl<'a> Server<'a> {
         self
     }
 
-    /// Wire the live context-graph projector so emitted events fold into the graph as
-    /// they are appended (rigger_emit's bridge to the graph, mirroring the conductor's own
-    /// `emit_with_actor`), and so `rigger_graph` has a projection to answer from.
-    pub fn with_graph(mut self, graph: &'a dyn Projection) -> Self {
+    /// Wire the record graph so emitted events fold into it as they are appended (rigger_emit's
+    /// bridge to the graph, mirroring the conductor's own `emit_with_actor`), and so the tools
+    /// that depend on the fold can tell whether it owes its rebuild.
+    pub fn with_graph(mut self, graph: &'a dyn RecordFold) -> Self {
         self.graph = Some(graph);
+        self
+    }
+
+    /// Wire the opener of the context graph `rigger_graph` reads.
+    pub fn with_context(mut self, context: &'a dyn OpenGraph) -> Self {
+        self.context = Some(context);
         self
     }
 
@@ -546,11 +560,10 @@ impl<'a> Server<'a> {
     /// STRUCTURE (`around`) and resolution (`show`) lookups. `lookup` answers through the wired
     /// [`Lookup`], which states in its own graph section why the graph did not answer (none wired,
     /// a rebuild owed), so it is never refused while its text and prose halves can answer, and it
-    /// answers as text. `around` and `show` read the SAME `graph` port `with_graph` already wires
-    /// for the emit fold - `around` serves [`crate::contextgraph::around`] (the
-    /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
-    /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
-    /// is needed for either selector. Both render a node through [`site_object`] (spec 119, SHOW
+    /// answers as text. `around` and `show` read the graph [`with_context`](Server::with_context)
+    /// opens, under the call's `tests` filter - `around` serves [`crate::contextgraph::around`]
+    /// (the graph's subgraph plus the seed's callers), `show` its `locate` - and each answers its
+    /// honesty `label` (6.1) as a field. Both render a node through [`site_object`] (spec 119, SHOW
     /// IS ONE RENDERER): `show` the located site whole, `around` every node of the loaded `Graph`
     /// by [`entity_site`] at its edge count there, less the [`AROUND_OMITTED`] `summary` entry.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
@@ -561,22 +574,28 @@ impl<'a> Server<'a> {
         if terms.is_empty() && show.is_empty() && around.is_empty() {
             return Err(GRAPH_ARGUMENTS_MISSING.into());
         }
+        let filter = tests_filter(args.get("tests"))?;
         if !terms.is_empty() {
             let lookup = self
                 .lookup
                 .ok_or("rigger_graph: no lookup is wired on this server")?;
-            let graph = self.graph.ok_or_else(|| NO_GRAPH_WIRED.to_string());
+            let graph = match (self.graph, self.context) {
+                (Some(fold), Some(context)) => open_unowed(fold, context, filter).map_err(|e| e.0),
+                _ => Err(NO_GRAPH_WIRED.to_string()),
+            };
             return lookup
-                .lookup(&terms, graph)
+                .lookup(&terms, graph.as_deref().map_err(Clone::clone))
                 .map(Value::String)
                 .map_err(|e| format!("rigger_graph: {e}").into());
         }
-        let graph = self
-            .graph
+        let context = self
+            .context
             .ok_or(format!("rigger_graph: {NO_GRAPH_WIRED}"))?;
         self.refuse_if_rebuild_owed("rigger_graph")?;
+        let graph = context.open(filter).map_err(|e| e.to_string())?;
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
+            let label = graph.stamp_label().to_string();
             return Ok(match located {
                 // A record the graph no longer holds (pruned by `rigger reset --runs`, which
                 // deletes no event) is read from the run store's log, as `rigger peers` reads it.
@@ -585,24 +604,29 @@ impl<'a> Server<'a> {
                     .site_of(show)
                 {
                     Some(site) => json!({
+                        "label": label,
                         "status": "one",
                         "site": site_object(&site, &[]),
                         "note": crate::sidecar::LOGGED_SITE_NOTE,
                     }),
-                    None => json!({"status": "none"}),
+                    None => json!({"label": label, "status": "none"}),
                 },
                 Located::Many(cands) => json!({
+                    "label": label,
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
-                Located::One(site) => json!({"status": "one", "site": site_object(&site, &[])}),
+                Located::One(site) => {
+                    json!({"label": label, "status": "one", "site": site_object(&site, &[])})
+                }
             });
         }
-        let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
+        let g = crate::contextgraph::around(graph.as_ref(), &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
+            "label": graph.stamp_label().to_string(),
             "nodes": g
                 .nodes
                 .iter()
@@ -652,8 +676,8 @@ callers and callees; a term resolves exactly, by case or separator variant, by p
 and one that resolves to no entity is answered with the nearest names), `text` (every line of your \
 working tree holding the term, scanned live) and `prose:<kind>` (specs, their criteria, personas, \
 instructions, skills, docs, decisions, lessons and findings, ranked by relevance). Every section \
-answers from your own working tree: a graph hit whose file differs there from what the graph \
-ingested is withheld and its file named. Same as `rigger graph --lookup <term>...`. `show` \
+answers from your own working tree: a graph hit in a file that differs there from the commit \
+the graph describes is withheld and counted in the label heading the section. Same as `rigger graph --lookup <term>...`. `show` \
 <entity> gives its definition site (same as `rigger graph --show <entity>`); `around` \
 <file|entity> (optionally `depth`) its structural neighborhood (same as `rigger graph --around \
 <file|entity> --depth <n>`). Worked examples - who calls <name>: pass `around` <name>; where is \
@@ -677,7 +701,30 @@ fn graph_tool() -> Value {
         "show": {"type": "string"},
         "around": {"type": "string"},
         "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"},
+        "tests": {"type": "string", "enum": ["exclude", "include", "only"], "description": RIGGER_GRAPH_TESTS},
     }}})
+}
+
+/// CONTRACT: the `rigger_graph` `tests` argument's description.
+pub const RIGGER_GRAPH_TESTS: &str =
+    "whether test code is shown: `exclude` (the default), `include` or `only`";
+
+/// The view filter a `tests` argument names: `exclude` when it is absent.
+pub fn tests_filter(arg: Option<&Value>) -> Result<ViewFilter, String> {
+    let tests = match arg {
+        None => Tests::Exclude,
+        Some(v) => match v.as_str() {
+            Some("exclude") => Tests::Exclude,
+            Some("include") => Tests::Include,
+            Some("only") => Tests::Only,
+            _ => {
+                return Err(format!(
+                    "rigger_graph: `tests` is one of exclude, include or only, not {v}"
+                ))
+            }
+        },
+    };
+    Ok(ViewFilter { tests })
 }
 
 /// The terms of a `lookup` argument: an array of strings, or one string, each term trimmed and
@@ -739,7 +786,7 @@ pub struct Emitted {
 /// The fold is unreachable without the store's position ([`crate::eventstore::Appended::one`]):
 /// the graph's applied ledger is keyed BY position, so folding at a position the store never
 /// issued would mark that location applied forever and swallow the genuine event recorded there.
-pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+pub fn emit_event<'g, G: std::ops::Deref<Target = dyn RecordFold + 'g>>(
     store: &dyn EventStore,
     stream: &str,
     graph: impl FnOnce() -> Result<G, crate::contextgraph::Error>,
@@ -1572,7 +1619,8 @@ mod tests {
     /// appended, and folds into the wired graph as a node reachable from the file it is about.
     #[test]
     fn emit_event_appends_and_folds_a_well_shaped_lesson() {
-        use crate::contextgraph::{sqlite::Projector, Projection};
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::RecordsRead;
 
         let store = Store::open(":memory:").unwrap();
         let graph = Projector::open(":memory:", "test").unwrap();
@@ -1656,12 +1704,15 @@ mod tests {
         // graph_context (not via the conductor hand-threading prompts). De-noise (spec 43):
         // only the finding's CONTENT is projected (the node and its ABOUT edge to the code) -
         // the reviewer's provenance is NOT projected as a KIND_AGENT node or a REL_RAISED edge.
-        use crate::contextgraph::{self, sqlite::Projector, Projection};
+        use crate::contextgraph::{self, sqlite::Projector};
+        use crate::test_support::RecordsRead;
 
         let store = Store::open(":memory:").unwrap();
         let graph = Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_spawn("u/reviewer#0");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"ReviewFinding","data":{"id":"f1","summary":"skips the buffer authority","about":["combat.rs"]},"meta":{"actor":"tech-lens"}}}}"#;
@@ -2080,7 +2131,7 @@ mod tests {
         use rigger_grounder::lookup::TreeLookup;
 
         struct Owing;
-        impl Projection for Owing {
+        impl RecordFold for Owing {
             fn apply(
                 &self,
                 _: &Event,
@@ -2088,11 +2139,10 @@ mod tests {
             ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
-            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::projection_folds_no_entry!();
+            crate::record_fold_folds_no_entry!();
         }
 
         let tree = tempfile::tempdir().unwrap();
@@ -2102,12 +2152,14 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let lookup = TreeLookup::new(tree.path());
         let graph = Owing;
-        let cases: [(Option<&dyn Projection>, &str); 2] =
+        let empty = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&empty);
+        let cases: [(Option<&dyn RecordFold>, &str); 2] =
             [(Some(&graph), REBUILD_OWED), (None, NO_GRAPH_WIRED)];
         for (graph, reason) in cases {
             let mut server = Server::new(&store, "run").with_lookup(&lookup);
             if let Some(graph) = graph {
-                server = server.with_graph(graph);
+                server = server.with_graph(graph).with_context(&context);
             }
             let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"lookup":["gizmo"]}}}"#;
             let mut out = Vec::new();
@@ -2262,7 +2314,7 @@ mod tests {
     /// `rigger_graph`'s `show` selector on the lookup surface: seeds one real code-entity
     /// definition into a `Projector` (the same `CodeEntityExtracted` fold a real extraction
     /// pass produces) and drives it through `Server::call_tool`, proving the trait's new
-    /// [`Projection::locate`] reaches a real caller holding only `&dyn Projection` - the DI
+    /// [`ContextGraph::locate`] reaches a real caller holding only `&dyn RecordFold` - the DI
     /// extension this fix round adds, reusing the SAME `graph` port `with_graph` already wires
     /// for the event fold, rather than a second implementation reaching for the concrete
     /// `sqlite::Projector` from outside the crate.
@@ -2281,8 +2333,10 @@ mod tests {
         e.position = 1;
         crate::test_support::folds(&graph, std::slice::from_ref(&e));
 
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"frobnicate"}}}"#;
@@ -2305,8 +2359,10 @@ mod tests {
     ) -> Value {
         let store = Store::open(":memory:").unwrap();
         let grounder = crate::grounder::Nop;
+        let context = crate::test_support::RecordsOnly(graph);
         let server = Server::new(&store, "run")
             .with_graph(graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
@@ -2342,14 +2398,20 @@ mod tests {
             )
             .unwrap();
         let grounder = crate::grounder::Nop;
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
         let show = |id: &str| {
             call(&server, &tools_call("rigger_graph", json!({"show": id})))["result"]
                 ["structuredContent"]
                 .clone()
         };
+        let label = crate::contextgraph::ContextGraph::stamp_label(
+            &crate::test_support::records_graph(&graph),
+        )
+        .to_string();
         assert_eq!(
             [show("d-old"), show("nope")],
             [
@@ -2357,8 +2419,9 @@ mod tests {
                     "status": "one",
                     "site": {"id": "d-old", "kind": "decision", "degree": 2, "summary": "chose X"},
                     "note": "read from the event log: the graph no longer holds this record",
+                    "label": label,
                 }),
-                json!({"status": "none"}),
+                json!({"status": "none", "label": label}),
             ]
         );
     }
@@ -2431,7 +2494,10 @@ mod tests {
             ],
             "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
-        crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
+        crate::test_support::assert_around_is_entity_sites(
+            &crate::test_support::records_graph(&graph),
+            &nodes,
+        );
         crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
     }
 
@@ -2466,7 +2532,7 @@ mod tests {
         use crate::grounder::Nop;
 
         struct Owing;
-        impl Projection for Owing {
+        impl RecordFold for Owing {
             fn apply(
                 &self,
                 _: &Event,
@@ -2474,18 +2540,20 @@ mod tests {
             ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
-            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::projection_folds_no_entry!();
+            crate::record_fold_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Owing;
+        let empty = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&empty);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder))
             .with_spawn("u/implementer#0");
         let call = |name: &str, args: &str| {
@@ -2556,8 +2624,10 @@ mod tests {
             crate::test_support::folds(&graph, std::slice::from_ref(&e));
         }
 
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"shared"}}}"#;
@@ -2832,9 +2902,11 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_grounder(Ok(&grounder))
             .with_graph(&graph)
+            .with_context(&context)
             .with_spawn("u/implementer#0");
 
         for (name, args) in [
@@ -2888,8 +2960,10 @@ mod tests {
         );
         e.position = 1;
         crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let context = crate::test_support::RecordsOnly(&graph);
         let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let frame = raw_frame(

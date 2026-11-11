@@ -1832,7 +1832,7 @@ pub fn graph_json(
 // ---------------------------------------------------------------------------
 // The DIRECTED-CALL views (spec 52 c4): `/api/graph?view=calls&dir=down|up|both`. A second seeded
 // branch beside the neighborhood, dispatching to the store-side directed traversal
-// `Projection::calls` through the SAME spec-45 lazy direct-projection provider - never the state
+// `ContextGraph::calls` through the SAME spec-45 lazy direct-projection provider - never the state
 // poll, never a second traversal implementation. The response reuses the [`Neighborhood`] shape with
 // the additive `layer`/`frontier`/`back`/`referenced_not_called`/`dir` fields, so the layered
 // left-to-right renderer draws it; an absent `view` keeps the neighborhood byte-identical.
@@ -7471,7 +7471,7 @@ mod tests {
         // empty result. Fold a small run (a unit, and a decision it made governing a file) into a
         // real projection, then seed it with graph_seeds output and confirm a live neighborhood.
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::Projection;
+        use crate::test_support::RecordsRead;
         let run = positioned(vec![
             ev(
                 "UnitStarted",
@@ -7518,7 +7518,7 @@ mod tests {
         // the empty panel the raw unit seed would otherwise yield. This drives the ACTUAL route the
         // click crosses, which the graph_seeds-only tests never touch (adj-u43c1-click-to-seed).
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::Projection;
+        use crate::test_support::RecordsRead;
 
         // A run's events in production shape: the unit, a decision its implementer emitted and a
         // finding a reviewer drew ABOUT the unit - BOTH stamped with their emitting spawn (`u1`'s
@@ -8923,9 +8923,10 @@ mod tests {
     mod calls_route_c4 {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{CallGraph, CallNode, Direction, Projection};
+        use crate::contextgraph::{CallGraph, CallNode, Direction};
         use crate::test_support::calls_edge;
         use crate::test_support::plain;
+        use crate::test_support::RecordsRead;
         use crate::test_support::{apply_call, apply_def};
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
@@ -9153,7 +9154,7 @@ mod tests {
 
         /// The dispatch: `view=calls` runs the store-side traversal through the provider and returns
         /// its layered body; an absent `view` DECLINES (so `handle_conn` falls through to the
-        /// byte-identical neighborhood). Drives the REAL `Projection::calls` through a store-backed
+        /// byte-identical neighborhood). Drives the REAL `ContextGraph::calls` through a store-backed
         /// provider closure, so it proves the route wired the direction/seed onto the traversal.
         #[test]
         fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {

@@ -73,6 +73,9 @@ mod fold_fixtures;
 mod scratch_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use scratch_fixtures::temp_root;
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]

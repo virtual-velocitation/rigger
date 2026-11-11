@@ -15,7 +15,7 @@ use crate::budget::{self, BuildBudget};
 use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
 #[cfg(test)]
 use crate::config_store;
-use crate::contextgraph::{self, Graph, Projection};
+use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
 use crate::eventstore::Direction;
 use crate::eventstore::{Appended, Event, EventStore};
@@ -2773,8 +2773,11 @@ pub struct Deps<'a> {
     pub repo: String,
     /// Grounds each agent before it runs; None grounds nothing.
     pub grounder: Option<&'a dyn Grounder>,
-    /// The live context-graph projection, folded during the run; None disables it.
-    pub graph: Option<&'a dyn Projection>,
+    /// The record graph the run folds its events into; None folds nothing.
+    pub graph: Option<&'a dyn RecordFold>,
+    /// Opens the context graph each grounding read reads, once per read so it follows the code
+    /// store as merges advance it; None reads nothing.
+    pub context: Option<&'a dyn OpenGraph>,
     /// The spec's acceptance criteria; when non-empty the coverage gate refuses a
     /// run unless every criterion is covered by a stage.
     pub criteria: Vec<String>,
@@ -2817,7 +2820,7 @@ impl<'a> Deps<'a> {
         &self,
     ) -> crate::ingest::FoldingStore<
         'a,
-        impl Fn() -> Result<&'a dyn Projection, contextgraph::Error> + Send + Sync + 'a,
+        impl Fn() -> Result<&'a dyn RecordFold, contextgraph::Error> + Send + Sync + 'a,
     > {
         crate::ingest::folding_into(self.store, self.graph, self.log)
     }
@@ -4005,7 +4008,7 @@ impl RunCtx<'_> {
 
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
     /// events to the run stream in ONE append and fold them into the live graph in ONE batched
-    /// fold, at the transaction cadence [`Projection::apply_batch`] states - spec 49's batched
+    /// fold, at the transaction cadence [`RecordFold::apply_batch`] states - spec 49's batched
     /// fold, rather than one fold per event, since the measured cold-build throughput was
     /// transaction-cadence bound. Run-id stamping is
     /// [`stamped`](RunCtx::stamped) (spec 06, unit 1), which this and the ingest sink's ledger
@@ -4199,7 +4202,7 @@ impl RunCtx<'_> {
     /// The entry is built by its one constructor, stamped with the run id as every event this run
     /// appends is, and appended and folded with its extraction through the ledger form of the
     /// folding store, in ONE store append, the fold committing the entry and its extraction in
-    /// the transaction [`Projection::apply_generation`] states. Everything slow happened
+    /// the transaction [`RecordFold::apply_generation`] states. Everything slow happened
     /// before the append: the fold only moves the extraction in. A failed append fails the emit;
     /// a fold that could not be made - the graph owes its rebuild, its write lock or catch-up held
     /// the fold past the appender's ceiling (spec 124), or it refused the write - leaves the entry
@@ -12141,15 +12144,17 @@ impl RunCtx<'_> {
         // `grounded_seed`); `safe` is UNIONED with the grounder's safe view so it can only widen
         // (addendum 2.4). With no graph (or a graph read error) this returns the grounder radius
         // byte-for-byte.
-        let graph = match self.deps.graph {
-            Some(g) => g,
-            None => return base,
+        let Some(context) = self.deps.context else {
+            return base;
         };
         if base.safe.is_empty() {
             return base;
         }
         let seed = base.precise.clone();
-        let sub = match graph.subgraph(&seed, depth) {
+        let sub = match context
+            .open(Default::default())
+            .and_then(|graph| graph.subgraph(&seed, depth))
+        {
             Ok(sub) => sub,
             Err(_) => return base,
         };
@@ -12348,8 +12353,11 @@ impl RunCtx<'_> {
     /// render reads - or `None` with no graph, an empty seed, or a failed read. Its depth is the
     /// prompt render's own, independent of the blast radius's [`BLAST_RADIUS_GRAPH_DEPTH`].
     fn seeded_subgraph(&self, seed: &[String]) -> Option<Graph> {
-        match self.deps.graph {
-            Some(g) if !seed.is_empty() => g.subgraph(seed, 2).ok(),
+        match self.deps.context {
+            Some(context) if !seed.is_empty() => context
+                .open(Default::default())
+                .and_then(|graph| graph.subgraph(seed, 2))
+                .ok(),
             _ => None,
         }
     }
@@ -14614,7 +14622,7 @@ fn member_files(g: &Graph) -> BTreeMap<&str, &str> {
 const BLAST_RADIUS_GRAPH_DEPTH: i64 = 2;
 
 /// The CONFIDENCE-TIER blast radius (spec 29c criterion 2, addendum 6.2): TWO filters over the ONE
-/// tiered edge set a seeded [`Projection::subgraph`](crate::contextgraph::Projection::subgraph)
+/// tiered edge set a seeded [`ContextGraph::subgraph`](crate::contextgraph::ContextGraph::subgraph)
 /// traversal returns, replacing the hand-rolled `BlastRadius{precise,safe}` two-view split.
 ///
 /// - `precise` is the EXTRACTED sub-graph: the files reachable from the seed crossing ONLY
@@ -15879,6 +15887,7 @@ mod tests {
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::test_spawn_host;
     use crate::test_support::trimmed_stdout;
+    use crate::test_support::RecordsRead;
     use crate::test_support::DOC_ONLY_ROUND_RULE;
     use crate::test_support::GHOST_TEST_AUTHOR_REFUSAL;
     use crate::test_support::{assert_communication_once, COMMUNICATION_SECTION};
@@ -15934,6 +15943,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             }
         }
 
@@ -15993,10 +16003,10 @@ mod tests {
                 .unwrap();
         }
 
-        /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
+        /// A `RecordFold` double: counts per-EVENT folds (`apply`), records the size of every
         /// per-BATCH fold (`apply_batch`) and of the batch every LEDGER fold asks for
-        /// (`apply_generation`), serves `graph` as every subgraph, resolves no mention and holds
-        /// no generation.
+        /// (`apply_generation`) and holds no generation; opened as the context, it serves `graph`
+        /// as every subgraph and resolves no mention.
         #[derive(Default)]
         pub(super) struct SpyGraph {
             pub(super) graph: Graph,
@@ -16005,7 +16015,7 @@ mod tests {
             pub(super) entry_folds: Mutex<Vec<usize>>,
         }
 
-        impl Projection for SpyGraph {
+        impl RecordFold for SpyGraph {
             fn apply(
                 &self,
                 _e: &Event,
@@ -16021,18 +16031,6 @@ mod tests {
             ) -> Result<(), contextgraph::Error> {
                 self.batch_folds.lock().unwrap().push(events.len());
                 Ok(())
-            }
-            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
-                Ok(self.graph.clone())
-            }
-            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
-            fn nodes_of_kind(
-                &self,
-                _kind: &str,
-            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
-                Ok(Vec::new())
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 Ok(false)
@@ -16055,6 +16053,34 @@ mod tests {
             fn held_identities(&self) -> Result<Vec<String>, contextgraph::Error> {
                 Ok(Vec::new())
             }
+        }
+
+        impl OpenGraph for SpyGraph {
+            fn open(
+                &self,
+                _filter: crate::code_view::ViewFilter,
+            ) -> Result<Box<dyn contextgraph::ContextGraph + '_>, contextgraph::Error> {
+                Ok(Box::new(Serves(self.graph.clone())))
+            }
+        }
+
+        /// The context a [`SpyGraph`] opens: its graph as every subgraph, no mention resolved.
+        pub(super) struct Serves(Graph);
+
+        impl contextgraph::ContextGraph for Serves {
+            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
+                Ok(self.0.clone())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+            fn nodes_of_kind(
+                &self,
+                _kind: &str,
+            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
+                Ok(Vec::new())
+            }
+            crate::context_graph_holds_no_tree!();
         }
     }
     use support::*;
@@ -18181,6 +18207,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -18750,6 +18777,7 @@ mod tests {
         // "required" label, grep would seed LICENSE_DECOY.txt and the traversal WOULD render it,
         // reddening the negative assertion below - the discrimination stays sharp.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut pos = 0u64;
         let mut apply = |type_: &str, payload: serde_json::Value| {
             pos += 1;
@@ -18779,6 +18807,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         run_isolated(&cfg, &deps).unwrap();
 
@@ -21679,6 +21708,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut e = Event::new(
             contextgraph::TYPE_DECISION_MADE,
             serde_json::to_vec(&json!({
@@ -21718,6 +21748,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt and points the implementer at `rigger_peers` instead), so a REVIEW/planner
@@ -21750,6 +21781,7 @@ mod tests {
         )
         .unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut e = Event::new(
             contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
             serde_json::to_vec(&json!({
@@ -21793,6 +21825,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let verbatim = criterion.trim();
@@ -21905,6 +21938,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut e = Event::new(
             contextgraph::TYPE_DECISION_MADE,
             serde_json::to_vec(&json!({
@@ -21935,6 +21969,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let seed = vec!["modifier.rs".to_string()];
@@ -21973,6 +22008,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("modifier.rs"), "fn modifier() {}\n").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
 
         // K governing decisions, oldest (d0) first, each a chunky verdict; the event
         // position increases with i, so recency = i (newest = d{K-1}).
@@ -22021,6 +22057,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         // The decisions section lives on the FULL grounding slice (spec 36 trims it from the
         // implement prompt), so this cap behavior is exercised through `GroundingSlice::Full` for the
@@ -22544,6 +22581,7 @@ mod tests {
         // The unit's blast-radius file both findings are ABOUT; the grounder seeds it from
         // the stage's `coverage` query, exactly as a real unit grounds its own files.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let seed = vec!["slice.rs".to_string()];
 
         // Two findings ABOUT slice.rs in the production ReviewFinding shape (id/by/summary/
@@ -22618,6 +22656,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let prompt = ctx.graph_context(&seed, GroundingSlice::Full);
@@ -22735,6 +22774,7 @@ mod tests {
         // reads `&Graph` and appends to a local `String`.
         let seed = vec!["conductor.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
 
         // Apply one folded event at the next global position. `apply` and the later
         // `subgraph` calls each take `&self` (shared), so they coexist without conflict.
@@ -22801,6 +22841,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -22882,6 +22923,7 @@ mod tests {
     fn structural_grounding_is_one_seeded_traversal_over_the_unified_graph() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut pos = 0u64;
         let mut apply = |type_: &str, payload: serde_json::Value| {
             pos += 1;
@@ -22983,6 +23025,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23071,6 +23114,7 @@ mod tests {
         // populated below.
         let st_store = Store::open(":memory:").unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let driver = Stub::new();
         let mut by_query = HashMap::new();
         by_query.insert("touch run".to_string(), vec!["src/run.rs".to_string()]);
@@ -23088,6 +23132,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23197,6 +23242,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23311,6 +23357,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -23530,7 +23577,7 @@ mod tests {
         fn sink_deps<'a>(
             store: &'a dyn EventStore,
             driver: &'a dyn AgentDriver,
-            graph: &'a dyn Projection,
+            graph: &'a dyn RecordFold,
             repo: &str,
             hash_blob: Hash<'a>,
         ) -> Deps<'a> {
@@ -23609,7 +23656,7 @@ mod tests {
         }
 
         /// The names of the live code entities the graph reaches from the source file.
-        fn live_names(graph: &dyn Projection) -> Vec<String> {
+        fn live_names(graph: &impl contextgraph::Neighbors) -> Vec<String> {
             let mut names: Vec<String> = graph
                 .subgraph(&[SOURCE_PATH.to_string()], 2)
                 .unwrap()
@@ -23622,10 +23669,10 @@ mod tests {
             names
         }
 
-        /// A graph double over a real one: it forwards every read and fold, but for the one named
+        /// A graph double over a real one: it forwards every fold, but for the one named
         /// in `fails`, which answers an error carrying [`GRAPH_REFUSED`].
         struct FailingGraph<'a> {
-            inner: &'a dyn Projection,
+            inner: &'a dyn RecordFold,
             fails: GraphCall,
         }
 
@@ -23654,7 +23701,7 @@ mod tests {
             }
         }
 
-        impl Projection for FailingGraph<'_> {
+        impl RecordFold for FailingGraph<'_> {
             fn apply(
                 &self,
                 _e: &Event,
@@ -23684,18 +23731,6 @@ mod tests {
             }
             fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
                 self.unless(GraphCall::Owed, || self.inner.rebuild_owed())
-            }
-            fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, contextgraph::Error> {
-                self.inner.subgraph(seed, depth)
-            }
-            fn resolve(&self, mention: &str) -> Result<Option<String>, contextgraph::Error> {
-                self.inner.resolve(mention)
-            }
-            fn nodes_of_kind(
-                &self,
-                kind: &str,
-            ) -> Result<Vec<contextgraph::Node>, contextgraph::Error> {
-                self.inner.nodes_of_kind(kind)
             }
         }
 
@@ -24747,7 +24782,7 @@ mod tests {
         fn handed_twice_over_an_empty_store(
             root: &str,
             handed: &Handed,
-            graph: &dyn Projection,
+            graph: &dyn RecordFold,
             hash: Hash<'_>,
         ) -> ([Result<(), String>; 2], Recorded, Vec<CountedRead>) {
             let inner = Store::open(":memory:").unwrap();
@@ -25464,6 +25499,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -25586,6 +25622,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg1, &deps1).unwrap();
 
@@ -25625,6 +25662,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg2, &deps2).unwrap();
 
@@ -25692,7 +25730,7 @@ mod tests {
     #[cfg(feature = "symbols")]
     #[allow(clippy::type_complexity)]
     fn spec60_reachable(
-        graph: &dyn Projection,
+        graph: &impl contextgraph::Neighbors,
         seed: &[String],
     ) -> (
         BTreeSet<(String, String, BTreeMap<String, String>)>,
@@ -25728,7 +25766,10 @@ mod tests {
     /// file's structural edges", since an entity whose containing edge was superseded is no longer
     /// reachable from its file however long its node row survives.
     #[cfg(feature = "symbols")]
-    fn spec60_reached_entities(graph: &dyn Projection, file: &str) -> BTreeSet<String> {
+    fn spec60_reached_entities(
+        graph: &impl contextgraph::Neighbors,
+        file: &str,
+    ) -> BTreeSet<String> {
         graph
             .subgraph(&[file.to_string()], 3)
             .unwrap()
@@ -25815,6 +25856,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
 
         // Run one records generation A of both files and the design doc.
@@ -25970,6 +26012,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let mut campaigns = 0;
         let mut run_over_the_tree = |criterion: &'static str| {
@@ -26279,6 +26322,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -26320,6 +26364,7 @@ mod tests {
     fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
         let mut pos = 0u64;
         let mut apply = |type_: &str, payload: serde_json::Value| {
             pos += 1;
@@ -26415,6 +26460,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let cfg = Config::default();
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -28357,6 +28403,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).expect("a verdict-less re-park is a clean unwind");
         };
@@ -28418,6 +28465,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             // The whole point: a recorded review error is a CLEAN re-park, never a run failure.
             run_isolated(&cfg, &deps)
@@ -29518,6 +29566,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph.subgraph(&["d1".to_string()], 2).unwrap();
@@ -30022,6 +30071,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         // The caller asserts on the recorded run state + the store (the routing marker and
@@ -30300,6 +30350,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -30703,6 +30754,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -30971,6 +31023,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -31311,6 +31364,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
         };
@@ -32869,6 +32923,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -36106,6 +36161,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -37104,6 +37160,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -39313,6 +39370,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -39492,6 +39550,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -40042,7 +40101,7 @@ mod tests {
             .len();
 
         let step = |store: &dyn EventStore,
-                    graph: Option<&dyn Projection>,
+                    graph: Option<&dyn RecordFold>,
                     repo: &str|
          -> Vec<CountedRead> {
             let counted = ReadCountingStore::new(store);
@@ -40439,6 +40498,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let g = graph
@@ -41085,6 +41145,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         for name in ["s1", "s2", "s3"] {
@@ -41150,6 +41211,7 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
 
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
@@ -41208,6 +41270,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&context),
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
@@ -41892,6 +41955,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -42126,6 +42190,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         // F3: the zero limit bounds the STAGE too - an infra red is never charged, and with no
         // rerun to give, the first one halts the step.
@@ -42210,6 +42275,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             // An infra outage halts the step (F3) and a flaky failure escalates: either way the
             // run ends, and only the gate runs and the ratchet are under test here.
@@ -44127,6 +44193,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
 
         let rs = run_isolated(&cfg, &deps).unwrap();
@@ -44255,6 +44322,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
@@ -44539,6 +44607,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -44590,6 +44659,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -44797,7 +44867,7 @@ mod tests {
     /// the grounder alone never would, and never the AMBIGUOUS (text-only) ones.
     #[test]
     fn grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grounder_radius() {
-        // A `Projection` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
+        // A `RecordFold` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
         // wiring is exercised over a discriminating multi-tier edge set (a real 29a fold scopes a
         // reference to its own file, so it cannot produce a cross-file INFERRED target to split on).
         // A grep grounder over a temp tree whose only match seeds the traversal on combat.rs.
@@ -44833,6 +44903,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let base = RunCtx::for_test(&cfg, &base_deps).grounded_blast_radius(&st);
         assert_eq!(
@@ -44857,6 +44928,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: Some(&graph),
         };
         let r = RunCtx::for_test(&cfg, &deps).grounded_blast_radius(&st);
 
@@ -44901,6 +44973,7 @@ mod tests {
         let deps = Deps {
             grounder: Some(&grounder),
             graph: Some(&graph),
+            context: Some(&graph),
             ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
@@ -44994,15 +45067,16 @@ mod tests {
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
+        let context = crate::test_support::RecordsOnly(&graph);
         // The safe view of each criterion in `criteria`, through the production radius.
         let radii_of = |grounder: &dyn Grounder,
-                        graph: Option<&dyn Projection>,
+                        context: Option<&dyn OpenGraph>,
                         depth: i64,
                         criteria: &[(String, String)]|
          -> Vec<(String, Vec<String>)> {
             let deps = Deps {
                 grounder: Some(grounder),
-                graph,
+                context,
                 ..stub_deps(&store, &driver, Vec::new())
             };
             let ctx = RunCtx::for_test(&cfg, &deps);
@@ -45056,7 +45130,7 @@ mod tests {
                             .map(|c| (id.clone(), c))
                             .collect();
                         let radius: BTreeSet<String> =
-                            radii_of(grounder, Some(&graph), depth, &criteria)
+                            radii_of(grounder, Some(&context), depth, &criteria)
                                 .into_iter()
                                 .flat_map(|(_, r)| r)
                                 .collect();
@@ -45096,11 +45170,11 @@ mod tests {
             .map(|d| d.parse().unwrap())
             .unwrap_or(BLAST_RADIUS_GRAPH_DEPTH);
         println!("retention at graph depth {depth}");
-        let radii_with = |grounder: &dyn Grounder, graph: Option<&dyn Projection>| {
-            radii_of(grounder, graph, depth, &units)
+        let radii_with = |grounder: &dyn Grounder, context: Option<&dyn OpenGraph>| {
+            radii_of(grounder, context, depth, &units)
         };
-        let combined = radii_with(&symbols, Some(&graph));
-        let structural = radii_with(&structural_only, Some(&graph));
+        let combined = radii_with(&symbols, Some(&context));
+        let structural = radii_with(&structural_only, Some(&context));
         for (label, grounder) in [
             ("no graph", &symbols as &dyn Grounder),
             ("no graph, structural", &structural_only),
@@ -45297,6 +45371,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
@@ -45391,6 +45466,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         assert_eq!(ctx.grounded_seed(&st), vec!["named.rs".to_string()]);
@@ -45814,6 +45890,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         let radii = ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -45852,6 +45929,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let plain_ctx = RunCtx::for_test(&cfg, &plain_deps);
         let plain_radii = plain_ctx.dag_unit_blast_radii(&stages, "gate", &none, &none);
@@ -45986,6 +46064,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(
@@ -46148,6 +46227,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -46815,6 +46895,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49437,6 +49518,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49489,6 +49571,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49524,6 +49607,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49600,6 +49684,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49715,6 +49800,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
 
@@ -49856,6 +49942,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap()
         };
@@ -49897,6 +49984,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -49972,6 +50060,7 @@ mod tests {
                 check_emit: &crate::contextgraph::check_emit,
                 spawn_host: test_spawn_host(),
                 code_store: None,
+                context: None,
             };
             run_isolated(&cfg, &deps).unwrap();
         }
@@ -50166,6 +50255,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs = run_isolated(&cfg, &deps).unwrap();
         assert!(
@@ -52123,6 +52213,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs1 = run_isolated(&cfg, &deps1).unwrap();
         assert_eq!(
@@ -52149,6 +52240,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         let rs2 = run_isolated(&cfg, &deps2).unwrap();
         assert_eq!(
@@ -53591,6 +53683,7 @@ mod tests {
             check_emit: &crate::contextgraph::check_emit,
             spawn_host: test_spawn_host(),
             code_store: None,
+            context: None,
         };
         run_isolated(&cfg, &deps).unwrap();
 
