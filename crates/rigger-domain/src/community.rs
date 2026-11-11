@@ -51,6 +51,7 @@ use crate::contextgraph::{
     REL_CONTAINS, REL_REFERENCES, TIER_AMBIGUOUS, TYPE_COMMUNITY_ASSIGNED,
 };
 use crate::eventstore::Event;
+use crate::resolve::{hop, Hop};
 
 /// The default resolution grain (spec 53): 1.0. Higher resolutions yield more and smaller
 /// communities; the grain knob's SEMANTICS (monotonicity, coexisting grains) are a later criterion's
@@ -80,6 +81,17 @@ fn fnv1a_hex(s: &str) -> String {
         h = h.wrapping_mul(FNV_PRIME);
     }
     format!("{h:016x}")
+}
+
+/// Whether an edge of `rel` onto a node of `to_kind` couples its ends: a call, a reference or a
+/// containment, but a module declaration's containment of its file.
+pub fn couples(rel: &str, to_kind: Option<&str>) -> bool {
+    [REL_CALLS, REL_REFERENCES, REL_CONTAINS].contains(&rel) && !declares_a_module(rel, to_kind)
+}
+
+/// Whether such an edge enters the coupling layer: it couples and its tier resolved.
+fn is_coupling(rel: &str, tier: &str, to_kind: Option<&str>) -> bool {
+    couples(rel, to_kind) && tier != TIER_AMBIGUOUS
 }
 
 /// An undirected, weighted coupling graph built from the projection's structure layer: the input
@@ -136,17 +148,15 @@ impl Coupling {
         }
         // Canonicalize a node id: a bare placeholder resolves to the UNIQUE call-target
         // definition sharing its leaf (EXACTLY ONE resolves; ZERO or MANY stays itself, honest by
-        // construction) - the SAME unique-leaf rule the directed calls walk (spec 52) applies at
-        // query time, here over the in-memory whole-graph read so the undirected coupling layer
-        // genuinely spans files instead of stopping at same-file bare placeholders. Every other
-        // node (a real definition, a file, a non-code node) is itself.
+        // construction) - the resolver's one "exactly one" decision ([`hop`]), here over the
+        // in-memory whole-graph read so the undirected coupling layer genuinely spans files
+        // instead of stopping at same-file bare placeholders. Every other node (a real
+        // definition, a file, a non-code node) is itself.
         let canon = |id: &str| -> String {
             if *bare.get(id).unwrap_or(&false) {
-                if let Some(leaf) = leaf_of(id) {
-                    if let Some(defs) = defs_by_name.get(leaf) {
-                        if defs.len() == 1 {
-                            return defs[0].to_string();
-                        }
+                if let Some(defs) = leaf_of(id).and_then(|leaf| defs_by_name.get(leaf)) {
+                    if let Hop::One(def) = hop(defs.clone()) {
+                        return def.to_string();
                     }
                 }
             }
@@ -160,16 +170,19 @@ impl Coupling {
         // construction. Self-loops (a same-file reference onto its own caller, or a bare placeholder
         // that resolved back onto its file-mate) are dropped inside `from_edges`.
         // A module declaration's `CONTAINS` onto its file couples nothing ([`declares_a_module`]).
+        Coupling::layer(g, canon)
+    }
+
+    /// The coupling layer of `g`: every coupling edge at a resolved tier ([`is_coupling`]), its
+    /// ends taken through `canon`, assembled by [`Coupling::from_edges`].
+    pub fn layer(g: &Graph, canon: impl Fn(&str) -> String) -> Self {
         let kind_of = g.kinds();
-        let edges = g.edges.iter().filter_map(|e| {
-            let coupling = e.rel == REL_CALLS || e.rel == REL_REFERENCES || e.rel == REL_CONTAINS;
-            let declaration = declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
-            if !coupling || declaration || e.tier == TIER_AMBIGUOUS {
-                return None;
-            }
-            Some((canon(&e.from), canon(&e.to)))
-        });
-        Coupling::from_edges(edges)
+        Coupling::from_edges(
+            g.edges
+                .iter()
+                .filter(|e| is_coupling(&e.rel, &e.tier, kind_of.get(e.to.as_str()).copied()))
+                .map(|e| (canon(&e.from), canon(&e.to))),
+        )
     }
 
     /// Assemble an undirected, weighted graph from a stream of edge OCCURRENCES - the ONE builder
