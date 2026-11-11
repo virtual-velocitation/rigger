@@ -18500,22 +18500,13 @@ mod tests {
         // "required" label, grep would seed LICENSE_DECOY.txt and the traversal WOULD render it,
         // reddening the negative assertion below - the discrimination stays sharp.
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let context = crate::test_support::RecordsOnly(&graph);
-        let mut pos = 0u64;
-        let mut apply = |type_: &str, payload: serde_json::Value| {
-            pos += 1;
-            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.define("metrics.rs", "project", "function", 2);
+        tree.define("LICENSE_DECOY.txt", "license_clause", "function", 1);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
         };
-        apply(
-            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "metrics.rs", "name": "project", "kind": "function", "line": 2, "lang": "rust", "fresh": true }),
-        );
-        apply(
-            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "LICENSE_DECOY.txt", "name": "license_clause", "kind": "function", "line": 1, "lang": "text", "fresh": true }),
-        );
         let criterion = "the metrics module projects first-pass yield";
         let deps = Deps {
             store: &st,
@@ -21502,17 +21493,12 @@ mod tests {
         )
         .unwrap();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let context = crate::test_support::RecordsOnly(&graph);
-        let mut e = Event::new(
-            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            serde_json::to_vec(&json!({
-                "file": "modifier.rs", "name": "modifier", "kind": "function", "line": 1,
-                "lang": "rust", "fresh": true,
-            }))
-            .unwrap(),
-        );
-        e.position = 1;
-        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.define("modifier.rs", "modifier", "function", 1);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         let unit = Stage {
@@ -22639,7 +22625,6 @@ mod tests {
     fn structural_grounding_is_one_seeded_traversal_over_the_unified_graph() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let context = crate::test_support::RecordsOnly(&graph);
         let mut pos = 0u64;
         let mut apply = |type_: &str, payload: serde_json::Value| {
             pos += 1;
@@ -22648,17 +22633,15 @@ mod tests {
             crate::test_support::folds(&graph, std::slice::from_ref(&e));
         };
 
-        // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file, plus a
-        // reference the file makes. Folds a `file` node, a `code-entity` (core.rs::run_unit) under a
-        // CONTAINS edge, and a REFERENCES edge to a referenced symbol - the file's code neighborhood.
-        apply(
-            contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-            json!({ "file": "core.rs", "name": "run_unit", "kind": "function", "line": 42, "lang": "rust", "fresh": true }),
-        );
-        apply(
-            contextgraph::TYPE_EDGE_INFERRED,
-            json!({ "file": "core.rs", "name": "spawn_agent", "lang": "rust" }),
-        );
+        // CODE NEIGHBORHOOD (29a): the tree's touched file defines `run_unit` and references
+        // `spawn_agent` - the file's code neighborhood, read from the tree.
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.files.push(crate::test_support::planted_file(
+            "core.rs",
+            &[("run_unit", "function")],
+            &[],
+            &["spawn_agent"],
+        ));
         // DECISION about the file (dev-loop DecisionMade -> GOVERNS edge).
         apply(
             contextgraph::TYPE_DECISION_MADE,
@@ -22670,30 +22653,31 @@ mod tests {
             json!({ "id": "f_core", "by": "arch", "unit": "u1", "summary": "a finding about core", "about": seed }),
         );
         // DESIGN-INTENT (29b): the handbook rule that GOVERNS the file and the RA section that
-        // SPECIFIES it. Each is a design-intent node (concept) plus a typed design-intent edge to
-        // the SAME `core.rs` node the code / decisions / findings hang off (addendum 6.1 one id
-        // space), so the ONE traversal reaches them too.
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop discipline rule", "doc": "docs/handbook/loops.md" }),
+        // SPECIFIES it, read from the tree's docs onto the SAME `core.rs` node the code /
+        // decisions / findings hang off (one id space), so the ONE traversal reaches them too.
+        tree.design_intent(
+            contextgraph::KIND_HANDBOOK_RULE,
+            "docs/handbook/loops.md",
+            "the loop discipline rule",
+            contextgraph::REL_GOVERNS,
+            "core.rs",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        tree.design_intent(
+            contextgraph::KIND_DESIGN_DOC,
+            "specs/29c.md",
+            "the RA section that specifies core",
+            contextgraph::REL_SPECIFIES,
+            "core.rs",
         );
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/29c.md", "title": "the RA section that specifies core", "doc": "specs/29c.md" }),
-        );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "specs/29c.md", "to": "core.rs", "rel": contextgraph::REL_SPECIFIES }),
-        );
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
 
         // CLAIM 1: ONE seeded traversal returns all four categories TOGETHER. A single
         // `subgraph(seed, 2)` reaches the code entity, the decision, the finding, AND both
         // design-intent nodes - the "one traversal, one graph" invariant this criterion owns.
-        let g = graph.subgraph(&seed, 2).unwrap();
+        let g = tree.subgraph(&graph, &seed, 2);
         let has_kind = |k: &str| g.nodes.iter().any(|n| n.kind == k);
         assert!(
             g.nodes
@@ -23214,84 +23198,82 @@ mod tests {
     fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let context = crate::test_support::RecordsOnly(&graph);
-        let mut pos = 0u64;
-        let mut apply = |type_: &str, payload: serde_json::Value| {
-            pos += 1;
-            let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
-        };
+        let mut tree = crate::test_support::PlantedTree::default();
 
         // DESIGN INTENT that BINDS the touched file (29b): the handbook rule that GOVERNS it, the RA
         // section that SPECIFIES it, the load-bearing decision that CONSTRAINS it, and the local
         // rationale that explains it. Each is a design-intent node plus a typed design-intent edge
         // to the SEED file `core.rs`, so the ONE seeded traversal reaches it and the design-intent
         // section renders it.
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop discipline rule governing core", "doc": "docs/handbook/loops.md" }),
+        tree.concept(
+            contextgraph::KIND_HANDBOOK_RULE,
+            "docs/handbook/loops.md",
+            "the loop discipline rule governing core",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        tree.link(
+            "docs/handbook/loops.md",
+            contextgraph::REL_GOVERNS,
+            "core.rs",
         );
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/29c.md#unified-traversal", "title": "the RA section specifying the unified traversal", "doc": "specs/29c.md" }),
+        tree.concept(
+            contextgraph::KIND_DESIGN_DOC,
+            "specs/29c.md#unified-traversal",
+            "the RA section specifying the unified traversal",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "specs/29c.md#unified-traversal", "to": "core.rs", "rel": contextgraph::REL_SPECIFIES }),
+        tree.link(
+            "specs/29c.md#unified-traversal",
+            contextgraph::REL_SPECIFIES,
+            "core.rs",
         );
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_ARCH_DECISION, "id": "docs/adr/0007.md", "title": "the load-bearing decision constraining core", "doc": "docs/adr/0007.md" }),
+        tree.concept(
+            contextgraph::KIND_ARCH_DECISION,
+            "docs/adr/0007.md",
+            "the load-bearing decision constraining core",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "docs/adr/0007.md", "to": "core.rs", "rel": contextgraph::REL_CONSTRAINS }),
+        tree.link("docs/adr/0007.md", contextgraph::REL_CONSTRAINS, "core.rs");
+        tree.concept(
+            contextgraph::KIND_RATIONALE,
+            "core.rs#L42",
+            "the local rationale explaining run_unit",
         );
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_RATIONALE, "id": "core.rs#L42", "title": "the local rationale explaining run_unit", "doc": "core.rs" }),
-        );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "core.rs#L42", "to": "core.rs", "rel": contextgraph::REL_EXPLAINS }),
-        );
+        tree.link("core.rs#L42", contextgraph::REL_EXPLAINS, "core.rs");
 
         // DECOY A (file-scope): a design-doc that SPECIFIES a DIFFERENT file (`other.rs`, not in the
         // seed) yet is REACHABLE in the subgraph because it CITES `core.rs` (a doc `references`
         // edge). Its binding edge targets a non-seed file, so the "of these files" section must NOT
         // surface it - proving the render scopes to design intent that binds the TOUCHED files.
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "specs/other.md#other", "title": "the RA section specifying OTHER not core", "doc": "specs/other.md" }),
+        tree.concept(
+            contextgraph::KIND_DESIGN_DOC,
+            "specs/other.md#other",
+            "the RA section specifying OTHER not core",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "specs/other.md#other", "to": "other.rs", "rel": contextgraph::REL_SPECIFIES }),
+        tree.link(
+            "specs/other.md#other",
+            contextgraph::REL_SPECIFIES,
+            "other.rs",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "specs/other.md#other", "to": "core.rs", "rel": contextgraph::REL_DOC_REFERENCES }),
+        tree.link(
+            "specs/other.md#other",
+            contextgraph::REL_DOC_REFERENCES,
+            "core.rs",
         );
         // DECOY B (relation-scope): a design-doc that only CITES `core.rs` (a doc `references`
         // edge), with NO code-binding SPECIFIES/GOVERNS/CONSTRAINS/explains edge. A mere citation is
         // not design intent that GOVERNS or SPECIFIES the file, so it must NOT surface.
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_DESIGN_DOC, "id": "docs/misc.md", "title": "a mere doc citation of core", "doc": "docs/misc.md" }),
+        tree.concept(
+            contextgraph::KIND_DESIGN_DOC,
+            "docs/misc.md",
+            "a mere doc citation of core",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "docs/misc.md", "to": "core.rs", "rel": contextgraph::REL_DOC_REFERENCES }),
-        );
+        tree.link("docs/misc.md", contextgraph::REL_DOC_REFERENCES, "core.rs");
 
         // Drive the PUBLIC grounding path. The grounder resolves the query to `core.rs` but its ref
         // TEXT is empty (`StubGrounder`), so any design-intent title that appears in the prompt can
         // ONLY have come from the graph traversal - the by-traversal-not-vector proof.
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
         let st_store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let mut by_query = HashMap::new();
@@ -23399,6 +23381,7 @@ mod tests {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut pos = 0u64;
+        let mut tree = crate::test_support::PlantedTree::default();
         let mut apply = |type_: &str, payload: serde_json::Value| {
             pos += 1;
             let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
@@ -23408,13 +23391,15 @@ mod tests {
 
         // A genuine handbook rule that GOVERNS the file - a design-intent node bound by the shared
         // GOVERNS relation, so the section renders and the discriminator is KIND, not relation.
-        apply(
-            contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-            json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/handbook/loops.md", "title": "the loop rule that governs core", "doc": "docs/handbook/loops.md" }),
+        tree.concept(
+            contextgraph::KIND_HANDBOOK_RULE,
+            "docs/handbook/loops.md",
+            "the loop rule that governs core",
         );
-        apply(
-            contextgraph::TYPE_DOC_LINK_EXTRACTED,
-            json!({ "from": "docs/handbook/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
+        tree.link(
+            "docs/handbook/loops.md",
+            contextgraph::REL_GOVERNS,
+            "core.rs",
         );
         // A DECISION that GOVERNS the SAME file through the SHARED GOVERNS relation - the exact leak
         // vector. It carries a `summary`, never a `title`, so a leaked line would render an empty
@@ -23424,7 +23409,7 @@ mod tests {
             json!({ "id": "d_leak_decision", "summary": "a governing decision that is not design intent", "governs": ["core.rs"] }),
         );
 
-        let g = graph.subgraph(&seed, 2).unwrap();
+        let g = tree.subgraph(&graph, &seed, 2);
         // Non-vacuity: the decision IS reachable in the subgraph, so the kind guard - not
         // reachability - is what must keep it out of the design-intent section.
         assert!(
@@ -23514,27 +23499,23 @@ mod tests {
             !b.contains(header),
             "no {what} must render no section header; got:\n{b}"
         );
-        g
     }
 
     crate::test_cases! {
         /// adv-u29c-3-empty-section-untested: a file whose subgraph carries a code neighborhood
         /// but NO design-intent node must render NOTHING for this section - never a bare
-        /// DESIGN_INTENT_HEADER over an empty body. Fold only a code definition of the file; the
+        /// DESIGN_INTENT_HEADER over an empty body. Plant only a code definition of the file; the
         /// design-intent section stays silent while the traversal has demonstrably reached the
         /// file. Non-vacuous: removing the empty-candidate early return renders a bare header,
         /// flipping both assertions.
         a_subgraph_with_no_design_intent_renders_no_design_intent_header: {
-            let g = assert_renders_no_section(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                json!({
-                    "file": "core.rs",
-                    "name": "run_unit",
-                    "kind": "function",
-                    "line": 42,
-                    "lang": "rust",
-                    "fresh": true,
-                }),
+            let seed = vec!["core.rs".to_string()];
+            let records = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let mut tree = crate::test_support::PlantedTree::default();
+            tree.define("core.rs", "run_unit", "function", 42);
+            let g = tree.subgraph(&records, &seed, 2);
+            assert_renders_no_section(
+                &g,
                 write_design_intent,
                 DESIGN_INTENT_HEADER,
                 "design intent",
@@ -23553,12 +23534,15 @@ mod tests {
         /// assertions.
         a_subgraph_with_no_code_definitions_renders_no_code_neighborhood_header: {
             assert_renders_no_section(
-                contextgraph::TYPE_DECISION_MADE,
-                json!({
-                    "id": "d_core",
-                    "summary": "a decision about the file, but no code was extracted",
-                    "governs": ["core.rs"],
-                }),
+                &fold_subgraph(
+                    contextgraph::TYPE_DECISION_MADE,
+                    vec![json!({
+                        "id": "d_core",
+                        "summary": "a decision about the file, but no code was extracted",
+                        "governs": ["core.rs"],
+                    })],
+                    &["core.rs".to_string()],
+                ),
                 write_code_neighborhood,
                 CODE_NEIGHBORHOOD_HEADER,
                 "code definitions",
@@ -23566,34 +23550,16 @@ mod tests {
         };
     }
 
-    /// Fold a list of `(file, name, kind, line)` code definitions into a fresh graph through the
-    /// PUBLIC `CODE_ENTITY_EXTRACTED` event API (the FIRST definition of each file carries the
-    /// `fresh` batch-head flag, exactly as a real 29a extraction pass emits it - so each file's
-    /// `CONTAINS` edges fold once), take the seeded `subgraph(seed, 2)`, and return the rendered
-    /// code-neighborhood section. This is the code-section analogue of `render_capped_decisions`.
+    /// Plant a list of `(file, name, kind, line)` code definitions in a tree beside an empty
+    /// record half, take the seeded `subgraph(seed, 2)`, and return the rendered code-neighborhood
+    /// section. This is the code-section analogue of `render_capped_decisions`.
     fn render_code_neighborhood(defs: &[(&str, &str, &str, u32)], seed: &[String]) -> String {
-        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
-        let mut pos = 0u64;
-        let mut seen_files: BTreeSet<&str> = BTreeSet::new();
+        let records = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let mut tree = crate::test_support::PlantedTree::default();
         for (file, name, kind, line) in defs {
-            pos += 1;
-            let fresh = seen_files.insert(file);
-            let mut e = Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&json!({
-                    "file": file,
-                    "name": name,
-                    "kind": kind,
-                    "line": line,
-                    "lang": "rust",
-                    "fresh": fresh,
-                }))
-                .unwrap(),
-            );
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
+            tree.define(file, name, kind, *line);
         }
-        let g = graph.subgraph(seed, 2).unwrap();
+        let g = tree.subgraph(&records, seed, 2);
         let mut b = String::new();
         write_code_neighborhood(&mut b, &g, seed);
         b
@@ -38245,21 +38211,16 @@ mod tests {
         };
         let seed = vec!["core.rs".to_string()];
         let design_intent = {
-            let doc = |type_: &str, payload: Value| {
-                Event::new(type_, serde_json::to_vec(&payload).unwrap())
-            };
-            let g = crate::test_support::fold_events([
-                doc(
-                    contextgraph::TYPE_DOC_CONCEPT_EXTRACTED,
-                    json!({ "kind": contextgraph::KIND_HANDBOOK_RULE, "id": "docs/loops.md", "title": "the loop rule", "doc": "docs/loops.md" }),
-                ),
-                doc(
-                    contextgraph::TYPE_DOC_LINK_EXTRACTED,
-                    json!({ "from": "docs/loops.md", "to": "core.rs", "rel": contextgraph::REL_GOVERNS }),
-                ),
-            ])
-            .subgraph(&seed, 2)
-            .unwrap();
+            let records = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+            let mut tree = crate::test_support::PlantedTree::default();
+            tree.design_intent(
+                contextgraph::KIND_HANDBOOK_RULE,
+                "docs/loops.md",
+                "the loop rule",
+                contextgraph::REL_GOVERNS,
+                "core.rs",
+            );
+            let g = tree.subgraph(&records, &seed, 2);
             let mut b = String::new();
             write_design_intent(&mut b, &g, &seed);
             b

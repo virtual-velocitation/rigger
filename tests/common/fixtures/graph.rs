@@ -367,6 +367,90 @@ pub fn planted_file(
     }
 }
 
+/// A planted tree: the files a test's code view holds, each built up as its extractor would read
+/// it - a design doc for a `.md` path, a Rust file ([`planted_file`]) otherwise.
+#[derive(Default)]
+pub struct PlantedTree {
+    pub files: Vec<rigger::code_facts::FileFacts>,
+}
+
+impl PlantedTree {
+    /// The planted file at `path`, added empty when the tree holds none.
+    pub fn file(&mut self, path: &str) -> &mut rigger::code_facts::FileFacts {
+        if let Some(i) = self.files.iter().position(|f| f.path == path) {
+            return &mut self.files[i];
+        }
+        let mut file = planted_file(path, &[], &[], &[]);
+        if path.ends_with(".md") {
+            file.lang = "markdown".to_string();
+            file.half = rigger::code_facts::Half::Design;
+        }
+        self.files.push(file);
+        self.files.last_mut().unwrap()
+    }
+
+    /// Define the file-level `leaf` of `kind` at `line` of `path`.
+    pub fn define(&mut self, path: &str, leaf: &str, kind: &str, line: u32) {
+        self.file(path).defs.push(rigger::code_facts::Def {
+            local: leaf.to_string(),
+            leaf: leaf.to_string(),
+            kind: kind.to_string(),
+            line,
+            end_line: line,
+            parent: None,
+            test: false,
+        });
+    }
+
+    /// The design-intent concept `id` of `kind` titled `title`, yielded by the document `id`
+    /// names (its text before any `#`).
+    pub fn concept(&mut self, kind: &str, id: &str, title: &str) {
+        let doc = id.split('#').next().unwrap();
+        self.file(doc)
+            .doc_concepts
+            .push(rigger::code_facts::DocConcept {
+                kind: kind.to_string(),
+                id: id.to_string(),
+                title: title.to_string(),
+            });
+    }
+
+    /// A design-intent link of `rel` from the concept `from` to the tree file `to`, yielded by
+    /// the document `from` names.
+    pub fn link(&mut self, from: &str, rel: &str, to: &str) {
+        self.file(to);
+        let doc = from.split('#').next().unwrap();
+        self.file(doc).doc_links.push(rigger::code_facts::DocLink {
+            from: from.to_string(),
+            rel: rel.to_string(),
+            to: to.to_string(),
+        });
+    }
+
+    /// A design-intent concept plus a typed code-binding link of `rel` to the tree file `to`, so
+    /// a traversal seeded on `to` reaches the concept.
+    pub fn design_intent(&mut self, kind: &str, id: &str, title: &str, rel: &str, to: &str) {
+        self.concept(kind, id, title);
+        self.link(id, rel, to);
+    }
+
+    /// The code view of the planted tree.
+    pub fn view(&self) -> rigger::code_view::FactsView {
+        facts_view(self.files.clone())
+    }
+
+    /// The subgraph `depth` hops around `seeds` that `records` composed with the planted tree
+    /// serves.
+    pub fn subgraph(
+        &self,
+        records: &dyn rigger::contextgraph::Neighbors,
+        seeds: &[String],
+        depth: i64,
+    ) -> Graph {
+        ContextGraph::subgraph(&view_graph(records, &self.view()), seeds, depth).unwrap()
+    }
+}
+
 /// An opener of the record half composed with the code view it holds ([`view_graph`]), whatever
 /// the filter: the context a test wires where the composition root wires the code store's.
 pub struct ViewedRecords<'a> {
