@@ -503,12 +503,25 @@ fn open_graph_to_read(
     graph_db: &str,
     project: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let existed = Path::new(graph_db).exists();
-    let graph = Projector::open(graph_db, project)?;
-    if let Some(note) = existed.then(|| rebuild_owed_note_of(&graph)).flatten() {
+    let (graph, note) = graph_to_read(graph_db, project, Projector::open)?;
+    if let Some(note) = note {
         eprintln!("{note}");
     }
     Ok(graph)
+}
+
+/// The `graph.db` at `graph_db` a read answers from, opened once through `open`, and the
+/// owed-rebuild note ([`rebuild_owed_note_of`]) that same open gives: none for a file the open
+/// created.
+fn graph_to_read<E>(
+    graph_db: &str,
+    project: &str,
+    open: impl FnOnce(&str, &str) -> Result<Projector, E>,
+) -> Result<(Projector, Option<String>), E> {
+    let existed = Path::new(graph_db).exists();
+    let graph = open(graph_db, project)?;
+    let note = existed.then(|| rebuild_owed_note_of(&graph)).flatten();
+    Ok((graph, note))
 }
 
 /// The environment variable carrying the server's full connection string (§48 rung 2).
@@ -5382,16 +5395,9 @@ mod tests {
     use rigger::spawn::SpawnEvent;
     use std::process::Command;
 
-    /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
-    /// owes its rebuild - never for a current file, and never by creating an absent one.
-    #[test]
-    fn the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("graph.db");
-        let graph_db = path.to_str().unwrap();
-        assert_eq!(graph_rebuild_owed_note(graph_db, "p"), None);
-        assert!(!path.exists(), "an absent graph.db is never created");
-
+    /// Fold one decision into the `graph.db` at `graph_db` for project `p`, current under today's
+    /// fold rule.
+    fn fold_one_decision(graph_db: &str) {
         let mut decision = Event::new(
             contextgraph::TYPE_DECISION_MADE,
             br#"{"id":"d","summary":"s","governs":[],"supersedes":""}"#.to_vec(),
@@ -5405,7 +5411,19 @@ mod tests {
             ),
             contextgraph::Fold::Folded
         );
-        drop(graph);
+    }
+
+    /// Spec 101: the note a read-only surface prints names `rigger setup` exactly when `graph.db`
+    /// owes its rebuild - never for a current file, and never by creating an absent one.
+    #[test]
+    fn the_rebuild_owed_note_speaks_only_for_a_graph_db_that_owes_it_and_creates_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let graph_db = path.to_str().unwrap();
+        assert_eq!(graph_rebuild_owed_note(graph_db, "p"), None);
+        assert!(!path.exists(), "an absent graph.db is never created");
+
+        fold_one_decision(graph_db);
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
             None,
@@ -5416,6 +5434,34 @@ mod tests {
         assert_eq!(
             graph_rebuild_owed_note(graph_db, "p"),
             Some(crate::test_support::rebuild_owed_note())
+        );
+    }
+
+    /// GIVEN no `graph.db`, a current one and one that owes its rebuild, WHEN a read opens it to
+    /// answer from, through an opener that counts, THEN each read opens the file exactly once and
+    /// takes the owed note, only for the file that owes it, from that one open.
+    #[test]
+    fn a_read_opens_graph_db_once_and_takes_its_owed_note_from_that_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let graph_db = path.to_str().unwrap();
+        let read = || {
+            let opens = std::cell::Cell::new(0);
+            let (_, note) = graph_to_read(graph_db, "p", |db, project| {
+                opens.set(opens.get() + 1);
+                Projector::open(db, project)
+            })
+            .unwrap();
+            (opens.get(), note)
+        };
+        assert_eq!(read(), (1, None), "a file the open creates");
+        fold_one_decision(graph_db);
+        assert_eq!(read(), (1, None), "a current file");
+        crate::test_support::stamp_user_version(&path, 0);
+        assert_eq!(
+            read(),
+            (1, Some(crate::test_support::rebuild_owed_note())),
+            "a file that owes its rebuild"
         );
     }
 
