@@ -64,9 +64,9 @@ impl<'a> Namespaced<'a> {
     /// written here so a consumer takes it rather than re-spelling it.
     ///
     /// It is published because a store-level MAINTENANCE operation has to address a project's
-    /// streams without going through the decorator: the migration of the derived index
-    /// (`sqlite::Store::shed_derived`) works on the backend directly, since rewriting and deleting
-    /// rows and reclaiming the file are not port operations. Reading the prefix from here rather than
+    /// streams without going through the decorator: the delete of the derived events
+    /// (`sqlite::Store::delete_derived`) works on the backend directly, since deleting rows and
+    /// reclaiming the file are not port operations. Reading the prefix from here rather than
     /// re-spelling `proj-<id>-` at the call site is what keeps that maintenance and every
     /// namespaced read and write on ONE SPELLING of the namespace, so a change to the wire form
     /// can never leave a maintenance command addressing streams that no longer exist.

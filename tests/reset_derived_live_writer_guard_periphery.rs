@@ -96,7 +96,7 @@ fn assert_compacted(said: (String, String, bool), why: &str) {
             true,
             format!(
                 "{}{}",
-                common::cli::NOTHING_TO_SHED_LINE,
+                common::cli::NOTHING_TO_DELETE_LINE,
                 common::cli::LOG_LEFT_AS_IT_STANDS_LINE
             )
         ),

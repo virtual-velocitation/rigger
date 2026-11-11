@@ -2,7 +2,7 @@
 //!
 //! `rigger validate` carries advisory-only checks (Design):
 //!   (a) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
-//!       events and file identities left and `rigger reset --derived`, the migration.
+//!       events left and `rigger reset --derived`, the delete.
 //!
 //! The symbols index has no staleness advisory: the code store holds the facts grounding reads
 //! and advances itself to the head, so there is no index file to drift.
@@ -12,14 +12,14 @@
 //! stdout/stderr/exit code - is pinned exactly as an operator sees it.
 //!
 //! What this file OWNS (criterion 4): the advisories' trigger conditions, their wording (the
-//! derived events and file identities left, the named fix each names), that a clean store draws
+//! derived events left, the named fix each names), that a clean store draws
 //! none and the exit status is unaffected either way, AND boundary-only
 //! properties neither advisory's own unit tests can see from inside their module: the LOG BLOAT
 //! advisory's sqlite-only boundary - a server-selected store must draw no warning from a local
 //! events.db sitting beside it, regardless of what that local file holds ("one resolution
 //! authority": `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset
 //! --derived` itself) - and its COUNT, every derived event of the project's run stream however
-//! its key or type repeats, since `rigger reset --derived` sheds every one of them. NOT OWNED: the
+//! its key or type repeats, since `rigger reset --derived` deletes every one of them. NOT OWNED: the
 //! underlying measurement primitive itself (`rigger::eventstore::sqlite::Store::count_derived`),
 //! which carries its own unit tests beside its implementation.
 //!
@@ -46,8 +46,8 @@ use std::path::Path;
 // ---------------------------------------------------------------------------------------
 
 /// Seed `root`'s event log with `rounds` recordings of ONE derived-index replay key, in the
-/// project's own namespaced stream - `rounds` derived events of one file identity, each of which
-/// `rigger reset --derived` sheds and the bloat advisory counts.
+/// project's own namespaced stream - `rounds` derived events, each of which `rigger reset
+/// --derived` deletes and the bloat advisory counts.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
     seed_derived_keys(root, &vec!["gc/src/a.rs@h1#0"; rounds]);
 }
@@ -75,8 +75,8 @@ fn seed_derived_events(root: &Path, keys: &[Option<&str>]) {
 }
 
 /// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT derived-index
-/// types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`): two derived events of the one
-/// file identity `key` names, each of which `rigger reset --derived` sheds.
+/// types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`): two derived events, each of
+/// which `rigger reset --derived` deletes.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
@@ -150,39 +150,32 @@ fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
 // ---------------------------------------------------------------------------------------
 
 /// Validate over an initialized project whose log `seed` shaped exits 0 and warns of log bloat
-/// exactly once, on the line naming `events` derived events of `identities` file identities
-/// left and `rigger reset --derived` (`why`).
-fn assert_validate_warns_of_log_bloat(
-    seed: impl FnOnce(&Path),
-    events: usize,
-    identities: usize,
-    why: &str,
-) {
+/// exactly once, on the line naming `events` derived events left and `rigger reset --derived`
+/// (`why`).
+fn assert_validate_warns_of_log_bloat(seed: impl FnOnce(&Path), events: usize, why: &str) {
     let err = validate_stderr_after(seed);
     assert_eq!(
         common::cli::bloat_lines(&err),
-        [common::cli::bloat_advisory_naming(events, identities)],
+        [common::cli::bloat_advisory_naming(events)],
         "{why}; stderr:\n{err}"
     );
 }
 
 rigger::test_cases! {
-    /// Any derived event is one the migration sheds, so a single recording already warns: no
+    /// Any derived event is one the delete removes, so a single recording already warns: no
     /// threshold stands between a store holding a derived event and its advisory.
     validate_warns_of_log_bloat_on_a_log_holding_one_derived_event: assert_validate_warns_of_log_bloat(
         |root| seed_duplicated_key(root, 1),
         1,
-        1,
-        "one derived event of one file identity is named",
+        "one derived event is named",
     );
     validate_warns_of_log_bloat_counting_every_recording_of_one_key: assert_validate_warns_of_log_bloat(
         |root| seed_duplicated_key(root, 6),
         6,
-        1,
-        "six recordings of one key are six derived events of one file identity",
+        "six recordings of one key are six derived events",
     );
     /// A log whose every key is recorded once but which holds six generations of one file is
-    /// six derived events of that one identity: the migration sheds all six, the latest too.
+    /// six derived events: the delete removes all six, the latest too.
     validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations: assert_validate_warns_of_log_bloat(
         |root| seed_derived_keys(
             root,
@@ -196,32 +189,28 @@ rigger::test_cases! {
             ],
         ),
         6,
-        1,
-        "six generations of one file are six derived events of one file identity",
+        "six generations of one file are six derived events",
     );
     /// The same replay key recorded once under two different derived types is two derived
-    /// events, both shed by `rigger reset --derived`, of the one identity the key names.
+    /// events, both deleted by `rigger reset --derived`.
     validate_warns_of_log_bloat_counting_a_key_recorded_under_two_derived_types: assert_validate_warns_of_log_bloat(
         |root| seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0"),
         2,
-        1,
-        "one key under two derived types is two derived events of one file identity",
+        "one key under two derived types is two derived events",
     );
-    /// A file identity is its prefix and file, so a `gc` and a `gd` batch of one file are two
-    /// and a second file a third.
-    validate_warns_of_log_bloat_naming_each_file_identity_once: assert_validate_warns_of_log_bloat(
+    /// The derived events of every file count: a `gc` and a `gd` batch of one file and a batch of
+    /// a second file are three.
+    validate_warns_of_log_bloat_counting_the_derived_events_of_every_file: assert_validate_warns_of_log_bloat(
         |root| seed_derived_keys(root, &["gc/src/a.rs@h1#0", "gc/src/b.rs@h1#0", "gd/src/a.rs@d1#0"]),
         3,
-        3,
-        "three recordings of three identities, a gc and a gd batch of one file being two",
+        "three recordings over two files and two prefixes are three derived events",
     );
     /// A derived event is left whether or not it names a file identity: a log whose derived
-    /// events all carry no replay key holds two events of no identity, and is warned of.
+    /// events all carry no replay key holds two derived events, and is warned of.
     validate_warns_of_log_bloat_on_a_log_whose_derived_events_all_name_no_identity: assert_validate_warns_of_log_bloat(
         |root| seed_derived_events(root, &[None, None]),
         2,
-        0,
-        "two derived events naming no identity are two derived events of no file identity",
+        "two derived events naming no identity are two derived events",
     );
 }
 

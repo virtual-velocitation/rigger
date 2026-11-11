@@ -223,25 +223,20 @@ fn discipline_body(ctx: &DocsContext) -> String {
          `rigger reset --runs` is a one-shot prune you run BEFORE launching the loop, never \
          against a live one.\n"
     );
-    let _ = writeln!(s, "## Event log hygiene: the one-time migration\n");
+    let _ = writeln!(s, "## Event log hygiene: the derived events\n");
     let _ = writeln!(
         s,
-        "The EVENT LOG keeps knowledge, never the derived index: an ingest records one ledger \
-         entry per file generation, and the graph re-derives the code entities, inferred edges, \
-         design links and doc concepts from your sources. A log recorded before that still holds \
-         the derived index itself, every generation of every file, and `rigger reset --derived` \
-         is the ONE-TIME MIGRATION that converts it: for each file it rewrites the first row of \
-         the file's LATEST derived batch into that generation's ledger entry, in place, and \
-         deletes every other derived event, so no derived event is left behind and events.db \
-         shrinks on disk. Every other event survives byte-for-byte - lessons, decisions, \
-         findings, gate verdicts, and the whole run history `rigger stats` and replay read. It \
-         writes nothing to graph.db, so the live graph is unchanged, and a later rebuild \
-         re-derives each entry's batch from the repository's objects and the tree. It reports \
-         the entries it converted, the derived events it shed and, on its own line, how many of \
-         those named no file - no replay key, or one that does not parse; no entry re-asserts \
-         what such an event asserted, so the live graph keeps it only until the first rebuild. \
-         Run again on a migrated log it says there is no derived event to shed - that is the \
-         expected report, not a failure. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
+        "The EVENT LOG keeps knowledge, never the derived index: the graph re-derives the code \
+         entities, inferred edges, design links, doc concepts, communities and concepts from your \
+         sources, and the log refuses every derived event. A log recorded before that still holds \
+         them, and `rigger reset --derived` DELETES THEM: in one transaction it deletes every \
+         derived event of the project's run stream, so no derived event is left behind and \
+         events.db shrinks on disk. `rigger setup` runs the same delete itself once the graph it \
+         rebuilds stands in place of the old one. Every other event survives byte-for-byte - \
+         lessons, decisions, findings, gate verdicts, and the whole run history `rigger stats` \
+         and replay read. It writes nothing to graph.db, so the live graph is unchanged. It \
+         reports how many derived events it deleted. Run again on a cleared log it says there is \
+         no derived event to delete - that is the expected report, not a failure. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
          a COMPLETE COPY of the log in the process's MEMORY while it does, never in a temporary \
          directory, so it needs free memory of about the size of your log, no \
          temporary-directory setting changes where the copy goes, and a crash leaves no \
@@ -250,19 +245,19 @@ fn discipline_body(ctx: &DocsContext) -> String {
          before it replaces the old pages, and the partition holding .rigger/ needs about the \
          compacted size of the log free while it does. A machine short of that memory or that \
          room fails the rewrite and nothing else: the rewrite rolls back and the log stays as \
-         the migration left it. It rewrites only when the FILE is holding reclaimable free \
+         the delete left it. It rewrites only when the FILE is holding reclaimable free \
          pages, which is not the same as this run having shed something: a run with nothing \
          to shed from an already-compact log leaves the file exactly as it found it and says \
          so, while a run that sheds nothing from a log still holding free pages \
          reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \
-         the migration has committed, the command still reports what it converted and shed and \
+         the delete has committed, the command still reports what it deleted and \
          names the failure, and because that change is durable and the space it freed is still \
          free in the file, re-running it is both safe and the way to reclaim that space. The two \
          flags COMPOSE \
          and each sheds its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
          graph rows and the derived index in one pass. Both are one-shot maintenance you run \
          BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: the \
-         migration leaves revision gaps by design, and a writer whose cursor was built before it \
+         delete leaves revision gaps by design, and a writer whose cursor was built before it \
          ran could reissue a gap and reorder the log, so it refuses while the run is live - a \
          `rigger run` holds its lock, an in-flight spawn (one with no recorded result, or only \
          its liveness fault) has a liveness marker younger than its wall-clock bound, or \
@@ -927,13 +922,12 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              run's stamp is older than the idle window; a courier's \
              (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
              own courier just before the reset never holds it back.",
-            "- `rigger reset --derived` migrates `events.db`, once: for each file it rewrites the \
-             first row of the file's latest derived batch into that generation's ledger entry, \
-             in place, deletes every other derived event, and vacuums so the file shrinks on \
-             disk. Every other event - every decision, finding, lesson, gate verdict, the whole \
-             run history - survives byte-for-byte. The migration runs on the embedded sqlite \
-             backend only, and it refuses (unless overridden with `--force-live`) while a run \
-             is live against the store.",
+            "- `rigger reset --derived` deletes every derived event of `events.db` in one \
+             transaction and vacuums so the file shrinks on disk; `rigger setup` runs the same \
+             delete once the graph it rebuilds is in place. Every other event - every decision, \
+             finding, lesson, gate verdict, the whole run history - survives byte-for-byte. The \
+             delete runs on the embedded sqlite backend only, and it refuses (unless overridden \
+             with `--force-live`) while a run is live against the store.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
              per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
@@ -946,7 +940,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
         "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
          tool outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
          hand-deleted row can desync the graph from the log in ways `rigger reset \
-         --derived`'s own migration is specifically built to avoid. A store \
+         --derived`'s own delete is specifically built to avoid. A store \
          file that is genuinely corrupt is an incident to fix at its root, never a reason \
          to reach for a database client.\n",
         "rigger-build-graph if `graph.db` needs regenerating rather than pruning.\n",
@@ -965,8 +959,8 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
         &[],
         &[
             "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
-             no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
-             batch whose generation moved, since the tree re-derives the batch itself. \
+             no run, no `RunStarted`, and nothing on the event log, since the graph re-derives \
+             each file's batch from the tree. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
@@ -1593,19 +1587,18 @@ mod tests {
         }
     }
 
-    /// The shipped operator guidance for the ONE-TIME MIGRATION (spec 107): the discipline body
-    /// names `rigger reset --derived` as the event log's own migration, beside `--runs`, the
-    /// graph's prune.
+    /// The shipped operator guidance for the DELETE of the derived events: the discipline body
+    /// names `rigger reset --derived` as the event log's own prune, beside `--runs`, the graph's
+    /// prune.
     ///
-    /// It pins what an operator must know before running a command that rewrites and deletes
-    /// rows of an append-only log: WHAT IT CONVERTS (the first row of each file's latest derived
-    /// batch, into that generation's ledger entry, in place), WHAT IT DELETES (every other
-    /// derived event, so none is left behind), WHAT IT COSTS everything else (nothing - every
-    /// other event survives byte-for-byte), that the FILE shrinks, what it says when run again,
-    /// and that the two flags COMPOSE. Both shipped outputs render from `discipline_body`, so the
+    /// It pins what an operator must know before running a command that deletes rows of an
+    /// append-only log: WHAT IT DELETES (every derived event of the run stream, in one
+    /// transaction, so none is left behind), WHAT IT COSTS everything else (nothing - every
+    /// other event survives byte-for-byte), that the FILE shrinks, that setup runs it, what it
+    /// says when run again, and that the two flags COMPOSE. Both shipped outputs render from `discipline_body`, so the
     /// skill and the handbook chapter cannot disagree and a drift here would drift for every
     /// consumer at once. The `rigger-reset-store` skill renders its own `--derived` bullet, so it
-    /// is held to the same conversion here.
+    /// is held to the same delete here.
     #[test]
     fn discipline_names_reset_derived_as_the_event_logs_own_prune() {
         let ctx = sentinel_ctx();
@@ -1615,16 +1608,16 @@ mod tests {
         ] {
             for (fact, needle) in [
                 ("name the command", "rigger reset --derived"),
-                ("say which store it migrates", "EVENT LOG"),
-                ("say it is run once", "ONE-TIME MIGRATION"),
-                (
-                    "say what it converts, and where",
-                    "rewrites the first row of the file's LATEST derived batch into that \
-                     generation's ledger entry, in place",
-                ),
+                ("say which store it deletes from", "EVENT LOG"),
+                ("say it runs in one transaction", "in one transaction"),
                 (
                     "say what it deletes",
-                    "deletes every other derived event, so no derived event is left behind",
+                    "deletes every derived event of the project's run stream, so no derived \
+                     event is left behind",
+                ),
+                (
+                    "say setup runs it",
+                    "`rigger setup` runs the same delete itself",
                 ),
                 ("say every other event survives it", "byte-for-byte"),
                 ("say events.db shrinks", "shrinks on disk"),
@@ -1633,12 +1626,8 @@ mod tests {
                     "writes nothing to graph.db",
                 ),
                 (
-                    "say the unkeyed events are reported on their own line",
-                    "on its own line, how many of those named no file",
-                ),
-                (
                     "say what a second run reports",
-                    "there is no derived event to shed",
+                    "there is no derived event to delete",
                 ),
                 (
                     "show the two flags composing",
@@ -1653,10 +1642,13 @@ mod tests {
                 "only the recordings of its LATEST generation",
                 "LATEST event per replay key",
                 "WHAT IT CANNOT RECLAIM",
+                "ONE-TIME MIGRATION",
+                "ledger entry",
             ] {
                 assert!(
                     !out.contains(stale),
-                    "{label} must not describe the compaction the migration replaced ({stale:?})"
+                    "{label} must not describe the compaction or the migration the delete \
+                     replaced ({stale:?})"
                 );
             }
 
@@ -1720,20 +1712,19 @@ mod tests {
         }
         let reset_store = render_reset_store_skill(&ctx);
         for needle in [
-            "rewrites the first row of the file's latest derived batch into that generation's \
-             ledger entry, in place, deletes every other derived event",
-            "The migration runs on the embedded sqlite backend only",
-            "`rigger reset --derived`'s own migration is specifically built to avoid",
+            "deletes every derived event of `events.db` in one transaction",
+            "The delete runs on the embedded sqlite backend only",
+            "`rigger reset --derived`'s own delete is specifically built to avoid",
         ] {
             assert!(
                 reset_store.contains(needle),
-                "the reset-store skill must state what the migration converts and deletes, \
+                "the reset-store skill must state what the delete removes, \
                  where it runs, and why a hand-edit is never its substitute ({needle:?})"
             );
         }
         assert!(
             !reset_store.contains("compact"),
-            "the reset-store skill must not describe the migration as a compaction"
+            "the reset-store skill must not describe the delete as a compaction"
         );
     }
 

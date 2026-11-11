@@ -56,6 +56,7 @@ use common::cli::assert_stopped_at_the_grounder;
 use common::cli::backdate_the_log;
 use common::cli::backdate_the_log_by;
 use common::cli::decision_lines;
+use common::cli::deleted_line;
 use common::cli::escalate_solo_unit;
 use common::cli::exists;
 use common::cli::fold_state;
@@ -67,7 +68,6 @@ use common::cli::idle_window_secs;
 use common::cli::insert_node;
 use common::cli::keyed;
 use common::cli::log_and_graph_files;
-use common::cli::migrated_lines;
 use common::cli::named_marker_age;
 use common::cli::no_progress;
 use common::cli::one_unanswered_spawn;
@@ -1008,7 +1008,7 @@ fn reset_derived_refuses_until_a_pre_rule_graph_db_is_rebuilt() {
         (ok, out),
         (
             true,
-            format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", migrated_lines(2, 5, 0))
+            format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", deleted_line(5))
         ),
         "once the graph is rebuilt the migration converts each file's h2 batch into its entry \
          and sheds all five derived recordings; stderr: {err}"
@@ -6198,7 +6198,7 @@ fn reset_derived_refuses_a_rebuild_stopped_in_its_tail_until_setup_finishes_it()
             (true, false),
             (
                 true,
-                format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", migrated_lines(1, 3, 0)),
+                format!("{}{LOG_LEFT_AS_IT_STANDS_LINE}", deleted_line(3)),
             ),
         ),
         "a graph file holding the rebuild's cursor refuses the derived reset, before its debt is \

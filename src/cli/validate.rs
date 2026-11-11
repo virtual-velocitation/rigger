@@ -289,11 +289,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
-    // the event log still holds a derived event and name `rigger reset --derived`, the migration
-    // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
-    // menu prints and the migration acts on. `None` on a server-backed project (the migration is
-    // a mechanic of the sqlite store), on a project with no events.db yet, or on any read
+    // LOG BLOAT advisory: warn while the event log still holds a derived event and name `rigger
+    // reset --derived`, the delete that removes it. Reads the store's own count
+    // ([`Store::count_derived`]), the read the reset menu prints and the delete acts on. `None`
+    // on a server-backed project (the delete is a mechanic of the sqlite store), on a project with no events.db yet, or on any read
     // failure; this never fails validate and never creates a store that does not already exist.
     if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &project_identity()) {
         eprintln!("{advisory}");
@@ -442,25 +441,25 @@ fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
     advisories
 }
 
-/// The LOG BLOAT advisory line (spec 107), rendered from an already-read
-/// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
-/// `None` for a count holding no derived event; any other names what the log still holds and
-/// `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
+/// The LOG BLOAT advisory line, rendered from an already-read count of derived events
+/// ([`Store::count_derived`]) - pure formatting, separate from the gathering in
+/// [`bloat_advisory_for`]. `None` for a count of none; any other names what the log still holds
+/// and `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
 /// reset menu's line asks too.
-fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
+fn bloat_advisory(counted: usize) -> Option<String> {
     derived_events_held(counted).map(|held| {
         format!(
-            "warning: the event log still holds {held}; run `rigger reset --derived` to migrate \
-             them into the ledger."
+            "warning: the event log still holds {held}; run `rigger reset --derived` to delete \
+             them."
         )
     })
 }
 
 /// Gather the LOG BLOAT advisory's input (spec 107): open the sqlite event log at `path` and
-/// count the derived index `project`'s run stream holds ([`Store::count_derived`]), the read
-/// the reset menu prints and the migration acts on, so the advisory never names a count
-/// `rigger reset --derived` would not shed. `None`, never an error, on every reason there is
-/// nothing to count: a server-backed project (the migration does not run there - see
+/// count the derived events `project`'s run stream holds ([`Store::count_derived`]), the read
+/// the reset menu prints and the delete acts on, so the advisory never names a count `rigger
+/// reset --derived` would not delete. `None`, never an error, on every reason there is nothing
+/// to count: a server-backed project (the delete does not run there - see
 /// [`cmd_reset`]), or a project with no `events.db` file YET - checked BEFORE opening anything,
 /// because [`open_sqlite_store`] (like [`Store::open`] under it) creates a missing file, and a
 /// read-only advisory must never have that side effect. Any read error after that point (a
@@ -473,7 +472,7 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     }
     let store = open_sqlite_store(path).ok()?;
     let counted = store.count_derived(&run_stream_of(project)).ok()?;
-    bloat_advisory(&counted)
+    bloat_advisory(counted)
 }
 
 /// Whether commit `ancestor` is an ancestor of commit `descendant` in the git repository
@@ -1798,43 +1797,16 @@ mod tests {
 
     #[test]
     fn bloat_advisory_is_none_for_a_count_holding_no_derived_event_and_names_any_other() {
-        assert_eq!(bloat_advisory(&DerivedCount::default()), None);
-        let one = DerivedCount {
-            shed: 1,
-            unkeyed: 0,
-            identities: ["gc/a.rs".to_string()].into(),
-        };
         assert_eq!(
-            bloat_advisory(&one).as_deref(),
-            Some(
-                "warning: the event log still holds 1 derived events of 1 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
-        );
-        // Decided by the events alone: rows naming no identity are still derived events left.
-        let all_unkeyed = DerivedCount {
-            shed: 7,
-            unkeyed: 7,
-            identities: Default::default(),
-        };
-        assert_eq!(
-            bloat_advisory(&all_unkeyed).as_deref(),
-            Some(
-                "warning: the event log still holds 7 derived events of 0 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
-        );
-        let two_identities = DerivedCount {
-            shed: 7,
-            unkeyed: 1,
-            identities: ["gc/a.rs", "gd/a.rs"].map(String::from).into(),
-        };
-        assert_eq!(
-            bloat_advisory(&two_identities).as_deref(),
-            Some(
-                "warning: the event log still holds 7 derived events of 2 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
+            [0, 7].map(bloat_advisory),
+            [
+                None,
+                Some(
+                    "warning: the event log still holds 7 derived event(s); run `rigger reset \
+                     --derived` to delete them."
+                        .to_string()
+                ),
+            ]
         );
     }
 

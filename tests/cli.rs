@@ -28173,7 +28173,7 @@ fn init_scaffolds_the_instructions_readme_and_names_it() {
 /// `rigger reset --derived` runs while another holder has the rebuild lock, then it is refused at
 /// the lock, in the one text naming every holder; once the lock is free it is refused for the
 /// unfinished rebuild, naming `rigger setup`; each refusal prints nothing else and leaves the event
-/// log and every `graph.db` file byte for byte. With the shadow gone the same command sheds the
+/// log and every `graph.db` file byte for byte. With the shadow gone the same command deletes the
 /// duplicates, and `graph.db.lock` stands free behind it.
 #[test]
 fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_changes_nothing() {
@@ -28226,21 +28226,21 @@ fn reset_derived_refuses_a_held_rebuild_lock_then_an_unfinished_rebuild_and_chan
             ),
             (
                 true,
-                common::cli::migrated_lines(1, 3, 0).lines().next(),
+                common::cli::deleted_line(3).lines().next(),
                 vec!["graph.db", "graph.db.lock"]
             ),
         ),
         "the held lock refuses first and the unfinished rebuild second, neither changing the log \
-         or a graph file, and the reset sheds once the shadow is gone; its stderr: {shed_err}"
+         or a graph file, and the reset deletes once the shadow is gone; its stderr: {shed_err}"
     );
     drop(lock_free);
 }
 
-/// Seed `root`'s run stream as a store recorded before the ledger left it, holding six derived
-/// events of three file identities: a superseded and a latest generation of one source file
-/// (`gc/src/a.rs`), a design batch of that same file (`gd/src/a.rs`), a second source file whose
-/// latest recording is already a ledger entry (`gc/src/b.rs`), and one event naming no identity.
-fn seed_six_derived_events_of_three_file_identities(root: &Path) {
+/// Seed `root`'s run stream as a store recorded before the ledger left it, holding seven derived
+/// events: a superseded and a latest generation of one source file (`gc/src/a.rs`), a design batch
+/// of that same file (`gd/src/a.rs`), a second source file and its ledger entry (`gc/src/b.rs`),
+/// and one event naming no file identity.
+fn seed_seven_derived_events(root: &Path) {
     use common::cli::{keyed, pre_ledger_batch};
     use rigger::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_DOC_CONCEPT_EXTRACTED};
     use rigger::eventstore::Event;
@@ -28260,45 +28260,36 @@ fn seed_six_derived_events_of_three_file_identities(root: &Path) {
     common::cli::seed_pre_ledger_events(root, &seeded);
 }
 
-/// Given a store recorded before the ledger holding six derived events of three file identities
-/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs bare `rigger
-/// reset`, then its `--derived` line names those
-/// six events and three identities and the log stands as it stood; when `rigger reset --derived`
-/// then runs it sheds exactly those six events, the three identities holding none after it; and
-/// bare `rigger reset` then says no derived event is left to shed.
+/// How many derived events `root`'s run stream holds, read from its rows and never from the
+/// command.
+fn derived_events_held(root: &Path) -> usize {
+    read_run_events(root)
+        .iter()
+        .filter(|event| rigger::retention::DERIVED_TYPES.contains(&event.type_.as_str()))
+        .count()
+}
+
+/// Given a store recorded before the ledger holding seven derived events
+/// ([`seed_seven_derived_events`]), when the operator runs bare `rigger reset`, then its
+/// `--derived` line names those seven events and the log stands as it stood; when `rigger reset
+/// --derived` then runs it deletes exactly those seven, none being left after it; and bare `rigger
+/// reset` then says no derived event is left to delete.
 #[test]
 fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_once_it_has() {
     use common::cli::{
-        derived_menu_line_naming, derived_menu_lines, migrated_lines, stream_shape,
-        NOTHING_TO_SHED_MENU_LINE,
+        deleted_line, derived_menu_line_naming, derived_menu_lines, stream_shape,
+        NOTHING_TO_DELETE_MENU_LINE,
     };
 
     let dir = temp_project();
     let root = dir.path();
     common::cli::init_event_log(root);
     setup_ok(root, &[]);
-    seed_six_derived_events_of_three_file_identities(root);
-
-    // What the log holds of the derived index, read from its rows and never from the command:
-    // how many derived events, and the file identities their replay keys name.
-    let held = || {
-        let derived: Vec<_> = read_run_events(root)
-            .into_iter()
-            .filter(|event| rigger::ingest::DERIVED_INDEX_TYPES.contains(&event.type_.as_str()))
-            .collect();
-        let identities: std::collections::BTreeSet<String> = derived
-            .iter()
-            .filter_map(|event| event.meta.get(rigger::ingest::META_REPLAY_KEY))
-            .filter_map(|key| rigger::ingest::derived_key_parts(key))
-            .map(|(identity, _)| identity.to_string())
-            .collect();
-        (derived.len(), identities)
-    };
-    let identities = ["gc/src/a.rs", "gc/src/b.rs", "gd/src/a.rs"].map(str::to_string);
+    seed_seven_derived_events(root);
     assert_eq!(
-        held(),
-        (6, identities.into_iter().collect()),
-        "premise: the log holds six derived events of three file identities"
+        derived_events_held(root),
+        7,
+        "premise: the log holds seven derived events"
     );
     let shape = stream_shape(root);
 
@@ -28306,56 +28297,51 @@ fn bare_reset_previews_what_the_derived_reset_then_sheds_and_says_none_is_left_o
     assert!(menu_ok, "bare reset exits 0: {menu_err}");
     assert_eq!(
         derived_menu_lines(&menu),
-        [derived_menu_line_naming(6, 3)],
-        "the menu names the six derived events and the three file identities the log holds"
+        [derived_menu_line_naming(7)],
+        "the menu names the seven derived events the log holds"
     );
     assert_eq!(stream_shape(root), shape, "the menu changes no row");
 
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(shed_ok, "the derived reset runs: {shed_err}");
     assert_eq!(
-        shed.get(..migrated_lines(2, 6, 1).len()),
-        Some(migrated_lines(2, 6, 1).as_str()),
-        "the derived reset sheds the six events the menu named, converting the two identities \
-         whose latest recording was derived"
+        shed.get(..deleted_line(7).len()),
+        Some(deleted_line(7).as_str()),
+        "the derived reset deletes the seven events the menu named"
     );
-    assert_eq!(
-        held(),
-        (0, std::collections::BTreeSet::new()),
-        "no derived event of any of the three identities is left"
-    );
+    assert_eq!(derived_events_held(root), 0, "no derived event is left");
 
     let (after, after_err, after_ok) = run_rigger(root, &["reset"]);
-    assert!(after_ok, "bare reset exits 0 once migrated: {after_err}");
+    assert!(after_ok, "bare reset exits 0 once deleted: {after_err}");
     assert_eq!(
         derived_menu_lines(&after),
-        [NOTHING_TO_SHED_MENU_LINE],
-        "the menu says none is left to shed"
+        [NOTHING_TO_DELETE_MENU_LINE],
+        "the menu says none is left to delete"
     );
 }
 
-/// Given a store recorded before the ledger holding six derived events of three file identities
-/// ([`seed_six_derived_events_of_three_file_identities`]), when the operator runs `rigger
-/// validate`, then it exits 0 and warns once, on standard error, naming those six events and
-/// three identities left and `rigger reset --derived`, and the log stands as it stood; and once
-/// `rigger reset --derived` has migrated the store, `rigger validate` prints no such warning.
+/// Given a store recorded before the ledger holding seven derived events
+/// ([`seed_seven_derived_events`]), when the operator runs `rigger validate`, then it exits 0 and
+/// warns once, on standard error, naming those seven events left and `rigger reset --derived`,
+/// and the log stands as it stood; and once `rigger reset --derived` has deleted them, `rigger
+/// validate` prints no such warning.
 #[test]
-fn validate_warns_of_the_derived_events_left_and_names_the_migration_until_it_has_run() {
-    use common::cli::{bloat_advisory_naming, bloat_lines, migrated_lines, stream_shape};
+fn validate_warns_of_the_derived_events_left_and_names_the_delete_until_it_has_run() {
+    use common::cli::{bloat_advisory_naming, bloat_lines, deleted_line, stream_shape};
 
     let dir = temp_project();
     let root = dir.path();
     let (_, init_err, inited) = run_rigger(root, &["init"]);
     assert!(inited, "premise: init scaffolds the project: {init_err}");
-    seed_six_derived_events_of_three_file_identities(root);
+    seed_seven_derived_events(root);
     let shape = stream_shape(root);
 
     let (out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "an advisory never fails validate: {err}");
     assert_eq!(
         bloat_lines(&err),
-        [bloat_advisory_naming(6, 3)],
-        "validate warns once, naming the six derived events and three file identities left"
+        [bloat_advisory_naming(7)],
+        "validate warns once, naming the seven derived events left"
     );
     assert_eq!(
         bloat_lines(&out),
@@ -28367,16 +28353,16 @@ fn validate_warns_of_the_derived_events_left_and_names_the_migration_until_it_ha
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(shed_ok, "the derived reset runs: {shed_err}");
     assert_eq!(
-        shed.get(..migrated_lines(2, 6, 1).len()),
-        Some(migrated_lines(2, 6, 1).as_str()),
-        "premise: the migration sheds the six events the advisory named"
+        shed.get(..deleted_line(7).len()),
+        Some(deleted_line(7).as_str()),
+        "premise: the delete removes the seven events the advisory named"
     );
 
     let (_, after_err, after_ok) = run_rigger(root, &["validate"]);
-    assert!(after_ok, "validate exits 0 once migrated: {after_err}");
+    assert!(after_ok, "validate exits 0 once deleted: {after_err}");
     assert_eq!(
         bloat_lines(&after_err),
         [""; 0],
-        "a migrated store draws no warning"
+        "a store whose derived events are deleted draws no warning"
     );
 }

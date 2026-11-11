@@ -1894,32 +1894,24 @@ pub fn refused_derived_reset(
     (ok, out, err, log_and_graph_files(root) == *found)
 }
 
-/// The two lines `rigger reset --derived` prints, each ended, for a migration that converted
-/// `converted` latest batches into ledger entries and shed `shed` derived events, `unkeyed` of
-/// them naming no file identity.
-pub fn migrated_lines(converted: usize, shed: usize, unkeyed: usize) -> String {
-    format!(
-        "reset --derived: converted {converted} latest batch(es) into ledger entries and shed \
-         {shed} derived event(s) from the event log\n\
-         reset --derived: {unkeyed} of the derived event(s) shed named no file identity (no \
-         replay key, or one that does not parse)\n"
-    )
+/// The line `rigger reset --derived` prints, ended, for a delete of `deleted` derived events.
+pub fn deleted_line(deleted: usize) -> String {
+    format!("reset --derived: deleted {deleted} derived event(s) from the event log\n")
 }
 
 /// The line `rigger reset --derived` prints, ended, over a store holding no derived event.
-pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to shed\n";
+pub const NOTHING_TO_DELETE_LINE: &str = "reset --derived: no derived event to delete\n";
 
-/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events
-/// of `identities` file identities.
-pub fn derived_menu_line_naming(events: usize, identities: usize) -> String {
+/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events.
+pub fn derived_menu_line_naming(events: usize) -> String {
     format!(
-        "--derived: {events} derived events of {identities} file identities to shed from the \
-         event log; rerun `rigger reset --derived` to migrate them"
+        "--derived: {events} derived event(s) to delete from the event log; rerun `rigger reset \
+         --derived` to delete them"
     )
 }
 
 /// The `--derived` line bare `rigger reset` prints over a store holding no derived event.
-pub const NOTHING_TO_SHED_MENU_LINE: &str = "--derived: no derived event to shed";
+pub const NOTHING_TO_DELETE_MENU_LINE: &str = "--derived: no derived event to delete";
 
 /// The `--derived` lines of what bare `rigger reset` printed, in order.
 pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
@@ -1995,11 +1987,10 @@ pub fn rebuild_in_progress_line() -> String {
 /// store, where the migration does not run: one [`refusal_line`], ended.
 pub fn server_backed_derived_refusal() -> String {
     refusal_line(
-        "reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
-         file, which is a mechanic of the embedded .rigger/events.db store; this project is \
-         configured for the server-backed store, where the migration does not run. Re-run it \
-         against a project on the sqlite backend. Refusing rather than reporting a migration that \
-         did not happen.",
+        "reset --derived: the delete removes rows of the event log and vacuums the file, which is \
+         a mechanic of the embedded .rigger/events.db store; this project is configured for the \
+         server-backed store, where the delete does not run. Re-run it against a project on the \
+         sqlite backend. Refusing rather than reporting a delete that did not happen.",
     ) + "\n"
 }
 
@@ -2532,11 +2523,11 @@ pub fn assert_light_lane_extent_note(out: &str) {
 }
 
 /// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived
-/// events of `identities` file identities.
-pub fn bloat_advisory_naming(events: usize, identities: usize) -> String {
+/// events.
+pub fn bloat_advisory_naming(events: usize) -> String {
     format!(
-        "warning: the event log still holds {events} derived events of {identities} file \
-         identities; run `rigger reset --derived` to migrate them into the ledger."
+        "warning: the event log still holds {events} derived event(s); run `rigger reset \
+         --derived` to delete them."
     )
 }
 

@@ -22,8 +22,7 @@ use rigger::driver::cli;
 use rigger::driver::replay::{reclaim_spawn_registered_scratch, ReplayDriver};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
-    sqlite::{DerivedCount, Store},
-    Direction, Event, EventStore, ExpectedRevision, Filter, Position,
+    sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
@@ -5326,19 +5325,6 @@ fn git_repo_at(root: &Path) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
-}
-
-/// THE ONE ROOT every path a ledger entry of perception records is relative to (spec 107), for
-/// the store at `store_dir` (its `.rigger/`): the git top-level of the directory holding that
-/// `.rigger/`, else - outside a repository - that directory. Every reader of the tree takes its
-/// root from here, so a store in a subdirectory of a repository reads the repository's tree,
-/// never the working directory's.
-fn tree_root(store_dir: &Path) -> PathBuf {
-    let holder = store_dir.parent().unwrap_or(store_dir);
-    match git_repo_at(holder) {
-        top_level if top_level.is_empty() => holder.to_path_buf(),
-        top_level => PathBuf::from(top_level),
-    }
 }
 
 /// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a
@@ -11840,33 +11826,6 @@ mod tests {
         assert!(
             anomalies.is_empty(),
             "a marker naming a real serving dash must report no anomaly: {anomalies:?}"
-        );
-    }
-
-    /// THE ONE ROOT (spec 107): the tree a store's entries are relative to is the git top-level
-    /// of the directory holding the store's `.rigger/` - from the top level itself and from a
-    /// subdirectory of the repository alike - and that directory itself outside a repository.
-    #[test]
-    fn tree_root_is_the_top_level_of_the_directory_holding_the_store_else_that_directory() {
-        let repo = tempfile::tempdir().unwrap();
-        git_init_quiet(repo.path());
-        let top = repo.path().canonicalize().unwrap();
-        let sub = top.join("nested").join("deeper");
-        std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(tree_root(&top.join(RIGGER_DIR)), top);
-        assert_eq!(
-            tree_root(&sub.join(RIGGER_DIR)),
-            top,
-            "a store in a subdirectory is rooted at the repository's top level"
-        );
-
-        let bare = tempfile::tempdir().unwrap();
-        let holder = bare.path().join("project");
-        std::fs::create_dir_all(&holder).unwrap();
-        assert_eq!(
-            tree_root(&holder.join(RIGGER_DIR)),
-            holder,
-            "outside a repository the root is the directory holding the store"
         );
     }
 }
