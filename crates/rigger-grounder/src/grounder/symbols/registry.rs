@@ -1093,23 +1093,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
-    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
-    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
-    /// persisted before the change loads as absent. The fixtures set every part a persisted index
-    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves the digest.
-    #[test]
-    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
-        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        use crate::grounder::symbols::store;
-        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
-        const GOLDEN: [(&str, &str); 8] = [
-            (
-                "rs",
-                "\
+    /// The golden fixtures: an (extension, source) for each registered grammar and query and a
+    /// malformed Rust file. The extraction golden and the facts golden both digest them.
+    pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
+        (
+            "rs",
+            "\
 use crate::store::Ledger;
 pub const QUOTA_CAP: u32 = 3;
 pub struct Kestrel { size: u32 }
@@ -1131,59 +1120,59 @@ mod tests {
     fn t() { super::helper(1); }
 }
 ",
-            ),
-            ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
-            (
-                "cs",
-                "\
+        ),
+        ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
+        (
+            "cs",
+            "\
 class Box {
     const int Cap = 3;
     int Width() { return Calc(Cap); }
     static int Calc(int n) { return n; }
 }
 ",
-            ),
-            (
-                "ts",
-                "\
+        ),
+        (
+            "ts",
+            "\
 const LIMIT = 3;
 class Box {
     width(): number { return calc(LIMIT); }
 }
 function calc(n: number): number { return n; }
 ",
-            ),
-            (
-                "tsx",
-                "\
+        ),
+        (
+            "tsx",
+            "\
 const LABEL = \"x\";
 function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
 ",
-            ),
-            (
-                "js",
-                "\
+        ),
+        (
+            "js",
+            "\
 const LIMIT = 3;
 class Box {
     width() { return calc(LIMIT); }
 }
 function calc(n) { return n; }
 ",
-            ),
-            (
-                "go",
-                "\
+        ),
+        (
+            "go",
+            "\
 package p
 const Limit = 3
 type T struct{}
 func (T) Width() int { return calc(Limit) }
 func calc(n int) int { return n }
 ",
-            ),
-            (
-                "py",
-                "\
+        ),
+        (
+            "py",
+            "\
 LIMIT = 3
 class Box:
     def width(self):
@@ -1191,9 +1180,23 @@ class Box:
 def calc(n):
     return n
 ",
-            ),
-        ];
-        let extracted: Vec<(&str, FileSymbols)> = GOLDEN
+        ),
+    ];
+
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
+    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
+    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
+    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
+    /// persisted before the change loads as absent. The fixtures set every part a persisted index
+    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind included, so a change to any of them moves the digest.
+    #[test]
+    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+        use crate::grounder::symbols::store;
+        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
+        let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
             .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
             .collect();
