@@ -534,13 +534,13 @@ impl<'a> Server<'a> {
         let grounder = self
             .grounder
             .ok_or("rigger_ground: no grounder is wired on this server")?;
-        let results: Vec<Value> = grounder
-            .ground(query, k)
+        // The rows and their honesty label (6.1) come from one read of the code store.
+        let (rows, label) = grounder.ground_labelled(query, k);
+        let results: Vec<Value> = rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
             .collect();
-        // The honesty label (6.1) travels with every answer, as a field.
-        Ok(json!({"results": results, "label": grounder.label().map(|l| l.to_string())}))
+        Ok(json!({"results": results, "label": label.map(|l| l.to_string())}))
     }
 
     /// Refuse `tool`, whose answer depends on the fold, while the wired graph owes its rebuild
@@ -2245,8 +2245,11 @@ mod tests {
             fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
                 Vec::new()
             }
-            fn label(&self) -> Option<Label> {
-                Some(Label::unopened("W".to_string(), "locked"))
+            fn ground_labelled(&self, query: &str, k: usize) -> (Vec<Ref>, Option<Label>) {
+                (
+                    self.ground(query, k),
+                    Some(Label::unopened("W".to_string(), "locked")),
+                )
             }
         }
         let store = Store::open(":memory:").unwrap();
