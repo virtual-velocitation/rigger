@@ -1216,8 +1216,9 @@ mod tests {
         }
     }
 
-    /// The snapshot in force is read through a mapping of its file, never a copy, and reads whole
-    /// after the reaper unlinks the file under it.
+    /// The snapshot in force is read through a mapping of its file, never a copy. Later advances
+    /// publish new files and the reaper unlinks the mapped one, never writing it in place, so
+    /// the mapping reads whole after.
     #[test]
     fn the_snapshot_in_force_is_mapped_and_outlives_its_unlink() {
         let root = tempfile::tempdir().unwrap();
@@ -1233,9 +1234,21 @@ mod tests {
             .unwrap()
             .expect("a snapshot in force");
         assert!(read.is_mapped(), "read through a mapping");
-        for name in snap_names(&store).into_iter().filter(|n| n.ends_with(SNAP)) {
-            std::fs::remove_file(store.dir().join(name)).unwrap();
+        let mapped: Vec<String> = snap_names(&store)
+            .into_iter()
+            .filter(|n| n.ends_with(SNAP))
+            .collect();
+        for (name, files) in [("c2", B), ("c3", A)] {
+            let tip = source.commit(name, files);
+            store
+                .advance(&source, &ToyExtract::new(FP), &group, &tip)
+                .unwrap();
         }
+        let left = snap_names(&store);
+        assert!(
+            mapped.iter().all(|name| !left.contains(name)),
+            "the reaper unlinked {mapped:?}: {left:?}"
+        );
         assert_eq!(
             read.bytes(),
             written.bytes(),
