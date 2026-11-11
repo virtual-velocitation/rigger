@@ -81,9 +81,10 @@ impl Extract for FactsExtractor {
     }
 }
 
-/// Fills the definitions, mentions and module declarations of `facts` from the symbols the
+/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from the symbols the
 /// extractor found in the file at `path`.
 fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
+    facts.partial = symbols.partial;
     let by_path = def_indices_by_path(symbols);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
     facts.defs = symbols
@@ -391,6 +392,27 @@ mod tests {
             assert_eq!(held_defs, defs, "{path}: definitions");
             assert_eq!(held_mentions, mentions, "{path}: mentions");
             assert_eq!(facts.scope, scope, "{path}: scope");
+        }
+    }
+
+    #[test]
+    fn a_file_the_parser_cannot_fully_read_is_partial() {
+        let table = [
+            (
+                "src/lib.rs",
+                "fn whole() { helper(); }\nfn helper() {}\n",
+                false,
+            ),
+            (
+                "src/lib.rs",
+                "fn whole() { helper(); }\nfn broken( {\n",
+                true,
+            ),
+            ("web/app.ts", "function broken( {\n", true),
+            ("docs/a-design.md", "# Design\n", false),
+        ];
+        for (path, source, partial) in table {
+            assert_eq!(facts_of(path, source.as_bytes()).partial, partial, "{path}");
         }
     }
 

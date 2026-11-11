@@ -80,7 +80,8 @@ pub struct Mention {
     pub enclosing: Option<u32>,
     /// The name as written ("bar", "Foo::bar", "crate::x::bar").
     pub name: String,
-    /// The last segment of `name` ("bar"), the key the resolver finds candidates by.
+    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. Every
+    /// extractor names a reference by its identifier alone, so it equals `name` today.
     pub leaf: String,
     pub kind: MentionKind,
     pub line: u32,
@@ -136,7 +137,9 @@ pub struct WfRelation {
     pub to: String,
 }
 
-/// Everything read off one file. Only the lists of the file's [`Half`] are filled.
+/// Everything read off one file. The lists of the file's [`Half`] are filled; a code-half file
+/// also carries the design facts the design extractor finds in source (its `WHY:` and `NOTE:`
+/// rationale concepts and their links).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileFacts {
     /// The repo-relative, `/`-separated path.
@@ -147,9 +150,12 @@ pub struct FileFacts {
     pub lang: String,
     pub half: Half,
     pub scope: Scope,
-    /// In source order.
+    /// Whether the parse of the file held an error, so its defs and mentions cover only as far
+    /// as the parse reached.
+    pub partial: bool,
+    /// In the extractor's order.
     pub defs: Vec<Def>,
-    /// In source order.
+    /// In the extractor's order.
     pub mentions: Vec<Mention>,
     pub modules: Vec<ModuleDecl>,
     pub doc_concepts: Vec<DocConcept>,
