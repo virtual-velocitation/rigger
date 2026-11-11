@@ -362,6 +362,7 @@ mod tests {
     use super::*;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::format::{Container, WriteLock};
+    use rigger_domain::code_facts::FileFacts;
     use rigger_domain::code_view::CodeView;
     use std::collections::BTreeSet;
     use std::sync::Mutex;
@@ -705,6 +706,76 @@ mod tests {
                 snap_names(&store),
                 names(&[CURRENT, LOCK, next]),
                 "{name}: debris reaped"
+            );
+        }
+    }
+
+    /// A damage done to one file's facts.
+    type Damage = fn(&mut FileFacts);
+
+    /// The toy extractor, with each file's facts damaged so they encode but fail to validate.
+    struct Damaging {
+        toy: ToyExtract,
+        damage: Damage,
+    }
+
+    impl Extract for Damaging {
+        fn fingerprint(&self) -> u64 {
+            self.toy.fingerprint()
+        }
+
+        fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+            let mut facts = self.toy.extract(entry, bytes);
+            (self.damage)(&mut facts);
+            facts
+        }
+    }
+
+    /// Each row: facts that encode but fail the snapshot's validation. The advance is an error,
+    /// and nothing is published or reaped: the old snapshot stays current beside the debris.
+    #[test]
+    fn a_snapshot_that_fails_validation_is_an_error_and_never_published() {
+        let cases: [(&str, Damage); 2] = [
+            ("a parent outside the file", |facts| {
+                if let Some(def) = facts.defs.first_mut() {
+                    def.parent = Some(99);
+                }
+            }),
+            ("an enclosing def outside the file", |facts| {
+                if let Some(mention) = facts.mentions.first_mut() {
+                    mention.enclosing = Some(99);
+                }
+            }),
+        ];
+        for (name, damage) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let source = MemSource::default();
+            let group = CountingGroup::default();
+            let store = Store::new(root.path());
+            let first = source.commit("c1", A);
+            store
+                .advance(&source, &ToyExtract::new(FP), &group, &first)
+                .unwrap();
+            std::fs::write(store.dir().join("000000.snap.4242.0.tmp"), b"debris").unwrap();
+            let before = snap_names(&store);
+            let target = source.commit("c2", B);
+            let damaging = Damaging {
+                toy: ToyExtract::new(FP),
+                damage,
+            };
+            assert!(
+                store.advance(&source, &damaging, &group, &target).is_err(),
+                "{name}: the advance fails"
+            );
+            assert_eq!(
+                snap_names(&store),
+                before,
+                "{name}: nothing published or reaped"
+            );
+            assert_eq!(
+                store.current(FP).map(|s| s.stamp().tip.clone()),
+                Some(first),
+                "{name}: the old stamp stays current"
             );
         }
     }
