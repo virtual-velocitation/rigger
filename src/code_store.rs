@@ -74,7 +74,7 @@ impl CodeStore {
             diff: self.differing(opened, worktree),
             behind: opened.behind.as_ref().map(ToString::to_string),
         };
-        Label::of(&opened.view.stamp().tip, honesty).0
+        Label::of(&opened.view.stamp().tip, honesty)
     }
 }
 

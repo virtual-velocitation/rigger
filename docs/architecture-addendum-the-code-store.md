@@ -537,7 +537,10 @@ open(caller worktree W, filter)
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
   diff fails (the stamp commit is not in W's object store, or W's index cannot be read)
-                  -> label "describes <commit>; W cannot be compared"; nothing is withheld
+                  -> label "describes <commit>; W cannot be compared; K withheld"; it fails
+                     closed: every node of the code half, and every edge with such an
+                     endpoint, is withheld, and K counts the nodes withheld so far; the
+                     record half still answers
 ```
 
 A head with no commit (an unborn branch) reads as the empty tree, so every file in W differs
@@ -550,10 +553,15 @@ and the label travels with every answer:
 - the MCP tools return it as a field;
 - the dash shows it in the header.
 
+Freshness has this one mechanism, the label; no hit carries its own. A reader that cannot tell
+whether a code hit is stale does not serve it, and the combined lookup's text half still answers
+for the code.
+
 `rigger graph --show` keeps its drift heal: a definition whose recorded line no longer holds it
 is found again by name and kind in W's file, and noted missing or ambiguous when it cannot be.
-Since a differing file's nodes are withheld, the heal is reached only when W cannot be compared,
-or for a node only the record half holds.
+Since a differing file's nodes are withheld, and every code-half node is when W cannot be
+compared, the heal is reached only for a node only the record half holds. The write-path lane
+deletes that path and its tests, with the code records the fold wrote.
 
 ### 6.2 The resolver
 

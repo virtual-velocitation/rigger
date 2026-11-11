@@ -1407,6 +1407,29 @@ pub fn show_recorded(
     seed_rigger_dir(root);
     super::fixtures::write_text(root, file, source);
     super::fixtures::commit_tree(root);
+    show_planted(root, file, path, kind, line, lang)
+}
+
+/// [`show_recorded`] over a worktree whose `file` the head does not hold ([`write_ignored`]), so
+/// the recorded definition is the record half's alone.
+pub fn show_record_only(
+    root: &Path,
+    file: &str,
+    source: &str,
+    path: &str,
+    kind: &str,
+    line: u64,
+    lang: &str,
+) -> String {
+    seed_rigger_dir(root);
+    write_ignored(root, &[(file, source)]);
+    show_planted(root, file, path, kind, line, lang)
+}
+
+/// `rigger graph --show <file>::<path>`'s stdout past the honesty label once the graph records
+/// the definition at the id path `path` of `file`, named by the text after the path's last `::`,
+/// of kind `kind` at `line` in `lang`.
+fn show_planted(root: &Path, file: &str, path: &str, kind: &str, line: u64, lang: &str) -> String {
     let name = super::last_path_segment(path);
     super::fixtures::apply_json(
         &open_graph(root),
@@ -1731,75 +1754,15 @@ pub fn build_head(root: &Path) -> String {
     run_rigger_ok(root, &["graph", "build"])
 }
 
-/// Commits each `committed` `(path, text)` at the head of the project at `root`, then leaves its
-/// worktree holding each `drifted` path's next text, or the path deleted at `None`, in a worktree
-/// the code store cannot compare with the head (6.1): the one way a drifted definition reaches a
-/// reader unwithheld. Git reads the index to compare the worktree, never to read the head's tree.
-pub fn drift_uncomparable(
-    root: &Path,
-    committed: &[(&str, &str)],
-    drifted: &[(&str, Option<&str>)],
-) {
-    super::fixtures::write_files(root, committed);
+/// Writes each `(path, text)` into the worktree of the project at `root` behind a committed
+/// `.gitignore` naming it, so the head holds none of them and the worktree diff counts none (6.1):
+/// a definition the graph records in one is the record half's alone, the one node `--show`'s drift
+/// heal still reaches.
+pub fn write_ignored(root: &Path, files: &[(&str, &str)]) {
+    let ignored: String = files.iter().map(|(path, _)| format!("/{path}\n")).collect();
+    super::fixtures::write_text(root, ".gitignore", &ignored);
     super::fixtures::commit_tree(root);
-    for (path, text) in drifted {
-        match text {
-            Some(text) => super::fixtures::write_text(root, path, text),
-            None => std::fs::remove_file(root.join(path)).unwrap(),
-        }
-    }
-    std::fs::write(root.join(".git").join("index"), "unreadable").unwrap();
-}
-
-/// A graph answer's stdout past its honesty label, which says the worktree cannot be compared
-/// ([`drift_uncomparable`]).
-pub fn past_uncomparable_label(out: &str) -> String {
-    let (label, answer) = out.split_once('\n').unwrap_or((out, ""));
-    assert!(
-        label.starts_with("describes ") && label.ends_with(" cannot be compared"),
-        "a graph answer over an uncomparable worktree says so in its label; stdout:\n{out}"
-    );
-    answer.to_string()
-}
-
-/// The stdout lines of `rigger graph --show <id>` past the label over `root` once `file` holding
-/// `committed` is the head and the worktree holds `drifted` there instead, deleted at `None`
-/// ([`drift_uncomparable`]).
-pub fn show_drifted(
-    root: &Path,
-    file: &str,
-    committed: &str,
-    drifted: Option<&str>,
-    id: &str,
-) -> Vec<String> {
-    seed_rigger_dir(root);
-    drift_uncomparable(root, &[(file, committed)], &[(file, drifted)]);
-    past_uncomparable_label(&run_rigger_ok(root, &["graph", "--show", id]))
-        .lines()
-        .map(str::to_string)
-        .collect()
-}
-
-/// The site the context graph a reader reads locates `id` at over the project at `root`: its
-/// records composed with the code store's view of the head (7.3).
-#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
-pub fn composed_site(root: &Path, id: &str) -> rigger::contextgraph::EntitySite {
-    let records = open_graph(root);
-    let opened = rigger::code_store::CodeStore::in_repository(root)
-        .open(rigger_store::code::Mode::Read)
-        .unwrap();
-    let composed = rigger::composed::Composed::new(
-        &records,
-        &opened.view,
-        rigger::code_view::ViewFilter::default(),
-        rigger::composed::Honesty {
-            worktree: root.display().to_string(),
-            diff: Err("not compared".to_string()),
-            behind: None,
-        },
-    )
-    .unwrap();
-    super::fixtures::located_site(&composed, id)
+    super::fixtures::write_files(root, files);
 }
 
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the

@@ -5,8 +5,9 @@
 //! kind carrying both halves' attrs, an alias reads as its canonical id, a record edge whose end
 //! neither half holds reaches an `artifact` node, and a decision governing a document realizes
 //! that document's concepts. A node whose file differs in the caller's worktree is withheld and
-//! counted on the honesty label. The searches every reader asks ([`subgraph`], [`calls`],
-//! [`locate`]) are written once over [`Neighbors`], so they step through both halves alike.
+//! counted on the honesty label. When the worktree cannot be compared, every code-half node is
+//! withheld and counted. The searches every reader asks ([`subgraph`], [`calls`], [`locate`])
+//! are written once over [`Neighbors`], so they step through both halves alike.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -33,7 +34,7 @@ pub enum Compared {
     /// the worktree exactly.
     Differ(usize),
     /// The worktree cannot be compared with the tree (its stamp commit is not in the worktree's
-    /// object store, or its index cannot be read), so nothing is withheld.
+    /// object store, or its index cannot be read), so every node of the code half is withheld.
     Uncomparable,
 }
 
@@ -47,24 +48,30 @@ pub struct Label {
     pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
-    /// The nodes withheld so far because their file differs.
+    /// The nodes withheld so far because their file differs or the worktree cannot be compared.
     pub withheld: usize,
 }
 
 impl Label {
     /// The label of a view of `tip` read from the worktree `honesty` names, before anything is
-    /// withheld, and the worktree's files that differ from the tip's tree.
-    pub fn of(tip: &Tip, honesty: Honesty) -> (Label, BTreeSet<String>) {
-        let (compared, differing) = match honesty.diff {
+    /// withheld.
+    pub fn of(tip: &Tip, honesty: Honesty) -> Label {
+        Self::with_stale(tip, honesty).0
+    }
+
+    /// [`Label::of`], with the code-half nodes a read of that view withholds.
+    fn with_stale(tip: &Tip, honesty: Honesty) -> (Label, Stale) {
+        let (compared, stale) = match honesty.diff {
             Ok(diff) => {
                 // A file out of the tree's scope (rigger's own state among them) holds no fact.
                 let files: BTreeSet<String> = (diff.changed.into_iter())
                     .chain(diff.untracked)
                     .filter(|f| crate::code_view::in_scope(f))
                     .collect();
-                (Compared::Differ(files.len()), files)
+                (Compared::Differ(files.len()), Stale::Files(files))
             }
-            Err(_) => (Compared::Uncomparable, BTreeSet::new()),
+            // A worktree that cannot be compared fails closed: no code hit is known fresh.
+            Err(_) => (Compared::Uncomparable, Stale::CodeHalf),
         };
         let label = Label {
             describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
@@ -73,7 +80,7 @@ impl Label {
             behind: honesty.behind,
             withheld: 0,
         };
-        (label, differing)
+        (label, stale)
     }
 }
 
@@ -328,6 +335,14 @@ enum Way {
     In,
 }
 
+/// The code-half nodes a read withholds because the caller's worktree may not match them.
+enum Stale {
+    /// The nodes whose file is one of these, the worktree's files that differ from the tree.
+    Files(BTreeSet<String>),
+    /// Every node of the code half: the worktree cannot be compared with the tree.
+    CodeHalf,
+}
+
 /// The record half and a view's code half read as one context graph.
 pub struct Composed<'r> {
     records: &'r dyn Neighbors,
@@ -339,10 +354,10 @@ pub struct Composed<'r> {
     /// Each concept's members and each member's concepts, as the view grouped them.
     concept_members: BTreeMap<String, Vec<String>>,
     concepts_of: BTreeMap<String, Vec<String>>,
-    /// The files of the caller's worktree that differ from the view's tree.
-    differing: BTreeSet<String>,
+    /// The code-half nodes the caller's worktree may not match.
+    stale: Stale,
     label: Label,
-    /// The ids withheld so far because their file differs.
+    /// The ids withheld so far because they are [`Stale`].
     withheld: Mutex<BTreeSet<String>>,
 }
 
@@ -376,7 +391,7 @@ impl<'r> Composed<'r> {
                 concepts_of.entry(m.clone()).or_default().push(c.id.clone());
             }
         }
-        let (label, differing) = Label::of(&view.stamp().tip, honesty);
+        let (label, stale) = Label::with_stale(&view.stamp().tip, honesty);
         Ok(Composed {
             records,
             code,
@@ -384,7 +399,7 @@ impl<'r> Composed<'r> {
             aliased,
             concept_members,
             concepts_of,
-            differing,
+            stale,
             label,
             withheld: Mutex::new(BTreeSet::new()),
         })
@@ -413,14 +428,18 @@ impl<'r> Composed<'r> {
         )
     }
 
-    /// Whether `node` is withheld because its file differs in the caller's worktree, counting it
-    /// when it is.
+    /// Whether `node` is withheld because it is [`Stale`], counting it when it is.
     fn withholds(&self, node: &Node) -> bool {
-        let differs = node_file(&node.kind, &node.id).is_some_and(|f| self.differing.contains(f));
-        if differs {
+        let stale = match &self.stale {
+            Stale::Files(files) => {
+                node_file(&node.kind, &node.id).is_some_and(|f| files.contains(f))
+            }
+            Stale::CodeHalf => self.code.nodes.contains_key(&node.id),
+        };
+        if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
         }
-        differs
+        stale
     }
 
     /// The node `id` names in both halves, merged, before any is withheld; `None` for an alias.
@@ -431,10 +450,10 @@ impl<'r> Composed<'r> {
         Ok(merge(self.code.node(id)?, self.records.node(id)?))
     }
 
-    /// Whether an edge end `id` is answered: no file differs, or the node it reads as (an
+    /// Whether an edge end `id` is answered: nothing is [`Stale`], or the node it reads as (an
     /// [`artifact`] when no half holds it) is not withheld.
     fn answers_end(&self, id: &str) -> Result<bool, Error> {
-        if self.differing.is_empty() {
+        if matches!(&self.stale, Stale::Files(files) if files.is_empty()) {
             return Ok(true);
         }
         let node = self.merged(id)?.unwrap_or_else(|| artifact(id));
