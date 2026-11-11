@@ -619,8 +619,7 @@ impl Worktree {
     /// splits the entry across two NUL-separated fields - the NEW path first,
     /// then the original - so we keep the new path and skip the original field.
     pub fn changed_files(&self) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["status", "--porcelain", "-z"])?;
-        Ok(parse_status_z(&out))
+        uncommitted_paths(&self.dir)
     }
 
     /// Stage and commit the agent's changes on the worktree's branch, returning
@@ -2721,6 +2720,27 @@ pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
 /// it", never "safe to remove".
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
+}
+
+/// The paths `git status --porcelain -z` reports changed in `dir`'s tree, untracked files
+/// included, in git's order ([`parse_status_z`]).
+pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
+    Ok(parse_status_z(&git(dir, &["status", "--porcelain", "-z"])?))
+}
+
+/// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
+/// the [`uncommitted_paths`], sorted, each once.
+pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error> {
+    let committed = git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?;
+    let mut paths: Vec<String> = committed
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .chain(uncommitted_paths(dir)?)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// Whether commit `ancestor` is in `descendant`'s history (either names any rev) in the

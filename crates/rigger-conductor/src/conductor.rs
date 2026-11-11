@@ -1129,6 +1129,19 @@ pub struct GateVerbRun {
 /// The reason a gate run that changed the tree it gated is not a pass ([`gate_once`]).
 const WORKTREE_CHANGED: &str = "the worktree changed while the gate ran";
 
+/// How many changed paths a [`WORKTREE_CHANGED`] refusal names before it counts the rest.
+const NAMED_PATHS: usize = 10;
+
+/// `paths` as a refusal names them: the first [`NAMED_PATHS`], comma-separated, and a count of
+/// the rest.
+fn named_paths(paths: &[String]) -> String {
+    let named = paths[..paths.len().min(NAMED_PATHS)].join(", ");
+    match paths.len().saturating_sub(NAMED_PATHS) {
+        0 => named,
+        more => format!("{named} and {more} more"),
+    }
+}
+
 /// Whether `dir` holds changes no commit records; an unreadable status counts as dirty.
 fn tree_is_dirty(dir: &str) -> bool {
     crate::worktree::path_is_dirty(dir).unwrap_or(true)
@@ -1138,9 +1151,10 @@ fn tree_is_dirty(dir: &str) -> bool {
 /// input resolution the driver uses ([`run_gate_with_taxonomy`] over [`GateInputs::resolve`]),
 /// with `run_base` as the run's `$RIGGER_RUN_BASE`. Records nothing and moves no ratchet. The tree
 /// must be clean and committed, since only a commit addresses what ran. A gate that changed the
-/// tree while it ran (left changes, or committed them) is a non-pass whatever it reported: its
-/// evidence starts with [`WORKTREE_CHANGED`] and tells the caller to commit and run it again, and
-/// it gets no digest.
+/// tree while it ran (left changes, or committed them) is a non-pass whatever it reported, with
+/// no digest: its evidence starts with [`WORKTREE_CHANGED`], names the changed paths
+/// ([`named_paths`]), and tells the caller to commit the changes it made and ignore the files the
+/// gate writes before it runs the gate again.
 ///
 /// Refuses, running nothing, an undeclared gate (naming the declared ones), a dirty tree and a tree
 /// with no commit; a failed guard probe is returned as its error.
@@ -1184,14 +1198,18 @@ fn gate_once(
     // A result addresses the commit only if the gate left it as it found it: otherwise no one can
     // say which tree it describes, so it fails closed.
     if crate::worktree::head_sha_of(dir) != commit || tree_is_dirty(dir) {
+        let changed = crate::worktree::paths_changed_since(dir, &commit)
+            .map(|paths| named_paths(&paths))
+            .unwrap_or_else(|e| format!("the changed paths are unreadable ({e})"));
         return Ok(GateVerbRun {
             gate: gate_id.to_string(),
             command: gc.run.clone(),
             pass: false,
             flaky: false,
             evidence: format!(
-                "{WORKTREE_CHANGED}, so its result addresses no commit; commit the tree, then run \
-                 `rigger gate {gate_id}` again\n{evidence}"
+                "{WORKTREE_CHANGED}, so its result addresses no commit; changed: {changed}. To \
+                 gate it: commit changes you made; add files the gate writes to .gitignore; then \
+                 run `rigger gate {gate_id}` again\n{evidence}"
             ),
             commit,
             digest: String::new(),
@@ -44688,7 +44706,7 @@ mod tests {
             (
                 TreeChange::Writes(12),
                 false,
-                &["out-0.rs", "out-9.rs", "and 2 more", ADVICE],
+                &["out-0.rs", "out-11.rs", "and 2 more", ADVICE],
             ),
             (TreeChange::Commits, false, &["out-0.rs", ADVICE]),
         ];
