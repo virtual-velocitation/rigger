@@ -1860,6 +1860,11 @@ fn refuse_a_lossy_refold(shadow: &Connection, live_path: &str, project: &str) ->
     Err(Error(refusal.join("\n")))
 }
 
+/// One table [`record_facts_lost`] compares: its name, the columns that name a fact, the columns
+/// compared beside them where the old file has them, the condition a record fact meets, and the
+/// SQL that labels a fact.
+type RecordTable<'a> = (&'a str, &'a [&'a str], &'a [&'a str], String, String);
+
 /// Every record fact the file attached as `old` holds for `project` that the main file lacks
 /// ([`refuse_a_lossy_refold`]), one line each: its record nodes, the edges from or onto them, the
 /// record identity's assertions and the aliases, each compared on the columns the old file has
@@ -1868,7 +1873,7 @@ fn record_facts_lost(conn: &Connection, project: &str) -> Result<Vec<String>, Er
     let p = sql_text(project);
     let kinds = record_kinds_sql();
     let old_records = format!("SELECT id FROM old.nodes WHERE kind IN ({kinds})");
-    let tables: [(&str, &[&str], &[&str], String, String); 4] = [
+    let tables: [RecordTable; 4] = [
         (
             "nodes",
             &["id", "kind"],
