@@ -27222,20 +27222,18 @@ fn graph_around_fails_on_an_unreadable_subgraph() {
 fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
     let dir = temp_project();
     let root = dir.path();
-    let out = common::cli::show_recorded(
+    common::cli::seed_rigger_dir(root);
+    common::fixtures::write_text(
         root,
         "src/App.tsx",
         "export function App() {\n  const v = <b>x</b>;\n  return v;\n}\n",
-        "App::v",
-        "constant",
-        2,
-        "ts",
     );
+    common::fixtures::commit_tree(root);
     assert_eq!(
-        out.lines().collect::<Vec<_>>(),
+        common::cli::show_lines(root, "src/App.tsx::App::v"),
         [
             "show src/App.tsx::App::v",
-            "  site: src/App.tsx:2   kind constant   degree 3",
+            "  site: src/App.tsx:2   kind constant   degree 2",
             "  name v",
             "  lang ts",
             "       2 |   const v = <b>x</b>;",
@@ -27483,31 +27481,18 @@ fn graph_around_a_bare_name_notes_the_seed_form_and_show() {
 /// `rigger_graph`'s `show` selector - its JSON wiring (`Server::tool_graph`'s `show` arm, the
 /// site object built from `site_fields`) on a bare-name resolution, where the happy-path test above
 /// only ever tries `around` on an unknown entity (the show-renderer test below drives every
-/// exact id and a resolving `around`). Seeds one real code-entity definition into
-/// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
-/// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
+/// exact id and a resolving `around`). Commits one real code-entity definition into
+/// the tree the code store describes and proves a SUCCESSFUL resolution
 /// serializes its site fields correctly over the wire, and an unresolved `show` still answers
 /// honestly `"none"` rather than erroring.
+#[cfg(feature = "symbols")]
 #[test]
 fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknown_one() {
-    use rigger::contextgraph::sqlite::Projector;
-    use rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-    use rigger::eventstore::Event;
-
     let dir = temp_store_project();
     let root = dir.path();
 
-    let id = run_stream_identity(root);
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).unwrap();
-    {
-        let p = Projector::open(rigger_dir.join("graph.db").to_str().unwrap(), &id).unwrap();
-        let payload =
-            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
-        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
-        e.position = 1;
-        common::fixtures::folds(&p, std::slice::from_ref(&e));
-    }
+    common::fixtures::write_text(root, "src/widget.rs", "\n\n\n\n\n\nfn frobnicate() {}\n");
+    common::fixtures::commit_tree(root);
 
     let mut mcp = McpSession::start(root);
 
@@ -27523,7 +27508,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
     assert_eq!(structured["site"]["file"], "src/widget.rs");
     assert_eq!(structured["site"]["line"], 7);
-    assert_eq!(structured["site"]["kind"], "fn");
+    assert_eq!(structured["site"]["kind"], "function");
 
     let missing = mcp.call(
         "tools/call",
