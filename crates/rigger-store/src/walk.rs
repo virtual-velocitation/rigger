@@ -66,3 +66,112 @@ where
     }
     ControlFlow::Continue(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rigger_domain::code_view::in_scope;
+
+    /// Every file a fixture holds besides its committed `.gitignore`.
+    const FILES: &[&str] = &[
+        ".git/HEAD",
+        ".github/workflows/ci.yml",
+        ".rigger/blob.txt",
+        ".rigger/cache/x.bin",
+        ".rigger/workflow.yml",
+        "src/.hidden.rs",
+        "src/lib.rs",
+        "target/out.bin",
+    ];
+
+    /// A tree holding every one of [`FILES`] and, when `gitignore` is not empty, a committed
+    /// `.gitignore` holding it.
+    fn fixture(gitignore: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("tempdir");
+        for file in FILES {
+            let path = root.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("a file sits in a directory"))
+                .expect("create the file's directory");
+            std::fs::write(&path, file.as_bytes()).expect("write the file");
+        }
+        if !gitignore.is_empty() {
+            std::fs::write(root.path().join(".gitignore"), gitignore).expect("write .gitignore");
+        }
+        root
+    }
+
+    /// The files a scoped walk of `root` visits, as sorted `/`-separated paths under it.
+    fn visited(root: &Path, named: Option<&[String]>) -> Vec<String> {
+        let mut out = Vec::new();
+        let _ = walk_scoped(root, named, &mut |file| {
+            let rel = file
+                .strip_prefix(root)
+                .expect("a visited file is under the root");
+            let parts: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            out.push(parts.join("/"));
+            ControlFlow::Continue(())
+        });
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_scoped_walk_visits_the_files_in_scope_that_the_committed_gitignore_keeps() {
+        /// The committed `.gitignore`, the paths the walk is confined to, the files it visits.
+        type Case = (
+            &'static str,
+            Option<&'static [&'static str]>,
+            &'static [&'static str],
+        );
+        let cases: &[Case] = &[
+            (
+                "",
+                None,
+                &[".rigger/workflow.yml", "src/lib.rs", "target/out.bin"],
+            ),
+            ("target/\n", None, &[".rigger/workflow.yml", "src/lib.rs"]),
+            (".rigger/\n", None, &["src/lib.rs", "target/out.bin"]),
+            (
+                "target/\n",
+                Some(&[".rigger/workflow.yml", ".rigger/blob.txt", "target/out.bin"]),
+                &[".rigger/workflow.yml"],
+            ),
+        ];
+        for (gitignore, named, expected) in cases {
+            let root = fixture(gitignore);
+            let named: Option<Vec<String>> =
+                named.map(|n| n.iter().map(|p| (*p).to_owned()).collect());
+            assert_eq!(
+                visited(root.path(), named.as_deref()),
+                *expected,
+                "gitignore {gitignore:?}, named {named:?}"
+            );
+        }
+        // With nothing ignored, the walk keeps a file exactly when the domain's one scope rule
+        // does.
+        let root = fixture("");
+        let all = visited(root.path(), None);
+        for file in FILES {
+            assert_eq!(all.contains(&(*file).to_owned()), in_scope(file), "{file}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_that_is_not_utf8_is_outside_the_scoped_walk() {
+        use std::os::unix::ffi::OsStrExt;
+        let not_utf8 = std::ffi::OsStr::from_bytes(b"n\xffme");
+        let root = fixture("");
+        std::fs::write(root.path().join("src").join(not_utf8), b"a file").expect("write the file");
+        let dir = root.path().join(not_utf8);
+        std::fs::create_dir(&dir).expect("create the directory");
+        std::fs::write(dir.join("lib.rs"), b"a file").expect("write the file within");
+        assert_eq!(
+            visited(root.path(), None),
+            [".rigger/workflow.yml", "src/lib.rs", "target/out.bin"]
+        );
+    }
+}

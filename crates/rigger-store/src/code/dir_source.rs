@@ -278,6 +278,16 @@ mod tests {
     }
 
     #[test]
+    fn a_gitignored_workflow_definition_is_left_out_of_the_listing_like_any_ignored_file() {
+        let root = tree_with_one_file();
+        std::fs::write(root.path().join(".rigger/workflow.yml"), b"stages: []\n")
+            .expect("write the workflow definition");
+        std::fs::write(root.path().join(".gitignore"), b".rigger/\n").expect("write .gitignore");
+        let got = answers(root.path(), content_id(OUTSIDE));
+        assert_eq!(got.paths, ["src/lib.rs"]);
+    }
+
+    #[test]
     fn each_walk_corner_is_kept_out_of_the_listing_and_the_read_and_diffs_as_its_row_says() {
         /// A corner planted at `src/corner.rs` and at the always-in-scope workflow path.
         struct Corner {
