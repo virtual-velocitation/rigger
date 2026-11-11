@@ -27,8 +27,9 @@ two operations below, each citing its evidence.
 **SUPERSESSION INTO HISTORY, ON EVIDENCE.** A decision, lesson or finding whose EVERY governed
 or about file is absent from the code view at the stamp (the file was deleted) and has no
 rename successor (git's rename detection between the previous and the current stamp's commits)
-gets `valid_to` on its `GOVERNS`, `ABOUT` and `RAISED` edges at the log's head position when
-the supersession is evaluated, in the record fold's supersession arm, through
+gets `valid_to` on its `GOVERNS`, `ABOUT` and `RAISED` edges, naming the deleting commit: the
+first stamp commit at which the file is absent with no rename successor, never a log position.
+The edge is written when an `advance` first observes that absence, through
 the same edge-invalidation authority spec 25 uses (`invalidate_finding_edges`, generalized to
 the three node kinds). A node with one surviving file stays live. `rigger peers
 --historical` returns superseded items with the evidence that superseded them (the commit that
@@ -103,10 +104,10 @@ specs whose criteria are unchecked.
 ## Done when
 
 - [ ] a test proves A DECISION WHOSE CODE IS GONE MOVES INTO HISTORY: after the code view
-  at the stamp lacks every file a decision governs, its edges carry `valid_to` at the log head
-  position of the evaluation, a decision with one surviving governed file stays live, a rename
+  at the stamp lacks every file a decision governs, its edges carry `valid_to` naming the first
+  stamp commit that lacks them, written when an `advance` first observes the absence, a decision with one surviving governed file stays live, a rename
   successor keeps the decision live, and `rigger peers --historical` names the deleting
-  commit as the evidence, pinned at the fold arm. This criterion OWNS supersession on
+  commit as the evidence, pinned at the arm that handles the advance. This criterion OWNS supersession on
   structural evidence; the age prune's removal is criterion 2's, NOT this one's.
 - [ ] a test proves FORGETTING BY AGE ENDS: `rigger reset --runs` on a store with a dead run
   leaves that run's durable decisions and upheld findings in the graph and archives its
