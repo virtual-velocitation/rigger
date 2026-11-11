@@ -664,7 +664,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
         )?)
     })?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
-    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record_stop_failure(
         &prog_store,
         &run_id,

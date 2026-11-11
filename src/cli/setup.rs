@@ -546,29 +546,29 @@ pub(crate) fn cmd_init() -> Res {
     Ok(())
 }
 
-/// The git hooks directory for `root`, resolved robustly via `git rev-parse --git-path
-/// hooks` (which honors `core.hooksPath` and a worktree's `.git`-file indirection) and
-/// falling back to `<root>/.git/hooks` when git cannot be consulted. A relative path git
-/// prints is resolved against `root` so the caller gets an absolute-enough path to write to.
-fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
-    let resolved = subprocess::git_in(root)
-        .args(["rev-parse", "--git-path", "hooks"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    match resolved {
-        Some(p) => {
-            let p = Path::new(&p);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                root.join(p)
-            }
-        }
-        None => root.join(".git").join("hooks"),
+/// The git hooks directory for `root`, resolved via `git rev-parse --git-path hooks` (which
+/// honors `core.hooksPath` and a worktree's `.git`-file indirection); `None` when discovery finds
+/// no repository enclosing `root`, and an error naming git's refusal inside one. A relative path
+/// git prints is resolved against `root` so the caller gets an absolute-enough path to write to.
+fn git_hooks_dir(root: &Path) -> Result<Option<PathBuf>, String> {
+    if rev_parse(root, Location::CommonDir)?.is_none() {
+        return Ok(None);
     }
+    let args = ["rev-parse", "--git-path", "hooks"];
+    let out = subprocess::git_in(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {} in {}: {e}", args.join(" "), root.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} in {}: {}",
+            args.join(" "),
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    Ok(Some(if p.is_absolute() { p } else { root.join(p) }))
 }
 
 /// Install (or refresh) rigger's docs-checking `pre-commit` hook under `root`,
@@ -581,9 +581,14 @@ fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
 /// run it. Non-destructive by construction: an existing pre-commit hook is preserved - rigger's
 /// block is chained in (inserted after the shebang, before the existing body), never clobbered -
 /// and reading BYTES rather than a UTF-8 string keeps that guarantee even for a non-UTF-8 hook.
-fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+/// `None` when `root` lies in no repository ([`git_hooks_dir`]), which has no hook to install.
+fn install_precommit_hook(
+    root: &Path,
+) -> Result<Option<InstallOutcome>, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
-    let hooks_dir = git_hooks_dir(root);
+    let Some(hooks_dir) = git_hooks_dir(root)? else {
+        return Ok(None);
+    };
     std::fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("pre-commit");
     let existed = hook_path.exists();
@@ -593,7 +598,7 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     let existing = std::fs::read(&hook_path).ok();
     let merged = compose_precommit_bytes(existing.as_deref());
     if existing.as_deref() == Some(merged.as_slice()) {
-        return Ok(InstallOutcome::AlreadyCurrent);
+        return Ok(Some(InstallOutcome::AlreadyCurrent));
     }
     std::fs::write(&hook_path, &merged)?;
     // Mark the hook executable so git runs it. A hook without the execute bit is silently
@@ -604,11 +609,11 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
         perms.set_mode(0o755);
         std::fs::set_permissions(&hook_path, perms)?;
     }
-    Ok(if existed {
+    Ok(Some(if existed {
         InstallOutcome::Refreshed
     } else {
         InstallOutcome::Installed
-    })
+    }))
 }
 
 /// What an earlier build wrote for the symbols index and its `rigger-reindex` skill, relative to
@@ -707,13 +712,14 @@ const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed
 
 /// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
 /// operator checkout git's common directory names, read from that checkout's HEAD whichever
-/// worktree `start` is in; at `start` itself for a project with no git.
+/// worktree `start` is in; at `start` itself only where discovery finds no enclosing repository.
+/// Git refusing inside a repository is an error, never a directory store.
 #[cfg(feature = "symbols")]
-pub(crate) fn project_code_store(start: &Path) -> rigger::code_store::CodeStore {
-    match main_repo_root(start) {
+pub(crate) fn project_code_store(start: &Path) -> Result<rigger::code_store::CodeStore, String> {
+    Ok(match main_repo_root(start)? {
         Some(root) => rigger::code_store::CodeStore::in_repository(&root),
         None => rigger::code_store::CodeStore::in_directory(start),
-    }
+    })
 }
 
 /// The code store the conductor advances after each merge a run on `repo` lands; `repo` is the
@@ -767,15 +773,14 @@ pub(crate) fn open_project_code_store(
     mode: rigger_store::code::Mode,
 ) -> Result<Option<CodeStoreOpened>, String> {
     use rigger_domain::code_view::CodeView;
-    let store = project_code_store(&cwd());
+    let store = project_code_store(&cwd())?;
+    let tree = caller_tree()?;
     let before = store.in_force()?;
     let opened = store.open(mode)?;
     Ok(Some(CodeStoreOpened {
         moved: before.as_ref() != Some(opened.view.stamp()),
         behind: opened.behind.as_ref().map(ToString::to_string),
-        stamp_line: Box::new(move || {
-            format!("code store: {}", store.label(&opened, &caller_tree()))
-        }),
+        stamp_line: Box::new(move || format!("code store: {}", store.label(&opened, &tree))),
     }))
 }
 
@@ -884,7 +889,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
             InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
         )
     });
-    let hook_changed = hook != InstallOutcome::AlreadyCurrent;
+    let hook_changed = hook.is_some_and(|hook| hook != InstallOutcome::AlreadyCurrent);
     let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
@@ -931,15 +936,15 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         }
     }
     match hook {
-        InstallOutcome::Installed => println!(
+        Some(InstallOutcome::Installed) => println!(
             "installed the docs pre-commit hook - each commit now checks every rendered docs \
              output this repo tracks against a fresh render, and refuses a drifted or \
              unstaged one"
         ),
-        InstallOutcome::Refreshed => {
+        Some(InstallOutcome::Refreshed) => {
             println!("refreshed the docs pre-commit hook to match this rigger build")
         }
-        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
+        Some(InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy) | None => {}
     }
     match mcp_registered {
         InstallOutcome::Installed => println!(
@@ -1061,7 +1066,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
     migrate_local_identity(Some(&held))?;
-    let project = project_identity();
+    let project = project_identity()?;
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
     // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
@@ -2579,7 +2584,8 @@ mod tests {
     fn install_precommit_hook_preserves_a_non_utf8_existing_hook() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // git_hooks_dir falls back to <root>/.git/hooks when git cannot be consulted.
+        // A repository whose hooks directory git resolves to <root>/.git/hooks.
+        git_init_quiet(root);
         let hooks = root.join(".git").join("hooks");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook_path = hooks.join("pre-commit");
@@ -2591,7 +2597,7 @@ mod tests {
         let outcome = install_precommit_hook(root).unwrap();
         assert_eq!(
             outcome,
-            InstallOutcome::Refreshed,
+            Some(InstallOutcome::Refreshed),
             "an existing hook is refreshed, not freshly installed"
         );
         let written = std::fs::read(&hook_path).unwrap();
@@ -2614,7 +2620,7 @@ mod tests {
         let again = install_precommit_hook(root).unwrap();
         assert_eq!(
             again,
-            InstallOutcome::AlreadyCurrent,
+            Some(InstallOutcome::AlreadyCurrent),
             "a rerun over the chained non-UTF-8 hook is a true no-op"
         );
         let rewritten = std::fs::read(&hook_path).unwrap();

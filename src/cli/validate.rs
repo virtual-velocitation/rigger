@@ -4,15 +4,16 @@ use std::time::{Duration, Instant};
 /// Whether the tracked `.rigger/project.id` is present (and non-blank) for the project at
 /// `root`, resolved relative to the git top-level (else `root`) - the same anchoring
 /// [`project_identity_at`] uses. `false` means identity falls back to the volatile basename,
-/// which `rigger validate` surfaces as a rename-orphans-history hazard.
-fn has_tracked_project_id(root: &Path) -> bool {
-    let toplevel = git_repo_at(root);
+/// which `rigger validate` surfaces as a rename-orphans-history hazard. An error when git refuses
+/// inside a repository ([`git_repo_at`]).
+fn has_tracked_project_id(root: &Path) -> Result<bool, String> {
+    let toplevel = git_repo_at(root)?;
     let base: &Path = if toplevel.is_empty() {
         root
     } else {
         Path::new(&toplevel)
     };
-    read_project_id(base).is_some()
+    Ok(read_project_id(base).is_some())
 }
 
 /// How long `rigger validate` waits on `claude auth status --json` for the login it reports.
@@ -240,7 +241,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
-    for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard) {
+    for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard)? {
         eprintln!("{advisory}");
     }
     // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
@@ -270,9 +271,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
     // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
-    // A store-read failure just skips the advisory (never fails validate), exactly like the
-    // git-backed advisories above swallow a missing/erroring git.
-    if let Ok(drift) = read_model_drift(&db_path("events.db"), &project_identity()) {
+    // A store-read failure just skips the advisory (never fails validate); git refusing inside a
+    // repository fails it, as it does every advisory above.
+    let identity = project_identity()?;
+    if let Ok(drift) = read_model_drift(&db_path("events.db"), &identity) {
         if let Some(advisory) = model_drift_advisory(&drift) {
             eprintln!("{advisory}");
         }
@@ -284,7 +286,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // direction only - the spec's repair stays a documented operator procedure, never a
     // command). A store-read failure just skips the advisory (never fails validate), exactly
     // like the model-drift advisory above.
-    if let Ok(signatures) = read_order_signatures(&db_path("events.db"), &project_identity()) {
+    if let Ok(signatures) = read_order_signatures(&db_path("events.db"), &identity) {
         for advisory in order_signature_advisories(&signatures) {
             eprintln!("{advisory}");
         }
@@ -294,7 +296,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // ([`Store::count_derived`]), the read the reset menu prints and the delete acts on. `None`
     // on a server-backed project (the delete is a mechanic of the sqlite store), on a project with no events.db yet, or on any read
     // failure; this never fails validate and never creates a store that does not already exist.
-    if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &project_identity()) {
+    if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &identity) {
         eprintln!("{advisory}");
     }
     // FOOTPRINT ACCOUNTING (spec 77 criterion 6): rigger's total on-disk footprint by
@@ -302,9 +304,9 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // threshold), plus an advisory for any category whose dead share breaches the
     // threshold, naming the reclaiming command. A store-ACCESS-miss failure degrades to an
     // empty report (mirrors residue_advisories/read_run_units); only a genuine store-
-    // SELECTION failure is worth surfacing, and it already will be by the residue block
-    // above sharing the same read - so this stays a silent skip, never a second error path
-    // for the identical cause.
+    // SELECTION failure or git refusing inside a repository is worth surfacing, and either
+    // already will be by the residue block above sharing the same read - so this stays a silent
+    // skip, never a second error path for the identical cause.
     if let Ok((totals, advisories)) = footprint_report_for(&cfg) {
         for line in totals {
             println!("{line}");
@@ -317,10 +319,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
     // writes nothing to it. Validate alone then says how many events the file passed over, by
     // cause (spec 124, CATCH-UP LINES).
-    if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &project_identity()) {
+    if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &identity) {
         eprintln!("{note}");
     }
-    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &project_identity()) {
+    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &identity) {
         eprintln!("{note}");
     }
     // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
@@ -407,14 +409,15 @@ fn gate_requirement_lines(gates: &[GateRequirements]) -> Vec<String> {
 ///   (b) the checkout's `.claude/settings.json` lacks rigger's session hooks, or carries the
 ///       grep-guard `grep_guard` (the workflow's `defaults.grep_guard`) does not declare.
 /// Both are warnings only - they are collected here and printed to stderr by the caller
-/// without affecting the exit status. Rooted at `root` so the seam is testable against a
-/// temp dir without mutating the process-wide current directory.
-fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
+/// without affecting the exit status; git refusing inside a repository is the error. Rooted at
+/// `root` so the seam is testable against a temp dir without mutating the process-wide current
+/// directory.
+fn validate_advisories(root: &Path, grep_guard: bool) -> Result<Vec<String>, String> {
     let mut advisories = Vec::new();
     // Identity durability (spec 09): without a tracked project.id, identity is the volatile
     // directory basename, so a rename away orphans this project's run history. Warn (like
     // the other drift advisories) so it is seen before a rename loses the log.
-    if !has_tracked_project_id(root) {
+    if !has_tracked_project_id(root)? {
         advisories.push(format!(
             "warning: no tracked {RIGGER_DIR}/{PROJECT_ID_FILE}; this project's identity falls \
              back to the directory basename, so renaming the checkout orphans its run history. \
@@ -438,7 +441,7 @@ fn validate_advisories(root: &Path, grep_guard: bool) -> Vec<String> {
     if let Some(advisory) = behind_the_tree_advisory(root, GITSEMVER_VERSION, BUILD_PROVENANCE) {
         advisories.push(advisory);
     }
-    advisories
+    Ok(advisories)
 }
 
 /// The LOG BLOAT advisory line, rendered from an already-read count of derived events
@@ -698,7 +701,7 @@ fn residue_advisories(
     // The repo whose `<repo>/.rigger/tmp` the run uses (spec 77 criterion 6:
     // [`owning_repo_root`] is the SAME authority [`footprint_report_for`] resolves its own
     // scratch root from). Keeps the scanned scratch root aligned with the run's actual one.
-    let repo = owning_repo_root(&cwd);
+    let repo = owning_repo_root(&cwd)?;
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
         &repo,
         &cfg.workflow.defaults.workdir,
@@ -801,12 +804,12 @@ fn read_run_units_or_why(
     // [`require_store_dir`] server branch uses), binding identity to the main repo root and
     // letting [`resolve_store`] reach the server.
     let loc = if sel.is_sqlite() {
-        let Some(dir) = find_store_dir_from(cwd) else {
+        let Some(dir) = find_store_dir_from(cwd)? else {
             return Ok(Ok(RunUnits::default()));
         };
         StoreLocation { dir }
     } else {
-        server_store_location(cwd)
+        server_store_location(cwd)?
     };
     // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
     // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
@@ -816,7 +819,7 @@ fn read_run_units_or_why(
         Ok(backend) => backend,
         Err(e) => return Ok(Err(format!("the run log cannot be opened: {e}"))),
     };
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let store = Namespaced::new(backend.as_ref(), &loc.identity()?);
     Ok(store
         .read_stream(conductor::STREAM, 0, Direction::Forward)
         .map(|events| current_run_units(&events))
@@ -865,7 +868,7 @@ pub(super) fn measure_footprint(
     cwd: &Path,
     workdir: &str,
 ) -> Result<(Vec<FootprintCategory>, Option<String>), Box<dyn std::error::Error>> {
-    let repo = owning_repo_root(cwd);
+    let repo = owning_repo_root(cwd)?;
     let rigger_dir = Path::new(&repo).join(RIGGER_DIR);
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(&repo, workdir));
     let (run_units, liveness_unknown) = match read_run_units_or_why(cwd)? {
@@ -1535,8 +1538,8 @@ mod tests {
         let root = dir.path();
         // No project.id: identity is the legacy basename (unchanged pre-spec-09 behavior).
         let basename = root.file_name().unwrap().to_str().unwrap().to_string();
-        assert_eq!(project_identity_at(root), basename);
-        assert_eq!(legacy_identity_at(root), basename);
+        assert_eq!(project_identity_at(root).unwrap(), basename);
+        assert_eq!(legacy_identity_at(root).unwrap(), basename);
 
         // A tracked project.id, when present (and trimmed), IS the identity - it survives a
         // directory rename because it does not track the basename.
@@ -1546,15 +1549,15 @@ mod tests {
             "  durable-id-42 \n",
         )
         .unwrap();
-        assert_eq!(project_identity_at(root), "durable-id-42");
+        assert_eq!(project_identity_at(root).unwrap(), "durable-id-42");
         // The legacy resolver ignores the file, so the migration can still name the "before".
-        assert_eq!(legacy_identity_at(root), basename);
-        assert!(has_tracked_project_id(root));
+        assert_eq!(legacy_identity_at(root).unwrap(), basename);
+        assert!(has_tracked_project_id(root).unwrap());
 
         // A blank id file is treated as absent (falls back), never an empty identity.
         std::fs::write(root.join(RIGGER_DIR).join(PROJECT_ID_FILE), "   \n").unwrap();
-        assert_eq!(project_identity_at(root), basename);
-        assert!(!has_tracked_project_id(root));
+        assert_eq!(project_identity_at(root).unwrap(), basename);
+        assert!(!has_tracked_project_id(root).unwrap());
     }
 
     // --- Spec 65 unit 5: `rigger validate` SURFACES the resolved wrapper, cache dir, and

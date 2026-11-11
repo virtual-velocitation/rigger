@@ -44,7 +44,7 @@ pub(crate) fn cmd_stats(args: &[String]) -> Res {
     // wrapper owns only the I/O boundary (which file, which project, and the printing);
     // the read-model edges live in the testable seam below.
     let selection = store_selection(None, None)?;
-    match stats_lines(&db_path("events.db"), &project_identity(), all, &selection)? {
+    match stats_lines(&db_path("events.db"), &project_identity()?, all, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -67,7 +67,7 @@ const NO_CANARY_MESSAGE: &str =
 /// LATEST canary run - per-tier catch rate, adjudicator correctness, and finding-order
 /// stability - folded from the project's DISTINCT canary stream (never the run stream).
 fn cmd_stats_canary() -> Res {
-    match canary_stats_lines(&db_path("events.db"), &project_identity())? {
+    match canary_stats_lines(&db_path("events.db"), &project_identity()?)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -197,7 +197,7 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     })?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
-    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record(&prog_store, &run_id, id, activity)?;
     println!("progress recorded for {id} (position {pos})");
     Ok(())
@@ -295,7 +295,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // This run's progress, from the SEPARATE store's per-run stream (absent/empty is fine - the
     // store is created lazily by the first `rigger progress`).
     let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
-        Ok(backend) => read_run_progress(&backend, &loc.identity(), &run_id),
+        Ok(backend) => read_run_progress(&backend, &loc.identity()?, &run_id),
         Err(_) => Vec::new(),
     };
 

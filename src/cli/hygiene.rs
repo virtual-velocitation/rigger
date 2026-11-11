@@ -210,7 +210,7 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     })?;
     let drop = superseded_graph_nodes(&events);
     let boundary = superseded_edge_boundary(&events);
-    let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let graph = Projector::open(&loc.file("graph.db"), &loc.identity()?)?;
     // A graph that owes its rebuild is read as it stands, which may predate the tables the prune
     // reads: nothing is prunable from it until `rigger setup` pays that, exactly as `--runs`
     // refuses until then.
@@ -227,7 +227,7 @@ fn reset_menu(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     // own doc) - honest per backend rather than a count of a store it does not run on.
     if selection.is_sqlite() {
         let es = open_sqlite_store(&loc.file("events.db"))?;
-        let counted = es.count_derived(&loc.run_stream())?;
+        let counted = es.count_derived(&loc.run_stream()?)?;
         println!("{}", derived_menu_line(selection, Some(counted)));
     } else {
         println!("{}", derived_menu_line(selection, None));
@@ -491,13 +491,13 @@ fn reset_derived(loc: &StoreLocation) -> Res {
     if Path::new(&graph_db).exists() {
         open_graph(
             &graph_db,
-            &loc.identity(),
+            &loc.identity()?,
             &StoreSelection::Sqlite,
             "reset --derived",
         )?;
     }
     let store = open_sqlite_store(&loc.file("events.db"))?;
-    for line in delete_derived_events(&store, &loc.run_stream())? {
+    for line in delete_derived_events(&store, &loc.run_stream()?)? {
         println!("{line}");
     }
     Ok(())
@@ -908,7 +908,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // with no run) reclaims no edge, so LIVE and recent history are both untouched.
         let boundary = superseded_edge_boundary(&events);
 
-        let graph = open_graph(&graph_db, &loc.identity(), selection, "reset --runs")?;
+        let graph = open_graph(&graph_db, &loc.identity()?, selection, "reset --runs")?;
         // The probe's step lock is held until the close returns, so no `rigger run` starts against
         // a run this reset is closing; the graph prune below takes no part in
         // it.
@@ -1760,7 +1760,7 @@ mod tests {
     fn refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event() {
         let dir = tempfile::tempdir().unwrap();
         let (loc, env) = probed_store(dir.path());
-        let identity = loc.identity();
+        let identity = loc.identity().unwrap();
         let backend = rigger::eventstore::sqlite::Store::open(&loc.file("events.db")).unwrap();
         let store = Namespaced::new(&backend, &identity);
         // A malformed SpawnRequested body: valid JSON but missing the fields `spawn::recorded`

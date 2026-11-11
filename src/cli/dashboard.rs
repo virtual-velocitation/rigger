@@ -58,7 +58,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     let events_db = db_path("events.db");
     let graph_db = db_path("graph.db");
     let progress_db = db_path("progress.db");
-    let identity = project_identity();
+    let identity = project_identity()?;
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
     // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
@@ -87,7 +87,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         dir: PathBuf::from(RIGGER_DIR),
     });
     let scratch_root = {
-        let repo = git_repo();
+        let repo = git_repo()?;
         // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
         // configured `workdir`) is an EXPLICIT override that `worktree::scratch_root_path`
         // already answers correctly with no git repo at all (its own first match arm checks the
@@ -866,9 +866,10 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let graph = open_graph_for_write(&loc.file("graph.db"), &loc.identity(), selection)?;
+        let identity = loc.identity()?;
+        let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
-        let context = ReadGraph::new(&graph, caller_tree());
+        let context = ReadGraph::new(&graph, caller_tree()?);
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -876,9 +877,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             .is_some()
             .then(|| Store::open(&loc.file("progress.db")))
             .transpose()?;
-        let prog_store = prog_backend
-            .as_ref()
-            .map(|b| Namespaced::new(b, &loc.identity()));
+        let prog_store = prog_backend.as_ref().map(|b| Namespaced::new(b, &identity));
         let scratch_root = if spawn.is_some() {
             let repo = loc
                 .dir
@@ -891,7 +890,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let lookup = rigger::lookup::TreeLookup::new(caller_tree());
+        let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
         let mut server = mcpserver::Server::new(store, conductor::STREAM)
             .with_graph(&graph)
             .with_context(&context)

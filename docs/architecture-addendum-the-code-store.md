@@ -184,8 +184,9 @@ Any design that holds test code fully has to keep product views the size they ar
    filtered by the view, never dropped at extraction.
 8. **Atomic publish.** A reader sees one whole snapshot, old or new, never a mix.
 9. **No external systems.**
-   - Git is the version control the project already uses. A project with no git reads its tree
-     from the directory.
+   - Git is the version control the project already uses. A directory that discovery finds no
+     repository enclosing reads its tree from the directory; git refusing inside a repository is
+     an error, never a directory store.
    - Every OS facility sits behind an interface with an implementation for each OS.
 
 ---
@@ -1127,8 +1128,10 @@ a reader holding one open (or mapped) never blocks a writer.
   holds no language knowledge.
 - **Process-agnostic.** The store knows nothing of runs, units or gates. It describes a commit,
   and whoever moves HEAD calls `open_current`.
-- **No external systems.** Git is read through the existing worktree crate, a project with no
-  git uses `DirTreeSource`, and no new dependency is added.
+- **No external systems.** Git is read through the existing worktree crate, and no new
+  dependency is added. Discovery (`rigger_worktree_git::discover::rev_parse`) alone decides that
+  no repository encloses a directory, which then uses `DirTreeSource`; git refusing inside a
+  repository is an error wherever a repository is resolved, never a directory store.
 
 ---
 

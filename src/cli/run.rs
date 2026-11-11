@@ -73,7 +73,7 @@ impl Drop for RunRegistration {
 }
 
 /// Register THIS invocation's instance in the machine-global discovery registry (spec 50, criterion
-/// 2): the project root, the credential-free store identity, and a fresh heartbeat, keyed so a
+/// 2): the project `identity`, its root, the credential-free store identity, and a fresh heartbeat, keyed so a
 /// re-registration refreshes one entry in place. This is the SINGLE registration writer - the
 /// run entry point (the in-process `rigger run` driver) requests through it, so the
 /// machine-global registry sees every invocation that starts or advances a run. That invocation
@@ -88,7 +88,11 @@ impl Drop for RunRegistration {
 /// registry is discovery metadata whose loss is harmless (live instances repopulate it), so a
 /// homeless environment or a write error degrades to an inert guard and NEVER fails the run.
 #[must_use = "hold the RunRegistration for the life of the run so its heartbeat stays fresh"]
-fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistration {
+fn register_run_instance(
+    repo: &str,
+    identity: &str,
+    selection: &StoreSelection,
+) -> RunRegistration {
     let Some(dir) = rigger::registry::default_dir() else {
         return RunRegistration::inert(); // homeless environment: degrade to no registration
     };
@@ -98,7 +102,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         PathBuf::from(repo)
     };
     let inst = rigger::registry::Instance {
-        project: project_identity(),
+        project: identity.to_string(),
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, &root),
         heartbeat_ms: rigger::registry::now_ms(),
@@ -251,7 +255,7 @@ pub(crate) fn refuse_unless_one_root(
         ));
     }
     if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
-        let scratch_repo = git_repo_at(Path::new(scratch));
+        let scratch_repo = git_repo_at(Path::new(scratch))?;
         if !scratch_repo.is_empty() {
             let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
                 .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
@@ -856,7 +860,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         migrate_local_identity(None)?;
     }
     let progress_backend = open_progress_backend()?;
-    let progress = Namespaced::new(&progress_backend, &project_identity());
+    let identity = project_identity()?;
+    let progress = Namespaced::new(&progress_backend, &identity);
     // No launch the progress store holds open has a live driver now that this run holds the
     // step lock: each is reaped and closed before the base gates, so a start they refuse has
     // already reconciled. The reconciliation reads the progress store alone, so the run store
@@ -902,13 +907,13 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
     // run. Registered here, off the same resolved `selection` the run store opens on, so
     // discovery names the store this run drives.
-    let _registration = register_run_instance(&repo, &selection);
+    let _registration = register_run_instance(&repo, &identity, &selection);
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
+    let store = Namespaced::new(backend.as_ref(), &identity);
+    let graph = open_graph(&db_path("graph.db"), &identity, &selection, "run")?;
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
@@ -938,7 +943,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         &RunStartCritique {
             command,
             backend: backend.as_ref(),
-            identity: &project_identity(),
+            identity: &identity,
             workflow: &cfg.workflow,
             root: &review::spec_root(&cwd, &repo),
             text: &text,
