@@ -568,7 +568,8 @@ open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
-                                                                   untracked list: < 20 ms)
+                                                                   untracked list: < 20 ms over a
+                                                                   refreshed index)
   diff empty      -> answers describe W exactly; label "describes <commit>"
   diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
                      K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
@@ -576,7 +577,7 @@ open(caller worktree W, filter)
                      with such an endpoint, is withheld, and K counts the withheld hits
                      with the overlay (section 13): the differing files are merged in; label
                      "describes W (<commit> + N files)"
-  diff fails (the stamp commit is not in W's object store, or W's index cannot be read)
+  diff fails (the stamp commit is not in W's object store, or W's index cannot be copied)
                   -> label "describes <commit>; W cannot be compared; K withheld"; it fails
                      closed: every node of the code half, and every edge with such an
                      endpoint, is withheld, and K counts the withheld hits; the
@@ -598,6 +599,17 @@ W is the caller's worktree: the git top-level of the cwd, else, outside any repo
 a git failure inside a repository is an error. Every reader names it by that one rule (graph,
 ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing
 files and its label names the top-level.
+
+The check never writes W's index. Every git the source starts itself passes
+`--no-optional-locks` (discovery's `rev-parse`, which finds W's git dir, reads no index), and
+since git still rewrites an index whose entries only a stat change has dirtied, the diff reads a
+private copy of W's index instead: the index in W's own git dir (a linked worktree's included),
+copied into a directory of its own in the OS temp directory with the index's mtime kept, so git
+judges a racily clean entry as it would over the index itself. The directory goes when the read
+ends; one a hard stop leaves is the OS temp cleaner's. A W with no index reads as git reads it:
+every tracked file deleted. Until W's own git refreshes its index, each check re-hashes every
+file the index cannot vouch for by stat: one whose stat alone changed, or one racily clean, as a
+fresh clone's files are.
 
 A head with no commit (an unborn branch, which git answers by its quiet no that `HEAD` names no
 object) reads as the empty tree, so every file in W differs until W commits. A head git fails to
@@ -770,7 +782,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git: `ls-tree`, `diff --name-status`, `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
@@ -1085,8 +1097,8 @@ Groupings still describe the stamp: a new entity shows no community until the ne
 the label says so.
 
 The overlay is about 300 lines plus tests. Its cost is extraction for each changed file (~25 ms,
-in parallel) plus the git diff (< 20 ms). With it, the honesty label in 6.1 becomes
-"describes W", and withholding is no longer used.
+in parallel) plus the git diff (< 20 ms over a refreshed index, 6.1). With it, the honesty label
+in 6.1 becomes "describes W", and withholding is no longer used.
 
 ---
 

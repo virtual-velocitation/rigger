@@ -24,9 +24,10 @@ rigger-process = { path = "../rigger-process", default-features = false }
 # The scratch-root resolvers' cache-home resolver and liveness marker encoding (a same-ring edge).
 rigger-driver = { path = "../rigger-driver", default-features = false }
 thiserror = "2"
+# The private copy of a worktree's index the git tree source reads, in the OS temp directory.
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 # The git tree source's tests advance a code store through it; `store` and `core` above forward
 # its lane.
 rigger-store = { path = "../rigger-store", default-features = false, features = ["doubles"] }
