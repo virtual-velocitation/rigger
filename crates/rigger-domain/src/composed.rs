@@ -847,55 +847,54 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         Ok(!self.withholds(&node))
     }
 
-    /// The `REALIZES` attachments read at `id` running `way`: out of a decision, one per concept
-    /// of each document it governs; into a concept, one per decision governing a member.
-    fn attachments(&self, id: &str, way: Way) -> Result<Vec<Edge>, Error> {
+    /// The edges both halves hold at `spelling` running `way`, ends canonical.
+    fn halves_at(&self, spelling: &str, way: Way) -> Result<Vec<Edge>, Error> {
         let mut found = Vec::new();
-        match way {
-            Way::Out => {
-                for e in self.records.out(id)? {
-                    if e.rel != REL_GOVERNS {
-                        continue;
-                    }
-                    let e = self.canon_edge(e);
-                    for c in self.code.concepts_of(&e.to) {
-                        found.push(attachment(&e, &c));
-                    }
-                }
-            }
-            Way::In => {
-                for m in self.code.concept_members(id) {
-                    for spelling in self.spellings(&m) {
-                        for e in self.records.incoming(spelling)? {
-                            if e.rel == REL_GOVERNS {
-                                found.push(attachment(&self.canon_edge(e), id));
-                            }
-                        }
-                    }
-                }
-            }
+        for half in [&self.code as &dyn Neighbors, self.records] {
+            let edges = match way {
+                Way::Out => half.out(spelling)?,
+                Way::In => half.incoming(spelling)?,
+            };
+            found.extend(edges.into_iter().map(|e| self.canon_edge(e)));
         }
         Ok(found)
     }
 
     /// The edges read at `id` running `way` from both halves and its aliases, ends canonical,
-    /// with its decision attachments, each (from, to, relation) once, the code half's first;
-    /// none at an alias or a withheld node, and none whose other end is withheld.
+    /// with its `REALIZES` attachments, each (from, to, relation) once, the code half's first;
+    /// none at an alias or a withheld node, and none whose other end is withheld. An attachment
+    /// comes of a GOVERNS edge in either half, as the whole graph's do: out of its source, one
+    /// per concept of the node it governs; into a concept, one per GOVERNS into a member.
     fn edges(&self, id: &str, way: Way) -> Result<Vec<Edge>, Error> {
         if self.canonical.contains_key(id) || !self.answers_end(id)? {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
         for spelling in self.spellings(id) {
-            for half in [&self.code as &dyn Neighbors, self.records] {
-                let edges = match way {
-                    Way::Out => half.out(spelling)?,
-                    Way::In => half.incoming(spelling)?,
-                };
-                found.extend(edges.into_iter().map(|e| self.canon_edge(e)));
+            found.extend(self.halves_at(spelling, way)?);
+        }
+        let mut attached = Vec::new();
+        match way {
+            Way::Out => {
+                for e in found.iter().filter(|e| e.rel == REL_GOVERNS) {
+                    for c in self.code.concepts_of(&e.to) {
+                        attached.push(attachment(e, &c));
+                    }
+                }
+            }
+            Way::In => {
+                for m in self.code.concept_members(id) {
+                    for spelling in self.spellings(&m) {
+                        for e in self.halves_at(spelling, Way::In)? {
+                            if e.rel == REL_GOVERNS {
+                                attached.push(attachment(&e, id));
+                            }
+                        }
+                    }
+                }
             }
         }
-        found.extend(self.attachments(id, way)?);
+        found.extend(attached);
         let mut answered = Vec::new();
         for e in found {
             let other = match way {
@@ -1619,6 +1618,12 @@ mod tests {
     /// longer holds, a decision governing `docs/d.md`, the record rows of a tree file and a tree
     /// entity, and the alias `the-compute`.
     fn records() -> Indexed {
+        let (graph, aliases) = record_rows();
+        Indexed::new(graph, aliases)
+    }
+
+    /// [`records`]'s rows and aliases.
+    fn record_rows() -> (Graph, Vec<(String, String)>) {
         let graph = Graph {
             nodes: vec![
                 node("f1", KIND_FINDING, &[("summary", "slow")]),
@@ -1633,10 +1638,8 @@ mod tests {
                 edge("dec-1", "docs/d.md", REL_GOVERNS),
             ],
         };
-        Indexed::new(
-            graph,
-            vec![("the-compute".into(), "src/b.rs::compute".into())],
-        )
+        let aliases = vec![("the-compute".into(), "src/b.rs::compute".into())];
+        (graph, aliases)
     }
 
     fn honest(diff: Result<WorktreeDiff, String>) -> Honesty {
@@ -1974,6 +1977,83 @@ mod tests {
                 let got = format!("{:#?}", open().into_whole().unwrap());
                 assert_eq!(got, want, "{case} (near {near})");
             }
+        }
+    }
+
+    /// The edges read at an id are the whole graph's edges at it: GIVEN a decision's GOVERNS
+    /// recorded under an alias and a design doc's GOVERNS the code half holds, each to a doc a
+    /// concept groups, and each worktree comparison, WHEN each id the whole graph holds is read
+    /// one hop out (its edges out and in), over the code half resolved whole and near, THEN the
+    /// edges at it are the whole graph's edges at it, the REALIZES attachments among them.
+    #[test]
+    fn the_edges_read_at_an_id_are_the_whole_graphs_edges_at_it() {
+        let mut view = view_with_workflow();
+        let mut files: Vec<FileFacts> = (view.facts.files())
+            .filter_map(|f| view.facts.file(f.path).map(Cow::into_owned))
+            .collect();
+        files.push(FileFacts {
+            path: "docs/e.md".into(),
+            lang: "markdown".into(),
+            half: Half::Design,
+            doc_concepts: vec![DocConcept {
+                kind: KIND_DESIGN_DOC.into(),
+                id: "docs/e.md".into(),
+                title: "E".into(),
+            }],
+            doc_links: vec![DocLink {
+                from: "docs/e.md".into(),
+                rel: REL_GOVERNS.into(),
+                to: "docs/d.md".into(),
+            }],
+            ..Default::default()
+        });
+        view.facts = FactsView::new(view.facts.stamp().clone(), files);
+        let (mut rows, mut aliases) = record_rows();
+        rows.nodes.push(node("dec-2", KIND_DECISION, &[]));
+        rows.edges.push(edge("dec-2", "the-doc", REL_GOVERNS));
+        aliases.push(("the-doc".into(), "docs/d.md".into()));
+        let records = Indexed::new(rows, aliases);
+        let differing = |path: &str| {
+            Ok(WorktreeDiff {
+                changed: vec![path.into()],
+                untracked: Vec::new(),
+            })
+        };
+        // (case, the comparison)
+        let cases: [(&str, Result<WorktreeDiff, String>); 4] = [
+            ("exact", Ok(WorktreeDiff::default())),
+            ("a code file", differing("src/a.rs")),
+            ("a design doc", differing("docs/e.md")),
+            ("no comparison", Err("unreadable".into())),
+        ];
+        for (case, diff) in cases {
+            for near in [false, true] {
+                let filter = ViewFilter::default();
+                let honesty = || honest(diff.clone());
+                let g: Box<dyn ContextGraph + '_> = match near {
+                    true => Box::new(Composed::near(&records, &view, filter, honesty()).unwrap()),
+                    false => Box::new(composed(&records, &view, honesty())),
+                };
+                let whole = ContextGraph::whole(&composed(&records, &view, honesty())).unwrap();
+                for id in ids(&whole.nodes) {
+                    let at = |edges: &[Edge]| -> Vec<(String, String, String)> {
+                        (edges.iter())
+                            .filter(|e| e.from == id || e.to == id)
+                            .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
+                            .collect()
+                    };
+                    let got = at(&g.subgraph(&[id.to_string()], 1).unwrap().edges);
+                    assert_eq!(got, at(&whole.edges), "{case} (near {near}) at {id}");
+                }
+            }
+        }
+        // Both attachments are the whole graph's, so the reads above are asked for them.
+        let whole = ContextGraph::whole(&composed(&records, &view, exact())).unwrap();
+        for from in ["dec-2", "docs/e.md"] {
+            assert!(
+                has_edge(&whole.edges, from, CONCEPT, REL_REALIZES),
+                "{from}"
+            );
         }
     }
 
