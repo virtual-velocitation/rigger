@@ -15824,6 +15824,9 @@ mod tests {
                     crate::test_support::empty_view(),
                 ))
             }
+            fn head_in(&self, worktree: &Path) -> Result<crate::code_view::Head, String> {
+                (self.head()).map(|head| crate::test_support::opened_in(head, worktree))
+            }
             fn open_on(
                 &self,
                 _head: &crate::code_view::Head,
@@ -41172,7 +41175,7 @@ mod tests {
     struct AdvancingStore(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     #[cfg(feature = "symbols")]
     impl crate::code_view::OpenCodeView for AdvancingStore {
-        fn head(&self, _worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+        fn head(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
             use crate::test_support::planted_file;
             let open = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let stamp = rigger_domain::code_facts::Stamp {
@@ -41204,8 +41207,11 @@ mod tests {
                 ),
                 user,
             ];
-            Ok(crate::test_support::matching_head(
-                rigger_domain::code_view::FactsView::new(stamp, files),
+            Ok(crate::test_support::opened_in(
+                crate::test_support::matching_head(rigger_domain::code_view::FactsView::new(
+                    stamp, files,
+                )),
+                worktree,
             ))
         }
     }
@@ -41219,8 +41225,11 @@ mod tests {
     #[cfg(feature = "symbols")]
     impl OpenGraph for AdvancingContext<'_> {
         fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+            self.head_in(Path::new("W"))
+        }
+        fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
             use crate::code_view::OpenCodeView;
-            self.heads.head(Path::new("W"))
+            self.heads.head(worktree)
         }
         fn open_on(
             &self,

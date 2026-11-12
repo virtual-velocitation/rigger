@@ -1775,10 +1775,11 @@ impl<'r> ReadGraph<'r> {
 }
 
 impl ReadGraph<'_> {
-    /// How the caller's worktree compares with `head`, as the composed graph's label states it.
-    fn honesty(&self, head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
+    /// How the worktree `head` was opened for compares with it, as the composed graph's label
+    /// states it.
+    fn honesty(head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
         rigger_domain::composed::Honesty {
-            worktree: self.worktree.display().to_string(),
+            worktree: head.worktree.display().to_string(),
             compared: head.compared,
             behind: head.behind.clone(),
         }
@@ -1787,7 +1788,11 @@ impl ReadGraph<'_> {
 
 impl OpenGraph for ReadGraph<'_> {
     fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
-        open_head(&self.worktree)
+        self.head_in(&self.worktree)
+    }
+
+    fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+        open_head(worktree)
     }
 
     fn open_on(
@@ -1799,7 +1804,7 @@ impl OpenGraph for ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            self.honesty(head),
+            Self::honesty(head),
         )?;
         Ok(Box::new(composed))
     }
@@ -1816,7 +1821,7 @@ impl OpenGraph for ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            self.honesty(&head),
+            Self::honesty(&head),
         )?;
         ask(&composed)
     }
@@ -1852,6 +1857,7 @@ fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> 
         view: Box::new(rigger_domain::code_view::FactsView::new(stamp, Vec::new())),
         compared: rigger_domain::code_view::Compared::of(diff.as_ref().map_err(String::as_str)),
         behind: None,
+        worktree: worktree.to_path_buf(),
     })
 }
 

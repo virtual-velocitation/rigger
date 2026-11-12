@@ -2520,6 +2520,12 @@ mod tests {
             fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
                 self.inner.head()
             }
+            fn head_in(
+                &self,
+                worktree: &std::path::Path,
+            ) -> Result<rigger_domain::code_view::Head, String> {
+                self.inner.head_in(worktree)
+            }
             fn open_on(
                 &self,
                 head: &rigger_domain::code_view::Head,

@@ -55,6 +55,7 @@ pub fn open_head(
         view,
         compared,
         behind,
+        worktree: worktree.to_path_buf(),
     })
 }
 
@@ -457,6 +458,7 @@ mod tests {
             view: Box::new(snap.unwrap()),
             compared: Compared::Overlaid(0),
             behind: None,
+            worktree: "W".into(),
         };
         (root, head)
     }

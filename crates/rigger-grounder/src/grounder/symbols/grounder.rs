@@ -2367,7 +2367,7 @@ mod tests {
     type Worktree = (WorktreeDiff, Vec<FileFacts>);
 
     impl OpenCodeView for Fixed {
-        fn head(&self, _worktree: &Path) -> Result<Head, String> {
+        fn head(&self, worktree: &Path) -> Result<Head, String> {
             let base = Box::new(FactsView::new(stamp(), self.files.clone()));
             let (view, compared): (Box<dyn CodeView>, _) = match &self.worktree {
                 Some((diff, changed)) => (
@@ -2380,6 +2380,7 @@ mod tests {
                 view,
                 compared,
                 behind: None,
+                worktree: worktree.to_path_buf(),
             })
         }
     }
@@ -2862,7 +2863,7 @@ mod tests {
     /// a count above one.
     struct Advancing(std::sync::Arc<std::sync::atomic::AtomicUsize>);
     impl OpenCodeView for Advancing {
-        fn head(&self, _worktree: &Path) -> Result<Head, String> {
+        fn head(&self, worktree: &Path) -> Result<Head, String> {
             let open = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let mut at = stamp();
             at.tip.tree = format!("tree-{open}");
@@ -2885,6 +2886,7 @@ mod tests {
                 view: Box::new(FactsView::new(at, vec![file, test])),
                 compared: Compared::Overlaid(0),
                 behind: None,
+                worktree: worktree.to_path_buf(),
             })
         }
     }

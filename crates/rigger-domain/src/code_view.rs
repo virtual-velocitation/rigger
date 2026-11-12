@@ -7,7 +7,7 @@ use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, 
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A file in a view, without its facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +164,8 @@ pub struct Head {
     pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
+    /// The worktree the view is compared with: the one it describes.
+    pub worktree: PathBuf,
 }
 
 /// Opens the code view of the head for a reader (7.3). The composition root implements it. A
