@@ -331,8 +331,8 @@ the `--agents` JSON and the tool pre-approval derive from one resolution. The ro
 root the run drives (for the conductor `Deps::repo`, `conductor.rs:1986`): the operator's checkout is
 the one root every spawn reads, and a helper copy committed into a unit worktree is ignored (this
 repository tracks `.claude/agents/`, `.gitignore:50`, and `crates/rigger-driver/src/hooks.rs:54` embeds the tracked file, so a
-worktree copy is only ever the operator's own text at an older commit); an empty root reads the
-embedded text. An existing file that cannot be read or does not parse as a helper definition makes
+worktree copy is only ever the operator's own text at an older commit); an empty root, the
+repo-less path's, is the working directory, the directory the definition pin reads. An existing file that cannot be read or does not parse as a helper definition makes
 `resolve_spawn_host` return `Err` naming the file (never the embedded text), an infrastructure fault that charges no
 remediation attempt; `rigger validate` reports the same error. `definition_hash` (`src/cli/mod.rs:1142`) becomes
 `definition_hash(root, helpers: &[HelperCopy])` and folds only the `present` entries after the agent
