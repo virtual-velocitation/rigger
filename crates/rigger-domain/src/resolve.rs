@@ -1825,4 +1825,92 @@ pub(crate) mod tests {
             assert_eq!(&got, want, "{name}");
         }
     }
+
+    #[test]
+    fn a_module_edge_into_a_test_file_is_test_code() {
+        // Each file: its path, its scope, and its module declarations as (test mark, target).
+        type File = (&'static str, Scope, &'static [(bool, &'static str)]);
+        // Each row: the case, the view's files, the file asked, and its module edges under
+        // exclude, then under include, each followed by its test flag.
+        type Case = (
+            &'static str,
+            &'static [File],
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+        );
+        let cases: &[Case] = &[
+            (
+                "a product declaration of a product file is product",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(false, "src/m.rs")]),
+                    ("src/m.rs", Scope::Product, &[]),
+                ],
+                "src/lib.rs",
+                &["src/lib.rs -CONTAINS-> src/m.rs product"],
+                &["src/lib.rs -CONTAINS-> src/m.rs product"],
+            ),
+            (
+                "a product declaration of a Test-scope file is test",
+                &[
+                    (
+                        "src/lib.rs",
+                        Scope::Product,
+                        &[(false, "src/examples/mod.rs")],
+                    ),
+                    ("src/examples/mod.rs", Scope::Test, &[]),
+                ],
+                "src/lib.rs",
+                &[],
+                &["src/lib.rs -CONTAINS-> src/examples/mod.rs test"],
+            ),
+            (
+                "a declaration in a test file is test",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(false, "tests/common.rs")]),
+                    ("tests/common.rs", Scope::Test, &[(false, "src/c.rs")]),
+                    ("src/c.rs", Scope::Product, &[]),
+                ],
+                "tests/common.rs",
+                &[],
+                &["tests/common.rs -CONTAINS-> src/c.rs test"],
+            ),
+            (
+                "a test-only declaration is test",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/t.rs")]),
+                    ("src/t.rs", Scope::Product, &[]),
+                ],
+                "src/lib.rs",
+                &[],
+                &["src/lib.rs -CONTAINS-> src/t.rs test"],
+            ),
+        ];
+        for (name, files, asked, exclude, include) in cases {
+            let facts = files
+                .iter()
+                .map(|(path, scope, decls)| {
+                    let mut f = code(path, "rust", *scope, vec![], vec![]);
+                    f.modules = decls
+                        .iter()
+                        .map(|(test, target)| decl("m", 0, *test, &[target]))
+                        .collect();
+                    f
+                })
+                .collect();
+            let view = FactsView::new(stamp(), facts);
+            let r = Resolver::new(&view);
+            for (tests, want) in [(false, exclude), (true, include)] {
+                let got: Vec<String> = r
+                    .links(&view.file(asked).unwrap(), tests)
+                    .iter()
+                    .map(|l| {
+                        let flag = if l.test { "test" } else { "product" };
+                        format!("{} -{}-> {} {flag}", l.from, l.rel, l.to)
+                    })
+                    .collect();
+                assert_eq!(&got, want, "{name}, tests {tests}");
+            }
+        }
+    }
 }
