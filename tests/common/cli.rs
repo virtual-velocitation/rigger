@@ -1910,6 +1910,26 @@ pub fn refused_derived_reset(
     (ok, out, err, log_and_graph_files(root) == *found)
 }
 
+/// Seeds the code store's facts memo of the project at `root` with two entries, of 10 and 20
+/// bytes, and answers its directory: the memo [`SEEDED_MEMO_REMOVED_LINE`] names.
+pub fn seed_code_facts_memo(root: &Path) -> PathBuf {
+    let memo = rigger_store::code::Store::new(root).memo_dir();
+    std::fs::create_dir_all(&memo).unwrap();
+    std::fs::write(memo.join("a.facts"), [0u8; 10]).unwrap();
+    std::fs::write(memo.join("b.facts"), [0u8; 20]).unwrap();
+    memo
+}
+
+/// The bytes the facts memo's entries in the project at `root` hold, or `None` with no memo.
+pub fn code_facts_memo_bytes(root: &Path) -> Option<u64> {
+    let entries = std::fs::read_dir(rigger_store::code::Store::new(root).memo_dir()).ok()?;
+    Some(entries.map(|e| e.unwrap().metadata().unwrap().len()).sum())
+}
+
+/// The line `rigger reset --derived` prints, ended, once it removed the memo
+/// [`seed_code_facts_memo`] seeds.
+pub const SEEDED_MEMO_REMOVED_LINE: &str = "reset --derived: removed the code facts memo (30B)\n";
+
 /// The line `rigger reset --derived` prints, ended, for a delete of `deleted` derived events.
 pub fn deleted_line(deleted: usize) -> String {
     format!("reset --derived: deleted {deleted} derived event(s) from the event log\n")

@@ -33,6 +33,7 @@
 
 use crate::common;
 
+use common::cli::code_facts_memo_bytes;
 use common::cli::configure_workdir;
 use common::cli::current_run_id_of;
 use common::cli::hold_step_lock;
@@ -48,6 +49,7 @@ use common::cli::rigger_file;
 use common::cli::run_on_arms_beside_with;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::seed_code_facts_memo;
 use common::cli::seed_owned;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
@@ -55,6 +57,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::DriverTraces;
 use common::cli::WorkflowFixture;
+use common::cli::SEEDED_MEMO_REMOVED_LINE;
 use common::cli::SPAWN;
 use common::cli::UNISOLATED_WORKER;
 use common::fixtures::registry_entries;
@@ -92,15 +95,28 @@ fn assert_compacted(said: (String, String, bool), why: &str) {
     let (out, err, ok) = said;
     assert_eq!(
         (ok, out),
-        (
-            true,
-            format!(
-                "{}{}",
-                common::cli::NOTHING_TO_DELETE_LINE,
-                common::cli::LOG_LEFT_AS_IT_STANDS_LINE
-            )
-        ),
+        (true, compacted_report()),
         "{why}: must print the migration's report; stderr: {err}"
+    );
+}
+
+/// What `reset --derived` prints over a store holding no derived event and no free page.
+fn compacted_report() -> String {
+    format!(
+        "{}{}",
+        common::cli::NOTHING_TO_DELETE_LINE,
+        common::cli::LOG_LEFT_AS_IT_STANDS_LINE
+    )
+}
+
+/// Asserts the dead driver's run `o` compacted as [`assert_compacted`] reads it and then removed
+/// the facts memo [`reset_over_a_dead_drivers_run`] seeds, naming it, `why` naming the case.
+fn assert_compacted_and_cleared_the_memo(o: Outcome, why: &str) {
+    assert_eq!(
+        (o.ok, o.out, o.memo_after),
+        (true, compacted_report() + SEEDED_MEMO_REMOVED_LINE, None),
+        "{why}: must print the migration's report, then remove the memo; stderr: {}",
+        o.err
     );
 }
 
@@ -206,14 +222,15 @@ const SPAWN_MARKER: Signal = Signal("a/implementer#0");
 const HEARTBEAT: Signal = Signal("registration");
 const ALL_SIGNALS: [Signal; 3] = [STEP_LOCK, SPAWN_MARKER, HEARTBEAT];
 
-/// What one `rigger` invocation did: its stdout, stderr and success, and the event log's row
-/// count before and after it.
+/// What one `rigger` invocation did: its stdout, stderr and success, the event log's row count
+/// before and after it, and the bytes of the code facts memo after it ([`code_facts_memo_bytes`]).
 struct Outcome {
     out: String,
     err: String,
     ok: bool,
     rows_before: i64,
     rows_after: i64,
+    memo_after: Option<u64>,
 }
 
 impl Outcome {
@@ -234,6 +251,7 @@ fn counted(root: &Path, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Out
         ok,
         rows_before,
         rows_after: row_count(root),
+        memo_after: code_facts_memo_bytes(root),
     }
 }
 
@@ -241,11 +259,12 @@ fn counted(root: &Path, cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Out
 /// other one stale or free: the step lock free, `a`'s marker touched 301 s ago (just past its
 /// 300 s bound), the registry heartbeat a minute past the idle window. `b`'s marker is always
 /// touched just now - a spawn with a real result has ended whatever its marker says - and `c` has
-/// none.
+/// none. The project's code facts memo is seeded ([`seed_code_facts_memo`]).
 fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
     let dir = temp_store_project();
     let root = dir.path();
     seed_run_events(root, DEAD_DRIVER_RUN);
+    seed_code_facts_memo(root);
 
     let scratch = tempfile::tempdir().expect("create the scratch root the markers live under");
     let scratch_root = scratch.path().to_str().unwrap();
@@ -285,7 +304,7 @@ fn reset_over_a_dead_drivers_run(fresh: &[Signal], args: &[&str]) -> Outcome {
 
 /// `reset --derived` over the dead driver's run refuses while `live` alone is fresh, naming it
 /// and nothing else - not the stale signals, not the answered or marker-less spawns, never a
-/// non-terminal unit - and prunes NOTHING.
+/// non-terminal unit - and prunes NOTHING: no row of the log, and none of the code facts memo.
 fn assert_refused_naming_only(live: Signal) {
     let o = reset_over_a_dead_drivers_run(&[live], &["reset", "--derived"]);
     let err = &o.err;
@@ -311,18 +330,19 @@ fn assert_refused_naming_only(live: Signal) {
         "the refusal must name the override; stderr: {err:?}"
     );
     assert_eq!(
-        o.rows_after, o.rows_before,
+        (o.rows_after, o.out.as_str(), o.memo_after),
+        (o.rows_before, "", Some(30)),
         "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
     );
 }
 
 /// Every unit non-terminal, yet the step lock is free, every in-flight marker is older than its
 /// bound and the registry heartbeat is older than the idle window: nothing is driving the run, so
-/// `reset --derived` compacts without `--force-live`.
+/// `reset --derived` compacts without `--force-live`, and then clears the code facts memo.
 #[test]
 fn reset_derived_proceeds_over_a_dead_drivers_non_terminal_run_without_force_live() {
-    assert_compacted(
-        reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]).said(),
+    assert_compacted_and_cleared_the_memo(
+        reset_over_a_dead_drivers_run(&[], &["reset", "--derived"]),
         "a run whose driver is dead must compact without --force-live",
     );
 }
@@ -340,12 +360,12 @@ rigger::test_cases! {
         assert_refused_naming_only(HEARTBEAT);
 }
 
-/// `--force-live` skips the check entirely: with all three signals live it still compacts and
-/// prints the ordinary prune report.
+/// `--force-live` skips the check entirely: with all three signals live it still compacts, prints
+/// the ordinary prune report and clears the code facts memo.
 #[test]
 fn reset_derived_force_live_compacts_while_every_signal_is_live() {
-    assert_compacted(
-        reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]).said(),
+    assert_compacted_and_cleared_the_memo(
+        reset_over_a_dead_drivers_run(&ALL_SIGNALS, &["reset", "--derived", "--force-live"]),
         "--force-live must skip the guard",
     );
 }
