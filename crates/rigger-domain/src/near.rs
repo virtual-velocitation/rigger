@@ -4,11 +4,12 @@
 //!
 //! Resolving a view whole folds what every file asserts ([`crate::code_graph`]). What a file
 //! asserts about an id is fixed by the rules: a code id is asserted by its own file, by the files
-//! holding a tagged reference to one of its leaves, by the files declaring it as a module, and by
-//! the design and workflow facts that name it. So an id's node and edges are the whole graph's
-//! when exactly those assertions are folded, in file order, under the same filter; its proofs are
-//! the test calls of its leaves; and its groupings are read from the view's groupings by id. Each
-//! file's assertions are read once and kept for the answer.
+//! whose mentions of one of its leaves land on it from elsewhere (a tagged reference, and with
+//! tests shown a test call), by the files declaring it as a module, and by the design and workflow
+//! facts that name it. So an id's node and edges are the whole graph's when exactly those
+//! assertions are folded, in file order, under the same filter; its proofs are the test calls of
+//! its leaves; and its groupings are read from the view's groupings by id. Each file's assertions
+//! are read once and kept for the answer.
 
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -174,8 +175,9 @@ enum Part {
 /// Which files' assertions a read folds.
 #[derive(Clone, Copy)]
 struct Reach {
-    /// The files holding a tagged reference to one of the id's leaves.
-    tagged: bool,
+    /// The files whose mentions of one of the id's leaves land on it from elsewhere
+    /// ([`State::landing`]).
+    landing: bool,
     /// The files declaring the id as a module.
     modules: bool,
 }
@@ -183,7 +185,7 @@ struct Reach {
 impl Reach {
     /// This reach's place among the four.
     fn at(self) -> usize {
-        usize::from(self.tagged) * 2 + usize::from(self.modules)
+        usize::from(self.landing) * 2 + usize::from(self.modules)
     }
 }
 
@@ -504,12 +506,20 @@ impl<'v> State<'v> {
         def_leaves(&facts, local)
     }
 
-    /// The places of the code files holding a tagged reference to one of `leaves`.
-    fn tagging(&self, leaves: &[String]) -> Vec<u32> {
+    /// The places of the code files whose mentions of one of `leaves` can land on a definition in
+    /// another file: those holding a tagged reference to one, and, with tests shown, a test call of
+    /// one, which lands on the definition its proof credits.
+    fn landing(&self, leaves: &[String]) -> Vec<u32> {
+        let tests = self.tests != Tests::Exclude;
+        let resolver = self.graph.resolver();
         let mut places = Vec::new();
         for leaf in leaves {
             for m in self.view.mentions_named(leaf) {
-                if m.file.half == Half::Code && matches!(m.kind, MentionKind::Tagged(_)) {
+                let lands = match m.kind {
+                    MentionKind::Tagged(_) => true,
+                    MentionKind::Call => tests && resolver.is_test(m.test, m.file.path),
+                };
+                if m.file.half == Half::Code && lands {
                     places.extend(self.code_place(m.file.path));
                 }
             }
@@ -525,9 +535,9 @@ impl<'v> State<'v> {
         let own = self.code_place(file);
         sources.extend(own.map(|at| (at, Part::Code)));
         let leaves = self.leaves_of(id);
-        if reach.tagged {
-            let tagging = self.tagging(&leaves);
-            sources.extend(tagging.into_iter().map(|at| (at, Part::Code)));
+        if reach.landing {
+            let landing = self.landing(&leaves);
+            sources.extend(landing.into_iter().map(|at| (at, Part::Code)));
         }
         if reach.modules && rest.is_none() && own.is_some() {
             let declaring = self.declaring(file);
@@ -609,7 +619,7 @@ impl<'v> State<'v> {
         let only = self.tests == Tests::Only;
         let test_file = split_id(id).1.is_none() && self.graph.resolver().is_test_file(id);
         let reach = Reach {
-            tagged: only,
+            landing: only,
             modules: only || test_file,
         };
         self.resolved(id, reach).node.clone()
@@ -619,7 +629,7 @@ impl<'v> State<'v> {
     /// resolve that reads the node of a product id reads them.
     fn code_out(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
-            tagged: false,
+            landing: false,
             modules: false,
         };
         self.resolved(id, reach)
@@ -628,7 +638,7 @@ impl<'v> State<'v> {
     /// The code edges into `id`.
     fn code_incoming(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
-            tagged: true,
+            landing: true,
             modules: true,
         };
         self.resolved(id, reach)

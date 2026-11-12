@@ -691,11 +691,14 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 - **A test mention** produces a proof under every filter. Under `include` and `only` it also
   produces the edges of the call and reference rules, resolved against all candidates, product
   and test. That gives test-to-test and test-to-product CALLS and REFERENCES edges, all marked
-  `test`. Under `exclude` it produces no edge.
+  `test`. A test call the call rule cannot resolve in its own file lands on the definition its
+  proof credits, so a shown test's call edge and the proof it adds name one definition. Under
+  `exclude` it produces no edge.
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
+| | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
 | down-hop | a placeholder | one candidate | a hop to it |
 | | | several candidates | a frontier |

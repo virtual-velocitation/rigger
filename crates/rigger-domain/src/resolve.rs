@@ -492,9 +492,30 @@ impl<'v> Resolver<'v> {
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
+    /// The call-edge rule: where the edge of a call to `leaf` from `file` lands, and its tier. A
+    /// product call, and a test call the call rule resolves in `file`, take the call rule. A test
+    /// call the call rule sends to a placeholder lands, INFERRED, on the definition the proof rule
+    /// credits with it, so a test's call edge and its proof name one definition; on the
+    /// placeholder when the proof rule credits none. INFERRED even when that definition is in
+    /// `file`: the call rule found a same-file test definition of the leaf contesting it.
+    fn call_edge(&self, file: &str, leaf: &str, test: bool) -> (String, &'static str) {
+        let (to, tier) = self.call(file, leaf, Pool::of(test));
+        if !test || tier == TIER_EXTRACTED {
+            return (to, tier);
+        }
+        self.proof(file, leaf)
+            .map_or((to, tier), |id| (id, TIER_INFERRED))
+    }
+
     /// Whether `m`, a mention in `facts`, is test code.
     pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
-        m.test || self.is_test_file(&facts.path)
+        self.is_test(m.test, &facts.path)
+    }
+
+    /// Whether a fact in `path` that its own mark calls test code when `marked` is test code: by
+    /// that mark, or by its file's scope or the test-module closure.
+    pub(crate) fn is_test(&self, marked: bool, path: &str) -> bool {
+        marked || self.is_test_file(path)
     }
 
     /// The entities of `facts`, one per id, in id order; test entities only when `tests`.
@@ -567,7 +588,7 @@ impl<'v> Resolver<'v> {
         self.each_declared_link(facts, tests, sink);
     }
 
-    /// The call and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
+    /// The call-edge and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
     /// to `sink` in [`Self::each_link`] order. A tagged reference a call holds stays held when
     /// `mentions` hold every call whose leaf a file-level tagged reference among them names.
     pub fn each_mention_link<'f>(
@@ -596,7 +617,7 @@ impl<'v> Resolver<'v> {
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
             }
-            let (to, tier) = self.call(file, &m.leaf, Pool::of(test));
+            let (to, tier) = self.call_edge(file, &m.leaf, test);
             if let Some(caller) = m.enclosing.and_then(entity) {
                 sink(caller, REL_CALLS, &to, tier, test);
             }
@@ -1565,9 +1586,15 @@ pub(crate) mod tests {
             ),
             (
                 "a test call resolves against every candidate",
-                Ask::Links("src/a.rs", true),
-                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::%helper"],
+                Ask::Links("tests/it.rs", true),
+                &["tests/it.rs::it_works -CALLS/extracted-> tests/it.rs::compute"],
                 &[],
+            ),
+            (
+                "a contested test call lands inferred on the definition its proof credits",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::helper"],
+                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::%helper"],
             ),
         ]);
         let view = fixture();
