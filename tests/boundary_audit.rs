@@ -560,8 +560,9 @@ const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
 /// The composition root: the one place production code constructs adapters.
 const COMPOSITION_ROOT: &[&str] = &["src/main.rs", "src/cli/"];
 
-/// An adapter family: the constructor shape that builds it, and the files that ARE the adapter
-/// (an adapter may use its own constructor internally).
+/// An adapter family: the constructor shape that builds it, matched where it is called or named
+/// as a value for a callee to call, and the files that ARE the adapter (an adapter may use its own
+/// constructor internally).
 struct Adapter {
     family: &'static str,
     constructor: &'static str,
@@ -571,17 +572,17 @@ struct Adapter {
 const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "sqlite opener",
-        constructor: r"\bopen_connection\(",
+        constructor: r"\bopen_connection\b",
         home: &["crates/rigger-store-sqlite/", "crates/rigger-graph-sqlite/"],
     },
     Adapter {
         family: "event store",
-        constructor: r"\bStore::open\(",
+        constructor: r"\bStore::open\b",
         home: &["crates/rigger-store-sqlite/"],
     },
     Adapter {
         family: "graph projection",
-        constructor: r"\bProjector::open\(",
+        constructor: r"\bProjector::open\b",
         home: &["crates/rigger-graph-sqlite/"],
     },
     Adapter {
