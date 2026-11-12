@@ -2244,10 +2244,11 @@ mod tests {
     /// worktree not comparable), WHEN each kind of code-half node is resolved and read in the
     /// whole graph, borrowed and consumed, over the code half resolved whole and near, THEN a
     /// node is withheld and counted exactly when its file is withheld, a grouping when a member's
-    /// file is, and nothing else is.
+    /// file is, and nothing else is: neither a record naming a differing file (a record is never
+    /// stale) nor a link end naming no file (no file withholds it).
     #[test]
     fn a_code_half_node_is_withheld_exactly_when_the_file_its_facts_came_from_is() {
-        let probes = [
+        let code = [
             "src/a.rs",
             "src/a.rs::run",
             "docs/d.md",
@@ -2255,6 +2256,8 @@ mod tests {
             COMMUNITY,
             CONCEPT,
         ];
+        // A record naming a file that differs, and a link end the design doc names no file by.
+        let probes = [code.as_slice(), &["src/gone.rs", "glossary"]].concat();
         let differing = |path: &str| {
             Ok(WorktreeDiff {
                 changed: vec![path.into()],
@@ -2262,7 +2265,7 @@ mod tests {
             })
         };
         // (case, the diff, the probes withheld)
-        let cases: [(&str, Result<WorktreeDiff, String>, &[&str]); 4] = [
+        let cases: [(&str, Result<WorktreeDiff, String>, &[&str]); 5] = [
             (
                 "a code file",
                 differing("src/a.rs"),
@@ -2278,9 +2281,24 @@ mod tests {
                 differing(".rigger/workflow.yml"),
                 &["stage:implement"],
             ),
-            ("no comparison", Err("unreadable".into()), &probes),
+            ("a recorded file", differing("src/gone.rs"), &[]),
+            ("no comparison", Err("unreadable".into()), &code),
         ];
-        let (records, view) = (records(), view_with_workflow());
+        let (mut rows, aliases) = record_rows();
+        rows.nodes
+            .push(node("src/gone.rs", KIND_ARTIFACT, &[("noted", "gone")]));
+        let records = Indexed::new(rows, aliases);
+        let mut view = view_with_workflow();
+        let mut files: Vec<FileFacts> = (view.facts.files())
+            .filter_map(|f| view.facts.file(f.path).map(Cow::into_owned))
+            .collect();
+        let doc = files.iter_mut().find(|f| f.path == "docs/d.md").unwrap();
+        doc.doc_links.push(DocLink {
+            from: "docs/d.md".into(),
+            rel: REL_SPECIFIES.into(),
+            to: "glossary".into(),
+        });
+        view.facts = FactsView::new(view.facts.stamp().clone(), files);
         for (case, diff, withheld) in cases {
             for near in [false, true] {
                 let honesty = honest(diff.clone());
@@ -2292,11 +2310,13 @@ mod tests {
                     Box::new(composed(&records, &view, honesty))
                 };
                 let answered: Vec<&str> = probes
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|id| g.resolve(id).unwrap().is_some())
                     .collect();
                 let want: Vec<&str> = probes
-                    .into_iter()
+                    .iter()
+                    .copied()
                     .filter(|id| !withheld.contains(id))
                     .collect();
                 assert_eq!(answered, want, "{case} (near {near}): the probes answered");
@@ -2307,7 +2327,7 @@ mod tests {
                 );
                 let held = |g: &Graph| -> Vec<&str> {
                     let held = |id: &&str| g.nodes.iter().any(|n| n.id == *id);
-                    probes.into_iter().filter(held).collect()
+                    probes.iter().copied().filter(held).collect()
                 };
                 let whole = g.whole().unwrap();
                 assert_eq!(held(&whole), want, "{case} (near {near}): the whole holds");
