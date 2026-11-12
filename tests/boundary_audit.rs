@@ -1136,6 +1136,13 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             ],
         ),
         (
+            "the graph projection's opener named as a value, for a callee to call",
+            "src/lib.rs",
+            "fn passed() {\n    let g = graph_to_read(p, q, Projector::open)?;\n}\n",
+            &[],
+            &["src/lib.rs:passed"],
+        ),
+        (
             "near misses of an open token and a declaration",
             "src/lib.rs",
             "fn misses() {\n    let a = Store::open(p);\n    let b = location.with_graph(&s);\n    \
