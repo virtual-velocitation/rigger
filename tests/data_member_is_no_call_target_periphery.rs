@@ -546,7 +546,8 @@ fn lens_graph(kind: &str, with_fn: bool) -> Graph {
 /// shares, WHEN the files lens folds the whole graph and re-grains the concept all three
 /// realize, THEN the member sits under its own file; with no fn of the leaf the placeholder
 /// folds nowhere and is unresolved with no candidate; with one fn of the leaf it resolves onto
-/// that fn's file alone. A fn in the member's place takes the placeholder.
+/// that fn's file alone, carrying that file's edge while the whole fold counts only the file's
+/// members. A fn in the member's place takes the placeholder.
 #[test]
 fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_onto_it() {
     for kind in NON_TARGETS {
@@ -565,7 +566,7 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
             files_lens_rows(&lens_graph(kind, true), CONCEPT, 3),
             [
                 "whole src/a.rs 1",
-                "whole src/b.rs 2",
+                "whole src/b.rs 1",
                 "whole src/c.rs 1",
                 "whole src/b.rs -- src/c.rs 1",
                 "concept src/a.rs 1",
@@ -578,7 +579,7 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
     assert_eq!(
         files_lens_rows(&lens_graph("function", false), CONCEPT, 3),
         [
-            "whole src/a.rs 2",
+            "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
             "concept src/a.rs 2",

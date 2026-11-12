@@ -49,7 +49,8 @@ fn leaf_graph(placeholder: &str, beside: Vec<Node>) -> Graph {
 
 /// GIVEN a placeholder whose leaf is the name of a nested definition in another file, WHEN the
 /// files lens folds the whole graph and re-grains the concept, THEN the placeholder folds under
-/// the nested definition's file; a second definition of the leaf leaves it unresolved with both
+/// the nested definition's file, carrying its edge while the whole fold counts only the file's
+/// members; a second definition of the leaf leaves it unresolved with both
 /// candidates; a node of an empty `name` is no candidate but a placeholder of its id's leaf; a
 /// doubled sigil leaves the leaf one sigil, which nothing defines; and the placeholder of the
 /// empty leaf, `src/c.rs::%`, has no definition, which no node of an empty `name` gives.
@@ -58,7 +59,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     assert_eq!(
         files_lens_rows(&leaf_graph(PLACEHOLDER, Vec::new()), SUB_C, 3),
         [
-            "whole src/a.rs 2",
+            "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
             "concept src/a.rs 2",
@@ -89,7 +90,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
             3
         ),
         [
-            "whole src/a.rs 3",
+            "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
             "concept src/a.rs 2",

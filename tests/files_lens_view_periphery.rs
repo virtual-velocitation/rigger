@@ -50,7 +50,7 @@ use rigger::contextgraph::{
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, neighborhood, Cluster, ClusterEdge, Lens,
+    cluster_detail, clustered_overview, neighborhood, reproject, Cluster, ClusterEdge, Lens,
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
@@ -348,19 +348,21 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 /// definitions - the SAME resolution [`reproject`] already performs for the re-projection surface -
 /// rather than folding it to the wrong (referencing) file. Three shapes in one graph: a name with
 /// EXACTLY ONE definition resolves to that definition's file (and its coupling edge crosses files
-/// correctly); a name with NO definition and a name with TWO definitions both cannot be honestly
+/// correctly) while that file's count stays its member count, the one its drill and its files
+/// re-projection show; a name with NO definition and a name with TWO definitions both cannot be honestly
 /// attributed to any one file, so the whole-graph fold EXCLUDES them entirely (there is no
 /// `unresolved` sidecar at this altitude, unlike the re-projection surface) - never mis-attributed to
 /// the referencing file their own id encodes.
 #[test]
 fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     // `helper`: ONE definition (target.rs) - the bare placeholder in caller.rs's namespace resolves
-    // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's count rises to
-    // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses
-    // files instead of collapsing to an intra-cluster edge.
+    // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's at just its
+    // real `helper` (the resolved reference stands in for it, never a second member), and the
+    // foo->helper coupling now crosses files instead of collapsing to an intra-cluster edge.
     const CALLER_FOO: &str = "src/caller.rs::foo";
     const HELPER_BARE: &str = "src/caller.rs::%helper";
     const HELPER_DEF: &str = "src/target.rs::helper";
+    const TARGET: &str = "src/target.rs";
     // `ghost`: ZERO definitions anywhere - excluded entirely (never attributed to its own referencing
     // file `src/caller.rs`).
     const GHOST_BARE: &str = "src/caller.rs::%ghost";
@@ -404,7 +406,7 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
             },
             Cluster {
                 key: "src/target.rs".to_string(),
-                count: 2,
+                count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
                 tests: 0,
@@ -424,9 +426,10 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
                 tests: 0,
             },
         ],
-        "caller.rs keeps only its real `foo` (the resolved `helper` reference moves to target.rs, \
-         raising ITS count to 2); the ghost and ambiguous placeholders fold to no cluster at all - \
-         never to caller.rs, never to x.rs/y.rs: {overview:?}"
+        "caller.rs keeps only its real `foo` and target.rs only its real `helper` (the resolved \
+         `helper` reference stands in for it, carrying its edge); the ghost and ambiguous \
+         placeholders fold to no cluster at all - never to caller.rs, never to x.rs/y.rs: \
+         {overview:?}"
     );
     assert_eq!(
         overview.edges,
@@ -438,6 +441,23 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
         "the foo->helper coupling now correctly crosses to target.rs (the TRUE definition's file), \
          not caller.rs (the referencing file the bare id encodes); the ghost and ambiguous edges add \
          no cluster edge since their far endpoint folds to nothing: {overview:?}"
+    );
+    // A file re-projects as a subject through its `file` node, which the files lens folds nowhere.
+    let mut with_file = graph.clone();
+    with_file.nodes.push(plain(TARGET, KIND_FILE));
+    let target_count = (clustered_overview(&with_file, &Lens::Files).clusters)
+        .into_iter()
+        .find(|c| c.key == TARGET)
+        .map(|c| c.count);
+    let drilled = cluster_detail(&with_file, TARGET, &Lens::Files).nodes.len();
+    assert_eq!(
+        [
+            target_count,
+            Some(drilled),
+            Some(reproject(&with_file, TARGET, &Lens::Files).total),
+        ],
+        [Some(1); 3],
+        "a file's overview count is the member count its drill and its files re-projection show"
     );
 }
 

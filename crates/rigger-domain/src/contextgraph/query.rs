@@ -2906,3 +2906,58 @@ mod line_citation_tests {
         assert_eq!(kept.map(referenced_id), kept);
     }
 }
+
+/// [`fold_buckets`]' STAND-IN: a keyed node `is_member` rejects carries the coupling edges of the
+/// bucket its key names and adds nothing to that bucket's count or kind, and a stand-in whose key
+/// no member names makes no bucket, so it carries no edge.
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::contextgraph::{REL_CALLS, TIER_EXTRACTED};
+    use crate::test_support::{edge, plain};
+
+    #[test]
+    fn a_stand_in_carries_its_buckets_edges_and_is_none_of_its_members() {
+        let nodes = [
+            plain("a", KIND_CODE_ENTITY),
+            plain("b", KIND_CODE_ENTITY),
+            plain("b-stand-in", KIND_ARTIFACT),
+            plain("lone-stand-in", KIND_CODE_ENTITY),
+        ];
+        let key = |n: &Node| {
+            let key = match n.id.as_str() {
+                "a" => "A",
+                "lone-stand-in" => "C",
+                _ => "B",
+            };
+            Some(key.to_string())
+        };
+        let calls = [
+            edge("a", "b-stand-in", REL_CALLS, TIER_EXTRACTED),
+            edge("a", "lone-stand-in", REL_CALLS, TIER_EXTRACTED),
+        ];
+        let (clusters, edges) = fold_buckets(
+            nodes.iter(),
+            &calls,
+            key,
+            |n| !n.id.ends_with("stand-in"),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            (clusters.iter())
+                .map(|c| (c.key.as_str(), c.count, c.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("A", 1, KIND_CODE_ENTITY), ("B", 1, KIND_CODE_ENTITY)],
+            "a stand-in is none of its bucket's members and makes no bucket of its own"
+        );
+        assert_eq!(
+            edges,
+            [ClusterEdge {
+                from: "A".to_string(),
+                to: "B".to_string(),
+                weight: 1,
+            }],
+            "a stand-in carries the edges of the bucket a member makes, and of no other"
+        );
+    }
+}
