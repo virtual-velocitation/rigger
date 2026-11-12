@@ -233,25 +233,50 @@ mod tests {
         assert!(err.starts_with("create "), "{err}");
     }
 
-    /// Two writers of one entry leave one whole entry: GIVEN the same facts put by several
-    /// threads at once, THEN the memo holds that one entry and no temp, and it reads back as the
-    /// facts.
+    /// Writers of one entry never show a reader part of it: GIVEN the same facts put over and
+    /// over by several threads while others read the entry, THEN every read begun after a put
+    /// returned answers the facts, and the memo ends holding that one entry and no temp.
     #[test]
     fn writers_of_one_entry_leave_it_whole() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
+        const WRITERS: usize = 4;
+        const READERS: usize = 4;
         let root = tempfile::tempdir().unwrap();
         let memo = DiskMemo::new(root.path().join(DIR), 7);
-        let bytes = b"alpha\nbeta\n";
+        // Enough lines that an entry is written in more than one piece.
+        let bytes: String = (0..2000).map(|n| format!("def_{n}\n")).collect();
+        let bytes = bytes.as_bytes();
         let facts = facts_of("src/a.rs", bytes);
+        let (published, writing) = (AtomicBool::new(false), AtomicUsize::new(WRITERS));
+        let checked = AtomicUsize::new(0);
         std::thread::scope(|scope| {
-            for _ in 0..8 {
+            for _ in 0..WRITERS {
                 scope.spawn(|| {
-                    for _ in 0..16 {
-                        memo.put(bytes, &facts).unwrap();
+                    let put = (0..16).try_for_each(|_| {
+                        memo.put(bytes, &facts)?;
+                        published.store(true, SeqCst);
+                        Ok::<_, String>(())
+                    });
+                    writing.fetch_sub(1, SeqCst);
+                    put.unwrap();
+                });
+            }
+            for _ in 0..READERS {
+                scope.spawn(|| {
+                    while writing.load(SeqCst) > 0 {
+                        let after = published.load(SeqCst);
+                        let read = memo.get("src/a.rs", bytes);
+                        if after {
+                            assert_eq!(read.as_ref(), Some(&facts), "a read after a put");
+                            checked.fetch_add(1, SeqCst);
+                        }
                     }
                 });
             }
         });
-        assert_eq!(names(&root.path().join(DIR)).len(), 1);
+        assert!(checked.load(SeqCst) > 0, "no read began after a put");
+        let entry = memo.name("src/a.rs", bytes);
+        assert_eq!(names(&root.path().join(DIR)), vec![entry]);
         assert_eq!(memo.get("src/a.rs", bytes), Some(facts));
     }
 
