@@ -227,6 +227,63 @@ fn around_and_show_count_the_hidden_tests_proving_what_they_show() {
     }
 }
 
+/// GIVEN a built project whose tests hide under the default filter (`one` proving the product
+/// `alpha`, a test named `alpha`, one named `beta` beside two products so named, and an inline
+/// `gamma` proving the product it shares a name with), WHEN `rigger graph --show` names a hidden
+/// test by id or by leaf, a product beside same-named tests, or nothing, THEN the line under the
+/// label counts each test hit the filter hid once (the tests the query names and those proving
+/// the node it locates) and names the filter that shows them, the answer says there is no such
+/// entity only when no test hid, and `include` locates the test and counts nothing.
+#[test]
+fn show_counts_the_hidden_tests_its_query_names() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn alpha() {}\npub fn beta() {}\npub fn gamma() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn gamma() { super::gamma(); }\n}\n",
+    );
+    write_text(root, "src/other.rs", "pub fn beta() {}\n");
+    write_text(root, "tests/t.rs", "#[test]\nfn one() { alpha(); }\n");
+    write_text(
+        root,
+        "tests/u.rs",
+        "#[test]\nfn alpha() {}\n#[test]\nfn beta() {}\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let one = "1 test hit not shown; the tests filter (include or only) shows them";
+    let two = "2 test hits not shown; the tests filter (include or only) shows them";
+    let none = "show \"nothing\": no such entity in the graph";
+    // (the arguments, the line under the label when one counts hidden tests, a line it holds)
+    let cases: [(&[&str], Option<&str>, &str); 7] = [
+        (&["--show", "tests/t.rs::one"], Some(one), one),
+        (&["--show", "one"], Some(one), one),
+        (
+            &["--show", "tests/t.rs::one", "--tests", "include"],
+            None,
+            "show tests/t.rs::one",
+        ),
+        (&["--show", "alpha"], Some(two), "show src/lib.rs::alpha"),
+        (&["--show", "beta"], Some(one), "src/other.rs::beta"),
+        (&["--show", "gamma"], Some(one), "show src/lib.rs::gamma"),
+        (&["--show", "nothing"], None, none),
+    ];
+    for (args, line, holds) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        match line {
+            Some(line) => {
+                assert_eq!(out.lines().nth(1), Some(line), "{args:?}:\n{out}");
+                assert!(!out.contains("no such entity"), "{args:?}:\n{out}");
+            }
+            None => assert!(!out.contains("not shown"), "{args:?}:\n{out}"),
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.

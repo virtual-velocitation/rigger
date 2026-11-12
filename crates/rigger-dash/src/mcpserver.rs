@@ -2620,8 +2620,8 @@ mod tests {
 
     /// Each row: a `rigger_graph` `show` or `around` call over the shown tree, whose
     /// `blank_is_blank` test, hidden under the default filter, proves `blank`, and the
-    /// `tests_hidden` its reply carries: how many hidden tests prove the nodes it shows, and none
-    /// when it shows no node.
+    /// `tests_hidden` its reply carries: how many hidden tests prove the nodes it shows or a show
+    /// names, none hidden when a show names nothing.
     #[test]
     fn rigger_graph_around_and_show_count_the_hidden_tests_proving_what_they_show() {
         use crate::contextgraph::sqlite::Projector;
@@ -2639,7 +2639,9 @@ mod tests {
                 json!(1),
             ),
             (json!({"show": "src/limits.rs::LIMIT"}), json!(0)),
-            (json!({"show": "nothing"}), Value::Null),
+            (json!({"show": "tests/limits.rs::blank_is_blank"}), json!(1)),
+            (json!({"show": "blank_is_blank"}), json!(1)),
+            (json!({"show": "nothing"}), json!(0)),
         ] {
             let answer = shown_graph_answer_over(&graph, &context, arguments.clone());
             assert_eq!(
