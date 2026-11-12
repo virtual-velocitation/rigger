@@ -912,10 +912,16 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
 
     /// The edges read at `id` running `way` from both halves and its aliases, ends canonical,
     /// with its `REALIZES` attachments, each (from, to, relation) once, the code half's first;
-    /// none at an alias or a withheld node, and none whose other end is withheld. An attachment
+    /// none at an alias or a withheld node, none whose other end is withheld, and, given
+    /// `within`, none whose other end is outside it, which is never asked whether it is withheld. An attachment
     /// comes of a GOVERNS edge in either half, as the whole graph's do: out of its source, one
     /// per concept of the node it governs; into a concept, one per GOVERNS into a member.
-    fn edges(&self, id: &str, way: Way) -> Result<Vec<Edge>, Error> {
+    fn edges(
+        &self,
+        id: &str,
+        way: Way,
+        within: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<Edge>, Error> {
         if self.canonical.contains_key(id) || !self.answers_end(id)? {
             return Ok(Vec::new());
         }
@@ -951,7 +957,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
                 Way::Out => &e.to,
                 Way::In => &e.from,
             };
-            if self.answers_end(other)? {
+            if within.is_none_or(|ids| ids.contains(other)) && self.answers_end(other)? {
                 answered.push(e);
             }
         }
@@ -987,10 +993,13 @@ impl<C: CodeHalf> Neighbors for Composed<'_, C> {
         Ok(self.merged(id)?.filter(|n| !self.withholds(n)))
     }
     fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
-        self.edges(id, Way::Out)
+        self.edges(id, Way::Out, None)
     }
     fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
-        self.edges(id, Way::In)
+        self.edges(id, Way::In, None)
+    }
+    fn out_within(&self, id: &str, within: &BTreeSet<String>) -> Result<Vec<Edge>, Error> {
+        self.edges(id, Way::Out, Some(within))
     }
     fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
         let nodes = self.answered(self.both(|h| h.members(file))?)?;
@@ -1151,7 +1160,12 @@ pub fn subgraph(graph: &dyn Neighbors, seed: &[String], depth: i64) -> Result<Gr
         let mut deeper = Vec::new();
         for id in std::mem::take(&mut level) {
             let node = graph.node(&id)?;
-            let out = graph.out(&id)?;
+            // The last level reads its edges among the ids reached alone: an end past it is
+            // never reached, so it is never counted as withheld either.
+            let out = match hops < depth {
+                true => graph.out(&id)?,
+                false => graph.out_within(&id, &reached)?,
+            };
             if hops < depth {
                 let mut next: Vec<String> = out.iter().map(|e| e.to.clone()).collect();
                 next.extend(graph.incoming(&id)?.into_iter().map(|e| e.from));
@@ -1170,7 +1184,6 @@ pub fn subgraph(graph: &dyn Neighbors, seed: &[String], depth: i64) -> Result<Gr
         }
         level = deeper;
     }
-    edges.retain(|e| reached.contains(&e.from) && reached.contains(&e.to));
     Ok(closed(nodes, edges))
 }
 
@@ -2323,6 +2336,53 @@ mod tests {
                     "{case} (near {near}): the edges answered and dropped are the whole's"
                 );
             }
+        }
+    }
+
+    /// A walk counts the withheld nodes it reaches and no other: GIVEN `src/b.rs` withheld, WHEN
+    /// the walk starts at each seed to each depth, THEN its label counts what the dash counts over
+    /// the whole read's withheld part, so a withheld node one hop past the last level (`compute`,
+    /// which `f1` is about, at depth 0) is never counted.
+    #[test]
+    fn a_walk_counts_the_withheld_nodes_it_reaches_and_no_other() {
+        let (records, view) = (records(), view(Some("c1")));
+        let differing = || {
+            honest(Ok(WorktreeDiff {
+                changed: vec!["src/b.rs".into()],
+                untracked: Vec::new(),
+            }))
+        };
+        let read = Box::new(composed(&records, &view, differing()))
+            .into_whole()
+            .unwrap();
+        // (seed, depth, the withheld nodes the walk reaches)
+        let cases: [(&str, i64, usize); 7] = [
+            ("f1", 0, 0),
+            ("f1", 1, 1),
+            ("docs/d.md", 0, 0),
+            ("docs/d.md", 1, 1),
+            ("dec-1", 1, 0),
+            ("dec-1", 2, 1),
+            ("src/a.rs", 2, 0),
+        ];
+        for (seed, depth, want) in cases {
+            let g = composed(&records, &view, differing());
+            let seeds = [seed.to_string()];
+            g.subgraph(&seeds, depth).unwrap();
+            let counted = (
+                g.stamp_label().withheld,
+                crate::contextgraph::query::withheld_reached(
+                    &read.graph,
+                    &read.withheld,
+                    &seeds,
+                    depth,
+                ),
+            );
+            assert_eq!(
+                counted,
+                (want, want),
+                "{seed} at depth {depth}: (walk, dash)"
+            );
         }
     }
 }

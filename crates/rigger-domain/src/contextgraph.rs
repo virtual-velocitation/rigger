@@ -3,7 +3,7 @@
 //! `RecordFold`, `ContextGraph` and `Neighbors` traits, plus the pure query engine over a projected [`Graph`] (`query`). The
 //! sqlite projector lives in `rigger-graph-sqlite`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -1132,6 +1132,14 @@ pub trait Neighbors: Send + Sync {
     fn out(&self, id: &str) -> Result<Vec<Edge>, Error>;
     /// The live edges into `id`.
     fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error>;
+    /// The live edges from `id` to an id of `within`: what a walk's last level reads, whose ends
+    /// past it the walk never reaches, so a graph that withholds asks of no other end whether it
+    /// withholds it.
+    fn out_within(&self, id: &str, within: &BTreeSet<String>) -> Result<Vec<Edge>, Error> {
+        let mut out = self.out(id)?;
+        out.retain(|e| within.contains(&e.to));
+        Ok(out)
+    }
     /// The nodes whose [`query::member_file`] is `file` (THE MEMBER RULE).
     fn members(&self, file: &str) -> Result<Vec<Node>, Error>;
     /// The nodes a leaf binds: those whose [`query::node_name`] is `leaf`, and those whose id's
