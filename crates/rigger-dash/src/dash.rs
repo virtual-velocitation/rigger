@@ -5228,7 +5228,7 @@ mod tests {
             .filter_map(|declaration| declaration.split_once(':'))
             .filter(|(name, _)| name.trim() == property)
             .map(|(_, value)| value.trim().trim_end_matches('}').trim().to_string())
-            .last()
+            .next_back()
     }
 
     /// The explorer element whose id is `id`, by its index in [`explorer_markup`].
