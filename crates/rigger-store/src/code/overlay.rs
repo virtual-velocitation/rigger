@@ -8,11 +8,13 @@
 //! files and the proof calls) is settled again where a differing file reaches
 //! ([`resettle`]), so the resolver reads the worktree's rows. The groupings stay the head's.
 //! The facts extracted from a worktree file are kept in a [`Memo`] by content for the life of
-//! the process: the one cache between opens.
+//! the process, over a facts memo on disk under the store ([`crate::code::disk_memo`]) that a
+//! one-shot reader shares: the one cache between opens, which is never stale because its key is
+//! the content.
 
-use crate::code::advance::{extract_parallel, open_compared};
+use crate::code::advance::{extract_parallel, fingerprint, open_compared, Store};
 use crate::code::dir_source::content_id;
-use crate::code::disk_memo::MemoCap;
+use crate::code::disk_memo::{DiskMemo, MemoCap};
 use rigger_domain::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger_domain::code_view::{
     CodeView, Compared, DefRef, Entry, Extract, FactsView, FileRef, Group, Groupings, Head,
@@ -43,7 +45,7 @@ pub fn open_head(
     let compared = Compared::of(diff.as_ref().map_err(String::as_str));
     let (view, compared) = match diff {
         Ok(diff) if diff.files_in_scope().is_empty() => (base, compared),
-        Ok(diff) => match read_changed(source, extract, worktree, &diff, memo) {
+        Ok(diff) => match read_changed(root, source, (extract, group), worktree, &diff, memo) {
             Ok(changed) => {
                 let overlay = Overlay::new(base, &diff, changed);
                 (Box::new(overlay) as Box<dyn CodeView>, compared)
@@ -62,11 +64,14 @@ pub fn open_head(
 
 /// The facts of each file `diff` reads from the worktree ([`WorktreeDiff::read_from_worktree`]):
 /// its bytes read once through `source`, each file's facts taken from `memo` when it holds them
-/// for those bytes, and the rest extracted in parallel ([`extract_parallel`]) and kept there. A
-/// file that is not read is an error.
+/// for those bytes, then from the facts memo on disk under the store at `root` when `memo` reads
+/// one, and the rest extracted in parallel ([`extract_parallel`]) and kept in both. A file that is
+/// not read is an error; a memo on disk that cannot be read or written is not, since extracting
+/// answers the same.
 fn read_changed(
+    root: &Path,
     source: &dyn TreeSource,
-    extract: &dyn Extract,
+    (extract, group): (&dyn Extract, &dyn Group),
     worktree: &Path,
     diff: &WorktreeDiff,
     memo: &Memo,
@@ -76,7 +81,11 @@ fn read_changed(
     source.read_worktree(worktree, &paths, &mut |path, read| {
         bytes.insert(path.to_owned(), read.to_vec());
     })?;
-    let fingerprint = extract.fingerprint();
+    let held_under = extract.fingerprint();
+    let disk = (memo.disk).map(|_| {
+        let dir = Store::new(root).memo_dir();
+        DiskMemo::new(dir, fingerprint(extract, group))
+    });
     let (mut facts, mut missed) = (Vec::with_capacity(paths.len()), Vec::new());
     for path in paths {
         let read = (bytes.get(path)).ok_or_else(|| format!("{path} was not read"))?;
@@ -84,25 +93,33 @@ fn read_changed(
             path: path.to_owned(),
             blob: content_id(read),
         };
-        match memo.get(fingerprint, &entry) {
+        let on_disk = || {
+            let held = disk.as_ref()?.get(path, read)?;
+            memo.put(held_under, held.clone());
+            Some(held)
+        };
+        match memo.get(held_under, &entry).or_else(on_disk) {
             Some(held) => facts.push(held),
             None => missed.push(entry),
         }
     }
-    let extracted = extract_parallel(extract, &missed, &|entry| {
-        bytes.get(&entry.path).map_or(&[][..], Vec::as_slice)
-    })?;
+    let bytes_of = |path: &str| bytes.get(path).map_or(&[][..], Vec::as_slice);
+    let extracted = extract_parallel(extract, &missed, &|entry| bytes_of(&entry.path))?;
     for f in &extracted {
-        memo.put(fingerprint, f.clone());
+        memo.put(held_under, f.clone());
+        if let Some(disk) = &disk {
+            let _ = disk.put(bytes_of(&f.path), f);
+        }
     }
     facts.extend(extracted);
     Ok(facts)
 }
 
 /// The facts extracted from worktree files, by the extractor's fingerprint, the file's path and
-/// its content id, kept for the life of the process and never written anywhere: an open reads a
-/// file it read before for the same bytes without extracting it again. It holds at most its
-/// bound of files' facts, evicting the least recently read beyond that.
+/// its content id, kept for the life of the process and, when it reads one, in the facts memo on
+/// disk under the store: an open reads a file read before for the same bytes without extracting
+/// it again. It holds at most its bound of files' facts in the process, evicting the least
+/// recently read beyond that.
 pub struct Memo {
     bound: usize,
     held: Mutex<Held>,
@@ -142,9 +159,10 @@ impl Memo {
         }
     }
 
-    /// The process's memo, of [`Self::BOUND`].
+    /// The process's memo, of [`Self::BOUND`], over the facts memo on disk within
+    /// [`MemoCap::STATED`].
     pub fn process() -> &'static Memo {
-        static MEMO: LazyLock<Memo> = LazyLock::new(|| Memo::new(Memo::BOUND));
+        static MEMO: LazyLock<Memo> = LazyLock::new(|| Memo::on_disk(Memo::BOUND, MemoCap::STATED));
         &MEMO
     }
 

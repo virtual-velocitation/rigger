@@ -55,8 +55,9 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 }
 
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
-/// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it and memoised
-/// for the life of the process ([`Memo::process`]).
+/// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
+/// differing files' facts memoised for the life of the process and on disk under the store
+/// ([`Memo::process`]).
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
