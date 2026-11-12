@@ -332,6 +332,9 @@ const PANES_DRIVER: &str = r#"
 const WIRING_DRIVER: &str = r#"
 ;(async function(){
   function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  // The page's own on-load overview settles first, so it is never a later view than the call
+  // site driven below (a later view's hidden card drops an earlier view's card).
+  await flush();
 
   // --- renderGraph(g) must card g.seed -----------------------------------------------------
   renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [] });
