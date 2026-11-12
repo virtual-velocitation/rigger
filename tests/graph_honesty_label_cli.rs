@@ -184,6 +184,49 @@ fn graph_takes_a_tests_option() {
     );
 }
 
+/// GIVEN a built project whose product function `alpha` two tests call (one twice) and whose
+/// `beta` no test calls, WHEN `rigger graph --around` and `--show` read `alpha` under each
+/// `--tests` setting, THEN `exclude` (the default) says under the label that the two tests
+/// proving it are not shown and which filter shows them, `include` and `only` say nothing of
+/// hidden tests, and `beta`, which no test proves, says nothing either.
+#[test]
+fn around_and_show_count_the_hidden_tests_proving_what_they_show() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub fn alpha() {}\npub fn beta() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn one() { alpha(); }\n#[test]\nfn two() { alpha(); alpha(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let counted = "2 test hits not shown; the tests filter (include or only) shows them";
+    let around = ["graph", "--around", "src/lib.rs::alpha", "--depth", "1"];
+    let show = ["graph", "--show", "src/lib.rs::alpha"];
+    // (the arguments, the line under the label when one counts hidden tests)
+    let cases: [(Vec<&str>, Option<&str>); 7] = [
+        (around.to_vec(), Some(counted)),
+        (
+            [&around[..], &["--tests", "exclude"]].concat(),
+            Some(counted),
+        ),
+        ([&around[..], &["--tests", "include"]].concat(), None),
+        ([&around[..], &["--tests", "only"]].concat(), None),
+        (show.to_vec(), Some(counted)),
+        ([&show[..], &["--tests", "include"]].concat(), None),
+        (vec!["graph", "--show", "src/lib.rs::beta"], None),
+    ];
+    for (args, line) in cases {
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        match line {
+            Some(line) => assert_eq!(out.lines().nth(1), Some(line), "{args:?}:\n{out}"),
+            None => assert!(!out.contains("not shown"), "{args:?}:\n{out}"),
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.
