@@ -1641,6 +1641,8 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
         members.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
+        // Every node of the subject's member set is a member of the bucket it folds to.
+        |_| true,
         &bucket_label,
     );
     count_tests(&mut clusters, graph, &buckets);
@@ -1762,6 +1764,8 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         members.iter().copied(),
         &graph.edges,
         |n| resolved.get(n.id.as_str()).cloned(),
+        // Every node of the subject's member set is a member of the file bucket it resolves to.
+        |_| true,
         &empty_label,
     );
     unresolved.sort_by(|a, b| a.id.cmp(&b.id));
