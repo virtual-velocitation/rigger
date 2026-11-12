@@ -268,8 +268,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 provider(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let html = dash::render_export(
                 &events,
-                &graph.graph,
-                graph.label.as_ref(),
+                dash::LabelledGraph::from(&graph),
                 &progress,
                 &liveness,
                 max_retries,

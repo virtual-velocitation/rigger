@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use common::fixtures::ev;
 use common::fixtures::positioned;
 use rigger::contextgraph::Graph;
-use rigger::dash::{build_state, state_json};
+use rigger::dash::{build_state, state_json, LabelledGraph};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
 use rigger::metrics::grep_fallbacks;
@@ -275,8 +275,7 @@ fn the_state_json_body_always_carries_the_grep_fallbacks_key_even_at_zero() {
 
     let body = state_json(
         &events,
-        &Graph::default(),
-        None,
+        LabelledGraph::from(&Graph::default()),
         &empty,
         &liveness,
         3,

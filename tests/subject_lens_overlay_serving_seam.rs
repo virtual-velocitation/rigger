@@ -149,8 +149,7 @@ fn the_export_page_carries_the_c4_seam_and_degrades_its_live_only_affordance() {
     let ages: HashMap<String, u64> = HashMap::new();
     let html = dash::render_export(
         &[],
-        &graph,
-        None,
+        dash::LabelledGraph::from(&graph),
         &[],
         &ages,
         3,

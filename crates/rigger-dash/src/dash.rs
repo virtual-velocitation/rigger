@@ -2786,8 +2786,7 @@ fn now_unix() -> u64 {
 /// feed the live per-agent `activity` view; both empty is fine (the view is then empty).
 pub fn state_json(
     events: &[Event],
-    graph: &Graph,
-    graph_label: Option<&GraphLabel>,
+    graph: LabelledGraph<'_>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -2796,8 +2795,8 @@ pub fn state_json(
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(&build_state(
         events,
-        graph,
-        graph_label,
+        graph.graph,
+        graph.label,
         false,
         progress_events,
         liveness_ages,
@@ -2906,8 +2905,7 @@ pub fn console_page() -> String {
 /// the `<script>` element, so no string field it carries can break out of that container.
 pub fn render_export(
     events: &[Event],
-    graph: &Graph,
-    graph_label: Option<&GraphLabel>,
+    graph: LabelledGraph<'_>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -2916,8 +2914,8 @@ pub fn render_export(
 ) -> Result<String, serde_json::Error> {
     let json = serde_json::to_string(&build_state(
         events,
-        graph,
-        graph_label,
+        graph.graph,
+        graph.label,
         true,
         progress_events,
         liveness_ages,
@@ -3155,6 +3153,31 @@ impl From<Graph> for GraphRead {
     }
 }
 
+/// A graph and what the read it came from describes, borrowed together for the run snapshot.
+#[derive(Clone, Copy, Debug)]
+pub struct LabelledGraph<'a> {
+    pub graph: &'a Graph,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<&'a GraphLabel>,
+}
+
+/// A graph no store read describes.
+impl<'a> From<&'a Graph> for LabelledGraph<'a> {
+    fn from(graph: &'a Graph) -> Self {
+        LabelledGraph { graph, label: None }
+    }
+}
+
+/// A provider's read, with what it describes.
+impl<'a> From<&'a GraphRead> for LabelledGraph<'a> {
+    fn from(read: &'a GraphRead) -> Self {
+        LabelledGraph {
+            graph: &read.graph,
+            label: read.label.as_ref(),
+        }
+    }
+}
+
 /// What a directed-call provider reads: the walk and what the read it came from describes.
 #[derive(Debug, Default)]
 pub struct CallsRead {
@@ -3228,8 +3251,10 @@ fn route_hiding(
         "/api/state" => {
             match state_json(
                 events,
-                graph,
-                graph_label,
+                LabelledGraph {
+                    graph,
+                    label: graph_label,
+                },
                 progress_events,
                 liveness_ages,
                 configured_max_retries,
@@ -5310,8 +5335,7 @@ mod tests {
         // And the activity serializes into the /api/state body the page renders.
         let body = state_json(
             &events,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5382,8 +5406,7 @@ mod tests {
         // And the count serializes into the /api/state body the review-outcomes panel reads.
         let body = state_json(
             &events,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5579,8 +5602,7 @@ mod tests {
         // The tree serializes into the /api/state body the page renders.
         let body = state_json(
             &events,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5801,8 +5823,7 @@ mod tests {
         let events = seeded_run();
         let html = render_export(
             &events,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -5841,8 +5862,7 @@ mod tests {
         let events = positioned(vec![ev("DecisionMade", payload)]);
         let html = render_export(
             &events,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -8186,8 +8206,7 @@ mod tests {
         // It serializes into the /api/state body the page reads.
         let body = state_json(
             &done,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -8227,8 +8246,7 @@ mod tests {
         // ... and the absent field is omitted from the serialized snapshot entirely.
         let body = state_json(
             &running,
-            &Graph::default(),
-            None,
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
