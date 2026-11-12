@@ -5349,6 +5349,51 @@ mod tests {
         }
     }
 
+    /// GIVEN the served page, WHEN the metadata card carries more rows than the explorer's body
+    /// has room for below the panel's control rows, THEN the card scrolls inside the body and
+    /// never extends past its bottom: `#kgcard` is a dock inset at both ends, a column that lets
+    /// clicks through, and the visible card inside it keeps its content height up to the dock's
+    /// height and scrolls past that. Layout is outside what the page harness can run, so this pins
+    /// the box each declares and that `renderCard` writes the card inside the dock.
+    #[test]
+    fn a_card_taller_than_the_explorer_body_scrolls_inside_it() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let dock = rules_of(&page, &markup[explorer_index(&markup, "kgcard")]);
+        let body = rules_of(
+            &page,
+            &Element {
+                id: String::new(),
+                classes: vec!["kgcard-body".to_string()],
+                ancestors: Vec::new(),
+            },
+        );
+        let read = |rules: &[&str], property: &str| declared(rules, property).unwrap_or_default();
+        assert_eq!(
+            (
+                read(&dock, "bottom").is_empty(),
+                read(&dock, "display"),
+                read(&dock, "flex-direction"),
+                read(&dock, "pointer-events"),
+            ),
+            (false, "flex".into(), "column".into(), "none".into()),
+            "#kgcard is a column dock inset at its bottom that lets clicks through: {dock:?}"
+        );
+        assert_eq!(
+            (
+                read(&body, "min-height"),
+                read(&body, "overflow-y"),
+                read(&body, "pointer-events"),
+            ),
+            ("0".into(), "auto".into(), "auto".into()),
+            "the visible card shrinks to the dock and scrolls its rows: {body:?}"
+        );
+        assert!(
+            page.contains(r#"box.innerHTML = '<div class="kgcard-body">'"#),
+            "renderCard writes the card's rows inside the visible card"
+        );
+    }
+
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
     /// WRAP at their hyphen/slash break opportunities - never one char per line, never forcing a
     /// page-level horizontal scrollbar - and the genuinely-wide cells (the event-feed JSON and
