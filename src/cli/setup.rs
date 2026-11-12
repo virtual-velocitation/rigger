@@ -707,8 +707,8 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
 /// What setup's report of an installed lookup hook says the hook does: the searches it bounces
 /// and the combined lookup it bounces them toward, then its escape hatch.
 const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
-     pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
-     rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+     pattern search, anywhere, now bounces toward the combined lookup, rigger_graph `lookup` \
+     (end the command with a `# --literal` comment to proceed anyway)";
 
 /// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
 /// operator checkout git's common directory names, read from that checkout's HEAD whichever
@@ -1425,9 +1425,9 @@ fn rebuild_progress_line(
 /// The same three-state contract every other `rigger setup` install artifact has:
 /// absent settings.json -> `Installed` (a fresh file, our block its first content),
 /// an existing settings.json the install or the removal changes -> `Refreshed` (the FILE
-/// existed even though our own array entry did not, mirroring [`install_operator_mcp`]'s
-/// `existed` distinction), a file the edit leaves as it is, or no file with the guard
-/// undeclared -> `AlreadyCurrent` (a silent no-op).
+/// existed, mirroring [`install_operator_mcp`]'s `existed` distinction: the install added or
+/// re-matched our entry, or the removal stripped it), a file the edit leaves as it is, or no
+/// file with the guard undeclared -> `AlreadyCurrent` (a silent no-op).
 fn install_lookup_hook(
     root: &Path,
     grep_guard: bool,

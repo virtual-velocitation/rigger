@@ -163,9 +163,10 @@ fn parse_helper(
 
 /// Merge the session settings rigger installs - the SessionStart prime hook and the status line,
 /// and the PreToolUse grep-guard when `grep_guard` is set - into `existing` settings JSON, through
-/// the same installers `rigger setup` runs one by one, preserving every other setting. It never
-/// removes: settings already carrying the guard keep it with `grep_guard` unset. `existing` may
-/// be empty.
+/// the same installers `rigger setup` runs one by one, preserving every other setting. With
+/// `grep_guard` unset it removes nothing: settings already carrying the guard keep it; set, the
+/// guard's installer replaces an entry under a drifted matcher ([`install_grep_guard`]).
+/// `existing` may be empty.
 pub fn install_session_settings(existing: &[u8], grep_guard: bool) -> Result<Vec<u8>, Error> {
     let mut merged = install_session_start(existing, PRIME_COMMAND)?;
     if grep_guard {

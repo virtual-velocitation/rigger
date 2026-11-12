@@ -43,8 +43,8 @@ const LITERAL_MARKER: &str = "--literal";
 
 /// The pure decision core of `rigger grep-guard` (spec 92, criterion 4, HOOK SCOPE
 /// amendment d-spec92-hook-no-target-axis): given the PreToolUse tool name and its raw
-/// `tool_input`, decide whether this call should bounce toward `rigger_ground`/
-/// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
+/// `tool_input`, decide whether this call should bounce toward the graph's combined lookup
+/// (`rigger_graph` `lookup`) or pass through untouched. The hook has NO target axis - a shell command's
 /// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
 /// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
 /// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, `git grep`

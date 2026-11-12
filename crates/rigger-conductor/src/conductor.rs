@@ -6155,7 +6155,7 @@ impl RunCtx<'_> {
             GroundingSlice::Implement,
         )?;
         // The doc-only fact is framing, never a gate: a delta that cannot be read leaves the
-        // prompt without it, so this seam still errs only on a park.
+        // prompt without it, so reading it adds no error to this seam.
         let delta = self.round_delta(wt, &st.name, attempt);
         let doc_only = doc_only_round(delta.as_ref());
         if !doc_only.is_empty() {
@@ -13682,8 +13682,9 @@ fn re_plan_lead(feedback: &str) -> String {
 /// lenses) retrieve it via grounding + rigger_peers, never via the conductor splicing one
 /// agent's stdout into another's prompt. When to record a finding, and what to do with one
 /// another reviewer already raised, are guidance the communication and working-discipline
-/// built-ins state, so the protocol carries only the tool, its data and what the record
-/// reaches ([`REVIEW_FINDING_PROTOCOL`] and [`REVIEW_FINDING_LIVE`]).
+/// built-ins state, so the protocol carries, for a finding, only the tool, its data and what the
+/// record reaches ([`REVIEW_FINDING_PROTOCOL`] and [`REVIEW_FINDING_LIVE`]), then the reviewer
+/// discipline.
 ///
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
@@ -14654,9 +14655,10 @@ fn write_peers_pointer(b: &mut String) {
 /// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
 /// prior decisions, findings, and lessons about the files). It names the tools and one worked
 /// example each of the two commonest questions, who calls a name and where it is defined, with a
-/// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
-/// the project's sources owes - is the `working-discipline` built-in's, which every spawn's
-/// instructions carry. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
+/// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and
+/// the `grep-fallback:` progress line a grep over the project's sources owes - is the
+/// `working-discipline` built-in's, which the built-in layer carries into every spawn's system
+/// prompt unless the operator switches it off or shadows it. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
 /// FULL/review slice (after the capped bulk) alike, so every spawn's grounding names the verbs. A
 /// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
 /// gate rejects U+2014), and it names only first-party tools.
