@@ -142,6 +142,11 @@ mod tests {
         );
         assert!(is_unexeced_fork_of(pid, std::process::id()));
         assert!(!processes_holding(dir.path()).contains(&pid));
+        assert_eq!(
+            crate::test_support::files_open_by(pid, &base.join("f")),
+            0,
+            "the host fixture counts no open by a fork whose descriptors are this process's own"
+        );
         go_tx.write_all(b"g").unwrap();
         assert!(spawner.join().unwrap().success());
     }
@@ -157,11 +162,13 @@ mod tests {
         );
         let pid = child.id();
         let held = open_files(pid).filter(|named| *named == file).count();
+        let counted = crate::test_support::files_open_by(pid, &file);
         release(child);
         assert_eq!(
-            (held, open_files(pid).count()),
-            (2, 0),
-            "each descriptor on the file names it, and a process that is gone holds nothing"
+            (held, counted, open_files(pid).count()),
+            (2, 2, 0),
+            "each descriptor on the file names it, the host fixture counts each, and a process \
+             that is gone holds nothing"
         );
     }
 
