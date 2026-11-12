@@ -598,7 +598,10 @@ impl CodeHalf for Whole {
     }
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let proofs = self.proofs.iter();
-        provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+        provers_of(
+            proofs.filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
+            ids,
+        )
     }
     fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
         self.placeholder_callers

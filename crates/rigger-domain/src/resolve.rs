@@ -42,7 +42,7 @@ use crate::contextgraph::{
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
 /// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
 /// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 2;
+pub const SETTLED_GENERATION: u64 = 3;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -160,9 +160,11 @@ pub struct Link {
 pub struct ProofCall {
     /// The product definition proved.
     pub target: String,
-    /// The test entity that calls it: the enclosing definition of the call, or the file's own id
-    /// when the call sits at file level.
-    pub caller: String,
+    /// The test entity that calls it: the enclosing definition of the call when its id is test
+    /// code, or the file's own id when the call sits at file level. None for test code inside
+    /// a product entity (a `#[cfg(test)]` twin of a product definition), which proves what it
+    /// calls but is no test entity of its own.
+    pub caller: Option<String>,
     /// The call's `file:line`.
     pub evidence: String,
 }
@@ -225,19 +227,16 @@ fn one_here_else_one_anywhere<'c, 'v>(
 /// `calls` in proof order: by the definition proved, then the calling file, then the evidence
 /// `file:line` as text, then the caller.
 fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
-    fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
-        (&c.target, c.file().unwrap_or(""), &c.evidence, &c.caller)
+    fn key(c: &ProofCall) -> (&str, &str, &str, Option<&str>) {
+        (
+            &c.target,
+            c.file().unwrap_or(""),
+            &c.evidence,
+            c.caller.as_deref(),
+        )
     }
     calls.sort_by(|a, b| key(a).cmp(&key(b)));
     calls
-}
-
-/// The test entity making a call in `facts` whose enclosing definition is `enclosing`: that
-/// definition, or the file itself when the call sits at file level.
-fn caller_of(facts: &FileFacts, enclosing: Option<u32>) -> String {
-    enclosing
-        .and_then(|i| facts.defs.get(i as usize))
-        .map_or_else(|| facts.path.clone(), |d| entity_id(&facts.path, &d.local))
 }
 
 /// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
@@ -737,6 +736,7 @@ impl<'v> Resolver<'v> {
     /// The proofs of the test calls in `facts`, a code file, unordered.
     pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
         let path = facts.path.as_str();
+        let test_entity = self.test_entity_of(facts);
         facts
             .mentions
             .iter()
@@ -745,11 +745,63 @@ impl<'v> Resolver<'v> {
                 let target = self.proof(path, &m.leaf)?;
                 Some(ProofCall {
                     target,
-                    caller: caller_of(facts, m.enclosing),
+                    caller: test_entity(m.enclosing),
                     evidence: format!("{path}:{}", m.line),
                 })
             })
             .collect()
+    }
+
+    /// The test entity a test mention of `facts` belongs to, by its enclosing definition: that
+    /// definition's id when the id is test code by the rule settling ids ([`Self::winners`]), the
+    /// file's own id when the mention sits at file level of a test file. None for test code
+    /// inside a product entity (a `#[cfg(test)]` twin of a product definition): the id is
+    /// product, and no entity holds the test code alone.
+    fn test_entity_of<'a>(
+        &'a self,
+        facts: &'a FileFacts,
+    ) -> impl Fn(Option<u32>) -> Option<String> + use<'a, 'v> {
+        let file_test = self.is_test_file(&facts.path);
+        let test_ids: std::cell::OnceCell<FxHashSet<&str>> = std::cell::OnceCell::new();
+        move |enclosing| {
+            let Some(d) = enclosing.and_then(|i| facts.defs.get(i as usize)) else {
+                return file_test.then(|| facts.path.clone());
+            };
+            let test = file_test
+                || test_ids
+                    .get_or_init(|| {
+                        (self.winners(facts, true).into_iter())
+                            .filter(|&(_, _, test)| test)
+                            .map(|(local, _, _)| local)
+                            .collect()
+                    })
+                    .contains(d.local.as_str());
+            test.then(|| entity_id(&facts.path, &d.local))
+        }
+    }
+
+    /// [`Self::test_entity_of`] each test mention at (path, enclosing definition) of `at`,
+    /// reading each file once and only when a mention in it sits in a definition.
+    fn test_entities_at<'p>(
+        &self,
+        at: BTreeMap<&'p str, BTreeSet<Option<u32>>>,
+    ) -> BTreeMap<(&'p str, Option<u32>), Option<String>> {
+        let mut entities = BTreeMap::new();
+        for (path, enclosing) in at {
+            let facts = (enclosing.iter().any(Option::is_some))
+                .then(|| self.view.file(path))
+                .flatten();
+            let file_test = self.is_test_file(path);
+            let test_entity = facts.as_deref().map(|f| self.test_entity_of(f));
+            for e in enclosing {
+                let entity = match &test_entity {
+                    Some(test_entity) => test_entity(e),
+                    None => file_test.then(|| path.to_string()),
+                };
+                entities.insert((path, e), entity);
+            }
+        }
+        entities
     }
 
     /// The proof calls in the file at `path`, in proof order: the view's settled rows, else
@@ -778,19 +830,25 @@ impl<'v> Resolver<'v> {
             .then(|| self.view.file(file))
             .flatten();
         let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
-        let mut calls = Vec::new();
+        let mut proving = Vec::new();
+        let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for leaf in leaves.iter().map(String::as_str) {
             for m in self.test_calls_named(leaf) {
                 let path = m.file.path;
                 if self.proof(path, leaf).as_deref() == Some(id) {
-                    calls.push(ProofCall {
-                        target: id.to_string(),
-                        caller: self.caller_at(path, m.enclosing),
-                        evidence: format!("{path}:{}", m.line),
-                    });
+                    enclosing.entry(path).or_default().insert(m.enclosing);
+                    proving.push((path, m.enclosing, m.line));
                 }
             }
         }
+        let entities = self.test_entities_at(enclosing);
+        let calls = (proving.into_iter())
+            .map(|(path, e, line)| ProofCall {
+                target: id.to_string(),
+                caller: entities[&(path, e)].clone(),
+                evidence: format!("{path}:{line}"),
+            })
+            .collect();
         proof_order(calls)
     }
 
@@ -801,16 +859,6 @@ impl<'v> Resolver<'v> {
                 && m.kind == MentionKind::Call
                 && self.is_test(m.test, m.file.path)
         })
-    }
-
-    /// [`caller_of`] a call in the file at `path` whose enclosing definition is `enclosing`,
-    /// reading the file only when there is one.
-    fn caller_at(&self, path: &str, enclosing: Option<u32>) -> String {
-        match enclosing {
-            Some(_) => (self.view.file(path))
-                .map_or_else(|| path.to_string(), |f| caller_of(&f, enclosing)),
-            None => path.to_string(),
-        }
     }
 
     /// Whether a test call to `leaf` from `file` lands on a placeholder ([`Self::call_edge`]):
@@ -824,20 +872,21 @@ impl<'v> Resolver<'v> {
     /// a call lands depends only on its file and leaf, so each leaf is resolved once.
     pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
         let path = facts.path.as_str();
+        let test_entity = self.test_entity_of(facts);
         let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
         (facts.mentions.iter())
             .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
             .filter(|m| {
                 *(lands.entry(&m.leaf)).or_insert_with(|| self.lands_on_placeholder(path, &m.leaf))
             })
-            .map(|m| (m.leaf.clone(), caller_of(facts, m.enclosing)))
+            .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
             .collect()
     }
 
     /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
-    /// test entities a callers walk reaches through a placeholder bound to `leaf` and no proof
-    /// names, read from the mentions of `leaf` alone. Where a call lands depends only on its file
-    /// and leaf, so each file is resolved once.
+    /// test entities ([`Self::test_entity_of`]) a callers walk reaches through a placeholder bound
+    /// to `leaf` and no proof names, read from the mentions of `leaf` alone. Where a call lands
+    /// depends only on its file and leaf, so each file is resolved once.
     pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
         let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
@@ -847,19 +896,9 @@ impl<'v> Resolver<'v> {
                 enclosing.entry(path).or_default().insert(m.enclosing);
             }
         }
-        let mut callers = BTreeSet::new();
-        for (path, enclosing) in enclosing {
-            let facts = enclosing
-                .iter()
-                .any(Option::is_some)
-                .then(|| self.view.file(path));
-            for e in enclosing {
-                callers.insert(match facts.as_ref().and_then(|f| f.as_ref()) {
-                    Some(facts) => caller_of(facts, e),
-                    None => path.to_string(),
-                });
-            }
-        }
+        let callers: BTreeSet<String> = (self.test_entities_at(enclosing).into_values())
+            .flatten()
+            .collect();
         callers.into_iter().collect()
     }
 
@@ -1607,7 +1646,7 @@ pub(crate) mod tests {
     /// is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (2, "4cf253b08ef03faa");
+        const PINNED: (u64, &str) = (3, "6126b9cf9571d2f0");
         let view = fixture();
         let resolver = Resolver::new(&view);
         let test_files: Vec<&str> = (view.files())
@@ -1627,6 +1666,82 @@ pub(crate) mod tests {
              differ from the pinned pair: a change to what a store settles ships with a bump, so \
              bump `SETTLED_GENERATION` and re-pin the pair to this build's values together"
         );
+    }
+
+    /// A PROOF NAMES ITS TEST ENTITY: a test call's caller is its enclosing definition when that
+    /// id is test code (an inline test, or twins that are both test), or its test file at file
+    /// level; test code inside a product entity (the `#[cfg(test)]` twin of the product `helper`)
+    /// still proves what it calls but names no caller, and no test entity reaches a placeholder
+    /// through it. Every reader of proofs and of placeholder callers says alike.
+    #[test]
+    fn a_proof_names_its_test_entity_and_none_for_test_code_inside_a_product_entity() {
+        let p = code(
+            "src/p.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("target", "function", 1, None, false),
+                def("helper", "function", 3, None, true),
+                def("helper", "function", 5, None, false),
+                def("tests", "module", 7, None, true),
+                def("tests::check", "function", 8, Some(3), true),
+                def("both", "function", 11, None, true),
+                def("both", "function", 13, None, true),
+            ],
+            vec![
+                call("target", Some(1), 3, true),
+                call("draw", Some(1), 4, true),
+                call("target", Some(4), 8, true),
+                call("draw", Some(4), 9, true),
+                call("target", Some(5), 11, true),
+            ],
+        );
+        let t = code(
+            "tests/t.rs",
+            "rust",
+            Scope::Test,
+            vec![],
+            vec![call("target", None, 1, true)],
+        );
+        let draws = ["src/d1.rs", "src/d2.rs"].map(|path| {
+            let draw = vec![def("draw", "function", 1, None, false)];
+            code(path, "rust", Scope::Product, draw, vec![])
+        });
+        let view = FactsView::new(stamp(), [vec![p, t], draws.to_vec()].concat());
+        let resolver = Resolver::new(&view);
+        let calls = |calls: Vec<ProofCall>| -> Vec<String> {
+            (calls.into_iter())
+                .map(|c| format!("{} {:?}", c.evidence, c.caller))
+                .collect()
+        };
+        let facts = view.file("src/p.rs").unwrap();
+        // (the reader, what it answers)
+        let cases: [(&str, Vec<String>); 4] = [
+            ("proof calls", calls(resolver.proof_calls().to_vec())),
+            ("proofs of", calls(resolver.proofs_of("src/p.rs::target"))),
+            ("placeholder callers", resolver.placeholder_callers("draw")),
+            (
+                "file placeholder calls",
+                (resolver.file_placeholder_calls(&facts).into_iter())
+                    .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                    .collect(),
+            ),
+        ];
+        let proofs = [
+            "src/p.rs:11 Some(\"src/p.rs::both\")",
+            "src/p.rs:3 None",
+            "src/p.rs:8 Some(\"src/p.rs::tests::check\")",
+            "tests/t.rs:1 Some(\"tests/t.rs\")",
+        ];
+        let wants: [&[&str]; 4] = [
+            &proofs,
+            &proofs,
+            &["src/p.rs::tests::check"],
+            &["draw src/p.rs::tests::check"],
+        ];
+        for ((reader, got), want) in cases.into_iter().zip(wants) {
+            assert_eq!(got, want, "{reader}");
+        }
     }
 
     #[test]

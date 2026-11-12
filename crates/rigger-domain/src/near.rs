@@ -569,11 +569,12 @@ impl<'v> State<'v> {
             }
         }
         if !leaves.is_empty() {
-            let (evidence, provers): (Vec<String>, Vec<String>) =
+            let (evidence, callers): (Vec<String>, Vec<Option<String>>) =
                 (self.graph.resolver().proofs_of(id))
                     .into_iter()
                     .map(|c| (c.evidence, c.caller))
                     .unzip();
+            let provers: Vec<String> = callers.into_iter().flatten().collect();
             if !evidence.is_empty() {
                 b.prove(id, &evidence);
             }
@@ -686,7 +687,7 @@ impl<'v> State<'v> {
             Some(place) => {
                 let calls = self.proofs_in(place);
                 let targets: BTreeSet<&str> = (calls.iter())
-                    .filter(|c| c.caller == test)
+                    .filter(|c| c.caller.as_deref() == Some(test))
                     .map(|c| c.target.as_str())
                     .collect();
                 let clusters = self.clusters();
@@ -723,11 +724,12 @@ impl<'v> State<'v> {
             .filter(|(a, _)| *a == arm)
             .flat_map(|&c| clusters.cluster(c).members.iter().map(String::as_str))
             .collect();
-        // A test call proves one member: its caller is the definition enclosing it, or its file.
+        // A test call proves one member: its caller is the test entity enclosing it, or its
+        // file, and none for test code inside a product entity.
         let mut callers = BTreeSet::new();
         for m in &members {
             let calls = self.graph.resolver().proofs_of(m);
-            callers.extend(calls.into_iter().map(|c| c.caller));
+            callers.extend(calls.into_iter().filter_map(|c| c.caller));
         }
         let mut tests = Vec::new();
         for t in callers {
@@ -1049,7 +1051,10 @@ impl CodeHalf for Near<'_> {
         match self.whole.get() {
             Some(_) => {
                 let proofs = state.graph.resolver().proof_calls().iter();
-                provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+                provers_of(
+                    proofs.filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
+                    ids,
+                )
             }
             None => {
                 let proofs = (state.provers.iter()).flat_map(|(id, provers)| {

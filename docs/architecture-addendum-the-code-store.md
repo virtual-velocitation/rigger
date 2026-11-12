@@ -354,8 +354,8 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | IDX_NAME   leaf -> [mention row]   (sorted by leaf; binary search)            |
  | GROUPINGS  communities at the default grain, their labels; concepts, their    |
  |            labels and REALIZES members      (computed over the production view)|
- | PROOFS     target, caller, file, line       (proof order: by target; binary   |
- |            search)                                                            |
+ | PROOFS     target, caller or none, file, line    (proof order: by target;     |
+ |            binary search)                                                     |
  | IDX_PROOF_FILE  [proof row]                 (by file, then proof order)       |
  +-------------------------------------------------------------------------------+
 ```
@@ -531,7 +531,7 @@ so it runs once per advance and is stored in the snapshot:
     closure. Without it every reader read the facts of each file declaring a module and grew
     the closure before it resolved anything.
   - **proofs:** every test call that proves a product definition (`PROOFS`: target, calling test
-    entity, file, line), in proof order, so the proofs of one definition are a binary search,
+    entity or none (section 8.1), file, line), in proof order, so the proofs of one definition are a binary search,
     and indexed by file, so the calls one test entity makes are the rows of its file. A whole
     read reads them instead of walking every test mention; a neighbourhood reads a
     definition's proofs and a test's attachment from them instead of resolving each mention of
@@ -940,6 +940,13 @@ items in product files. An entity counts as a test entity when any of these hold
 
 A fixture is a test entity like any other: a definition these rules mark test is held, proved
 through and filtered the same way, with no fixture kind of its own.
+
+A test call names the test entity that makes it: its enclosing definition when that id is a test
+entity, else its file when the call sits at file level of a test file. Test code inside a product
+entity (a `#[cfg(test)]` twin of a product definition, which shares the product's id) names
+none. It is test code all the same: the filter hides its edges and its calls prove what they
+reach. But no test entity holds it alone, so it is attached to no grouping and counted as no
+hidden test.
 
 ### 8.2 How it is filtered
 

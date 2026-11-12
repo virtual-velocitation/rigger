@@ -21,7 +21,7 @@ pub const TESTS_ATTR: &str = "tests";
 /// the cluster earliest in the grouping's own order, which is its numbering order, so
 /// `community/1/2` wins over `community/1/10`. A test that proves no grouped product definition is
 /// attached to none; a call outside any definition is the file's own, and the file is the test
-/// entity.
+/// entity; test code inside a product entity names no test entity and attaches none.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TestAttachment {
     cluster_of: BTreeMap<String, String>,
@@ -39,7 +39,9 @@ impl TestAttachment {
         }
         let mut proved: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for p in proofs {
-            proved.entry(&p.caller).or_default().insert(&p.target);
+            if let Some(caller) = &p.caller {
+                proved.entry(caller).or_default().insert(&p.target);
+            }
         }
         let mut attachment = Self::default();
         for (test, targets) in proved {
@@ -298,7 +300,7 @@ mod tests {
                 .iter()
                 .map(|t| ProofCall {
                     target: t.to_string(),
-                    caller: "T".into(),
+                    caller: Some("T".into()),
                     evidence: "f:1".into(),
                 })
                 .collect()
