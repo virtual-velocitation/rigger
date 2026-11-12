@@ -2504,6 +2504,38 @@ mod tests {
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
 
+    /// Each row: a `rigger_graph` `show` or `around` call over the shown tree, whose
+    /// `blank_is_blank` test, hidden under the default filter, proves `blank`, and the
+    /// `tests_hidden` its reply carries: how many hidden tests prove the nodes it shows, and none
+    /// when it shows no node.
+    #[test]
+    fn rigger_graph_around_and_show_count_the_hidden_tests_proving_what_they_show() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::{shown_tree_planted_view, ViewedRecords};
+
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let context = ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        for (arguments, hidden) in [
+            (json!({"show": "src/limits.rs::blank"}), json!(1)),
+            (
+                json!({"around": "src/limits.rs::blank", "depth": 1}),
+                json!(1),
+            ),
+            (json!({"show": "src/limits.rs::LIMIT"}), json!(0)),
+            (json!({"show": "nothing"}), Value::Null),
+        ] {
+            let answer = shown_graph_answer_over(&graph, &context, arguments.clone());
+            assert_eq!(
+                answer["tests_hidden"],
+                json!(hidden),
+                "{arguments}: {answer}"
+            );
+        }
+    }
+
     /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens
     /// under, or the refusal that names the three spellings.
     #[test]
