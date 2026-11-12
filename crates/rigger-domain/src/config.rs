@@ -1846,6 +1846,22 @@ mod tests {
         );
     }
 
+    /// A test author is declared exactly when `defaults.test_author` is non-empty: the key's
+    /// own text is the declared id, a blank one included, and an absent or empty key declares none.
+    #[test]
+    fn the_declared_test_author_is_the_key_unless_it_is_empty() {
+        for (yaml, declared) in [
+            ("{}", None),
+            ("{ test_author: '' }", None),
+            ("{ test_author: ' ' }", Some(" ")),
+            ("{ test_author: test-writer }", Some("test-writer")),
+        ] {
+            let defaults: Defaults = parse_yaml_naming_unknown_keys(yaml)
+                .unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
+            assert_eq!(defaults.declared_test_author(), declared, "{yaml}");
+        }
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);

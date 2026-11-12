@@ -47989,11 +47989,13 @@ mod tests {
 
     /// Spec 121's THE TEST AUTHOR IS DECLARED: the build seam spawns the agent
     /// `defaults.test_author` names, served that agent's own persona, under the `sdet-author` role
-    /// token; it spawns nothing when the key is absent, whatever agents the project defines; and a
-    /// workflow whose key names no defined agent is refused at load, so it never runs. Each spawn
-    /// reads as its agent, its spawn id and the defined agents whose persona its system prompt
-    /// carries, so a seam that resolved the conventional `sdet-author` agent, or served the
-    /// declared one another agent's persona, names the wrong agent or persona.
+    /// token; it spawns nothing when the key is absent, whatever agents the project defines; a
+    /// workflow whose key names no defined agent is refused at load, so it never runs; and a config
+    /// that never went through a load, whose key names no defined agent, fails the run at the seam
+    /// naming the stage, the role and the id, as an unknown review agent does, never proceeding
+    /// author-less. Each spawn reads as its agent, its spawn id and the defined agents whose
+    /// persona its system prompt carries, so a seam that resolved the conventional `sdet-author`
+    /// agent, or served the declared one another agent's persona, names the wrong agent or persona.
     #[test]
     fn the_build_seam_spawns_the_declared_test_author_under_the_sdet_author_token() {
         let persona = |id: &str| format!("Persona of {id}.");
@@ -48005,10 +48007,12 @@ mod tests {
             )
         };
         let worker = spawn("worker", "s/implementer#0", &[]);
+        // (declared, defined, loaded: whether the config goes through a load first, want)
         let rows = [
             (
                 "sdet-author",
                 &["sdet-author"][..],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("sdet-author", "s/sdet-author#0", &["sdet-author"]),
@@ -48017,6 +48021,7 @@ mod tests {
             (
                 "test-writer",
                 &["sdet-author", "test-writer"],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
@@ -48025,20 +48030,28 @@ mod tests {
             (
                 "test-writer",
                 &["test-writer"],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
                 ]),
             ),
-            ("", &["sdet-author"], Ok(vec![worker.clone()])),
-            ("", &[], Ok(vec![worker])),
+            ("", &["sdet-author"], true, Ok(vec![worker.clone()])),
+            ("", &[], true, Ok(vec![worker])),
             (
                 "ghost",
                 &["sdet-author"],
+                true,
                 Err(GHOST_TEST_AUTHOR_REFUSAL.to_string()),
             ),
+            (
+                "ghost",
+                &["sdet-author"],
+                false,
+                Err(r#"stage "s" references unknown sdet-author "ghost""#.to_string()),
+            ),
         ];
-        for (declared, defined, want) in rows {
+        for (declared, defined, loaded, want) in rows {
             let mut cfg = sdet_lane_cfg(false);
             for id in defined {
                 cfg.agents
@@ -48046,28 +48059,32 @@ mod tests {
             }
             cfg.workflow.defaults.test_author = declared.to_string();
             let driver = sdet_lane_driver();
-            let spawned = cfg.validate().map_err(|e| e.0).map(|_| {
-                run_in_repo(&cfg, &driver)
-                    .0
-                    .expect("the sdet seam never fails the run");
-                let order = driver.call_order.lock().unwrap().clone();
-                order
-                    .into_iter()
-                    .zip(driver.spawn_ids())
-                    .map(|(agent, id)| {
-                        let system = driver.system_prompt_for(&agent).unwrap_or_default();
-                        let served = defined
-                            .iter()
-                            .map(|d| d.to_string())
-                            .filter(|d| system.contains(&persona(d)))
-                            .collect::<Vec<_>>();
-                        (agent, id, served)
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let load = if loaded {
+                cfg.validate().map(|_| ()).map_err(|e| e.0)
+            } else {
+                Ok(())
+            };
+            let spawned = load
+                .and_then(|()| run_in_repo(&cfg, &driver).0.map_err(|e| e.0))
+                .map(|_| {
+                    let order = driver.call_order.lock().unwrap().clone();
+                    order
+                        .into_iter()
+                        .zip(driver.spawn_ids())
+                        .map(|(agent, id)| {
+                            let system = driver.system_prompt_for(&agent).unwrap_or_default();
+                            let served = defined
+                                .iter()
+                                .map(|d| d.to_string())
+                                .filter(|d| system.contains(&persona(d)))
+                                .collect::<Vec<_>>();
+                            (agent, id, served)
+                        })
+                        .collect::<Vec<_>>()
+                });
             assert_eq!(
                 spawned, want,
-                "test_author {declared:?} over the agents {defined:?}"
+                "test_author {declared:?} over the agents {defined:?}, loaded first: {loaded}"
             );
         }
     }
