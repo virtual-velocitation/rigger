@@ -5286,6 +5286,46 @@ mod tests {
         );
     }
 
+    /// GIVEN the served page, WHEN a view draws the panel's own toolbar (the back link, the lens
+    /// controls) and the memory rail or the metadata card docks over the panel, THEN each docks
+    /// against the toolbar's bottom edge, so a wrapped toolbar pushes it down and neither covers a
+    /// toolbar control; neither takes the toolbar as its default anchor, so scrolling the panel
+    /// never carries either up over the header. Layout is outside what the page harness can run,
+    /// so this pins the anchoring each declares.
+    #[test]
+    fn the_rail_and_the_card_dock_below_the_panel_toolbar() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let toolbar = Element {
+            id: String::new(),
+            classes: vec!["kgtoolbar".to_string()],
+            ancestors: Vec::new(),
+        };
+        let declared = |rules: &[&str], property: &str| -> Option<String> {
+            rules
+                .iter()
+                .flat_map(|rule| rule[rule.find('{').map_or(0, |i| i + 1)..].split(';'))
+                .filter_map(|declaration| declaration.split_once(':'))
+                .filter(|(name, _)| name.trim() == property)
+                .map(|(_, value)| value.trim().trim_end_matches('}').trim().to_string())
+                .last()
+        };
+        let anchor = declared(&rules_of(&page, &toolbar), "anchor-name")
+            .expect("the panel toolbar names itself as an anchor");
+        for docked in ["kgrail", "kgcard"] {
+            let rules = rules_of(&page, &markup[explorer_index(&markup, docked)]);
+            let top = declared(&rules, "top").unwrap_or_default();
+            assert!(
+                top.contains(&format!("anchor({anchor} bottom")),
+                "#{docked} docks its top against the toolbar's bottom ({anchor}), not at {top:?}"
+            );
+            assert!(
+                declared(&rules, "position-anchor").is_none(),
+                "#{docked} does not follow the panel's scroll: {rules:?}"
+            );
+        }
+    }
+
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
     /// WRAP at their hyphen/slash break opportunities - never one char per line, never forcing a
     /// page-level horizontal scrollbar - and the genuinely-wide cells (the event-feed JSON and
