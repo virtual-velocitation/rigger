@@ -329,6 +329,53 @@ fn around_counts_the_hidden_tests_calling_through_a_placeholder() {
     }
 }
 
+/// GIVEN a built project where `helper` has a `#[cfg(test)]` twin calling `target` beside its
+/// product definition, so the one id `helper` is product code holding a test call, WHEN `rigger
+/// graph` reads the community, `target` and the file under each `--tests` setting, THEN the
+/// twin's call is shown as a test edge under `include` but names no test entity: the community
+/// lists no test and draws no `TESTS` edge, and no answer counts a hidden test for it.
+#[test]
+fn a_test_twin_of_a_product_definition_is_no_test_entity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn target() {}\n#[cfg(test)]\nfn helper() { target(); }\n#[cfg(not(test))]\nfn helper() {}\npub fn user() { helper(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let file = ["--around", "src/lib.rs", "--depth", "1"];
+    // (the arguments, a line the answer holds, what it never holds)
+    let cases: [(&[&str], &str, &[&str]); 4] = [
+        (
+            &["communities", "--tests", "include"],
+            "community/1/0",
+            &["test src/lib.rs::helper", "1 test"],
+        ),
+        (
+            &["--show", "src/lib.rs::target"],
+            "show src/lib.rs::target",
+            &["not shown"],
+        ),
+        (&file, "node src/lib.rs::helper", &["not shown"]),
+        (
+            &[&file[..], &["--tests", "include"]].concat(),
+            "edge src/lib.rs::helper -CALLS-> src/lib.rs::target",
+            &["-TESTS->"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.
