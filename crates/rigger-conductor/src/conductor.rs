@@ -41293,6 +41293,124 @@ mod tests {
         assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
     }
 
+    /// The context graph of the directory each head is opened in, read from its files on disk,
+    /// recording every worktree a head is opened for.
+    #[cfg(feature = "symbols")]
+    struct DirectoryContext<'a> {
+        records: &'a dyn contextgraph::Neighbors,
+        own: std::path::PathBuf,
+        opened_in: Mutex<Vec<std::path::PathBuf>>,
+    }
+    #[cfg(feature = "symbols")]
+    impl OpenGraph for DirectoryContext<'_> {
+        fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+            use crate::code_view::OpenCodeView;
+            rigger_grounder::facts::DirectoryHead::new(&self.own).head(&self.own)
+        }
+        fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+            use crate::code_view::OpenCodeView;
+            self.opened_in.lock().unwrap().push(worktree.to_path_buf());
+            rigger_grounder::facts::DirectoryHead::new(worktree).head(worktree)
+        }
+        fn open_on(
+            &self,
+            head: &rigger_domain::code_view::Head,
+            _filter: crate::code_view::ViewFilter,
+        ) -> Result<Box<dyn contextgraph::ContextGraph + '_>, contextgraph::Error> {
+            Ok(Box::new(crate::test_support::view_graph(
+                self.records,
+                &*head.view,
+            )))
+        }
+    }
+
+    /// A unit's radius describes the unit's own worktree: each attempt opens the head in the
+    /// worktree the implementer works in, so a file an earlier attempt added there grounds the
+    /// next attempt's radius though the checkout the run lands on has never held it. Attempt 0
+    /// adds `src/added.rs`, its gate fails once, and attempt 1's recorded seed names the file.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_units_blast_radius_describes_the_units_own_worktree() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let marks = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert(
+            "once".into(),
+            gate_def(&format!(
+                "test -f '{m}' || {{ touch '{m}'; exit 1; }}",
+                m = marks.path().join("failed-once").display()
+            )),
+        );
+        cfg.workflow.stages.insert(
+            "u".into(),
+            Stage {
+                name: "u".into(),
+                agent: "worker".into(),
+                gates: vec!["once".into()],
+                on_pass: "merge".into(),
+                coverage: "`src/added.rs`".into(),
+                ..Default::default()
+            },
+        );
+        let mut driver = Stub::new();
+        driver.write_files_by_spawn_id.insert(
+            spawn_id("u", ROLE_IMPLEMENTER, 0),
+            vec!["src/added.rs".to_string()],
+        );
+        let grounder = crate::grounder::symbols::grounder::Symbols::in_directory(&repo_path);
+        let records = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = DirectoryContext {
+            records: &records,
+            own: repo.path().to_path_buf(),
+            opened_in: Mutex::new(Vec::new()),
+        };
+        let store = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            gates: &ExecRunner,
+            grounder: Some(&grounder),
+            context: Some(&context),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["u"].status, ledger::Status::Integrated);
+
+        let worked_in: Vec<std::path::PathBuf> = driver.dirs_by_agent.lock().unwrap()["worker"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        assert_eq!(
+            worked_in.len(),
+            2,
+            "premise: the gate failed attempt 0 once"
+        );
+        assert_eq!(
+            *context.opened_in.lock().unwrap(),
+            worked_in,
+            "each attempt's radius opens the head in the worktree its implementer works in"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let seed_of = |attempt: u32| -> Value {
+            let key = format!("u/blast-radius#{attempt}");
+            let audit = (events.iter())
+                .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
+                .unwrap_or_else(|| panic!("attempt {attempt} records its radius"));
+            serde_json::from_slice::<Value>(&audit.data).unwrap()["precise"].clone()
+        };
+        assert_eq!(
+            seed_of(0),
+            json!([]),
+            "premise: no tree holds the file before attempt 0"
+        );
+        assert_eq!(
+            seed_of(1),
+            json!(["src/added.rs"]),
+            "attempt 1's radius reads the file attempt 0 added to the unit's worktree"
+        );
+    }
+
     /// spec 16 unit 3, the empty fail-safe pin: a STRUCTURAL grounder whose query grounds to
     /// NOTHING still records the audit event (the index - and so the stamp - is present even when
     /// a query matches no symbol), so "why the full panel?" is answerable, and the empty radius
