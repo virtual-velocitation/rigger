@@ -1165,10 +1165,15 @@ because its key is the content. It has two tiers:
   read (a CLI call) extracts each content once across processes. An entry is a one-file snapshot
   whose stamp holds the store's fingerprint and the content's identity (content id, crc32 and
   length); the content itself is not kept. It is written through the store's atomic publish
-  (temp, rename) once it reads back as the facts it holds. A read takes an entry only when it
-  decodes whole with that stamp and holds that one path's facts; any other entry reads as absent
-  and is removed. Two processes writing one entry write the same bytes, and the rename keeps one
-  whole. A disk error is never an answer's error: the file is extracted as without a memo.
+  unsynced (`write_atomic_as`, `Durability::Unsynced`: temp and rename, with no fsync of the
+  temp or the directory) once it reads back as the facts it holds, its directory made before it
+  is encoded so a store that cannot be written costs no encode. The entry is not durable, and
+  need not be: every read validates it, so an entry a crash loses or leaves short is a miss that
+  extraction answers, while a sync per entry is a wait the reader pays for every file it
+  extracts. A read takes an entry only when it decodes whole with that stamp and holds that one
+  path's facts; any other entry reads as absent and is removed. Two processes writing one entry
+  write the same bytes, and the rename keeps one whole. A disk error is never an answer's error:
+  the file is extracted as without a memo.
 
 The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
 
@@ -1240,7 +1245,8 @@ rigger's own segment log (109), a resolved graph held in memory and loaded from 
   - the magic plus version header;
   - the crc32 check;
   - the section table;
-  - the atomic publish (temp, fsync, rename, `sync_dir`);
+  - the atomic publish (temp, fsync, rename, `sync_dir`; unsynced for a file every read
+    validates);
   - the lock (`with_write_lock`, on std `File::lock`).
 
   109 and 110 add their modules (`segments`, `graph`) to the same crate.
@@ -1363,7 +1369,7 @@ a reader holding one open (or mapped) never blocks a writer.
 - The facts memo on disk: `a_one_shot_read_extracts_each_content_once_and_answers_the_worktree`
   (a file edited back and forth, each answer compared with a fresh extraction),
   `a_damaged_entry_reads_as_absent_and_is_replaced`, `an_unwritable_memo_leaves_the_answer_alone`,
-  `writers_of_one_entry_leave_it_whole`,
+  `an_unwritable_memo_fails_before_it_encodes`, `writers_of_one_entry_leave_it_whole`,
   `a_reap_keeps_the_recently_read_entries_of_the_kept_fingerprints_within_the_cap`,
   `a_read_entry_outlives_one_read_before_it`,
   `an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps`,

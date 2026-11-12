@@ -4,10 +4,10 @@
 //!
 //! An entry is a one-file snapshot ([`encode`]) at `memo/<fingerprint>-<path hash>-<content
 //! id>.facts`, stamped with the store's fingerprint and the content's identity (its content id,
-//! crc32 and length), published atomically ([`write_atomic`]) once it reads back as the facts it
-//! holds. A read takes an entry only when it decodes whole with that stamp and holds the facts of
-//! that one path; any other entry is absent and removed, and the file is extracted again. The key
-//! is the content, so an entry is never stale; it is only unused.
+//! crc32 and length), published atomically and unsynced ([`write_atomic_as`]) once it reads back
+//! as the facts it holds. A read takes an entry only when it decodes whole with that stamp and
+//! holds the facts of that one path; any other entry is absent and removed, and the file is
+//! extracted again. The key is the content, so an entry is never stale; it is only unused.
 //!
 //! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, each counted in whole 4 KiB
 //! blocks, none unread for more than three days. Its reaper ([`reap`]) runs with the store's on
@@ -19,7 +19,7 @@
 
 use crate::code::dir_source::content_id;
 use crate::code::snapshot::{encode, Snapshot};
-use crate::format::{crc32, write_atomic, TEMP};
+use crate::format::{crc32, write_atomic_as, Durability, TEMP};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{CodeView, FactsView, Groupings};
 use rigger_domain::playbooks::fnv1a_64;
@@ -81,8 +81,13 @@ impl DiskMemo {
         }
     }
 
-    /// Keeps `facts`, extracted from `bytes`, once their entry reads back as them.
+    /// Keeps `facts`, extracted from `bytes`, once their entry reads back as them. The directory
+    /// comes first, so a memo that cannot be written costs no encode. The entry is published
+    /// unsynced ([`Durability::Unsynced`]): every read validates it, so one a crash loses or
+    /// leaves short is a miss, and the reader waits on no sync.
     pub(crate) fn put(&self, bytes: &[u8], facts: &FileFacts) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let view = FactsView::new(self.stamp(bytes), vec![facts.clone()]);
         let snap = Snapshot::decode(encode(&view, &Groupings::default())?)?;
         if self.facts_in(&snap, &facts.path, bytes).as_ref() != Some(facts) {
@@ -91,9 +96,8 @@ impl DiskMemo {
                 facts.path
             ));
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
-        write_atomic(&self.dir.join(self.name(&facts.path, bytes)), snap.bytes())
+        let at = self.dir.join(self.name(&facts.path, bytes));
+        write_atomic_as(&at, snap.bytes(), Durability::Unsynced)
     }
 
     /// The entry name of the file at `path` holding `bytes`: one name prefix a fingerprint.
