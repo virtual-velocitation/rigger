@@ -795,14 +795,7 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         )
         .into());
     }
-    // Honor the project's configured `defaults.grounder` when a config is present;
-    // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
-    // (the empty name -> symbols, the scaffold default), so an agent can ground before
-    // a workflow is authored rather than hitting a config error.
-    let name = config_store::load(".")
-        .map(|cfg| cfg.workflow.defaults.grounder)
-        .unwrap_or_default();
-    let grounder = select_grounder(&name)?;
+    let grounder = configured_grounder()?;
     // The rows and their honesty label (6.1) come from one read of the code store.
     let grounded = grounder.ground_ranked_labelled(query, k, tests);
     match grounded.rows {

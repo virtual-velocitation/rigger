@@ -5362,6 +5362,16 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     Ok(rigger::grounder::grounder_for(name, &worktree)?)
 }
 
+/// The grounder the caller's tree ([`caller_tree`]) configures: its workflow's
+/// `defaults.grounder` ([`select_grounder`]); a tree with no workflow yet grounds with the
+/// default, so an agent can ground before a workflow is authored.
+fn configured_grounder() -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+    let name = config_store::load(&caller_tree()?.to_string_lossy())
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    select_grounder(&name)
+}
+
 fn git_repo() -> Result<String, String> {
     git_repo_at(&cwd())
 }

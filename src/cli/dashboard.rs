@@ -916,10 +916,7 @@ fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::
 pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let spawn = parse_mcp_spawn_flag(args)?;
     over_the_run_store(|loc, selection, store| {
-        let grounder_name = config_store::load(".")
-            .map(|cfg| cfg.workflow.defaults.grounder)
-            .unwrap_or_default();
-        let grounder = select_grounder(&grounder_name);
+        let grounder = configured_grounder();
         // The resolved store's own graph, so a server started in a linked worktree serves and folds
         // into the owning repository's graph, never one opened in the worktree. Opened as it
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the

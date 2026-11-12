@@ -2843,6 +2843,45 @@ fn ground_rejects_an_unknown_grounder_naming_only_the_accepted_set() {
     );
 }
 
+/// GIVEN a project whose workflow names an unknown grounder, WHEN `rigger ground` and the MCP
+/// ground tool run from a directory below the top of its worktree, THEN each reads the grounder
+/// from the workflow of the caller's worktree, as every other read names its worktree, and
+/// refuses the unknown name: neither falls back to the default grounder because the cwd holds no
+/// workflow.
+#[test]
+fn ground_reads_its_grounder_from_the_callers_worktree_below_its_top() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "semantic-embed");
+    let below = root.join("src");
+    std::fs::create_dir_all(&below).unwrap();
+    std::fs::write(below.join("lib.rs"), "pub fn apply_damage() {}\n").unwrap();
+    common::fixtures::git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+
+    let (out, err, ok) = run_rigger(&below, &["ground", "apply_damage"]);
+    assert!(
+        !ok && err.contains("unknown grounder"),
+        "the CLI refuses the configured name; stdout: {out:?}, stderr: {err}"
+    );
+
+    let mut mcp = common::mcp::McpSession::from_command(common::cli::rigger_command(
+        &below,
+        &["mcp"],
+        &[],
+        root,
+    ));
+    let reply = mcp.tool_call(
+        "rigger_ground",
+        serde_json::json!({"query": "apply_damage"}),
+    );
+    mcp.finish_cleanly();
+    assert!(
+        reply.to_string().contains("unknown grounder"),
+        "the MCP tool refuses the configured name: {reply}"
+    );
+}
+
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
 /// a silent success - a workflow agent must be able to tell a malformed emit failed.
 #[test]
