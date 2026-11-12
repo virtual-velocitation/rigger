@@ -169,7 +169,37 @@ impl Memo {
 pub struct Overlay {
     view: Merged,
     /// The test files and the proof calls, settled again on first read.
-    settled: OnceLock<(Vec<String>, Vec<ProofCall>)>,
+    settled: OnceLock<Resettled>,
+}
+
+/// The test files and the proof calls settled again, with the places among the calls of each
+/// definition's and each file's, in proof order: a lookup reads its hits alone, as the snapshot's
+/// sorted rows serve it.
+struct Resettled {
+    test_files: Vec<String>,
+    calls: Vec<ProofCall>,
+    of: HashMap<String, Vec<usize>>,
+    in_file: HashMap<String, Vec<usize>>,
+}
+
+impl Resettled {
+    fn new((test_files, calls): (Vec<String>, Vec<ProofCall>)) -> Self {
+        let (mut of, mut in_file) = (HashMap::new(), HashMap::new());
+        for (at, c) in calls.iter().enumerate() {
+            let held: &mut Vec<usize> = of.entry(c.target.clone()).or_default();
+            held.push(at);
+            if let Some(file) = c.file() {
+                let held: &mut Vec<usize> = in_file.entry(file.to_owned()).or_default();
+                held.push(at);
+            }
+        }
+        Self {
+            test_files,
+            calls,
+            of,
+            in_file,
+        }
+    }
 }
 
 impl Overlay {
@@ -192,10 +222,10 @@ impl Overlay {
         }
     }
 
-    fn resettled(&self) -> &(Vec<String>, Vec<ProofCall>) {
+    fn resettled(&self) -> &Resettled {
         self.settled.get_or_init(|| {
             let differing = self.view.hidden.iter().map(String::as_str).collect();
-            resettle(&*self.view.base, &self.view, &differing)
+            Resettled::new(resettle(&*self.view.base, &self.view, &differing))
         })
     }
 }
@@ -235,16 +265,31 @@ impl CodeView for Overlay {
 
 impl Settled for Overlay {
     fn test_files(&self) -> Vec<&str> {
-        self.resettled().0.iter().map(String::as_str).collect()
+        self.resettled()
+            .test_files
+            .iter()
+            .map(String::as_str)
+            .collect()
     }
 
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
-        let calls = self.resettled().1.iter().inspect(|_| read_proof_row());
-        match of {
-            Proofs::All => calls.cloned().collect(),
-            Proofs::Of(id) => calls.filter(|c| c.target == id).cloned().collect(),
-            Proofs::In(path) => calls.filter(|c| c.file() == Some(path)).cloned().collect(),
-        }
+        let settled = self.resettled();
+        let at = match of {
+            Proofs::All => {
+                return settled
+                    .calls
+                    .iter()
+                    .inspect(|_| read_proof_row())
+                    .cloned()
+                    .collect()
+            }
+            Proofs::Of(id) => settled.of.get(id),
+            Proofs::In(path) => settled.in_file.get(path),
+        };
+        let at = at.map_or(&[][..], Vec::as_slice).iter();
+        at.inspect(|_| read_proof_row())
+            .map(|&at| settled.calls[at].clone())
+            .collect()
     }
 }
 
