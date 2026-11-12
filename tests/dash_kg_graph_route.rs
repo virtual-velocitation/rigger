@@ -1628,3 +1628,87 @@ rigger::test_cases! {
     /// error; a reply stating neither leaves the header as it was.
     the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
 }
+
+/// A node program loading the served page into a fresh realm per load over a browser store the
+/// loads share, so a second load is a reload in the same browser. It steps the explorer's tests
+/// toggle through the header's own click dispatch and records, per load, the toggle's text and the
+/// tests filter a graph read carries.
+const TESTS_CHOICE_HARNESS: &str = r#""use strict";
+const vm = require("vm");
+const fs = require("fs");
+const pageScript = fs.readFileSync(process.argv[2], "utf8");
+const SHIM = String.raw`__SHIM__`;
+// A browser store over `items`, which the test reads and corrupts directly.
+function store(items) {
+  return {
+    getItem: function(k){ return Object.prototype.hasOwnProperty.call(items, k) ? items[k] : null; },
+    setItem: function(k, v){ items[k] = String(v); },
+    removeItem: function(k){ delete items[k]; },
+  };
+}
+const refused = function(){ throw new Error("SecurityError: the store is blocked"); };
+// One page load: `storage` is a store, a getter standing for a store whose access throws, or
+// undefined for a realm with no store at all.
+function load(storage) {
+  const sandbox = { console: console, process: process };
+  if (typeof storage === "function") Object.defineProperty(sandbox, "localStorage", { get: storage });
+  else if (storage !== undefined) sandbox.localStorage = storage;
+  vm.createContext(sandbox);
+  vm.runInContext(SHIM + "\n" + pageScript, sandbox, { filename: "dash-tests-choice-harness.js" });
+  const page = vm.runInContext("({ el: el, apiUrl: apiUrl })", sandbox);
+  const seen = function(){
+    const m = page.apiUrl("/api/graph").match(/[?&]tests=([^&]*)/);
+    return page.el("kgteststoggle").textContent + " / " + (m ? m[1] : "exclude");
+  };
+  const step = function(){
+    const click = page.el("kghead")._listeners.click[0];
+    click({ target: { closest: function(sel){ return sel === "[data-tests]" ? {} : null; } },
+            preventDefault: function(){} });
+    return seen();
+  };
+  return { seen: seen, step: step };
+}
+const trace = [];
+const items = {};
+const browser = store(items);
+let page = load(browser);
+trace.push("fresh: " + page.seen());
+for (const _ of [1, 2, 3]) {
+  trace.push("step: " + page.step());
+  page = load(browser);
+  trace.push("reload: " + page.seen());
+}
+page.step();
+for (const k of Object.keys(items)) items[k] = "bogus";
+trace.push("garbage kept: " + load(browser).seen());
+for (const [name, storage] of [["no store", undefined], ["blocked store", refused],
+    ["full store", { getItem: refused, setItem: refused, removeItem: refused }]]) {
+  page = load(storage);
+  trace.push(name + ": " + page.seen() + ", step: " + page.step() + ", reload: " + load(storage).seen());
+}
+const expected = [
+  "fresh: Show tests / exclude",
+  "step: tests: shown / include",
+  "reload: tests: shown / include",
+  "step: tests: only / only",
+  "reload: tests: only / only",
+  "step: Show tests / exclude",
+  "reload: Show tests / exclude",
+  "garbage kept: Show tests / exclude",
+  "no store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+  "blocked store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+  "full store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+];
+if (JSON.stringify(trace) !== JSON.stringify(expected)) {
+  console.error("got:\n" + trace.join("\n") + "\nwant:\n" + expected.join("\n"));
+  process.exit(1);
+}
+console.log("OK the-explorer-remembers-its-tests-choice");
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: the explorer remembers its tests choice per browser, so a reload keeps it, and
+    /// starts at exclude when nothing is kept, the kept value is not a choice, or the browser's store
+    /// cannot be read or written, the toggle still cycling within the page.
+    the_explorer_remembers_its_tests_choice_across_a_reload: node_harness_passes(&TESTS_CHOICE_HARNESS.replace("__SHIM__", LABEL_SHIM), "OK the-explorer-remembers-its-tests-choice");
+}
