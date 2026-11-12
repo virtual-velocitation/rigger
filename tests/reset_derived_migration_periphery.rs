@@ -117,9 +117,9 @@ fn the_append_after_a_delete_that_emptied_the_stream_lands_above_it_and_folds() 
 /// Given the committed `rigger-reset-store` skill, when an operator reads what it says of
 /// `rigger reset --derived`, then the two lines naming it are the delete's: what it deletes, that
 /// setup runs it, that every other event survives, the backend it runs on and its refusal of a
-/// live run, and that it first removes the code store's facts memo; and that a hand-edit is no
-/// substitute for it. Read from the bytes on disk, the file
-/// an operator opens, with no render in the loop.
+/// live run, and that it removes the code store's facts memo once the delete has run, and nothing
+/// when refused; and that a hand-edit is no substitute for it. Read from the bytes on disk, the
+/// file an operator opens, with no render in the loop.
 #[test]
 fn the_committed_reset_store_skill_describes_the_derived_reset_as_the_delete() {
     let shipped = repo_text("skills/rigger-reset-store/SKILL.md");
@@ -136,8 +136,9 @@ fn the_committed_reset_store_skill_describes_the_derived_reset_as_the_delete() {
              delete once the graph it rebuilds is in place. Every other event - every decision, \
              finding, lesson, gate verdict, the whole run history - survives byte-for-byte. The \
              delete runs on the embedded sqlite backend only, and it refuses (unless overridden \
-             with `--force-live`) while a run is live against the store. It first removes the \
-             code store's facts memo (a cache reads refill), on any backend and with a run live.",
+             with `--force-live`) while a run is live against the store. Once the delete has run \
+             it removes the code store's facts memo (a cache reads refill); a refused \
+             `--derived` removes nothing.",
             "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any tool \
              outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
              hand-deleted row can desync the graph from the log in ways `rigger reset \

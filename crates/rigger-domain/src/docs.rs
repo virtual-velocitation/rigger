@@ -927,8 +927,9 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              delete once the graph it rebuilds is in place. Every other event - every decision, \
              finding, lesson, gate verdict, the whole run history - survives byte-for-byte. The \
              delete runs on the embedded sqlite backend only, and it refuses (unless overridden \
-             with `--force-live`) while a run is live against the store. It first removes the \
-             code store's facts memo (a cache reads refill), on any backend and with a run live.",
+             with `--force-live`) while a run is live against the store. Once the delete has run \
+             it removes the code store's facts memo (a cache reads refill); a refused \
+             `--derived` removes nothing.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
              per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \

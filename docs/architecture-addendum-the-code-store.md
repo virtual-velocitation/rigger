@@ -1177,9 +1177,10 @@ The memo on disk is bounded and reaped (`DiskMemo::reap`, `MemoCap::STATED`):
 - **Temps:** a temp older than a minute is a crashed writer's, and goes.
 - **When:** with the store's reaper on every advance, under LOCK, and after every overlay open
   that writes an entry.
-- **Hygiene:** `rigger reset --derived` removes the memo first, on any backend, and `rigger
-  validate` reports its size as the footprint's `code facts memo` category. Setup's
-  `.rigger/store` ignore line covers it.
+- **Hygiene:** `rigger reset --derived` removes the memo once its delete has run, so a
+  `--derived` refused on its backend or on a live run removes nothing, and `rigger validate`
+  reports its size as the footprint's `code facts memo` category. Setup's `.rigger/store` ignore
+  line covers it.
 
 A reader that races the reaper fails closed: an entry gone before its read is a miss, and the
 file is extracted again. A read marks an entry without creating it, so it never re-creates an

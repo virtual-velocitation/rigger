@@ -7,9 +7,9 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
-///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`]. It first
-///     clears the code store's facts memo ([`clear_code_facts_memo`]), which needs neither the
-///     backend nor the live-writer guard the delete does.
+///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`]. Once the delete
+///     has run it clears the code store's facts memo ([`clear_code_facts_memo`]), so a refused
+///     `--derived` removes nothing.
 ///
 /// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
 /// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
@@ -84,11 +84,6 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         reset_scratch_orphans()?;
     }
     if modes.derived {
-        // The code store's facts memo first: it needs no backend and no quiet store, so neither
-        // refusal below holds it back.
-        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root()))? {
-            println!("{line}");
-        }
         // Decided up front, before deleting: deleting rows and reclaiming the file are mechanics
         // of the embedded log, not port operations, so `--derived` names the backend it needs
         // rather than quietly doing nothing on one the delete does not run on.
@@ -122,6 +117,11 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
         reset_derived(&loc)?;
+        // The code store's facts memo last, once every refusal above has passed: a refused
+        // `--derived` removes nothing.
+        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root()))? {
+            println!("{line}");
+        }
     }
     Ok(())
 }
@@ -462,10 +462,10 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 
 /// `rigger reset --derived`'s clear of the code store's facts memo
 /// ([`rigger_store::code::Store::memo_dir`]) in the project at `root`: the whole directory goes,
-/// since a read extracts again any file whose entry it needs. It needs no backend and no quiet
-/// store, a reader racing it extracting its files again, so it runs first in `--derived`, ahead
-/// of the event log's backend refusal and live-writer guard. Answers the line that says what it
-/// removed, or none when there was no memo.
+/// since a read extracts again any file whose entry it needs, and a reader racing it extracts its
+/// files again. It runs last in `--derived`, once the delete has run, so a `--derived` refused on
+/// its backend, on a live run or on a rebuild leaves the memo as it stands. Answers the line that
+/// says what it removed, or none when there was no memo.
 ///
 /// reap-exempt (spec 79, criterion 2): the memo is a flat directory of entry files the code store
 /// writes and reads from within rigger's own process, never a working directory: no process
