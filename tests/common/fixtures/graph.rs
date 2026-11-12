@@ -204,10 +204,12 @@ impl rigger::contextgraph::ContextGraph for MinimalGraph {
 pub fn records_graph(
     records: &dyn rigger::contextgraph::Neighbors,
 ) -> rigger::composed::Composed<'_> {
-    view_graph(
-        records,
-        &rigger::code_view::FactsView::new(view_stamp("empty", 0, 0), Vec::new()),
-    )
+    view_graph(records, &empty_view())
+}
+
+/// The code view of a tree that holds no file.
+pub fn empty_view() -> rigger::code_view::FactsView {
+    rigger::code_view::FactsView::new(view_stamp("empty", 0, 0), Vec::new())
 }
 
 /// The stamp of a test's code view of the tree `tree`, read by an extractor of `fingerprint`.
@@ -432,11 +434,33 @@ pub struct ViewedRecords<'a> {
 }
 
 impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
-    fn open(
+    /// A copy of the view it holds, compared with a worktree that matches its tree.
+    fn head(&self) -> Result<rigger::code_view::Head, String> {
+        use rigger::code_view::CodeView;
+        let files = (self.view.files())
+            .filter_map(|f| self.view.file(f.path))
+            .map(std::borrow::Cow::into_owned)
+            .collect();
+        let view = rigger::code_view::FactsView::new(self.view.stamp().clone(), files)
+            .with_groupings(self.view.groupings().clone());
+        Ok(matching_head(view))
+    }
+
+    fn open_on(
         &self,
+        head: &rigger::code_view::Head,
         _filter: rigger::code_view::ViewFilter,
     ) -> Result<Box<dyn ContextGraph + '_>, rigger::contextgraph::Error> {
-        Ok(Box::new(view_graph(self.records, &self.view)))
+        Ok(Box::new(view_graph(self.records, &*head.view)))
+    }
+}
+
+/// The head of `view`, compared with a worktree that matches its tree.
+pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::Head {
+    rigger::code_view::Head {
+        view: Box::new(view),
+        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        behind: None,
     }
 }
 
@@ -445,11 +469,17 @@ impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
 pub struct RecordsOnly<'a>(pub &'a dyn rigger::contextgraph::Neighbors);
 
 impl rigger::contextgraph::OpenGraph for RecordsOnly<'_> {
-    fn open(
+    /// A view that holds no file, as [`records_graph`] composes over.
+    fn head(&self) -> Result<rigger::code_view::Head, String> {
+        Ok(matching_head(empty_view()))
+    }
+
+    fn open_on(
         &self,
+        head: &rigger::code_view::Head,
         _filter: rigger::code_view::ViewFilter,
     ) -> Result<Box<dyn ContextGraph + '_>, rigger::contextgraph::Error> {
-        Ok(Box::new(records_graph(self.0)))
+        Ok(Box::new(view_graph(self.0, &*head.view)))
     }
 }
 

@@ -1774,25 +1774,33 @@ impl<'r> ReadGraph<'r> {
     }
 }
 
+impl ReadGraph<'_> {
+    /// How the caller's worktree compares with `head`, as the composed graph's label states it.
+    fn honesty(&self, head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
+        rigger_domain::composed::Honesty {
+            worktree: self.worktree.display().to_string(),
+            diff: head.diff.clone(),
+            behind: head.behind.clone(),
+        }
+    }
+}
+
 impl OpenGraph for ReadGraph<'_> {
-    fn open(
+    fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+        open_head(&self.worktree)
+    }
+
+    fn open_on(
         &self,
+        head: &rigger_domain::code_view::Head,
         filter: rigger_domain::code_view::ViewFilter,
     ) -> Result<Box<dyn ContextGraph + '_>, contextgraph::Error> {
-        let composed = head_view(&self.worktree, |view, diff, behind| {
-            rigger_domain::composed::Composed::new(
-                self.records,
-                view,
-                filter,
-                rigger_domain::composed::Honesty {
-                    worktree: self.worktree.display().to_string(),
-                    diff,
-                    behind,
-                },
-            )
-            .map_err(|e| e.0)
-        })
-        .map_err(contextgraph::Error)?;
+        let composed = rigger_domain::composed::Composed::new(
+            self.records,
+            &*head.view,
+            filter,
+            self.honesty(head),
+        )?;
         Ok(Box::new(composed))
     }
 
@@ -1803,51 +1811,29 @@ impl OpenGraph for ReadGraph<'_> {
         filter: rigger_domain::code_view::ViewFilter,
         ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), contextgraph::Error>,
     ) -> Result<(), contextgraph::Error> {
-        head_view(&self.worktree, |view, diff, behind| {
-            let composed = rigger_domain::composed::Composed::near(
-                self.records,
-                view,
-                filter,
-                rigger_domain::composed::Honesty {
-                    worktree: self.worktree.display().to_string(),
-                    diff,
-                    behind,
-                },
-            )
-            .map_err(|e| e.0)?;
-            ask(&composed).map_err(|e| e.0)
-        })
-        .map_err(contextgraph::Error)
+        let head = self.head().map_err(contextgraph::Error)?;
+        let composed = rigger_domain::composed::Composed::near(
+            self.records,
+            &*head.view,
+            filter,
+            self.honesty(&head),
+        )?;
+        ask(&composed)
     }
 }
 
-/// Hands `compose` the code store's view of the head of the project `worktree` lies in, how
-/// `worktree` differs from it, and why it is behind the head when it is.
+/// The code store's view of the head of the project `worktree` lies in, how `worktree` differs
+/// from it, and why it is behind the head when it is.
 #[cfg(feature = "symbols")]
-fn head_view<T>(
-    worktree: &Path,
-    compose: impl FnOnce(
-        &dyn rigger_domain::code_view::CodeView,
-        Result<rigger_domain::code_view::WorktreeDiff, String>,
-        Option<String>,
-    ) -> Result<T, String>,
-) -> Result<T, String> {
+fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::OpenCodeView;
-    let head = project_code_store(worktree)?.head(worktree)?;
-    compose(&*head.view, head.diff, head.behind)
+    project_code_store(worktree)?.head(worktree)
 }
 
-/// Light-lane [`head_view`]: no extractor is compiled in, so the head's tree is read with no code
+/// Light-lane [`open_head`]: no extractor is compiled in, so the head's tree is read with no code
 /// facts.
 #[cfg(not(feature = "symbols"))]
-fn head_view<T>(
-    worktree: &Path,
-    compose: impl FnOnce(
-        &dyn rigger_domain::code_view::CodeView,
-        Result<rigger_domain::code_view::WorktreeDiff, String>,
-        Option<String>,
-    ) -> Result<T, String>,
-) -> Result<T, String> {
+fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::TreeSource;
     // The light lane shares the symbols lane's `Head` shape without a store: the tree's own
     // difference from the worktree over a view that holds no fact.
@@ -1862,11 +1848,11 @@ fn head_view<T>(
         fingerprint: 0,
         seq: 0,
     };
-    compose(
-        &rigger_domain::code_view::FactsView::new(stamp, Vec::new()),
+    Ok(rigger_domain::code_view::Head {
+        view: Box::new(rigger_domain::code_view::FactsView::new(stamp, Vec::new())),
         diff,
-        None,
-    )
+        behind: None,
+    })
 }
 
 /// The path to a database file (`events.db` / `graph.db`) inside a resolved store
@@ -5434,6 +5420,26 @@ mod tests {
     use crate::test_support::RecordsRead;
     use rigger::spawn::SpawnEvent;
     use std::process::Command;
+
+    /// A reader's graph composed over a head it is handed reads that head and opens no other: the
+    /// worktree it compares with holds no code, so a graph from a second open holds none.
+    #[test]
+    fn a_read_graph_composes_over_the_head_it_is_handed() {
+        let records = Projector::open(":memory:", "test").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let read = ReadGraph::new(&records, dir.path().to_path_buf());
+        let tree =
+            crate::test_support::planted_file("src/a.rs", &[("alpha", "function")], &[], &[]);
+        let head = crate::test_support::matching_head(crate::test_support::facts_view(vec![tree]));
+        let graph = read.open_on(&head, Default::default()).unwrap();
+        let sub = graph.subgraph(&["src/a.rs".to_string()], 1).unwrap();
+        let ids: Vec<&str> = sub.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["src/a.rs", "src/a.rs::alpha"],
+            "the handed head's tree"
+        );
+    }
 
     /// Fold one decision into the `graph.db` at `graph_db` for project `p`, current under today's
     /// fold rule.

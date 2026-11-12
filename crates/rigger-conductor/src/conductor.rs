@@ -2776,7 +2776,8 @@ pub struct Deps<'a> {
     /// The record graph the run folds its events into; None folds nothing.
     pub graph: Option<&'a dyn RecordFold>,
     /// Opens the context graph each grounding read reads, once per read so it follows the code
-    /// store as merges advance it; None reads nothing.
+    /// store as merges advance it; a read that also grounds reads the one head it opens in both.
+    /// None reads nothing.
     pub context: Option<&'a dyn OpenGraph>,
     /// The spec's acceptance criteria; when non-empty the coverage gate refuses a
     /// run unless every criterion is covered by a stage.
@@ -11996,25 +11997,49 @@ impl RunCtx<'_> {
     /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the graph arm expanding the seed
     /// `depth` hops; production passes [`BLAST_RADIUS_GRAPH_DEPTH`] alone. Depth 0 expands nothing:
     /// the radius is the seed, the named code's files.
+    ///
+    /// The grounder and the graph read ONE open of the head ([`OpenGraph::head`]): a store
+    /// advanced between two opens would otherwise record a radius whose graph part describes
+    /// another tree than its seed and its stamp.
     fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> StampedRadius {
+        let Some(grounder) = self.deps.grounder else {
+            return StampedRadius::default();
+        };
+        let query = self.ground_query(st);
+        let Some(context) = self.deps.context else {
+            return grounder.blast_radius_stamped(&query, GROUNDED_SEED_K);
+        };
+        let head = context.head();
         let StampedRadius {
             seed,
             radius: base,
             stamp,
-        } = match self.deps.grounder {
-            Some(g) => g.blast_radius_stamped(&self.ground_query(st), GROUNDED_SEED_K),
-            None => StampedRadius::default(),
+        } = grounder.blast_radius_stamped_over(
+            head.as_ref().map_err(String::as_str),
+            &query,
+            GROUNDED_SEED_K,
+        );
+        let radius = match &head {
+            Ok(head) => self.graph_tiered(context, head, base, depth),
+            Err(_) => base,
         };
         StampedRadius {
             seed,
-            radius: self.graph_tiered(base, depth),
+            radius,
             stamp,
         }
     }
 
-    /// The grounder's radius `base` re-derived through the unified graph's confidence tiers,
-    /// expanding its structural seed `depth` hops.
-    fn graph_tiered(&self, base: BlastRadius, depth: i64) -> BlastRadius {
+    /// The grounder's radius `base` re-derived through the unified graph `context` composes over
+    /// `head`, the open that grounded `base`, by its confidence tiers, expanding its structural
+    /// seed `depth` hops.
+    fn graph_tiered(
+        &self,
+        context: &dyn OpenGraph,
+        head: &rigger_domain::code_view::Head,
+        base: BlastRadius,
+        depth: i64,
+    ) -> BlastRadius {
         // Spec 29c criterion 2: when the unified graph is present, the two-view radius is TWO
         // confidence-tier filters over the ONE subgraph (addendum 6.2) - [`confidence_tier_radius`].
         // The subgraph is seeded from the grounder's own STRUCTURAL view - the files the code a
@@ -12024,15 +12049,12 @@ impl RunCtx<'_> {
         // `grounded_seed`); `safe` is UNIONED with the grounder's safe view so it can only widen
         // (addendum 2.4). With no graph (or a graph read error) this returns the grounder radius
         // byte-for-byte.
-        let Some(context) = self.deps.context else {
-            return base;
-        };
         if base.safe.is_empty() {
             return base;
         }
         let seed = base.precise.clone();
         let sub = match context
-            .open(Default::default())
+            .open_on(head, Default::default())
             .and_then(|graph| graph.subgraph(&seed, depth))
         {
             Ok(sub) => sub,
@@ -15797,8 +15819,14 @@ mod tests {
         }
 
         impl OpenGraph for SpyGraph {
-            fn open(
+            fn head(&self) -> Result<crate::code_view::Head, String> {
+                Ok(crate::test_support::matching_head(
+                    crate::test_support::empty_view(),
+                ))
+            }
+            fn open_on(
                 &self,
+                _head: &crate::code_view::Head,
                 _filter: crate::code_view::ViewFilter,
             ) -> Result<Box<dyn contextgraph::ContextGraph + '_>, contextgraph::Error> {
                 Ok(Box::new(Serves(self.graph.clone())))
@@ -41135,6 +41163,125 @@ mod tests {
         );
         assert_eq!(audit[0]["safe"], json!(["grounded.rs"]));
         assert_eq!(audit[0]["index_stamp"], json!("tree-1/tags-v1"));
+    }
+
+    /// A code store that advances on every open: each open's tree, `tree-<open>`, holds
+    /// `src/damage.rs` defining the type `Damage` and a file of the open's number naming it, so an
+    /// answer read from a later open names that open's file.
+    #[cfg(feature = "symbols")]
+    struct AdvancingStore(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    #[cfg(feature = "symbols")]
+    impl crate::code_view::OpenCodeView for AdvancingStore {
+        fn head(&self, _worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+            use crate::test_support::planted_file;
+            let open = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let stamp = rigger_domain::code_facts::Stamp {
+                tip: rigger_domain::code_facts::Tip {
+                    head: "main".to_string(),
+                    commit: None,
+                    tree: format!("tree-{open}"),
+                },
+                fingerprint: 0,
+                seq: 1,
+            };
+            let mut user = planted_file(&format!("src/user{open}.rs"), &[], &[], &[]);
+            user.mentions.push(rigger_domain::code_facts::Mention {
+                enclosing: None,
+                name: "Damage".to_string(),
+                leaf: "Damage".to_string(),
+                kind: rigger_domain::code_facts::MentionKind::Tagged(
+                    contextgraph::REF_KIND_TYPE.to_string(),
+                ),
+                line: 1,
+                test: false,
+            });
+            let files = vec![
+                planted_file(
+                    "src/damage.rs",
+                    &[("Damage", contextgraph::CODE_KIND_TYPE)],
+                    &[],
+                    &[],
+                ),
+                user,
+            ];
+            Ok(crate::test_support::matching_head(
+                rigger_domain::code_view::FactsView::new(stamp, files),
+            ))
+        }
+    }
+
+    /// The context graph over an [`AdvancingStore`]: the records composed with the head it opens.
+    #[cfg(feature = "symbols")]
+    struct AdvancingContext<'a> {
+        records: &'a dyn contextgraph::Neighbors,
+        heads: AdvancingStore,
+    }
+    #[cfg(feature = "symbols")]
+    impl OpenGraph for AdvancingContext<'_> {
+        fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+            use crate::code_view::OpenCodeView;
+            self.heads.head(Path::new("W"))
+        }
+        fn open_on(
+            &self,
+            head: &rigger_domain::code_view::Head,
+            _filter: crate::code_view::ViewFilter,
+        ) -> Result<Box<dyn contextgraph::ContextGraph + '_>, contextgraph::Error> {
+            Ok(Box::new(crate::test_support::view_graph(
+                self.records,
+                &*head.view,
+            )))
+        }
+    }
+
+    /// The radius a run records reads ONE open of the code store in the grounder and the graph:
+    /// a store advanced between two opens never records a safe part from another tree than the
+    /// seed and the stamp. The grounder and the graph share a store that advances on every open,
+    /// so a second open shows as the later open's file in the safe part and as a count above
+    /// one.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn a_recorded_radius_reads_one_open_in_the_grounder_and_the_graph() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let grounder = crate::grounder::symbols::grounder::Symbols::over(
+            "W",
+            Box::new(AdvancingStore(opens.clone())),
+        );
+        let records = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = AdvancingContext {
+            records: &records,
+            heads: AdvancingStore(opens.clone()),
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            context: Some(&context),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let st = Stage {
+            name: "u".to_string(),
+            coverage: "`Damage`".to_string(),
+            ..Default::default()
+        };
+        let stamped = ctx.grounded_blast_radius_stamped(&st);
+        assert!(
+            stamped.stamp.starts_with("tree-1/"),
+            "the stamp names the first open: {}",
+            stamped.stamp
+        );
+        assert_eq!(stamped.seed, ["src/damage.rs"], "the seed reads that open");
+        assert_eq!(
+            stamped.radius.safe,
+            ["src/damage.rs", "src/user1.rs"],
+            "the safe part reads that same open"
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
     }
 
     /// spec 16 unit 3, the empty fail-safe pin: a STRUCTURAL grounder whose query grounds to

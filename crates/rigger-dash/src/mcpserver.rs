@@ -2516,13 +2516,17 @@ mod tests {
             seen: Mutex<Vec<Tests>>,
         }
         impl crate::contextgraph::OpenGraph for Spy<'_> {
-            fn open(
+            fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+                self.inner.head()
+            }
+            fn open_on(
                 &self,
+                head: &rigger_domain::code_view::Head,
                 filter: ViewFilter,
             ) -> Result<Box<dyn crate::contextgraph::ContextGraph + '_>, crate::contextgraph::Error>
             {
                 self.seen.lock().unwrap().push(filter.tests);
-                self.inner.open(filter)
+                self.inner.open_on(head, filter)
             }
         }
 

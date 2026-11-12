@@ -120,6 +120,22 @@ pub trait Grounder: Send + Sync {
         }
     }
 
+    /// [`Self::blast_radius_stamped`] read over `head`, the one open of the code store's view of
+    /// the head (or why it could not be opened) a caller also composes the context graph over, so
+    /// the seed, the radius, the stamp and the graph's part of the radius describe one tree. The
+    /// DEFAULT (grep / nop) reads the worktree itself, never the store, so it answers
+    /// [`Self::blast_radius_stamped`]. A grounder that reads the store's view overrides it to read
+    /// `head` instead of opening its own.
+    fn blast_radius_stamped_over(
+        &self,
+        head: Result<&crate::code_view::Head, &str>,
+        query: &str,
+        k: usize,
+    ) -> StampedRadius {
+        let _ = head;
+        self.blast_radius_stamped(query, k)
+    }
+
     /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the
     /// rows describe and what the caller's worktree puts in doubt, or why nothing could be read.
     /// A grounder that answers from the code store's view of the head overrides it to read that

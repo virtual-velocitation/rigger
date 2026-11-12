@@ -676,7 +676,9 @@ fn report_groupings(
     counted: impl Fn(usize) -> String,
 ) -> Res {
     let (resolution, tests) = report_options(verb, args)?;
-    let lines = head_view(&cwd(), |view, _, _| {
+    let head = open_head(&cwd())?;
+    let view = &*head.view;
+    let lines = {
         let computed;
         let groupings = if resolution == community::DEFAULT_RESOLUTION {
             view.groupings()
@@ -710,8 +712,8 @@ fn report_groupings(
                 lines.extend(attached.tests_of(&c.id).map(|t| format!("  test {t}")));
             }
         }
-        Ok(lines)
-    })?;
+        lines
+    };
     for line in lines {
         println!("{line}");
     }

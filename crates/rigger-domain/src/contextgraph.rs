@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::code_view::ViewFilter;
+use crate::code_view::{Head, ViewFilter};
 use crate::eventstore::{Event, Position};
 
 // THE QUERY ENGINE MOVES WITH THE OPS (spec 93 criterion 5): the pure graph query functions
@@ -1040,8 +1040,21 @@ pub trait ContextGraph: Send + Sync {
 /// the head, compared with the reader's worktree. The composition root implements it. A reader that
 /// lives across merges opens once per read, so each answer describes the store as it stands then.
 pub trait OpenGraph: Send + Sync {
-    /// The graph as it stands now under `filter`, or why it cannot be read.
-    fn open(&self, filter: ViewFilter) -> Result<Box<dyn ContextGraph + '_>, Error>;
+    /// The code view of the head the graph composes its code half over, as it stands now and
+    /// compared with the reader's worktree, or why it cannot be read: the one open a reader that
+    /// reads the head beside the graph hands both reads.
+    fn head(&self) -> Result<Head, String>;
+
+    /// The graph composed over `head`, a view [`head`](OpenGraph::head) opened, under `filter`, or
+    /// why it cannot be read: a reader that also reads `head` itself reads one tree in both.
+    fn open_on(&self, head: &Head, filter: ViewFilter)
+        -> Result<Box<dyn ContextGraph + '_>, Error>;
+
+    /// The graph as it stands now under `filter`, or why it cannot be read: the graph composed
+    /// over the head as it is opened now.
+    fn open(&self, filter: ViewFilter) -> Result<Box<dyn ContextGraph + '_>, Error> {
+        self.open_on(&self.head().map_err(Error)?, filter)
+    }
 
     /// Hands `ask` the graph as it stands now under `filter` for one answer, or answers why it
     /// cannot be read. The graph lives only while `ask` runs, so the composition root may resolve

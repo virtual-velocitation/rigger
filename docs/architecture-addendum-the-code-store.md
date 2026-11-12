@@ -863,6 +863,9 @@ It splits by role:
 - **Opened per read.** A reader holds an `OpenGraph`, whose `open(filter)` composes the record
   graph with the code view of the head as it stands then, so a reader that lives across merges
   (the conductor's grounding, the MCP server, the dash) follows the store as merges advance it.
+  `open(filter)` is `open_on(head(), filter)`: a read that also grounds (the conductor's blast
+  radius) opens the head once and hands that `Head` to both the grounder and `open_on`, so the
+  seed, the stamp and the radius's graph tier all come from one tree.
   `open_unowed(fold, read, filter)` refuses with REBUILD_OWED first when the record fold owes
   its rebuild.
 

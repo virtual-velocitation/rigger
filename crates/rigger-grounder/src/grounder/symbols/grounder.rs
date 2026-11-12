@@ -14,7 +14,7 @@ use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
 use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref, StampedRadius};
 use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
 use rigger_domain::code_view::{
-    CodeView, DefRef, FactsView, FileRef, MentionRef, OpenCodeView, Tests, Withheld,
+    CodeView, DefRef, FactsView, FileRef, Head, MentionRef, OpenCodeView, Tests, Withheld,
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
@@ -64,18 +64,29 @@ impl Symbols {
     /// [`Symbols::read_labelled`] with the id of the tree that same open read ([`UNREAD_TREE`]
     /// when the head cannot be read): the one open every read makes.
     fn read_opened<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label, String) {
+        let head = self.heads.head(Path::new(&self.root));
+        self.read_head(head.as_ref().map_err(String::as_str), read)
+    }
+
+    /// [`Symbols::read_opened`] over `head`, an open already made, so a caller that reads the same
+    /// open elsewhere reads one tree in both.
+    fn read_head<T>(
+        &self,
+        head: Result<&Head, &str>,
+        read: impl FnOnce(&Sight<'_>) -> T,
+    ) -> (T, Label, String) {
         let worktree = self.root.clone();
-        match self.heads.head(Path::new(&self.root)) {
+        match head {
             Ok(head) => {
-                let withheld = Withheld::of(head.diff);
+                let withheld = Withheld::of(head.diff.clone());
                 let tip = &head.view.stamp().tip;
-                let label = Label::describing(tip, worktree, &withheld, head.behind);
+                let label = Label::describing(tip, worktree, &withheld, head.behind.clone());
                 let tree = tip.tree.clone();
                 (read(&Sight::new(&*head.view, withheld)), label, tree)
             }
             Err(reason) => (
                 read(&Sight::new(&unread_view(), Withheld::All)),
-                Label::unopened(worktree, &reason),
+                Label::unopened(worktree, reason),
                 UNREAD_TREE.to_string(),
             ),
         }
@@ -741,11 +752,22 @@ impl Grounder for Symbols {
     /// keys the audit + retention metric off - even for the empty-radius fail-safe, whose open
     /// still names the tree. A change to the tree changes the stamp.
     fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+        let head = self.heads.head(Path::new(&self.root));
+        self.blast_radius_stamped_over(head.as_ref().map_err(String::as_str), query, k)
+    }
+
+    /// [`Grounder::blast_radius_stamped`] over `head`, the open the caller made, never another.
+    fn blast_radius_stamped_over(
+        &self,
+        head: Result<&Head, &str>,
+        query: &str,
+        k: usize,
+    ) -> StampedRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
         let terms = code_terms(query);
-        let ((seed, radius), _label, tree) = self.read_opened(|sight| {
+        let ((seed, radius), _label, tree) = self.read_head(head, |sight| {
             let seed = self.seed_in(sight, query, k);
             // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
             // (an empty query, prose only, a single character, all punctuation) grounds to the
