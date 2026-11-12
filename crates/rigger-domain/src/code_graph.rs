@@ -29,15 +29,22 @@ pub struct CodeGraph<'v> {
     filter: ViewFilter,
 }
 
-/// The graph being built: each node once, in the order its id was first asserted, with whether a
-/// product fact asserts it, and each edge's tier and test-ness by its ends and relation. It is
-/// put in id order once, when it becomes a graph.
+/// The graph being built: each node once, by its place in the order its id was first asserted,
+/// with whether a product fact asserts it, and each edge's tier and test-ness by its ends' places
+/// and relation. The index holds the one copy of each id, which becomes the node's and its edges'
+/// ids when the graph is put in id order, once.
 #[derive(Default)]
 pub(crate) struct Builder {
-    index: FxHashMap<String, usize>,
-    nodes: Vec<Node>,
-    product: Vec<bool>,
+    index: FxHashMap<Box<str>, usize>,
+    nodes: Vec<Placed>,
     edges: FxHashMap<(usize, &'static str, usize), (&'static str, bool)>,
+}
+
+/// A node being built: its kind, its attributes and whether a product fact asserts it.
+struct Placed {
+    kind: &'static str,
+    attrs: BTreeMap<String, String>,
+    product: bool,
 }
 
 /// What reading a file asserts, in the order read: each node with its kind, attributes and
@@ -88,30 +95,29 @@ impl Builder {
     fn place(
         &mut self,
         id: &str,
-        kind: &str,
+        kind: &'static str,
         attrs: impl IntoIterator<Item = (&'static str, String)>,
         test: bool,
     ) -> usize {
         let at = match self.index.get(id) {
             Some(&at) => at,
             None => {
-                self.index.insert(id.to_string(), self.nodes.len());
-                self.nodes.push(Node {
-                    id: id.to_string(),
-                    kind: kind.to_string(),
+                self.index.insert(id.into(), self.nodes.len());
+                self.nodes.push(Placed {
+                    kind,
                     attrs: BTreeMap::new(),
+                    product: false,
                 });
-                self.product.push(false);
                 self.nodes.len() - 1
             }
         };
         let node = &mut self.nodes[at];
         if node.kind == KIND_ARTIFACT && kind != KIND_ARTIFACT {
-            node.kind = kind.to_string();
+            node.kind = kind;
         }
         node.attrs
             .extend(attrs.into_iter().map(|(k, v)| (k.to_string(), v)));
-        self.product[at] |= !test;
+        node.product |= !test;
         at
     }
 
@@ -129,7 +135,7 @@ impl Builder {
     /// The node `id`, when one is asserted, carrying the proofs whose `evidence` lands on it.
     pub(crate) fn prove(&mut self, id: &str, evidence: &[String]) {
         if let Some(&at) = self.index.get(id) {
-            prove(&mut self.nodes[at], evidence);
+            prove(&mut self.nodes[at].attrs, evidence);
         }
     }
 
@@ -139,13 +145,16 @@ impl Builder {
     /// relation order.
     pub(crate) fn into_graph(self, tests: Tests) -> Graph {
         let Builder {
+            index,
             nodes,
-            product,
             edges,
-            ..
         } = self;
+        let mut ids = vec![String::new(); nodes.len()];
+        for (id, at) in index {
+            ids[at] = id.into();
+        }
         let mut order: Vec<usize> = (0..nodes.len()).collect();
-        order.sort_unstable_by(|&a, &b| nodes[a].id.cmp(&nodes[b].id));
+        order.sort_unstable_by(|&a, &b| ids[a].cmp(&ids[b]));
         let mut rank = vec![0; nodes.len()];
         for (r, &at) in order.iter().enumerate() {
             rank[at] = r;
@@ -163,8 +172,8 @@ impl Builder {
         let edges = edges
             .into_iter()
             .map(|((from, rel, to), (tier, _))| Edge {
-                from: nodes[from].id.clone(),
-                to: nodes[to].id.clone(),
+                from: ids[from].clone(),
+                to: ids[to].clone(),
                 rel: rel.to_string(),
                 valid_from: 0,
                 valid_to: None,
@@ -172,16 +181,23 @@ impl Builder {
                 tier: tier.to_string(),
             })
             .collect();
-        let mut slots: Vec<Option<Node>> = nodes.into_iter().map(Some).collect();
+        let mut slots: Vec<Option<Placed>> = nodes.into_iter().map(Some).collect();
         let nodes = order
             .into_iter()
-            .filter(|&at| shown(tests, product[at], reached[at]))
             .filter_map(|at| {
-                let mut n = slots[at].take()?;
-                if !product[at] {
-                    n.attrs.insert("test".to_string(), "true".to_string());
+                let n = slots[at].take()?;
+                if !shown(tests, n.product, reached[at]) {
+                    return None;
                 }
-                Some(n)
+                let mut attrs = n.attrs;
+                if !n.product {
+                    attrs.insert("test".to_string(), "true".to_string());
+                }
+                Some(Node {
+                    id: std::mem::take(&mut ids[at]),
+                    kind: n.kind.to_string(),
+                    attrs,
+                })
             })
             .collect();
         Graph { nodes, edges }
@@ -430,12 +446,12 @@ fn hidden_node(facts: &FileFacts, e: Entity) -> Node {
     }
 }
 
-/// `node` carrying the proofs whose `evidence` lands on it: their count and their evidence.
-pub(crate) fn prove(node: &mut Node, evidence: &[String]) {
-    node.attrs
-        .insert("proven_by".to_string(), evidence.len().to_string());
+/// A node's `attrs` carrying the proofs whose `evidence` lands on it: their count and their
+/// evidence.
+pub(crate) fn prove(attrs: &mut BTreeMap<String, String>, evidence: &[String]) {
+    attrs.insert("proven_by".to_string(), evidence.len().to_string());
     let evidence = serde_json::to_string(evidence).expect("strings serialize");
-    node.attrs.insert("proof_evidence".to_string(), evidence);
+    attrs.insert("proof_evidence".to_string(), evidence);
 }
 
 #[cfg(test)]
