@@ -191,6 +191,11 @@ gates:                      # the project's verification library, referenced by 
   # names an executable not on PATH. This gate declares no `requires` while it stays unwired;
   # #32 adds `requires: [cargo-mutants, cargo-nextest]` when it re-wires it.
   mutation: { run: "sh .rigger/gates/mutation.sh", kind: core }
+  # The self-evaluation gate: the format check over the newest run file under docs/evaluation/.
+  # The logic, and the why of every rule, live in `.rigger/gates/evaluate.sh`; the procedure is
+  # docs/evaluation/README.md. It is declared and wired to no stage: the operator runs the
+  # evaluation after a landing and before the next run, so it can never block or undo a landing.
+  evaluate: { run: "sh .rigger/gates/evaluate.sh check", kind: core }
 
 stages:
   # 1. Refine the spec's decomposition. The conductor itself creates one baseline
