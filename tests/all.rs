@@ -174,6 +174,7 @@ mod postmerge_gate_modified_file_periphery;
 mod principle_gates_wiring;
 mod product_binary_location;
 mod projections_stay_local;
+mod prompt_surface_sweep;
 mod proof_lands_on_the_card_periphery;
 mod proof_row_renders_on_the_card;
 mod published_content_key_split_periphery;
