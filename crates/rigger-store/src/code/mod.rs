@@ -4,6 +4,7 @@
 
 mod advance;
 mod dir_source;
+mod disk_memo;
 #[cfg(any(test, feature = "doubles"))]
 pub mod doubles;
 mod overlay;
@@ -13,5 +14,6 @@ pub use advance::{
     fingerprint, open_compared, open_current, AtomicPublish, Behind, Mode, Opened, Publish, Store,
 };
 pub use dir_source::{content_id, tree_id, DirTreeSource, DIRECTORY_HEAD};
+pub use disk_memo::MemoCap;
 pub use overlay::{open_head, Memo, Overlay};
 pub use snapshot::{encode, Snapshot};

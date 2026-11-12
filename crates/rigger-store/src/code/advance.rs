@@ -127,6 +127,11 @@ impl Store {
         self.dir.join(LOCK)
     }
 
+    /// The directory of the facts memo on disk.
+    pub fn memo_dir(&self) -> PathBuf {
+        self.dir.join(crate::code::disk_memo::DIR)
+    }
+
     /// The snapshot `fingerprint`'s pointer names, when it reads whole and was extracted under
     /// `fingerprint`; none when there is no such snapshot (no pointer, a pointer that names no
     /// snapshot, a snapshot that fails to decode or was extracted under another fingerprint),

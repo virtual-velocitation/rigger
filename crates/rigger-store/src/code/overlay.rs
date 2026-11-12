@@ -12,6 +12,7 @@
 
 use crate::code::advance::{extract_parallel, open_compared};
 use crate::code::dir_source::content_id;
+use crate::code::disk_memo::MemoCap;
 use rigger_domain::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger_domain::code_view::{
     CodeView, Compared, DefRef, Entry, Extract, FactsView, FileRef, Group, Groupings, Head,
@@ -105,6 +106,9 @@ fn read_changed(
 pub struct Memo {
     bound: usize,
     held: Mutex<Held>,
+    /// The cap of the facts memo on disk this memo reads and writes under the store; none when it
+    /// keeps facts in the process alone.
+    disk: Option<MemoCap>,
 }
 
 /// A memo's facts, each with the tick it was last read or kept at.
@@ -125,6 +129,16 @@ impl Memo {
         Self {
             bound,
             held: Mutex::new(Held::default()),
+            disk: None,
+        }
+    }
+
+    /// An empty memo holding at most `bound` files' facts in the process, over the facts memo on
+    /// disk under the store, kept within `cap`.
+    pub fn on_disk(bound: usize, cap: MemoCap) -> Self {
+        Self {
+            disk: Some(cap),
+            ..Self::new(bound)
         }
     }
 
@@ -445,6 +459,35 @@ mod tests {
             self.head(changes, memo);
             self.extract.calls() - before
         }
+
+        /// The files in the store's facts memo on disk, sorted.
+        fn entries(&self) -> Vec<std::path::PathBuf> {
+            let dir = Store::new(self.root.path()).memo_dir();
+            let listed = std::fs::read_dir(dir).into_iter().flatten().flatten();
+            let mut entries: Vec<_> = listed.map(|e| e.path()).collect();
+            entries.sort();
+            entries
+        }
+    }
+
+    /// The memo a one-shot read opens with: a new process's, over the facts memo on disk.
+    fn one_shot() -> Memo {
+        Memo::on_disk(Memo::BOUND, MemoCap::STATED)
+    }
+
+    /// What a store advanced to a commit of `FILES` with `changes` applied answers whole, less its
+    /// groupings: the fresh extraction an overlaid answer of that worktree must equal.
+    fn fresh(changes: Changes) -> String {
+        let mut files: std::collections::BTreeMap<&str, &str> = FILES.iter().copied().collect();
+        for &(path, text) in changes {
+            match text {
+                Some(text) => files.insert(path, text),
+                None => files.remove(path),
+            };
+        }
+        let files: Vec<(&str, &str)> = files.into_iter().collect();
+        let (_store, head) = committed(&files);
+        ungrouped(&answer(&head).0)
     }
 
     /// What a store advanced to a commit of `files` answers, with the store it reads from.
@@ -617,6 +660,112 @@ mod tests {
                 want,
                 "bound {bound}: {changes:?}"
             );
+        }
+    }
+
+    /// The facts memo on disk serves a one-shot read and never answers content the worktree does
+    /// not hold: GIVEN a worktree file edited back and forth, each read by a new process's memo,
+    /// WHEN the head is read for each content, THEN a content read before is not extracted again,
+    /// a content not read before is, the same bytes at another path are extracted for that path,
+    /// and every answer is what a fresh extraction of the worktree answers.
+    #[test]
+    fn a_one_shot_read_extracts_each_content_once_and_answers_the_worktree() {
+        let fx = Fixture::new(FILES);
+        let (v1, v2, v3) = (
+            "def alpha\ndef gamma\n",
+            "def alpha\ncall beta\ndef delta\n",
+            "def omega\n",
+        );
+        // (the worktree's changes, the files the read extracts), in order.
+        let cases: [(Changes, usize); 7] = [
+            (&[("src/a.rs", Some(v1))], 1),
+            (&[("src/a.rs", Some(v2))], 1),
+            (&[("src/a.rs", Some(v1))], 0),
+            (&[("src/a.rs", Some(v2))], 0),
+            (&[("src/a.rs", Some(v3))], 1),
+            (&[("src/a.rs", Some(v1))], 0),
+            (&[("src/a.rs", Some(v1)), ("src/c.rs", Some(v1))], 1),
+        ];
+        for (changes, want) in cases {
+            let before = fx.extract.calls();
+            let head = fx.head(changes, &one_shot());
+            assert_eq!(
+                fx.extract.calls() - before,
+                want,
+                "extracted for {changes:?}"
+            );
+            assert_eq!(head.compared, Compared::Overlaid(changes.len()));
+            assert_eq!(ungrouped(&answer(&head).0), fresh(changes), "{changes:?}");
+        }
+    }
+
+    /// An entry that does not read whole as the facts of the path and bytes asked for is absent
+    /// and replaced: GIVEN an entry written by a read, then removed (a reaper racing the read),
+    /// emptied, truncated, altered, or overwritten by another path's or another content's valid
+    /// entry (a colliding name), WHEN a new process reads the head for the same content, THEN the
+    /// file is extracted again, the answer is the fresh extraction's, and the entry is rewritten
+    /// whole.
+    #[test]
+    fn a_damaged_entry_reads_as_absent_and_is_replaced() {
+        let fx = Fixture::new(FILES);
+        let (v1, v2) = ("def alpha\ndef gamma\n", "def alpha\ndef delta\n");
+        let a: Changes = &[("src/a.rs", Some(v1))];
+        let mut written = Vec::new();
+        for changes in [&[("src/b.rs", Some(v1))][..], &[("src/a.rs", Some(v2))], a] {
+            fx.head(changes, &one_shot());
+            let entries = fx.entries();
+            let new = entries
+                .into_iter()
+                .find(|e| !written.iter().any(|(w, _)| w == e));
+            let new = new.unwrap_or_else(|| panic!("a read of {changes:?} writes an entry"));
+            written.push((new.clone(), std::fs::read(&new).unwrap()));
+        }
+        let (entry, whole) = written[2].clone();
+        let (of_b, of_v2) = (written[0].1.clone(), written[1].1.clone());
+        let cut = |n: usize| Some(whole[..n].to_vec());
+        let mut flipped = whole.clone();
+        flipped[whole.len() / 2] ^= 0xff;
+        // (the damage, the entry's bytes after it: none when it is removed)
+        let cases: [(&str, Option<Vec<u8>>); 7] = [
+            ("removed", None),
+            ("emptied", Some(Vec::new())),
+            ("truncated by one byte", cut(whole.len() - 1)),
+            ("cut in half", cut(whole.len() / 2)),
+            ("a byte flipped", Some(flipped)),
+            ("another path's entry", Some(of_b)),
+            ("another content's entry", Some(of_v2)),
+        ];
+        for (case, damaged) in cases {
+            match damaged {
+                Some(bytes) => std::fs::write(&entry, bytes).unwrap(),
+                None => std::fs::remove_file(&entry).unwrap(),
+            }
+            let before = fx.extract.calls();
+            let head = fx.head(a, &one_shot());
+            assert_eq!(fx.extract.calls() - before, 1, "{case}: extracted");
+            assert_eq!(ungrouped(&answer(&head).0), fresh(a), "{case}: answer");
+            assert_eq!(
+                std::fs::read(&entry).ok(),
+                Some(whole.clone()),
+                "{case}: entry"
+            );
+        }
+    }
+
+    /// A memo that cannot be written leaves the answer alone: GIVEN a store whose memo directory
+    /// is a file, WHEN the head is read twice for a changed worktree, THEN each read extracts the
+    /// file and answers what a fresh extraction answers.
+    #[test]
+    fn an_unwritable_memo_leaves_the_answer_alone() {
+        let fx = Fixture::new(FILES);
+        std::fs::write(Store::new(fx.root.path()).memo_dir(), b"a file").unwrap();
+        let a: Changes = &[("src/a.rs", Some("def alpha\ndef gamma\n"))];
+        for read in 0..2 {
+            let before = fx.extract.calls();
+            let head = fx.head(a, &one_shot());
+            assert_eq!(fx.extract.calls() - before, 1, "read {read}");
+            assert_eq!(head.compared, Compared::Overlaid(1), "read {read}");
+            assert_eq!(ungrouped(&answer(&head).0), fresh(a), "read {read}");
         }
     }
 
