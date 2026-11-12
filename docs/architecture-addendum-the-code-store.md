@@ -590,9 +590,9 @@ node the file its id names, and a community or concept every file its attributes
 members', which give its label and hash, and its attached tests', which give its test count). A
 differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
 doubt. Only code-half nodes are withheld: a record is never stale, so a record naming a differing
-file is answered. An edge end is in the file its id names, as every other node is, so an end whose
-id names no file (a doc link to `glossary`) is in none and no comparison withholds it; the edges
-joining it to a withheld node are withheld with that node.
+file is answered. An edge end is in the file its id names, as any other code-half node is, so an
+end whose id names no file (a doc link to `glossary`) is in none and no comparison withholds it;
+the edges joining it to a withheld node are withheld with that node.
 
 K is the number of hits of this answer that were withheld, counted in the read that answered and
 in one unit, nodes: the nodes it would have answered or reported hidden (`--around`, `--show`,
