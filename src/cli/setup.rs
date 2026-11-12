@@ -4471,11 +4471,11 @@ mod tests {
         all.extend([
             (
                 "REVIEWER_DISCIPLINE".to_string(),
-                conductor::REVIEWER_DISCIPLINE.to_string(),
+                rigger_conductor::prompt_surface::REVIEWER_DISCIPLINE.to_string(),
             ),
             (
                 "REVIEWER_BUILD_CACHE".to_string(),
-                conductor::REVIEWER_BUILD_CACHE.to_string(),
+                rigger_conductor::prompt_surface::REVIEWER_BUILD_CACHE.to_string(),
             ),
         ]);
         all.extend(

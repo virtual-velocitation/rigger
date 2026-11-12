@@ -2565,4 +2565,76 @@ mod tests {
         let scoped = latest_run(&events);
         assert_eq!(scoped.len(), 3);
     }
+
+    /// Spec 121, criterion 16: over the placeholder fixture the canary's review header and its
+    /// adjudicator prompt are their registry groups concatenated in registry order, on each
+    /// branch: an anchored and an anchorless item, and no finding or two, each finding's line
+    /// spelled here, since a skeleton is not a group.
+    #[test]
+    fn the_canary_prompts_are_their_groups_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let header =
+            |names: &[&str]| rendered_groups(prompt_groups(), "canary_store::review_header", names);
+        let adjudicator = |names: &[&str]| {
+            rendered_groups(prompt_groups(), "canary_store::adjudicator_prompt", names)
+        };
+        let anchored = CanaryItem {
+            anchor: "{file}".into(),
+            review: "{review}".into(),
+            ..item("c", "none", false, "approve", "")
+        };
+        let anchorless = CanaryItem {
+            anchor: String::new(),
+            ..anchored.clone()
+        };
+        let unanchored_header = fill(
+            &header(&["CANARY_REVIEW_HEADER"]),
+            &[("file", &header(&["CANARY_NO_ANCHOR"]))],
+        );
+        let finding = |about: &[&str], summary: &str| Finding {
+            about: about.iter().map(|a| a.to_string()).collect(),
+            summary: summary.to_string(),
+        };
+        let (first, second) = (
+            finding(&["{a}", "{b}"], "{first}"),
+            finding(&[], "{second}"),
+        );
+        let cases = [
+            (
+                "the review header of an anchored item",
+                review_header(&anchored),
+                header(&["CANARY_REVIEW_HEADER"]),
+            ),
+            (
+                "the review header of an anchorless item",
+                review_header(&anchorless),
+                unanchored_header.clone(),
+            ),
+            (
+                "the adjudicator prompt of an anchorless item and no finding",
+                adjudicator_prompt(&anchorless, &[]),
+                format!(
+                    "{unanchored_header}{}",
+                    adjudicator(&[
+                        "CANARY_FINDINGS_LEAD",
+                        "CANARY_NO_FINDINGS",
+                        "CANARY_VERDICT"
+                    ])
+                ),
+            ),
+            (
+                "the adjudicator prompt of an anchored item and two findings",
+                adjudicator_prompt(&anchored, &[&first, &second]),
+                format!(
+                    "{}1. [{{a}}, {{b}}] {{first}}\n2. [] {{second}}\n{}",
+                    adjudicator(&["CANARY_REVIEW_HEADER", "CANARY_FINDINGS_LEAD"]),
+                    adjudicator(&["CANARY_VERDICT"])
+                ),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
 }

@@ -1936,7 +1936,7 @@ mod tests {
             assert!(structured["left_out"]["note"]
                 .as_str()
                 .unwrap()
-                .contains(crate::conductor::RECORD_RECOVERY));
+                .contains(rigger_conductor::prompt_surface::RECORD_RECOVERY));
         }
     }
 

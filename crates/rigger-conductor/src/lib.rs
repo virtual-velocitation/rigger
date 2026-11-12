@@ -21,6 +21,10 @@ pub mod conductor;
 pub mod held;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod hold_controller;
+/// The conductor's and the canary's prompt texts (spec 121): the protocols, the retry and
+/// review-round blocks, the grounding sections and the plan-critique and canary prompts, each one
+/// const whose doc comment opens with its class.
+pub mod prompt_surface;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod replay_keys;
 /// The per-run verdict key and the MAC every gate verdict the driver records carries.
@@ -142,6 +146,10 @@ mod instructions_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/plan_critique.rs"]
 mod plan_critique_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/prompt_surface.rs"]
+mod prompt_surface_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
