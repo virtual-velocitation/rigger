@@ -833,21 +833,37 @@ mod tests {
         assert_eq!(fx.entries().len(), 2, "{:?}", fx.entries());
     }
 
-    /// An open that writes the memo reaps it: GIVEN a memo holding an entry of a fingerprint the
-    /// store keeps no snapshot of, WHEN a one-shot read extracts a changed file, THEN that entry
-    /// is gone and the read's own stays.
+    /// An open that extracts a file reaps the memo, whether or not its entry is written: GIVEN a
+    /// memo holding an entry of a fingerprint the store keeps no snapshot of, and the read's own
+    /// entry gone, or held off by a directory in its place, WHEN a one-shot read extracts the
+    /// changed file, THEN it answers what a fresh extraction answers, the other entry is gone and
+    /// only the read's own name stays.
     #[test]
-    fn an_open_that_writes_the_memo_reaps_it() {
-        let fx = Fixture::new(FILES);
-        let dir = Store::new(fx.root.path()).memo_dir();
-        std::fs::create_dir_all(&dir).unwrap();
-        let other = fingerprint(&fx.extract, &fx.group) ^ 1;
-        let other = dir.join(format!("{other:016x}-other.facts"));
-        std::fs::write(&other, b"an entry").unwrap();
-        fx.head(&[("src/a.rs", Some("def alpha\ndef gamma\n"))], &one_shot());
-        let entries = fx.entries();
-        assert!(!entries.contains(&other), "{entries:?}");
-        assert_eq!(entries.len(), 1, "{entries:?}");
+    fn an_open_that_extracts_reaps_the_memo() {
+        let a: Changes = &[("src/a.rs", Some("def alpha\ndef gamma\n"))];
+        let cases = [
+            ("the entry is written", false),
+            ("the entry cannot be written", true),
+        ];
+        for (case, held_off) in cases {
+            let fx = Fixture::new(FILES);
+            fx.head(a, &one_shot());
+            let own = fx.entries();
+            assert_eq!(own.len(), 1, "{case}: {own:?}");
+            std::fs::remove_file(&own[0]).unwrap();
+            if held_off {
+                std::fs::create_dir(&own[0]).unwrap();
+                std::fs::write(own[0].join("held"), b"a file").unwrap();
+            }
+            let other = fingerprint(&fx.extract, &fx.group) ^ 1;
+            let dir = Store::new(fx.root.path()).memo_dir();
+            std::fs::write(dir.join(format!("{other:016x}-other.facts")), b"an entry").unwrap();
+            let before = fx.extract.calls();
+            let head = fx.head(a, &one_shot());
+            assert_eq!(fx.extract.calls() - before, 1, "{case}: extracted");
+            assert_eq!(ungrouped(&answer(&head).0), fresh(a), "{case}");
+            assert_eq!(fx.entries(), own, "{case}");
+        }
     }
 
     /// A reaper racing reads fails closed to extraction: GIVEN a reaper emptying the memo over
