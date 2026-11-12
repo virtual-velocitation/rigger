@@ -12,7 +12,8 @@ use serde_json::json;
 /// graph tool answers `around` and `show` of them, each read traced by git itself (`GIT_TRACE`),
 /// THEN each read's one open runs exactly two git commands: the worktree diff against the head's
 /// tree and the untracked listing. A build with no code store has no snapshot to take the head
-/// from, so it also asks git for the head's branch, commit and tree.
+/// from, so it also asks git for the head's branch, the object it names, and that object's commit
+/// and tree in one query.
 #[test]
 fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
     let dir = temp_project();
@@ -27,7 +28,7 @@ fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
     let mut expected = vec!["diff --name-status".to_string(), "ls-files --others".into()];
     if !cfg!(feature = "symbols") {
         expected.extend([
-            format!("rev-parse '{head}^{{tree}}'"),
+            format!("rev-parse '{head}^{{commit}}'"),
             "rev-parse --verify".into(),
             "symbolic-ref --short".into(),
         ]);
