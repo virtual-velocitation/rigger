@@ -234,13 +234,31 @@ impl<'a> Container<'a> {
 
 /// Distinguishes the temp files of concurrent writers within one process.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-/// The suffix of every temp [`write_atomic`] writes, by which a reaper knows one.
+/// The suffix of every temp [`write_atomic_as`] writes, by which a reaper knows one.
 pub(crate) const TEMP: &str = ".tmp";
 
-/// Publishes `bytes` at `path` atomically: a reader sees the old file or the new one, never a
-/// part. The bytes go to a `.tmp` sibling that is fsynced, renamed over `path`, and the directory
-/// is then synced so the rename itself survives a crash. A failed rename removes the temp.
+/// Whether a publish ([`write_atomic_as`]) survives a crash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Durability {
+    /// The temp is fsynced before the rename and the directory after it, so a crash leaves the old
+    /// file or the new one whole.
+    Synced,
+    /// Neither is synced, so a crash can lose the publish or leave it short. For a file every read
+    /// validates, where that costs a miss rather than a wait on every write.
+    Unsynced,
+}
+
+/// Publishes `bytes` at `path` atomically and durably: [`write_atomic_as`] with
+/// [`Durability::Synced`].
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic_as(path, bytes, Durability::Synced)
+}
+
+/// Publishes `bytes` at `path` atomically: a reader sees the old file or the new one, never a
+/// part. The bytes go to a `.tmp` sibling that is renamed over `path`; a failed rename removes the
+/// temp. Under [`Durability::Synced`] the temp is fsynced before the rename and the directory
+/// after it, so the rename itself survives a crash.
+pub fn write_atomic_as(path: &Path, bytes: &[u8], durability: Durability) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("{} has no parent dir", path.display()))?;
@@ -260,14 +278,19 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("write temp {}: {e}", tmp.display()))?;
         // The bytes reach the disk before the rename publishes them; otherwise a crash right after
         // the rename could leave the new name pointing at empty data.
-        f.sync_all()
-            .map_err(|e| format!("fsync temp {}: {e}", tmp.display()))?;
+        if durability == Durability::Synced {
+            f.sync_all()
+                .map_err(|e| format!("fsync temp {}: {e}", tmp.display()))?;
+        }
     }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("rename {} -> {}: {e}", tmp.display(), path.display())
     })?;
-    sync_dir(dir).map_err(|e| format!("sync dir {}: {e}", dir.display()))
+    match durability {
+        Durability::Synced => sync_dir(dir).map_err(|e| format!("sync dir {}: {e}", dir.display())),
+        Durability::Unsynced => Ok(()),
+    }
 }
 
 /// An exclusive lock on a lock file, held until dropped. Every process that writes the files
@@ -420,18 +443,25 @@ mod tests {
         }
     }
 
+    /// Synced or not, a publish replaces the file whole and leaves no temp beside it.
     #[test]
     fn write_atomic_publishes_and_leaves_no_temp() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("f");
-        write_atomic(&path, b"one").expect("first write");
-        write_atomic(&path, b"two").expect("second write");
-        assert_eq!(std::fs::read(&path).expect("read"), b"two");
-        let names: Vec<String> = std::fs::read_dir(dir.path())
-            .expect("list")
-            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, vec!["f".to_string()]);
+        for durability in [Durability::Synced, Durability::Unsynced] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("f");
+            write_atomic_as(&path, b"one", durability).expect("first write");
+            write_atomic_as(&path, b"two", durability).expect("second write");
+            assert_eq!(
+                std::fs::read(&path).expect("read"),
+                b"two",
+                "{durability:?}"
+            );
+            let names: Vec<String> = std::fs::read_dir(dir.path())
+                .expect("list")
+                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, vec!["f".to_string()], "{durability:?}");
+        }
     }
 
     #[test]
