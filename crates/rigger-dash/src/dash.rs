@@ -5194,25 +5194,41 @@ mod tests {
     }
 
     /// The CSS rules selecting `element` by its id or by one of its classes alone: each rule
-    /// whose line opens with `#id {` or `.class {`, from the selector to its closing `}`.
+    /// whose line opens with a selector list naming `#id` or `.class` as one of its selectors,
+    /// from the selector list to its closing `}`.
     fn rules_of<'a>(page: &'a str, element: &Element) -> Vec<&'a str> {
-        let selectors = std::iter::once(format!("#{} {{", element.id))
+        let names: Vec<String> = std::iter::once(format!("#{}", element.id))
             .filter(|_| !element.id.is_empty())
-            .chain(element.classes.iter().map(|c| format!(".{c} {{")));
+            .chain(element.classes.iter().map(|c| format!(".{c}")))
+            .collect();
         let mut rules = Vec::new();
-        for selector in selectors {
-            let mut at = 0;
-            for line in page.split_inclusive('\n') {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with(&selector) {
-                    let open = at + line.len() - trimmed.len();
-                    let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
-                    rules.push(&page[open..close]);
-                }
-                at += line.len();
+        let mut at = 0;
+        for line in page.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            let named = trimmed.split_once('{').is_some_and(|(selectors, _)| {
+                selectors
+                    .split(',')
+                    .any(|selector| names.iter().any(|name| selector.trim() == name))
+            });
+            if named {
+                let open = at + line.len() - trimmed.len();
+                let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
+                rules.push(&page[open..close]);
             }
+            at += line.len();
         }
         rules
+    }
+
+    /// The value `rules` last declare for `property`, as the cascade reads them.
+    fn declared(rules: &[&str], property: &str) -> Option<String> {
+        rules
+            .iter()
+            .flat_map(|rule| rule[rule.find('{').map_or(0, |i| i + 1)..].split(';'))
+            .filter_map(|declaration| declaration.split_once(':'))
+            .filter(|(name, _)| name.trim() == property)
+            .map(|(_, value)| value.trim().trim_end_matches('}').trim().to_string())
+            .last()
     }
 
     /// The explorer element whose id is `id`, by its index in [`explorer_markup`].
@@ -5286,32 +5302,39 @@ mod tests {
         );
     }
 
-    /// GIVEN the served page, WHEN a view draws the panel's own toolbar (the back link, the lens
-    /// controls) and the memory rail or the metadata card docks over the panel, THEN each docks
-    /// against the toolbar's bottom edge, so a wrapped toolbar pushes it down and neither covers a
-    /// toolbar control; neither takes the toolbar as its default anchor, so scrolling the panel
-    /// never carries either up over the header. Layout is outside what the page harness can run,
-    /// so this pins the anchoring each declares.
+    /// GIVEN the served page, WHEN a view draws the panel's control rows above its content (the
+    /// toolbar with the back link and the lens controls; in a neighbourhood the heading, the
+    /// directed-call links and the tier checkboxes) and the memory rail or the metadata card docks
+    /// over the panel, THEN each docks against the bottom edge of the last of those rows, so a
+    /// wrapped row pushes it down and neither covers a panel control; neither takes the rows as
+    /// its default anchor, so scrolling the panel never carries either up over the header. Layout
+    /// is outside what the page harness can run, so this pins the anchoring each declares.
     #[test]
     fn the_rail_and_the_card_dock_below_the_panel_toolbar() {
         let page = live_page();
         let markup = explorer_markup(&page);
-        let toolbar = Element {
-            id: String::new(),
-            classes: vec!["kgtoolbar".to_string()],
-            ancestors: Vec::new(),
-        };
-        let declared = |rules: &[&str], property: &str| -> Option<String> {
-            rules
-                .iter()
-                .flat_map(|rule| rule[rule.find('{').map_or(0, |i| i + 1)..].split(';'))
-                .filter_map(|declaration| declaration.split_once(':'))
-                .filter(|(name, _)| name.trim() == property)
-                .map(|(_, value)| value.trim().trim_end_matches('}').trim().to_string())
-                .last()
-        };
-        let anchor = declared(&rules_of(&page, &toolbar), "anchor-name")
+        let row_anchors: Vec<(&str, Option<String>)> =
+            ["kgtoolbar", "kgseed", "kgcalls-offer", "kgtiers"]
+                .into_iter()
+                .map(|row| {
+                    let element = Element {
+                        id: String::new(),
+                        classes: vec![row.to_string()],
+                        ancestors: Vec::new(),
+                    };
+                    (row, declared(&rules_of(&page, &element), "anchor-name"))
+                })
+                .collect();
+        let anchor = row_anchors[0]
+            .1
+            .clone()
             .expect("the panel toolbar names itself as an anchor");
+        assert!(
+            row_anchors
+                .iter()
+                .all(|(_, name)| name.as_deref() == Some(anchor.as_str())),
+            "every control row above the panel's content names the one anchor: {row_anchors:?}"
+        );
         for docked in ["kgrail", "kgcard"] {
             let rules = rules_of(&page, &markup[explorer_index(&markup, docked)]);
             let top = declared(&rules, "top").unwrap_or_default();
