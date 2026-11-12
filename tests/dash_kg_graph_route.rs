@@ -1715,6 +1715,66 @@ rigger::test_cases! {
     the_explorer_remembers_its_tests_choice_across_a_reload: node_harness_passes(&TESTS_CHOICE_HARNESS.replace("__SHIM__", LABEL_SHIM), "OK the-explorer-remembers-its-tests-choice");
 }
 
+/// Driver: under each tests filter in turn, the explorer opens every graph view through its own
+/// entry (the overview, a seeded neighbourhood, a cluster drill, a re-projection, a call walk) and
+/// records what the header says beside the tests toggle, and the overview's own hidden-test count.
+/// While tests are hidden, every view but the overview says so beside the toggle, and the overview
+/// keeps its count; while they are shown, nothing is said.
+const TESTS_STATE_DRIVER: &str = r#"
+;(async function(){
+  const flush = async function(){ for (let k = 0; k < 24; k++) { await Promise.resolve(); } };
+  __reply = function(u){
+    if (/^\/api\/graph(\?tests=[a-z]*)?$/.test(u)) {
+      return { clusters: [{ key: "src", count: 2, kind: "code-entity" }], edges: [], total: 2,
+               tests_hidden: u.indexOf("tests=") === -1 ? 3 : 0 };
+    }
+    return { nodes: [], edges: [] };
+  };
+  const views = [
+    ["overview", function(){ return loadKgOverview(); }],
+    ["seeded neighbourhood", function(){ return seedGraph("src/a.rs::a"); }],
+    ["cluster drill", function(){ return drillCluster("src"); }],
+    ["re-projection", function(){ return reprojectSubject("src/a.rs::a"); }],
+    ["call walk", function(){ return seedCalls("src/a.rs::a", "down"); }],
+  ];
+  const beside = function(){
+    const s = el("kgtestsstate");
+    return s.hidden ? "nothing" : JSON.stringify(s.textContent);
+  };
+  const trace = [];
+  for (const tests of ["exclude", "include", "only", "exclude"]) {
+    if (kgTests !== tests) setTests({ exclude: "include", include: "only", only: "exclude" }[kgTests]);
+    await flush();
+    for (const [name, open] of views) {
+      await open();
+      await flush();
+      const count = el("kgpanel")._html.match(/(\d+) tests hidden/);
+      trace.push(tests + " " + name + ": " + beside() + (count ? ", toolbar " + count[1] : ""));
+    }
+  }
+  const expected = [];
+  for (const tests of ["exclude", "include", "only", "exclude"]) {
+    for (const [name] of views) {
+      const hidden = tests === "exclude";
+      expected.push(tests + " " + name + ": "
+        + (name === "overview" ? "nothing" + (hidden ? ", toolbar 3" : "") : hidden ? '"tests hidden"' : "nothing"));
+    }
+  }
+  if (JSON.stringify(trace) !== JSON.stringify(expected)) {
+    throw new Error("got:\n" + trace.join("\n") + "\nwant:\n" + expected.join("\n"));
+  }
+  console.log("OK every-view-says-when-tests-are-hidden");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: no graph view looks complete while the tests filter hides tests. The overview
+    /// keeps its own count of the hidden tests; every other view (a seeded neighbourhood and its
+    /// card, a cluster drill, a re-projection, a call walk) says "tests hidden" beside the toggle,
+    /// and says nothing while tests are shown.
+    every_graph_view_says_when_tests_are_hidden: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, TESTS_STATE_DRIVER, "dash-tests-state-harness.js"), "OK every-view-says-when-tests-are-hidden");
+}
+
 /// A product tree and its tests, one per way a test calls product code: a same-file test module, a
 /// test file importing the entity, one naming it by path, and a Python test calling at file level
 /// and inside a function; a test file calling its own helper while product code defines one of the
