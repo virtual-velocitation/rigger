@@ -4399,6 +4399,17 @@ mod tests {
         all
     }
 
+    /// The body of the built-in instruction entry `name`, read through
+    /// [`every_shipped_agent_text`]'s `BUILTIN <name>` label; fails when no such entry is shipped.
+    fn shipped_builtin(name: &str) -> String {
+        let label = format!("BUILTIN {name}");
+        every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| *at == label)
+            .map(|(_, text)| text)
+            .unwrap_or_else(|| panic!("the {name} body is shipped"))
+    }
+
     /// The MARKERS rule itself: a word marker hits as a token, as its plural or as a part of a
     /// `_`-joined token, never inside a longer word, a marker holding `_` only as a whole token,
     /// and a syntax or phrase marker as a substring of the lower-cased text.
@@ -4592,11 +4603,7 @@ mod tests {
     /// longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         let section = format!(
             "{WHEN_YOU_REVIEW_HEADING} {} {FAN_OUT_HEADING}",
@@ -4632,11 +4639,7 @@ mod tests {
     /// second paragraph, right after the corners sentence and before the success one.
     #[test]
     fn the_working_discipline_holds_each_moved_method_in_its_slot() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         for (heading, method, before, after) in [
             (
@@ -4676,11 +4679,7 @@ mod tests {
     /// nothing else.
     #[test]
     fn the_hand_over_section_holds_the_bounded_audit_bullet_verbatim() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let section = markdown_section(&body, HAND_OVER_HEADING);
         let bullet = format!(
             "- **{}** {} {}",
