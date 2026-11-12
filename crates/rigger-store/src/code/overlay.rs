@@ -348,6 +348,9 @@ mod tests {
     use rigger_domain::composed::{Composed, Honesty, Indexed};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
 
+    /// What a worktree changes: each path with its bytes, or none when it deleted the file.
+    type Changes<'a> = &'a [(&'a str, Option<&'a str>)];
+
     /// A store advanced to a commit of `FILES` in `source`, read by a reader in the worktree `W`.
     struct Fixture {
         root: tempfile::TempDir,
@@ -373,7 +376,7 @@ mod tests {
         }
 
         /// The head read once the worktree holds `changes` ([`MemSource::worktree`]).
-        fn head(&self, changes: &[(&str, Option<&str>)], memo: &Memo) -> Head {
+        fn head(&self, changes: Changes, memo: &Memo) -> Head {
             self.source.worktree(changes);
             self.open(memo).unwrap()
         }
@@ -384,7 +387,7 @@ mod tests {
         }
 
         /// How many files reading the head extracts once the worktree holds `changes`.
-        fn extracted(&self, changes: &[(&str, Option<&str>)], memo: &Memo) -> usize {
+        fn extracted(&self, changes: Changes, memo: &Memo) -> usize {
             let before = self.extract.calls();
             self.head(changes, memo);
             self.extract.calls() - before
@@ -539,7 +542,7 @@ mod tests {
         let a = ("src/a.rs", Some("def alpha\ndef gamma\n"));
         let c = ("src/c.rs", Some("def delta\n"));
         // (the memo's bound, the worktree's changes, the files the read extracts), in order.
-        let cases: [(usize, &[(&str, Option<&str>)], usize); 7] = [
+        let cases: [(usize, Changes, usize); 7] = [
             (Memo::BOUND, &[a], 1),
             (Memo::BOUND, &[a], 0),
             (
@@ -582,7 +585,7 @@ mod tests {
         );
         // (the worktree's changes, the tier of the call to `helper`, the proof of `run`)
         let proved = Some(r#"["tests/t.rs:2"]"#);
-        let cases: [(&[(&str, Option<&str>)], &str, Option<&str>); 3] = [
+        let cases: [(Changes, &str, Option<&str>); 3] = [
             (&[], "ambiguous", proved),
             (&[helper], "inferred", proved),
             (&[helper, second], "inferred", None),
