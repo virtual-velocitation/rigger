@@ -1076,8 +1076,8 @@ mod tests {
     }
 
     /// The run-seeded read the polled snapshot draws its decisions from states what it read: the
-    /// label of its open over a built graph, the reason over a graph never built, and nothing when
-    /// the run seeds no read.
+    /// label of its open over a built graph, the reason over a graph never built or a worktree git
+    /// refuses to read, and nothing when the run seeds no read.
     #[test]
     fn the_run_seeded_read_states_what_it_describes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1116,6 +1116,20 @@ mod tests {
 
         let read = dash_read_graph(graph_db, identity, &[]);
         assert_eq!(read.label, None, "a run with no seeds opens no store");
+
+        // A checkout whose git administrative directory is gone: git refuses inside it.
+        std::fs::rename(root.join(".git"), root.join(".git-moved")).unwrap();
+        let gone = root.join(".git-gone");
+        std::fs::write(root.join(".git"), format!("gitdir: {}\n", gone.display())).unwrap();
+        let read = dash_read_graph(graph_db, identity, &decided);
+        let want = format!("the worktree of {graph_db} cannot be read: ");
+        match read.label {
+            Some(dash::GraphLabel::Unread(reason)) => assert!(
+                reason.starts_with(&want),
+                "a worktree git refuses is stated as unread, got {reason:?}"
+            ),
+            other => panic!("a worktree git refuses reads no graph, got {other:?}"),
+        }
     }
 
     /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection
