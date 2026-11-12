@@ -1,6 +1,5 @@
 //! The one node `vm` program the dash client-seam suites run the served page script in.
-//! Included by path (`#[path = "common/vm_harness.rs"] mod vm_harness;`) by each suite that
-//! drives a page function from outside the page.
+//! Mounted once by `tests/all.rs`; a suite reaches it with `use crate::vm_harness;`.
 
 /// A complete node `vm` program: the `shim` parts, one per line (the suite's DOM and `fetch`
 /// stand-ins), then the served page script (read from `argv[2]`), then `driver` - which shares the page's scope, so

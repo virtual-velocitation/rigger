@@ -35,8 +35,6 @@ Any agent with `Bash` can drive the shared memory and grounding through the `rig
 rigger ground "<query>"            # structural search over the codebase
 rigger graph --around <path>       # the context-graph slice governing a file:
                                    # decisions, lessons, peers' touches
-rigger reindex                     # rebuild the structural symbol index (it also
-                                   # auto-freshens before every ground)
 ```
 
 `ground` is the entry point for "where does X live / what couples to Y" questions - use it *before* grep-spelunking. It scopes discovery; exhaustiveness claims ("all call sites") still require an exact grep, and dependency claims require the compiler. The grounder is selected in the workflow (`symbols` structural by default; `grep` substring opt-out; `nop`), and selecting a grounder that is not built in degrades loudly, never silently.
@@ -81,18 +79,16 @@ Anything scriptable can gate: compilers, linters, test suites, contract suites a
 1. **Gates mirror CI exactly** - same commands, same versions. A gate/CI mismatch means the loop green-lights what CI rejects, and agents "fix" the wrong failure.
 2. **Know what the gates cannot see.** Every gate suite has a blind spot (a lock file masking fresh-resolve skew, non-compiled artifacts, behavior only a live server exercises). Name the blind spots in the spec and route their verification to the adjudicator as demanded evidence.
 
-## 4. The MCP bridge: Rigger's tools inside another harness
+## 4. The MCP servers: Rigger's tools inside a session
 
-`rigger serve` runs the conductor as an MCP server over stdio. An external harness (Claude Code or anything MCP-speaking) connects and gets four tools:
+`rigger` serves its tools over MCP on stdio in two shapes:
 
-| Tool | Direction | Purpose |
+| Command | Who connects | Tools |
 |---|---|---|
-| `rigger_next` | pull | Fetch the next ready assignment (unit + context slice) |
-| `rigger_result` | push | Report a completed assignment's outcome |
-| `rigger_emit` | push | Append an event (same contract as `rigger emit`) |
-| `rigger_peers` | pull | Live peer decisions (same contract as `rigger peers`) |
+| `rigger mcp --spawn <id>` | one agent `rigger run` spawned | the lookup tools plus `rigger_emit`, `rigger_progress` and `rigger_scratch`, each bound to that spawn |
+| `rigger mcp` | your own interactive session (`rigger setup` registers it in `.mcp.json`) | the read-only lookup tools: `rigger_graph`, `rigger_ground`, `rigger_peers` |
 
-This is the integration seam for embedding Rigger's orchestration and memory into a harness you do not control: the harness runs the agents; Rigger assigns the work, holds the memory, and keeps the score. The CLI (`rigger emit` / `rigger peers`) and the MCP tools hit the same store, so a fleet can mix both - in-session workflow agents on the CLI verbs, external agents on the bridge - and still share one memory.
+The CLI verbs (`rigger emit` / `rigger peers` / `rigger graph`) and the MCP tools hit the same store, so an agent, your session and a script all share one memory.
 
 ## 5. Context: what an agent is handed without asking
 
@@ -108,8 +104,8 @@ A headless Claude Code session reads its hooks, MCP servers and subagents from i
 |---|---|---|
 | `--settings` | The spawn's own settings, with the SessionStart hook (`rigger prime`), the PreToolUse lookup guard (`rigger grep-guard` on `Grep\|Bash`) and the status line (`rigger status --line`) merged in | The same installers and commands `rigger setup` writes into `.claude/settings.json` |
 | `--mcp-config` + `--strict-mcp-config` | Exactly one MCP server, `rigger`, bound to this spawn (`rigger mcp --spawn <id>`), and no other | The same installer `rigger setup` writes `.mcp.json` with |
-| `--agents` | The `lookup` and `verify` fan-out helpers | The committed `.claude/agents/lookup.md` and `verify.md`, the same text `rigger init` scaffolds |
+| `--agents` | The `lookup` and `verify` fan-out helpers, with the rigger tools they declare pre-approved in `--allowed-tools` | The operator's copy of each, `.claude/agents/lookup.md` and `verify.md` in the checkout the command runs from, where one exists, else the text `rigger init` and `rigger setup` scaffold there |
 
-Every value has one home in the binary, shared with `rigger setup`, so what an operator's session carries and what a spawn carries cannot drift, and the worktree needs nothing. A spawn is only a working spawn when its `rigger` server connects: the host reads the server's status from the session's `system/init` message, and any status but `connected` stops the session before its task runs and fails the spawn as a launch fault of class `unknown` whose message names the status. The usual cause is a `rigger mcp --spawn <id>` that could not start, for example in a checkout with no `.rigger/` store. The operator's own interactive session still reads `.claude/settings.json`; `rigger validate` warns when that file lacks the hooks, and `rigger setup` installs them.
+Every value has one home, shared with `rigger setup`: the binary for the settings and the server, and the operator's checkout for the helpers, which `rigger init` and `rigger setup` scaffold only where no copy exists. So what an operator's session carries and what a spawn carries cannot drift, and the worktree needs nothing. The helper copies are read once per command and folded into the definition a run pins, so editing one mid-run halts the run until `--rebase-definition` accepts the edit; a copy that cannot be read or does not parse fails the command, and `rigger validate`, naming its file. A spawn is only a working spawn when its `rigger` server connects: the host reads the server's status from the session's `system/init` message, and any status but `connected` stops the session before its task runs and fails the spawn as a launch fault of class `unknown` whose message names the status. The usual cause is a `rigger mcp --spawn <id>` that could not start, for example in a checkout with no `.rigger/` store. The operator's own interactive session still reads `.claude/settings.json`; `rigger validate` warns when that file lacks the hooks, and `rigger setup` installs them.
 
 What this means for you as an author: you rarely need to stuff context into prompts. Put durable knowledge in events (lessons, decisions), keep prompts about *role and method*, and let grounding deliver the knowledge at the moment it is relevant. A prompt that hardcodes facts about the codebase goes stale; a graph that stores them gets superseded properly.

@@ -18,7 +18,7 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the client seam in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 use common::served::vm_harness;

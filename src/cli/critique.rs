@@ -1,18 +1,18 @@
 //! `rigger critique <spec>` (spec 112, criterion 1): the workflow's plan-critique adversary
-//! critiques a spec before any run, as a headless Claude Code session, and each pass is recorded
-//! keyed on the spec's content hash - on the critique's own stream, never the run stream a step
-//! folds into its wave. The critique passes to exhaustion (spec 123): the critic is spawned again,
-//! the recorded findings in its prompt, until a pass carries no finding or the critic's ceiling is
-//! reached; so unchanged text whose critique is exhausted, or at its ceiling with a pass recorded,
-//! is answered from the store with no spawn, by the union of its passes and the verdict that union
-//! derives, and any edit is critiqued afresh.
+//! critiques a spec before any run, as a headless agent-host session, and each pass is recorded
+//! keyed on the spec's content hash - on the critique's own stream, never the run stream `rigger
+//! run`'s conductor folds. The critique passes to exhaustion (spec 123): the critic is spawned
+//! again, the recorded findings in its prompt, until a pass carries no finding or the critic's
+//! ceiling is reached; so unchanged text whose critique is exhausted, or at its ceiling with a pass
+//! recorded, is answered from the store with no spawn, by the union of its passes and the verdict
+//! that union derives, and any edit is critiqued afresh.
 
 use super::*;
 
 use std::collections::HashSet;
 
 use rigger::blocker::RetriesSource;
-use rigger::conductor::{AgentDriver, SpawnOpts};
+use rigger::conductor::{AgentDriver, SpawnHost, SpawnOpts};
 use rigger::driver::{claude_code, replay};
 use rigger::eventstore::TypeSelection;
 use rigger::liveness;
@@ -26,8 +26,8 @@ const COMMAND: &str = "rigger critique";
 const CRITIQUE_STAGE: &str = "critique";
 
 /// The critique's own store: the project's namespace plus `-critique`, so a critique's spawn
-/// request and result land on a stream of their own and never on the run stream a `rigger step`
-/// folds into its wave. Every critique read and write goes through it - the one place that
+/// request and result land on a stream of their own and never on the run stream `rigger run`'s
+/// conductor folds. Every critique read and write goes through it - the one place that
 /// spells the suffix.
 pub(crate) fn critique_store<'a>(backend: &'a dyn EventStore, identity: &str) -> Namespaced<'a> {
     Namespaced::new(backend, &format!("{identity}-critique"))
@@ -113,7 +113,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
         migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let identity = project_identity();
+    let identity = project_identity()?;
     let store = Namespaced::new(backend.as_ref(), &identity);
     let graph = open_graph(&db_path("graph.db"), &identity, &selection, "critique")?;
     let critiques = critique_store(backend.as_ref(), &identity);
@@ -140,6 +140,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             identity: &identity,
             scratch_root: &scratch_root,
             root: &root,
+            spawn_host: rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, &root)?,
         };
         let mut union = union;
         loop {
@@ -291,14 +292,18 @@ struct CriticHost<'a> {
     critic: &'a Critic,
     /// The critique's own store ([`critique_store`]).
     critiques: &'a dyn EventStore,
-    /// The verb's store selection, handed to the critic so its bound rigger server resolves the
-    /// store the critique is recorded to ([`StoreSelection::handed_env`]).
+    /// The verb's store selection, handed to the critic so its bound `rigger mcp --spawn` server
+    /// resolves the store the critique is recorded to ([`StoreSelection::handed_env`]).
     store_env: Vec<(String, String)>,
     identity: &'a str,
     /// The project scratch root; empty in a project with no git repository.
     scratch_root: &'a str,
     /// The root the spec path is relative to: the critic's working directory.
     root: &'a Path,
+    /// The host values every pass's spawn carries, resolved once from the workflow's defaults
+    /// and the helper copies at `root` when the critique starts
+    /// ([`rigger::hooks::resolve_spawn_host`]).
+    spawn_host: SpawnHost,
 }
 
 impl CriticHost<'_> {
@@ -339,7 +344,7 @@ impl CriticHost<'_> {
                 "permissions": { "deny": review::CRITIC_DENIED_TOOLS }
             })
             .to_string(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(self.spawn_host.clone())
         };
         spawn_store::park_in_run(
             self.critiques,
@@ -424,7 +429,7 @@ fn remove_critique_scratch(scratch_root: &str) {
 /// peers <spec>` shows them. Each copy passes the one emit guard first.
 fn copy_findings(
     store: &dyn EventStore,
-    graph: &dyn contextgraph::Projection,
+    graph: &dyn contextgraph::RecordFold,
     critique: &Critique,
     spec: &str,
 ) -> Res {

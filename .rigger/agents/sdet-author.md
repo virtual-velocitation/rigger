@@ -82,55 +82,33 @@ never rests on your judgment alone.
 ## Hand-over checks in this project
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
-(`.rigger/workflow.yml`) are fmt, clippy, build, audit, test, lane-no-default, style,
-no-os-kill, boundary and red-before-green. Before you report, run from the worktree root, on
-your committed tree:
+(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, lane-core, style,
+no-os-kill, boundary and red-before-green. The workflow's gates run that full battery on your
+committed result and are the authority: you do not run the whole suite, the other lanes, the
+boundary suite, the content gates or red-before-green by hand, and a gate failure comes back
+as the next round's finding. Before you report, run from the worktree root, on your committed
+tree, these and nothing else:
 
 - `cargo fmt --all --check`;
-- `cargo clippy --workspace --all-targets -- -D warnings` and
-  `cargo clippy --workspace --all-targets --no-default-features -- -D warnings`, the clippy
-  line of the lane-no-default gate: a helper only one lane calls is dead code on the other;
-- `sh .rigger/gates/audit.sh`, then `git status --porcelain` empty. The audit regenerates
-  `docs/audit` from the tree, so run it before each commit that moves code under `src/`,
-  `crates/` or `tests/`, tests-only commits included, and commit what it rewrote with that
-  commit;
-- `cargo test --test boundary_audit`, `sh .rigger/gates/content.sh style`,
-  `sh .rigger/gates/content.sh no-os-kill` and `sh .rigger/gates/red-before-green.sh`;
-- every test binary your change touched, on both lanes: `cargo test -p <crate> --lib` or
-  `cargo test --test <file>`, then the same with `--no-default-features`. When your production
-  hunks touch `src/` or `crates/`, those binaries include every root test that reads a
-  checked-in file as text, edited by you or not, since a text pin goes red when a hunk moves
-  the text it reads: the top-level `tests/*.rs` files spelling one of the ways to the tree this
-  command names - the package root `CARGO_MANIFEST_DIR`, a compile-time include, a read given a
-  literal path (a root test runs from the package root), the audit-record reader and the
-  walkers, which read the root-relative path their caller hands them, and each `tests/common`
-  helper that resolves against the root, by its bare name so a turbofish call is found too -
-  which lists them and runs them in one invocation, on the default lane alone, since the
-  lane-no-default gate runs them on the final tree:
-  `git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, "CARGO_MANIFEST_DIR") || index($0, "include_str!(") || index($0, "include_bytes!(") || index($0, "read_to_string(\"") || index($0, "fs::read(\"") || index($0, "read_dir(\"") || index($0, "File::open(\"") || index($0, "read_text(Path::new(\"") || index($0, "read_audit_record") || index($0, "production_sources") || index($0, "collect_rs_files") || index($0, "collect_files") || index($0, "for_each_rs_file") || index($0, "repo_root") || index($0, "repo_text") || index($0, "cargo_tree") || index($0, "stub_path") || index($0, "write_critique_stub") || index($0, "committed_json") || index($0, "assert_committed_ledger_is_nonempty") || index($0, "assert_doc_carries_none_of") || index($0, "production_main_rs") || index($0, "worker_label") || index($0, "run_capturing_system_prompt") || index($0, "record_critique") || index($0, "record_clean_critique") || index($0, "refused_run") || index($0, "echo_agent_path") || index($0, "fixture_script") || index($0, "arms_claude") || index($0, "assert_no_src_line_gates_on") || index($0, "assert_real_tree_clean") { print FILENAME }' | sort -u | sed 's|^tests/||; s|\.rs$||; s|^|--test |' | xargs cargo test`.
-- whenever a commit touches `tests/common` or the selector command above,
-  `cargo test --bin rigger the_author_text_test_selector`, on the default lane alone: that
-  pin derives the selector's anchors from `tests/common` and lives in the binary target,
-  which none of the runs above reaches.
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- the tests you added or changed, on the default lane: `cargo test --test all <module>::` for
+  a module of the consolidated `all` executable, `cargo test --test <file>` for a suite
+  `Cargo.toml` lists as its own `[[test]]` executable, `cargo test -p <crate> --lib` for a
+  crate's own tests; and the same with `--no-default-features` only when your change touches
+  feature-gated code.
 
-Once these checks have run, a later commit or an amend re-runs only what its new diff can
-change: a diff that touches only comments, doc comments or Markdown re-runs
-`cargo fmt --all --check`, the default-lane clippy line, `sh .rigger/gates/audit.sh` with
-`git status --porcelain` empty and the root tests that read a checked-in file as text; any
-other hunk re-runs the full list.
+A new test file is declared in `tests/all.rs` (or, when it must own its process, as a
+`[[test]]` entry), and a test enforces it. A suite that is a module of `all` reaches the shared
+helpers with `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`.
 
-Each run above, the test binaries on both lanes and any `sh .rigger/gates/lanes.sh <lane>` run
-a unit asks of you included, takes minutes here: run it in the foreground with the Bash timeout
-raised to fit, and when one outlives that timeout and moves to the background, poll its output
-in an `until`-loop until its exit line is there, before you report.
+Each run above, and any `sh .rigger/gates/lanes.sh <lane>` run a unit asks of you, takes minutes
+here: run it in the foreground with the Bash timeout raised to fit, and when one outlives that
+timeout and moves to the background, poll its output in an `until`-loop until its exit line is
+there, before you report.
 
-The whole workspace suite on both lanes is the test and lane-no-default gates' run, not yours:
-a gate's verdict is replayed only from its own recorded run, so a shell run of the suite saves
-the gate nothing.
-
-A red `every_open_cluster_is_dispositioned` from the audit is a twin your change opened: close
-it by extending the helper that already exists and calling it from both sites, never by a
-disposition in `docs/audit/duplication-dispositions.json` that excuses the twin.
+When you want a gate's verdict before you report, run `rigger gate <id>` with one of the gate
+ids above (`rigger gate clippy`, say) after you commit: the driver reuses that verdict for the
+same commit and does not run the gate again.
 
 The test homes: a crate's own `mod tests` and its contract module under `crates/*/src/`; the
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
@@ -160,3 +138,7 @@ the code under test turns it red:
   the empty, zero, absent or repeated input.
 - For a bounded buffer, a retry count or a timeout, test the exact bound: the element that
   fits and the one that does not; the attempt that is allowed and the one that is refused.
+
+## A documentation-only round
+
+Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.

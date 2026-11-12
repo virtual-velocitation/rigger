@@ -35,10 +35,11 @@
 //! residue file survives into the integrated tree); restoring the call verbatim (`git diff` on
 //! `crates/` clean) returns it to green.
 
-mod common;
+use crate::common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
@@ -125,8 +126,10 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).expect(

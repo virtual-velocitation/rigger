@@ -1,6 +1,6 @@
 # Authoring loops
 
-A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with one of four drivers. This document opens with what rigger prescribes, then covers all three parts.
+A loop is the machine that turns a spec into integrated code. You author one by writing two artifacts - a **spec** (what "done" means) and a **workflow** (who does the work, checked by what) - and then driving them with `rigger run`. This document opens with what rigger prescribes, then covers all three parts.
 
 ## What rigger prescribes
 
@@ -19,15 +19,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 **Language coverage.** Three tools cover some languages and not others; the rule binds them, and the operator carries the gap. A spawn's build and review caches reach it as `CARGO_TARGET_DIR`, which only Cargo reads, so another toolchain gets no per-unit cache. `build.wrapper` and `build.jobs` resolve only to Cargo's build settings, so another toolchain ignores them. The `symbols` grounder extracts symbols from Rust, C#, Go, JavaScript, TypeScript and Python and skips a file in any other language.
 
 **Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
-
-- the cadence clauses in `EMIT_PROTOCOL` and `review_protocol`
-- `DOC_ONLY_ROUND`'s rule sentence
-- `PLAN_PROTOCOL`'s guidance sentences
-- `MAX_UNIT_ADDED_LINES` and the second sentence of `unit_size_cap`
-- the progress cadence in its four host homes: the process hosts' shared framing, the workflow script's and the shim's progress notes, and the `rigger_progress` description
-- the REQUIRED PATTERN audit sentences: the `PATTERN:` lines an implementer and a reviewer read under a REQUIRED list
-- the method sentences of the lookup pointer (`write_lookup_pointer`)
-- the toolchain words in `workflows/rigger.js` and the `rigger_scratch` description
 
 ### The review ceremony
 
@@ -121,7 +112,17 @@ stages:
 
 A gate may declare `requires:`, the executables its command runs (`requires: [cargo-mutants, cargo-nextest]`). Every validating load (`config_store::load`, and `config_store::load_with_gate_requirements`, which it wraps and `rigger validate` calls) refuses a declared gate whose requirement is not an executable on `PATH`, and `rigger validate` prints one `gate <id>:` line per declared gate naming where each requirement resolved. `config_store::load_workflow`, and `config_store::read_scratch_defaults`, through which `rigger status` and `rigger watch` read their `defaults:`, never validate, so neither checks a requirement.
 
+A gate may declare `post_merge: false` when it judges only the unit's own diff against the run branch (a content check over the added lines, a test-before-code ordering check). After a unit lands, the conductor re-runs the stage's gates on the merged tree; a gate declaring `post_merge: false` is skipped there, with a skip event naming the declaration, because the landed tree no longer differs from the run branch and the run would pass without checking anything. The gate still runs before the merge, in every implement and remediate pass. Leave the key off (it defaults to `true`) for a gate that reads the tree. rigger knows no gate by name, so only the declaration puts a gate in this set.
+
 Upgrading an older workflow: the top-level `name:` key is retired, and `rigger validate` refuses a workflow.yml that still carries it - delete that line.
+
+Some behaviour a project once got unasked is now a `defaults:` key it declares, and an existing workflow.yml without the key behaves as declared, not as before: without `grep_guard: true`, no agent session carries the graph-first lookup hook and `rigger setup` removes rigger's own entry from `.claude/settings.json`, so add the key to keep a bare `grep` bouncing. Without `max_unit_added_lines: 3000` (or the cap you choose), neither the planner's plan protocol nor the plan critique states a unit size cap, so add the key to keep one. Without `test_author: sdet-author` (or the id of whichever agent writes your periphery tests), no test author spawns at the build seam, whatever `.rigger/agents` defines, so add the key to keep that spawn; a load refuses an id no agent defines.
+
+Some guidance an agent's prompt once carried now lives in a persona, and rigger never rewrites a persona a project already has, so copy each moved sentence into your own persona to keep it:
+
+- "Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test." - the sdet-author's rule for a round that changed documentation only, in this repository's `.rigger/agents/sdet-author.md` under `## A documentation-only round`.
+- "Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part.", "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.", "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.", "Propose each refinement the moment you decide it.", "Do not write code." and "Only omit the id when you truly intend a new sub-unit." - the planner's planning policy, in this repository's `.rigger/agents/planner.md` and in the `planner.md` persona `rigger init` scaffolds.
+- "The cap measures review scope - how much one review round must read - never code shape." - the unit size cap's scope, in this repository's `.rigger/agents/planner.md`, `adversary.md` and `adjudicator.md` and in the personas of those names `rigger init` scaffolds.
 
 ### The knobs that matter
 
@@ -131,7 +132,7 @@ Upgrading an older workflow: the top-level `name:` key is retired, and `rigger v
 
 **`autonomy`** sets the default gate policy. Start new workflows at `manual` or `auto_notify`; let the ratchet earn `silent` per gate through clean passes. A gate that fails while non-manual demotes itself back to `manual` automatically.
 
-**`partition: by-blast-radius`** keeps overlapping units apart: a ready unit starts only while its blast radius shares no file with a unit in flight, and a unit whose radius is empty runs alone. A criterion's blast radius is grounded on the CODE it names, never its prose: its code spans (backticked text) and its identifier-shaped bare words (containing `_` or `::`, or camelCase / CamelCase). A span grounds only when it NAMES CODE: an identifier or a `::` path names a symbol (`a::b<T>`, `foo(x)` and `store.open()` name `b`, `foo` and `open`), and a path the tree holds (`ingest.rs`, `.gitignore`) names that file. Everything else grounds nothing: a multi-word span such as a command line (`rigger reset --derived`) is prose about the code, a directory fragment (`src/`) names no file, a path the tree does not hold (`graph.db`, a runtime artifact) names nothing, and language keywords (`fn`, `pub`, `self`, ...) are never terms. The radius is every file that defines or references a named symbol - as the symbol index records references, so a call written inside a macro invocation (`assert!`, `format!`, `json!`) is not counted - and every named file; a named symbol the index does not define (a string-literal event name, a name nothing defines yet) adds every file holding it as a whole identifier, never inside a longer word, and never a spec file or the regenerated audit under `docs/audit/`. A name ending in `_` (`TYPE_`) is a family prefix and matches every member. With the knowledge graph present the radius widens from the named code's own files over structural edges only, and a criterion naming no code stays empty. Name the code a criterion touches in backticks; a criterion that names no code has an empty radius, so it runs alone. The full contract is section 2.4 of `docs/architecture-addendum-context-management.md`. Two units whose radii are disjoint run side by side - even when each criterion names a widely used symbol, whose whole neighborhood is already in its radius. Admission is continuous: when a unit resolves, its slot goes to the next ready unit at once, up to `max_parallel_units`. Gate commands still queue on the machine-wide build slot (`build.max_concurrent`), so two side-by-side units overlap their agent work while their gate runs take turns. This plus worktree isolation is why parallel implementation is safe. The radius a wave schedules by is the one recorded in the log (`BlastRadiusComputed`), so a resumed driver decides the same way and `rigger stats` reports the share of grounded units whose recorded radii let them pair (the parallelism-retention line). A span naming a widely used word (`Store`, `path`) widens the radius and lowers that share.
+**`partition: by-blast-radius`** keeps overlapping units apart: a ready unit starts only while its blast radius shares no file with a unit in flight, and a unit whose radius is empty runs alone. A criterion's blast radius is grounded on the CODE it names, never its prose: its code spans (backticked text) and its identifier-shaped bare words (containing `_` or `::`, or camelCase / CamelCase). A span grounds only when it NAMES CODE: an identifier or a `::` path names a symbol (`a::b<T>`, `foo(x)` and `store.open()` name `b`, `foo` and `open`), and a path the tree holds (`ingest.rs`, `.gitignore`) names that file. Everything else grounds nothing: a multi-word span such as a command line (`rigger reset --derived`) is prose about the code, a directory fragment (`src/`) names no file, a path the tree does not hold (`graph.db`, a runtime artifact) names nothing, and language keywords (`fn`, `pub`, `self`, ...) are never terms. The radius is every file that defines or references a named symbol - as the symbol index records references, so a call written inside a macro invocation (`assert!`, `format!`, `json!`) is not counted - and every named file; a named symbol the index does not define (a string-literal event name, a name nothing defines yet) adds every file holding it as a whole identifier, never inside a longer word, and never a spec file. A name ending in `_` (`TYPE_`) is a family prefix and matches every member. With the knowledge graph present the radius widens from the named code's own files over structural edges only, and a criterion naming no code stays empty. Name the code a criterion touches in backticks; a criterion that names no code has an empty radius, so it runs alone. The full contract is section 2.4 of `docs/architecture-addendum-context-management.md`. Two units whose radii are disjoint run side by side - even when each criterion names a widely used symbol, whose whole neighborhood is already in its radius. Admission is continuous: when a unit resolves, its slot goes to the next ready unit at once, up to `max_parallel_units`. Gate commands still queue on the machine-wide build slot (`build.max_concurrent`), so two side-by-side units overlap their agent work while their gate runs take turns. This plus worktree isolation is why parallel implementation is safe. The radius a wave schedules by is the one recorded in the log (`BlastRadiusComputed`), so a resumed driver decides the same way and `rigger stats` reports the share of grounded units whose recorded radii let them pair (the parallelism-retention line). A span naming a widely used word (`Store`, `path`) widens the radius and lowers that share.
 
 ### The per-unit lifecycle
 
@@ -166,24 +167,17 @@ A `.rigger/gates/mutation.sh` an earlier `rigger init` wrote reads `$MUTANTS`, w
 
 `rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, unowned agent scratch, and the shared gate build cache - and leaves any entry a live process still holds (its working directory or an open file) where it is.
 
-## The four drivers
+## The driver
 
-Same loop, four entry points - pick by where you are sitting:
+`rigger run <spec> --base <ref>` drives every run. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed. Launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard (`rigger dash`). A killed or interrupted run resumes from its event log: relaunch the same command.
 
-| Driver | Command | When |
-|---|---|---|
-| Native Claude Code workflow | `/rigger specs/feature.md` | The primary driver. Installed by `rigger setup` at `.claude/workflows/rigger.js`; runs inside your Claude Code session, progress visible in `/workflows`. |
-| Standalone JS driver | `rigger workflow specs/feature.md` | Same loop from a plain terminal - no interactive session needed. Provisioned in `.rigger/shim/` by `rigger setup`. |
-| Standalone CLI driver | `rigger run specs/feature.md` | The lower-level conductor binary driving the `claude` CLI directly. |
-| MCP bridge | `rigger serve` | The conductor as an MCP server: an external harness pulls assignments and reports results over stdio. See [tools-and-context.md](tools-and-context.md#the-mcp-bridge). |
-
-Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus installing the Claude Code workflow and the shim driver). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
+Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus the hooks, the skills and the `rigger mcp` lookup server). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
 
 ## Running Rigger on a new project: the checklist
 
 1. `rigger setup` in the repo root.
 2. Check the gates in `.rigger/workflow.yml`: `rigger init` takes them from the gate template set matching your language, and declares none when no set matches - declare your own under `gates:`. The gates must be the same checks CI runs, or the loop green-lights what CI rejects.
-3. Adapt the starter agents: your language's engineer instead of `rust-engineer`, your project's defect classes in the reviewer prompts.
+3. Adapt the starter agents: the implement and checkin stages run the implementer the matching gate template set brings (`rust-engineer` from the Rust set), or the language-neutral `implementer` when no set matches - tune it to your language and project - and put your project's defect classes in the reviewer prompts.
 4. Write a small spec (one or two criteria) and run it end-to-end at `autonomy: auto_notify` with a low `budget`.
 5. Read the run: the decisions emitted, the review verdicts, what integrated. Calibrate prompts and gates against what you see.
 6. Scale up: bigger specs, ratcheted autonomy, raised budget.

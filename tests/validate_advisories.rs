@@ -1,33 +1,27 @@
 //! CLI periphery for spec 68, criterion 4 - VALIDATE ADVISORIES.
 //!
-//! `rigger validate` gains two advisory-only checks (Design):
-//!   (a) INDEX STALENESS - the persisted `symbols` grounding index has drifted from the tree,
-//!       warn and name `rigger reindex`.
-//!   (b) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
-//!       events and file identities left and `rigger reset --derived`, the migration.
+//! `rigger validate` carries advisory-only checks (Design):
+//!   (a) LOG BLOAT - the event log still holds a derived event (spec 107), warn naming the
+//!       events left and `rigger reset --derived`, the delete.
 //!
-//! Both are stderr-only warnings that NEVER change `validate`'s exit status (Design: "advisory-
+//! The symbols index has no staleness advisory: the code store holds the facts grounding reads
+//! and advances itself to the head, so there is no index file to drift.
+//!
+//! Each is a stderr-only warning that NEVER changes `validate`'s exit status (Design: "advisory-
 //! warn, never failing"). These tests drive the compiled binary so the observable surface -
 //! stdout/stderr/exit code - is pinned exactly as an operator sees it.
 //!
-//! What this file OWNS (criterion 4): the two advisories' trigger conditions, their wording (the
-//! staleness kind, the derived events and file identities left, the named fix each names), that
-//! a clean store draws neither and the exit status is unaffected either way, AND boundary-only
+//! What this file OWNS (criterion 4): the advisories' trigger conditions, their wording (the
+//! derived events left, the named fix each names), that a clean store draws
+//! none and the exit status is unaffected either way, AND boundary-only
 //! properties neither advisory's own unit tests can see from inside their module: the LOG BLOAT
 //! advisory's sqlite-only boundary - a server-selected store must draw no warning from a local
 //! events.db sitting beside it, regardless of what that local file holds ("one resolution
 //! authority": `bloat_advisory_for` gates on the resolved `StoreSelection`, exactly like `reset
 //! --derived` itself) - and its COUNT, every derived event of the project's run stream however
-//! its key or type repeats, since `rigger reset --derived` sheds every one of them; plus the
-//! INDEX STALENESS advisory's real on-disk BACK-COMPAT boundary - a genuine
-//! pre-spec-68 `index.json` (missing the `hashes` key entirely, not merely an in-memory struct
-//! built via the current API) must load and stay silent; plus the GRAPH INDEX LAG sample's
-//! candidate set as the operator sees it (spec 107, THE TREE IS READ BY ONE RULE) - a recorded
-//! path outside the walk's scope, or one the read fault makes unreadable, is never named and
-//! takes no slot of the bounded sample. NOT OWNED: the underlying measurement
-//! primitives themselves (`rigger::grounder::symbols::staleness`/`compare_to_tree` and
-//! `rigger::eventstore::sqlite::Store::count_derived`), which carry their own unit tests beside
-//! their implementations.
+//! its key or type repeats, since `rigger reset --derived` deletes every one of them. NOT OWNED: the
+//! underlying measurement primitive itself (`rigger::eventstore::sqlite::Store::count_derived`),
+//! which carries its own unit tests beside its implementation.
 //!
 //! It also owns spec 105's CLAUDE LOGIN report (A PERSON SEES THE HOLD): the auth method
 //! `rigger validate` reads from `claude auth status --json` through the one login reader, the
@@ -38,55 +32,22 @@
 //! in `crates/rigger-driver/src/claude_auth.rs`; its `authMethod` key is tested only here, through
 //! the binary.
 
-mod common;
+use crate::common;
 
 use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
 use common::cli::validate_after_init;
-use rigger::eventstore::{Event, ExpectedRevision};
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymbolIndex};
-use rigger::grounder::symbols::store as symstore;
+use rigger::eventstore::Event;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
 // Harness (mirrors tests/reset_derived_compaction.rs's conventions)
 // ---------------------------------------------------------------------------------------
 
-/// Persist a `symbols` index directly (no tree-sitter needed - the staleness check is ungated),
-/// one entry per `(rel_path, content)`, its hash recorded from the CONTENT GIVEN (so a caller can
-/// hand a hash that does not match what is on disk, to provoke drift deliberately).
-fn persist_index(root: &Path, entries: &[(&str, &str)]) {
-    let mut idx = SymbolIndex::default();
-    for (path, content) in entries {
-        idx.insert_hashed_file(
-            (*path).to_string(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs: vec![Def {
-                    kind: Kind::Function,
-                    name: "f".into(),
-                    line: 1,
-                    end_line: 1,
-                    path: "f".into(),
-                    parent: None,
-                    is_test: false,
-                    is_out_of_line_module: false,
-                    path_override: None,
-                    enclosing_inline_module_path: None,
-                }],
-                refs: vec![],
-                partial: false,
-            },
-            symstore::content_hash(content),
-        );
-    }
-    symstore::save(&idx, root.to_str().unwrap()).unwrap();
-}
-
 /// Seed `root`'s event log with `rounds` recordings of ONE derived-index replay key, in the
-/// project's own namespaced stream - `rounds` derived events of one file identity, each of which
-/// `rigger reset --derived` sheds and the bloat advisory counts.
+/// project's own namespaced stream - `rounds` derived events, each of which `rigger reset
+/// --derived` deletes and the bloat advisory counts.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
     seed_derived_keys(root, &vec!["gc/src/a.rs@h1#0"; rounds]);
 }
@@ -114,8 +75,8 @@ fn seed_derived_events(root: &Path, keys: &[Option<&str>]) {
 }
 
 /// Seed `root`'s event log with ONE recording of `key` under EACH of two DIFFERENT derived-index
-/// types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`): two derived events of the one
-/// file identity `key` names, each of which `rigger reset --derived` sheds.
+/// types (`TYPE_CODE_ENTITY_EXTRACTED` and `TYPE_EDGE_INFERRED`): two derived events, each of
+/// which `rigger reset --derived` deletes.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
@@ -131,8 +92,49 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 }
 
 // ---------------------------------------------------------------------------------------
-// (a) INDEX STALENESS
+// (a) NO INDEX STALENESS ADVISORY
 // ---------------------------------------------------------------------------------------
+
+/// A `.rigger/symbols/index.json` an earlier build left behind, beside a tree it has drifted
+/// from, draws no advisory: nothing reads that file, so there is no index to be stale. Each row
+/// is a drift the retired advisory warned of: an edited file, a file the index lacks and a file
+/// the index holds that the tree no longer does.
+#[test]
+fn validate_has_no_index_staleness_advisory() {
+    let index = r#"{"grammar":"ts-tags-v5","files":{"a.rs":{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":1,"end_line":1,"path":"f"}],"refs":[]},"gone.rs":{"lang":"Rust","defs":[],"refs":[]}},"hashes":{"a.rs":"ca21bc77c906456a","gone.rs":"cbf29ce484222325"}}"#;
+    let drifts: [(&str, &[(&str, &str)]); 3] = [
+        (
+            "an edited file",
+            &[("a.rs", "fn onemodified() {}\n"), ("gone.rs", "")],
+        ),
+        (
+            "a file the index lacks",
+            &[
+                ("a.rs", "fn f() {}\n"),
+                ("gone.rs", ""),
+                ("b.rs", "fn two() {}\n"),
+            ],
+        ),
+        ("a file the tree lost", &[("a.rs", "fn f() {}\n")]),
+    ];
+    for (drift, files) in drifts {
+        let err = validate_stderr_after(|root| {
+            let planted = root.join(".rigger").join("symbols");
+            std::fs::create_dir_all(&planted).unwrap();
+            std::fs::write(planted.join("index.json"), index).unwrap();
+            for (name, content) in files {
+                std::fs::write(root.join(name), content).unwrap();
+            }
+        });
+        let lower = err.to_lowercase();
+        assert!(
+            !lower.contains("symbols grounding index")
+                && !lower.contains("reindex")
+                && !lower.contains("drifted"),
+            "{drift}: validate must not advise on a symbols index; stderr:\n{err}"
+        );
+    }
+}
 
 /// `rigger validate`'s stderr over a fresh `rigger init` project that `prepare` then edited;
 /// validate must still succeed - an advisory never fails its exit status.
@@ -143,169 +145,37 @@ fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
     err
 }
 
-/// Validate's stderr after `prepare` carries an advisory naming (case-insensitively) at least one
-/// of `any_of` (`warning_why`), and every `(needle, why)` of `names` - the fix it points at among
-/// them.
-fn assert_validate_advises(
-    prepare: impl FnOnce(&Path),
-    any_of: &[&str],
-    warning_why: &str,
-    names: &[(&str, &str)],
-) {
-    let err = validate_stderr_after(prepare);
-    let lower = err.to_lowercase();
-    assert!(
-        any_of.iter().any(|w| lower.contains(w)),
-        "{warning_why}; stderr:\n{err}"
-    );
-    for (needle, why) in names {
-        assert!(err.contains(needle), "{why}; stderr:\n{err}");
-    }
-}
-
-rigger::test_cases! {
-    /// Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
-    /// reindexing - the drift a path-set-only check cannot see (same path, changed content).
-    validate_warns_of_index_staleness_and_names_reindex: assert_validate_advises(
-        |root| {
-            std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
-            persist_index(root, &[("a.rs", "fn one() {}\n")]);
-            std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
-        },
-        &["drift", "stale"],
-        "validate must warn that the symbols index has drifted",
-        &[(
-            "rigger reindex",
-            "the staleness warning must name `rigger reindex` as the fix",
-        )],
-    );
-    /// The `symbols` feature is what compiles the extraction pass the advisory needs to find
-    /// `fn original() {}`/`fn renamed() {}` as real definitions in the first place: the light
-    /// lane's `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX
-    /// STALENESS counterpart is NOT (that one is content-hash-only, ungated) - so this positive
-    /// case is `symbols`-only; the two SILENT cases below hold in both lanes (the light lane
-    /// samples nothing, whatever the log records).
-    ///
-    /// The log's latest entry records churn.rs's ORIGINAL content, then the file was edited on disk
-    /// without an integration ever reindexing it - the exact drift the audit
-    /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a recorded generation the
-    /// tree has since moved past.
-    #[cfg(feature = "symbols")]
-    validate_warns_of_graph_index_lag_and_names_graph_build: assert_validate_advises(
-        |root| {
-            std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
-            seed_graph_generation(root, "churn.rs");
-            std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
-        },
-        &["context graph", "graph index lag", "fallen behind"],
-        "validate must warn that the context graph has fallen behind",
-        &[
-            ("churn.rs", "the warning must name the lagging file"),
-            (
-                "Run `rigger graph build` to refresh it.",
-                "the graph-lag warning must name `rigger graph build`, which records and folds \
-                 the lagging entry, as the fix",
-            ),
-        ],
-    );
-}
-
-#[test]
-fn validate_is_silent_on_index_staleness_when_the_index_matches_the_tree() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err) = validate_after_init(root, |root| {
-        let content = "fn one() {}\n";
-        std::fs::write(root.join("a.rs"), content).unwrap();
-        persist_index(root, &[("a.rs", content)]);
-    });
-    assert!(
-        !err.contains("rigger reindex"),
-        "an index that matches the tree must draw no staleness warning; stderr:\n{err}"
-    );
-}
-
-#[test]
-fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
-    // `SymbolIndex` gained a persisted `hashes` field (spec 68) alongside its pre-existing
-    // `files` field. An index written by a binary from BEFORE this field existed has no
-    // "hashes" key at all on disk. This drives the REAL persisted file (not an in-memory
-    // struct built via the current `insert_hashed_file`) through the compiled binary, proving an
-    // operator's pre-upgrade index still loads without crashing and never manufactures a
-    // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
-    // load, and every path's hash reads as "unknown", which is nothing to compare against.
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    let content = "fn one() {}\n";
-    std::fs::write(root.join("a.rs"), content).unwrap();
-    persist_index(root, &[("a.rs", content)]);
-
-    // Strip the "hashes" key from the REAL persisted file, simulating exactly what a
-    // pre-spec-68 binary would have written - every other field of `SymbolIndex` predates
-    // this spec, so the rest of the file is unchanged.
-    let index_path = root.join(".rigger").join("symbols").join("index.json");
-    let raw = std::fs::read_to_string(&index_path).expect("read the persisted index");
-    let mut value: serde_json::Value = serde_json::from_str(&raw).expect("index is valid JSON");
-    value
-        .as_object_mut()
-        .expect("a symbols index serializes as a JSON object")
-        .remove("hashes");
-    std::fs::write(&index_path, serde_json::to_string(&value).unwrap())
-        .expect("rewrite the index without its hashes field");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed against a pre-upgrade index; stderr:\n{err}"
-    );
-    assert!(
-        !err.contains("rigger reindex"),
-        "a pre-upgrade index missing the hashes field must never manufacture a false \
-         staleness warning from the absence alone; stderr:\n{err}"
-    );
-}
-
 // ---------------------------------------------------------------------------------------
-// (b) LOG BLOAT
+// (a) LOG BLOAT
 // ---------------------------------------------------------------------------------------
 
 /// Validate over an initialized project whose log `seed` shaped exits 0 and warns of log bloat
-/// exactly once, on the line naming `events` derived events of `identities` file identities
-/// left and `rigger reset --derived` (`why`).
-fn assert_validate_warns_of_log_bloat(
-    seed: impl FnOnce(&Path),
-    events: usize,
-    identities: usize,
-    why: &str,
-) {
+/// exactly once, on the line naming `events` derived events left and `rigger reset --derived`
+/// (`why`).
+fn assert_validate_warns_of_log_bloat(seed: impl FnOnce(&Path), events: usize, why: &str) {
     let err = validate_stderr_after(seed);
     assert_eq!(
         common::cli::bloat_lines(&err),
-        [common::cli::bloat_advisory_naming(events, identities)],
+        [common::cli::bloat_advisory_naming(events)],
         "{why}; stderr:\n{err}"
     );
 }
 
 rigger::test_cases! {
-    /// Any derived event is one the migration sheds, so a single recording already warns: no
+    /// Any derived event is one the delete removes, so a single recording already warns: no
     /// threshold stands between a store holding a derived event and its advisory.
     validate_warns_of_log_bloat_on_a_log_holding_one_derived_event: assert_validate_warns_of_log_bloat(
         |root| seed_duplicated_key(root, 1),
         1,
-        1,
-        "one derived event of one file identity is named",
+        "one derived event is named",
     );
     validate_warns_of_log_bloat_counting_every_recording_of_one_key: assert_validate_warns_of_log_bloat(
         |root| seed_duplicated_key(root, 6),
         6,
-        1,
-        "six recordings of one key are six derived events of one file identity",
+        "six recordings of one key are six derived events",
     );
     /// A log whose every key is recorded once but which holds six generations of one file is
-    /// six derived events of that one identity: the migration sheds all six, the latest too.
+    /// six derived events: the delete removes all six, the latest too.
     validate_warns_of_log_bloat_on_a_log_holding_only_superseded_generations: assert_validate_warns_of_log_bloat(
         |root| seed_derived_keys(
             root,
@@ -319,58 +189,28 @@ rigger::test_cases! {
             ],
         ),
         6,
-        1,
-        "six generations of one file are six derived events of one file identity",
+        "six generations of one file are six derived events",
     );
     /// The same replay key recorded once under two different derived types is two derived
-    /// events, both shed by `rigger reset --derived`, of the one identity the key names.
+    /// events, both deleted by `rigger reset --derived`.
     validate_warns_of_log_bloat_counting_a_key_recorded_under_two_derived_types: assert_validate_warns_of_log_bloat(
         |root| seed_key_under_two_covered_types(root, "gc/src/a.rs@h1#0"),
         2,
-        1,
-        "one key under two derived types is two derived events of one file identity",
+        "one key under two derived types is two derived events",
     );
-    /// A file identity is its prefix and file, so a `gc` and a `gd` batch of one file are two
-    /// and a second file a third.
-    validate_warns_of_log_bloat_naming_each_file_identity_once: assert_validate_warns_of_log_bloat(
+    /// The derived events of every file count: a `gc` and a `gd` batch of one file and a batch of
+    /// a second file are three.
+    validate_warns_of_log_bloat_counting_the_derived_events_of_every_file: assert_validate_warns_of_log_bloat(
         |root| seed_derived_keys(root, &["gc/src/a.rs@h1#0", "gc/src/b.rs@h1#0", "gd/src/a.rs@d1#0"]),
         3,
-        3,
-        "three recordings of three identities, a gc and a gd batch of one file being two",
+        "three recordings over two files and two prefixes are three derived events",
     );
     /// A derived event is left whether or not it names a file identity: a log whose derived
-    /// events all carry no replay key holds two events of no identity, and is warned of.
+    /// events all carry no replay key holds two derived events, and is warned of.
     validate_warns_of_log_bloat_on_a_log_whose_derived_events_all_name_no_identity: assert_validate_warns_of_log_bloat(
         |root| seed_derived_events(root, &[None, None]),
         2,
-        0,
-        "two derived events naming no identity are two derived events of no file identity",
-    );
-}
-
-/// A log whose perception is recorded as ledger entries alone holds no derived event: the state
-/// `rigger reset --derived` leaves a store in, which draws no bloat warning.
-#[test]
-fn validate_is_silent_on_log_bloat_when_the_log_holds_ledger_entries_and_no_derived_event() {
-    let err = validate_stderr_after(|root| {
-        common::cli::seed_run_events(root, &[("RunStarted", "{}")]);
-        common::cli::with_run_store(root, |store| {
-            store
-                .append(
-                    rigger::conductor::STREAM,
-                    ExpectedRevision::Any,
-                    &[
-                        common::fixtures::generation_ingested("gc", "src/a.rs", "h1", "", false)
-                            .event(1),
-                    ],
-                )
-                .unwrap();
-        });
-    });
-    assert_eq!(
-        common::cli::bloat_lines(&err),
-        [""; 0],
-        "a ledger entry is no derived event; stderr:\n{err}"
+        "two derived events naming no identity are two derived events",
     );
 }
 
@@ -417,183 +257,6 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
         "a server-selected store must draw no bloat warning from a local events.db sitting \
          beside it, whatever derived events it holds; stderr:\n{err}"
     );
-}
-
-// ---------------------------------------------------------------------------------------
-// (c) GRAPH INDEX LAG (spec 92 criterion 1, FRESH ON EVERY INTEGRATION)
-// ---------------------------------------------------------------------------------------
-
-/// Record the ledger entry of `file`'s `gc` batch at the generation its CURRENT bytes extract
-/// to in the project's own run stream, by a plain append that folds nothing and builds no
-/// `graph.db`, so the advisory compares the log's side alone (spec 107). A caller who seeds a
-/// file's current content and never edits it afterward records a log that agrees with the tree;
-/// editing the file afterward (without re-seeding) is what provokes disagreement. Where no
-/// extraction is compiled the entry names a generation nothing extracts to, and the advisory
-/// samples nothing.
-fn seed_graph_generation(root: &Path, file: &str) {
-    #[cfg(feature = "symbols")]
-    let generation = common::fixtures::code_generation_now(root, file);
-    #[cfg(not(feature = "symbols"))]
-    let generation = "unextracted".to_string();
-    common::cli::seed_run_events(root, &[("RunStarted", "{}")]);
-    common::cli::with_run_store(root, |store| {
-        common::fixtures::record_unfolded_entry(store, file, &generation)
-    });
-    assert!(
-        !rigger_file(root, "graph.db").exists(),
-        "premise: no graph.db stands, so the log's side alone is compared"
-    );
-}
-
-/// A project `prepare` left in a state with nothing to compare, or nothing that disagrees, draws
-/// no graph index-lag warning from validate (`why`).
-fn assert_validate_is_silent_on_graph_index_lag(prepare: impl FnOnce(&Path), why: &str) {
-    let err = validate_stderr_after(prepare);
-    assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "{why}; stderr:\n{err}"
-    );
-}
-
-rigger::test_cases! {
-    /// The log's latest entry records churn.rs's CURRENT content, and it is never edited
-    /// afterward - exactly what an integration that just reindexed it leaves behind.
-    validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree:
-        assert_validate_is_silent_on_graph_index_lag(
-            |root| {
-                std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
-                seed_graph_generation(root, "churn.rs");
-            },
-            "a graph that agrees with the tree must draw no index-lag warning",
-        );
-    /// No recording of a `gc` identity was ever made (no integration has run yet) - there is
-    /// nothing to compare, so this must never manufacture a warning from the mere absence of one.
-    validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing:
-        assert_validate_is_silent_on_graph_index_lag(
-            |root| std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap(),
-            "a project the graph has never indexed must draw no index-lag warning",
-        );
-}
-
-/// Plant each of `files` under `root` as a small Rust source and record a STALE `gc` generation
-/// of every one (`gc/<file>@stale#0`, a generation no extraction yields), so the advisory names
-/// every one of them the sample takes as a candidate: a recorded path the advisory leaves out
-/// was never sampled.
-#[cfg(feature = "symbols")]
-fn plant_stale_recordings(root: &Path, files: &[&str]) {
-    for file in files {
-        common::fixtures::write_file(&root.join(file), b"fn planted() {}\n");
-    }
-    let keys: Vec<String> = files
-        .iter()
-        .map(|file| format!("gc/{file}@stale#0"))
-        .collect();
-    seed_derived_keys(root, &keys.iter().map(String::as_str).collect::<Vec<_>>());
-}
-
-/// `stderr` carries exactly ONE graph index-lag advisory line, the one naming `files` in that
-/// order (`why`).
-#[cfg(feature = "symbols")]
-fn assert_names_as_lagging(stderr: &str, files: &[&str], why: &str) {
-    assert_eq!(
-        common::cli::index_lag_lines(stderr),
-        vec![common::cli::index_lag_advisory(files).as_str()],
-        "{why}; stderr:\n{stderr}"
-    );
-}
-
-/// Validate's stderr over a fresh `rigger init` project holding a stale recording of each of
-/// `files` names exactly `lagging` (`why`); the project is handed back for a second act.
-#[cfg(feature = "symbols")]
-fn project_validated_with_stale_recordings(
-    files: &[&str],
-    lagging: &[&str],
-    why: &str,
-) -> tempfile::TempDir {
-    let dir = temp_rigger_project();
-    let (_out, err) = validate_after_init(dir.path(), |root| plant_stale_recordings(root, files));
-    assert_names_as_lagging(&err, lagging, why);
-    dir
-}
-
-/// A later `rigger validate` in `root` still exits 0 and names exactly `lagging` (`why`).
-#[cfg(feature = "symbols")]
-fn assert_validate_now_names_as_lagging(root: &Path, lagging: &[&str], why: &str) {
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must exit 0 (an advisory never fails it); stderr:\n{err}"
-    );
-    assert_names_as_lagging(&err, lagging, why);
-}
-
-/// Given a graph that recorded a path under a hidden directory and one a committed `.gitignore`
-/// comes to name, when the operator validates, then the advisory names only the recorded paths
-/// inside the walk's scope (spec 107, THE TREE IS READ BY ONE RULE): the ignored path is named
-/// until the `.gitignore` names it and never after, and the hidden one never.
-#[cfg(feature = "symbols")]
-#[test]
-fn validate_samples_no_recorded_path_outside_the_walk_scope() {
-    let dir = project_validated_with_stale_recordings(
-        &[".hidden/h.rs", "ignored.rs", "kept.rs"],
-        &["ignored.rs", "kept.rs"],
-        "the two recorded paths inside the scope are sampled and the hidden one is not",
-    );
-    let root = dir.path();
-
-    let gitignore = root.join(".gitignore");
-    let mut rules = std::fs::read_to_string(&gitignore).unwrap_or_default();
-    rules.push_str("ignored.rs\n");
-    std::fs::write(&gitignore, rules).unwrap();
-
-    assert_validate_now_names_as_lagging(
-        root,
-        &["kept.rs"],
-        "a recorded path the committed .gitignore names is sampled no more",
-    );
-}
-
-/// Given a graph that recorded a file THE READ FAULT then makes unreadable, when the operator
-/// validates, then validate still exits 0 and the advisory names only the readable recording:
-/// the unreadable one is named until the fault is armed and never after.
-#[cfg(feature = "symbols")]
-#[test]
-fn validate_samples_no_recorded_path_the_read_fault_makes_unreadable() {
-    let dir = project_validated_with_stale_recordings(
-        &["kept.rs", "locked.rs"],
-        &["kept.rs", "locked.rs"],
-        "both recorded paths are sampled while both can be read",
-    );
-    let root = dir.path();
-
-    if !common::fixtures::arm_read_fault(&root.join("locked.rs")) {
-        return;
-    }
-
-    assert_validate_now_names_as_lagging(
-        root,
-        &["kept.rs"],
-        "the recorded path the read fault makes unreadable is sampled no more",
-    );
-}
-
-rigger::test_cases! {
-    /// A recorded path outside the walk's scope is left OUT of the candidates, never merely filtered
-    /// from the answer, so it takes no slot of the bounded sample: with a hidden recording sorting
-    /// ahead of nine in-scope ones, the advisory names the first eight in-scope paths - the eighth
-    /// (`h.rs`) is the one a slot spent on the hidden path would cost, and the ninth (`i.rs`) is the
-    /// one past the bound.
-    #[cfg(feature = "symbols")]
-    validate_spends_no_sample_slot_on_a_recorded_path_outside_the_walk_scope:
-        project_validated_with_stale_recordings(
-            &[
-                ".hidden/first.rs", "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
-                "i.rs",
-            ],
-            &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs"],
-            "the hidden recording takes no sample slot and the ninth in-scope path is past the \
-             bound",
-        );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -672,7 +335,7 @@ fn validate_is_silent_on_a_gated_scaffolded_fanout_template() {
 // ---------------------------------------------------------------------------------------
 
 #[test]
-fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_advisory() {
+fn a_clean_store_with_no_derived_event_draws_neither_advisory() {
     let dir = temp_rigger_project();
     let root = dir.path();
     // No persisted symbols index at all, and no seeded event log - the state `rigger init`
@@ -682,18 +345,10 @@ fn a_clean_store_with_no_symbols_index_and_no_derived_event_draws_neither_adviso
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"
     );
-    assert!(
-        !err.contains("rigger reindex"),
-        "a project with no persisted symbols index must draw no staleness warning; stderr:\n{err}"
-    );
     assert_eq!(
         common::cli::bloat_lines(&err),
         [""; 0],
         "a project holding no derived event must draw no bloat warning; stderr:\n{err}"
-    );
-    assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "a project the graph has never indexed must draw no graph-index-lag warning; stderr:\n{err}"
     );
     assert!(
         !err.contains("declares no gates"),
@@ -1007,4 +662,35 @@ fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() 
         );
         assert_reports_the_claude_login(name, &out, &err, lines, warnings);
     }
+}
+
+/// GIVEN a freshly initialised project with no `graph.db`, WHEN the operator runs `rigger
+/// validate`, THEN it succeeds, prints its config summary, and leaves `graph.db` absent: a
+/// read-only check never fabricates the file it would have read.
+#[test]
+fn validate_never_fabricates_a_graph_db_on_a_fresh_project() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let graph_path = root.join(".rigger").join("graph.db");
+    assert!(
+        !graph_path.exists(),
+        "precondition: a fresh project has no graph.db yet"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "validate must succeed on a project with no graph.db yet; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        !graph_path.exists(),
+        "a read-only advisory must never fabricate the graph.db file it would have read; the \
+         file must stay absent afterward"
+    );
 }

@@ -1,28 +1,19 @@
-//! The concepts lens's tests: [`rigger_domain::concepts`] reached through the facade, beside the
-//! sqlite projector its rebuild-from-the-log test folds into.
+//! The concepts lens's tests: [`rigger_domain::concepts`] reached through the facade.
 
 pub use rigger_domain::concepts::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    use crate::contextgraph::sqlite::Projector;
     use crate::contextgraph::{
         Graph, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_EXPLAINS, REL_GOVERNS,
         REL_SPECIFIES,
     };
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    use crate::eventstore::Event;
+    use crate::contextgraph::{KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
     use crate::test_support::edge;
     use crate::test_support::node_with_optional_attrs;
-    use std::collections::BTreeMap;
-    // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
-    // sqlite-backed rebuild test above, gated the same way for the same reason.
-    use crate::contextgraph::{KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    use crate::contextgraph::{REL_IN_COMMUNITY, REL_REALIZES};
     use crate::test_support::pair_map;
+    use std::collections::BTreeMap;
 
     /// The canonical spec-54 intent fixture: TWO documents governing DISJOINT code regions, each
     /// region spanning TWO directories (so a concept groups a doc WITH its code across directory
@@ -237,7 +228,7 @@ mod tests {
     #[test]
     fn derivation_is_byte_identical_across_runs() {
         // Determinism: two independent derivations of the same intent layer produce equal members,
-        // equal concepts, an equal hash, and byte-identical events.
+        // equal concepts and an equal hash.
         let g = intent_fixture();
         let d1 = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
         let d2 = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
@@ -250,11 +241,6 @@ mod tests {
             "concepts + labels are byte-identical"
         );
         assert_eq!(d1.hash, d2.hash, "the pass hash is byte-identical");
-
-        let ev = |d: &Derivation| -> Vec<(String, Vec<u8>)> {
-            events(d).into_iter().map(|e| (e.type_, e.data)).collect()
-        };
-        assert_eq!(ev(&d1), ev(&d2), "the recorded events are byte-identical");
     }
 
     #[test]
@@ -269,76 +255,5 @@ mod tests {
         let m = pair_map(&d.members);
         assert_eq!(labels[&m["docs/kg.md"]], "The knowledge graph");
         assert_eq!(labels[&m["docs/review.md"]], "Review adjudication");
-    }
-
-    // Needs a real sqlite-backed EventStore for its rebuild-from-log verification, so it moves
-    // with the `Projector` import above under `#[cfg(any(feature = "store", not(feature =
-    // "core")))]` - the derive/fold logic it exercises is otherwise fully covered by this
-    // module's other (pure) tests.
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    #[test]
-    fn a_rebuild_from_the_recorded_events_reproduces_identical_membership() {
-        // The event-sourced claim: folding the recorded events into a FRESH projection reproduces the
-        // derivation's membership WITHOUT re-running the pass, and a second fresh rebuild reproduces
-        // the SAME rows - so the grouping is a rebuildable projection of the log.
-        let g = intent_fixture();
-        let d = derive(&g, &intent_layer(&g), DEFAULT_RESOLUTION);
-        let evs = events(&d);
-
-        // The members a concept attaches to are nodes the graph holds (spec 101: an attachment on
-        // a node the graph does not hold is not live); a decision naming them holds them.
-        let held: Vec<&str> = d.members.iter().map(|(m, _)| m.as_str()).collect();
-        let rebuild = |events: &[Event]| -> BTreeMap<String, String> {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("graph.db");
-            let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
-            crate::test_support::apply_decision(&p, 900_000, "d-hold", "members", &held, "");
-            for (i, e) in events.iter().enumerate() {
-                let mut e = e.clone();
-                e.position = i as u64 + 1;
-                crate::test_support::folds(&p, std::slice::from_ref(&e));
-            }
-            // Read the folded REALIZES membership: <member> --REALIZES--> <concept>.
-            p.whole()
-                .unwrap()
-                .edges
-                .into_iter()
-                .filter(|e| e.rel == REL_REALIZES)
-                .map(|e| (e.from, e.to))
-                .collect()
-        };
-
-        let expected: BTreeMap<String, String> = d.members.iter().cloned().collect();
-        let first = rebuild(&evs);
-        assert_eq!(
-            first, expected,
-            "the folded REALIZES edges reproduce the derivation's membership"
-        );
-        let second = rebuild(&evs);
-        assert_eq!(
-            second, first,
-            "a second rebuild reproduces identical membership"
-        );
-
-        // No IN_COMMUNITY edge is minted by the concepts fold (it records only its own relation).
-        let no_community = {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("graph.db");
-            let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
-            for (i, e) in evs.iter().enumerate() {
-                let mut e = e.clone();
-                e.position = i as u64 + 1;
-                crate::test_support::folds(&p, std::slice::from_ref(&e));
-            }
-            p.whole()
-                .unwrap()
-                .edges
-                .iter()
-                .all(|e| e.rel != REL_IN_COMMUNITY)
-        };
-        assert!(
-            no_community,
-            "the concepts fold records only REALIZES edges"
-        );
     }
 }

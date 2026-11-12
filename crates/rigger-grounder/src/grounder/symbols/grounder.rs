@@ -1,17 +1,25 @@
-//! The `symbols` grounder (spec 15, unit 4): the `Grounder` port over the persisted symbol
-//! index, serving the PRECISE grounding contract (architecture 5.5.6). It ranks a DEFINITION
+//! The `symbols` grounder (spec 15, unit 4): the `Grounder` port over the code store's view of
+//! the head, serving the PRECISE grounding contract (architecture 5.5.6). It ranks a DEFINITION
 //! whose name matches the query above a mere REFERENCE, above an incidental prose mention
-//! (which is not indexed as a symbol at all, so it never appears). Selection is wired in
-//! `grounder_for` / `main::select_grounder`; this module is the consumer of units 1-3's model,
-//! extraction, registry, and store.
+//! (which the view does not hold as a symbol at all, so it never appears). Selection is wired in
+//! `grounder_for` / `main::select_grounder`.
+//!
+//! Every read opens the view of the head as it stands then ([`OpenCodeView`]), so a grounder that
+//! lives across merges follows the store as merges advance it, and serves the code files the
+//! caller's worktree agrees with the view on: a file that differs is withheld (the code store's
+//! honesty rule, invariant 2), and every file is when the worktree cannot be compared.
 
-use crate::grounder::symbols::model::{percentile_cutoff, Lang, SymbolIndex};
-use crate::grounder::symbols::{build_index, reindex_files, store};
-use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
+use crate::facts::DirectoryHead;
+use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
+use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref, StampedRadius};
+use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
+use rigger_domain::code_view::{
+    CodeView, DefRef, FactsView, FileRef, Head, MentionRef, OpenCodeView, Tests, Withheld,
+};
+use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
 
 /// The percentile of the tree-wide name-ambiguity distribution above which a name counts as
 /// AMBIGUOUS for the ranked-by-intent page (spec 92 criterion 3): drawn from the repo's OWN
@@ -19,82 +27,224 @@ use std::sync::Mutex;
 /// most-defined names is down-weighted.
 const AMBIGUITY_PERCENTILE: f64 = 0.90;
 
-/// The `symbols` grounder over the persisted index. `open` loads the persisted index (building and
-/// persisting it on a cold start); `ground` ranks name matches by the precise contract; `reindex`
-/// re-parses ONLY the files whose content actually changed, keyed on the line-ending-normalized
-/// [`store::content_hash`] (the freshening gate). The in-memory index is behind a `Mutex` so the
-/// grounder is `Send + Sync` (the trait bound) and concurrent `ground`s serialize their read.
+/// The `symbols` grounder over the code store's view of the head. `ground` ranks name matches by
+/// the precise contract; every method reads the view afresh, so there is nothing to freshen after a
+/// unit integrates: the conductor advances the store after each landed merge.
 pub struct Symbols {
-    /// The project root the index was built over - the same root `store::save`/`load` key on, and
-    /// the root `reindex` resolves each relative file against.
+    /// The caller's worktree: the tree the text search and the path checks read, and the one the
+    /// head's view is compared with.
     root: String,
-    /// An explicit `--language` override applied to every file, or `None` to auto-detect by
-    /// extension (threaded into `index_one_file`, exactly as `build_index` does).
-    override_lang: Option<Lang>,
-    /// The in-memory index served by `ground` and freshened by `reindex`.
-    idx: Mutex<SymbolIndex>,
-    /// Per-file content fingerprints (`rel_path -> content_hash`) the reindex freshening gate keys
-    /// on to skip a named-but-unchanged file. Seeded lazily (empty at `open`): a file's first
-    /// reindex always re-parses (fingerprint absent -> treated as changed, the safe default), and
-    /// a later reindex whose content hashes equal is skipped. Process-local by design - it gates
-    /// only redundant work, never correctness, so it need not survive a process (the persisted
-    /// index already does).
-    fingerprints: Mutex<BTreeMap<String, String>>,
+    heads: Box<dyn OpenCodeView>,
 }
 
 impl Symbols {
-    /// Open the grounder over `root`: load the persisted index, or - on a cold start - build it
-    /// over the tree and persist it so the next process loads instead of rebuilding. A corrupt or
-    /// absent artifact loads as `None` and is transparently rebuilt (never a crash).
-    pub fn open(root: &str, override_lang: Option<Lang>) -> Symbols {
-        let idx = store::load(root).unwrap_or_else(|| {
-            let built = build_index(root, override_lang);
-            // Best-effort persist: a write failure (e.g. a read-only tree) must not stop grounding
-            // from the in-memory index we just built; the next open simply rebuilds.
-            let _ = store::save(&built, root);
-            built
-        });
+    /// The grounder for the worktree at `root`, reading the view `heads` opens.
+    pub fn over(root: &str, heads: Box<dyn OpenCodeView>) -> Symbols {
         Symbols {
             root: root.to_string(),
-            override_lang,
-            idx: Mutex::new(idx),
-            fingerprints: Mutex::new(BTreeMap::new()),
+            heads,
         }
+    }
+
+    /// The grounder of a project with no git, read from the directory at `root`.
+    pub fn in_directory(root: &str) -> Symbols {
+        Symbols::over(root, Box::new(DirectoryHead::new(Path::new(root))))
+    }
+
+    /// `read` over the head's view as it stands now, less the files `root` puts in doubt, with
+    /// the label of that same head: ONE open of the store gives both, so the label always
+    /// describes the tree the answer came from. A head that cannot be read is a worktree that
+    /// cannot be compared and more: every file is withheld, over a view that holds none, so the
+    /// radius falls back to the text search, and the label names the failure.
+    fn read_labelled<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label) {
+        let (answer, label, _tree) = self.read_opened(read);
+        (answer, label)
+    }
+
+    /// [`Symbols::read_labelled`] with the id of the tree that same open read ([`UNREAD_TREE`]
+    /// when the head cannot be read): the one open every read makes.
+    fn read_opened<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> (T, Label, String) {
+        let head = self.heads.head(Path::new(&self.root));
+        self.read_head(head.as_ref().map_err(String::as_str), read)
+    }
+
+    /// [`Symbols::read_opened`] over `head`, an open already made, so a caller that reads the same
+    /// open elsewhere reads one tree in both.
+    fn read_head<T>(
+        &self,
+        head: Result<&Head, &str>,
+        read: impl FnOnce(&Sight<'_>) -> T,
+    ) -> (T, Label, String) {
+        let worktree = self.root.clone();
+        match head {
+            Ok(head) => {
+                let withheld = Withheld::of(head.diff.clone());
+                let tip = &head.view.stamp().tip;
+                let label = Label::describing(tip, worktree, &withheld, head.behind.clone());
+                let tree = tip.tree.clone();
+                (read(&Sight::new(&*head.view, withheld)), label, tree)
+            }
+            Err(reason) => (
+                read(&Sight::new(&unread_view(), Withheld::All)),
+                Label::unopened(worktree, reason),
+                UNREAD_TREE.to_string(),
+            ),
+        }
+    }
+
+    /// [`Symbols::read_labelled`] without the label.
+    fn read<T>(&self, read: impl FnOnce(&Sight<'_>) -> T) -> T {
+        self.read_labelled(read).0
+    }
+
+    /// [`Grounder::seed`] over one read's `sight`.
+    fn seed_in(&self, sight: &Sight<'_>, query: &str, k: usize) -> Vec<String> {
+        if query.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let terms = code_terms(query);
+        let mut seed: Vec<String> = Vec::new();
+        let mut add = |file: &str| {
+            if !seed.iter().any(|s| s == file) {
+                seed.push(file.to_string());
+            }
+        };
+        for t in &terms.paths {
+            let served: Vec<&str> = sight
+                .files()
+                .map(|f| f.path)
+                .filter(|p| names_path(p, t))
+                .collect();
+            if served.is_empty() && held_in_tree(&self.root, t) {
+                add(t);
+            }
+            served.into_iter().for_each(&mut add);
+        }
+        let mut named: Vec<Vec<&str>> = terms
+            .names
+            .iter()
+            .map(|n| definers(sight, &n.name))
+            .collect();
+        named.sort_by_key(Vec::len);
+        named.into_iter().flatten().for_each(&mut add);
+        scored_hits(sight, &query_terms(query))
+            .into_iter()
+            .filter(|h| !h.test)
+            .take(k)
+            .for_each(|h| add(&h.file));
+        seed.truncate(k);
+        seed
     }
 }
 
-/// The reindex freshening gate: given the remembered per-file `fingerprints`, return the subset of
-/// `files` whose CURRENT content differs from the remembered [`store::content_hash`] - the files a
-/// reindex must actually re-parse - and update `fingerprints` to the fresh hashes. A file whose
-/// content is unchanged (including one that changed ONLY its line endings, which `content_hash`
-/// normalizes away) is filtered out, so reindex re-parses and re-persists ONLY genuinely-changed
-/// files. A file that cannot be read (deleted/unreadable) is returned as changed with its stale
-/// fingerprint dropped, so the shared `index_one_file` authority still runs for it and REMOVES its
-/// entry - the deleted file's stale symbols are purged, leaving the index equal to a fresh
-/// whole-tree build that never visits it.
-fn changed_files(
-    root: &str,
-    files: &[String],
-    fingerprints: &mut BTreeMap<String, String>,
-) -> Vec<String> {
-    let mut changed = Vec::new();
-    for rel in files {
-        let abs = Path::new(root).join(rel);
-        match std::fs::read_to_string(&abs) {
-            Ok(src) => {
-                let hash = store::content_hash(&src);
-                if fingerprints.get(rel) != Some(&hash) {
-                    fingerprints.insert(rel.clone(), hash);
-                    changed.push(rel.clone());
-                }
-            }
-            Err(_) => {
-                fingerprints.remove(rel);
-                changed.push(rel.clone());
-            }
+/// The tree id of the view a head that cannot be read stands in for.
+const UNREAD_TREE: &str = "unread";
+
+/// The view a head that cannot be read stands in for: it holds no file.
+fn unread_view() -> FactsView {
+    let tip = Tip {
+        head: String::new(),
+        commit: None,
+        tree: UNREAD_TREE.to_string(),
+    };
+    FactsView::new(
+        Stamp {
+            tip,
+            fingerprint: 0,
+            seq: 0,
+        },
+        Vec::new(),
+    )
+}
+
+/// What one read sees: the head's view, less the files its worktree puts in doubt. Only code-half
+/// files are served: the design and workflow halves hold no symbols.
+struct Sight<'v> {
+    view: &'v dyn CodeView,
+    withheld: Withheld,
+    /// Whether this sight serves the withheld code files instead: what a read counts as withheld.
+    inverted: bool,
+}
+
+impl<'v> Sight<'v> {
+    fn new(view: &'v dyn CodeView, withheld: Withheld) -> Self {
+        Sight {
+            view,
+            withheld,
+            inverted: false,
         }
     }
-    changed
+
+    /// The code files this sight withholds, served as a sight of their own, so a read counts the
+    /// hits it withheld by the same pass that finds the hits it serves.
+    fn withheld_part(&self) -> Sight<'v> {
+        Sight {
+            view: self.view,
+            withheld: self.withheld.clone(),
+            inverted: true,
+        }
+    }
+
+    /// Whether the file at `path` is withheld from this read.
+    fn withholds(&self, path: &str) -> bool {
+        self.withheld.withholds_file(path)
+    }
+
+    fn serves(&self, file: &FileRef<'_>) -> bool {
+        file.half == Half::Code && self.withholds(file.path) == self.inverted
+    }
+
+    /// Whether the radius must text-search the names the view resolves: some file is withheld, so
+    /// a reference in it may be one the view does not hold.
+    fn has_withheld_files(&self) -> bool {
+        !self.withheld.withholds_nothing()
+    }
+
+    /// The served files, in path order.
+    fn files(&self) -> impl Iterator<Item = FileRef<'v>> + '_ {
+        let view = self.view;
+        view.files().filter(move |f| self.serves(f))
+    }
+
+    /// The served definitions named `leaf`.
+    fn defs_named(&self, leaf: &str) -> impl Iterator<Item = DefRef<'v>> + '_ {
+        let view = self.view;
+        view.defs_named(leaf).filter(move |d| self.serves(&d.file))
+    }
+
+    /// The served call references to `leaf`: no tagged reference (spec 117) counts, ranks or
+    /// places a file.
+    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+        let view = self.view;
+        view.mentions_named(leaf)
+            .filter(move |m| m.kind == MentionKind::Call && self.serves(&m.file))
+    }
+
+    /// How many definitions named `name` the served files of `lang` hold, and with `count_refs`
+    /// the call references to it too.
+    fn occurrences(&self, name: &str, lang: &str, count_refs: bool) -> usize {
+        let defs = self
+            .defs_named(name)
+            .filter(|d| d.file.lang == lang)
+            .count();
+        if !count_refs {
+            return defs;
+        }
+        defs + self
+            .calls_named(name)
+            .filter(|m| m.file.lang == lang)
+            .count()
+    }
+
+    /// How many call references name `name` WITHIN `lang` - the per-language fan-out degree an
+    /// entity row reports. SCOPED to `lang`: the cross-reference graph is per-language (5.5.2), so
+    /// the degree over it is too. A name that over-links in another language never inflates this
+    /// count (a Python `parse` leaves the Rust `parse` degree untouched).
+    fn reference_degree(&self, name: &str, lang: &str) -> usize {
+        self.calls_named(name)
+            .filter(|m| m.file.lang == lang)
+            .count()
+    }
 }
 
 /// The query's symbol-candidate terms for [`Symbols::ground`] (the prompt seed): the
@@ -136,9 +286,9 @@ struct Named {
     name: String,
 }
 
-/// Files the text search never matches: spec files no unit edits, and the simplification audit
-/// every unit regenerates, so a mention there is never a conflict between two units.
-const TEXT_SEARCH_SKIPS: &[&str] = &["specs/", "docs/audit/"];
+/// Files the text search never matches: spec files no unit edits, so a mention there is never a
+/// conflict between two units.
+const TEXT_SEARCH_SKIPS: &[&str] = &["specs/"];
 
 /// Language keywords a code span may carry (`pub fn`, `&mut self`) that name no code of the
 /// project, so they are never terms.
@@ -152,8 +302,8 @@ const FILE_EXTENSIONS: &[&str] = &[
 ];
 
 /// The code a criterion names ([`CodeTerms`]). Each code span (backticked text) and each bare
-/// token that is identifier-shaped ([`identifier_shaped`]) contributes; a plain prose word never
-/// does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
+/// token that is identifier-shaped ([`identifier_shaped`]) or path-shaped ([`is_path`])
+/// contributes; a plain prose word never does. Generic and call arguments (`<T>`, `(x)`), surrounding punctuation and trailing `:`, `!`
 /// or `?` are stripped, and keywords dropped. A span left with ONE piece is a path when it looks
 /// like one (contains `/`, starts with `.`, or ends in a file extension), else a symbol when it is
 /// an identifier or a `::`/`.` path of identifiers; anything else names no code. A span left
@@ -169,7 +319,7 @@ fn code_terms(query: &str) -> CodeTerms {
         for word in part.split_whitespace() {
             let stripped = strip_groups(word);
             let piece = clean_piece(&stripped);
-            if identifier_shaped(piece) {
+            if identifier_shaped(piece) || is_path(piece) {
                 terms.add_piece(piece);
             }
         }
@@ -264,6 +414,34 @@ fn clean_piece(piece: &str) -> &str {
         .trim_end_matches('.')
 }
 
+/// Whether the code file at `path` is the one a criterion's path `term` names: the same path,
+/// or one ending in `/term` (a criterion may spell a path from any directory down).
+fn names_path(path: &str, term: &str) -> bool {
+    path == term || path.ends_with(&format!("/{term}"))
+}
+
+/// Whether a path `term` the index does not hold facts for (`.gitignore`) is a file the tree holds. An
+/// absolute or `..` path, which would escape the tree, is never read.
+fn held_in_tree(root: &str, term: &str) -> bool {
+    !Path::new(term).is_absolute()
+        && !term.split('/').any(|c| c == "..")
+        && Path::new(root).join(term).is_file()
+}
+
+/// The files that define `name`, product code before test code, each group in path order.
+fn definers<'v>(sight: &Sight<'v>, name: &str) -> Vec<&'v str> {
+    let mut files: BTreeMap<&'v str, bool> = BTreeMap::new();
+    for d in sight.defs_named(name) {
+        let test = files
+            .entry(d.file.path)
+            .or_insert(d.file.scope == Scope::Test);
+        *test |= d.test;
+    }
+    let mut files: Vec<(&'v str, bool)> = files.into_iter().collect();
+    files.sort_by_key(|(_, test)| *test);
+    files.into_iter().map(|(path, _)| path).collect()
+}
+
 /// Whether a bare prose token reads as code: it contains `_` or `::`, or mixes case with an
 /// uppercase letter past its first character (`camelCase`, `CamelCase`) - never an ALL-CAPS or
 /// Capitalized prose word.
@@ -273,63 +451,33 @@ fn identifier_shaped(token: &str) -> bool {
         || (token.chars().any(char::is_lowercase) && token.chars().skip(1).any(char::is_uppercase))
 }
 
-/// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
-/// DEFINITIONS always and CALL references
-/// ([`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls), never a tagged
-/// one, spec 117) only when `count_refs` is set - the ONE counting pass
-/// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
-/// arch-u92c3-cutoff-formula-duplicated-not-shared's DRY finding applied to this pair too: two
-/// near-identical scan loops over the same data, one function body now covers both). Keyed by
-/// `(name, Lang)`, never a bare name (spec 92 criterion 3 remediation round 5,
-/// adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages): a bare-name
-/// key sums an entity's popularity/ambiguity across every language sharing that name, exactly
-/// the cross-language collision [`SymbolIndex::reference_degree`] already guards against (5.5.2) - a `run` over-defined in Python must never inflate the same
-/// bare name's Rust count, in either direction.
-fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, Lang), usize> {
-    let mut counts: BTreeMap<(&str, Lang), usize> = BTreeMap::new();
-    for fs in idx.files().values() {
-        for d in &fs.defs {
-            *counts.entry((d.name.as_str(), fs.lang)).or_insert(0) += 1;
-        }
-        if count_refs {
-            for r in fs.calls() {
-                *counts.entry((r.name.as_str(), fs.lang)).or_insert(0) += 1;
-            }
+/// Every distinct `(name, language)` pair's DISTINCT-DEFINITION count over the served files (spec
+/// 92 criterion 3 remediation, adj-u92c3-verdict-reject): the genuine tree-wide AMBIGUITY signal -
+/// "how many different things could this name mean, WITHIN this language" - independent of how
+/// often any ONE of those definitions is called. A name defined exactly once (within its own
+/// language) is entirely unambiguous no matter how many places reference it (`criterion_stable_id`:
+/// 1 definition, 37 references in this very repo, must read as a confident match); a name defined
+/// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
+/// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
+/// on - never the raw definition-plus-call-reference occurrence volume
+/// ([`Sight::occurrences`]), which conflates one entity's own popularity with tree-wide name
+/// ambiguity. Its cutoff is [`crate::grounder::symbols::model::percentile_cutoff`]. Keyed by
+/// `(name, language)`, never a bare name (spec 92 criterion 3 remediation round 5,
+/// adj-u92c3-r4-verdict-reject): a bare-name key sums an entity's ambiguity across every language
+/// sharing that name.
+fn ambiguity_map(sight: &Sight<'_>) -> BTreeMap<(String, String), usize> {
+    let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for file in sight.files() {
+        let Some(facts) = sight.view.file(file.path) else {
+            continue;
+        };
+        for d in &facts.defs {
+            *counts
+                .entry((d.leaf.clone(), file.lang.to_string()))
+                .or_insert(0) += 1;
         }
     }
     counts
-}
-
-/// Every distinct `(name, language)` pair's total DEFINITION+CALL-REFERENCE occurrence count (spec
-/// 92 criterion 3, RANKED BY INTENT; a tagged reference counts none, spec 117,
-/// [`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls)): the
-/// inverse-document-frequency proxy Design names - "a token in hundreds of files - `run`, `new`,
-/// `tests` - carries near-zero weight." The ONE authority [`scored_hits`] draws a matched ENTITY's
-/// own commonness from (looked up by the entity's OWN resolved `(name, Lang)` pair, never the raw
-/// query term - a CONTAINS-tier term is by definition a substring and so is almost never itself a
-/// key here), for ranking (rarer wins a tie). NOT the signal [`Symbols::has_strong_match`] gates
-/// on - a popular but UNAMBIGUOUS entity (one definition, many call sites, e.g.
-/// `criterion_stable_id`) must rank low here (it is genuinely the specific thing a caller meant
-/// when they typed its exact name) without being misread as "too common to be a confident match" -
-/// that second, distinct question is [`ambiguity_map`]'s (spec 92 criterion 3 remediation,
-/// adj-u92c3-verdict-reject: the two were wrongly conflated by an earlier round of this unit).
-fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
-    name_occurrence_map(idx, true)
-}
-
-/// Every distinct `(name, language)` pair's DISTINCT-DEFINITION count (spec 92 criterion 3
-/// remediation, adj-u92c3-verdict-reject): the genuine tree-wide AMBIGUITY signal - "how many
-/// different things could this name mean, WITHIN this language" - independent of how often any
-/// ONE of those definitions is called. A name defined exactly once (within its own language) is
-/// entirely unambiguous no matter how many places reference it (`criterion_stable_id`: 1
-/// definition, 37 references in this very repo, must read as a confident match); a name defined
-/// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
-/// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
-/// on - never [`commonness_map`]'s raw def+call-ref occurrence volume, which conflates one entity's
-/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Its cutoff
-/// is [`crate::grounder::symbols::model::percentile_cutoff`].
-fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
-    name_occurrence_map(idx, false)
 }
 
 /// Whether a location's match is a DEFINITION or a REFERENCE of the query - the existing
@@ -347,50 +495,45 @@ enum HitKind {
 /// scorer): `tier` - EXACT (2, a term equals the entity's name) beats CONTAINS (1, a term
 /// merely occurs within a longer name), the Design decision "a query token that equals an
 /// entity's name beats a token that merely occurs in it"; `commonness` - the MATCHED ENTITY's
-/// OWN tree-wide occurrence count from [`commonness_map`], looked up by the entity's OWN
+/// OWN tree-wide occurrence count ([`Sight::occurrences`]), looked up by the entity's OWN
 /// resolved name rather than whichever query term matched it (ascending: rarer ranks first, the
 /// inverse-document-frequency ordering, without needing floating point - spec 92 criterion 3
 /// remediation round 2, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero: a
 /// CONTAINS-tier term is by definition a substring, so keying this off the term itself missed
-/// `commonness_map` for nearly every CONTAINS hit and silently handed it the artificial rarest
-/// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
-/// tiebreaker ("then by the existing lexical score").
+/// every CONTAINS hit and silently handed it the artificial rarest score); `lexical` - the
+/// EXISTING definition-over-reference tier, the Design's final tiebreaker ("then by the existing
+/// lexical score").
 ///
 /// Gap 104 puts three keys ahead of that order, counting DISTINCT query terms case-insensitively.
 /// `name_coverage` - the terms the entity's name holds - ranks first, so a query that names an
 /// entity by its shape (`impl EventStore for` -> the impl blocks named `impl EventStore for
 /// Store`) finds it above a name that holds one incidental word (`for`). `test` - the location is
-/// test code ([`Def::is_test`]/[`SymRef::is_test`], or a file at a dev-only path,
-/// [`is_dev_only`](crate::grounder::symbols::events::is_dev_only)) - ranks
+/// test code (a test-marked definition or reference, or a file whose scope is Test) - ranks
 /// next, so a test double never outranks the product code it stands in for. `coverage` - the
 /// terms the name OR the file path holds - ranks third, so the words that name the module narrow
 /// the match (`sqlite store open` -> `open_connection` in `store/sqlite.rs` above `reopen_window`
 /// elsewhere).
-///
-/// [`Def::is_test`]: crate::grounder::symbols::model::Def::is_test
-/// [`SymRef::is_test`]: crate::grounder::symbols::model::SymRef::is_test
-struct ScoredHit<'a> {
+struct ScoredHit {
     name_coverage: usize,
     test: bool,
     coverage: usize,
     tier: u8,
     commonness: usize,
     lexical: u8,
-    file: &'a str,
+    file: String,
     line: u32,
-    name: &'a str,
-    lang: Lang,
+    name: String,
+    lang: String,
     kind: HitKind,
 }
 
-impl ScoredHit<'_> {
-    /// The `(name, Lang)` key that identifies this hit's matched entity within
-    /// [`commonness_map`]/[`ambiguity_map`]/`def_sites` - the ONE pairing every cross-language
-    /// scoping lookup in this module uses, so a same-named entity in an unrelated language can
-    /// never be looked up, absorbed into, or pooled with this one (spec 92 criterion 3
-    /// remediation round 5, adj-u92c3-r4-verdict-reject).
-    fn entity(&self) -> (&str, Lang) {
-        (self.name, self.lang)
+impl ScoredHit {
+    /// The `(name, language)` key that identifies this hit's matched entity - the ONE pairing every
+    /// cross-language scoping lookup in this module uses, so a same-named entity in an unrelated
+    /// language can never be looked up, absorbed into, or pooled with this one (spec 92 criterion
+    /// 3 remediation round 5, adj-u92c3-r4-verdict-reject).
+    fn entity(&self) -> (&str, &str) {
+        (&self.name, &self.lang)
     }
 
     /// The ONE ranking order, best first: name coverage, then product before test code, then
@@ -405,43 +548,39 @@ impl ScoredHit<'_> {
             std::cmp::Reverse(self.tier),
             self.commonness,
             std::cmp::Reverse(self.lexical),
-            self.file,
+            self.file.as_str(),
             self.line,
         )
     }
 }
 
-/// Score every (file, line) definition/call-reference location in `idx` against `terms` (a
-/// tagged reference, spec 117, never a location:
-/// [`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls)), ranked by
-/// [`ScoredHit::rank`] - the ONE scored, sorted pass both [`Symbols::ground`] and
-/// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
-/// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
-/// its BEST tier - commonness is a property of the matched entity's own name, so it never varies
-/// by which term matched - mirroring the def-and-ref-at-one-line collapse the prior single-pass
-/// scorer already made.
-fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
-    let commonness = commonness_map(idx);
+/// Score every (file, line) definition/call-reference location of the served files against
+/// `terms` (a tagged reference, spec 117, never a location), ranked by [`ScoredHit::rank`] - the
+/// ONE scored, sorted pass both [`Symbols::ground`] and [`Symbols::ground_ranked`] consume, so the
+/// two views can never disagree on ranking. A location that matches more than one term (or both an
+/// EXACT and a CONTAINS candidate) keeps its BEST tier - commonness is a property of the matched
+/// entity's own name, so it never varies by which term matched - mirroring the
+/// def-and-ref-at-one-line collapse the prior single-pass scorer already made.
+///
+/// The one pass that reads every served file's facts: a CONTAINS-tier term is a substring of a
+/// name, so no lookup by name finds it.
+fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
     let lower_terms: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
-    let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
-    for (path, fs) in idx.files() {
-        let lower_path = path.to_lowercase();
-        let test_file = crate::grounder::symbols::events::is_dev_only(path);
-        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8, test: bool| {
+    let mut memo: HashMap<(String, String), usize> = HashMap::new();
+    let mut best: BTreeMap<(String, u32), ScoredHit> = BTreeMap::new();
+    for file in sight.files() {
+        let Some(facts) = sight.view.file(file.path) else {
+            continue;
+        };
+        let lower_path = file.path.to_lowercase();
+        let test_file = file.scope == Scope::Test;
+        let mut score_one = |name: &str, line: u32, kind: HitKind, lexical: u8, test: bool| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
             // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `(name,
-            // fs.lang)`, never the raw query term `t` - so it is the same value regardless of
-            // which term matched. A CONTAINS-tier term is by definition a substring, so it is
-            // almost never itself an indexed name; keying the lookup on `t` instead of `name`
-            // (round-2 defect, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero)
-            // silently missed `commonness_map` for nearly every CONTAINS hit and handed it the
-            // artificial rarest score (`unwrap_or(0)`), drowning a genuinely rare entity under
-            // unrelated ones that merely share a common substring. Keying on `name` ALONE,
-            // ignoring `fs.lang` (round-4 defect, adv-u92c3r4-ambiguity-map-bleeds-across-
-            // languages), pooled a same-named entity's commonness across every language sharing
-            // it; `(name, fs.lang)` scopes the lookup to this hit's OWN language, exactly as
-            // `SymbolIndex::reference_degree` already scopes the fan-out signal (5.5.2).
+            // language)`, never the raw query term - so it is the same value regardless of which
+            // term matched (rounds 2 and 4, adv-u92c3r2/r4: keying on the term, or on the name
+            // alone, mis-scored CONTAINS hits and pooled languages).
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
@@ -458,6 +597,9 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             }
             let lower_name = name.to_lowercase();
             let in_name = |t: &&String| lower_name.contains(t.as_str());
+            let commonness = *memo
+                .entry((name.to_string(), file.lang.to_string()))
+                .or_insert_with(|| sight.occurrences(name, file.lang, true));
             let hit = ScoredHit {
                 name_coverage: lower_terms.iter().filter(in_name).count(),
                 test: test || test_file,
@@ -466,18 +608,18 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
                     .filter(|t| in_name(t) || lower_path.contains(t.as_str()))
                     .count(),
                 tier: hit_tier,
-                commonness: commonness.get(&(name, fs.lang)).copied().unwrap_or(0),
+                commonness,
                 lexical,
-                file: path.as_str(),
+                file: file.path.to_string(),
                 line,
-                name,
-                lang: fs.lang,
+                name: name.to_string(),
+                lang: file.lang.to_string(),
                 kind,
             };
             // One row per (file, line): the better-ranked candidate keeps the slot - an impl
             // block's definition, matching every word of an impl-shaped query, over the trait
             // reference on its own header line.
-            match best.entry((path.as_str(), line)) {
+            match best.entry((file.path.to_string(), line)) {
                 std::collections::btree_map::Entry::Occupied(mut slot) => {
                     if hit.rank() < slot.get().rank() {
                         slot.insert(hit);
@@ -488,69 +630,80 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
                 }
             }
         };
-        for d in &fs.defs {
-            score_one(d.name.as_str(), d.line, HitKind::Def, 3, d.is_test);
+        for d in &facts.defs {
+            score_one(&d.leaf, d.line, HitKind::Def, 3, d.test);
         }
-        for r in fs.calls() {
-            score_one(r.name.as_str(), r.line, HitKind::Ref, 2, r.is_test);
+        for m in facts
+            .mentions
+            .iter()
+            .filter(|m| m.kind == MentionKind::Call)
+        {
+            score_one(&m.leaf, m.line, HitKind::Ref, 2, m.test);
         }
     }
-    let mut hits: Vec<ScoredHit<'a>> = best.into_values().collect();
+    let mut hits: Vec<ScoredHit> = best.into_values().collect();
     hits.sort_by(|a, b| a.rank().cmp(&b.rank()));
     hits
 }
 
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
+        self.ground_labelled(query, k, Tests::Include).rows
+    }
+
+    fn ground_labelled(&self, query: &str, k: usize, tests: Tests) -> Grounded<Vec<Ref>> {
+        let none = Grounded {
+            rows: Vec::new(),
+            label: None,
+            tests_hidden: 0,
+        };
         if query.is_empty() || k == 0 {
-            return Vec::new();
+            return none;
         }
         // The query's alphanumeric/underscore terms are the symbol candidates (so `apply_damage`
         // stays one term). Single-character terms are dropped as noise. This is the prompt seed's
         // whole-text match; `blast_radius` grounds on `code_terms` instead.
         let terms = query_terms(query);
         if terms.is_empty() {
-            return Vec::new();
+            return none;
         }
-        let idx = self.idx.lock().unwrap();
         // Ranked by intent (spec 92 criterion 3): exact-name match first, then the rarest
         // matching token, then definition-over-reference - NOT deduplicated by entity (that is
         // `ground_ranked`'s page-shape concern), so this stays the SAME row-per-location
         // contract `grounded_seed` (conductor.rs) relies on for prompt-seed file diversity.
-        scored_hits(&idx, &terms)
-            .into_iter()
-            .take(k)
-            .map(|h| Ref {
-                file: h.file.to_string(),
-                line: h.line,
-                text: h.name.to_string(),
-            })
-            .collect()
+        let ((rows, tests_hidden, withheld), mut label) = self.read_labelled(|sight| {
+            let hits = scored_hits(sight, &terms);
+            let hidden = hidden_test_hits(&hits, tests);
+            let rows = hits
+                .into_iter()
+                .filter(|h| tests.admits(h.test))
+                .take(k)
+                .map(|h| Ref {
+                    file: h.file,
+                    line: h.line,
+                    text: h.name,
+                })
+                .collect();
+            (rows, hidden, withheld_entities(sight, &terms, tests))
+        });
+        label.withheld = withheld;
+        Grounded {
+            rows,
+            label: Some(label),
+            tests_hidden,
+        }
     }
 
-    fn reindex(&self, _src_dir: &str, files: &[String]) {
-        // Decide which named files ACTUALLY changed (the content-hash freshening gate). Persist only
-        // when something changed, so a reindex of unchanged files touches neither the parser nor the
-        // disk. The fingerprints are process-local and gate only redundant work, so this check is
-        // deliberately OUTSIDE the write lock; `index_one_file` re-reads each file at parse time.
-        let changed = {
-            let mut fps = self.fingerprints.lock().unwrap();
-            changed_files(&self.root, files, &mut fps)
-        };
-        if changed.is_empty() {
-            return;
-        }
-        // ONE `idx` lock across the whole freshen, and INSIDE `store::reindex_under_lock` the
-        // cross-process write lock across reload -> apply -> persist - the single mutation
-        // authority. The reload (under the held lock) folds in any change a concurrent `rigger
-        // reindex` process persisted since this grounder loaded its in-memory copy, so our stale
-        // snapshot cannot clobber that write (a cross-process lost update). We then re-parse ONLY
-        // the changed files through the shared `reindex_files` authority - never a second
-        // extraction path - on top of the reloaded base, and it publishes atomically.
-        let mut idx = self.idx.lock().unwrap();
-        let _ = store::reindex_under_lock(&mut idx, &self.root, |base| {
-            reindex_files(&self.root, base, &changed, self.override_lang);
-        });
+    /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
+    /// it, then the whole-text match. The files it spells come first (a served file whose path
+    /// ends in the term, else the file itself when the tree holds it), then the files that define
+    /// each identifier it names - the identifier fewer files define first, so a widely defined
+    /// name never crowds out a specific one. The fill is [`Symbols::ground`]'s own top-`k` hit
+    /// lines with test code left out: a prose word never matches a test function's sentence name,
+    /// while a test file or test function the query names explicitly still seeds. At most `k`
+    /// distinct files.
+    fn seed(&self, query: &str, k: usize) -> Vec<String> {
+        self.read(|sight| self.seed_in(sight, query, k))
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
@@ -563,174 +716,75 @@ impl Grounder for Symbols {
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
-    ///   files whose call references name them
-    ///   ([`FileSymbols::calls`](crate::grounder::symbols::model::FileSymbols::calls), spec 117: a
-    ///   tagged reference places no file) - capped at `k`. It is what seeds an agent's prompt, so
-    ///   it favors precision.
+    ///   files whose call references name them (spec 117: a tagged reference places no file) -
+    ///   capped at `k`. It is what seeds an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
-    ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the index
+    ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the view
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
     ///   event name, a constant prefix, a name nothing defines yet), outside spec files and the
-    ///   regenerated audit. A defined name and a path are never text-searched.
+    ///   regenerated audit. A defined name and a path are never text-searched, except that a file
+    ///   the worktree holds differently from the view is withheld from the structural view, so a
+    ///   text hit in it is added for every named symbol: a missed reference is the unsafe error.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
     ///   every file that defines it or holds a call reference to it is in the view, never
     ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
     ///   the units that share one of those files - and pairs it with every unit that shares none.
     ///
-    /// Determinism is by construction: `files()` is a `BTreeMap`, so both structural passes visit
-    /// files in sorted path order (the ranked `precise` / structural head of `safe`), and the
-    /// grep-recovered tail of `safe` is explicitly SORTED before it is appended - grep itself walks
-    /// the tree in unsorted `read_dir` order, so without the sort `safe` would be set-deterministic
-    /// but not order-deterministic. Sorting the tail makes the whole `safe` ordering reproducible
-    /// across processes, which is what unit 3 needs to hash the seed-file list into a stable
-    /// `BlastRadiusComputed` audit event. A query naming no code - empty, prose only, a single
-    /// character (ASCII or multibyte) or all punctuation - returns empty views (the empty-radius
-    /// fail-safe the scheduler runs alone and unit 3 routes to the full panel) WITHOUT running a
-    /// whole-repo grep, never a partial or a panic. A query WITH code terms that simply matches
-    /// nothing is ALSO empty, but that case does run the uncapped search per unresolved name - it
-    /// just comes back empty.
+    /// Determinism is by construction: the served files come in path order, so both structural
+    /// passes are sorted, and the grep-recovered tail of `safe` is explicitly SORTED before it is
+    /// appended - grep itself walks the tree in unsorted `read_dir` order, so without the sort
+    /// `safe` would be set-deterministic but not order-deterministic. Sorting the tail makes the
+    /// whole `safe` ordering reproducible across processes, which is what unit 3 needs to hash the
+    /// seed-file list into a stable `BlastRadiusComputed` audit event. A query naming no code -
+    /// empty, prose only, a single character (ASCII or multibyte) or all punctuation - returns
+    /// empty views (the empty-radius fail-safe the scheduler runs alone and unit 3 routes to the
+    /// full panel) WITHOUT running a whole-repo grep, never a partial or a panic. It is
+    /// [`Self::blast_radius_stamped`]'s radius: one read gives both. A query WITH code
+    /// terms that simply matches nothing is ALSO empty, but that case does run the uncapped search
+    /// per unresolved name - it just comes back empty.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
+        self.blast_radius_stamped(query, k).radius
+    }
+
+    /// The prompt seed and the radius with the provenance stamp `<tree-id>/<grammar-tags-version>`
+    /// of the one open that grounded both: the tree the view describes unioned with the grammar / tag-query version. The
+    /// `symbols` grounder is STRUCTURAL, so the stamp is NON-EMPTY - the signal unit 3's conductor
+    /// keys the audit + retention metric off - even for the empty-radius fail-safe, whose open
+    /// still names the tree. A change to the tree changes the stamp.
+    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+        let head = self.heads.head(Path::new(&self.root));
+        self.blast_radius_stamped_over(head.as_ref().map_err(String::as_str), query, k)
+    }
+
+    /// [`Grounder::blast_radius_stamped`] over `head`, the open the caller made, never another.
+    fn blast_radius_stamped_over(
+        &self,
+        head: Result<&Head, &str>,
+        query: &str,
+        k: usize,
+    ) -> StampedRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
         let terms = code_terms(query);
-        // The empty-terms fail-safe, applied BEFORE any index read or text search: a query naming
-        // no code (an empty query, prose only, a single character, all punctuation) grounds to the
-        // empty radius - empty precise and empty safe - which the scheduler runs alone and unit 3
-        // routes to the full, unpartitioned panel.
-        if terms.is_empty() {
-            return BlastRadius::default();
+        let ((seed, radius), _label, tree) = self.read_head(head, |sight| {
+            let seed = self.seed_in(sight, query, k);
+            // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
+            // (an empty query, prose only, a single character, all punctuation) grounds to the
+            // empty radius - empty precise and empty safe - which the scheduler runs alone and
+            // unit 3 routes to the full, unpartitioned panel.
+            let radius = if terms.is_empty() {
+                BlastRadius::default()
+            } else {
+                self.radius(sight, &terms, k)
+            };
+            (seed, radius)
+        });
+        StampedRadius {
+            seed,
+            radius,
+            stamp: format!("{tree}/{GRAMMAR_TAGS_VERSION}"),
         }
-        let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
-
-        // The STRUCTURAL view, ranked (definer files, then referencer files not already a definer),
-        // computed under ONE read lock over the index.
-        // The names the index DEFINES: a name that resolves is grounded by the structural view
-        // alone, and only an unresolved one falls back to the text search.
-        let mut defined: HashSet<&str> = HashSet::new();
-        let mut found_paths: HashSet<&str> = HashSet::new();
-        let structural: Vec<String> = {
-            let idx = self.idx.lock().unwrap();
-            // Iterate `files()` directly to KEEP each hit's owning file.
-            // `files()` is a BTreeMap, so this is sorted-path-order and deterministic.
-            // A file the criterion names counts as a definer; a symbol it names matches by name.
-            let mut definers: Vec<&str> = Vec::new();
-            let mut referencers: Vec<&str> = Vec::new();
-            for (path, fs) in idx.files() {
-                let named: Vec<&str> = terms
-                    .paths
-                    .iter()
-                    .map(String::as_str)
-                    .filter(|t| path == t || path.ends_with(&format!("/{t}")))
-                    .collect();
-                found_paths.extend(&named);
-                let defines: Vec<&str> = names
-                    .iter()
-                    .copied()
-                    .filter(|n| fs.defs.iter().any(|d| d.name == *n))
-                    .collect();
-                defined.extend(&defines);
-                if !named.is_empty() || !defines.is_empty() {
-                    definers.push(path.as_str());
-                }
-                if fs.calls().any(|r| names.contains(&r.name.as_str())) {
-                    referencers.push(path.as_str());
-                }
-            }
-            // A named path the index does not parse (`.gitignore`) still grounds on its own file
-            // when the tree holds it; a path the tree does not hold grounds nothing, and an
-            // absolute or `..` path, which would escape the tree, is never read.
-            let root = std::path::Path::new(&self.root);
-            let unindexed: Vec<&str> = terms
-                .paths
-                .iter()
-                .map(String::as_str)
-                .filter(|t| {
-                    !found_paths.contains(t)
-                        && !std::path::Path::new(t).is_absolute()
-                        && !t.split('/').any(|c| c == "..")
-                })
-                .filter(|t| root.join(t).is_file())
-                .collect();
-            definers.extend(unindexed);
-            // Ranked: every definer file first, then each referencer that is not also a definer.
-            let mut ranked: Vec<String> = Vec::new();
-            for f in &definers {
-                ranked.push((*f).to_string());
-            }
-            for f in &referencers {
-                if !definers.contains(f) {
-                    ranked.push((*f).to_string());
-                }
-            }
-            ranked
-        };
-
-        // The SAFE view: the FULL (untruncated) structural set UNIONed with an UNCAPPED text search
-        // for each name the index does NOT define - the fallback for the references a name index
-        // misses (a string-literal event name, a constant prefix, a name nothing defines yet). A
-        // name the index resolves is grounded structurally alone: text-searching it would put
-        // every file mentioning a common type name in the radius. A path is never text-searched. The search matches whole
-        // identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone happens BEFORE `precise`
-        // is capped, so the safe view is never bounded by `k`; do not reorder the truncation
-        // above it. A `seen` set keeps the dedup O(lines) rather than O(lines * files): the search
-        // yields one hit per matching LINE and the safe view is uncapped.
-        let mut safe = structural.clone();
-        let mut seen: HashSet<String> = safe.iter().cloned().collect();
-        let grep = Grep {
-            root: self.root.clone(),
-        };
-        // The grep-recovered tail: the files grep matched that the structural view missed. Grep
-        // walks the tree in unsorted `read_dir` order, so collect the tail and SORT it before
-        // appending - the structural head is already `BTreeMap`-sorted, so this makes the whole
-        // `safe` ordering reproducible across processes (unit 3 hashes the seed-file list into a
-        // `BlastRadiusComputed` event that must be cross-process byte-identical). Sorting a set of
-        // distinct paths (not the raw grep hits) keeps this O(tail log tail), not per-line.
-        let mut grep_tail: Vec<String> = Vec::new();
-        let unresolved = terms
-            .names
-            .iter()
-            .filter(|n| !defined.contains(n.name.as_str()));
-        for r in unresolved.flat_map(|n| grep.ground_identifier(&n.text, usize::MAX)) {
-            if TEXT_SEARCH_SKIPS
-                .iter()
-                .any(|skip| r.file.starts_with(skip))
-            {
-                continue;
-            }
-            if seen.insert(r.file.clone()) {
-                grep_tail.push(r.file);
-            }
-        }
-        grep_tail.sort();
-        safe.extend(grep_tail);
-
-        // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
-        let mut precise = structural;
-        precise.truncate(k);
-        BlastRadius { precise, safe }
-    }
-
-    /// The provenance stamp for unit 3's `BlastRadiusComputed` audit event: the content-hash of
-    /// the CURRENT in-memory index unioned with the grammar / tag-query version, as
-    /// `<index-content-hash>/<grammar-tags-version>`. The `symbols` grounder is STRUCTURAL, so it
-    /// returns a NON-EMPTY stamp - the signal unit 3's conductor keys the audit + retention metric
-    /// off (a grep / nop grounder inherits the empty default and emits neither). The
-    /// hash is over the COMPACT `serde_json::to_string` of the `BTreeMap`-backed index. Because the
-    /// index is `BTreeMap`-backed it serializes in sorted-key order, so this is DETERMINISTIC: the
-    /// SAME index state yields the SAME stamp across processes, and a reindex that changes the graph
-    /// changes the stamp - which is exactly what makes a recorded radius reconstruct which index
-    /// generation grounded it. (This is a DIFFERENT byte stream than `store::save`, which pretty-
-    /// prints via `to_vec_pretty`; both are deterministic, but the stamp is not the on-disk bytes -
-    /// it need only be stable across processes for the same index, which the compact form is.)
-    fn index_stamp(&self) -> String {
-        let idx = self.idx.lock().unwrap();
-        let serialized = serde_json::to_string(&*idx).unwrap_or_default();
-        format!(
-            "{}/{}",
-            store::content_hash(&serialized),
-            crate::grounder::symbols::model::GRAMMAR_TAGS_VERSION
-        )
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3): [`scored_hits`]'s already-ranked list,
@@ -744,7 +798,7 @@ impl Grounder for Symbols {
     /// has EXACTLY one definition anywhere in the tree; a name with ZERO or
     /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
-    /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
+    /// `degree` is the real [`Sight::reference_degree`] for the entity's name and
     /// language, not an approximate
     /// count of what happened to be visible in this page - EXCEPT on an ambiguous name's own
     /// Def row, which reports 0 rather than the tree-wide count (spec 92 criterion 3
@@ -754,97 +808,28 @@ impl Grounder for Symbols {
     /// cannot be pinned to any given reference must never claim it too - see the degree
     /// computation below for the full reasoning.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
-        if query.is_empty() || k == 0 {
-            return Vec::new();
-        }
+        self.read(|sight| ranked_in(sight, &query_terms(query), k, Tests::Include))
+    }
+
+    fn ground_ranked_labelled(
+        &self,
+        query: &str,
+        k: usize,
+        tests: Tests,
+    ) -> Grounded<Option<Vec<RankedRef>>> {
         let terms = query_terms(query);
-        if terms.is_empty() {
-            return Vec::new();
+        let ((rows, tests_hidden, withheld), mut label) = self.read_labelled(|sight| {
+            let rows =
+                (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests));
+            let hidden = hidden_test_hits(&scored_hits(sight, &terms), tests);
+            (rows, hidden, withheld_entities(sight, &terms, tests))
+        });
+        label.withheld = withheld;
+        Grounded {
+            rows,
+            label: Some(label),
+            tests_hidden,
         }
-        let idx = self.idx.lock().unwrap();
-        let hits = scored_hits(&idx, &terms);
-
-        // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look up
-        // whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Built over the WHOLE
-        // index (not just the hits), since a name's definition is only a "hit" itself when it
-        // also matches a term - the absorption question ("how many definitions does this name
-        // have, within this language") is independent of that. Keyed by `(name, Lang)`, never a
-        // bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-reject /
-        // adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name key let a
-        // Rust reference with NO Rust definition (e.g. a `.unwrap()` call site, matching only
-        // `SymRef::name`) resolve through a same-named definition in an unrelated language (a JS
-        // `unwrap` helper) as if it were that entity's own sole definer - silently absorbing and
-        // deduplicating the entire cross-language reference population into ONE foreign row,
-        // erasing rather than down-weighting the Design's own poster-child tree-wide-common case.
-        let mut def_sites: BTreeMap<(&str, Lang), Vec<(&str, u32)>> = BTreeMap::new();
-        for (path, fs) in idx.files() {
-            for d in &fs.defs {
-                def_sites
-                    .entry((d.name.as_str(), fs.lang))
-                    .or_default()
-                    .push((path.as_str(), d.line));
-            }
-        }
-
-        #[derive(PartialEq, Eq, Hash, Clone)]
-        enum EntityKey<'a> {
-            /// A specific definition site - always a distinct entity.
-            Def(&'a str, &'a str, u32),
-            /// A `(name, Lang)` with zero or ambiguous (multiple SAME-LANGUAGE) definitions -
-            /// its references stand alone, keyed by name AND language (never a bare name: a
-            /// standalone Rust `unwrap` and a standalone Python `unwrap` are different entities,
-            /// there is only ever one such row per `(name, Lang)` pair).
-            Standalone(&'a str, Lang),
-        }
-
-        let mut seen: HashSet<EntityKey> = HashSet::new();
-        let mut out: Vec<RankedRef> = Vec::new();
-        for h in hits {
-            // How many SAME-LANGUAGE definitions this hit's own name has - independent of
-            // which hit kind matched, since a Def hit's own definition is always counted in
-            // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
-            let def_count = def_sites.get(&h.entity()).map_or(0, Vec::len);
-            let key = match h.kind {
-                HitKind::Def => EntityKey::Def(h.name, h.file, h.line),
-                HitKind::Ref => match def_sites.get(&h.entity()).map(Vec::as_slice) {
-                    Some([(file, line)]) => EntityKey::Def(h.name, file, *line),
-                    _ => EntityKey::Standalone(h.name, h.lang),
-                },
-            };
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            // An AMBIGUOUS (more than one same-language definition) entity's own Def row
-            // reports an attributable degree of 0, never the tree-wide call-reference count (spec
-            // 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
-            // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
-            // Standalone row for this same `(name, Lang)` exists SPECIFICALLY because a
-            // reference cannot be pinned to any one of its several candidates, so a Def row
-            // must never turn around and claim that identical unattributable pool as its own
-            // - the opposite of what creating the Standalone row already decided. An
-            // UNAMBIGUOUS (exactly one definer) Def row keeps the real
-            // `reference_degree` - every call reference to that name genuinely IS this entity's
-            // own, nothing is pooled. A Standalone row always keeps the real
-            // `reference_degree` too - it IS the pooled, unattributed call-reference count
-            // (`FileSymbols::calls`: no tagged reference counts, spec 117), by construction of
-            // why it exists at all.
-            let degree = match key {
-                EntityKey::Def(..) if def_count > 1 => 0,
-                _ => idx.reference_degree(h.name, h.lang),
-            };
-            out.push(RankedRef {
-                loc: Ref {
-                    file: h.file.to_string(),
-                    line: h.line,
-                    text: h.name.to_string(),
-                },
-                degree,
-            });
-            if out.len() >= k {
-                break;
-            }
-        }
-        out
     }
 
     /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
@@ -854,81 +839,306 @@ impl Grounder for Symbols {
     /// remediation, adj-u92c3-verdict-reject):
     ///
     /// 1. Judges the SAME hits [`scored_hits`] (the actual ranker `ground`/`ground_ranked` use)
-    ///    produces, rather than re-deriving a second raw `counts.get(term)` lookup keyed on the
-    ///    QUERY TERM. A CONTAINS-tier term (`"damage"` matching `apply_damage`) is never itself
-    ///    an indexed name, so that second lookup always missed and silently read as "not
-    ///    strong" - an absent-key sentinel inversion against `scored_hits`' own
-    ///    `unwrap_or(0)` = rarest convention. Judging `scored_hits`' resolved
+    ///    produces, rather than re-deriving a second raw lookup keyed on the QUERY TERM. A
+    ///    CONTAINS-tier term (`"damage"` matching `apply_damage`) is never itself a name, so that
+    ///    second lookup always missed and silently read as "not strong" - an absent-key sentinel
+    ///    inversion against `scored_hits`' own rarest-by-default convention. Judging
     ///    [`ScoredHit::name`] (the entity actually matched) instead closes that gap.
-    /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name, Lang)`)
-    ///    rather than [`commonness_map`] (raw def+call-ref occurrence count): a single-definition,
-    ///    heavily-referenced entity (`criterion_stable_id`, `sweep_terminal` - this repo's own
-    ///    Done-when audit fixtures) is completely unambiguous and must never be misclassified
-    ///    as tree-wide-common merely because it is called often.
+    /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name,
+    ///    language)`) rather than the raw definition-plus-call-reference occurrence count: a
+    ///    single-definition, heavily-referenced entity (`criterion_stable_id` - one of this
+    ///    repo's own Done-when audit fixtures) is completely unambiguous and must never be
+    ///    misclassified as tree-wide-common merely because it is called often.
     /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
     ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
-    ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages),
-    ///    as [`SymbolIndex::reference_degree`] scopes its count: a name defined
-    ///    once in Rust and, separately, once in an unrelated language is genuinely unambiguous
-    ///    in EACH language alone; pooling the two definition counts into one bare-name bucket
-    ///    manufactures a tree-wide-ambiguous verdict neither language's own distribution
-    ///    supports.
+    ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages), as
+    ///    [`Sight::reference_degree`] scopes its count: a name defined once in Rust and,
+    ///    separately, once in an unrelated language is genuinely unambiguous in EACH language
+    ///    alone; pooling the two definition counts into one bare-name bucket manufactures a
+    ///    tree-wide-ambiguous verdict neither language's own distribution supports.
     ///
     /// A query with no matches at all is not strong either - it has no candidate to be
     /// confident about.
     fn has_strong_match(&self, query: &str, _k: usize) -> bool {
-        let terms = query_terms(query);
-        if terms.is_empty() {
-            return false;
+        self.read(|sight| has_strong(sight, &query_terms(query)))
+    }
+}
+
+/// How many entities the hits of `terms` in the files `sight` withholds name, keyed as the
+/// ranked page keys its rows: those its answer under `tests` would have shown or reported hidden,
+/// the unit every graph read counts its withheld nodes in.
+fn withheld_entities(sight: &Sight<'_>, terms: &[&str], tests: Tests) -> usize {
+    let counted = match tests {
+        Tests::Only => Tests::Only,
+        Tests::Include | Tests::Exclude => Tests::Include,
+    };
+    ranked_in(&sight.withheld_part(), terms, usize::MAX, counted).len()
+}
+
+/// How many of `hits` are test locations `tests` leaves out of an answer: none unless it excludes
+/// them.
+fn hidden_test_hits(hits: &[ScoredHit], tests: Tests) -> usize {
+    if tests == Tests::Exclude {
+        hits.iter().filter(|h| h.test).count()
+    } else {
+        0
+    }
+}
+
+/// The ranked-by-intent page of `terms` over what `sight` serves ([`Grounder::ground_ranked`]
+/// states the contract): empty for no terms or `k == 0`.
+fn ranked_in(sight: &Sight<'_>, terms: &[&str], k: usize, tests: Tests) -> Vec<RankedRef> {
+    if terms.is_empty() || k == 0 {
+        return Vec::new();
+    }
+    let hits: Vec<ScoredHit> = scored_hits(sight, terms)
+        .into_iter()
+        .filter(|h| tests.admits(h.test))
+        .collect();
+
+    // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look
+    // up whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Read over the WHOLE
+    // view (not just the hits), since a name's definition is only a "hit" itself when it
+    // also matches a term - the absorption question ("how many definitions does this name
+    // have, within this language") is independent of that. Keyed by `(name, language)`,
+    // never a bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-
+    // reject / adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name
+    // key let a Rust reference with NO Rust definition (e.g. a `.unwrap()` call site)
+    // resolve through a same-named definition in an unrelated language as if it were that
+    // entity's own sole definer - silently absorbing and deduplicating the entire
+    // cross-language reference population into ONE foreign row.
+    let mut def_sites: HashMap<(String, String), Vec<(String, u32)>> = HashMap::new();
+
+    #[derive(PartialEq, Eq, Hash, Clone)]
+    enum EntityKey {
+        /// A specific definition site - always a distinct entity.
+        Def(String, String, u32),
+        /// A `(name, language)` with zero or ambiguous (multiple SAME-LANGUAGE)
+        /// definitions - its references stand alone, keyed by name AND language (never a
+        /// bare name: a standalone Rust `unwrap` and a standalone Python `unwrap` are
+        /// different entities, there is only ever one such row per pair).
+        Standalone(String, String),
+    }
+
+    let mut seen: HashSet<EntityKey> = HashSet::new();
+    let mut out: Vec<RankedRef> = Vec::new();
+    for h in hits {
+        // How many SAME-LANGUAGE definitions this hit's own name has - independent of
+        // which hit kind matched, since a Def hit's own definition is always counted in
+        // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
+        let sites = def_sites
+            .entry((h.name.clone(), h.lang.clone()))
+            .or_insert_with(|| {
+                sight
+                    .defs_named(&h.name)
+                    .filter(|d| d.file.lang == h.lang)
+                    .map(|d| (d.file.path.to_string(), d.line))
+                    .collect()
+            });
+        let def_count = sites.len();
+        let key = match h.kind {
+            HitKind::Def => EntityKey::Def(h.name.clone(), h.file.clone(), h.line),
+            HitKind::Ref => match sites.as_slice() {
+                [(file, line)] => EntityKey::Def(h.name.clone(), file.clone(), *line),
+                _ => EntityKey::Standalone(h.name.clone(), h.lang.clone()),
+            },
+        };
+        if !seen.insert(key.clone()) {
+            continue;
         }
-        let idx = self.idx.lock().unwrap();
-        let hits = scored_hits(&idx, &terms);
-        if hits.is_empty() {
-            return false;
+        // An AMBIGUOUS (more than one same-language definition) entity's own Def row
+        // reports an attributable degree of 0, never the tree-wide call-reference count
+        // (spec 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
+        // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
+        // Standalone row for this same `(name, language)` exists SPECIFICALLY because a
+        // reference cannot be pinned to any one of its several candidates, so a Def row
+        // must never turn around and claim that identical unattributable pool as its own
+        // - the opposite of what creating the Standalone row already decided. An
+        // UNAMBIGUOUS (exactly one definer) Def row keeps the real reference degree -
+        // every call reference to that name genuinely IS this entity's own, nothing is
+        // pooled. A Standalone row always keeps the real reference degree too - it IS the
+        // pooled, unattributed call-reference count (no tagged reference counts, spec
+        // 117), by construction of why it exists at all.
+        let degree = match key {
+            EntityKey::Def(..) if def_count > 1 => 0,
+            _ => sight.reference_degree(&h.name, &h.lang),
+        };
+        out.push(RankedRef {
+            loc: Ref {
+                file: h.file,
+                line: h.line,
+                text: h.name,
+            },
+            degree,
+        });
+        if out.len() >= k {
+            break;
         }
-        let ambiguity = ambiguity_map(&idx);
-        // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
-        // distinct-definition distribution - never one pooled cutoff across every language
-        // present (5.5.2). A language absent from
-        // `ambiguity` (no definition anywhere in it) falls back to 0: nothing has EVER been
-        // observed as ambiguous there, so every hit in that language trivially clears the
-        // cutoff, matching `ambiguity.get(..).unwrap_or(0)` below for every such hit regardless.
-        let mut cutoffs: BTreeMap<Lang, usize> = BTreeMap::new();
-        for lang in hits.iter().map(|h| h.lang).collect::<BTreeSet<Lang>>() {
-            let mut degrees: Vec<usize> = ambiguity
-                .iter()
-                .filter_map(|(&(_, l), &count)| (l == lang).then_some(count))
-                .collect();
-            let cutoff = if degrees.is_empty() {
-                0
-            } else {
-                percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
-            };
-            cutoffs.insert(lang, cutoff);
+    }
+    out
+}
+
+/// Whether `terms` have a match over what `sight` serves whose entity sits at or below the
+/// name-ambiguity cutoff ([`Grounder::has_strong_match`] states the contract): false for no terms.
+fn has_strong(sight: &Sight<'_>, terms: &[&str]) -> bool {
+    if terms.is_empty() {
+        return false;
+    }
+    let hits = scored_hits(sight, terms);
+    if hits.is_empty() {
+        return false;
+    }
+    let ambiguity = ambiguity_map(sight);
+    // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
+    // distinct-definition distribution - never one pooled cutoff across every language
+    // present (5.5.2). A language absent from `ambiguity` (no definition anywhere in it)
+    // falls back to 0: nothing has EVER been observed as ambiguous there, so every hit in
+    // that language trivially clears the cutoff, matching the `unwrap_or(0)` below for
+    // every such hit regardless.
+    let mut cutoffs: BTreeMap<&str, usize> = BTreeMap::new();
+    for lang in hits
+        .iter()
+        .map(|h| h.lang.as_str())
+        .collect::<BTreeSet<_>>()
+    {
+        let mut degrees: Vec<usize> = ambiguity
+            .iter()
+            .filter_map(|((_, l), &count)| (l == lang).then_some(count))
+            .collect();
+        let cutoff = if degrees.is_empty() {
+            0
+        } else {
+            percentile_cutoff(&mut degrees, AMBIGUITY_PERCENTILE)
+        };
+        cutoffs.insert(lang, cutoff);
+    }
+    hits.iter().any(|h| {
+        let cutoff = cutoffs.get(h.lang.as_str()).copied().unwrap_or(0);
+        let (name, lang) = h.entity();
+        let ambiguous = ambiguity
+            .get(&(name.to_string(), lang.to_string()))
+            .copied()
+            .unwrap_or(0);
+        ambiguous <= cutoff
+    })
+}
+
+impl Symbols {
+    /// The two views of the radius of `terms` over what `sight` serves ([`Grounder::blast_radius`]
+    /// states the contract).
+    fn radius(&self, sight: &Sight<'_>, terms: &CodeTerms, k: usize) -> BlastRadius {
+        let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
+
+        // The STRUCTURAL view, ranked (definer files, then referencer files not already a
+        // definer), each group in path order. A file the criterion names counts as a definer; a
+        // symbol it names matches by name.
+        let mut defined: HashSet<&str> = HashSet::new();
+        let mut found_paths: HashSet<&str> = HashSet::new();
+        let mut definers: BTreeSet<&str> = BTreeSet::new();
+        for file in sight.files() {
+            for t in terms.paths.iter().filter(|t| names_path(file.path, t)) {
+                found_paths.insert(t.as_str());
+                definers.insert(file.path);
+            }
         }
-        hits.iter().any(|h| {
-            let cutoff = cutoffs.get(&h.lang).copied().unwrap_or(0);
-            ambiguity.get(&h.entity()).copied().unwrap_or(0) <= cutoff
-        })
+        for name in &names {
+            for d in sight.defs_named(name) {
+                defined.insert(*name);
+                definers.insert(d.file.path);
+            }
+        }
+        let referencers: BTreeSet<&str> = names
+            .iter()
+            .flat_map(|name| sight.calls_named(name))
+            .map(|m| m.file.path)
+            .collect();
+        // A named path the view holds no facts for (`.gitignore`) still grounds on its own file
+        // when the tree holds it; a path the tree does not hold grounds nothing.
+        let unheld: Vec<&str> = terms
+            .paths
+            .iter()
+            .map(String::as_str)
+            .filter(|t| !found_paths.contains(t) && held_in_tree(&self.root, t))
+            .collect();
+        // Ranked: every definer file first, then each referencer that is not also a definer.
+        let structural: Vec<String> = definers
+            .iter()
+            .copied()
+            .chain(unheld)
+            .chain(referencers.difference(&definers).copied())
+            .map(str::to_string)
+            .collect();
+
+        // The SAFE view: the FULL (untruncated) structural set UNIONed with an UNCAPPED text search
+        // for each name the view does NOT define - the fallback for the references a name index
+        // misses (a string-literal event name, a constant prefix, a name nothing defines yet). A
+        // name the view resolves is grounded structurally alone: text-searching it would put
+        // every file mentioning a common type name in the radius. A path is never text-searched.
+        // The search matches whole identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone
+        // happens BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not
+        // reorder the truncation below it. A `seen` set keeps the dedup O(lines) rather than
+        // O(lines * files): the search yields one hit per matching LINE and the safe view is
+        // uncapped.
+        let mut safe = structural.clone();
+        let mut seen: HashSet<String> = safe.iter().cloned().collect();
+        let grep = Grep {
+            root: self.root.clone(),
+        };
+        // The grep-recovered tail: the files grep matched that the structural view missed. Grep
+        // walks the tree in unsorted `read_dir` order, so collect the tail and SORT it before
+        // appending, which makes the whole `safe` ordering reproducible across processes (unit 3
+        // hashes the seed-file list into a `BlastRadiusComputed` event that must be cross-process
+        // byte-identical). Sorting a set of distinct paths (not the raw grep hits) keeps this
+        // O(tail log tail), not per-line.
+        let mut grep_tail: Vec<String> = Vec::new();
+        for n in &terms.names {
+            let resolved = defined.contains(n.name.as_str());
+            // A resolved name is searched only for the files the worktree withholds from the view.
+            if resolved && !sight.has_withheld_files() {
+                continue;
+            }
+            for r in grep.ground_identifier(&n.text, usize::MAX) {
+                if (resolved && !sight.withholds(&r.file))
+                    || TEXT_SEARCH_SKIPS
+                        .iter()
+                        .any(|skip| r.file.starts_with(skip))
+                {
+                    continue;
+                }
+                if seen.insert(r.file.clone()) {
+                    grep_tail.push(r.file);
+                }
+            }
+        }
+        grep_tail.sort();
+        safe.extend(grep_tail);
+
+        // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
+        let mut precise = structural;
+        precise.truncate(k);
+        BlastRadius { precise, safe }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grounder::symbols::model::{Def, FileSymbols, Kind, SymRef};
+    use crate::facts::FactsExtractor;
     use crate::grounder::Grounder;
+    use rigger_domain::code_facts::{Def, FileFacts, Mention, Stamp, Tip};
+    use rigger_domain::code_view::{Entry, Extract, Head, Tests, WorktreeDiff};
+    use rigger_domain::composed::Compared;
 
-    /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
+    /// The `symbols` grounder is STRUCTURAL, so its radius stamp (unit 3's audit provenance +
     /// the structural-active signal the conductor keys the `BlastRadiusComputed` audit off) is
     /// NON-EMPTY, shaped `<index-content-hash>/<grammar-tags-version>`, and CHANGES with the
     /// index content - so a recorded radius reconstructs which index generation grounded it.
     #[test]
-    fn index_stamp_is_nonempty_and_tracks_index_content() {
+    fn radius_stamp_is_nonempty_and_tracks_index_content() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
-        let stamp = g.index_stamp();
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
+        let stamp = g.blast_radius_stamped("`foo`", 8).stamp;
         assert!(
             !stamp.is_empty(),
             "symbols is structural: the audit stamp must be non-empty so the conductor emits the audit"
@@ -942,10 +1152,10 @@ mod tests {
         // recorded under one index generation is distinguishable from one under another.
         let dir2 = tempfile::tempdir().unwrap();
         std::fs::write(dir2.path().join("b.rs"), "fn bar() {}\nfn baz() {}\n").unwrap();
-        let g2 = Symbols::open(dir2.path().to_str().unwrap(), None);
+        let g2 = Symbols::in_directory(dir2.path().to_str().unwrap());
         assert_ne!(
-            g.index_stamp(),
-            g2.index_stamp(),
+            g.blast_radius_stamped("`foo`", 8).stamp,
+            g2.blast_radius_stamped("`foo`", 8).stamp,
             "distinct index content must yield a distinct provenance stamp"
         );
         // DETERMINISM (the load-bearing provenance/replay property): the SAME tree opened by a
@@ -955,11 +1165,11 @@ mod tests {
         // would trip this.
         let dir3 = tempfile::tempdir().unwrap();
         std::fs::write(dir3.path().join("a.rs"), "fn foo() {}\n").unwrap();
-        let g3a = Symbols::open(dir3.path().to_str().unwrap(), None);
-        let g3b = Symbols::open(dir3.path().to_str().unwrap(), None);
+        let g3a = Symbols::in_directory(dir3.path().to_str().unwrap());
+        let g3b = Symbols::in_directory(dir3.path().to_str().unwrap());
         assert_eq!(
-            g3a.index_stamp(),
-            g3b.index_stamp(),
+            g3a.blast_radius_stamped("`foo`", 8).stamp,
+            g3b.blast_radius_stamped("`foo`", 8).stamp,
             "the same tree opened twice must yield the SAME stamp (cross-process determinism)"
         );
     }
@@ -978,7 +1188,7 @@ mod tests {
             "// TODO: think about apply_damage someday\nfn unrelated() {}\n",
         )
         .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
         let refs = g.ground("apply_damage", 5);
         assert!(!refs.is_empty(), "the definition must be grounded");
         // The DEFINITION site outranks the prose mention: combat.rs is first, and the prose
@@ -1014,7 +1224,7 @@ mod tests {
             "// apply_damage is discussed but never called here\n",
         )
         .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let br = g.blast_radius("apply_damage", 8);
         // The precise view IS the structural cross-reference graph: the definer and the real call
@@ -1073,7 +1283,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let br = g.blast_radius(
             "a test proves the run reclaims space: `reclaim_space` frees what tests and parse \
@@ -1226,11 +1436,10 @@ mod tests {
         );
     }
 
-    /// The text search never matches a spec file or the regenerated audit: no unit edits the
-    /// first and every unit regenerates the second, so neither is a conflict. Tests and the
-    /// handbook stay in scope.
+    /// The text search never matches a spec file, which no unit edits. Everything else stays in
+    /// scope: tests, the handbook and `docs/audit/`.
     #[test]
-    fn blast_radius_text_search_skips_specs_and_the_audit() {
+    fn blast_radius_text_search_skips_specs_alone() {
         assert_safe(
             &[
                 ("code.rs", "const K: &str = \"unindexed_name\";\n"),
@@ -1244,8 +1453,14 @@ mod tests {
                 ("tests/cli.rs", "// unindexed_name\n"),
             ],
             "`unindexed_name` is read",
-            &["code.rs", "docs/handbook/page.md", "tests/cli.rs"],
-            "specs and the audit are never text-search hits",
+            &[
+                "code.rs",
+                "docs/audit/catalog.json",
+                "docs/audit/report.md",
+                "docs/handbook/page.md",
+                "tests/cli.rs",
+            ],
+            "specs are never text-search hits",
         );
     }
 
@@ -1263,7 +1478,7 @@ mod tests {
         ] {
             std::fs::write(dir.path().join(file), format!("fn {def}() {{}}\n")).unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
         for (query, file) in [
             ("`spawn_unit<T>`", "generic.rs"),
             ("`finish(x)`", "call.rs"),
@@ -1280,7 +1495,7 @@ mod tests {
         // A store file (`graph.db`) is a path, never the symbol `db`.
         let store_dir = tempfile::tempdir().unwrap();
         std::fs::write(store_dir.path().join("handle.rs"), "fn db() {}\n").unwrap();
-        let g = Symbols::open(store_dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(store_dir.path().to_str().unwrap());
         let br = g.blast_radius("`graph.db`", 8);
         assert!(
             !br.safe.contains(&"handle.rs".to_string()),
@@ -1304,7 +1519,7 @@ mod tests {
             std::fs::write(dir.path().join(&name), "fn c() { spawn(); }\n").unwrap();
             expected.push(name);
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
         let br = g.blast_radius("`spawn`", 8);
@@ -1333,7 +1548,7 @@ mod tests {
         // A definer and a real referencer of `parse`, so the radius is non-empty for a real query.
         std::fs::write(dir.path().join("def.rs"), "fn parse() {}\n").unwrap();
         std::fs::write(dir.path().join("call.rs"), "fn run() { parse(); }\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // Empty query -> no terms -> empty views.
         let empty = g.blast_radius("", 8);
@@ -1388,7 +1603,7 @@ mod tests {
             "fn draw() { parse(); } // \u{e9}\n",
         )
         .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // A single-character query: its only token is one CHARACTER, dropped by the char-count term
         // filter, so it has NO symbol terms. `ground` returns nothing...
@@ -1460,7 +1675,7 @@ mod tests {
             "# render is described in prose only, never called\n",
         )
         .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let br = g.blast_radius("`render`", 8);
         // The Rust definer is present (the precise structural view).
@@ -1488,6 +1703,88 @@ mod tests {
         }
     }
 
+    /// Over a tree holding `files`, `query`'s prompt seed at cap `k` is exactly `expected`.
+    fn assert_seed(files: &[(&str, &str)], query: &str, k: usize, expected: &[&str], why: &str) {
+        let (_tree, g) = grounder_over(files);
+        assert_eq!(g.seed(query, k), expected, "{why}");
+    }
+
+    crate::test_cases! {
+        /// A backticked identifier seeds its definition file ahead of a name that merely covers
+        /// more of the criterion's prose words.
+        seed_puts_a_named_identifier_s_definition_file_before_any_prose_match: assert_seed(
+            &[
+                ("src/conductor.rs", "fn write_lookup_pointer() {}\n"),
+                ("src/pointer_names.rs", "fn names_the_tools() {}\n"),
+            ],
+            "`write_lookup_pointer` names the tools",
+            8,
+            &["src/conductor.rs", "src/pointer_names.rs"],
+            "the named definition comes first, the prose match fills after it",
+        );
+        /// A path the criterion spells out, bare in its prose, seeds that file first.
+        seed_resolves_a_path_the_criterion_spells_bare_to_that_file: assert_seed(
+            &[
+                ("crates/dash/src/mcpserver.rs", "fn tool_list() {}\n"),
+                ("src/listing.rs", "fn lists_every_tool() {}\n"),
+            ],
+            "crates/dash/src/mcpserver.rs lists every tool",
+            8,
+            &["crates/dash/src/mcpserver.rs", "src/listing.rs"],
+            "the spelled path comes first, the prose match fills after it",
+        );
+        /// A test file the criterion names explicitly still seeds: only the prose fill skips test
+        /// code.
+        seed_takes_a_test_file_the_criterion_names_explicitly: assert_seed(
+            &[("tests/guard.rs", "fn awk_is_held() {}\n")],
+            "`tests/guard.rs` holds the awk case",
+            8,
+            &["tests/guard.rs"],
+            "a named test path seeds its file",
+        );
+        /// Prose words never match a test function's sentence name, in a test directory or in a
+        /// test module of a product file.
+        seed_never_matches_prose_against_test_function_names: assert_seed(
+            &[
+                ("tests/notes.rs", "fn the_rebuild_owed_note_speaks_only_for_a_graph_db() {}\n"),
+                ("src/note.rs", "fn rebuild_note() {}\n"),
+                (
+                    "src/lib.rs",
+                    "#[cfg(test)]\nmod tests {\n    fn the_note_speaks_for_the_graph() {}\n}\n",
+                ),
+            ],
+            "the rebuild owed note speaks only for a graph db",
+            8,
+            &["src/note.rs"],
+            "the prose fill holds product code alone",
+        );
+        /// The named code fills the cap before any prose match does.
+        seed_caps_at_k_with_the_named_code_first: assert_seed(
+            &[
+                ("a_prose.rs", "fn wires_every_spawn_gate() {}\n"),
+                ("z.rs", "fn arm() {}\n"),
+            ],
+            "`arm` wires every spawn gate",
+            1,
+            &["z.rs"],
+            "a cap of one keeps the named definition alone",
+        );
+        /// Among named identifiers, the one fewer files define seeds first, so a widely defined
+        /// name cannot crowd out a specific one.
+        seed_puts_a_rarely_defined_name_before_a_widely_defined_one: assert_seed(
+            &[
+                ("r1.rs", "fn run() {}\n"),
+                ("r2.rs", "fn run() {}\n"),
+                ("r3.rs", "fn run() {}\n"),
+                ("combat.rs", "fn apply_damage() {}\n"),
+            ],
+            "`run` before `apply_damage`",
+            2,
+            &["combat.rs", "r1.rs"],
+            "the one-definer name seeds before the three-definer name",
+        );
+    }
+
     /// A `Symbols` grounder over a fresh root holding `files` (`(name, source)` pairs); the
     /// root lives as long as the returned dir.
     fn grounder_over(files: &[(&str, &str)]) -> (tempfile::TempDir, Symbols) {
@@ -1497,7 +1794,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, source).unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
         (dir, g)
     }
 
@@ -1609,7 +1906,7 @@ mod tests {
         // definition score), not as a duplicate def-row plus ref-row.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("r.rs"), "fn parse() { parse(); }\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
         let refs = g.ground("parse", 8);
         let at_line_1: Vec<_> = refs
             .iter()
@@ -1644,7 +1941,7 @@ mod tests {
             )
             .unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let ranked = g.ground_ranked("unwrap", 50);
         assert!(
@@ -1693,7 +1990,7 @@ mod tests {
         std::fs::write(dir.path().join("filler.rs"), filler).unwrap();
         std::fs::write(dir.path().join("combat.rs"), "fn collide() {}\n").unwrap();
         std::fs::write(dir.path().join("other.py"), "def collide():\n    pass\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         assert!(
             g.has_strong_match("collide", 8),
@@ -1712,100 +2009,11 @@ mod tests {
         assert!(g.ground("parse", 0).is_empty());
     }
 
+    /// Every read opens the view of the head afresh, so the grounder follows the tree as its files
+    /// change and are deleted: a new symbol grounds, the replaced one is gone, an untouched file
+    /// stands, and a deleted file stops grounding.
     #[test]
-    fn open_persists_the_index_on_a_cold_start() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn parse() {}\n").unwrap();
-        let _g = Symbols::open(dir.path().to_str().unwrap(), None);
-        // A cold open builds + persists, so a second process (here, `store::load`) finds it.
-        assert!(
-            store::load(dir.path().to_str().unwrap()).is_some(),
-            "a cold open must persist the index for the next process"
-        );
-    }
-
-    #[test]
-    fn reindex_freshening_gate_skips_a_content_unchanged_file() {
-        // The content-hash freshening gate consumes `store::content_hash`: a file whose content is
-        // unchanged - INCLUDING a change to line endings only, which the hash normalizes away - is
-        // NOT re-parsed. A genuinely different content IS.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        let rel = "a.rs".to_string();
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
-        let mut fps = BTreeMap::new();
-
-        // First sight of the file: no fingerprint yet -> it is "changed" (must be parsed).
-        assert_eq!(
-            changed_files(root, std::slice::from_ref(&rel), &mut fps),
-            vec![rel.clone()]
-        );
-        // Rewrite the SAME logical content with CRLF line endings: content_hash normalizes CRLF to
-        // LF, so the fingerprint is unchanged -> the gate SKIPS it (no needless re-parse/persist).
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\r\n").unwrap();
-        assert!(
-            changed_files(root, std::slice::from_ref(&rel), &mut fps).is_empty(),
-            "a line-ending-only change must be skipped by the content-hash gate"
-        );
-        // A genuine content change bumps the hash -> the gate returns it.
-        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
-        assert_eq!(
-            changed_files(root, std::slice::from_ref(&rel), &mut fps),
-            vec![rel.clone()]
-        );
-    }
-
-    #[test]
-    fn a_concurrent_reindex_from_a_second_grounder_is_not_clobbered() {
-        // Two `Symbols` grounders over the SAME root model two long-lived processes: a conductor
-        // holding one for a whole `rigger run` while a separate `rigger reindex` process opens
-        // another. Each reindexes a DIFFERENT file. `Symbols::open` loads the index ONCE, so the
-        // conductor's in-memory copy goes STALE the moment the other process persists. Without
-        // reload-under-lock, the conductor's later reindex would write its stale snapshot over the
-        // peer's freshly-persisted change - a cross-process LOST UPDATE. Reloading the persisted
-        // base under the held write lock before applying its own delta folds the peer's write in,
-        // so BOTH changes survive.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        // Named so the OLD and NEW symbol at each site share no substring relationship (spec 92
-        // criterion 3 added CONTAINS-tier matching, so e.g. "one" would still weakly ground to a
-        // renamed "oneprime" - a real, intended recall improvement, but it would wrongly pass a
-        // "the superseded symbol must be gone" assertion here for the wrong reason).
-        std::fs::write(dir.path().join("a.rs"), "fn alpha_orig() {}\n").unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn gamma_orig() {}\n").unwrap();
-        // Both open over the SAME initial on-disk index {a: alpha_orig, b: gamma_orig}, each
-        // into its own memory.
-        let conductor = Symbols::open(root, None);
-        let other_process = Symbols::open(root, None);
-
-        // The "other process" reindexes b.rs -> delta_fresh and PERSISTS it. Disk is now {a, b'}.
-        std::fs::write(dir.path().join("b.rs"), "fn delta_fresh() {}\n").unwrap();
-        other_process.reindex(root, &["b.rs".to_string()]);
-
-        // The conductor still holds the STALE in-memory index {a: alpha_orig, b: gamma_orig}. It
-        // reindexes a.rs. Its persist MUST fold in the peer's delta_fresh rather than clobber it
-        // back to gamma_orig.
-        std::fs::write(dir.path().join("a.rs"), "fn beta_fresh() {}\n").unwrap();
-        conductor.reindex(root, &["a.rs".to_string()]);
-
-        // A fresh reader (a third process) sees BOTH changes on disk.
-        let reader = Symbols::open(root, None);
-        assert!(
-            !reader.ground("beta_fresh", 5).is_empty(),
-            "the conductor's own reindex must be persisted"
-        );
-        assert!(
-            !reader.ground("delta_fresh", 5).is_empty(),
-            "the peer's concurrent reindex must NOT be clobbered by the conductor's stale snapshot"
-        );
-        assert!(
-            reader.ground("gamma_orig", 5).is_empty(),
-            "the superseded symbol must be gone"
-        );
-    }
-
-    #[test]
-    fn reindex_replaces_only_a_changed_files_symbols() {
+    fn grounding_follows_the_tree_as_files_change() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
         // Named so the OLD and NEW symbol share no substring relationship (spec 92 criterion 3's
@@ -1813,15 +2021,13 @@ mod tests {
         // "oneprime" - correct recall, but the wrong reason for THIS assertion to pass).
         std::fs::write(dir.path().join("a.rs"), "fn alpha_orig() {}\n").unwrap();
         std::fs::write(dir.path().join("b.rs"), "fn gamma_orig() {}\n").unwrap();
-        let g = Symbols::open(root, None);
+        let g = Symbols::in_directory(root);
         assert!(!g.ground("alpha_orig", 5).is_empty());
 
-        // Change a.rs, reindex just it: the new symbol grounds, the old one is gone, b.rs stands.
         std::fs::write(dir.path().join("a.rs"), "fn beta_fresh() {}\n").unwrap();
-        g.reindex(root, &["a.rs".to_string()]);
         assert!(
             !g.ground("beta_fresh", 5).is_empty(),
-            "the freshened symbol must ground"
+            "the new symbol must ground"
         );
         assert!(
             g.ground("alpha_orig", 5).is_empty(),
@@ -1830,6 +2036,16 @@ mod tests {
         assert!(
             !g.ground("gamma_orig", 5).is_empty(),
             "the untouched file must stand"
+        );
+
+        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
+        assert!(
+            g.ground("beta_fresh", 5).is_empty(),
+            "a deleted file's symbol must not keep grounding"
+        );
+        assert!(
+            !g.ground("gamma_orig", 5).is_empty(),
+            "the surviving file must still ground"
         );
     }
 
@@ -1870,7 +2086,7 @@ mod tests {
         // Named so a plain file-order tiebreak (with commonness ignored) would put a `run`
         // hit first - only real inverse-document-frequency weighting can make `dash` win.
         std::fs::write(dir.path().join("zzz_dash.rs"), "fn dash() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let refs = g.ground("dash run", 10);
         assert_eq!(
@@ -1909,7 +2125,7 @@ mod tests {
             "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
         )
         .unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // Neither "cfg" nor "zorble" is ever itself a standalone name in this fixture - every
         // match below is CONTAINS-tier, never EXACT, squarely exercising the scorer's
@@ -1945,7 +2161,7 @@ mod tests {
             )
             .unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let ranked = g.ground_ranked("apply_damage", 5);
         assert_eq!(
@@ -1968,7 +2184,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn run() {}\n").unwrap();
         std::fs::write(dir.path().join("b.rs"), "fn run() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let ranked = g.ground_ranked("run", 5);
         let files: Vec<&str> = ranked.iter().map(|r| r.loc.file.as_str()).collect();
@@ -2009,7 +2225,7 @@ mod tests {
             )
             .unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         let ranked = g.ground_ranked("dup_name", 10);
         assert_eq!(
@@ -2067,7 +2283,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("f{i}.rs")), "fn run() {}\n").unwrap();
         }
         std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         assert!(
             !g.has_strong_match("run", 8),
@@ -2086,10 +2302,10 @@ mod tests {
 
     /// Spec 92 criterion 3 remediation (adj-u92c3-verdict-reject): the reject's own live repro
     /// against the real project tree - `criterion_stable_id` (1 definition, 37 references) and
-    /// `sweep_terminal` (1 definition, 93 references) both wrongly printed "no entity matches
-    /// strongly". A single-definition entity is UNAMBIGUOUS no matter how many places call it;
-    /// the old cutoff conflated one entity's own reference VOLUME with tree-wide name
-    /// AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
+    /// another single-definition entity (1 definition, 93 references) both wrongly printed "no
+    /// entity matches strongly". A single-definition entity is UNAMBIGUOUS no matter how many
+    /// places call it; the old cutoff conflated one entity's own reference VOLUME with tree-wide
+    /// name AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
     /// shape at a scale that clears `AMBIGUITY_PERCENTILE` under the OLD (broken) raw
     /// occurrence-count cutoff, proving the fix measures ambiguity, not popularity.
     #[test]
@@ -2103,7 +2319,7 @@ mod tests {
             )
             .unwrap();
         }
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+        let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         assert!(
             g.has_strong_match("widely_called", 8),
@@ -2129,163 +2345,151 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reindex_over_a_deleted_file_stops_grounding_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn gone_symbol() {}\n").unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn kept_symbol() {}\n").unwrap();
-        let g = Symbols::open(root, None);
-        assert!(!g.ground("gone_symbol", 5).is_empty());
-
-        // Delete a.rs and reindex it: the grounder must stop surfacing the gone file as a seed
-        // (a deleted file's defs must not keep grounding), while the surviving file still grounds.
-        std::fs::remove_file(dir.path().join("a.rs")).unwrap();
-        g.reindex(root, &["a.rs".to_string()]);
-        assert!(
-            g.ground("gone_symbol", 5).is_empty(),
-            "a deleted file's symbol must not keep grounding"
-        );
-        assert!(
-            !g.ground("kept_symbol", 5).is_empty(),
-            "the surviving file must still ground"
-        );
-
-        // The removal is PERSISTED: a fresh reader (a separate process) never grounds it either.
-        let reader = Symbols::open(root, None);
-        assert!(
-            reader.ground("gone_symbol", 5).is_empty(),
-            "the deleted file's symbols must be purged from the persisted index"
-        );
+    /// A stamp for a view built in memory.
+    fn stamp() -> Stamp {
+        Stamp {
+            tip: Tip {
+                head: "main".into(),
+                commit: None,
+                tree: "fixture-tree".into(),
+            },
+            fingerprint: 0,
+            seq: 1,
+        }
     }
 
-    /// Spec 92 criterion 2: `docs/audit/2026-09-graph-vs-grep.md` questions 5 (the driver
-    /// `fresh` flag's semantics) and 8 (`OUTER_WALL_CLOCK_SEC`) both failed with "JS not
-    /// indexed" - `ground` surfaced only generic `new`/`driver` module noise. Proven here
-    /// against this project's OWN, REAL `workflows/rigger.js` (its exact bytes, copied into an
-    /// isolated fixture root at the same relative path - not a synthetic snippet), through the
-    /// production `Symbols` grounder: both constants must now ground to it.
-    #[test]
-    fn ground_answers_audit_questions_5_and_8_against_the_real_rigger_js() {
-        let real = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../workflows")
-                .join("rigger.js"),
-        )
-        .expect("this project's own workflows/rigger.js must be readable");
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("workflows")).unwrap();
-        std::fs::write(dir.path().join("workflows").join("rigger.js"), &real).unwrap();
-        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+    /// The head a test double hands out: the same files every read, compared with a worktree that
+    /// differs as `diff` says. No file is on disk.
+    struct Fixed {
+        files: Vec<FileFacts>,
+        diff: Result<WorktreeDiff, String>,
+    }
 
-        // Q8: `OUTER_WALL_CLOCK_SEC` (a ternary-valued constant).
-        let outer = g.ground("OUTER_WALL_CLOCK_SEC", 6);
-        assert!(
-            outer.iter().any(|r| r.file == "workflows/rigger.js"),
-            "OUTER_WALL_CLOCK_SEC must ground to workflows/rigger.js; got {outer:?}"
-        );
-        // Q5: the driver `fresh` flag - its constant is named `FRESH` (`!!A.fresh`).
-        let fresh = g.ground("FRESH", 6);
-        assert!(
-            fresh.iter().any(|r| r.file == "workflows/rigger.js"),
-            "FRESH must ground to workflows/rigger.js; got {fresh:?}"
-        );
+    impl OpenCodeView for Fixed {
+        fn head(&self, _worktree: &Path) -> Result<Head, String> {
+            Ok(Head {
+                view: Box::new(FactsView::new(stamp(), self.files.clone())),
+                diff: self.diff.clone(),
+                behind: None,
+            })
+        }
+    }
+
+    /// A fully-parsed code file at `path`, in language `lang` and `scope`.
+    fn code_file(
+        path: &str,
+        lang: &str,
+        scope: Scope,
+        defs: Vec<Def>,
+        refs: Vec<Mention>,
+    ) -> FileFacts {
+        FileFacts {
+            path: path.into(),
+            lang: lang.into(),
+            scope,
+            defs,
+            mentions: refs,
+            ..FileFacts::default()
+        }
     }
 
     /// Test-only fixture: a one-line definition at `line`, real fields elsewhere immaterial to
-    /// [`scored_hits`]'s tie-break (`is_test`/`is_out_of_line_module`/`path_override`/
-    /// `enclosing_inline_module_path` all left at their inert defaults).
+    /// [`scored_hits`]'s tie-break (`test` at its inert default).
     fn hand_def(name: &str, line: u32) -> Def {
         Def {
-            kind: Kind::Function,
-            name: name.to_string(),
+            local: name.to_string(),
+            leaf: name.to_string(),
+            kind: "fn".to_string(),
             line,
             end_line: line,
-            path: name.to_string(),
             parent: None,
-            is_test: false,
-            is_out_of_line_module: false,
-            path_override: None,
-            enclosing_inline_module_path: None,
+            test: false,
         }
     }
 
-    /// Test-only fixture: a reference at `line`, uncalled/unattributed (`enclosing: None`) and
-    /// not test evidence - the fields [`scored_hits`] itself never reads.
-    fn hand_ref(name: &str, line: u32) -> SymRef {
-        SymRef {
-            name: name.to_string(),
-            line,
+    /// Test-only fixture: a call reference at `line`, unattributed (`enclosing: None`) and not
+    /// test evidence - the fields [`scored_hits`] itself never reads.
+    fn hand_ref(name: &str, line: u32) -> Mention {
+        Mention {
             enclosing: None,
-            is_test: false,
-            ref_kind: None,
+            name: name.to_string(),
+            leaf: name.to_string(),
+            kind: MentionKind::Call,
+            line,
+            test: false,
         }
     }
 
-    /// A one-file `fixture.rs` Rust index holding `defs` and `refs`.
-    fn fixture_index(defs: Vec<Def>, refs: Vec<SymRef>) -> SymbolIndex {
-        let mut idx = SymbolIndex::default();
-        idx.insert_file(
-            "fixture.rs".to_string(),
-            FileSymbols {
-                lang: Lang::Rust,
-                defs,
-                refs,
-                partial: false,
-            },
-        );
-        idx
+    /// A view of `files`, compared with a worktree that differs from it nowhere.
+    fn view_of(files: Vec<FileFacts>) -> FactsView {
+        FactsView::new(stamp(), files)
+    }
+
+    fn agreeing(view: &FactsView) -> Sight<'_> {
+        Sight::new(view, Withheld::of(Ok(WorktreeDiff::default())))
+    }
+
+    /// A one-file `fixture.rs` Rust view of `defs` and `refs`.
+    fn fixture_view(defs: Vec<Def>, refs: Vec<Mention>) -> FactsView {
+        view_of(vec![code_file(
+            "fixture.rs",
+            "rust",
+            Scope::Product,
+            defs,
+            refs,
+        )])
     }
 
     /// DEV-ONLY CODE MAKES NO NODE (spec 116 criterion 1), at ranking: [`scored_hits`] marks
-    /// every location of a `*_test.go` file as test, though none carries a test marking of its
-    /// own, and leaves its production sibling's unmarked.
+    /// every location of a Test-scope file (`*_test.go` among them) as test, though none carries
+    /// a test marking of its own, and leaves its production sibling's unmarked.
     #[test]
-    fn scored_hits_marks_a_go_test_file_location_as_test_and_its_sibling_as_production() {
-        let mut idx = SymbolIndex::default();
-        for path in ["pkg/x.go", "pkg/x_test.go"] {
-            idx.insert_file(
-                path.to_string(),
-                FileSymbols {
-                    lang: Lang::Go,
-                    defs: vec![hand_def("Widget", 1)],
-                    refs: vec![hand_ref("Widget", 2)],
-                    partial: false,
-                },
-            );
-        }
-        let marked: Vec<(&str, u32, bool)> = scored_hits(&idx, &["Widget"])
-            .iter()
+    fn scored_hits_marks_a_test_scope_file_location_as_test_and_its_sibling_as_production() {
+        let view = view_of(
+            [("pkg/x.go", Scope::Product), ("pkg/x_test.go", Scope::Test)]
+                .map(|(path, scope)| {
+                    code_file(
+                        path,
+                        "go",
+                        scope,
+                        vec![hand_def("Widget", 1)],
+                        vec![hand_ref("Widget", 2)],
+                    )
+                })
+                .into(),
+        );
+        let marked: Vec<(String, u32, bool)> = scored_hits(&agreeing(&view), &["Widget"])
+            .into_iter()
             .map(|h| (h.file, h.line, h.test))
             .collect();
         assert_eq!(
             marked,
             vec![
-                ("pkg/x.go", 1, false),
-                ("pkg/x.go", 2, false),
-                ("pkg/x_test.go", 1, true),
-                ("pkg/x_test.go", 2, true),
+                ("pkg/x.go".to_string(), 1, false),
+                ("pkg/x.go".to_string(), 2, false),
+                ("pkg/x_test.go".to_string(), 1, true),
+                ("pkg/x_test.go".to_string(), 2, true),
             ]
         );
     }
 
     /// The name `hits` slots at `fixture.rs`'s `line`.
-    fn slot_at<'a>(hits: &[ScoredHit<'a>], line: u32) -> Option<&'a str> {
+    fn slot_at(hits: &[ScoredHit], line: u32) -> Option<&str> {
         hits.iter()
             .find(|h| h.line == line && h.file == "fixture.rs")
-            .map(|h| h.name)
+            .map(|h| h.name.as_str())
     }
 
-    /// Over a `fixture.rs` index of `defs` and `refs`, scoring `terms` slots each `(line, name,
+    /// Over a `fixture.rs` view of `defs` and `refs`, scoring `terms` slots each `(line, name,
     /// why)` case's `name` at its `line`.
     fn assert_slots(
         defs: Vec<Def>,
-        refs: Vec<SymRef>,
+        refs: Vec<Mention>,
         terms: &[&str],
         expected: &[(u32, &str, &str)],
     ) {
-        let idx = fixture_index(defs, refs);
-        let hits = scored_hits(&idx, terms);
+        let view = fixture_view(defs, refs);
+        let hits = scored_hits(&agreeing(&view), terms);
         for (line, name, why) in expected {
             let slot = slot_at(&hits, *line);
             assert_eq!(slot, Some(*name), "{why}; got {slot:?}");
@@ -2429,41 +2633,575 @@ mod tests {
         );
     }
 
+    /// The files a worktree holds differently from the view's tree, as the honesty check reports
+    /// them.
+    fn differing(changed: &[&str], untracked: &[&str]) -> Result<WorktreeDiff, String> {
+        let owned = |files: &[&str]| files.iter().map(|f| f.to_string()).collect();
+        Ok(WorktreeDiff {
+            changed: owned(changed),
+            untracked: owned(untracked),
+        })
+    }
+
+    /// Grounding reads the code store's view, not the disk: the files exist only in the view the
+    /// grounder is handed, and what it serves is that view less the files the caller's worktree
+    /// puts in doubt (a differing file; every file when the worktree cannot be compared). Each row:
+    /// the worktree's difference, `ground`'s hits as `file:line:name`, and the blast radius's
+    /// precise view.
+    #[test]
+    fn symbol_grounding_reads_the_code_view() {
+        let files = vec![
+            code_file(
+                "src/combat.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("apply_damage", 7)],
+                vec![],
+            ),
+            code_file(
+                "src/caller.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("go", 1)],
+                vec![hand_ref("apply_damage", 2)],
+            ),
+        ];
+        let both_files = vec![
+            "src/combat.rs:7:apply_damage",
+            "src/caller.rs:2:apply_damage",
+        ];
+        let cases = [
+            (
+                "a worktree that agrees with the view",
+                differing(&[], &[]),
+                both_files.clone(),
+                vec!["src/combat.rs", "src/caller.rs"],
+            ),
+            (
+                "a file outside the tree's scope that differs withholds nothing",
+                differing(&[], &[".rigger/events.db"]),
+                both_files,
+                vec!["src/combat.rs", "src/caller.rs"],
+            ),
+            (
+                "a differing definer is withheld",
+                differing(&["src/combat.rs"], &[]),
+                vec!["src/caller.rs:2:apply_damage"],
+                vec!["src/caller.rs"],
+            ),
+            (
+                "a differing caller is withheld",
+                differing(&[], &["src/caller.rs"]),
+                vec!["src/combat.rs:7:apply_damage"],
+                vec!["src/combat.rs"],
+            ),
+            (
+                "a worktree that cannot be compared withholds every file",
+                Err("the commit is not in the worktree".to_string()),
+                vec![],
+                vec![],
+            ),
+        ];
+        for (name, diff, ground, precise) in cases {
+            let worktree = tempfile::tempdir().unwrap();
+            let g = Symbols::over(
+                worktree.path().to_str().unwrap(),
+                Box::new(Fixed {
+                    files: files.clone(),
+                    diff,
+                }),
+            );
+            let hits: Vec<String> = g
+                .ground("apply_damage", 8)
+                .into_iter()
+                .map(|r| format!("{}:{}:{}", r.file, r.line, r.text))
+                .collect();
+            assert_eq!(hits, ground, "{name}: ground");
+            assert_eq!(
+                g.blast_radius("`apply_damage`", 8).precise,
+                precise,
+                "{name}: blast radius"
+            );
+        }
+    }
+
+    /// A store that cannot be opened withholds everything, like a worktree that cannot be compared,
+    /// and says why: nothing is served from the view, the radius falls back to the text search
+    /// (the safe over-approximation), and the label names the failure. Never an empty answer
+    /// indistinguishable from "no hit".
+    #[test]
+    fn grounding_answers_state_an_unopenable_store() {
+        struct Unopenable;
+        impl OpenCodeView for Unopenable {
+            fn head(&self, _worktree: &Path) -> Result<Head, String> {
+                Err("the code store is locked".to_string())
+            }
+        }
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::write(worktree.path().join("def.rs"), "fn apply_damage() {}\n").unwrap();
+        std::fs::write(
+            worktree.path().join("caller.rs"),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+        let g = Symbols::over(worktree.path().to_str().unwrap(), Box::new(Unopenable));
+
+        let Grounded {
+            rows: hits, label, ..
+        } = g.ground_labelled("apply_damage", 8, Tests::Include);
+        assert!(hits.is_empty(), "nothing is served");
+        let radius = g.blast_radius("`apply_damage`", 8);
+        assert!(radius.precise.is_empty(), "no structural view");
+        let mut safe = radius.safe;
+        safe.sort();
+        assert_eq!(
+            safe,
+            ["caller.rs", "def.rs"],
+            "the text search answers in place of the view"
+        );
+        let label = label.expect("the symbols grounder labels its answers");
+        assert_eq!(label.compared, Compared::Uncomparable);
+        assert!(
+            label.to_string().contains("the code store is locked"),
+            "the label names why: {label}"
+        );
+    }
+
+    /// Grounding rows follow the `tests` filter: `exclude` keeps product rows, `include` ranks
+    /// every row (product first), `only` keeps the tests. Each row: the filter and the files of
+    /// the rows it answers for `widget`, defined in `src/w.rs` and called by a test in
+    /// `tests/t.rs`.
+    #[test]
+    fn grounding_rows_follow_the_tests_filter() {
+        let worktree = tempfile::tempdir().unwrap();
+        let files = vec![
+            code_file(
+                "src/w.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("widget", 1)],
+                Vec::new(),
+            ),
+            code_file(
+                "tests/t.rs",
+                "rust",
+                Scope::Test,
+                vec![hand_def("widget_works", 1)],
+                Vec::new(),
+            ),
+        ];
+        let g = Symbols::over(
+            worktree.path().to_str().unwrap(),
+            Box::new(Fixed {
+                files,
+                diff: Ok(WorktreeDiff::default()),
+            }),
+        );
+        let cases: [(Tests, &[&str]); 3] = [
+            (Tests::Exclude, &["src/w.rs"]),
+            (Tests::Include, &["src/w.rs", "tests/t.rs"]),
+            (Tests::Only, &["tests/t.rs"]),
+        ];
+        for (tests, expected) in cases {
+            let grounded = g.ground_labelled("widget", 8, tests);
+            let rows = grounded.rows;
+            let found: Vec<&str> = rows.iter().map(|r| r.file.as_str()).collect();
+            assert_eq!(found, expected, "{tests:?}");
+            let ranked = g.ground_ranked_labelled("widget", 8, tests);
+            let page = ranked.rows.unwrap_or_default();
+            let page: Vec<&str> = page.iter().map(|r| r.loc.file.as_str()).collect();
+            assert_eq!(page, expected, "{tests:?}: the ranked page follows it");
+            let hidden = usize::from(tests == Tests::Exclude);
+            assert_eq!(grounded.tests_hidden, hidden, "{tests:?}");
+            assert_eq!(
+                ranked.tests_hidden, hidden,
+                "{tests:?}: the ranked page counts it"
+            );
+        }
+    }
+
+    /// A store that advances on every open, naming the open's number in its tree id and its one
+    /// file (beside one test file), so a second open shows as an answer from another tree and as
+    /// a count above one.
+    struct Advancing(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl OpenCodeView for Advancing {
+        fn head(&self, _worktree: &Path) -> Result<Head, String> {
+            let open = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let mut at = stamp();
+            at.tip.tree = format!("tree-{open}");
+            let file = code_file(
+                &format!("open{open}.rs"),
+                "rust",
+                Scope::Product,
+                vec![hand_def("apply_damage", 1)],
+                vec![],
+            );
+            // One test location beside it, which the excluding answer counts, not lists.
+            let test = code_file(
+                &format!("open{open}_test.rs"),
+                "rust",
+                Scope::Test,
+                vec![hand_def("apply_damage_works", 1)],
+                vec![],
+            );
+            Ok(Head {
+                view: Box::new(FactsView::new(at, vec![file, test])),
+                diff: Ok(WorktreeDiff::default()),
+                behind: None,
+            })
+        }
+    }
+
+    /// A labelled answer comes from ONE open of the store: the label describes the tree the rows
+    /// came from even when the store advances between opens. The double advances on every open,
+    /// naming the open's number in its tree id and its one file, so a second open shows as a
+    /// label and rows from different trees, and as a count above one.
+    #[test]
+    fn a_labelled_answer_opens_the_store_once_and_describes_the_tree_it_read() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        type Answer = fn(&Symbols) -> (Vec<String>, Option<Label>, usize);
+        let ground: Answer = |g| {
+            let answer = g.ground_labelled("apply_damage", 8, Tests::Exclude);
+            (
+                answer.rows.into_iter().map(|r| r.file).collect(),
+                answer.label,
+                answer.tests_hidden,
+            )
+        };
+        let ranked: Answer = |g| {
+            let answer = g.ground_ranked_labelled("apply_damage", 8, Tests::Exclude);
+            (
+                answer
+                    .rows
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|r| r.loc.file)
+                    .collect(),
+                answer.label,
+                answer.tests_hidden,
+            )
+        };
+        for (name, answer) in [
+            ("ground_labelled", ground),
+            ("ground_ranked_labelled", ranked),
+        ] {
+            let opens = Arc::new(AtomicUsize::new(0));
+            let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
+            let (files, label, hidden) = answer(&g);
+            assert_eq!(files, ["open1.rs"], "{name}: the rows read the first open");
+            assert_eq!(hidden, 1, "{name}: the count comes from that open too");
+            assert_eq!(
+                label.expect("labelled").to_string(),
+                "describes tree-1",
+                "{name}: the label describes that same open"
+            );
+            assert_eq!(
+                opens.load(Ordering::SeqCst),
+                1,
+                "{name}: one answer, one open"
+            );
+        }
+    }
+
+    /// The prompt seed, the radius and its audit stamp come from ONE open of the store: a store
+    /// advanced between two opens never records a seed and a radius of different trees, or
+    /// stamps either with a tree it was not grounded on.
+    #[test]
+    fn a_radius_is_stamped_with_the_tree_of_the_open_that_grounded_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
+        let stamped = g.blast_radius_stamped("`apply_damage`", 8);
+        assert_eq!(stamped.seed, ["open1.rs"], "the seed reads the first open");
+        assert!(
+            stamped.radius.precise.contains(&"open1.rs".to_string()),
+            "the radius reads the first open: {:?}",
+            stamped.radius
+        );
+        assert_eq!(
+            stamped.stamp,
+            format!("tree-1/{GRAMMAR_TAGS_VERSION}"),
+            "the stamp names that same open's tree"
+        );
+        assert_eq!(
+            opens.load(Ordering::SeqCst),
+            1,
+            "one seed and radius, one open"
+        );
+    }
+
+    /// Every answer's label states what was withheld, and counts the hits of that answer the
+    /// differing files withheld: the entities it would have shown or reported hidden, a definition
+    /// and its calls one, in the same read.
+    /// The view holds `alpha` defined and called in `src/a.rs` and the test `alpha_test` in
+    /// `tests/t.rs`; the query is `alpha`. Each row: the worktree's difference, the filter, the
+    /// label's text after `describes <tree>` (the same on the plain and the ranked page) and the
+    /// test hits reported hidden.
+    #[test]
+    fn grounding_labels_count_the_hits_they_withheld() {
+        let files = vec![
+            code_file(
+                "src/a.rs",
+                "rust",
+                Scope::Product,
+                vec![hand_def("alpha", 1)],
+                vec![hand_ref("alpha", 5)],
+            ),
+            code_file(
+                "tests/t.rs",
+                "rust",
+                Scope::Test,
+                vec![hand_def("alpha_test", 1)],
+                vec![],
+            ),
+        ];
+        let a = &["src/a.rs"][..];
+        let t = &["tests/t.rs"][..];
+        let cases = [
+            ("agreeing", differing(&[], &[]), Tests::Exclude, "", 1),
+            (
+                "the product file differs",
+                differing(a, &[]),
+                Tests::Exclude,
+                "; 1 file in W differs; 1 withheld",
+                1,
+            ),
+            (
+                "an untracked differing file holds no hit",
+                differing(a, &["src/b.rs"]),
+                Tests::Include,
+                "; 2 files in W differ; 1 withheld",
+                0,
+            ),
+            (
+                "a differing test file's hit is withheld, not hidden",
+                differing(t, &[]),
+                Tests::Exclude,
+                "; 1 file in W differs; 1 withheld",
+                0,
+            ),
+            (
+                "a product hit the test view would not show is not counted",
+                differing(a, &[]),
+                Tests::Only,
+                "; 1 file in W differs",
+                0,
+            ),
+            (
+                "the test view counts its withheld test hit",
+                differing(t, &[]),
+                Tests::Only,
+                "; 1 file in W differs; 1 withheld",
+                0,
+            ),
+            (
+                "not comparable",
+                Err("no such commit".to_string()),
+                Tests::Include,
+                "; W cannot be compared; 2 withheld",
+                0,
+            ),
+        ];
+        for (name, diff, tests, after_tree, hidden) in cases {
+            let g = Symbols::over(
+                "W",
+                Box::new(Fixed {
+                    files: files.clone(),
+                    diff,
+                }),
+            );
+            let expected = format!("describes {}{after_tree}", stamp().tip.tree);
+            let plain = g.ground_labelled("alpha", 8, tests);
+            assert_eq!(
+                plain.label.expect("labelled").to_string(),
+                expected,
+                "{name}"
+            );
+            assert_eq!(plain.tests_hidden, hidden, "{name}: hidden");
+            let ranked = g.ground_ranked_labelled("alpha", 8, tests);
+            assert_eq!(
+                ranked.label.expect("labelled").to_string(),
+                expected,
+                "{name}: ranked"
+            );
+            assert_eq!(ranked.tests_hidden, hidden, "{name}: ranked hidden");
+        }
+    }
+
+    /// A file the worktree holds differently from the view is withheld from the structural view,
+    /// so the safe view adds the files the text search finds each named symbol in among them: a
+    /// missed reference is the unsafe error. Each row: the worktree's difference and the safe view
+    /// of `spawn`, defined in the view's `def.rs`; the worktree's `edited.rs` calls it.
+    #[test]
+    fn a_differing_file_s_text_hits_join_the_safe_view() {
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::write(worktree.path().join("edited.rs"), "fn go() { spawn(); }\n").unwrap();
+        let files = vec![code_file(
+            "def.rs",
+            "rust",
+            Scope::Product,
+            vec![hand_def("spawn", 1)],
+            vec![],
+        )];
+        let cases = [
+            (
+                "a worktree that agrees with the view: a resolved name is not text-searched",
+                differing(&[], &[]),
+                vec!["def.rs"],
+            ),
+            (
+                "a differing file that names the symbol joins the safe view",
+                differing(&[], &["edited.rs"]),
+                vec!["def.rs", "edited.rs"],
+            ),
+            (
+                "a differing file that does not name it stays out",
+                differing(&[], &["other.rs"]),
+                vec!["def.rs"],
+            ),
+        ];
+        for (name, diff, safe) in cases {
+            let g = Symbols::over(
+                worktree.path().to_str().unwrap(),
+                Box::new(Fixed {
+                    files: files.clone(),
+                    diff,
+                }),
+            );
+            let br = g.blast_radius("`spawn`", 8);
+            assert_eq!(br.safe, safe, "{name}");
+            assert_eq!(br.precise, vec!["def.rs"], "{name}: precise");
+        }
+    }
+
+    /// The reference degree counts every served file's call references to a name within one
+    /// language: a name called in many files reports them all, and a name over-linked in another
+    /// language never inflates the degree (the cross-language collision per-language scoping
+    /// exists to prevent, 5.5.2). Each row: the files, then (name, language, degree) cases.
+    #[test]
+    fn reference_degree_counts_call_references_within_one_language() {
+        let called = |path: String, lang: &str, name: &str| {
+            code_file(&path, lang, Scope::Product, vec![], vec![hand_ref(name, 1)])
+        };
+        let many = |lang: &str, ext: &str, name: &str, n: usize| -> Vec<FileFacts> {
+            (0..n)
+                .map(|i| called(format!("{lang}/f{i}.{ext}"), lang, name))
+                .collect()
+        };
+        let mut shared_name = many("python", "py", "parse", 20);
+        shared_name.push(called("a.rs".into(), "rust", "parse"));
+        shared_name.extend(many("rust", "rs", "new", 10));
+        let mut defined_and_called = many("rust", "rs", "new", 20);
+        defined_and_called.push(code_file(
+            "combat.rs",
+            "rust",
+            Scope::Product,
+            vec![hand_def("apply_damage", 1)],
+            vec![hand_ref("apply_damage", 2)],
+        ));
+        let cases = [
+            (
+                "a name called in many files",
+                defined_and_called,
+                vec![
+                    ("new", "rust", 20),
+                    ("apply_damage", "rust", 1),
+                    ("absent", "rust", 0),
+                ],
+            ),
+            (
+                "a name over-linked in another language",
+                shared_name,
+                vec![
+                    ("parse", "rust", 1),
+                    ("parse", "python", 20),
+                    ("new", "rust", 10),
+                ],
+            ),
+        ];
+        for (name, files, degrees) in cases {
+            let view = view_of(files);
+            let sight = agreeing(&view);
+            for (leaf, lang, degree) in degrees {
+                assert_eq!(sight.reference_degree(leaf, lang), degree, "{name}: {leaf}");
+            }
+        }
+    }
+
     /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
-    /// radius - [`SymbolIndex::reference_degree`], [`name_occurrence_map`], [`scored_hits`],
+    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`],
     /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
-    /// an index holding one of each beside a call.
+    /// a view holding one of each beside a call.
     #[test]
     fn tagged_references_move_no_degree_commonness_rank_or_radius() {
         use crate::rust_definition_sources::{
-            REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER,
+            REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER as USER,
         };
-        let idx = crate::symbol_index::extracted_rust_index(
-            &crate::rust_definition_sources::REFERENCE_KINDS_TREE,
-        );
+        let files: Vec<FileFacts> = REFERENCE_KINDS_TREE
+            .iter()
+            .map(|(path, source)| {
+                let entry = Entry {
+                    path: path.to_string(),
+                    blob: format!("blob-of-{path}"),
+                };
+                FactsExtractor.extract(&entry, source.as_bytes())
+            })
+            .collect();
+        let user = files.iter().find(|f| f.path == USER).unwrap();
+        let mut tagged: Vec<(u32, &str, String)> = user
+            .mentions
+            .iter()
+            .filter_map(|m| match &m.kind {
+                MentionKind::Tagged(kind) => Some((m, kind)),
+                MentionKind::Call => None,
+            })
+            .map(|(m, kind)| {
+                let caller = m
+                    .enclosing
+                    .map_or("-", |d| user.defs[d as usize].local.as_str());
+                (
+                    m.line,
+                    m.name.as_str(),
+                    format!("{} {kind} {} {caller}", m.line, m.name),
+                )
+            })
+            .collect();
+        tagged.sort();
+        let tagged: Vec<&str> = tagged.iter().map(|(_, _, row)| row.as_str()).collect();
         assert_eq!(
-            crate::symbol_index::tagged_refs(&idx.files()[USER]),
+            tagged.join("\n"),
             crate::rust_definition_sources::REFERENCE_KINDS_USER_TAGGED
         );
         let names = ["Kestrel", "QUOTA_CAP", "draw"];
-        assert_eq!(
-            names.map(|n| idx.reference_degree(n, Lang::Rust)),
-            [0, 0, 1]
-        );
-        let occurrences = name_occurrence_map(&idx, true);
-        assert_eq!(names.map(|n| occurrences[&(n, Lang::Rust)]), [1, 1, 2]);
-        let mut hits: Vec<(&str, u32)> = scored_hits(&idx, &names)
-            .iter()
+        let view = view_of(files.clone());
+        let sight = agreeing(&view);
+        assert_eq!(names.map(|n| sight.reference_degree(n, "rust")), [0, 0, 1]);
+        assert_eq!(names.map(|n| sight.occurrences(n, "rust", true)), [1, 1, 2]);
+        let mut hits: Vec<(String, u32)> = scored_hits(&sight, &names)
+            .into_iter()
             .map(|h| (h.file, h.line))
             .collect();
         hits.sort();
-        assert_eq!(hits, [(DEFINER, 1), (DEFINER, 2), (DEFINER, 3), (USER, 2)]);
-        let g = Symbols {
-            root: String::new(),
-            override_lang: None,
-            idx: Mutex::new(idx),
-            fingerprints: Mutex::default(),
-        };
+        assert_eq!(
+            hits,
+            [
+                (DEFINER.to_string(), 1),
+                (DEFINER.to_string(), 2),
+                (DEFINER.to_string(), 3),
+                (USER.to_string(), 2)
+            ]
+        );
+        let g = Symbols::over(
+            "",
+            Box::new(Fixed {
+                files,
+                diff: Ok(WorktreeDiff::default()),
+            }),
+        );
         let ranked: Vec<(String, u32, usize)> = g
             .ground_ranked("Kestrel draw", 8)
             .into_iter()

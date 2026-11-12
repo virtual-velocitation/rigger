@@ -15,7 +15,7 @@
 //! (the second part of this criterion); and every surface that reads the hold (the criteria after
 //! this one).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

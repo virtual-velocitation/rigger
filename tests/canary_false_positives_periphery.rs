@@ -27,11 +27,12 @@
 //! `control_false_positives` survive the real wire round trip over four independently-
 //! varying items, not just a fixture typed to match it.
 
-mod common;
+use crate::common;
 
 use common::fixtures::cfg_for;
 use common::fixtures::lens_only_panel;
 use common::fixtures::marked_item as item;
+use common::fixtures::test_spawn_host;
 use rigger::canary::{CanaryOutcome, STREAM};
 use rigger::canary_store::{default_jobs, run_canary};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
@@ -177,6 +178,7 @@ fn run_canary_scores_false_positive_controls_and_project_canary_counts_them() {
         &store,
         &FalsePositiveDriver,
         &cfg,
+        &test_spawn_host(),
         &panel,
         &corpus,
         default_jobs(),

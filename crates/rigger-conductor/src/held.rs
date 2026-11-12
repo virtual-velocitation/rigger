@@ -3,9 +3,7 @@
 //!
 //! The run's hold is a fold of its log ([`ledger::project`]), read here before every launch, so a
 //! session already running is left alone and a gate already running finishes: only the next
-//! launch waits. A wait ends on the run's `RunReleased` or, on `rigger serve`, on the session's
-//! close, with a park, and a close beats a release landing with it, since nothing would serve the
-//! launch. An error of a hold or wait class, or any error but a store fault while the run is held,
+//! launch waits. A wait ends on the run's `RunReleased`. An error of a hold or wait class, or any error but a store fault while the run is held,
 //! waits the same way and launches the same spawn id again, its next ordinal coming from the host's own read of
 //! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
 //! after the host returns, because the host appends a third-fault hold before it returns its
@@ -22,7 +20,7 @@
 //! fault-class error on an unheld run reaches it too, unless the host marked it interrupted, its
 //! spawn site deciding what follows.
 //!
-//! On `rigger run`, an error it hands the conductor for a spawn the current run parked and has
+//! An error it hands the conductor for a spawn the current run parked and has
 //! not ended is recorded as that spawn's result, so a restarted run answers the spawn from the
 //! log instead of launching it again: any error but a park, an emit refusal or a store fault, and
 //! an interrupted one only once its spawn id has no relaunch left. A store fault ended no launched
@@ -31,12 +29,10 @@
 //! over one supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, parked_spawn, store_fault, AgentDriver, AgentResult, Error, SpawnOpts,
-    EMIT_REFUSED_MARKER,
+    failure_class, store_fault, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
@@ -55,49 +51,30 @@ use crate::spawn_store;
 /// error passes through, whatever the error's class and whether or not the run is held.
 const RELAUNCH_BOUND: u32 = 2;
 
-/// Where the error a [`HeldDriver`] hands the conductor ends up: whether it is also recorded as
-/// the spawn's result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Results {
-    /// `rigger run`: the error is recorded as the spawn's result, so a restarted run answers the
-    /// spawn from the log.
-    Recorded,
-    /// `rigger serve`: the shim hands each result back in process and none is logged.
-    HandedBack,
-}
-
 /// An [`AgentDriver`] that holds `inner`'s launches back while the run is held and relaunches a
 /// session a hold or a wait class ended, up to [`RELAUNCH_BOUND`].
 pub struct HeldDriver<'a> {
     inner: &'a dyn AgentDriver,
     store: &'a dyn EventStore,
-    results: Results,
-    session_closed: Option<&'a AtomicBool>,
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
     relaunch_counts: Mutex<HashMap<String, u32>>,
 }
 
 impl<'a> HeldDriver<'a> {
-    /// A decorator over `inner`, reading the run from `store` and, under [`Results::Recorded`],
-    /// recording the errors it hands the conductor there, so `store` is the one every other write
-    /// of the run goes through. A resume fallback launches inside
-    /// `inner`'s spawn, past this gate, so an `inner` with one reads the run's hold itself
-    /// ([`AgentDriver`]'s contract). `session_closed` is `rigger
-    /// serve`'s flag, `None` on `rigger run`, which has no session to end a wait. `pause` runs
-    /// between two reads of a standing hold.
+    /// A decorator over `inner`, reading the run from `store` and recording the errors it hands
+    /// the conductor there, so `store` is the one every other write of the run goes through. A
+    /// resume fallback launches inside `inner`'s spawn, past this gate, so an `inner` with one
+    /// reads the run's hold itself ([`AgentDriver`]'s contract). `pause` runs between two reads
+    /// of a standing hold.
     pub fn new(
         inner: &'a dyn AgentDriver,
         store: &'a dyn EventStore,
-        results: Results,
-        session_closed: Option<&'a AtomicBool>,
         pause: &'a (dyn Fn() + Sync),
     ) -> Self {
         HeldDriver {
             inner,
             store,
-            results,
-            session_closed,
             pause,
             relaunch_counts: Mutex::new(HashMap::new()),
         }
@@ -109,23 +86,13 @@ impl<'a> HeldDriver<'a> {
         Ok(slice)
     }
 
-    /// Return once the run is not held. A closed session ends a held read, or a wait that paused
-    /// whatever its last read found, with `id`'s park: the flag is read after the hold, so a close
-    /// beats a release landing with it and a launch that did not wait reads no close. A failed
-    /// read of the run ends the wait with `relaunched`, the error of the spawn this wait
-    /// relaunches, or with the read's own error marked a store fault ([`store_fault`]) before a
-    /// first launch, since a run not proved unheld launches nothing, unless the wait paused and its session closed: that wait parks,
-    /// whatever its read answered, since nothing would serve the spawn either way.
-    fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
-        let mut paused = false;
+    /// Return once the run is not held. A failed read of the run ends the wait with
+    /// `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
+    /// marked a store fault ([`store_fault`]) before a first launch, since a run not proved
+    /// unheld launches nothing.
+    fn wait_out_the_hold(&self, mut relaunched: Option<Error>) -> Result<(), Error> {
         loop {
             let held = hold_stands(self.store, STREAM);
-            let closed = self
-                .session_closed
-                .is_some_and(|closed| closed.load(Ordering::SeqCst));
-            if (paused || matches!(held, Ok(true))) && closed {
-                return Err(parked_spawn(id));
-            }
             if !held.map_err(|read| {
                 relaunched
                     .take()
@@ -134,7 +101,6 @@ impl<'a> HeldDriver<'a> {
                 return Ok(());
             }
             (self.pause)();
-            paused = true;
         }
     }
 
@@ -177,20 +143,14 @@ impl<'a> HeldDriver<'a> {
 
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): record `e`, the error this decorator hands
     /// the conductor for spawn `id`, as the spawn's result, so a restarted `rigger run` answers
-    /// the spawn from the log with that error instead of launching it again. Only under
-    /// [`Results::Recorded`], `rigger run`'s mode: under [`Results::HandedBack`] nothing is
-    /// recorded. A
-    /// park, an emit refusal and a store fault end no launched spawn, so their marked errors
+    /// the spawn from the log with that error instead of launching it again. A park, an emit refusal and a store fault end no launched spawn, so their marked errors
     /// record nothing; neither does
     /// an interrupted error while `id` has a relaunch owed, nor a spawn the current run never
     /// parked. The write lands over no result or a liveness fault alone
     /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
     /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
-        if self.results == Results::HandedBack
-            || is_parked_or_refused(e, EMIT_REFUSED_MARKER)
-            || is_store_fault(e)
-        {
+        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
             return;
         }
         if is_interrupted(e)
@@ -228,7 +188,7 @@ impl AgentDriver for HeldDriver<'_> {
     ) -> Result<AgentResult, Error> {
         let mut relaunched = None;
         loop {
-            self.wait_out_the_hold(&opts.id, relaunched.take())?;
+            self.wait_out_the_hold(relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
                 Ok(result) => {
                     self.relaunch_counts
@@ -263,7 +223,7 @@ mod tests {
     };
     use serde_json::Value;
 
-    use super::{HeldDriver, Results};
+    use super::HeldDriver;
     use crate::config::AgentDef;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Event, EventStore, ExpectedRevision, Position};
@@ -272,7 +232,7 @@ mod tests {
     use crate::spawn::{SpawnEvent, SpawnRequest, SpawnResult, TYPE_SPAWN_RESULT};
     use crate::test_support::{
         agent, ev, held_event, implementer_opts, no_emit, placed_positions, released_event,
-        run_started, spawn_result_rows, LandsInTheNextRead, ReadsFailWhenArmed,
+        run_started, spawn_result_rows, ReadsFailWhenArmed,
     };
 
     /// The spawn each row launches, and a second spawn id for the rows the bound keeps apart.
@@ -433,38 +393,14 @@ mod tests {
         }
     }
 
-    /// The session flag a row's decorator runs under.
-    #[derive(Clone, Copy, Default)]
-    enum Session {
-        /// `rigger run`: no session, so only a release ends a wait.
-        #[default]
-        Absent,
-        /// A `rigger serve` session still open.
-        Open,
-        /// A `rigger serve` session already closed.
-        Closed,
-    }
-
     /// What a row's pause does, standing in for the world moving while the decorator sleeps.
     #[derive(Clone, Copy, Default)]
     enum AtPause {
         /// The hold is released once the row has polled it [`Row::polls`] times.
         #[default]
         Release,
-        /// The session closes.
-        CloseSession,
-        /// The session closes, then the hold is released, both inside this one pause.
-        CloseThenRelease,
-        /// The hold is released, then the session closes, both inside this one pause.
-        ReleaseThenClose,
         /// The store's reads start failing.
         BreakReads,
-        /// The session closes and the store's reads start failing, both inside this one pause.
-        CloseAndBreakReads,
-        /// The session closes, then the hold is released, both inside the decorator's next hold
-        /// read and ahead of that read's own calls, so only a flag read after that read sees the
-        /// close.
-        CloseThenReleaseInTheNextRead,
     }
 
     /// One scenario: a run stream, a scripted host, the spawn calls made in order, and every
@@ -472,7 +408,6 @@ mod tests {
     struct Row {
         name: &'static str,
         seeded: Vec<Event>,
-        session: Session,
         at_pause: AtPause,
         polls: usize,
         reads_fail: bool,
@@ -494,7 +429,6 @@ mod tests {
             Row {
                 name: "",
                 seeded: Vec::new(),
-                session: Session::default(),
                 at_pause: AtPause::default(),
                 polls: 1,
                 reads_fail: false,
@@ -538,11 +472,6 @@ mod tests {
                 launched: Mutex::new(Vec::new()),
                 authored: &authored,
             };
-            let closed = AtomicBool::new(matches!(row.session, Session::Closed));
-            let session = match row.session {
-                Session::Absent => None,
-                Session::Open | Session::Closed => Some(&closed),
-            };
             let release = || {
                 store
                     .append(
@@ -552,17 +481,6 @@ mod tests {
                     )
                     .unwrap();
             };
-            let close = || closed.store(true, Ordering::SeqCst);
-            let lands_armed = AtomicBool::new(false);
-            let land = || {
-                close();
-                release();
-            };
-            let lands = LandsInTheNextRead {
-                inner: &reads,
-                armed: &lands_armed,
-                land: &land,
-            };
             let paused_at = Mutex::new(Vec::new());
             let pause = || {
                 let mut paused = paused_at.lock().unwrap();
@@ -570,31 +488,10 @@ mod tests {
                 match row.at_pause {
                     AtPause::Release if paused.len() % row.polls == 0 => release(),
                     AtPause::Release => {}
-                    AtPause::CloseSession => close(),
-                    AtPause::CloseThenRelease => {
-                        close();
-                        release();
-                    }
-                    AtPause::ReleaseThenClose => {
-                        release();
-                        close();
-                    }
                     AtPause::BreakReads => armed.store(true, Ordering::SeqCst),
-                    AtPause::CloseAndBreakReads => {
-                        close();
-                        armed.store(true, Ordering::SeqCst);
-                    }
-                    AtPause::CloseThenReleaseInTheNextRead => {
-                        lands_armed.store(true, Ordering::SeqCst)
-                    }
                 }
             };
-            // Each command's mode: `rigger run`, with no session, records; `rigger serve` does not.
-            let results = match row.session {
-                Session::Absent => Results::Recorded,
-                Session::Open | Session::Closed => Results::HandedBack,
-            };
-            let held = HeldDriver::new(&host, &lands, results, session, &pause);
+            let held = HeldDriver::new(&host, &reads, &pause);
             for (call, (id, wants)) in row.calls.into_iter().enumerate() {
                 let answer = held
                     .spawn(
@@ -652,17 +549,6 @@ mod tests {
                 calls: one_call(Ok(OUTPUT)),
                 launched: vec![ID],
                 paused_at: vec![0, 0, 0],
-                ..Row::default()
-            },
-            Row {
-                name: "an open session waits as a run with no session does",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                polls: 2,
-                script: vec![done()],
-                calls: one_call(Ok(OUTPUT)),
-                launched: vec![ID],
-                paused_at: vec![0, 0],
                 ..Row::default()
             },
             Row {
@@ -1026,100 +912,8 @@ mod tests {
         ]);
     }
 
-    /// THE SESSION: a closed `rigger serve` session ends a wait with the park of the spawn that
-    /// waited, at either wait, whichever way round a release landed with the close in one pause,
-    /// and when both land inside the hold read, since the flag is read after the hold; it reads
-    /// as nothing on a launch that did not wait.
-    #[test]
-    fn a_closed_session_ends_a_wait_with_a_park() {
-        check(vec![
-            Row {
-                name:
-                    "a session closing during the wait before a launch parks with nothing launched",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                at_pause: AtPause::CloseSession,
-                calls: one_call(Err(parked_spawn(ID))),
-                paused_at: vec![0],
-                ..Row::default()
-            },
-            Row {
-                name: "a session closing during the wait after an error parks that spawn",
-                session: Session::Open,
-                at_pause: AtPause::CloseSession,
-                script: vec![held_then_fails(classed(FAULT))],
-                calls: one_call(Err(parked_spawn(ID))),
-                launched: vec![ID],
-                paused_at: vec![1],
-                ..Row::default()
-            },
-            Row {
-                name: "a close then a release in one pause before a launch parks unlaunched",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                at_pause: AtPause::CloseThenRelease,
-                calls: one_call(Err(parked_spawn(ID))),
-                paused_at: vec![0],
-                ..Row::default()
-            },
-            Row {
-                name: "a release then a close in one pause before a launch parks unlaunched",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                at_pause: AtPause::ReleaseThenClose,
-                calls: one_call(Err(parked_spawn(ID))),
-                paused_at: vec![0],
-                ..Row::default()
-            },
-            Row {
-                name: "a close and a release inside the paused hold read park unlaunched",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                at_pause: AtPause::CloseThenReleaseInTheNextRead,
-                calls: one_call(Err(parked_spawn(ID))),
-                paused_at: vec![0],
-                ..Row::default()
-            },
-            Row {
-                name: "a close then a release in one pause after an error parks that spawn",
-                session: Session::Open,
-                at_pause: AtPause::CloseThenRelease,
-                script: vec![held_then_fails(classed(FAULT))],
-                calls: one_call(Err(parked_spawn(ID))),
-                launched: vec![ID],
-                paused_at: vec![1],
-                ..Row::default()
-            },
-            Row {
-                name: "a release then a close in one pause after an error parks that spawn",
-                session: Session::Open,
-                at_pause: AtPause::ReleaseThenClose,
-                script: vec![held_then_fails(classed(FAULT))],
-                calls: one_call(Err(parked_spawn(ID))),
-                launched: vec![ID],
-                paused_at: vec![1],
-                ..Row::default()
-            },
-            Row {
-                name: "a session already closed parks a held run with no pause",
-                seeded: vec![third_fault_hold()],
-                session: Session::Closed,
-                calls: one_call(Err(parked_spawn(ID))),
-                ..Row::default()
-            },
-            Row {
-                name: "a closed session on an unheld run launches",
-                session: Session::Closed,
-                script: vec![done()],
-                calls: one_call(Ok(OUTPUT)),
-                launched: vec![ID],
-                ..Row::default()
-            },
-        ]);
-    }
-
     /// A FAILED READ: a run not proved unheld launches nothing and answers the read's error marked a
-    /// store fault, never a hang, unless the wait paused and its session closed, which parks the spawn; a read
+    /// store fault, never a hang; a read
     /// failing while the decorator decides on a spawn's error, or in the wait after it relaunched
     /// that spawn, hands that error back, not its own.
     #[test]
@@ -1147,15 +941,6 @@ mod tests {
                 calls: one_call(Err(classed(FAULT))),
                 launched: vec![ID],
                 paused_at: vec![1],
-                ..Row::default()
-            },
-            Row {
-                name: "a session closing as the store fails during the wait parks unlaunched",
-                seeded: vec![third_fault_hold()],
-                session: Session::Open,
-                at_pause: AtPause::CloseAndBreakReads,
-                calls: one_call(Err(parked_spawn(ID))),
-                paused_at: vec![0],
                 ..Row::default()
             },
             Row {
@@ -1191,8 +976,8 @@ mod tests {
     /// THE ERROR WRITE (spec 105, RESUME BY SESSION): on `rigger run`, an error the decorator
     /// hands the conductor is recorded as the result of a spawn its run parked and has not ended,
     /// the bound's pass-through included and a liveness fault no bar, so a restart answers the
-    /// spawn from the log. A marked error, a store fault, a relaunched one, an open or closed
-    /// `rigger serve` session, a spawn this run never parked, one its run has ended and a run the decorator
+    /// spawn from the log. A marked error, a store fault, a relaunched one, a spawn this run never
+    /// parked, one its run has ended and a run the decorator
     /// cannot read each record nothing, and the error returns unchanged.
     #[test]
     fn an_error_passing_on_rigger_run_is_recorded_for_a_parked_spawn_its_run_has_not_ended() {
@@ -1261,24 +1046,6 @@ mod tests {
                 seeded: vec![requested()],
                 script: vec![fails(faulted(READ_FAILED))],
                 calls: one_call(Err(faulted(READ_FAILED))),
-                launched: vec![ID],
-                ..Row::default()
-            },
-            Row {
-                name: "an open rigger serve session records nothing",
-                seeded: vec![requested()],
-                session: Session::Open,
-                script: vec![fails(unclassed())],
-                calls: one_call(Err(unclassed())),
-                launched: vec![ID],
-                ..Row::default()
-            },
-            Row {
-                name: "a closed rigger serve session records nothing",
-                seeded: vec![requested()],
-                session: Session::Closed,
-                script: vec![fails(unclassed())],
-                calls: one_call(Err(unclassed())),
                 launched: vec![ID],
                 ..Row::default()
             },

@@ -10,9 +10,7 @@ findings from the graph on the run boundary alone, keeping only `LessonLearned`.
 still in the tree is forgotten with its run; a decision whose code is long gone stays live
 until its run dies. Spec 25 already moves RESOLVED findings into history by disposition
 (`invalidate_finding_edges`, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs:1775`, from the adjudication arm at
-`:1497` and the integration arm at `:1138`), the right shape, for one kind only; a file's own
-structural edges are already retired when a fresh generation lands (`supersede_file_edges`,
-`sqlite.rs:1814`) and a superseding decision retires `GOVERNS` (`sqlite.rs:1055`). Nothing consolidates: no code folds decisions or findings into a
+`:1497` and the integration arm at `:1138`), the right shape, for one kind only; a superseding decision retires `GOVERNS` (`sqlite.rs:1055`). Nothing consolidates: no code folds decisions or findings into a
 digest at any altitude. Grounding knows two altitudes,
 `GroundingSlice::Implement` and `GroundingSlice::Full` (`crates/rigger-conductor/src/conductor.rs:12788`), and both
 serve raw file-level items. `DecisionMade` carries two kinds of content under one type: durable
@@ -27,15 +25,15 @@ pruning decisions and findings from the graph. What leaves the live view leaves 
 two operations below, each citing its evidence.
 
 **SUPERSESSION INTO HISTORY, ON EVIDENCE.** A decision, lesson or finding whose EVERY governed
-or about file has a blank-blob `GenerationIngested` (spec 107: the file was deleted) and no
-rename successor (the ingest pass records `renamed_from` on the successor's first generation
-when git detects the rename) gets `valid_to` on its `GOVERNS`, `ABOUT` and `RAISED` edges at
-the position of the ingest that observed the last deletion, in the fold arm that already
-retires the file's own structural edges (`supersede_file_edges`, `sqlite.rs:1814`), through
+or about file is absent from the code view at the stamp (the file was deleted) and has no
+rename successor (git's rename detection between the previous and the current stamp's commits)
+gets `valid_to` on its `GOVERNS`, `ABOUT` and `RAISED` edges, naming the deleting commit: the
+first stamp commit at which the file is absent with no rename successor, never a log position.
+The edge is written when an `advance` first observes that absence, through
 the same edge-invalidation authority spec 25 uses (`invalidate_finding_edges`, generalized to
 the three node kinds). A node with one surviving file stays live. `rigger peers
---historical` returns superseded items with the evidence that superseded them (the deleting
-generation, the superseding decision, or the disposing adjudication). Deletion of a node or
+--historical` returns superseded items with the evidence that superseded them (the commit that
+deleted the file, the superseding decision, or the disposing adjudication). Deletion of a node or
 edge stays impossible outside `reset --derived`'s rebuild.
 
 **PROCESS RECORDS ARE EPISODES.** A `DecisionMade` is a process record when its `id` carries a
@@ -78,7 +76,7 @@ skipped. Repeat: a source already linked by a live `DISTILLS` edge is not re-dig
 whose every source was later superseded is superseded with them. Crash-resume: the stage is a
 spawn with a `SpawnResult`; a resumed run re-runs it only if no result was recorded.
 Concurrent actors: the consolidator runs alone before the wave. Revert: a file restored after
-deletion records a fresh generation; its superseded decisions stay in history and the
+deletion reappears in the code view; its superseded decisions stay in history and the
 consolidator may re-raise them as a digest, never un-supersede them. Empty group: nothing is
 emitted.
 
@@ -90,7 +88,7 @@ or a persona's own memory of what it consolidated is NOT an implementation of th
 ## Notes (non-criteria)
 
 No new event type: digests are `DecisionMade` and `LessonLearned` with `meta.distills` and
-`meta.generalizes`; `DISTILLS` and `renamed_from` are a relation constant and a ledger field.
+`meta.generalizes`; `DISTILLS` is a relation constant.
 The consolidator's judgment is qualitative and bounded to abstraction: it may create a digest
 or decline to; it may never mark a source superseded, delete, or rewrite one. The persona's
 prompt names the stated goals it judges against: `docs/architecture.md`, its addenda, and the
@@ -105,11 +103,11 @@ specs whose criteria are unchecked.
 
 ## Done when
 
-- [ ] a test proves A DECISION WHOSE CODE IS GONE MOVES INTO HISTORY: after the ingest records
-  blank-blob generations for every file a decision governs, its edges carry `valid_to` at that
-  ingest's position, a decision with one surviving governed file stays live, a rename
+- [ ] a test proves A DECISION WHOSE CODE IS GONE MOVES INTO HISTORY: after the code view
+  at the stamp lacks every file a decision governs, its edges carry `valid_to` naming the first
+  stamp commit that lacks them, written when an `advance` first observes the absence, a decision with one surviving governed file stays live, a rename
   successor keeps the decision live, and `rigger peers --historical` names the deleting
-  generation as the evidence, pinned at the fold arm. This criterion OWNS supersession on
+  commit as the evidence, pinned at the arm that handles the advance. This criterion OWNS supersession on
   structural evidence; the age prune's removal is criterion 2's, NOT this one's.
 - [ ] a test proves FORGETTING BY AGE ENDS: `rigger reset --runs` on a store with a dead run
   leaves that run's durable decisions and upheld findings in the graph and archives its

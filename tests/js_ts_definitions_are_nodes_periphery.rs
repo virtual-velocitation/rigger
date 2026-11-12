@@ -6,7 +6,8 @@
 //! carrying its kind string and line, a computed member and a `for .. of` assigning an existing
 //! name are no node, and each reference hangs off the caller the fixture gives it.
 
-mod common;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 rigger::test_cases! {
     /// GIVEN a project whose one JS file is the JS definitions fixture,

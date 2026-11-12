@@ -20,7 +20,7 @@
 //! wire-shape suite, `console_map_legend_wire_shape_periphery.rs`, needed the identical helper -
 //! spec 85's own mandatory duplication sweep), never a copy local to this file.
 
-mod common;
+use crate::common;
 
 use common::fixtures::ONE_COMMUNITY;
 use common::json_object_keys;
@@ -46,11 +46,11 @@ fn one_entity_graph() -> Graph {
         edges: vec![Edge {
             from: "src/worktree.rs::hub".to_string(),
             to: ONE_COMMUNITY.to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     }
 }

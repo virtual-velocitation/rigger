@@ -1,6 +1,6 @@
 //! The context graph's sqlite adapter: the `Projector` that folds the event log into
 //! bi-temporal node and edge tables, and the payload shapes only its fold reads. The model, the
-//! `Projection` port and the query engine live in `rigger-domain`'s `contextgraph`, re-exported
+//! `RecordFold` port and the query engine live in `rigger-domain`'s `contextgraph`, re-exported
 //! here so the fold names them by their historical paths.
 
 // The sqlite projector is the concrete adapter Design names as `store`-gated, so it is excluded
@@ -78,6 +78,10 @@ struct ReviewFinding {
     about: Vec<String>,
     #[serde(default, deserialize_with = "referenced_file")]
     file: Option<String>,
+    /// The reviewer's sign-off mark, judged here as a bool so a mistyped one is refused at emit;
+    /// the fold does not read it, the peers ranking does.
+    #[serde(default, rename = "sign_off")]
+    _sign_off: bool,
 }
 
 /// A record's references - a decision's `governs`, a lesson's or finding's `about` - each read as
@@ -117,10 +121,8 @@ fn locations<'a>(
 /// never drift from what the fold applies. It answers for every type whose payload the fold reads,
 /// so it is the one judge of a payload the fold deterministically rejects: the emit guard every
 /// emit surface runs ([`check_emit`]) calls it BEFORE appending, so such an event never reaches the
-/// log through one, and a rebuild passes over the events it rejects, and the ledger entries an
-/// event of whose re-extracted batch it rejects; a rebuild also passes over the entries whose
-/// re-extraction resolves to nothing, which no payload judgment decides - any other fold failure
-/// is the store's, not the payload's. The error names the offending field and the shape expected;
+/// log through one, and a rebuild passes over the events it rejects - any other fold failure is
+/// the store's, not the payload's. The error names the offending field and the shape expected;
 /// a type whose payload the fold does not read passes unchecked. Two callers read it: the emit
 /// guard, which every emit surface reaches it through - `rigger emit` and the `rigger_emit` tool,
 /// the conductor's in-process agent emit, and the critique before it appends its copies of the
@@ -256,9 +258,8 @@ mod tests {
     use super::*;
 
     /// Every type whose payload the fold reads has its payload judged - so a rebuild passes over
-    /// the events whose payload the fold rejects, a ledger entry of perception among them, beside
-    /// the entries whose re-extraction resolves to nothing - and a type whose payload the fold does
-    /// not read passes unchecked.
+    /// the events whose payload the fold rejects, a ledger entry of perception among them - and a
+    /// type whose payload the fold does not read passes unchecked.
     #[test]
     fn every_type_whose_payload_the_fold_reads_is_judged_and_no_other() {
         let judged = [
@@ -379,6 +380,32 @@ mod tests {
             let event = Event::new(type_, payload.as_bytes().to_vec());
             assert_eq!(check_emit(&log, "run", &event), outcome, "{row}");
         }
+    }
+
+    /// A finding's sign-off mark is a bool: one carrying it, true or false, passes, and one whose
+    /// mark is any other value is refused naming the field, so no mistyped mark lands a finding
+    /// the peers read cannot decode.
+    #[test]
+    fn a_finding_sign_off_mark_is_judged_as_a_bool() {
+        let finding = |mark: &str| {
+            format!(r#"{{"id":"f1","summary":"s","about":["src/a.rs"],"sign_off":{mark}}}"#)
+        };
+        assert_eq!(
+            ["true", "false", r#""true""#, "1"]
+                .map(|mark| check_fold_payload(TYPE_REVIEW_FINDING, finding(mark).as_bytes())),
+            [
+                Ok(()),
+                Ok(()),
+                Err(format!(
+                    "{TYPE_REVIEW_FINDING} payload field `sign_off`: invalid type: string \"true\", \
+                     expected a boolean at line 1 column 63"
+                )),
+                Err(format!(
+                    "{TYPE_REVIEW_FINDING} payload field `sign_off`: invalid type: integer `1`, \
+                     expected a boolean at line 1 column 58"
+                )),
+            ]
+        );
     }
 
     /// A ledger entry is judged by the parse its fold reads it with: a payload missing a field is

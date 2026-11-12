@@ -563,8 +563,7 @@ impl Driver<'_> {
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
     /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
     /// ([`Driver::silence`]), not total run time and not the bare wall time since the last
-    /// line, mirroring `liveness::sweep`'s own reading for the external stepwise driver, but
-    /// enforced HERE because this host has no external stepper polling a marker file. Silent
+    /// line, enforced HERE because nothing outside this host polls a marker file. Silent
     /// time can pass the bound no sooner than the wall time since the last line does, so a
     /// line costs no read: the records are read only on a wake at that point, and a wake under
     /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
@@ -572,8 +571,7 @@ impl Driver<'_> {
     /// result exists runs THE STOP sequence (close the session's input ([`Pipes::close_input`]),
     /// wait [`Driver::stop_grace`], end the child via [`crate::reap::end_child`] - the handle-bound
     /// production helper, never a computed pid) and, short of THE RESUME FALLBACK below, records
-    /// the EXISTING [`SpawnResult::liveness_fault`] shape, same as `liveness::sweep`'s own fault
-    /// for the stepwise driver, just recorded HERE rather than by an external sweep. An expiry
+    /// the EXISTING [`SpawnResult::liveness_fault`] shape, recorded HERE by this host. An expiry
     /// AFTER a result already landed is not a stop at all - it degrades to the SAME soft-break the
     /// post-result read-error path already takes (round-2 precedent), letting the existing reap
     /// decide the child's fate.
@@ -924,9 +922,9 @@ impl Driver<'_> {
                 (Some("result"), _) if result.is_none() && !errored => {
                     errored = result_errored(&v);
                     if !errored {
-                        // The real result supersedes a liveness fault a courier recorded for
-                        // a launch this one replaced, and lands nothing beside a real result
-                        // already standing.
+                        // The real result supersedes a liveness fault recorded for a launch
+                        // this one replaced, and lands nothing beside a real result already
+                        // standing.
                         let res = spawn_result_from(&v, opts, &resolved_model);
                         spawn_store::record_result_unless_ended(self.run_store, &res)?;
                         self.close(opts, id, progress::ENDED_COMPLETED, "");
@@ -1376,8 +1374,7 @@ impl Driver<'_> {
     /// stays a failure from this driver's own return value, exactly like the "agent stream
     /// ended with no result" ending just above; a caller wanting the no-attempt-charged
     /// semantics reads [`SpawnResult::is_liveness_fault`] off the run store this durably
-    /// wrote, the SAME way `liveness::sweep`'s callers already do for the stepwise driver's
-    /// own fault. A resume that never showed its session never comes here: its arm runs the
+    /// wrote. A resume that never showed its session never comes here: its arm runs the
     /// sequence with no line yet and reads the hold behind it, since no fault stands for a session
     /// that was never there to go silent, so on a run proved unheld it takes the fallback
     /// ([`Driver::session_gone`]), and on any other the same line and ending as here.
@@ -1415,10 +1412,9 @@ impl Driver<'_> {
         message: String,
         assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
-        // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
-        // shape `liveness::sweep` already records for the stepwise driver's own hung
-        // agent, so every downstream reader (the not-yet-recovered surface, last-write-
-        // wins recovery) treats a wall-clock STOP identically to a marker-staleness fault.
+        // "the existing liveness-fault result is recorded" - the one [`SpawnResult`] shape
+        // every downstream reader (the not-yet-recovered surface, last-write-wins recovery)
+        // reads as a hung agent.
         let fault = SpawnResult::liveness_fault(
             opts.id.clone(),
             message.clone(),
@@ -1776,8 +1772,7 @@ impl AgentDriver for Driver<'_> {
             }
         };
         // This call's terminus: `read_stream` reaped the session (or the launch never started
-        // one), whatever its outcome, and this host records its result directly, never through
-        // the `rigger result` courier that reclaims a stepwise spawn's scratch - so reclaim the
+        // one), whatever its outcome, and this host records its result directly - so reclaim the
         // scratch its spawn MCP server names (`rigger_scratch`, under this host's own scratch
         // root) and its system-prompt file sits in here.
         reclaim_spawn_registered_scratch(&self.scratch_root, &opts.run_id, &opts.id);
@@ -1871,7 +1866,7 @@ fn canary_args(model: &str) -> Vec<String> {
 }
 
 /// Touch `marker` (create it, or bump its mtime if it already exists) so a fresh liveness
-/// read from `rigger step`/the dash sees this spawn as alive - the pure filesystem side
+/// read from `rigger status`/the dash sees this spawn as alive - the pure filesystem side
 /// of `liveness::marker_path`'s contract. `None` (no scratch root, or a degenerate id
 /// `marker_path` itself declines - see its doc) is a silent no-op, mirroring every other
 /// caller's "no marker: leave it alone" convention. Best-effort throughout: a liveness
@@ -2026,10 +2021,8 @@ fn api_retry_line(v: &Value) -> String {
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
 /// [`SpawnResult::liveness_fault`]'s `error` text and this driver's own returned `Err` -
-/// the ONE place that wording is assembled, mirroring [`crate::liveness::stale_result_message`]'s
-/// role for the stepwise driver's own hung-agent fault, but naming THIS host's own
-/// mechanism (stream silence against `max_wall_clock`) rather than a stale marker file,
-/// since this driver enforces it in-process rather than through an external sweep.
+/// the ONE place that wording is assembled, naming the host's own mechanism (stream silence
+/// against `max_wall_clock`).
 fn stop_message(spawn_id: &str, max_wall_clock: u64) -> String {
     format!(
         "spawn {spawn_id:?} stopped: its agent stream stayed silent for {max_wall_clock}s \
@@ -2116,8 +2109,8 @@ fn rigger_server_fault(init: &Value) -> Option<String> {
     (status != "connected").then(|| status.to_string())
 }
 
-/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
-/// the tool every launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
+/// `task` framed with the progress verb ([`progress_framed`]), a call of the progress tool every
+/// launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
 pub fn framed(task: &str) -> String {
     let report =
         format!("by calling the {SPAWN_PROGRESS_TOOL} tool with that line as its activity");
@@ -2197,8 +2190,9 @@ fn model_args(model: &str) -> Vec<String> {
 /// (the Done-when text names session id, stream-json, persona, model, tools, permission
 /// flags, MCP config and settings only) and is not built here; a later criterion adds it
 /// alongside whichever caller knows a persona is a verdict role, through this same
-/// function rather than a second argv authority. Fails only when the spawn's own
-/// `settings_json` is not a JSON object the spawn's hooks and the session settings can merge into.
+/// function rather than a second argv authority. Fails when the spawn's own `settings_json` is
+/// not a JSON object the spawn's hooks and the session settings can merge into, or a helper
+/// `opts.host` carries does not parse.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
@@ -2215,7 +2209,7 @@ pub fn build_args(
         args.push("--fallback-model".to_string());
         args.push(agent.fallback_model.clone());
     }
-    args.extend(allowed_tools_args(agent, &SPAWN_BOUND_TOOLS)?);
+    args.extend(allowed_tools_args(agent, &opts.host, &SPAWN_BOUND_TOOLS)?);
     let settings = json_arg(
         hooks::install_spawn_hooks(
             opts.settings_json.as_bytes(),
@@ -2226,9 +2220,11 @@ pub fn build_args(
         "settings",
     )?;
     args.extend(spawn_config_args(
+        agent,
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
         &settings,
+        &opts.host,
     )?);
     Ok(args)
 }
@@ -2241,7 +2237,8 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured_system_prompt, fixture_script, no_emit, spawn_result_rows, PROMPT_CAPTURE_DIR,
+        captured, fixture_script, no_emit, operator_helpers_agents_json, spawn_result_rows,
+        PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -2290,7 +2287,7 @@ mod tests {
             get_val("--allowed-tools"),
             format!(
                 "Read,Bash,{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&o.host.helpers).unwrap().join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
@@ -2633,42 +2630,56 @@ mod tests {
     /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
-        let mut o = opts("u/implementer#0");
-        o.settings_json = "{\"model\":\"opus\"}".to_string();
-        let args = build_args(
-            &AgentDef::default(),
-            &SystemPromptFile::default(),
-            &o,
-            &fresh_session("sess"),
-            "/custom/rigger",
-            &["/wt".to_string(), "/scratch/s".to_string()],
-        )
-        .unwrap();
-        let i = args.iter().position(|x| x == "--settings").unwrap();
-        let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
-        assert_eq!(settings["model"], "opus");
-        let commands = |event: &str| -> Vec<&str> {
-            settings["hooks"][event]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
-                .collect()
-        };
-        assert_eq!(
-            commands("PreToolUse"),
-            [
-                "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'",
-                hooks::GREP_GUARD_COMMAND,
-            ]
-        );
-        assert_eq!(commands("SessionStart"), [hooks::PRIME_COMMAND]);
-        let stop_failures = commands("StopFailure");
-        assert_eq!(stop_failures.len(), AgentFailure::CATEGORIES.len());
-        assert_eq!(
-            stop_failures[0],
-            "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit"
-        );
+        let write_guard = "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'";
+        for (grep_guard, pre_tool_use) in [
+            (false, vec![write_guard]),
+            (true, vec![write_guard, hooks::GREP_GUARD_COMMAND]),
+        ] {
+            let mut o = opts("u/implementer#0");
+            o.settings_json = "{\"model\":\"opus\"}".to_string();
+            o.host.grep_guard = grep_guard;
+            let args = build_args(
+                &AgentDef::default(),
+                &SystemPromptFile::default(),
+                &o,
+                &fresh_session("sess"),
+                "/custom/rigger",
+                &["/wt".to_string(), "/scratch/s".to_string()],
+            )
+            .unwrap();
+            let i = args.iter().position(|x| x == "--settings").unwrap();
+            let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+            assert_eq!(settings["model"], "opus", "grep_guard {grep_guard}");
+            let commands = |event: &str| -> Vec<&str> {
+                settings["hooks"][event]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                    .collect()
+            };
+            assert_eq!(
+                commands("PreToolUse"),
+                pre_tool_use,
+                "grep_guard {grep_guard}"
+            );
+            assert_eq!(
+                commands("SessionStart"),
+                [hooks::PRIME_COMMAND],
+                "grep_guard {grep_guard}"
+            );
+            let stop_failures = commands("StopFailure");
+            assert_eq!(
+                stop_failures.len(),
+                AgentFailure::CATEGORIES.len(),
+                "grep_guard {grep_guard}"
+            );
+            assert_eq!(
+                stop_failures[0],
+                "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit",
+                "grep_guard {grep_guard}"
+            );
+        }
     }
 
     #[test]
@@ -2734,13 +2745,20 @@ mod tests {
             args[ti + 1],
             format!(
                 "{},{}",
-                hooks::helper_mcp_tools().unwrap().join(","),
+                hooks::helper_mcp_tools(&bare.host.helpers)
+                    .unwrap()
+                    .join(","),
                 SPAWN_BOUND_TOOLS.join(",")
             )
         );
-        // The always-on flags are still present, the session configuration included.
+        // The always-on flags are still present, the session configuration included, and the
+        // helpers are the ones the spawn's host carries.
         assert!(args.iter().any(|x| x == "--settings"));
-        assert!(args.iter().any(|x| x == "--agents"));
+        let ai = args.iter().position(|x| x == "--agents").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&args[ai + 1]).unwrap(),
+            operator_helpers_agents_json()
+        );
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert!(args.iter().any(|x| x == "--session-id"));
     }
@@ -3359,7 +3377,7 @@ mod tests {
         launch.child.wait().unwrap();
 
         assert_eq!(
-            captured_system_prompt(capture.path()),
+            captured(capture.path(), "system-prompt"),
             o.system_prompt,
             "the whole persona arrived through the system-prompt file"
         );

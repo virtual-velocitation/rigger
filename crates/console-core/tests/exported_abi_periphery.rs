@@ -235,11 +235,11 @@ fn console_call_wires_map_build_and_map_frame_through_the_public_abi() {
         edges: vec![Edge {
             from: "src/a.rs::f".to_string(),
             to: "community/1/0".to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -301,11 +301,11 @@ fn console_call_map_frame_zooming_in_answers_a_longer_reply_through_the_public_a
             edges.push(Edge {
                 from: id,
                 to: format!("community/1/{d}"),
-                rel: REL_IN_COMMUNITY.to_string(),
+                rel: REL_IN_COMMUNITY.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: Position::default(),
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             });
         }
     }
@@ -365,11 +365,11 @@ fn console_call_map_frame_errors_again_after_a_graph_reload_through_the_public_a
             edges: vec![Edge {
                 from: format!("src/a.rs::{fn_name}"),
                 to: "community/1/0".to_string(),
-                rel: REL_IN_COMMUNITY.to_string(),
+                rel: REL_IN_COMMUNITY.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: Position::default(),
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         }
     }
@@ -453,11 +453,11 @@ fn console_call_wires_map_hit_through_the_public_abi() {
         edges: vec![Edge {
             from: "src/a.rs::f".to_string(),
             to: "community/1/0".to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -532,11 +532,11 @@ fn console_call_wires_graph_query_map_landmarks_through_the_public_abi() {
         edges: vec![Edge {
             from: "src/a.rs::f".to_string(),
             to: "community/1/0".to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
@@ -592,11 +592,11 @@ fn cross_district_fixture() -> rigger_domain::contextgraph::Graph {
     let edge = |from: &str, to: &str, rel: &str| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     };
 
     Graph {
@@ -649,21 +649,21 @@ fn six_member_district_graph() -> rigger_domain::contextgraph::Graph {
         edges.push(Edge {
             from: id,
             to: "community/1/0".to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         });
     }
     edges.push(Edge {
         from: "src/worktree.rs::f_0".to_string(),
         to: "src/worktree.rs::f_1".to_string(),
-        rel: REL_CALLS.to_string(),
+        rel: REL_CALLS.into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     });
     Graph { nodes, edges }
 }
@@ -830,11 +830,11 @@ fn console_call_wires_graph_query_map_argued_about_through_the_public_abi() {
     graph.edges.push(Edge {
         from: "finding/1".to_string(),
         to: "src/worktree.rs::hub".to_string(),
-        rel: REL_ABOUT.to_string(),
+        rel: REL_ABOUT.into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     });
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
 
@@ -889,11 +889,11 @@ fn console_call_wires_graph_query_map_argued_about_excludes_a_superseded_finding
     graph.edges.push(Edge {
         from: "finding/live".to_string(),
         to: "src/worktree.rs::hub".to_string(),
-        rel: REL_ABOUT.to_string(),
+        rel: REL_ABOUT.into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     });
     graph.nodes.push(Node {
         id: "finding/superseded".to_string(),
@@ -903,11 +903,11 @@ fn console_call_wires_graph_query_map_argued_about_excludes_a_superseded_finding
     graph.edges.push(Edge {
         from: "finding/superseded".to_string(),
         to: "src/dash.rs::bridge".to_string(),
-        rel: REL_ABOUT.to_string(),
+        rel: REL_ABOUT.into(),
         valid_from: 0,
         valid_to: Some(100),
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     });
     let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
 
@@ -1286,11 +1286,11 @@ fn tiebreak_fixture() -> (rigger_domain::contextgraph::Graph, String, String) {
     let edge = |from: &str, to: &str, rel: &str| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     };
 
     const N: usize = 600;

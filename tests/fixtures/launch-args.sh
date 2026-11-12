@@ -1,5 +1,6 @@
 # Sourced, never run, by the stand-in `claude` fixtures beside it: reads what a launch's arguments
-# name, as the real binary reads them. A fixture passes it its own launch's arguments, `"$@"`, and
+# name, as the real binary reads them, and puts a launch on record for a test to read back. A
+# fixture passes it its own launch's arguments, `"$@"`, and
 # sources this file from the directory it is checked in under, which a test that links the fixture
 # elsewhere reaches through the link:
 # `self=$(readlink "$0") || self=$0; . "$(dirname "$self")/launch-args.sh"`.
@@ -35,6 +36,20 @@ launched_session() {
     ls_session=$(launch_arg --session-id "$@")
     [ -n "$ls_session" ] || ls_session=$(launch_arg --resume "$@")
     printf '%s' "${ls_session:-$ls_fallback}"
+}
+
+# Puts the launch on record under the directory `$1`, in a directory of its own named for the
+# stand-in's process: the rest of the arguments, the launch's own, one NUL-terminated field each
+# (`argv`), its working directory with every link resolved (`cwd`) and the spawn it runs as
+# (`spawn`, from `RIGGER_SPAWN`). A launch is read back as a whole, so concurrent launches never
+# share a file.
+record_launch() {
+    rl_dir="$1/$$"
+    shift
+    mkdir -p "$rl_dir"
+    printf '%s\0' "$@" > "$rl_dir/argv"
+    pwd -P > "$rl_dir/cwd"
+    printf '%s' "$RIGGER_SPAWN" > "$rl_dir/spawn"
 }
 
 # Copies its input to its output with the `session_id` of each `system/init` line read as `$1`, so

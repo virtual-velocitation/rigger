@@ -1,38 +1,18 @@
 //! Agent liveness (spec 10, unit 3): a spawn carries a `max_wall_clock` bound and its
 //! worker touches a per-spawn liveness MARKER file under the scratch root on a heartbeat
-//! interval. `rigger step` treats a spawn whose marker is STALE beyond the wall-clock as
-//! an infrastructure fault - a HUNG agent that stopped making progress - so it can no
-//! longer stall a wave invisibly.
+//! interval. A spawn silent past its bound is an infrastructure fault - a HUNG agent that
+//! stopped making progress - so it can no longer stall a wave invisibly.
 //!
 //! This module is the framework-free domain of that mechanism: the single marker-path
-//! authority, the pure staleness decision, and the classification that routes a hung
-//! spawn through unit 2's [`failure::Taxonomy`]. The pure decisions ([`is_stale`],
-//! [`classify_stale`], [`classify_hung`]) name no store and no config; [`sweep`] and
-//! [`hung_spawns`] are the caller-facing helpers `rigger step` runs, which read marker
-//! mtimes and record/fold the outcome on the run stream.
+//! authority, the pure staleness decisions ([`is_stale`], [`past_bound`], [`silent_time`]),
+//! and the readers of the recorded outcome ([`hung_spawns`], [`unended_spawns`]).
 //!
-//! ## Classification (the class is an operator-facing LABEL; the treatment is uniform)
-//!
-//! A hung worker is classified by feeding a distinctive [`stale_signal`] to the
-//! configured [`failure::Taxonomy`]. A hung/unresponsive worker is an INFRASTRUCTURE
-//! condition (the agent PROCESS stalled, not the unit's code), so [`classify_hung`]
-//! defaults to [`FailureClass::Infra`] and lets a workflow RELABEL it only through a rule
-//! that SPECIFICALLY targets the liveness signal - a NON-wildcard matcher (e.g. an
-//! `output_regex` on the stale text). A catch-all rule (`match: {}`, the shipped
-//! default's final `product` rule) classifies GATE output, not hung agents, so it does
-//! NOT capture a hung spawn.
-//!
-//! The class is a DISPLAY/AUDIT label only: it rides the recorded fault (the
-//! [`spawn::META_LIVENESS_CLASS`] meta value) and is surfaced in the step halt and the
-//! stats, so an operator sees how the workflow named the stall. It does NOT change the
-//! TREATMENT. EVERY hung spawn - whatever class a rule labels it - is recorded as a
-//! no-attempt-charged liveness fault ([`SpawnResult::liveness_fault`]) and re-parked by
-//! the replay driver, because a hung agent PROCESS is infrastructure regardless of any
-//! rule's label: charging a unit's remediation counter for its agent hanging would be
-//! exactly the misclassification unit 2's infra semantics exist to prevent. (A workflow
-//! that wants a hung agent to CHARGE the unit would be asking the liveness mechanism to
-//! do the dead-worker-exit driver's job, which is out of this unit's scope.) Recovery is
-//! uniform too: an operator records a real result (last-write-wins) and re-drives.
+//! A hung spawn is recorded as a no-attempt-charged liveness fault
+//! ([`SpawnResult::liveness_fault`], classified infra) and re-parked by the replay driver,
+//! because a hung agent PROCESS is infrastructure: charging a unit's remediation counter for
+//! its agent hanging would be exactly the misclassification the infra class exists to
+//! prevent. Recovery is uniform: an operator records a real result (last-write-wins) and
+//! re-drives.
 //!
 //! ## Silent time (spec 105 LIVENESS)
 //!
@@ -41,24 +21,20 @@
 //! how long a spawn has really been silent: the wall time since its last sign of life outside
 //! those spans, computed from records alone. [`hold_intervals`], [`retry_delays`] and
 //! [`beat_times`] read those records. The host's stream-silence stop weighs all three;
-//! [`sweep`] and `rigger status --json`'s `liveness_age_s` weigh the holds alone, since the
-//! step-driven path writes no beats. Every other marker-age reader stays on wall-clock age: an
+//! `rigger status --json`'s `liveness_age_s` weighs the holds alone. Every other marker-age reader stays on wall-clock age: an
 //! age with an open hold subtracted never reaches the bound `rigger watch` needs to see a dead
 //! supervisor.
 
-use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
-use crate::eventstore::{Error, Event, EventStore};
-use crate::failure::{FailureClass, Signal, Taxonomy};
+use crate::eventstore::{Error, Event};
 use crate::ledger;
 use crate::progress::{ApiRetry, TYPE_API_RETRY, TYPE_SUPERVISOR_BEAT};
-use crate::spawn::{self, SpawnResult};
-use crate::spawn_store;
+use crate::spawn;
 
 /// The scratch subdirectory the per-spawn liveness markers live under, a sibling of the
-/// worktrees and `agent-scratch`. Kept in ONE place so the sweep and the driver-framed
-/// worker instruction (`workflows/rigger.js`) derive the same path.
+/// worktrees and `agent-scratch`. Kept in ONE place so every marker reader and the
+/// driver that touches the marker derive the same path.
 pub const MARKER_SUBDIR: &str = "agent-live";
 
 /// The filesystem-safe marker filename for a spawn id: an INJECTIVE byte-for-byte
@@ -66,11 +42,10 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 /// is not ASCII alphanumeric or `-` becomes `_` followed by its two-lowercase-hex-digit
 /// value, and `_` itself is escaped the same way (to `_5f`), so a literal `_` never
 /// appears in the output except as the first byte of a 3-byte escape. A spawn id is
-/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. `workflows/rigger.js`
-/// never recomputes this rule itself - it receives the fully-resolved absolute path
-/// `rigger step` stamps on the wire (through THIS function, via [`marker_path`]) and just
-/// touches it verbatim, so the worker and the sweep can never compute two different
-/// filenames for the same spawn.
+/// `{unit}/{role}#{n}`, so `/` becomes `_2f` and `#` becomes `_23`. Every writer and
+/// reader resolves the path through THIS function (via [`marker_path`]), so the driver that
+/// touches a marker and the readers that stat it can never compute two different filenames
+/// for the same spawn.
 ///
 /// INJECTIVE BY CONSTRUCTION, not by guard: every caller of this function derives a
 /// filesystem path with `<registered_root>.join(marker_filename(id))` (this module's own
@@ -94,11 +69,9 @@ pub const MARKER_SUBDIR: &str = "agent-live";
 ///
 /// The ONE remaining degenerate shape - the EMPTY input, which encodes to the EMPTY
 /// string (there are no bytes to escape) - still returns `None` rather than `Some("")`:
-/// an empty string still makes a caller's `.join` a no-op. It is reachable via
-/// `reclaim_spawn_scratch`'s own `spawn_id.split('/').next()` unit-extraction, which
-/// yields `""` for any leading-slash spawn id. Every caller skips a `None`, mirroring
-/// this module's own established idiom for uncertainty elsewhere in the same call chain
-/// ([`sweep`]: "a spawn with NO marker is left alone").
+/// an empty string still makes a caller's `.join` a no-op. Every caller skips a
+/// `None`, mirroring this module's own idiom for uncertainty: a spawn with NO marker is
+/// left alone.
 pub fn marker_filename(spawn_id: &str) -> Option<String> {
     let mut encoded = String::with_capacity(spawn_id.len());
     for byte in spawn_id.bytes() {
@@ -190,13 +163,12 @@ pub fn scratch_subpath(
 /// The absolute marker path for a spawn:
 /// `<scratch_root>/agent-live/<run_id>/<sanitized id>`.
 ///
-/// The SINGLE authority for where a spawn's liveness marker lives - the worker touches it
-/// (driver-framed instruction, over the path `rigger step` carries on the wave item) and
-/// the sweep stats it, both through THIS function, so a re-hardcoded root can never make
-/// the two diverge. The `run_id` component gives the marker RUN IDENTITY: a re-run that
+/// The SINGLE authority for where a spawn's liveness marker lives - the driver touches it
+/// and every reader stats it, both through THIS function, so a re-hardcoded root can never
+/// make the two diverge. The `run_id` component gives the marker RUN IDENTITY: a re-run that
 /// reuses a unit-title slug computes the same spawn id, but a DIFFERENT run gets a
-/// different subdir, so the sweep never reads a prior run's leftover mtime and records a
-/// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
+/// different subdir, so no reader ever reads a prior run's leftover mtime as a bogus
+/// multi-hour silence. An empty `run_id` (a caller outside a run - the pure-fold
 /// tests) omits the run subdir, keeping the path stable for the no-run case.
 ///
 /// A thin [`scratch_subpath`] call under [`MARKER_SUBDIR`] - see that function's own doc
@@ -206,11 +178,10 @@ pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<s
 }
 
 /// Where one run's spawns keep their liveness markers (spec 101): under the scratch root each
-/// spawn's request recorded ([`spawn::META_MARKER_ROOT`]), which `rigger step` stamps beside the
+/// spawn's request recorded ([`spawn::META_MARKER_ROOT`]), which the driver records beside the
 /// run id when it parks the spawn, else under `fallback_root` - the reader's own resolution, for
-/// a request recorded before the root was carried. The ONE marker-location rule: the step's wave
-/// stamp, the sweep, the halted-spawn checkpoint, the reset guard and every marker-age surface
-/// resolve a spawn's marker through it, so none of them finds a live worker only when its own
+/// a request recorded before the root was carried. The ONE marker-location rule: the
+/// halted-spawn checkpoint, the reset guard and every marker-age surface resolve a spawn's marker through it, so none of them finds a live worker only when its own
 /// environment (`RIGGER_TMPDIR`, `XDG_CACHE_HOME`, `HOME`) happens to match the driver's.
 pub struct MarkerRoots<'a> {
     recorded: std::collections::BTreeMap<String, String>,
@@ -289,11 +260,11 @@ pub struct LiveSpawn {
 
 /// THE rule for whether a requested spawn is LIVE (spec 101, ruling adj-u101gl-live-spawn-rule),
 /// spelled here once for every liveness reader ([`live_spawns`], [`spawn_is_halted`]): the spawn
-/// has not ended ([`spawn::ended_by`]) - its latest result is absent or is the step's liveness
+/// has not ended ([`spawn::ended_by`]) - its latest result is absent or is a liveness
 /// fault - and its
 /// liveness marker is not stale at `now` against the spawn's OWN `max_wall_clock` ([`is_stale`]).
 /// A spawn with no marker is not live: nothing proves a worker ever started it. An unbounded
-/// spawn's marker never goes stale, exactly as [`sweep`] never calls it hung. A real result ends
+/// spawn's marker never goes stale. A real result ends
 /// the spawn whatever its marker says.
 ///
 /// The marker is read first, so the results are scanned only for a spawn whose marker is inside
@@ -351,12 +322,12 @@ pub fn live_spawns(
 /// already polls deliberately captures no per-run inputs (spec 50 retargets the reap trigger
 /// at the machine-global registry, not one project's run) - so this generalizes
 /// [`marker_path`]'s exact per-spawn lookup into "is anything alive at all" over the SAME
-/// [`MARKER_SUBDIR`] convention every other liveness reader walks (`sweep`, `rigger status`,
+/// [`MARKER_SUBDIR`] convention every other liveness reader walks (`rigger status`,
 /// the dash's per-spawn ages): reusing the ONE marker mechanism rather than standing up a
 /// second, divergent liveness check. An empty `scratch_root` (no repo, mirroring every other
 /// caller's repo-less degrade), an absent marker directory (no agent has ever run here), or
 /// any unreadable entry along the way all read as "no live agent" - never an error - the same
-/// conservative default [`sweep`]'s own doc names for a spawn with no marker at all.
+/// conservative default every reader applies to a spawn with no marker at all.
 pub fn any_marker_fresh(scratch_root: &str, now: SystemTime, max_age: Duration) -> bool {
     if scratch_root.is_empty() {
         return false;
@@ -536,171 +507,14 @@ pub fn unwatched(from: SystemTime, to: SystemTime) -> bool {
         .is_ok_and(|gap| gap > SUPERVISED_BEAT_GAP)
 }
 
-/// The failure SIGNAL a hung spawn presents to the taxonomy: a distinctive,
-/// human-readable output line describing the stall. A workflow that wants to reclassify
-/// (or explicitly pin infra) can match on this text via a `failure_rules` `output_regex`.
-pub fn stale_signal() -> Signal {
-    Signal::from_output(
-        "rigger: liveness marker stale beyond the spawn's max_wall_clock (the agent is unresponsive/hung)",
-    )
-}
-
-/// Classify a hung spawn: a rule that SPECIFICALLY (non-wildcard) matches the hung-agent
-/// signal governs, letting a workflow RELABEL liveness faults; a wildcard catch-all match
-/// (the shipped default's final `product` rule classifies GATE output) or no match at all
-/// defaults to [`FailureClass::Infra`] - a hung worker is infrastructure, not the unit's
-/// code, and the generic gate catch-all must never label a hung agent as the unit's fault.
-///
-/// The returned class is a DISPLAY/AUDIT label only (see the module docs): every hung spawn
-/// is recorded and re-parked no-charge regardless of it. The wildcard test routes through
-/// [`Matcher::is_any`](crate::failure::Matcher::is_any) - the single authority - rather
-/// than re-checking the matcher fields.
-pub fn classify_hung(taxonomy: &Taxonomy) -> FailureClass {
-    match taxonomy.classify(&stale_signal()) {
-        Some(rule) if !rule.matcher.is_any() => rule.class,
-        _ => FailureClass::Infra,
-    }
-}
-
-/// One in-flight spawn the sweep is evaluating: its deterministic id, the unit it belongs
-/// to, when it was last seen alive (its marker mtime), and its wall-clock bound.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InFlightSpawn {
-    pub id: String,
-    pub unit: String,
-    pub last_seen: SystemTime,
-    pub max_wall_clock: Duration,
-}
-
-/// A hung spawn the sweep found stale, with the class the taxonomy assigned it and how
-/// long past its last heartbeat it has been silent, holds left out ([`silent_time`]) - the
-/// descriptor `rigger step` surfaces and records.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StaleSpawn {
-    pub id: String,
-    pub unit: String,
-    pub class: FailureClass,
-    pub silent_for: Duration,
-}
-
-/// The pure staleness core: given the in-flight spawns (each with the time it was last
-/// seen alive and its wall-clock bound), the taxonomy, `now` and the run's `holds`, return
-/// the ones whose [`silent_time`] outside those holds is past their bound, classified. No
-/// IO - the caller reads marker mtimes and records outcomes.
-pub fn classify_stale(
-    in_flight: &[InFlightSpawn],
-    taxonomy: &Taxonomy,
-    now: SystemTime,
-    holds: &[Span],
-) -> Vec<StaleSpawn> {
-    let class = classify_hung(taxonomy);
-    in_flight
-        .iter()
-        .filter_map(|s| {
-            let silent_for = silent_time(s.last_seen, now, holds, &[], None);
-            past_bound(silent_for, s.max_wall_clock).then(|| StaleSpawn {
-                id: s.id.clone(),
-                unit: s.unit.clone(),
-                class,
-                silent_for,
-            })
-        })
-        .collect()
-}
-
-/// The human-readable error text recorded on a hung spawn's result and surfaced in the
-/// step halt. Names the spawn, its class, and the no-attempt-charged semantics so an
-/// operator reading the halt knows exactly what happened and that the unit was not blamed.
-pub fn stale_result_message(s: &StaleSpawn) -> String {
-    format!(
-        "spawn {:?} (unit {:?}) hung: its liveness marker stayed silent for {}s outside any \
-         hold, past its max_wall_clock, classified {} - no remediation attempt is charged \
-         (the unit's code is not at fault). Re-drive it once the agent/driver is healthy: \
-         record a real result with `rigger result {}` (last-write-wins supersedes this \
-         liveness fault).",
-        s.id,
-        s.unit,
-        s.silent_for.as_secs(),
-        s.class.as_str(),
-        s.id,
-    )
-}
-
 /// A hung spawn whose LATEST recorded result is a liveness fault (spec 10, unit 3) - the
-/// not-yet-recovered set `rigger step` surfaces in its output so a hung agent is visible,
-/// not a silent stall. A real result recorded later supersedes the fault (last-write-wins)
+/// not-yet-recovered set, surfaced so a hung agent is visible, not a silent stall. A real result recorded later supersedes the fault (last-write-wins)
 /// and the spawn drops out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HungSpawn {
     pub id: String,
     pub unit: String,
     pub class: String,
-}
-
-/// The liveness SWEEP `rigger step` runs against the run stream (spec 10, unit 3): find
-/// every IN-FLIGHT spawn (a recorded request with no result yet) whose per-spawn liveness
-/// marker - read where [`MarkerRoots`] says it lives, under the root its request recorded or
-/// else `scratch_root` - is STALE beyond its `max_wall_clock`, classify it through
-/// the `taxonomy`, and record a no-attempt-charged liveness fault on its id (the existing
-/// [`SpawnResult`], recorded `--if-absent`, NEVER a new event type). Returns the spawns it
-/// freshly recorded a fault for.
-///
-/// A marker's silence is its [`silent_time`] over the [`hold_intervals`] of `events` (the run's
-/// slice) alone: the step-driven path writes no beats and holds no keep-awake guard, so a hold
-/// is all it has to leave out, and a step after a released 17 h hold reads minutes.
-///
-/// A spawn with NO marker is left alone (conservative: a not-yet-started or dead-on-arrival
-/// worker is dead-worker-exit territory, unchanged here - only a marker that WAS being
-/// touched and then went stale is a hung agent). A recorded liveness fault charges no
-/// remediation attempt: the sweep records only a [`SpawnResult`], never a `UnitFailed`, and
-/// the replay driver re-parks it - so a hung agent process never blames the unit's code.
-pub fn sweep(
-    store: &dyn EventStore,
-    events: &[Event],
-    scratch_root: &str,
-    run_id: &str,
-    taxonomy: &Taxonomy,
-    now: SystemTime,
-) -> Result<Vec<StaleSpawn>, Error> {
-    let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
-    let roots = MarkerRoots::of(events, scratch_root)?;
-    let mut in_flight = Vec::new();
-    for req in requested.values() {
-        // Only a spawn with a positive wall-clock bound is subject to a liveness timeout.
-        let bound = match req.max_wall_clock {
-            Some(secs) if secs > 0 => Duration::from_secs(secs),
-            _ => continue,
-        };
-        // In-flight = requested but not yet answered. A spawn already carrying a result
-        // (including a prior liveness fault) is not re-swept.
-        if spawn::result_of(events, &req.id)
-            .map_err(|e| Error::Backend(e.to_string()))?
-            .is_some()
-        {
-            continue;
-        }
-        // The marker's mtime is the spawn's last proof of life. The path carries the run id
-        // ([`marker_path`]), so a prior run's leftover marker for a slug-colliding id lives
-        // under a different subdir and is never read here. A MISSING marker is left alone
-        // (conservative - see the fn docs); only a present-but-stale marker is hung. A
-        // degenerate id ([`marker_path`] returns `None`) is treated identically - the same
-        // conservative no-op, never a fabricated path to stat.
-        let Some(last_seen) = roots.touched_at(run_id, &req.id) else {
-            continue;
-        };
-        in_flight.push(InFlightSpawn {
-            id: req.id.clone(),
-            unit: req.unit.clone(),
-            last_seen,
-            max_wall_clock: bound,
-        });
-    }
-    let stale = classify_stale(&in_flight, taxonomy, now, &hold_intervals(events, now));
-    for s in &stale {
-        let fault = SpawnResult::liveness_fault(&s.id, stale_result_message(s), s.class.as_str());
-        spawn_store::record_result_if_absent(store, &fault)?;
-    }
-    Ok(stale)
 }
 
 /// Whether the named spawn is genuinely HALTED (spec 103, THE HALTED-SPAWN CHECKPOINT
@@ -711,8 +525,8 @@ pub fn sweep(
 ///
 /// 1. `named_spawn_id` itself carries a recorded [`crate::spawn::TYPE_SPAWN_REQUESTED`] -
 ///    a spawn that was never requested has nothing to have halted.
-/// 2. it has not ended ([`spawn::ended_by`]) - a liveness fault does not count (the sweep's own
-///    stale-marker classification is a diagnosis of the hang, not a genuine outcome, so the
+/// 2. it has not ended ([`spawn::ended_by`]) - a liveness fault does not count (a stop on a
+///    silent stream is a diagnosis of the hang, not a genuine outcome, so the
 ///    SAME attempt is still presumed to resume against this tree).
 /// 3. no spawn belonging to the SAME `unit` (any role, any attempt, the named one included)
 ///    is [`live_spawn`] - the one rule every liveness reader applies. A live spawn elsewhere
@@ -758,9 +572,8 @@ pub fn spawn_is_halted(
 }
 
 /// Every spawn whose LATEST recorded result is a liveness fault (spec 10, unit 3): the
-/// hung, not-yet-recovered spawns. `rigger step` folds this from the post-sweep stream to
-/// SURFACE hung agents (a halt reason) every step until they recover, so a stall is never
-/// silent - even on a step that recorded no NEW fault. A real result recorded later has a
+/// hung, not-yet-recovered spawns, surfaced until they recover so a stall is never silent.
+/// A real result recorded later has a
 /// larger position and supersedes the fault, so a recovered spawn drops out. Ordered by id.
 pub fn hung_spawns(events: &[Event]) -> Result<Vec<HungSpawn>, Error> {
     let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
@@ -783,15 +596,14 @@ pub fn hung_spawns(events: &[Event]) -> Result<Vec<HungSpawn>, Error> {
 
 /// The spawns of a run that have not ENDED ([`spawn::ended_by`]): the PENDING frontier - every
 /// recorded request with no result yet, the wave a relaunched driver resumes - and the HUNG spawns
-/// ([`hung_spawns`]), answered only by the step's liveness fault, which the step halts on and the
-/// replay driver re-parks. THE one authority for "a spawn of the run may still advance": the run
+/// ([`hung_spawns`]), answered only by a liveness fault, which the replay driver re-parks. THE one authority for "a spawn of the run may still advance": the run
 /// teardown reclaims nothing and `reset --runs` closes no landed unit while either set is
 /// non-empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnendedSpawns {
     /// The ids of the spawns with no recorded result, ordered by id.
     pub pending: Vec<String>,
-    /// The spawns whose latest result is the step's liveness fault, ordered by id.
+    /// The spawns whose latest result is a liveness fault, ordered by id.
     pub hung: Vec<HungSpawn>,
 }
 
@@ -812,59 +624,8 @@ pub fn unended_spawns(events: &[Event]) -> Result<UnendedSpawns, Error> {
     })
 }
 
-/// The NO-STILL-ADVANCING-WORK core of the never-delete-live-owned rail as ONE predicate (spec 34,
-/// criterion 3): true when the current run has NO worker that may still be alive under the shared
-/// scratch AND no unit still awaiting a human. Both of `rigger step`'s run-teardown sites - the
-/// definition-drift early-return and the terminal-fixpoint teardown after `conductor::run` - gate
-/// on THIS function (`rigger run` gates its own on `RunState::done()`, its conductor having
-/// returned), so every still-advancing condition is inherited by both and none can drift into a
-/// divergent per-caller copy (the divergence that once let the drift path reclaim on an empty
-/// frontier ALONE - first omitting the hung check, then the manual-review check).
-///
-/// Three conditions, all required:
-/// - the step is DONE (`step.done`, the one value [`spawn::step_of_pass`] prints): every recorded
-///   spawn has a result AND the pass that printed it parked nothing - a result a courier records
-///   after the pass parked its spawn leaves the log answered while the run still owes the work
-///   it unlocks, so the run is not terminal; and
-/// - EVERY spawn has ENDED ([`unended_spawns`] is empty, the one authority `reset --runs` closes
-///   on too): no in-flight wave and no obviously-live worker, and NO spawn is HUNG - a
-///   liveness-fault result answers the frontier yet leaves a worker that may still be alive and
-///   writing under the shared scratch, and which the operator may yet recover, so it still
-///   blocks reclamation; and
-/// - NO manual-review PAUSE is pending (`ledger::project(...).manual_review` is empty): a
-///   `autonomy: manual` gate (§4.3) emits a PERSISTED `ManualReview` and returns its unit pending
-///   WITHOUT parking any spawn, so it leaves no unended spawn - the spawn core alone reads
-///   terminal - yet the run is manual-review-pending, i.e. NON-terminal and STILL
-///   ADVANCING (a human will approve+integrate it on a later step). That persisted pause is a
-///   property of the LOG, not of whether `conductor::run` ran this step, so it is folded in HERE
-///   rather than at a caller: the drift early-return runs BEFORE `conductor::run`, but it reads the
-///   full stream (which already carries a prior step's `ManualReview`), so it needs the exclusion
-///   too. Folding it into this shared core keeps a single authority for "no still-advancing work"
-///   and closes the never-delete-live breach a per-caller guard re-opened.
-///
-/// The drift early-return runs no pass, so it hands in the log-only [`spawn::step_result`].
-///
-/// Scoped to the CURRENT run only ([`crate::run::current_run`]), so a prior run's unanswered
-/// spawns or paused units never gate this run's teardown. Errs only if a malformed stored event
-/// cannot be replayed; callers treat an `Err` as "not safe to reclaim" (never delete on
-/// uncertainty).
-pub fn terminal_and_no_live_worker(events: &[Event], step: &spawn::Step) -> Result<bool, Error> {
-    let scoped = crate::run::current_run(events);
-    let spawns_ended = unended_spawns(scoped)?.is_empty();
-    // The manual-review inbox, projected from the SAME scoped slice - the single authority for
-    // which units still await a human. A non-terminal manual-review PAUSE leaves no unended spawn
-    // (it parks no spawn), so the spawn core alone reads terminal even though the run is still
-    // advancing.
-    let no_manual_review = rigger_domain::ledger::project(scoped)
-        .map_err(|e| Error::Backend(e.to_string()))?
-        .manual_review
-        .is_empty();
-    Ok(step.done && spawns_ended && no_manual_review)
-}
-
-/// The step halt reason for a non-empty set of hung spawns (spec 10, unit 3). Surfaced on
-/// the `Step`'s `halted` channel so the driver stops LOUDLY - a hung agent halts the wave
-/// VISIBLY rather than stalling it invisibly - naming each hung spawn and the recovery.
+/// The reason a non-empty set of hung spawns keeps work open (spec 10, unit 3), naming each
+/// hung spawn and the recovery, so a hung agent is reported VISIBLY rather than silently.
 pub fn halt_reason(hung: &[HungSpawn]) -> String {
     let names = hung
         .iter()
@@ -880,91 +641,13 @@ pub fn halt_reason(hung: &[HungSpawn]) -> String {
     )
 }
 
-/// The persisted CROSSING BOUNDARY for the hung-liveness half of the push-side `attention`
-/// signal (spec 69, criterion 5; review u69c5 round 3, cause genuine-defect): which hung
-/// spawn ids `rigger step` has ALREADY surfaced, as of the end of the PREVIOUS invocation.
-///
-/// Every other piece of state `rigger step` uses is re-derived fresh from the event log on
-/// every invocation - the log is the single source of truth, and no other cross-process
-/// state exists anywhere in this codebase's conductor path. This is the one deliberate
-/// exception, forced by what "once per crossing" needs here specifically: the fault that
-/// makes a spawn HUNG is not always recorded by the process that goes on to surface it. A
-/// driver's out-of-band `rigger result --error` (the outer-wall-clock backstop, spec 19c
-/// unit 2, for a spawn with no per-spawn `max_wall_clock` the in-process sweep can never
-/// time out) runs as a wholly separate process strictly BETWEEN two `rigger step`
-/// invocations. By the time the NEXT invocation opens the store, that write already
-/// predates every read it could possibly take - so "this process's own start" is always too
-/// late a boundary; a fault recorded that way is indistinguishable, from inside a fresh
-/// process, from one this run already reported steps ago. The one boundary that IS early
-/// enough is "the end of the PREVIOUS `rigger step` invocation" - and only a value persisted
-/// OUTSIDE the log, by that previous process, for this one to read, can supply it. This is
-/// the exact role [`crate::dash::DashMarker`] already plays for "is a dash already serving
-/// on this machine" - a cross-process fact the append-only log cannot answer either, so a
-/// small on-disk record is the established escape hatch, not a new one.
-///
-/// One id per line (spawn ids never contain a newline), written in the caller's sorted
-/// order so two folds of the same state produce a byte-identical file. Scoped by `run_id` -
-/// a SIBLING of the run's own marker subdir ([`MARKER_SUBDIR`]`/<run>/`), never a file
-/// inside it, so it can never collide with a sanitized spawn-id marker filename regardless
-/// of what a workflow names its units. Reclaimed with the rest of `agent-live` at run
-/// teardown (the same lifecycle a per-spawn marker already has), so it never outlives the
-/// run it tracks. An empty `run_id` (a caller outside a run) still produces a stable path,
-/// mirroring [`marker_path`]'s own convention for the no-run case - the only degenerate
-/// [`marker_filename`] shape under the injective encoding.
-pub fn hung_cursor_path(scratch_root: &str, run_id: &str) -> std::path::PathBuf {
-    let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
-    let name = match marker_filename(run_id) {
-        Some(safe) => format!("{safe}.hung-cursor"),
-        None => ".hung-cursor".to_string(),
-    };
-    dir.join(name)
-}
-
-/// Read the hung-attention cursor ([`hung_cursor_path`]): the spawn ids already surfaced as
-/// of the end of the PREVIOUS `rigger step`. Absent, unreadable, or malformed all read as
-/// EMPTY - "nothing surfaced yet" - which is the safe default in both directions this can be
-/// wrong: correct on the very first step of a run (nothing has surfaced), and on any read
-/// failure the safe direction is toward one extra, harmless re-notification of a still-true
-/// halt, never toward silently swallowing a genuine new crossing (the exact failure mode
-/// this mechanism exists to close - see [`hung_cursor_path`]'s own doc comment).
-pub fn read_hung_cursor(scratch_root: &str, run_id: &str) -> BTreeSet<String> {
-    std::fs::read_to_string(hung_cursor_path(scratch_root, run_id))
-        .map(|s| {
-            s.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Persist the hung-attention cursor ([`hung_cursor_path`]): the FULL set of currently-hung
-/// spawn ids, as computed at the end of THIS `rigger step`, for the NEXT invocation's
-/// [`read_hung_cursor`] to seed its own crossing check from. Unconditionally overwritten
-/// every step (cheap - a handful of short ids) rather than only on a change, so a recovered
-/// spawn drops out of the file the same step it drops out of [`hung_spawns`] and a later
-/// re-hang of the same id is correctly treated as fresh. Best-effort at the call site, like
-/// every other scratch write `rigger step` performs - a failed write only means the NEXT
-/// step may re-stamp a still-true halt once more than strictly necessary, never that this
-/// step fails.
-pub fn write_hung_cursor(
-    scratch_root: &str,
-    run_id: &str,
-    hung: &BTreeSet<String>,
-) -> std::io::Result<()> {
-    let path = hung_cursor_path(scratch_root, run_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, hung.iter().cloned().collect::<Vec<_>>().join("\n"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::progress::{SupervisorBeat, TYPE_SUPERVISOR_BEAT};
     use crate::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
+    use crate::spawn::SpawnResult;
+    use crate::spawn_store;
     use crate::test_support::at;
     use crate::test_support::run_log;
 
@@ -1227,55 +910,14 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn classify_hung_defaults_to_infra_under_the_shipped_taxonomy() {
-        // The shipped default taxonomy's narrow infra regex does NOT match the hung-agent
-        // signal, so classify() returns None and the caller default (infra) governs - a
-        // hung worker is infrastructure, never a charged product defect.
-        assert_eq!(classify_hung(&Taxonomy::default()), FailureClass::Infra);
-    }
-
-    #[test]
-    fn classify_hung_is_infra_even_when_a_catch_all_product_rule_would_match() {
-        use crate::failure::{Backoff, FailureRule, Matcher};
-        // A workflow whose ONLY rule is a catch-all product (the shape of the shipped
-        // default's final rule): it classifies gate output, but a hung AGENT is not a
-        // product defect, so the wildcard must NOT capture it - infra governs.
-        let tax = Taxonomy::new(vec![FailureRule {
-            matcher: Matcher::any(),
-            class: FailureClass::Product,
-            limit: 0,
-            backoff: Backoff::default(),
-        }]);
-        assert_eq!(classify_hung(&tax), FailureClass::Infra);
-    }
-
-    #[test]
-    fn classify_hung_honors_a_workflow_rule_that_matches_the_stale_signal() {
-        use crate::failure::{Backoff, FailureRule, Matcher};
-        use regex::Regex;
-        // A workflow can reclassify a hung spawn by matching the stale signal's text.
-        let tax = Taxonomy::new(vec![FailureRule {
-            matcher: Matcher {
-                exit_status: None,
-                signal: None,
-                output_regex: Some(Regex::new("liveness marker stale").unwrap()),
-            },
-            class: FailureClass::Flaky,
-            limit: 3,
-            backoff: Backoff::default(),
-        }]);
-        assert_eq!(classify_hung(&tax), FailureClass::Flaky);
-    }
-
-    // --- Sweep / hung-spawns tests (a synthetic stale marker, the done-when pin) ---
+    // --- Hung-spawns tests (a synthetic stale marker, the done-when pin) ---
 
     use crate::eventstore::sqlite::Store;
 
     use crate::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
     use crate::spawn_store::park_in_run;
 
-    /// Park a spawn carrying a wall-clock bound, so the sweep considers it.
+    /// Park a spawn carrying a wall-clock bound, so the host's liveness rule applies to it.
     fn park_bounded(store: &Store, unit: &str, secs: u64) -> SpawnRequest {
         park_bounded_attempt(store, unit, 0, secs)
     }
@@ -1290,11 +932,11 @@ mod tests {
         req
     }
 
-    /// The run id every sweep test scopes its markers under (the run-identity subdir).
+    /// The run id every hung-spawns test scopes its markers under (the run-identity subdir).
     const TEST_RUN: &str = "r1";
 
     /// Plant a synthetic liveness marker (under the test run's subdir) touched "now" - its
-    /// mtime is the wall-clock at creation. The sweep's `now` parameter is advanced past the
+    /// mtime is the wall-clock at creation. A test's `now` argument is advanced past the
     /// bound to make it stale, so no mtime manipulation is needed.
     fn plant_marker(root: &str, id: &str) {
         let path = marker_path(root, TEST_RUN, id).expect("test ids are never degenerate");
@@ -1303,111 +945,11 @@ mod tests {
     }
 
     #[test]
-    fn sweep_classifies_a_stale_marker_as_infra_records_it_and_charges_no_attempt() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-
-        // An in-flight spawn with a 300s wall-clock bound and a SYNTHETIC marker touched
-        // "now"; the sweep is run at now+400s, so the marker is 400s stale past the bound.
-        let hung = park_bounded(&store, "hung-unit", 300);
-        plant_marker(root, &hung.id);
-
-        let events = run_log(&store);
-        let taxonomy = Taxonomy::default();
-        let now = SystemTime::now() + Duration::from_secs(400);
-        let stale = sweep(&store, &events, root, TEST_RUN, &taxonomy, now).unwrap();
-
-        // Classified infra and returned.
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].id, hung.id);
-        assert_eq!(stale[0].class, FailureClass::Infra);
-
-        // Recorded on the spawn's id as a liveness fault (existing SpawnResult type).
-        let after = run_log(&store);
-        let res = spawn::result_of(&after, &hung.id).unwrap().unwrap();
-        assert!(
-            res.is_liveness_fault(),
-            "recorded a liveness fault on the spawn id"
-        );
-        assert_eq!(res.meta_str(crate::spawn::META_LIVENESS_CLASS), "infra");
-        assert!(
-            res.is_error(),
-            "a hung spawn's fault carries a describing error"
-        );
-
-        // NO attempt charged: the sweep records NO UnitFailed - only the SpawnResult, and
-        // NO new event TYPE was introduced (only SpawnRequested + SpawnResult exist).
-        let types: std::collections::BTreeSet<&str> =
-            after.iter().map(|e| e.type_.as_str()).collect();
-        assert!(
-            !types.contains(crate::ledger::TYPE_UNIT_FAILED),
-            "a hung spawn charges no remediation attempt (no UnitFailed)"
-        );
-        assert_eq!(
-            types,
-            [spawn::TYPE_SPAWN_REQUESTED, spawn::TYPE_SPAWN_RESULT]
-                .into_iter()
-                .collect(),
-            "no new event type - the fault rides SpawnResult on the spawn id"
-        );
-    }
-
-    #[test]
-    fn sweep_leaves_a_fresh_marker_and_a_missing_marker_alone() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-
-        // Fresh marker (alive): touched now, and the sweep runs only 10s later.
-        let alive = park_bounded(&store, "alive-unit", 300);
-        plant_marker(root, &alive.id);
-
-        // No marker at all (never started touching): left alone, conservative.
-        let _no_marker = park_bounded(&store, "no-marker-unit", 300);
-
-        let events = run_log(&store);
-        let now = SystemTime::now() + Duration::from_secs(10);
-        let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
-        assert!(
-            stale.is_empty(),
-            "a fresh marker and a missing marker are not hung"
-        );
-        assert!(
-            spawn::result_of(&run_log(&store), &alive.id)
-                .unwrap()
-                .is_none(),
-            "no fault is recorded for a live spawn"
-        );
-    }
-
-    #[test]
-    fn sweep_ignores_a_spawn_without_a_wall_clock_bound() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let store = Store::open(":memory:").unwrap();
-
-        // No max_wall_clock: unbounded, exempt from liveness timeouts (back-compat). Its
-        // marker is planted "now" but the sweep runs far in the future - still not stale.
-        let unbounded = crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task");
-        park_in_run(&store, &unbounded, "", "").unwrap();
-        plant_marker(root, &unbounded.id);
-
-        let events = run_log(&store);
-        let now = SystemTime::now() + Duration::from_secs(99_999);
-        let stale = sweep(&store, &events, root, TEST_RUN, &Taxonomy::default(), now).unwrap();
-        assert!(
-            stale.is_empty(),
-            "an unbounded spawn is never timed out, however old its marker"
-        );
-    }
-
-    #[test]
     fn hung_spawns_surfaces_the_fault_until_a_real_result_supersedes_it() {
         let store = Store::open(":memory:").unwrap();
         let hung = park_bounded(&store, "u", 300);
 
-        // Record a liveness fault directly (as the sweep would).
+        // Record a liveness fault directly (as the host does).
         let fault = SpawnResult::liveness_fault(&hung.id, "hung", "infra");
         spawn_store::record_result(&store, &fault).unwrap();
         let surfaced = hung_spawns(&run_log(&store)).unwrap();
@@ -1454,99 +996,6 @@ mod tests {
         assert!(
             unended_spawns(&run_log(&store)).unwrap().is_empty(),
             "every spawn ended on a real result"
-        );
-    }
-
-    #[test]
-    fn classify_stale_returns_only_the_stale_spawns_classified() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let bound = Duration::from_secs(300);
-        let in_flight = vec![
-            // Hung: silent for 400s past a 300s bound.
-            InFlightSpawn {
-                id: "u/implementer#0".into(),
-                unit: "u".into(),
-                last_seen: now - Duration::from_secs(400),
-                max_wall_clock: bound,
-            },
-            // Alive: touched 10s ago.
-            InFlightSpawn {
-                id: "v/implementer#0".into(),
-                unit: "v".into(),
-                last_seen: now - Duration::from_secs(10),
-                max_wall_clock: bound,
-            },
-        ];
-        let stale = classify_stale(&in_flight, &Taxonomy::default(), now, &[]);
-        assert_eq!(stale.len(), 1, "only the hung spawn is returned");
-        assert_eq!(stale[0].id, "u/implementer#0");
-        assert_eq!(stale[0].class, FailureClass::Infra);
-        assert_eq!(stale[0].silent_for, Duration::from_secs(400));
-    }
-
-    #[test]
-    fn hung_cursor_path_is_a_sibling_of_the_run_marker_subdir_never_inside_it() {
-        // With a run id: `<scratch>/agent-live/<sanitized run>.hung-cursor` - a FILE
-        // alongside the `<run>/` marker directory, never a filename inside it, so it can
-        // never collide with a sanitized spawn-id marker regardless of what a workflow
-        // names its units.
-        let p = hung_cursor_path("/scratch", "run/7#a");
-        assert_eq!(
-            p,
-            std::path::Path::new("/scratch/agent-live/run_2f7_23a.hung-cursor")
-        );
-        assert_ne!(
-            p,
-            marker_path("/scratch", "run/7#a", "run/7#a").unwrap(),
-            "the cursor file must never collide with any sanitized spawn-id marker path"
-        );
-        // An empty run id (a caller outside a run) still produces a stable path, mirroring
-        // `marker_path`'s own no-run convention.
-        let p = hung_cursor_path("/scratch", "");
-        assert_eq!(p, std::path::Path::new("/scratch/agent-live/.hung-cursor"));
-    }
-
-    #[test]
-    fn read_hung_cursor_is_empty_when_absent_and_round_trips_through_write() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-
-        // No cursor has ever been written for this run: empty, not an error - the correct
-        // reading for the very first step of a run.
-        assert!(read_hung_cursor(root, "r1").is_empty());
-
-        // A round trip persists the exact set, and only that run's set - a DIFFERENT run id
-        // reads its own (still-empty) cursor, never another run's.
-        let mut hung = BTreeSet::new();
-        hung.insert("a/implementer#0".to_string());
-        hung.insert("b/implementer#0".to_string());
-        write_hung_cursor(root, "r1", &hung).unwrap();
-        assert_eq!(read_hung_cursor(root, "r1"), hung);
-        assert!(
-            read_hung_cursor(root, "r2").is_empty(),
-            "a cursor is scoped per run id; a sibling run must not see it"
-        );
-
-        // Overwriting with a SMALLER set (a recovery) drops the recovered id - the cursor
-        // always reflects THIS step's own full hung set, never a sticky union.
-        let mut recovered = BTreeSet::new();
-        recovered.insert("b/implementer#0".to_string());
-        write_hung_cursor(root, "r1", &recovered).unwrap();
-        assert_eq!(read_hung_cursor(root, "r1"), recovered);
-    }
-
-    #[test]
-    fn read_hung_cursor_reads_a_malformed_or_empty_file_as_empty() {
-        let scratch = tempfile::tempdir().unwrap();
-        let root = scratch.path().to_str().unwrap();
-        let path = hung_cursor_path(root, "r1");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-
-        // A blank line and surrounding whitespace never produce a phantom empty-string id.
-        std::fs::write(&path, "\n  \n\n").unwrap();
-        assert!(
-            read_hung_cursor(root, "r1").is_empty(),
-            "blank lines must never surface as a phantom hung id"
         );
     }
 
@@ -1687,7 +1136,7 @@ mod tests {
             },
             0,
         ));
-        /// The sweep's own stale-marker classification is a diagnosis of the hang, not a real
+        /// The host's liveness fault is a diagnosis of the hang, not a real
         /// outcome - the same attempt is still presumed to resume against this tree.
         spawn_is_halted_is_true_when_the_named_spawns_only_result_is_its_own_liveness_fault:
             assert!(halted(
@@ -1805,7 +1254,7 @@ mod tests {
         }
     }
 
-    /// The step's liveness fault on `id`, as the sweep records it.
+    /// The liveness fault on `id`, as the host records it.
     fn fault(id: &str) -> SpawnResult {
         SpawnResult::liveness_fault(id, "hung", "infra")
     }
@@ -1939,7 +1388,7 @@ mod tests {
             ),
             Vec::<LiveSpawn>::new()
         );
-        /// The step's liveness fault is not the spawn's end: a worker that resumed and touched
+        /// A liveness fault is not the spawn's end: a worker that resumed and touched
         /// its marker inside the bound keeps the spawn live.
         live_spawns_keeps_a_liveness_faulted_spawn_whose_marker_is_inside_its_bound: assert_eq!(
             live_after(a_answered_by(&[fault]), Duration::from_secs(10)),
@@ -2055,8 +1504,8 @@ mod tests {
     }
 
     /// Every marker reader finds a spawn's marker under the root its request recorded, whatever
-    /// root the reader itself resolved: the guard's live set, the marker-age surfaces, the
-    /// halted-spawn checkpoint and the sweep.
+    /// root the reader itself resolved: the guard's live set, the marker-age surfaces and the
+    /// halted-spawn checkpoint.
     #[test]
     fn every_marker_reader_reads_under_the_root_the_request_recorded() {
         let recorded = tempfile::tempdir().unwrap();
@@ -2082,21 +1531,6 @@ mod tests {
         assert!(
             !spawn_is_halted(&events, readers_root, TEST_RUN, "a", &a, at).unwrap(),
             "the halted-spawn checkpoint"
-        );
-        let past_bound = at + Duration::from_secs(301);
-        let stale = sweep(
-            &store,
-            &events,
-            readers_root,
-            TEST_RUN,
-            &Taxonomy::default(),
-            past_bound,
-        )
-        .unwrap();
-        assert_eq!(
-            stale.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
-            [a.as_str()],
-            "the sweep"
         );
     }
 
@@ -2619,108 +2053,6 @@ mod tests {
                 past_bound(Duration::from_secs(silent), Duration::from_secs(bound)),
                 past,
                 "{case}"
-            );
-        }
-    }
-
-    /// The staleness core weighs a spawn's silence outside the holds against its bound, and
-    /// reports that silence.
-    #[test]
-    fn classify_stale_weighs_the_silence_outside_the_hold_intervals() {
-        let in_flight = [InFlightSpawn {
-            id: THE_SPAWN.into(),
-            unit: "u".into(),
-            last_seen: at(9_000),
-            max_wall_clock: Duration::from_secs(300),
-        }];
-        for (case, holds, silent_for) in [
-            ("no hold", vec![], vec![1_000]),
-            ("a hold leaving the bound", vec![span(9_100, 9_800)], vec![]),
-            (
-                "a hold leaving a second past the bound",
-                vec![span(9_100, 9_799)],
-                vec![301],
-            ),
-        ] {
-            let stale = classify_stale(&in_flight, &Taxonomy::default(), at(10_000), &holds);
-            assert_eq!(
-                stale
-                    .iter()
-                    .map(|s| s.silent_for.as_secs())
-                    .collect::<Vec<u64>>(),
-                silent_for,
-                "{case}"
-            );
-        }
-    }
-
-    /// Spec 105 LIVENESS: the step-driven sweep reads a marker's silence over the run's hold
-    /// intervals alone, so a marker silent across a released 17 h hold reads minutes and its spawn
-    /// stands, while one past its bound outside the hold is still hung.
-    #[test]
-    fn the_sweep_reads_a_marker_silent_across_a_hold_as_the_time_outside_it() {
-        const BOUND: u64 = 1800;
-        const WALL: u64 = 17 * 3600 + 600;
-        for (case, hold, faulted_at) in [
-            (
-                "a released 17 h hold leaves ten minutes",
-                Some((300, Some(300 + 17 * 3600))),
-                None,
-            ),
-            ("an open hold leaves five minutes", Some((300, None)), None),
-            ("no hold", None, Some(WALL)),
-            (
-                "a hold leaving the bound",
-                Some((300, Some(300 + WALL - BOUND))),
-                None,
-            ),
-            (
-                "a hold leaving a second past the bound",
-                Some((300, Some(300 + WALL - BOUND - 1))),
-                Some(BOUND + 1),
-            ),
-        ] {
-            let scratch = tempfile::tempdir().unwrap();
-            let root = scratch.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
-            let parked = park_bounded(&store, "held-unit", BOUND);
-            let touched_at = touched(root, &parked.id);
-            let after = |secs: u64| touched_at + Duration::from_secs(secs);
-            let mut events = run_log(&store);
-            events.extend(
-                hold.into_iter()
-                    .flat_map(|(held, released): (u64, Option<u64>)| {
-                        hold_records(after(held), released.map(after))
-                    }),
-            );
-
-            let stale = sweep(
-                &store,
-                &events,
-                root,
-                TEST_RUN,
-                &Taxonomy::default(),
-                after(WALL),
-            )
-            .unwrap();
-
-            assert_eq!(
-                stale
-                    .iter()
-                    .map(|s| (s.id.as_str(), s.silent_for))
-                    .collect::<Vec<_>>(),
-                faulted_at
-                    .iter()
-                    .map(|&secs| (parked.id.as_str(), Duration::from_secs(secs)))
-                    .collect::<Vec<_>>(),
-                "{case}"
-            );
-            assert_eq!(
-                spawn::result_of(&run_log(&store), &parked.id)
-                    .unwrap()
-                    .map(|res| res.is_liveness_fault()),
-                faulted_at.map(|_| true),
-                "{case}: the recorded fault"
             );
         }
     }

@@ -29,7 +29,7 @@
 //! (neither the route nor these DTOs is feature-gated), so this guards the served contract in both
 //! lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

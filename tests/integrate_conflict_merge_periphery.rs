@@ -25,7 +25,7 @@
 //! the real on-disk loader for a multi-rule, multi-path block, for the back-compat case (an
 //! omitted key - every workflow.yml committed before this criterion existed - must resolve to
 //! an empty list, not an error), and for the REAL, currently-committed project
-//! `.rigger/workflow.yml` itself, pinning its own `docs/audit/*` rule.
+//! `.rigger/workflow.yml` itself, which registers no rule.
 //!
 //! GAP 2,
 //! `a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regenerates_for_real`.
@@ -274,14 +274,25 @@
 //! loops back, and that last pass merges nothing. `UnitIntegrated` must still carry the sha the
 //! unit landed at, because the landed-criterion skip reads it and treats a unit with no commit
 //! as not landed. The plain clean path is the control row.
+//!
+//! GAP 13 (spec 121 criterion 19),
+//! `a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_lands_the_unit`.
+//! The conductor's own unit row asserts only the marked `Err` `regenerate_conflicted_paths`
+//! returns when the regenerate command's guard probe fails. This drives that `Err` through
+//! `integrate_and_emit`, its infra retry and the wave's settle arm to `run`'s caller: the step
+//! halts with the fault's message and no halt marker, the regenerate command is called once, no
+//! lesson, failure, escalation or infra mark is recorded, the unit's gate verdict is kept, and a
+//! resume regenerates and lands the unit with no attempt charged.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::cli::write_workflow;
 use common::fixtures::bare_deps;
+use common::fixtures::count_of_type;
 use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
+use common::fixtures::gate_outcomes;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
@@ -455,22 +466,14 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     );
 
     // (c) the REAL, currently-committed project workflow.yml - not a synthetic fixture. It
-    // must load through the exact same `config::load` path `main.rs` uses in production, and
-    // its own registered rule (this diff's own worked example) must be exactly what the
-    // committed file states: `docs/audit/*.json` (fully-generated artifacts only, spec 89
-    // op-89-regenerate-rule-narrowed-to-json-artifacts) regenerated via simplification_audit.
+    // must load through the exact same `config::load` path `main.rs` uses in production, and it
+    // registers no regenerable artifact, so every conflict goes to the implementer.
     let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let real_cfg = config_store::load(project_root.to_str().unwrap())
         .expect("the project's own .rigger/workflow.yml must load through the real loader");
     assert!(
-        real_cfg
-            .workflow
-            .regenerate
-            .iter()
-            .any(|r| r.paths == vec!["docs/audit/*.json".to_string()]
-                && r.run.contains("simplification_audit")),
-        "the real committed workflow.yml must register docs/audit/*.json as regenerable via \
-         the simplification_audit regeneration command; got: {:?}",
+        real_cfg.workflow.regenerate.is_empty(),
+        "the real committed workflow.yml registers no regenerable artifact; got: {:?}",
         real_cfg.workflow.regenerate
     );
 }
@@ -1064,7 +1067,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id != "regenerate" {
             return rigger::gate::ExecRunner.run(
                 g,
@@ -1085,10 +1088,10 @@ impl rigger::gate::Runner for RecordingGateRunner {
             gate_scratch.to_string(),
         ));
         std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_PORT\n").unwrap();
-        rigger::gate::GateResult {
+        Ok(rigger::gate::GateResult {
             pass: true,
             evidence: "fake runner: regenerated via the injected port, never a raw shell".into(),
-        }
+        })
     }
 }
 
@@ -1257,7 +1260,7 @@ impl rigger::gate::Runner for BlockingRegenerateGateRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id == "regenerate" {
             self.entered_tx
                 .lock()
@@ -2338,13 +2341,39 @@ fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
     drop(repo);
 }
 
-/// Fails the `"regenerate"` gate id exactly once (a real subprocess-level failure through the
-/// injected `gate::Runner` port, mirroring GAP 4/5's `RecordingGateRunner` family), succeeding
-/// on every call after - one shared instance drives BOTH calls of a two-call resume, so the
-/// SAME flag (never reset) proves the second call genuinely retries rather than being handed a
-/// fresh, unrelated runner.
+/// Fails the `"regenerate"` gate id exactly once through the injected `gate::Runner` port
+/// (mirroring GAP 4/5's `RecordingGateRunner` family): its first call answers the outcome the
+/// runner was built with - a red verdict ([`Self::red_once`]) or a failed guard probe - and
+/// every later call runs for real. One shared instance drives BOTH calls of a two-call resume,
+/// so the SAME taken outcome (never refilled) proves the second call genuinely retries rather
+/// than being handed a fresh, unrelated runner; it counts every `"regenerate"` call it serves.
 struct FailRegenerateOnceRunner {
-    failed_once: Mutex<bool>,
+    first: Mutex<Option<Result<rigger::gate::GateResult, rigger::gate::ProbeFault>>>,
+    regenerate_calls: Mutex<u32>,
+}
+
+impl FailRegenerateOnceRunner {
+    /// A runner whose first `"regenerate"` call answers `first`.
+    fn answering_once(first: Result<rigger::gate::GateResult, rigger::gate::ProbeFault>) -> Self {
+        FailRegenerateOnceRunner {
+            first: Mutex::new(Some(first)),
+            regenerate_calls: Mutex::new(0),
+        }
+    }
+
+    /// A runner whose first `"regenerate"` call is a red verdict: the regenerate command ran
+    /// and failed.
+    fn red_once() -> Self {
+        Self::answering_once(Ok(rigger::gate::GateResult {
+            pass: false,
+            evidence: "simulated crash: regenerate gate failed once".into(),
+        }))
+    }
+
+    /// How many `"regenerate"` calls this runner has served.
+    fn regenerate_calls(&self) -> u32 {
+        *self.regenerate_calls.lock().unwrap()
+    }
 }
 
 impl rigger::gate::Runner for FailRegenerateOnceRunner {
@@ -2359,15 +2388,11 @@ impl rigger::gate::Runner for FailRegenerateOnceRunner {
         store_fence: &str,
         build_env: &rigger::gate::BuildEnv,
         budget: &rigger::budget::BuildBudget,
-    ) -> rigger::gate::GateResult {
+    ) -> Result<rigger::gate::GateResult, rigger::gate::ProbeFault> {
         if g.id == "regenerate" {
-            let mut failed = self.failed_once.lock().unwrap();
-            if !*failed {
-                *failed = true;
-                return rigger::gate::GateResult {
-                    pass: false,
-                    evidence: "simulated crash: regenerate gate failed once".into(),
-                };
+            *self.regenerate_calls.lock().unwrap() += 1;
+            if let Some(first) = self.first.lock().unwrap().take() {
+                return first;
             }
         }
         rigger::gate::ExecRunner.run(
@@ -2423,9 +2448,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
         let driver = confined_conflict_driver(&repo_path);
-        let runner = FailRegenerateOnceRunner {
-            failed_once: Mutex::new(false),
-        };
+        let runner = FailRegenerateOnceRunner::red_once();
         {
             let deps = bare_deps(&store, &driver, &runner, &repo_path);
             let err = run(&cfg, &deps)
@@ -2538,6 +2561,120 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         );
         drop(repo);
     }
+}
+
+/// GAP 13 (spec 121 criterion 19): a failed guard probe on the regenerate command ends the WHOLE
+/// step as a halt. The conductor's own unit row asserts only the marked `Err`
+/// `regenerate_conflicted_paths` returns; this drives that `Err` up through `integrate_and_emit`,
+/// its infra retry and the wave's settle arm to `run`'s caller, beside the red-verdict row 3
+/// fixture above, which takes the same path as an ordinary failure.
+#[test]
+fn a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_lands_the_unit() {
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let cfg = regenerating_cfg(&repo_path);
+    let store = Store::open(":memory:").unwrap();
+    let driver = confined_conflict_driver(&repo_path);
+    let fault = rigger::gate::ProbeFault {
+        guard: "/scratch/regenerate/cargo-target.lock".into(),
+        error: "Permission denied (os error 13)".into(),
+    };
+    let runner = FailRegenerateOnceRunner::answering_once(Err(fault.clone()));
+    {
+        let deps = bare_deps(&store, &driver, &runner, &repo_path);
+        let err = run(&cfg, &deps)
+            .err()
+            .expect("the failed guard probe must end the step with an error");
+        assert_eq!(
+            err.0,
+            fault.to_string(),
+            "the step must end with the fault's own message, its halt marker stripped and no \
+             wave-failure wrapping"
+        );
+    }
+    assert_eq!(
+        runner.regenerate_calls(),
+        1,
+        "a failed probe is never retried: no infra rerun and no second regenerate call"
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    for (what, count) in [
+        (
+            "a lesson",
+            count_of_type(&events, rigger::contextgraph::TYPE_LESSON_LEARNED),
+        ),
+        (
+            "a failed unit",
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+        ),
+        (
+            "an escalated unit",
+            count_of_type(&events, ledger::TYPE_UNIT_ESCALATED),
+        ),
+        (
+            "an infra retry mark",
+            count_status_marker(&events, "infra-retry"),
+        ),
+        (
+            "an infra halt mark",
+            count_status_marker(&events, "infra-halt"),
+        ),
+        (
+            "a regenerate commit",
+            count_status_marker(&events, "integrate-conflict-regenerate-commit"),
+        ),
+    ] {
+        assert_eq!(
+            count, 0,
+            "a halt records {what} for no unit; events: {events:?}"
+        );
+    }
+    assert_recorded_once(
+        &events,
+        "integrate-conflict-regenerate-pending",
+        "the owed regeneration stays recorded for the resume",
+    );
+    assert_eq!(
+        gate_outcomes(&events),
+        vec![("g".to_string(), true)],
+        "the pass's gate verdict stands and the regenerate command records none"
+    );
+    let gen_on_run_branch = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(
+        gen_on_run_branch, "SIBLING_GEN\n",
+        "the halt lands nothing on the run branch"
+    );
+
+    let events_after_resume = resume_lands_unit_a(
+        &cfg,
+        &store,
+        &runner,
+        &repo_path,
+        "the resumed step must land the unit once the probe passes",
+    );
+    assert_eq!(runner.regenerate_calls(), 2);
+    assert_recorded_once(
+        &events_after_resume,
+        "integrate-conflict-regenerate-commit",
+        "the resumed call regenerates exactly once",
+    );
+    assert_eq!(
+        gate_outcomes(&events_after_resume),
+        vec![("g".to_string(), true), ("g".to_string(), true)],
+        "the halted pass's verdict is kept and replayed, never re-recorded; only the post-merge \
+         re-gate adds one"
+    );
+    assert_eq!(
+        count_of_type(
+            &events_after_resume,
+            rigger::contextgraph::TYPE_LESSON_LEARNED
+        ),
+        0,
+        "the resumed step records no lesson for the earlier halt either"
+    );
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(final_gen, "REGENERATED\n");
+    drop(repo);
 }
 
 /// A crash on the append that would durably record `after` while the mutation itself already
@@ -2734,9 +2871,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
     let driver = MixedConflictThenResolveDriver {
         repo: repo_path.clone(),
     };
-    let runner = FailRegenerateOnceRunner {
-        failed_once: Mutex::new(false),
-    };
+    let runner = FailRegenerateOnceRunner::red_once();
     {
         let deps = bare_deps(&store, &driver, &runner, &repo_path);
         let err = match run(&cfg, &deps) {

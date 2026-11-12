@@ -31,6 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use rigger_process::whole_line;
 use serde::Serialize;
 
 use crate::console::unix_seconds;
@@ -50,8 +51,9 @@ use crate::contextgraph::{
 // one of them (in the code below and in `mod tests`'s `use super::*`), it just no longer DEFINES
 // them.
 use crate::contextgraph::query::{
-    bucket_label_index, defs_by_entity_suffix, fold_buckets, member_set, memory_rail_of,
-    neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id, Buckets,
+    bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
+    withheld_reached, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -65,6 +67,8 @@ pub use crate::contextgraph::query::{
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, run, spawn};
+use rigger_domain::code_view::Tests;
+use rigger_domain::composed::Label;
 /// The supervised child-process guard, re-exported from `rigger-driver` under its historical path.
 pub use rigger_driver::reaped_child::ReapedChild;
 
@@ -189,21 +193,18 @@ fn console_font_response(suffix: &str) -> Response {
 /// The default loopback port for `rigger dash` when `--port` is not given.
 pub const DEFAULT_PORT: u16 = 7420;
 
-/// The first bindable loopback port at or above `start` (pass [`DEFAULT_PORT`]).
+/// A loopback listener bound on the first free port at or above `start` (pass [`DEFAULT_PORT`]).
 ///
 /// The always-on dash (spec 19b, unit 1) auto-starts on `DEFAULT_PORT` "or the next free
 /// port so concurrent harnesses each get their own": the first harness binds `DEFAULT_PORT`,
 /// a second finds it busy and takes the next free port, so two harnesses (e.g. two repos)
-/// never fight over one port. Each candidate is bound and immediately released to test it, so
-/// the returned port is free at probe time. A concurrent process could still claim it in the
-/// narrow window before the dash re-binds, in which case the dash's OWN `bind` fails loudly
-/// at startup rather than silently serving nothing - the safe direction (the same ephemeral
-/// probe pattern the reaping test's `free_loopback_port` uses). `std`-only, so it is
-/// identical on the default and `--no-default-features` lanes.
-pub fn free_port_from(start: u16) -> io::Result<u16> {
+/// never fight over one port. The listener is returned still bound, so the process that searched
+/// is the one that serves: no other process can claim the port between the choice and the bind.
+/// `std`-only, so it is identical on the default and `--no-default-features` lanes.
+pub fn bind_first_free_from(start: u16) -> io::Result<TcpListener> {
     for port in start..=u16::MAX {
         if let Ok(listener) = TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))) {
-            return listener.local_addr().map(|addr| addr.port());
+            return Ok(listener);
         }
     }
     Err(io::Error::new(
@@ -220,27 +221,9 @@ pub fn free_port_from(start: u16) -> io::Result<u16> {
 /// endpoint - the recognition rides the root page every dash already serves.
 pub const DASH_HEADER: &str = "X-Rigger-Dash";
 
-/// The response header carrying the pid of whichever process is ACTUALLY holding the accept
-/// loop that answered this response (spec 62 round 2:
-/// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Every dash response carries it
-/// (see `Response::write_to`), stamped fresh from `std::process::id()` at write time by the
-/// process that is genuinely serving - never a value plumbed in from outside. This is what lets
-/// [`dash_serving_pid_on`] answer "who is REALLY serving this port" directly from the wire,
-/// rather than a caller having to assume its own locally-spawned child is the one that bound it:
-/// in a fixed-address singleton race (spec 50, criterion 4) the LOSING side's own spawned
-/// `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits without ever
-/// binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING is serving,
-/// never that it was the caller's own spawn - the caller needs the served pid itself to attribute
-/// a marker correctly.
-pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
-
 /// Connects to loopback `port`, issues a bare `GET /`, and reads the response HEAD (the status
 /// line and headers) into a buffer - the ONE probe-a-loopback-port-for-a-bounded-dash-response
-/// implementation both [`dash_serving_on`] and [`dash_serving_pid_on`] drive
-/// (arch-u62c1-dash-serving-pid-on-duplicates-the-probe-read-loop, spec 62 round 2): before this
-/// extraction each carried its own copy of this exact connect/write-timeout/deadline/cap/read-loop
-/// machinery, a second parallel implementation of the same concern the one-mutation-authority
-/// rule exists to prevent.
+/// implementation.
 ///
 /// Bounded THREE independent ways so a dead, slow, or hostile holder can NEVER stall the caller:
 ///   * an overall wall-clock DEADLINE across the whole head - the per-read timeout is reset to
@@ -255,9 +238,7 @@ pub const DASH_HEADER_PID: &str = "X-Rigger-Dash-Pid";
 ///
 /// `stop_early` is consulted after every chunk arrives; the instant it returns `true` the
 /// accumulated head is returned WITHOUT waiting for the rest of the header block - this is what
-/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`], while
-/// [`dash_serving_pid_on`] (which needs the FULL block, since [`DASH_HEADER_PID`] can arrive on a
-/// LATER line) passes a predicate that never fires early.
+/// lets [`dash_serving_on`] short-circuit the moment it recognizes [`DASH_HEADER`].
 ///
 /// Returns `Err(ProbeMiss::Silent)` when the port accepted the connection (or the connect itself
 /// timed out) but no header block arrived before the deadline - a holder that is alive but busy,
@@ -406,81 +387,6 @@ pub fn dash_serving_on(port: u16) -> bool {
     dash_answer_on(port) == DashAnswer::Serving
 }
 
-/// The pid ACTUALLY serving loopback `port` right now, or `None` when no rigger dash answers
-/// there (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). Confirms
-/// dash-ness the SAME way [`dash_serving_on`] does - the [`DASH_HEADER`] marker must be present,
-/// so an unrelated listener holding the port is never mistaken for a dash naming a pid - and
-/// then reads [`DASH_HEADER_PID`]'s value off that SAME response. This is what lets a caller ask
-/// the port itself who is REALLY serving it, instead of assuming its own locally-spawned child
-/// is the one that bound it: in a fixed-address singleton race (spec 50, criterion 4) the LOSING
-/// side's own spawned `rigger dash` recognizes `bind_singleton`'s `AlreadyServing` arm and exits
-/// without ever binding, so `dash_serving_on(port)` answering `true` proves only that SOMETHING
-/// is serving, never that it was the caller's own spawn.
-///
-/// `None` is returned not only when nothing (or something non-dash) answers, but ALSO in the
-/// STEADY STATE when a genuine rigger dash answers [`DASH_HEADER`] but never sends
-/// [`DASH_HEADER_PID`] at all - a build that predates this header, or a foreign dash-shaped
-/// responder. Callers must never treat that `None` as narrowly timing-related and fall back to a
-/// GUESSED value of their own, the way a round-2 draft of `spawn_run_dashboard_detached` once did
-/// (spec 62 round 2 fix point, adj-u62c1r2-verdict-reject-version-skew-fallback - rejected): the
-/// ONLY production caller instead records the documented [`UNATTRIBUTED_PID`] sentinel on this
-/// `None`, never a value it cannot prove.
-///
-/// Shares [`probe_dash_head`] with [`dash_serving_on`] but passes a `stop_early` that never fires:
-/// [`DASH_HEADER_PID`] can arrive on a LATER line than [`DASH_HEADER`], so extracting a value
-/// needs the full header block every time, unlike `dash_serving_on`'s early exit. Bounded
-/// identically to `dash_serving_on` otherwise (the same connect/write timeouts, the same overall
-/// deadline, and the same total-byte cap, because both run through the same probe), so this can
-/// never hang or misbehave where that proven probe would not - a dead, slow, or hostile holder
-/// still resolves to `None` within the same bound.
-pub fn dash_serving_pid_on(port: u16) -> Option<u32> {
-    let dash_needle = format!("{DASH_HEADER}:").to_ascii_lowercase();
-    let pid_needle = format!("{DASH_HEADER_PID}:").to_ascii_lowercase();
-    let head = probe_dash_head(port, |_| false).ok()?;
-    if !head_has_header_line(&head, dash_needle.as_bytes()) {
-        return None; // not a rigger dash at all - never guess a pid from an unrelated listener
-    }
-    header_line_value(&head, pid_needle.as_bytes())?
-        .parse()
-        .ok()
-}
-
-/// The value substring of the FIRST line in `head` whose NAME matches `needle_lower` (e.g.
-/// `x-rigger-dash-pid:`), trimmed - or `None` when no line matches. Case-insensitive and
-/// anchored to a line start, mirroring [`head_has_header_line`]'s own matching exactly so the
-/// two can never disagree about which line is "the" header.
-fn header_line_value<'a>(head: &'a [u8], needle_lower: &[u8]) -> Option<&'a str> {
-    if needle_lower.is_empty() {
-        return None;
-    }
-    let mut start = 0usize;
-    loop {
-        if start >= head.len() {
-            return None;
-        }
-        let line_end = head[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map(|rel| start + rel)
-            .unwrap_or(head.len());
-        let line = &head[start..line_end];
-        if line.len() >= needle_lower.len()
-            && line[..needle_lower.len()]
-                .iter()
-                .zip(needle_lower)
-                .all(|(b, n)| b.to_ascii_lowercase() == *n)
-        {
-            return std::str::from_utf8(&line[needle_lower.len()..])
-                .ok()
-                .map(str::trim);
-        }
-        if line_end >= head.len() {
-            return None;
-        }
-        start = line_end + 1;
-    }
-}
-
 /// Whether any LINE of the HTTP response head in `head` BEGINS with `needle_lower` - the
 /// lowercased header-name prefix (e.g. `x-rigger-dash:`). The match is case-insensitive and
 /// ANCHORED to a line start (byte 0, or just after a `\n`), so the marker is recognized only as a
@@ -536,7 +442,7 @@ pub enum SingletonBind {
 ///     operator resolves with an explicit `--port`, never a silent drift to another port.
 ///
 /// This is the one place the fixed-address policy lives: the address in / the address out, or a
-/// loud conflict; it never searches upward the way [`free_port_from`] does. `std`-only, so it
+/// loud conflict; it never searches upward the way [`bind_first_free_from`] does. `std`-only, so it
 /// holds identically on the default and `--no-default-features` lanes.
 pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
     match TcpListener::bind(addr) {
@@ -553,20 +459,18 @@ pub fn bind_singleton(addr: SocketAddr) -> io::Result<SingletonBind> {
 }
 
 /// The per-project record of the run dashboard currently serving a project: the loopback
-/// PORT it bound and the PID of its process. The step drive path writes it when it starts a
-/// dash and reads it before starting one, so at most one run dashboard serves a project at a
-/// time (spec 39, criterion 1: idempotent start on step). It sits alongside the dash-url
-/// breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so it
-/// round-trips with no serde and compiles identically in BOTH feature lanes.
+/// PORT it bound and the PID of its process. `rigger status` ([`dash_status`]) and `rigger watch`
+/// read it to report whether that dash still answers. It sits alongside the
+/// dash-url breadcrumb `rigger status` already reads, and is a plain `port\npid` text record - so
+/// it round-trips with no serde and compiles identically in BOTH feature lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DashMarker {
     /// The loopback port the recorded dash bound.
     pub port: u16,
     /// The PID of the recorded dash process. Informational only for display (e.g. `rigger
-    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness /
-    /// idempotency decision made OVER a marker ([`dash_start_needed`]'s `still_serving`,
-    /// [`dash_status`]) re-probes the marker's PORT, never this field, so a stale or
-    /// unattributable value here can never wrongly suppress or fabricate a start. May be
+    /// watch`'s dead-dash report naming which pid stopped answering) - every liveness
+    /// decision made OVER a marker ([`dash_status`]) re-probes the marker's PORT, never this
+    /// field, so a stale or unattributable value here can never fabricate a liveness verdict. May be
     /// [`UNATTRIBUTED_PID`] when the port was confirmed serving but the real serving process
     /// could not be identified - never a guessed real pid.
     pub pid: u32,
@@ -574,27 +478,10 @@ pub struct DashMarker {
 
 /// The documented sentinel [`DashMarker::pid`] value recorded when a dash is confirmed serving
 /// a port but the real serving process's pid could not be attributed (spec 62 round 4,
-/// adj-u62c1r3-verdict-reject-idempotency-regression) - `spawn_run_dashboard_detached`'s only
-/// production write site for it. `0` is never a real OS pid (the kernel reserves it; no process
-/// is ever assigned it), so it can never collide with, or be mistaken for, an actual serving
-/// process, so a liveness check naturally reads it as not alive - the safe direction.
-///
-/// Recording THIS rather than refusing to write any marker at all is what keeps the step path's
-/// idempotent no-op working even when the winning dash's pid can never be named: the marker's
-/// PORT (which `dash_start_needed`/`dash_marker_serving` actually probe; neither ever reads this
-/// pid) is enough for the next `step` to recognize this dash as already serving. A round-3 fix
-/// that instead wrote NO marker at all in this exact case regressed spec 39 criterion 1's
-/// no-op-on-later-steps invariant, repeating the full spawn/probe/attribute cycle on every later
-/// step forever.
-///
-/// Self-heal (spec 62 criterion 2, u62c2) is scoped to DEAD or stale markers only
-/// (`d-u62c1-unattributable-serving-disposition`): it never proactively revisits a marker whose
-/// port is STILL serving, sentinel pid or not - `dash_start_needed`'s still-serving short-circuit
-/// answers `false` before `start()` is ever called, so nothing rewrites the on-disk record while
-/// THIS exact dash instance keeps answering. Correction to a real pid, if one ever becomes
-/// attributable, can only happen on this same instance's NEXT full stop-then-restart cycle (a
-/// fresh `start()` call reached once the port genuinely stops answering) - never while it keeps
-/// serving.
+/// adj-u62c1r3-verdict-reject-idempotency-regression). `0` is never a real OS pid (the kernel
+/// reserves it; no process is ever assigned it), so it can never collide with, or be mistaken for,
+/// an actual serving process, so a liveness check naturally reads it as not alive - the safe
+/// direction. A reader filters it out rather than naming pid 0.
 pub const UNATTRIBUTED_PID: u32 = 0;
 
 /// The one shared filter for every DISPLAY site that renders a marker's raw pid (spec 62 round
@@ -621,9 +508,8 @@ impl DashMarker {
     }
 
     /// Parse a marker from its on-disk record, or `None` when it is malformed. A corrupt or
-    /// truncated marker reads as "no dash recorded" so the step path starts a fresh dash
-    /// rather than trusting garbage - the safe direction (start-if-unsure never suppresses a
-    /// real dash).
+    /// truncated marker reads as "no dash recorded" rather than trusting garbage - the safe
+    /// direction (start-if-unsure never suppresses a real dash).
     pub fn parse(s: &str) -> Option<DashMarker> {
         let mut lines = s.lines();
         let port = lines.next()?.trim().parse().ok()?;
@@ -638,8 +524,8 @@ impl DashMarker {
     }
 
     /// Write the marker to `path`, overwriting any prior record. Best-effort at the call
-    /// site: a failed write only means a later step cannot discover this dash and may start
-    /// a second one, never a broken step.
+    /// site: a failed write only means a later reader cannot discover this dash and a later
+    /// start may start a second one, never a broken run.
     pub fn write(&self, path: &Path) -> io::Result<()> {
         std::fs::write(path, self.serialize())
     }
@@ -767,13 +653,11 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// The raw `(pid, rendered message)` pair [`describe_held_port_if_confirmed`] resolves from a
 /// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
 /// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
-/// discovered pid ITSELF, not only the human-readable message about it. The one such caller is
-/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`, extracted out of `spawn_run_dashboard_detached`
-/// in this same round - see that function's own doc, adj-u62c3r4-independently-confirmed-stale-caller-doc):
-/// when its own `wait_for_dash_bind` gives up, it must tell a genuinely competing external process
-/// apart from its OWN just-spawned child having merely bound the port slower than the startup
-/// window allows - a distinction only the raw pid (compared against the spawn's already-known
-/// pid, its `spawned_pid` parameter), never the rendered message text, can carry.
+/// discovered pid ITSELF, not only the human-readable message about it: a caller that spawned
+/// its own dash and saw no bind within its startup window must tell a genuinely competing
+/// external process apart from its OWN just-spawned child having merely bound the port slower
+/// than that window allows - a distinction only the raw pid (compared against the spawn's
+/// already-known pid), never the rendered message text, can carry.
 /// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
 /// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
 /// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
@@ -797,25 +681,20 @@ pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
 /// `pub` (cross-crate: `src/main.rs` is a separate binary crate that depends on this library) -
 /// its production caller chain is [`describe_held_port`] -> `cmd_dash`'s manual `rigger dash` CLI
 /// arm (`src/cli/dashboard.rs`), reached only AFTER `bind_singleton` has itself already confirmed a
-/// genuine `AddrInUse` from that call's OWN bind attempt. This function's `None`-gates-a-claim
-/// discipline was originally written for a DIFFERENT caller - the step-path auto-start, which has
-/// no such upstream confirmation available (its bind attempt runs inside a detached child whose
-/// `io::Error` never reaches the parent, `Stdio::null()`, spec 44) - but round 4
-/// (adj-u62c3r3-verdict-reject-child-self-attribution) rewired that caller,
-/// `wait_for_dash_bind_or_diagnose` (`src/cli/run.rs`), to call [`held_port_holder`] directly instead
-/// of through this function, since it also needs the raw pid (to rule out self-attribution; see
-/// [`held_port_holder`]'s own doc), not just a rendered message. The gate itself did not move -
-/// it lives in [`held_port_holder`], which both callers ultimately share - only which named
-/// function each caller reaches it through did. This wrapper is kept for
-/// [`describe_held_port`]'s already-confirmed case and any future confirmed-precondition caller
-/// that only needs the message, never the pid.
+/// genuine `AddrInUse` from that call's OWN bind attempt. The `None`-gates-a-claim discipline
+/// lives in [`held_port_holder`], so a caller with no such upstream confirmation (a bind attempt
+/// inside a detached child whose `io::Error` never reaches the parent, `Stdio::null()`, spec 44)
+/// reaches the same gate by calling [`held_port_holder`] directly when it also needs the raw pid
+/// (to rule out self-attribution; see [`held_port_holder`]'s own doc). This wrapper serves
+/// [`describe_held_port`]'s already-confirmed case and any confirmed-precondition caller that
+/// only needs the message, never the pid.
 pub fn describe_held_port_if_confirmed(addr: SocketAddr) -> Option<String> {
     held_port_holder(addr).map(|(_, msg)| msg)
 }
 
 /// The loopback port embedded in a recorded dash URL (`http://127.0.0.1:<port>/`, the only
-/// shape any dash-starting path writes - [`crate`]'s `spawn_run_dashboard` and
-/// `spawn_run_dashboard_detached` both format it this way). `None` for anything that does not
+/// shape the dash-starting path writes - `src/cli/run.rs`'s `spawn_run_dashboard` formats it
+/// this way). `None` for anything that does not
 /// parse as `scheme://host:port...` with a valid `u16` port, so a malformed or foreign URL is
 /// treated as unparseable rather than guessed at - the safe direction [`dash_status`] takes for
 /// every other ambiguous input.
@@ -860,8 +739,8 @@ pub enum DashStatus {
     /// A URL is recorded and TRUSTED: either a probe PROVES it is still serving, or no marker
     /// exists to check against and it is left unverified. An absent marker reads as
     /// "unverifiable", never "dead" - the marker LIFECYCLE is a separate concern (spec 62), and
-    /// more than one dash-starting path (the guard-bound `rigger run` / `rigger serve` dash)
-    /// records a URL but no marker at all, so treating "no marker" as "dead" would falsely
+    /// `rigger run` removes its marker when it reaps its dash while the URL stays recorded, so
+    /// treating "no marker" as "dead" would falsely
     /// report a genuinely live dash as down.
     Serving(String),
     /// A probe PROVED the recorded URL's own port is not serving - the lie this criterion
@@ -896,16 +775,12 @@ pub enum DashStatus {
 /// Decide [`DashStatus`] from the two on-disk breadcrumbs and an injected port-serving probe
 /// (spec 69, criterion 4). Pure, so both the trusted-URL and the caught-lie outcomes are
 /// provable without a real dashboard process; the production caller (`rigger status`) injects
-/// [`dash_answer_on`] directly - the SAME underlying probe the step path's own idempotent-start
-/// decision ([`dash_start_needed`]) verifies through, so `rigger status` and the step path can
-/// never disagree about whether a recorded dash is alive.
+/// [`dash_answer_on`] directly.
 ///
 /// Round 2 (adv-u69c4-dash-status-verifies-wrong-port): a marker only PROVES `recorded_url`'s
-/// liveness when its port MATCHES the port embedded in that URL - two independent
-/// dash-starting paths write `dash.url` and `dash.marker` separately (one writes a URL alone
-/// on a free-searched port, the other writes both together on a fixed port) and neither is
-/// ever cleared, so a project that has used both can be left with breadcrumbs naming two
-/// different dashes.
+/// liveness when its port MATCHES the port embedded in that URL - `dash.url` and `dash.marker`
+/// are separate breadcrumbs and neither is ever cleared, so a project can be left with
+/// breadcrumbs naming two different dashes.
 ///
 /// Round 3 (adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url): the round-2 fix stopped a
 /// mismatched marker's OWN liveness standing in as proof about `recorded_url`, but then fell
@@ -915,13 +790,12 @@ pub enum DashStatus {
 /// THIS url. So a genuinely dead `recorded_url` paired with a mismatched-but-otherwise-live
 /// marker sailed straight through as trusted, unverified. The fix: probe `url_port(&url)`
 /// itself directly whenever no MATCHING marker exists to prove it. A marker that is truly
-/// ABSENT still skips the probe and stays trusted unconditionally (the guard-bound `rigger run`
-/// / `rigger serve` dash never writes one at all, so treating its absence as suspicious would
-/// falsely distrust the one path that is documented to have none - spec 62 owns making that
-/// path write one, not this criterion). A mismatched marker no longer gets that free pass: its
-/// port differs from `port`, so the branch below probes `port` (the URL's own) regardless, and
-/// only a genuinely matching marker's pid is ever named in the [`DashStatus::NotServing`] this
-/// returns - a mismatched marker's pid is never printed as though it belonged to this URL.
+/// ABSENT still skips the probe and stays trusted unconditionally (the `rigger run` dash writes
+/// none, so treating its absence as suspicious would falsely distrust every run's dash). A
+/// mismatched marker gets no such free pass: its port differs from `port`, so the branch below
+/// probes `port` (the URL's own) regardless, and only a genuinely matching marker's pid is ever
+/// named in the [`DashStatus::NotServing`] this returns - a mismatched marker's pid is never
+/// printed as though it belonged to this URL.
 pub fn dash_status(
     recorded_url: Option<String>,
     marker: Option<DashMarker>,
@@ -959,35 +833,15 @@ pub fn dash_status(
             // Round 5 (adj-u62c1r4-verdict-reject-sentinel-pid-leaks-to-status): filtered HERE, at
             // the display construction site, never inside `pid_if_port_matches` itself, via the one
             // shared `displayable_pid` (see its doc for why). A pid of `UNATTRIBUTED_PID` names no
-            // real process - `spawn_run_dashboard_detached` (`src/cli/run.rs`) records it only to keep
-            // the marker's PORT usable for idempotency, and documents that no reader may treat it as
-            // a real pid. Printing it unfiltered here would render "marker names dead pid 0" for a
-            // process that was never assigned that pid - a literal violation of spec 69 criterion 4's
-            // "never lies about the dash" text.
+            // real process - a marker records it only to keep its PORT usable for idempotency, and
+            // `UNATTRIBUTED_PID`'s doc says no reader may treat it as a real pid. Printing it
+            // unfiltered here would render "marker names dead pid 0" for a process that was never
+            // assigned that pid - a literal violation of spec 69 criterion 4's "never lies about
+            // the dash" text.
             DashStatus::NotServing {
                 pid: displayable_pid(pid),
             }
         }
-    }
-}
-
-/// The idempotency decision for the step drive path (spec 39, criterion 1): given the
-/// per-project [`DashMarker`] recorded on disk (if any) and a predicate reporting whether a
-/// recorded dash is STILL serving, returns `true` iff the step must START a run dashboard -
-/// i.e. NONE is already serving. A marker naming a still-serving dash short-circuits to
-/// `false`, so the second and every later `step` of a run is a no-op, never a second dash
-/// or a port fight. `still_serving` is injected so the decision is provable without a real
-/// dash process; production passes a probe over [`dash_serving_on`] (a marker left by a
-/// self-reaped or pid-recycled dash must never masquerade as still serving on a bare pid
-/// check) - the SAME underlying probe [`dash_status`]'s truthful presentation verifies
-/// through, so the two decisions can never disagree about whether a recorded dash is alive.
-pub fn dash_start_needed(
-    marker: Option<DashMarker>,
-    still_serving: impl Fn(DashMarker) -> bool,
-) -> bool {
-    match marker {
-        Some(m) => !still_serving(m),
-        None => true,
     }
 }
 
@@ -1023,8 +877,8 @@ pub fn dash_start_needed(
 ///   singleton SURVIVE one project's run ending while another's is still live: that other instance
 ///   keeps the count positive.
 /// - `ever_seen_live`: whether the watcher has observed a live instance on any prior poll. This is
-///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton the step
-///   path just ensured reads zero live instances until its ensuring run writes its registry entry,
+///   the startup-race guard, the direct analogue of spec 39's `run_started`: a singleton a run
+///   just started reads zero live instances until that run writes its registry entry,
 ///   and it must NOT reap on those first empty polls before the entry lands. Once any live instance
 ///   has been seen, a return to zero is genuine machine idle and reaps. The safe direction on
 ///   uncertainty (never yet seen a live instance) is to keep serving. Scoped to the REGISTRY only
@@ -1032,7 +886,7 @@ pub fn dash_start_needed(
 ///   (an absent marker degrades to `agent_live: false`, the same safe-to-check-again-next-poll
 ///   default the registry's own absent-directory read already uses).
 /// - `agent_live`: whether the SAME liveness authority `rigger status` presents - a per-spawn
-///   `agent-live` marker ([`crate::liveness::any_marker_fresh`]) - shows a fresh signal right now,
+///   `agent-live` marker ([`rigger_driver::liveness::any_marker_fresh`]) - shows a fresh signal right now,
 ///   for the launching project OR (spec 62 criterion 5 round 2) ANY other currently- or
 ///   formerly-registered project the watcher has ever seen (`watch_and_self_reap_on_idle`'s own
 ///   doc comment covers the per-project derivation and its `known_roots` durability). `true`
@@ -1056,11 +910,11 @@ pub fn should_reap_singleton(
     ever_seen_live && live_instances == 0 && !agent_live
 }
 
-/// What the dash's data provider yields per request: the run's events, its context subgraph,
-/// this run's progress reports (spec 14), and each in-flight spawn's liveness-marker age.
-/// Factored into a `type` so the provider signature stays readable across the server, its
-/// callers, and the tests.
-pub type DashInputs = (Vec<Event>, Graph, Vec<Event>, HashMap<String, u64>);
+/// What the dash's data provider yields per request: the run's events, its context subgraph with
+/// what the read that drew it describes, this run's progress reports (spec 14), and each in-flight
+/// spawn's liveness-marker age. Factored into a `type` so the provider signature stays readable
+/// across the server, its callers, and the tests.
+pub type DashInputs = (Vec<Event>, GraphRead, Vec<Event>, HashMap<String, u64>);
 
 /// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
 /// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
@@ -1251,6 +1105,27 @@ pub struct GateView {
 pub struct GraphView {
     pub decisions: Vec<DecisionView>,
     pub findings: Vec<FindingView>,
+    /// What the read these were drawn from describes (spec 6.1), or why it read no graph; absent
+    /// when no store was opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<GraphLabelView>,
+}
+
+/// A [`GraphLabel`] on the wire: `{"read": "<label>"}` or `{"unread": "<reason>"}`.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphLabelView {
+    Read(String),
+    Unread(String),
+}
+
+impl From<&GraphLabel> for GraphLabelView {
+    fn from(label: &GraphLabel) -> Self {
+        match label {
+            GraphLabel::Read(l) => GraphLabelView::Read(l.to_string()),
+            GraphLabel::Unread(reason) => GraphLabelView::Unread(reason.clone()),
+        }
+    }
 }
 
 /// A decision node; `superseded` is true when a currently-valid `SUPERSEDES` edge points
@@ -1389,7 +1264,7 @@ pub struct TreeNode {
     /// The node's display label (spec id, unit id, stage name, role, or agent handle).
     pub label: String,
     /// The spine level: `spec` | `unit` | `stage` | `role` | `agent` | `driver`. A `driver`
-    /// node is the collapsed courier line for a driver-run step (Gates, Integrate).
+    /// node is the single collapsed line for a stage the driver runs itself (Gates, Integrate).
     pub kind: String,
     /// The node's live status, rolled up from its subtree (`running` / `done` / `failed`
     /// for the machinery levels; the unit's own live status - `building` / `reviewing` /
@@ -1494,6 +1369,7 @@ pub struct ConsoleSnapshotView {
 pub fn build_state(
     events: &[Event],
     graph: &Graph,
+    graph_label: Option<&GraphLabel>,
     include_events: bool,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
@@ -1600,7 +1476,10 @@ pub fn build_state(
         blockers,
         step,
         activity,
-        graph: build_graph_view(graph),
+        graph: GraphView {
+            label: graph_label.map(GraphLabelView::from),
+            ..build_graph_view(graph)
+        },
         tree,
         events: events_view,
         release_ready,
@@ -1642,6 +1521,7 @@ fn build_graph_view(graph: &Graph) -> GraphView {
     GraphView {
         decisions,
         findings,
+        label: None,
     }
 }
 
@@ -1757,12 +1637,13 @@ fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
     let buckets = Buckets::new(graph, lens);
     let bucket_label = bucket_label_index(graph, &buckets);
-    let (clusters, edges) = fold_buckets(
+    let (mut clusters, edges) = fold_buckets(
         members.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
         &bucket_label,
     );
+    count_tests(&mut clusters, graph, &buckets);
     // Spec 55 c2, the EMPTY cell: when NO member folds into a derived (community/concept) bucket, the
     // cell is defined-but-empty. The kind-fallback clusters above still render (criterion 1, nothing
     // dropped); this message is the additive caption the panel shows. A single member with a derived
@@ -1979,7 +1860,7 @@ pub fn graph_json(
 // ---------------------------------------------------------------------------
 // The DIRECTED-CALL views (spec 52 c4): `/api/graph?view=calls&dir=down|up|both`. A second seeded
 // branch beside the neighborhood, dispatching to the store-side directed traversal
-// `Projection::calls` through the SAME spec-45 lazy direct-projection provider - never the state
+// `ContextGraph::calls` through the SAME spec-45 lazy direct-projection provider - never the state
 // poll, never a second traversal implementation. The response reuses the [`Neighborhood`] shape with
 // the additive `layer`/`frontier`/`back`/`referenced_not_called`/`dir` fields, so the layered
 // left-to-right renderer draws it; an absent `view` keeps the neighborhood byte-identical.
@@ -2032,8 +1913,8 @@ fn call_edge_view(ce: &crate::contextgraph::CallEdge) -> NeighborhoodEdge {
     NeighborhoodEdge {
         from: ce.edge.from.clone(),
         to: ce.edge.to.clone(),
-        rel: ce.edge.rel.clone(),
-        tier: ce.edge.tier.clone(),
+        rel: ce.edge.rel.to_string(),
+        tier: ce.edge.tier.to_string(),
         back: ce.back,
     }
 }
@@ -2106,7 +1987,7 @@ fn calls_view(
                 .entry((
                     ce.edge.from.clone(),
                     ce.edge.to.clone(),
-                    ce.edge.rel.clone(),
+                    ce.edge.rel.to_string(),
                 ))
                 .or_insert_with(|| call_edge_view(ce));
         }
@@ -2169,9 +2050,10 @@ fn calls_view(
 /// neighborhood seed (a code-entity id carries `::` and `/`); an empty or missing seed degrades to
 /// an empty view (the traversal seeds on real nodes only), never an error. `instance` is the
 /// spec-50 attach selector threaded to the provider so the walk opens the SELECTED instance's store.
-fn calls_route<G>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
+fn calls_route<G, C>(instance: Option<&str>, target: &str, calls_provider: &G) -> Option<Response>
 where
-    G: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    G: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
     if query_param(target, "view").map(percent_decode).as_deref() != Some("calls") {
         return None;
@@ -2190,22 +2072,29 @@ where
         .map(percent_decode)
         .unwrap_or_else(|| TIER_INFERRED.to_string());
     let dir = parse_call_dir(query_param(target, "dir").map(percent_decode).as_deref());
+    // The caller refuses a malformed `tests=` before this runs.
+    let tests = tests_param(target).unwrap_or_default();
 
-    let down = matches!(dir, CallDir::Down | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Down, depth, &floor));
-    let up = matches!(dir, CallDir::Up | CallDir::Both)
-        .then(|| calls_provider(instance, &seeds, Direction::Up, depth, &floor));
+    let walk = |direction| -> CallsRead {
+        calls_provider(instance, &seeds, direction, depth, &floor, tests).into()
+    };
+    let down = matches!(dir, CallDir::Down | CallDir::Both).then(|| walk(Direction::Down));
+    let up = matches!(dir, CallDir::Up | CallDir::Both).then(|| walk(Direction::Up));
 
-    let view = calls_view(down.as_ref(), up.as_ref(), &seed, depth);
+    let view = calls_view(
+        down.as_ref().map(|r| &r.calls),
+        up.as_ref().map(|r| &r.calls),
+        &seed,
+        depth,
+    );
+    let labels = [down, up].into_iter().flatten().filter_map(|r| r.label);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
     // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
-    match serde_json::to_string(&view) {
-        Ok(body) => Some(Response::rendered(200, JSON_CONTENT_TYPE, body)),
-        Err(e) => Some(Response::text(
-            500,
-            &format!("dash: calls projection failed: {e}"),
-        )),
-    }
+    let response = match serde_json::to_string(&view) {
+        Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
+        Err(e) => Response::text(500, &format!("dash: calls projection failed: {e}")),
+    };
+    Some(response.labelled(labels))
 }
 
 // ---------------------------------------------------------------------------
@@ -2218,16 +2107,15 @@ where
 /// Project the run into the tree the dash renders as its SPINE. One root per spec (units
 /// group by their id's spec prefix); under each unit its present lifecycle stages; under each
 /// worker stage the roles; under each role its agents (one per recorded spawn). `Gates` and
-/// `Integrate` are run by the stepwise driver itself (no worker agent), so each collapses to a
-/// single `driver` line instead of a node per courier step.
+/// `Integrate` are run by the driver itself (no worker agent), so each collapses to a single
+/// `driver` line instead of a node per sub-step.
 ///
 /// Pure and side-effect free: it reads the already-projected `run`, the already-classified
 /// live `blockers` (so a unit's status is the SAME line `rigger status` shows, never
 /// re-derived here), and the recorded spawns in `events`. A spawn with no result - or whose
-/// LATEST result is a step-synthesized liveness fault (a re-park the driver treats as still
-/// hung) - is RUNNING, and the whole path down to it is marked auto-expand; its answered /
-/// errored state is read per-spawn from `spawn::result_of` (last-write-wins), never a second
-/// fold over the raw event stream.
+/// LATEST result is a liveness fault (the host launches such a spawn again) - is RUNNING, and the
+/// whole path down to it is marked auto-expand; its answered / errored state is read per-spawn from
+/// `spawn::result_of` (last-write-wins), never a second fold over the raw event stream.
 pub fn build_run_tree(
     events: &[Event],
     run: &ledger::RunState,
@@ -2486,9 +2374,8 @@ fn role_stage(
     }
 }
 
-/// A driver-run stage (`Gates` / `Integrate`): the stepwise driver runs it with no worker
-/// agent, so its couriers collapse to a SINGLE `driver` line rather than one node per courier
-/// step - the spec-30 "step couriers collapse to a single driver line" behavior.
+/// A driver-run stage (`Gates` / `Integrate`): the driver runs it with no worker agent, so it
+/// collapses to a SINGLE `driver` line rather than one node per sub-step (spec 30).
 fn driver_stage(label: &str, driver_status: &str) -> TreeNode {
     let driver = TreeNode {
         label: "driver".into(),
@@ -2900,7 +2787,7 @@ fn now_unix() -> u64 {
 /// feed the live per-agent `activity` view; both empty is fine (the view is then empty).
 pub fn state_json(
     events: &[Event],
-    graph: &Graph,
+    graph: LabelledGraph<'_>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -2909,7 +2796,8 @@ pub fn state_json(
 ) -> Result<String, serde_json::Error> {
     serde_json::to_string(&build_state(
         events,
-        graph,
+        graph.graph,
+        graph.label,
         false,
         progress_events,
         liveness_ages,
@@ -3018,7 +2906,7 @@ pub fn console_page() -> String {
 /// the `<script>` element, so no string field it carries can break out of that container.
 pub fn render_export(
     events: &[Event],
-    graph: &Graph,
+    graph: LabelledGraph<'_>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -3027,7 +2915,8 @@ pub fn render_export(
 ) -> Result<String, serde_json::Error> {
     let json = serde_json::to_string(&build_state(
         events,
-        graph,
+        graph.graph,
+        graph.label,
         true,
         progress_events,
         liveness_ages,
@@ -3080,6 +2969,9 @@ pub struct Response {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// What the graph reads behind a graph view describe, one per open, which the response states
+    /// in its [`GRAPH_LABEL_HEADER`] and [`GRAPH_ERROR_HEADER`] for the page's header to show.
+    pub graph_labels: Vec<GraphLabel>,
 }
 
 impl Response {
@@ -3089,6 +2981,7 @@ impl Response {
             status,
             content_type,
             body,
+            graph_labels: Vec::new(),
         }
     }
     /// A rendered text body of `content_type` ([`HTML_CONTENT_TYPE`] for a page,
@@ -3112,6 +3005,36 @@ impl Response {
         Self::new(status, content_type, body.to_vec())
     }
 
+    /// This response, stating what the graph reads behind it describe.
+    fn labelled(mut self, labels: impl IntoIterator<Item = GraphLabel>) -> Self {
+        self.graph_labels.extend(labels);
+        self
+    }
+
+    /// The graph-label header lines: the distinct labels of the reads that described the graph,
+    /// and the reasons of those that could not read one, each percent-encoded as one line.
+    fn graph_label_lines(&self) -> String {
+        let mut described: Vec<String> = Vec::new();
+        let mut unread: Vec<String> = Vec::new();
+        for label in &self.graph_labels {
+            let (lines, text) = match label {
+                GraphLabel::Read(l) => (&mut described, l.to_string()),
+                GraphLabel::Unread(reason) => (&mut unread, reason.clone()),
+            };
+            if !lines.contains(&text) {
+                lines.push(text);
+            }
+        }
+        [
+            (GRAPH_LABEL_HEADER, described),
+            (GRAPH_ERROR_HEADER, unread),
+        ]
+        .into_iter()
+        .filter(|(_, texts)| !texts.is_empty())
+        .map(|(name, texts)| format!("{name}: {}\r\n", header_encode(&texts.join(" | "))))
+        .collect()
+    }
+
     fn reason(&self) -> &'static str {
         match self.status {
             200 => "OK",
@@ -3127,23 +3050,18 @@ impl Response {
     /// Write this response as HTTP/1.1 with `Connection: close`, so a bare client knows
     /// the body ends at the connection close (no keep-alive bookkeeping). Every response
     /// carries the [`DASH_HEADER`] marker so a second `rigger dash` invocation can recognize
-    /// an already-serving singleton on the port (spec 50, criterion 1), AND the
-    /// [`DASH_HEADER_PID`] marker naming THIS process's own pid (`std::process::id()`, read
-    /// fresh at write time - never plumbed in from outside) so a caller can learn WHO is
-    /// actually serving, not merely THAT something is (spec 62 round 2:
-    /// adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race).
+    /// an already-serving singleton on the port (spec 50, criterion 1).
     fn write_to(&self, w: &mut impl Write) -> io::Result<()> {
         let header = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-             {}: {}\r\n{}: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+             {}: {}\r\n{}Cache-Control: no-store\r\nConnection: close\r\n\r\n",
             self.status,
             self.reason(),
             self.content_type,
             self.body.len(),
             DASH_HEADER,
             env!("CARGO_PKG_VERSION"),
-            DASH_HEADER_PID,
-            std::process::id(),
+            self.graph_label_lines(),
         );
         w.write_all(header.as_bytes())?;
         w.write_all(&self.body)?;
@@ -3162,6 +3080,158 @@ pub fn route(
     target: &str,
     events: &[Event],
     graph: &Graph,
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+    configured_max_retries: u32,
+    run_branch: &str,
+    base: &str,
+    instances: &[InstanceView],
+) -> Response {
+    route_hiding(
+        method,
+        target,
+        events,
+        graph,
+        &Graph::default(),
+        0,
+        None,
+        progress_events,
+        liveness_ages,
+        configured_max_retries,
+        run_branch,
+        base,
+        instances,
+    )
+}
+
+/// The response header stating what a graph view describes: the label of each open that read it
+/// (spec 6.1), percent-encoded.
+pub const GRAPH_LABEL_HEADER: &str = "X-Rigger-Graph-Label";
+
+/// The response header stating why a graph view holds no graph: the reason its store could not be
+/// opened or read, percent-encoded.
+pub const GRAPH_ERROR_HEADER: &str = "X-Rigger-Graph-Error";
+
+/// `text` as one header value: every byte outside printable ASCII, and `%` itself, as `%XX`, which
+/// the page reads back with `decodeURIComponent`.
+fn header_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'%' => "%25".to_string(),
+            0x20..=0x7e => char::from(b).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// What a graph read describes (spec 6.1): the label of the open that read it, or why no graph
+/// could be read, so an unopenable store is a stated error and never an empty graph alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphLabel {
+    /// The label of the open the graph was read from.
+    Read(Label),
+    /// Why no graph could be read: none was built, or its store could not be opened or read.
+    Unread(String),
+}
+
+/// What a whole-graph provider reads: the graph a read drew, how many test entities its `tests`
+/// filter removed from it, which the graph itself does not hold, the part of the graph it
+/// withheld, and what that read describes.
+#[derive(Debug, Default)]
+pub struct GraphRead {
+    pub graph: Graph,
+    pub tests_hidden: usize,
+    /// The nodes the read withheld and the edges it dropped for an end it withheld, from which
+    /// each view counts the withheld hits of its own answer; empty when nothing is withheld.
+    pub withheld: Graph,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<GraphLabel>,
+}
+
+/// A provider that reads no hidden tests and opens no store answers a plain [`Graph`].
+impl From<Graph> for GraphRead {
+    fn from(graph: Graph) -> Self {
+        GraphRead {
+            graph,
+            ..GraphRead::default()
+        }
+    }
+}
+
+/// A graph and what the read it came from describes, borrowed together for the run snapshot.
+#[derive(Clone, Copy, Debug)]
+pub struct LabelledGraph<'a> {
+    pub graph: &'a Graph,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<&'a GraphLabel>,
+}
+
+/// A graph no store read describes.
+impl<'a> From<&'a Graph> for LabelledGraph<'a> {
+    fn from(graph: &'a Graph) -> Self {
+        LabelledGraph { graph, label: None }
+    }
+}
+
+/// A provider's read, with what it describes.
+impl<'a> From<&'a GraphRead> for LabelledGraph<'a> {
+    fn from(read: &'a GraphRead) -> Self {
+        LabelledGraph {
+            graph: &read.graph,
+            label: read.label.as_ref(),
+        }
+    }
+}
+
+/// What a directed-call provider reads: the walk and what the read it came from describes.
+#[derive(Debug, Default)]
+pub struct CallsRead {
+    pub calls: CallGraph,
+    /// What the read describes; `None` for a provider that opens no store.
+    pub label: Option<GraphLabel>,
+}
+
+/// A provider that opens no store answers a plain [`CallGraph`].
+impl From<CallGraph> for CallsRead {
+    fn from(calls: CallGraph) -> Self {
+        CallsRead { calls, label: None }
+    }
+}
+
+/// `graph` with the part a read withheld beside it, `withheld`, added back: the whole graph a
+/// fold reads to count the withheld nodes it would have held.
+fn unwithheld(graph: &Graph, withheld: &Graph) -> Graph {
+    let mut whole = graph.clone();
+    whole.nodes.extend(withheld.nodes.iter().cloned());
+    whole.edges.extend(withheld.edges.iter().cloned());
+    whole
+}
+
+/// How many distinct nodes of `withheld` are among the ids `held` gives, read only when
+/// something was withheld.
+fn count_withheld(withheld: &Graph, held: impl FnOnce() -> Vec<String>) -> usize {
+    if withheld.nodes.is_empty() {
+        return 0;
+    }
+    let ids: BTreeSet<String> = held().into_iter().collect();
+    (withheld.nodes.iter())
+        .filter(|n| ids.contains(&n.id))
+        .count()
+}
+
+/// [`route`] over a graph read that withheld `withheld` beside `graph`, which each graph view
+/// counts the withheld hits of its own answer from, that hid `tests_hidden` test entities, which
+/// the overview reports, and that describes `graph_label`, which the run snapshot states and each
+/// graph view states with its own count.
+#[allow(clippy::too_many_arguments)]
+fn route_hiding(
+    method: &str,
+    target: &str,
+    events: &[Event],
+    graph: &Graph,
+    withheld: &Graph,
+    tests_hidden: usize,
+    graph_label: Option<&GraphLabel>,
     progress_events: &[Event],
     liveness_ages: &HashMap<String, u64>,
     configured_max_retries: u32,
@@ -3210,7 +3280,10 @@ pub fn route(
         "/api/state" => {
             match state_json(
                 events,
-                graph,
+                LabelledGraph {
+                    graph,
+                    label: graph_label,
+                },
                 progress_events,
                 liveness_ages,
                 configured_max_retries,
@@ -3260,6 +3333,24 @@ pub fn route(
             // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
             // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
             // is present, so every existing `/api/graph` view stays byte-identical.
+            //
+            // Each view states the read's label with its own answer's withheld count: a walk (the
+            // seeded neighborhood, a card's one hop) the withheld nodes it reaches without stepping
+            // from one, as the store's walk counts them; a fold (a drill, a re-projection, the
+            // rationale batch) the withheld nodes it would have held had nothing been withheld; the
+            // overview, a fold of the whole read, the read's own count.
+            let labelled = |response: Response, withheld_hits: Option<usize>| {
+                response.labelled(graph_label.map(|label| match (label, withheld_hits) {
+                    (GraphLabel::Read(l), Some(withheld)) => GraphLabel::Read(Label {
+                        withheld,
+                        ..l.clone()
+                    }),
+                    _ => label.clone(),
+                }))
+            };
+            // A fold's count: the withheld nodes among `held`, the ids the fold computed over the
+            // whole graph would have held.
+            let unwithheld = || unwithheld(graph, withheld);
             if let Some(raw_explain) = query_param(target, "explain") {
                 let ids: Vec<String> = raw_explain
                     .split(',')
@@ -3269,12 +3360,18 @@ pub fn route(
                 let batch = RationaleBatch {
                     nodes: rationale_batch(graph, &ids),
                 };
-                return match serde_json::to_string(&batch) {
+                let hits = count_withheld(withheld, || {
+                    (rationale_batch(&unwithheld(), &ids).into_iter())
+                        .map(|r| r.node)
+                        .collect()
+                });
+                let response = match serde_json::to_string(&batch) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => {
                         Response::text(500, &format!("dash: rationale projection failed: {e}"))
                     }
                 };
+                return labelled(response, Some(hits));
             }
             // The METADATA CARD (spec 63 c2): `card=<id>` returns ONE subject's card - content
             // only, on demand, mirroring `explain=`'s per-node shape (never riding every other
@@ -3284,13 +3381,16 @@ pub fn route(
             // never a 404/500. Checked alongside `explain=`, before the lens/seed dispatch, so
             // every existing `/api/graph` view stays byte-identical.
             if let Some(raw_card) = query_param(target, "card") {
+                let subject = percent_decode(raw_card);
                 let body = CardResponse {
-                    card: card(graph, &percent_decode(raw_card)),
+                    card: card(graph, &subject),
                 };
-                return match serde_json::to_string(&body) {
+                let hits = withheld_reached(graph, withheld, &[subject], 1);
+                let response = match serde_json::to_string(&body) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
+                return labelled(response, Some(hits));
             }
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
             // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
@@ -3301,14 +3401,25 @@ pub fn route(
                     .map(percent_decode)
                     .as_deref(),
             );
-            let body = if let Some(raw_cluster) = query_param(target, "cluster") {
-                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster), &lens))
+            let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
+                let key = percent_decode(raw_cluster);
+                let hits = count_withheld(withheld, || {
+                    (cluster_detail(&unwithheld(), &key, &lens).nodes.into_iter())
+                        .map(|n| n.id)
+                        .collect()
+                });
+                (
+                    serde_json::to_string(&cluster_detail(graph, &key, &lens)),
+                    Some(hits),
+                )
             } else {
                 let seed = query_param(target, "seed")
                     .map(percent_decode)
                     .unwrap_or_default();
                 if seed.is_empty() {
-                    serde_json::to_string(&clustered_overview(graph, &lens))
+                    let mut overview = clustered_overview(graph, &lens);
+                    overview.tests_hidden = tests_hidden;
+                    (serde_json::to_string(&overview), None)
                 } else if query_param(target, "lens").is_some() {
                     // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
                     // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
@@ -3316,7 +3427,15 @@ pub fn route(
                     // fires only when a lens is explicitly present, so a lens-ABSENT seed request
                     // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
                     // composition-absent back-compat).
-                    serde_json::to_string(&reproject(graph, &seed, &lens))
+                    let hits = count_withheld(withheld, || {
+                        (member_set(&unwithheld(), &seed).into_iter())
+                            .map(|n| n.id.clone())
+                            .collect()
+                    });
+                    (
+                        serde_json::to_string(&reproject(graph, &seed, &lens)),
+                        Some(hits),
+                    )
                 } else {
                     let depth = query_param(target, "depth")
                         .and_then(|v| v.parse::<i64>().ok())
@@ -3328,16 +3447,29 @@ pub fn route(
                     // a graph node. Re-point it onto that unit's content nodes so the click lands on
                     // a real neighborhood; a seed that already resolves to a node is unchanged.
                     let seeds = repoint_seed(events, graph, &seed);
-                    graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref())
+                    let hits = withheld_reached(graph, withheld, &seeds, depth);
+                    (
+                        graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref()),
+                        Some(hits),
+                    )
                 }
             };
-            match body {
+            let response = match body {
                 Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                 Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
-            }
+            };
+            labelled(response, hits)
         }
         _ => Response::text(404, "not found"),
     }
+}
+
+/// The `tests` filter a request names: `exclude` when it carries none, else the one
+/// [`Tests`] parser's reading of `tests=`.
+fn tests_param(target: &str) -> Result<Tests, String> {
+    query_param(target, "tests")
+        .map(percent_decode)
+        .map_or(Ok(Tests::Exclude), |spelled| spelled.parse())
 }
 
 /// Percent-decode a URL query value (`%XX` -> the byte; every other byte verbatim). The client
@@ -3389,6 +3521,32 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 // The blocking server loop.
 // ---------------------------------------------------------------------------
 
+/// Say on `out` the address the dash serves at, `bound`, in one write ([`whole_line`]): a run's
+/// dash shares the run's stderr, and the run says its own pointer to the dash there meanwhile.
+fn announce_serving(out: &mut dyn Write, bound: SocketAddr) -> io::Result<()> {
+    whole_line::write_line(
+        out,
+        format_args!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)"),
+    )
+}
+
+/// Say on `out` the URL of the dash a run just started, `url`, in one write ([`whole_line`]): the
+/// run's own pointer to its dash, said on the stderr the run shares with that dash while the dash
+/// says its serving line there.
+pub fn announce_run_serving(out: &mut dyn Write, url: &str) -> io::Result<()> {
+    whole_line::write_line(out, format_args!("rigger dash: serving this run at {url}"))
+}
+
+/// Say on `out` that the dash's `failed` step (`connection` or `accept`) failed with `error`, in
+/// one write ([`whole_line`]), on the stderr a run's dash shares with the run.
+fn report_error(
+    out: &mut dyn Write,
+    failed: &str,
+    error: &dyn std::fmt::Display,
+) -> io::Result<()> {
+    whole_line::write_line(out, format_args!("rigger dash: {failed} error: {error}"))
+}
+
 /// Serve the dash on an ALREADY-BOUND `listener` until the process is stopped, re-reading
 /// fresh projection inputs from `provider` on each request (the run advances while the dash
 /// watches) - the singleton-aware entrypoint (spec 50, criterion 1). `cmd_dash` binds the
@@ -3414,7 +3572,7 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, H, I>(
+pub fn serve_on<F, G, R, H, I, C>(
     listener: TcpListener,
     provider: F,
     graph_provider: G,
@@ -3426,12 +3584,13 @@ pub fn serve_on<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
-    let bound = listener.local_addr()?;
-    eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
+    announce_serving(&mut io::stderr().lock(), listener.local_addr()?)?;
     // Shared so THE STREAM (spec 94 c2) can clone a handle onto its own thread per open
     // connection (`d-u94c2-stream-threading`) without cloning `F` itself, which is not
     // generally `Clone` - see `handle_conn`'s own doc.
@@ -3449,10 +3608,10 @@ where
                     run_branch,
                     base,
                 ) {
-                    eprintln!("rigger dash: connection error: {e}");
+                    whole_line::on_stderr(|err| report_error(err, "connection", &e));
                 }
             }
-            Err(e) => eprintln!("rigger dash: accept error: {e}"),
+            Err(e) => whole_line::on_stderr(|err| report_error(err, "accept", &e)),
         }
     }
     Ok(())
@@ -3472,7 +3631,7 @@ where
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, H, I>(
+fn handle_conn<F, G, R, H, I, C>(
     stream: TcpStream,
     provider: &Arc<F>,
     graph_provider: &G,
@@ -3484,9 +3643,11 @@ fn handle_conn<F, G, H, I>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>) -> Graph,
+    G: Fn(Option<&str>, Tests) -> R,
+    R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
-    I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
+    I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
+    C: Into<CallsRead>,
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -3567,6 +3728,9 @@ where
     // Every other path reads through the plain `&F` the pre-existing dispatch below always
     // expected - shadowed here so that body stays byte-identical to before this criterion.
     let provider = provider.as_ref();
+    // The graph a whole-graph read drew, freed on a thread of its own once the answer is
+    // written, so neither this answer nor the next connection waits on the freeing.
+    let mut drawn = Graph::default();
     let response = match parsed {
         None => Response::text(400, "bad request"),
         Some((method, target)) => {
@@ -3597,7 +3761,14 @@ where
                 // opens only the calls provider, never the whole-graph read. `calls_route` returns
                 // `None` for every other `/api/graph` request (and every non-graph path), so those
                 // fall through to the byte-identical neighborhood / overview / drill path below.
-                if let Some(resp) = (path == "/api/graph")
+                //
+                // The graph's `tests=exclude|include|only` filter rides every `/api/graph` read, the
+                // directed-call views included; a value that is none of the three is refused 400
+                // before any provider is consulted.
+                let tests = tests_param(&target);
+                if let (true, Err(refusal)) = (path == "/api/graph", &tests) {
+                    Response::text(400, &format!("dash: {refusal}"))
+                } else if let Some(resp) = (path == "/api/graph")
                     .then(|| calls_route(instance, &target, calls_provider))
                     .flatten()
                 {
@@ -3610,23 +3781,31 @@ where
                             // every other `/api/*` path keeps the cheap run-seeded graph the polled
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
-                            let graph = if path == "/api/graph" {
-                                graph_provider(instance)
+                            let read: GraphRead = if path == "/api/graph" {
+                                graph_provider(instance, tests.unwrap_or_default()).into()
                             } else {
                                 polled_graph
                             };
-                            route(
+                            let answer = route_hiding(
                                 &method,
                                 &target,
                                 &events,
-                                &graph,
+                                &read.graph,
+                                &read.withheld,
+                                read.tests_hidden,
+                                read.label.as_ref(),
                                 &progress,
                                 &liveness,
                                 configured_max_retries,
                                 run_branch,
                                 base,
                                 &[],
-                            )
+                            );
+                            // A graph view states what its read describes in its headers (the route
+                            // counts its own answer's withheld hits); the run snapshot states it in
+                            // its body, beside the decisions it draws.
+                            drawn = read.graph;
+                            answer
                         }
                         Err(e) => {
                             Response::text(500, &format!("dash: reading the store failed: {e}"))
@@ -3650,7 +3829,10 @@ where
             }
         }
     };
-    response.write_to(&mut stream)
+    let written = response.write_to(&mut stream);
+    drop(stream);
+    std::thread::spawn(move || drop(drawn));
+    written
 }
 
 /// Env override for [`serve_console_stream`]'s poll interval (milliseconds) - how often it
@@ -3705,8 +3887,8 @@ fn write_sse(
 
 /// Write the retained-window refusal [`serve_console_stream`]'s own guard sends, and close
 /// the connection - a real, parseable HTTP response (via the same [`Response::write_to`]
-/// every other route answers through, so it carries the same [`DASH_HEADER`]/
-/// [`DASH_HEADER_PID`] markers), never a bare socket drop. `410 Gone` names the position
+/// every other route answers through, so it carries the same [`DASH_HEADER`]
+/// marker), never a bare socket drop. `410 Gone` names the position
 /// itself as no longer obtainable (as opposed to `404`, which would say the RESOURCE - the
 /// stream endpoint - does not exist, which is false) and points the reader at the recovery
 /// this guard exists to trigger: re-fetch the snapshot and resume from its head.
@@ -3755,10 +3937,9 @@ fn serve_console_stream<F>(
     // reconnecting client's `since=`/`Last-Event-ID` names a position it has ALREADY
     // applied; if the store's own current floor - the smallest [`Position`] any row (of
     // ANY type, not just a console one) still occupies - has moved PAST that position,
-    // something that once sat between them is gone (the `rigger reset --derived`
-    // migration, [`crate::eventstore::sqlite::Store::shed_derived`], deletes every derived
-    // row it does not rewrite into a ledger entry; a later hygiene operation may cover more
-    // ground than the four derived-index types), and resuming with `since` as though nothing had changed would
+    // something that once sat between them is gone (`rigger reset --derived` deletes every
+    // derived row of the run stream; a later hygiene operation may cover more ground), and
+    // resuming with `since` as though nothing had changed would
     // silently miss whatever stood there. `since == 0` is the "from the very start"
     // sentinel a fresh tab's first-ever connect always carries, never a stale cursor, so
     // it is exempt; an empty store (`floor` is `None` - no row anywhere yet) exempts
@@ -3788,11 +3969,9 @@ fn serve_console_stream<F>(
 
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\
-         {}: {}\r\n{}: {}\r\nConnection: close\r\n\r\n",
+         {}: {}\r\nConnection: close\r\n\r\n",
         DASH_HEADER,
         env!("CARGO_PKG_VERSION"),
-        DASH_HEADER_PID,
-        std::process::id(),
     );
     if stream.write_all(header.as_bytes()).is_err() || stream.flush().is_err() {
         return;
@@ -3896,6 +4075,49 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
+
+    /// The writes a stream took, each as the bytes it carried.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The writes `say` hands its stream, each as the bytes it carried.
+    fn writes_of(say: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Vec<Vec<u8>> {
+        let mut out = Writes::default();
+        say(&mut out).unwrap();
+        out.0
+    }
+
+    // GIVEN a line the dash, or the run that started it, says on the stderr they share, WHEN it
+    // is said, THEN the line and its newline reach the stream in one write, which a pipe keeps
+    // whole, so the other process's line written there meanwhile never lands inside it.
+    crate::test_cases! {
+        the_serving_line_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| announce_serving(out, "127.0.0.1:7421".parse().unwrap())),
+            [b"rigger dash: serving on http://127.0.0.1:7421/ (read-only; Ctrl-C to stop)\n"]
+        );
+        the_runs_pointer_to_its_dash_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| announce_run_serving(out, "http://127.0.0.1:7421/")),
+            [b"rigger dash: serving this run at http://127.0.0.1:7421/\n"]
+        );
+        a_connection_error_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| report_error(out, "connection", &"reset by peer")),
+            [b"rigger dash: connection error: reset by peer\n"]
+        );
+        an_accept_error_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| report_error(out, "accept", &"too many open files")),
+            [b"rigger dash: accept error: too many open files\n"]
+        );
+    }
 
     /// A `GET target` against the router with no run, graph, progress or instances - the
     /// static routes (the page, the console shell and its assets, an unknown path).
@@ -4359,16 +4581,23 @@ mod tests {
     }
 
     /// Spec 19b, unit 1 (always-on dash, "on `DEFAULT_PORT` or the next free port so
-    /// concurrent harnesses each get their own"): the port selector returns the requested
-    /// start port when it is free, and SKIPS to the next free port when it is taken - so a
-    /// second harness auto-starting its dash never collides with the first's.
+    /// concurrent harnesses each get their own"): the bind binds the requested start port when
+    /// it is free, and SKIPS to the next free port when it is taken - so a second harness
+    /// auto-starting its dash never collides with the first's.
     #[test]
-    fn free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken() {
+    fn bind_first_free_from_binds_the_start_port_when_free_and_the_next_free_one_when_it_is_taken()
+    {
+        let bound_port = |start| {
+            bind_first_free_from(start)
+                .ok()
+                .and_then(|listener| listener.local_addr().ok())
+                .map(|addr| addr.port())
+        };
         // Free: the requested start port is chosen as-is (a lone harness gets DEFAULT_PORT).
         // An ephemeral high port stands in for DEFAULT_PORT so the test never fights a real
         // dash. The retry loop absorbs the rare window where a PARALLEL test grabs the
-        // just-released probe port between finding it free and calling free_port_from - it is
-        // the CONTRACT (pick the requested port when free), not the OS scheduler, under test.
+        // just-released probe port between finding it free and binding it - it is the
+        // CONTRACT (pick the requested port when free), not the OS scheduler, under test.
         let mut chose_start = false;
         for _ in 0..25 {
             let start = TcpListener::bind(("127.0.0.1", 0))
@@ -4376,24 +4605,24 @@ mod tests {
                 .local_addr()
                 .unwrap()
                 .port();
-            // The probe listener is dropped, so `start` is free again for free_port_from.
-            if free_port_from(start).ok() == Some(start) {
+            // The probe listener is dropped, so `start` is free again for the bind.
+            if bound_port(start) == Some(start) {
                 chose_start = true;
                 break;
             }
         }
         assert!(
             chose_start,
-            "a free start port must be returned unchanged (a lone harness gets DEFAULT_PORT)"
+            "a free start port must be bound unchanged (a lone harness gets DEFAULT_PORT)"
         );
 
         // Taken: HOLD an ephemeral port (a first harness's dash), then ask for a dash starting
         // at that same port - it must SKIP the held port for a strictly higher free one, so
         // two concurrent harnesses never collide on one port. Robust because we hold the port
-        // ourselves, so free_port_from can never return it.
+        // ourselves, so the bind can never land on it.
         let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let taken = held.local_addr().unwrap().port();
-        let next = free_port_from(taken).unwrap();
+        let next = bound_port(taken).unwrap();
         assert!(
             next > taken,
             "a busy start port is skipped for the next free one; got {next} for start {taken}"
@@ -4404,7 +4633,7 @@ mod tests {
     /// Spec 50, criterion 1 (fixed address, no free-port search): `bind_singleton` binds the
     /// EXACT requested address when it is free, and NEVER drifts to another port when the port
     /// is held by an UNRELATED (non-dash) process - that is a genuine conflict surfaced as an
-    /// `AddrInUse` error, the deliberate opposite of `free_port_from`'s search-upward behavior.
+    /// `AddrInUse` error, the deliberate opposite of `bind_first_free_from`'s search-upward behavior.
     #[test]
     fn bind_singleton_binds_the_exact_port_and_never_searches() {
         // A free ephemeral port (learn it, release it): `bind_singleton` returns `Bound` on
@@ -4485,14 +4714,22 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                Graph::default().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let instances_provider = Vec::new;
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         // A dash that FAILS instead of serving reports its error here, so the failure surfaces
         // LOUD and named (spec 19c) rather than as a silent stall that only shows up much later
         // as an unexplained deadline.
@@ -4596,11 +4833,6 @@ mod tests {
             .unwrap_or_else(|_| panic!("{hang}"))
     }
 
-    /// `dash_serving_pid_on` against a listener answering `reply` reports `expected`.
-    fn assert_pid_probe(reply: impl Into<Vec<u8>>, expected: Option<u32>, why: &str) {
-        assert_eq!(dash_serving_pid_on(serve_reply(reply)), expected, "{why}");
-    }
-
     /// Spec 50, criterion 1: `dash_serving_on` recognizes ONLY a rigger dash (by its
     /// [`DASH_HEADER`]). A raw listener that answers WITHOUT that header is not mistaken for a
     /// dash, so a genuine conflict with an unrelated process is never swallowed as a false
@@ -4686,99 +4918,23 @@ mod tests {
         );
     }
 
-    crate::test_cases! {
-        /// Spec 62 round 2 (adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race):
-        /// `dash_serving_pid_on` reports the pid a REAL rigger-dash-shaped response names via
-        /// [`DASH_HEADER_PID`] - the whole point being that a caller can learn WHO is actually
-        /// serving a port without assuming it is whichever process the caller itself happens to have
-        /// spawned. A fake listener stands in for the winner of a singleton race, answering with an
-        /// ARBITRARY pid value in the header (never the test process's own pid), so a pass here can
-        /// only be explained by the probe reading the header off the wire, not by any coincidental
-        /// match with `std::process::id()`.
-        dash_serving_pid_on_reports_the_pid_a_real_dash_response_names: assert_pid_probe(
-            // 424242 is deliberately NOT this test process's own pid.
-            format!(
-                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                 424242\r\nConnection: close\r\n\r\n"
-            ),
-            Some(424_242),
-            "the probe must report the EXACT pid the response names via X-Rigger-Dash-Pid",
-        );
-        /// Spec 62 round 2 mutation-efficacy follow-up (adv-u62c1-marker-pid-not-the-serving-pid-on-
-        /// singleton-race): [`dash_serving_pid_on`]'s read loop has its own local byte-cap constant
-        /// and a `head.len() >= <cap>` termination check, both of which matter, not merely
-        /// `head_block_ended` - a response whose header block is genuinely LARGER than the
-        /// fixed-size read buffer forces multiple `read` calls to assemble, so a wrong cap (too
-        /// small, or the comparison direction flipped) truncates the head BEFORE the real
-        /// [`DASH_HEADER_PID`] line ever arrives, well short of the block's actual end.
-        ///
-        /// The response here is ~2KB: status line, then ~2000 bytes of an unrelated padding header
-        /// (never matching either needle), THEN the real `DASH_HEADER`/`DASH_HEADER_PID` lines. Two
-        /// structural facts make the assertion robust regardless of exact OS-level TCP chunking:
-        /// (1) the read loop's own buffer is a fixed 512-byte array, so `Read::read` can never
-        /// return more than 512 bytes in one call - reaching the real content (past byte ~2030)
-        /// PROVABLY requires at least 4 calls; (2) since 1032 (`8 * 1024` mis-computed as `8 + 1024`
-        /// or `8 / 1024`) and the flipped-comparison cap are both far below 2030 while the real cap
-        /// (8192) is far above it, a wrong cap is GUARANTEED to trip - monotonically, on whichever
-        /// read call first crosses it - strictly before the padding ends, while the correct cap
-        /// never trips at all (this response never reaches 8192 bytes) and the loop instead runs to
-        /// completion exactly once `head_block_ended` sees the real trailing blank line.
-        dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls: assert_pid_probe(
-            // 424243 is deliberately NOT this test process's own pid.
-            format!(
-                "HTTP/1.1 200 OK\r\nX-Padding: {}\r\n{DASH_HEADER}: \
-                 probe\r\n{DASH_HEADER_PID}: 424243\r\nConnection: \
-                 close\r\n\r\n",
-                "A".repeat(2000)
-            ),
-            Some(424_243),
-            "a head spanning many read() calls must still be fully assembled and parsed - \
-             a premature length-cap break truncates it before the real header lines arrive",
-        );
-        /// The false direction, mirroring `dash_serving_on_is_false_for_a_non_dash_listener`: a
-        /// listener that answers but carries no [`DASH_HEADER`] at all (an unrelated process holding
-        /// the port) must never be mistaken for a dash naming a pid, even if it happens to send a
-        /// same-shaped header by coincidence-free construction here (it sends none).
-        dash_serving_pid_on_is_none_for_a_non_dash_listener: assert_pid_probe(
-            NON_DASH_REPLY,
-            None,
-            "a non-dash listener must never be reported as naming a serving pid",
-        );
-        /// The sentinel arm of `dash_serving_pid_on`'s own `.parse().ok()` (spec 62 round 2, SDET
-        /// lens periphery: neither the mutation-efficacy accounting recorded in
-        /// `d-u62c1-mutation-accounting-round2` nor any existing test in this file exercises this
-        /// exact path - the mutation tool's default mutator set never touches a `Result::ok()`
-        /// call on a std `.parse()`, so this arm is invisible to that tool and only a hand-written
-        /// test
-        /// closes it). A listener that DOES carry a genuine `DASH_HEADER` (so the "is this even a
-        /// dash" check at the top of the function passes) but whose `DASH_HEADER_PID` value is not a
-        /// valid `u32` must resolve to `None`, never panic and never silently coerce to some other
-        /// value (e.g. `0`) - a malformed or truncated pid header must never be reported as a real
-        /// pid a caller could act on. A round-2 draft of the one production call site,
-        /// `spawn_run_dashboard_detached`, once used `dash_serving_pid_on(port).unwrap_or(pid)` -
-        /// this exact `None` was what let that (since-rejected,
-        /// adj-u62c1r2-verdict-reject-version-skew-fallback) fallback engage instead of recording a
-        /// nonsense pid. The current call site no longer falls back to a guessed pid at all: it
-        /// records the documented [`UNATTRIBUTED_PID`] sentinel on this `None` instead - so this
-        /// test's lasting job is proving `dash_serving_pid_on` itself never manufactures a value
-        /// from unparseable input, regardless of what any caller later does with the `None`.
-        dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number: assert_pid_probe(
-            format!(
-                "HTTP/1.1 200 OK\r\n{DASH_HEADER}: probe\r\n{DASH_HEADER_PID}: \
-                 not-a-number\r\nConnection: close\r\n\r\n"
-            ),
-            None,
-            "a non-numeric X-Rigger-Dash-Pid value must resolve to None, never panic or \
-             coerce to a default pid",
-        );
-    }
-
-    /// Nothing listening at all must resolve to `None`, never a stale or default pid - mirrors
-    /// `dash_serving_on`'s false-on-no-connection direction.
+    /// The probe's read loop assembles a head larger than its fixed 512-byte read buffer: a
+    /// ~2KB padding header ahead of the real [`DASH_HEADER`] line forces at least 4 `read` calls
+    /// before the marker arrives, so a byte cap below ~2030 (or a flipped cap comparison) stops
+    /// the loop short of the marker and the dash reads as not serving, while the real cap (8192)
+    /// is never reached.
     #[test]
-    fn dash_serving_pid_on_is_none_when_nothing_answers() {
-        let port = free_port_from(45000).expect("a free loopback port must be available");
-        assert_eq!(dash_serving_pid_on(port), None);
+    fn dash_serving_on_assembles_a_head_that_spans_many_read_calls() {
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nX-Padding: {}\r\n{DASH_HEADER}: probe\r\nConnection: \
+             close\r\n\r\n",
+            "A".repeat(2000)
+        );
+        assert!(
+            dash_serving_on(serve_reply(reply)),
+            "a head spanning many read() calls must still be fully assembled - a premature \
+             length-cap break truncates it before the DASH_HEADER line arrives"
+        );
     }
 
     /// Spec 50, criterion 1 (cold-race loser): when two dashes bind the fixed address at once, the
@@ -4900,8 +5056,10 @@ mod tests {
         assert!(
             page.contains("apiUrl(\"/api/state\")")
                 && page.contains("apiUrl(\"/api/events")
-                && page.contains("apiUrl(\"/api/graph"),
-            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded)"
+                && page.contains("graphFetch(\"/api/graph")
+                && page.contains("await fetch(apiUrl(path), { cache: \"no-store\" })"),
+            "each store-reading poll (state/events/graph) must go through apiUrl (attach-threaded), \
+             a graph read through graphFetch, which builds its URL with apiUrl"
         );
 
         // The registry landing itself is NEVER threaded - it lists every instance regardless of the
@@ -5297,6 +5455,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5320,7 +5479,7 @@ mod tests {
         // And the activity serializes into the /api/state body the page renders.
         let body = state_json(
             &events,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5369,6 +5528,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5390,7 +5550,7 @@ mod tests {
         // And the count serializes into the /api/state body the review-outcomes panel reads.
         let body = state_json(
             &events,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5482,6 +5642,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &progress_events,
             &liveness,
@@ -5531,7 +5692,7 @@ mod tests {
             ("agent", "attempt#0")
         );
 
-        // Gates is driver-run: its couriers collapse to a single "driver" line.
+        // Gates is driver-run: it collapses to a single "driver" line.
         let gates = &unit_a.children[1];
         assert_eq!(
             gates.children.len(),
@@ -5585,7 +5746,7 @@ mod tests {
         // The tree serializes into the /api/state body the page renders.
         let body = state_json(
             &events,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &progress_events,
             &liveness,
             3,
@@ -5688,6 +5849,7 @@ mod tests {
         let state = build_state(
             &positioned(events),
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -5734,6 +5896,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -5804,7 +5967,7 @@ mod tests {
         let events = seeded_run();
         let html = render_export(
             &events,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -5843,7 +6006,7 @@ mod tests {
         let events = positioned(vec![ev("DecisionMade", payload)]);
         let html = render_export(
             &events,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -5901,11 +6064,11 @@ mod tests {
             edges: vec![Edge {
                 from: "d-new".to_string(),
                 to: "d-old".to_string(),
-                rel: REL_SUPERSEDES.to_string(),
+                rel: REL_SUPERSEDES.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         };
         let view = build_graph_view(&graph);
@@ -6012,11 +6175,11 @@ mod tests {
         let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let graph = Graph {
             nodes: vec![
@@ -6064,12 +6227,14 @@ mod tests {
                     count: 1,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
                 Cluster {
                     key: "src/a.rs".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: None,
+                    tests: 0,
                 },
             ],
             "each code entity folds by its OWN FILE; the file's own node, the design-doc, and the \
@@ -6127,20 +6292,20 @@ mod tests {
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let member_of = |from: &str, community_id: &str| Edge {
             from: from.to_string(),
             to: community_id.to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_INFERRED.to_string(),
+            tier: TIER_INFERRED.into(),
         };
 
         let lens = Lens::Code {
@@ -6187,11 +6352,11 @@ mod tests {
         edges.push(Edge {
             from: "src/small/lib.rs::a".to_string(),
             to: "src/small/lib.rs::b".to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: Some(9),
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         });
 
         // AT-THRESHOLD community EDGE: a hub + EXACTLY GOD_NODE_DEGREE_THRESHOLD leaves (degree 5,
@@ -6369,11 +6534,11 @@ mod tests {
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let populated = Graph {
             nodes: vec![ce("src/a.rs::foo"), ce("src/a.rs::bar")],
@@ -6405,6 +6570,105 @@ mod tests {
         };
         let none = cluster_detail(&empty_graph, "src/a.rs", &Lens::Files);
         assert!(none.nodes.is_empty() && none.edges.is_empty() && none.truncated.is_none());
+    }
+
+    /// The lenses report the tests the filter hides: a community or concept cluster carries its
+    /// attached test count (`tests`), and the overview says how many attached tests it hides
+    /// (`tests_hidden`): all of them under `exclude`, none once `include` or `only` draws them.
+    /// Each row: the lens, whether the tests are drawn, the overview's hidden count and its
+    /// clusters' test counts.
+    #[test]
+    fn lenses_report_the_hidden_test_count() {
+        use rigger_domain::contextgraph::REL_TESTS;
+
+        let node = |id: &str, kind: &str, tests: Option<&str>| Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: tests
+                .map(|n| ("tests".to_string(), n.to_string()))
+                .into_iter()
+                .chain([("name".to_string(), id.to_string())])
+                .collect(),
+        };
+        let edge = |from: &str, to: &str, rel: &str| Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string().into(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: TIER_INFERRED.into(),
+        };
+        let product = |drawn: bool| {
+            let mut graph = Graph {
+                nodes: vec![
+                    node("src/a.rs::foo", KIND_CODE_ENTITY, None),
+                    node("src/b.rs::bar", KIND_CODE_ENTITY, None),
+                    node("community/1/0", KIND_COMMUNITY, Some("2")),
+                    node("community/1/1", KIND_COMMUNITY, None),
+                ],
+                edges: vec![
+                    edge("src/a.rs::foo", "community/1/0", REL_IN_COMMUNITY),
+                    edge("src/b.rs::bar", "community/1/1", REL_IN_COMMUNITY),
+                ],
+            };
+            if drawn {
+                for t in ["tests/t.rs::t1", "tests/t.rs::t2"] {
+                    graph.nodes.push(node(t, KIND_CODE_ENTITY, None));
+                    graph.edges.push(edge(t, "community/1/0", REL_TESTS));
+                }
+            }
+            graph
+        };
+        let code = Lens::Code {
+            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        };
+        // Three tests are hidden when none is drawn: the two attached to community 0 and one that
+        // proves nothing grouped. The opened graph counts them; the drawn graph holds none.
+        let cases = [
+            ("exclude", false, "code", 3, vec![("community/1/0", 2)]),
+            ("include", true, "code", 0, vec![("community/1/0", 2)]),
+            ("exclude, files lens", false, "files", 3, vec![]),
+            ("include, files lens", true, "files", 0, vec![]),
+        ];
+        for (name, drawn, lens_name, hidden, counted) in cases {
+            let lens = match lens_name {
+                "code" => &code,
+                _ => &Lens::Files,
+            };
+            let graph = product(drawn);
+            let response = route_hiding(
+                "GET",
+                &format!("/api/graph?lens={lens_name}"),
+                &[],
+                &graph,
+                &Graph::default(),
+                hidden,
+                None,
+                &[],
+                &HashMap::new(),
+                3,
+                "run",
+                "base",
+                &[],
+            );
+            let json: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+            let mut overview = clustered_overview(&graph, lens);
+            overview.tests_hidden = hidden;
+            let counts: Vec<(&str, usize)> = overview
+                .clusters
+                .iter()
+                .filter(|c| c.tests > 0)
+                .map(|c| (c.key.as_str(), c.tests))
+                .collect();
+            assert_eq!(overview.tests_hidden, hidden, "{name}: hidden count");
+            assert_eq!(counts, counted, "{name}: cluster test counts");
+            assert_eq!(
+                json.get("tests_hidden").and_then(|v| v.as_u64()),
+                (hidden > 0).then_some(hidden as u64),
+                "{name}: the hidden count rides the body only when something is hidden"
+            );
+        }
     }
 
     /// Spec 53 c4 - the CODE LENS VIEW: with `lens=code` the SAME overview/drill folds bucket every
@@ -6441,11 +6705,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: tier.to_string(),
+            tier: tier.to_string().into(),
         };
 
         // Two coupling communities, each a pair of code entities in DIFFERENT directories that call
@@ -6508,12 +6772,14 @@ mod tests {
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("foo".to_string()),
+                    tests: 0,
                 },
                 Cluster {
                     key: "community/1/1".to_string(),
                     count: 2,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("baz".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less decision / design-doc nodes (spec 63 c1): the
                 // code lens admits ONLY code-entity subjects, so they carry no bucket of any kind.
@@ -6652,11 +6918,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: tier.to_string(),
+            tier: tier.to_string().into(),
         };
 
         // Two derived concepts, each grouping a DOC with the CODE it governs across directory lines
@@ -6722,6 +6988,7 @@ mod tests {
                     count: 3,
                     kind: KIND_CODE_ENTITY.to_string(),
                     label: Some("the graph".to_string()),
+                    tests: 0,
                 },
                 // concept/1/1 (the smaller): the SHARED build folds under its primary c0, so c1 counts
                 // ONLY its sole non-shared member docs/review.md.
@@ -6730,6 +6997,7 @@ mod tests {
                     count: 1,
                     kind: KIND_DESIGN_DOC.to_string(),
                     label: Some("the review".to_string()),
+                    tests: 0,
                 },
                 // NO cluster for the membership-less code entity / decision (spec 63 c4): the concepts
                 // lens admits ONLY concept members, so they carry no bucket of any kind.
@@ -6972,11 +7240,11 @@ mod tests {
             edges: vec![Edge {
                 from: raw_id.to_string(),
                 to: "src/conductor.rs".to_string(),
-                rel: "explains".to_string(),
+                rel: "explains".into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         };
         // encodeURIComponent("src/conductor.rs#L19930") == "src%2Fconductor.rs%23L19930".
@@ -7347,11 +7615,11 @@ mod tests {
         let edge = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let node = |id: &str| Node {
             id: id.to_string(),
@@ -7504,11 +7772,11 @@ mod tests {
             Edge {
                 from: from.to_string(),
                 to: to.to_string(),
-                rel: rel.to_string(),
+                rel: rel.to_string().into(),
                 valid_from: 0,
                 valid_to,
                 source,
-                tier: tier.to_string(),
+                tier: tier.to_string().into(),
             }
         };
         Graph {
@@ -7709,7 +7977,7 @@ mod tests {
         // empty result. Fold a small run (a unit, and a decision it made governing a file) into a
         // real projection, then seed it with graph_seeds output and confirm a live neighborhood.
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::Projection;
+        use crate::test_support::RecordsRead;
         let run = positioned(vec![
             ev(
                 "UnitStarted",
@@ -7756,7 +8024,7 @@ mod tests {
         // the empty panel the raw unit seed would otherwise yield. This drives the ACTUAL route the
         // click crosses, which the graph_seeds-only tests never touch (adj-u43c1-click-to-seed).
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::Projection;
+        use crate::test_support::RecordsRead;
 
         // A run's events in production shape: the unit, a decision its implementer emitted and a
         // finding a reviewer drew ABOUT the unit - BOTH stamped with their emitting spawn (`u1`'s
@@ -7964,6 +8232,7 @@ mod tests {
         let state = build_state(
             &events,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8013,6 +8282,7 @@ mod tests {
         let state = build_state(
             &[],
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8052,6 +8322,7 @@ mod tests {
         let state = build_state(
             &done,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8080,7 +8351,7 @@ mod tests {
         // It serializes into the /api/state body the page reads.
         let body = state_json(
             &done,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -8107,6 +8378,7 @@ mod tests {
         let state = build_state(
             &running,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8119,7 +8391,7 @@ mod tests {
         // ... and the absent field is omitted from the serialized snapshot entirely.
         let body = state_json(
             &running,
-            &Graph::default(),
+            LabelledGraph::from(&Graph::default()),
             &[],
             &HashMap::new(),
             3,
@@ -8159,6 +8431,7 @@ mod tests {
         let state = build_state(
             &done,
             &Graph::default(),
+            None,
             false,
             &[],
             &HashMap::new(),
@@ -8262,16 +8535,19 @@ mod tests {
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .map_err(|e| e.to_string())?;
-            Ok((events, Graph::default(), Vec::new(), HashMap::new()))
+            Ok((events, Graph::default().into(), Vec::new(), HashMap::new()))
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = |_instance: Option<&str>| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let provider = Arc::new(provider);
         let server = std::thread::spawn(move || {
@@ -8309,6 +8585,361 @@ mod tests {
         assert_eq!(v["metrics"]["review_approve"], 1);
     }
 
+    /// The explorer offers a "Show tests" toggle in its static header, cycling the filter
+    /// exclude -> include -> only, and every `/api/graph` fetch carries the choice through the one
+    /// graph fetch, `graphFetch`, which builds its URL with `apiUrl`, so no view reads past it.
+    #[test]
+    fn explorer_offers_a_show_tests_toggle() {
+        let page = live_page();
+        for needle in [
+            r#"id="kgteststoggle""#,
+            "Show tests",
+            r#"let kgTests = "exclude";"#,
+            r#""tests=" + encodeURIComponent(kgTests)"#,
+            "function setTests(",
+            "tests_hidden",
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+        for bypass in [r#"fetch("/api/graph"#, r#"fetch(apiUrl("/api/graph"#] {
+            assert!(
+                !page.contains(bypass),
+                "every graph fetch goes through graphFetch, not {bypass}"
+            );
+        }
+        assert!(
+            page.contains(r#"const resp = await fetch(apiUrl(path), { cache: "no-store" });"#),
+            "graphFetch builds its URL with apiUrl"
+        );
+        let fetches = page.matches(r#"graphFetch("/api/graph"#).count();
+        assert!(fetches >= 8, "{fetches} graph fetches ride graphFetch");
+    }
+
+    /// The explorer's static header states what the graph on show describes: the one graph fetch
+    /// reads the label and the error header off every graph reply into it, an error marked so.
+    #[test]
+    fn the_graph_header_states_what_its_reads_describe() {
+        let page = live_page();
+        for needle in [
+            r#"id="kglabel""#,
+            &format!(r#"resp.headers.get("{GRAPH_LABEL_HEADER}")"#),
+            &format!(r#"resp.headers.get("{GRAPH_ERROR_HEADER}")"#),
+            "decodeURIComponent(error !== null ? error : label)",
+            r#"box.classList.toggle("kglabel-error", error !== null)"#,
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+    }
+
+    /// The run snapshot's decision history states what its graph read describes: the label the
+    /// state's graph carries, or the reason it could not be read, marked so.
+    #[test]
+    fn the_decision_history_states_what_its_graph_read_describes() {
+        let page = live_page();
+        for needle in [
+            r#"id="decisionslabel""#,
+            "const read = graph.label || {};",
+            r#"readBox.textContent = read.unread !== undefined ? read.unread : (read.read || "");"#,
+            r#"readBox.className = read.unread !== undefined ? "kglabel kglabel-error" : "kglabel";"#,
+            "readBox.hidden = read.unread === undefined && read.read === undefined;",
+        ] {
+            assert!(page.contains(needle), "the page lacks {needle}");
+        }
+    }
+
+    /// `/api/graph` takes `tests=exclude|include|only` (`exclude` when absent) and hands it to the
+    /// graph provider, to the directed-call provider too; a value that is none of the three is
+    /// refused 400 before either provider is consulted. Each row: the request's target, the status
+    /// it answers, and the filters the whole-graph and directed-call providers were opened under.
+    #[test]
+    fn api_graph_takes_the_tests_parameter() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::Mutex;
+
+        let ask = |target: &str| -> (String, String, Vec<Tests>, Vec<Tests>) {
+            let graph_seen = Arc::new(Mutex::new(Vec::new()));
+            let calls_seen = Arc::new(Mutex::new(Vec::new()));
+            let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
+            let provider = |_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((
+                    Vec::new(),
+                    Graph::default().into(),
+                    Vec::new(),
+                    HashMap::new(),
+                ))
+            };
+            let graph_provider = move |_: Option<&str>, tests: Tests| {
+                g.lock().unwrap().push(tests);
+                GraphRead {
+                    tests_hidden: 4,
+                    ..GraphRead::default()
+                }
+            };
+            let calls_provider = move |_: Option<&str>,
+                                       _: &[String],
+                                       _: crate::contextgraph::Direction,
+                                       _: i64,
+                                       _: &str,
+                                       tests: Tests| {
+                c.lock().unwrap().push(tests);
+                crate::contextgraph::CallGraph::default()
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let provider = Arc::new(provider);
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let status = resp.lines().next().unwrap().to_string();
+            let body = resp
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or_default()
+                .to_string();
+            let graph_seen = graph_seen.lock().unwrap().clone();
+            let calls_seen = calls_seen.lock().unwrap().clone();
+            (status, body, graph_seen, calls_seen)
+        };
+        let ok = "HTTP/1.1 200 OK";
+        let refused = "HTTP/1.1 400 Bad Request";
+        let cases = [
+            ("/api/graph", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=exclude", ok, vec![Tests::Exclude], vec![]),
+            ("/api/graph?tests=include", ok, vec![Tests::Include], vec![]),
+            ("/api/graph?tests=only", ok, vec![Tests::Only], vec![]),
+            (
+                "/api/graph?lens=code&tests=include",
+                ok,
+                vec![Tests::Include],
+                vec![],
+            ),
+            (
+                "/api/graph?view=calls&seed=x&dir=down&tests=only",
+                ok,
+                vec![],
+                vec![Tests::Only],
+            ),
+            ("/api/graph?tests=some", refused, vec![], vec![]),
+            (
+                "/api/graph?view=calls&seed=x&tests=",
+                refused,
+                vec![],
+                vec![],
+            ),
+        ];
+        for (target, status, graph, calls) in cases {
+            let (got, _, seen_graph, seen_calls) = ask(target);
+            assert_eq!(
+                (got, seen_graph, seen_calls),
+                (status.to_string(), graph, calls),
+                "{target}"
+            );
+        }
+        // The count the provider read rides the overview body, from the same read as the graph.
+        let (_, body, _, _) = ask("/api/graph?tests=exclude");
+        assert!(body.contains(r#""tests_hidden":4"#), "{body}");
+    }
+
+    /// The polled run snapshot states what the read its decisions and findings were drawn from
+    /// describes (spec 6.1), in its body beside them, so the static export states it too: the label
+    /// of that open, or why no graph could be read, and nothing when no store was opened. Each row:
+    /// what the polled read describes and the snapshot's `graph.label`.
+    #[test]
+    fn the_run_snapshot_states_what_its_graph_read_describes() {
+        use rigger_domain::composed::Compared;
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let ask = |read: Option<GraphLabel>| -> (String, serde_json::Value) {
+            let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
+                let polled = GraphRead {
+                    label: read.clone(),
+                    ..GraphRead::default()
+                };
+                Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
+            });
+            let graph_provider = |_: Option<&str>, _: Tests| GraphRead::default();
+            let calls_provider = |_: Option<&str>,
+                                  _: &[String],
+                                  _: crate::contextgraph::Direction,
+                                  _: i64,
+                                  _: &str,
+                                  _: Tests| CallsRead::default();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(b"GET /api/state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let (head, body) = resp.split_once("\r\n\r\n").expect("a head");
+            (head.to_string(), serde_json::from_str(body).unwrap())
+        };
+        let described = GraphLabel::Read(Label {
+            describes: "c1".to_string(),
+            worktree: "/w".to_string(),
+            compared: Compared::Differ(1),
+            behind: None,
+            withheld: 0,
+        });
+        let unread = GraphLabel::Unread("no graph has been built at g.db".to_string());
+        let cases = [
+            (
+                Some(described),
+                serde_json::json!({"read": "describes c1; 1 file in /w differs"}),
+            ),
+            (
+                Some(unread),
+                serde_json::json!({"unread": "no graph has been built at g.db"}),
+            ),
+            (None, serde_json::Value::Null),
+        ];
+        for (read, expected) in cases {
+            let (head, state) = ask(read);
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+            assert_eq!(state["graph"]["label"], expected);
+        }
+    }
+
+    /// Every graph view states what the reads behind it describe: the label of each open (spec
+    /// 6.1) in one header, the reason a store could not be read in another, so a graph that could
+    /// not be read is never an empty graph alone. Each row: the request, what the whole-graph and
+    /// directed-call providers read, and the label and error header lines the response carries.
+    #[test]
+    fn a_graph_view_states_what_its_reads_describe() {
+        use rigger_domain::composed::Compared;
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+
+        let ask = |target: &str, read: Option<GraphLabel>| -> String {
+            let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((
+                    Vec::new(),
+                    Graph::default().into(),
+                    Vec::new(),
+                    HashMap::new(),
+                ))
+            });
+            let whole = read.clone();
+            // The read withheld `x` alone: a view counts the withheld hits of its own answer.
+            let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
+                withheld: Graph {
+                    nodes: vec![Node {
+                        id: "x".to_string(),
+                        kind: KIND_CODE_ENTITY.to_string(),
+                        attrs: BTreeMap::new(),
+                    }],
+                    ..Graph::default()
+                },
+                label: whole.clone(),
+                ..GraphRead::default()
+            };
+            let calls_provider = move |_: Option<&str>,
+                                       _: &[String],
+                                       _: crate::contextgraph::Direction,
+                                       _: i64,
+                                       _: &str,
+                                       _: Tests| CallsRead {
+                label: read.clone(),
+                ..CallsRead::default()
+            };
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &Vec::new,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            resp
+        };
+        let described = GraphLabel::Read(Label {
+            describes: "c1".to_string(),
+            worktree: "/w/\u{fc}".to_string(),
+            compared: Compared::Differ(1),
+            behind: None,
+            withheld: 3,
+        });
+        let label = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 3 withheld";
+        // The seed view reaches the one withheld node, `x`, so it states 1 where the overview
+        // states the whole read's 3.
+        let seeded = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 1 withheld";
+        let unread = GraphLabel::Unread("the code store cannot be opened: 100%".to_string());
+        let error = "X-Rigger-Graph-Error: the code store cannot be opened: 100%25";
+        let cases: [(&str, Option<GraphLabel>, Vec<&str>); 6] = [
+            ("/api/graph", Some(described.clone()), vec![label]),
+            ("/api/graph?seed=x", Some(described.clone()), vec![seeded]),
+            ("/api/graph", Some(unread.clone()), vec![error]),
+            (
+                "/api/graph?view=calls&seed=x&dir=both",
+                Some(described),
+                vec![label],
+            ),
+            ("/api/graph?view=calls&seed=x", Some(unread), vec![error]),
+            ("/api/graph", None, vec![]),
+        ];
+        for (target, read, lines) in cases {
+            let resp = ask(target, read);
+            let (head, _) = resp.split_once("\r\n\r\n").expect("a head");
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{target}: {head}");
+            let stated: Vec<&str> = head
+                .lines()
+                .filter(|l| l.starts_with("X-Rigger-Graph-"))
+                .collect();
+            assert_eq!(stated, lines, "{target}");
+        }
+    }
+
     /// The read-only guard also holds over a real socket: a POST is refused 405 and the
     /// provider is never even consulted (it would panic if called), proving no request can
     /// reach a mutation path.
@@ -8320,14 +8951,15 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = |_instance: Option<&str>| -> Graph {
+        let graph_provider = |_instance: Option<&str>, _tests: Tests| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
         let calls_provider = |_: Option<&str>,
                               _: &[String],
                               _: crate::contextgraph::Direction,
                               _: i64,
-                              _: &str|
+                              _: &str,
+                              _: Tests|
          -> crate::contextgraph::CallGraph {
             panic!("a non-GET request must never open the calls projection");
         };
@@ -8384,7 +9016,12 @@ mod tests {
         // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
         // panel reads, and it must be the ONLY graph the state poll touches.
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                Graph::default().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
 
         // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture
@@ -8392,7 +9029,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>| -> Graph {
+        let graph_provider = move |_instance: Option<&str>, _tests: Tests| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {
@@ -8407,9 +9044,12 @@ mod tests {
         // A call view is not exercised here (no request carries `view=calls`), so the calls
         // provider must never be consulted; a plain empty walk keeps the wiring complete.
         let calls_provider =
-            |_: Option<&str>, _: &[String], _: crate::contextgraph::Direction, _: i64, _: &str| {
-                crate::contextgraph::CallGraph::default()
-            };
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
         let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -8506,8 +9146,8 @@ mod tests {
 
     #[test]
     fn dash_marker_parse_rejects_a_malformed_record() {
-        // A corrupt/truncated marker reads as "no dash recorded" (None), so the step path
-        // starts a fresh dash rather than trusting garbage.
+        // A corrupt/truncated marker reads as "no dash recorded" (None) rather than trusting
+        // garbage.
         assert_eq!(DashMarker::parse(""), None, "empty is not a marker");
         assert_eq!(
             DashMarker::parse("7431"),
@@ -8677,10 +9317,9 @@ mod tests {
         /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
         /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
         /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
-        /// never promote an unconfirmed holder to a claim regardless of who calls it. This is what let
-        /// round 4 rewire the step-path auto-start (`wait_for_dash_bind_or_diagnose`, `src/cli/run.rs`,
-        /// whose bind attempt runs in a detached child with no observable `io::Error` at all, so it
-        /// has no upstream confirmation of its own to lean on) onto [`held_port_holder`] directly
+        /// never promote an unconfirmed holder to a claim regardless of who calls it, so a caller
+        /// whose bind attempt runs in a detached child with no observable `io::Error` at all (no
+        /// upstream confirmation of its own to lean on) can use [`held_port_holder`] directly
         /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
         /// this test process's own pid.
         describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed:
@@ -8710,26 +9349,6 @@ mod tests {
             None,
             "a port nothing holds must never be described as held - the exact false-positive \
              this round's fix exists to close"
-        );
-    }
-
-    #[test]
-    fn dash_start_needed_is_true_when_none_serving_and_false_when_one_serves() {
-        let m = DashMarker { port: 7442, pid: 7 };
-        // No marker at all -> a step must start one.
-        assert!(
-            dash_start_needed(None, |_| panic!("must not probe when there is no marker")),
-            "no recorded dash -> start one"
-        );
-        // A marker whose dash is NOT serving (e.g. a crashed/reaped dash) -> start a fresh one.
-        assert!(
-            dash_start_needed(Some(m), |_| false),
-            "a stale marker (dash gone) -> start a fresh one"
-        );
-        // A marker whose dash IS still serving -> no-op (the idempotent short-circuit).
-        assert!(
-            !dash_start_needed(Some(m), |_| true),
-            "a live recorded dash -> start NO second one"
         );
     }
 
@@ -8847,7 +9466,7 @@ mod tests {
         );
 
         // A recorded URL with NO marker to check against is TRUSTED as-is, with NO probe - the
-        // guard-bound `rigger run` / `rigger serve` dash records a URL but no marker at all
+        // URL `rigger run` records outlives the marker it removes on reaping its dash
         // (spec 62 owns the marker lifecycle), so an absent marker must never read as "dead".
         assert_eq!(
             dash_status(Some(url.clone()), None, |_| panic!(
@@ -9182,10 +9801,10 @@ mod tests {
     mod calls_route_c4 {
         use super::*;
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::{CallGraph, CallNode, Direction, Projection};
+        use crate::contextgraph::{CallGraph, CallNode, ContextGraph, Direction};
         use crate::test_support::calls_edge;
         use crate::test_support::plain;
-        use crate::test_support::{apply_call, apply_def};
+        use crate::test_support::{facts_view, planted_file, view_graph};
 
         /// One reached call node with a store-side (non-negative) hop `layer` and an optional
         /// multi-candidate `frontier`, as the traversal returns it.
@@ -9388,11 +10007,11 @@ mod tests {
                 edges: vec![Edge {
                     from: "a".to_string(),
                     to: "b".to_string(),
-                    rel: REL_REFERENCES.to_string(),
+                    rel: REL_REFERENCES.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: 0,
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 }],
             };
             let body = graph_json(&graph, "a", &["a".to_string()], 1, None, None).unwrap();
@@ -9412,21 +10031,29 @@ mod tests {
 
         /// The dispatch: `view=calls` runs the store-side traversal through the provider and returns
         /// its layered body; an absent `view` DECLINES (so `handle_conn` falls through to the
-        /// byte-identical neighborhood). Drives the REAL `Projection::calls` through a store-backed
+        /// byte-identical neighborhood). Drives the REAL `ContextGraph::calls` through a store-backed
         /// provider closure, so it proves the route wired the direction/seed onto the traversal.
         #[test]
         fn calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise() {
             let p = Projector::open(":memory:", "test").unwrap();
-            apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-            apply_def(&p, 2, "src/c.rs", "caller", 1, true);
-            apply_call(&p, 3, "src/c.rs", "callee", "caller");
+            let view = facts_view(vec![
+                planted_file("src/a.rs", &[("callee", "function")], &[], &[]),
+                planted_file(
+                    "src/c.rs",
+                    &[("caller", "function")],
+                    &[("caller", "callee")],
+                    &[],
+                ),
+            ]);
             let cp = |_inst: Option<&str>,
                       seed: &[String],
                       dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
-                p.calls(seed, dir, depth, floor).unwrap_or_default()
+                ContextGraph::calls(&view_graph(&p, &view), seed, dir, depth, floor)
+                    .unwrap_or_default()
             };
 
             // No view=calls: the dispatch declines so the neighborhood path runs unchanged.
@@ -9482,7 +10109,8 @@ mod tests {
                       _seed: &[String],
                       _dir: Direction,
                       depth: i64,
-                      floor: &str|
+                      floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 seen.borrow_mut().push((depth, floor.to_string()));
                 CallGraph::default()
@@ -9515,7 +10143,8 @@ mod tests {
                       _seed: &[String],
                       dir: Direction,
                       _depth: i64,
-                      _floor: &str|
+                      _floor: &str,
+                      _tests: Tests|
              -> CallGraph {
                 dirs.borrow_mut().push(dir);
                 CallGraph::default()

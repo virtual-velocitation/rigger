@@ -17,31 +17,37 @@
 //! off a real workflow file, and the workflows `rigger init` renders, which keep loading as the
 //! canonical sequence.
 //!
-//! Past those sits a list running: the compiled `rigger step` walks one repeating a kind, a fresh
-//! process per step, each step printed under its own token with the roster of every earlier one.
-//! The walk runs through an adjudicator's reject into a next round, the log it leaves parses back
-//! through `review_step_of`, and a map-form run rebased onto its canonical list keeps its ids.
+//! Past those sits a list running: `rigger run`, over a stand-in host answering each spawn by its
+//! id, walks one repeating a kind, each step requested once the step before it answered, under
+//! its own token with the roster of every earlier one. The run goes through an adjudicator's
+//! reject into a next round, the log it leaves parses back through `review_step_of`, and a
+//! map-form run halted mid-round and rebased onto its canonical list keeps its ids.
 //!
-//! Past that sit the token readers: a walked round's own spawn ids and findings, a real respawn
-//! among them, read back through the compiled `rigger stats` and `rigger dash --export` by kind,
-//! the map form folding as ever.
+//! Past that sit the token readers: a run's own spawn ids and findings, a real respawn among
+//! them, read back through the compiled `rigger stats` and `rigger dash --export` by kind, the
+//! map form folding as ever.
 //!
 //! Past a run sits the canary, spec 120's criterion 10 (PANEL READERS READ EVERY STEP): the
 //! compiled `rigger canary` walks every step of a panel under its token, each spawn's argv carrying
 //! its tier's `--model` pin, shows the adjudicator every finding in order and reversed, scores a
 //! corpus item into the tier of the step that caught it, and refuses a list with no adjudicator
-//! step.
+//! step. The same canary carries spec 121's criterion 2 (THE GREP GUARD IS DECLARED): every spawn
+//! of the panel starts with the session's grep guard exactly when the workflow declares
+//! `defaults.grep_guard`. It carries spec 121's criterion 3 (THE OPERATOR'S HELPER COPY IS THE
+//! DEFINITION) too: every spawn of the panel defines the helpers from the operator's copies the
+//! checkout holds, else from the embedded text, and pre-approves the rigger tools they declare.
 
-mod common;
+use crate::common;
 
-#[cfg(unix)]
-use common::cli::run_rigger_envs;
 use common::cli::{
-    cargo_project, loaded_config, read_run_events, rigger_file, run_rigger, run_rigger_ok,
-    temp_project, write_scaffold,
+    cargo_project, loaded_config, read_run_events, rigger_file, run_on_arms, run_rigger,
+    run_rigger_ok, temp_project, write_scaffold,
 };
+#[cfg(unix)]
+use common::cli::{declare_grep_guard, run_rigger_envs};
 #[cfg(feature = "symbols")]
 use common::cli::{edge_lines, run_around};
+use common::fixtures::test_spawn_host;
 use common::fixtures::{
     adversary_first_steps, agent_with_its_own_alias, count_status_marker, declaring, lenses,
     light_of, panel_of, panel_rule_refusals, repeated_kind_lists, repo_review_panel,
@@ -50,11 +56,17 @@ use common::fixtures::{
     PANEL_SCOPES, REJECT_FEATURE, REPEATED_KIND_LIST,
 };
 #[cfg(unix)]
-use common::fixtures::{read_text, CONTROL_ITEM, PROMPT_CAPTURE_DIR};
-use common::git::{commit_files, temp_git_project_with_commit};
+use common::fixtures::{
+    read_text, stand_in_launches, write_helper_copies, HelperFile, CONTROL_ITEM,
+    OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
+};
+use common::git::temp_git_project_with_commit;
 use common::repo::repo_root;
 #[cfg(unix)]
-use common::repo::stub_path;
+use common::repo::{
+    flag_value, grep_guard_hook, handed_helpers_agents_json, hook_words, launch_helpers, stub_path,
+    EMBEDDED_HELPER_TOOLS,
+};
 use rigger::conductor::{run, Deps, META_REPLAY_KEY, STREAM};
 use rigger::config::ReviewPanel;
 use rigger::config::ReviewStep::{self, Adjudicator, Adversary};
@@ -66,8 +78,9 @@ use rigger::metrics::META_MODEL_ALIAS;
 use rigger::spawn::{
     requests, review_step_of, spawn_role, ReviewKind, SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT,
 };
-use std::fmt::Display;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use serde_json::Value;
+use std::path::Path;
 
 /// The panel a stage named `s` carries when its `review:` key is the flow mapping `panel`, read
 /// through the production workflow parser and the stage-panel resolution the conductor uses.
@@ -266,13 +279,113 @@ fn canary_on_stub(
 #[cfg(unix)]
 fn canary_of(root: &Path, panel: &str) -> (String, String, bool) {
     write_canary_project(root, panel, CONTROL_ITEM);
+    let (out, err, ok, _capture) = canary_capturing(root);
+    (out, err, ok)
+}
+
+/// `rigger canary` run in `root` over the real subprocess driver standing on the prompt-capture
+/// stub: its stdout, stderr and success, then the directory holding what the stub captured.
+#[cfg(unix)]
+fn canary_capturing(root: &Path) -> (String, String, bool, tempfile::TempDir) {
     let capture = tempfile::tempdir().unwrap();
-    canary_on_stub(
+    let (out, err, ok) = canary_on_stub(
         root,
         ("prompt-capture-agent.sh", PROMPT_CAPTURE_DIR),
         capture.path(),
         &[],
-    )
+    );
+    (out, err, ok, capture)
+}
+
+/// Spec 121's THE GREP GUARD IS DECLARED, through the canary: given a panel repeating a kind and a
+/// one-item corpus, its workflow declaring `defaults.grep_guard` or not, when the operator runs
+/// `rigger canary`, then every spawn of the panel, each reviewer and the adjudicator, starts with
+/// the session's grep guard as its one `PreToolUse` hook exactly when the workflow declares it,
+/// and with no `PreToolUse` hook otherwise.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_starts_every_panel_spawn_with_the_grep_guard_exactly_when_declared() {
+    for grep_guard in [false, true] {
+        let dir = temp_project();
+        let root = dir.path();
+        write_canary_project(root, REPEATED_KIND_LIST, CONTROL_ITEM);
+        if grep_guard {
+            declare_grep_guard(root);
+        }
+        let (_out, err, ok, capture) = canary_capturing(root);
+        assert!(
+            ok,
+            "grep_guard {grep_guard}: the canary scores; stderr:\n{err}"
+        );
+        let spawns: Vec<_> = stand_in_launches(&capture.path().join("launches"))
+            .into_iter()
+            .map(|launch| {
+                let settings: Value =
+                    serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+                let pre_tool_use = settings["hooks"].get("PreToolUse");
+                let hooks = pre_tool_use.map(|_| hook_words(&settings, "PreToolUse"));
+                (launch.spawn, hooks)
+            })
+            .collect();
+        let hooks = grep_guard.then(|| vec![grep_guard_hook()]);
+        let expected: Vec<_> = repeated_kind_canary_spawns()
+            .into_iter()
+            .map(|spawn| (spawn, hooks.clone()))
+            .collect();
+        assert_eq!(spawns, expected, "grep_guard {grep_guard}");
+    }
+}
+
+/// The spawn of each step of [`REPEATED_KIND_LIST`] the canary launches over its control item,
+/// each reviewer's and the adjudicator's, in spawn order.
+#[cfg(unix)]
+fn repeated_kind_canary_spawns() -> Vec<String> {
+    let mut roles: Vec<&str> = REPEATED_KIND_REVIEWERS
+        .iter()
+        .map(|(role, _)| *role)
+        .collect();
+    roles.push("adjudicator:a");
+    roles.sort();
+    roles
+        .iter()
+        .map(|role| format!("canary:control:{role}"))
+        .collect()
+}
+
+/// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, through the canary: given a panel
+/// repeating a kind and a one-item corpus, the checkout holding the operator's own copies of both
+/// helpers or of neither, when the operator runs `rigger canary`, then every spawn of the panel,
+/// each reviewer and the adjudicator, defines the helpers from those copies, else from the
+/// embedded text, and pre-approves exactly the rigger tools those definitions declare: the panel's
+/// agents grant none of their own, and this host serves no bound tool.
+#[cfg(unix)]
+#[test]
+fn rigger_canary_hands_every_panel_spawn_the_operators_helper_copies() {
+    let rows: [(&str, &[HelperFile], &str); 2] = [
+        ("no copy", &[], EMBEDDED_HELPER_TOOLS),
+        (
+            "both copies",
+            &OPERATOR_HELPER_COPIES,
+            OPERATOR_HELPER_TOOLS,
+        ),
+    ];
+    for (name, copies, tools) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        write_canary_project(root, REPEATED_KIND_LIST, CONTROL_ITEM);
+        write_helper_copies(root, copies);
+        let (_out, err, ok, capture) = canary_capturing(root);
+        assert!(ok, "{name}: the canary scores; stderr:\n{err}");
+        let spawns = launch_helpers(&capture.path().join("launches"));
+        let expected: Vec<(String, Value, String)> = repeated_kind_canary_spawns()
+            .into_iter()
+            .map(|spawn| (spawn, handed_helpers_agents_json(copies), tools.to_string()))
+            .collect();
+        assert_eq!(
+            spawns, expected,
+            "{name}: each panel spawn's helpers and pre-approval"
+        );
+    }
 }
 
 /// Given a corpus and a panel declared as a list repeating a kind, when the operator runs
@@ -651,7 +764,7 @@ fn an_agent_id_holding_the_separator_stops_validate_and_each_run_entry() {
         "defaults: {}\n",
     );
     let line = format!("rigger: config: {}", separator_refusal("agents", "w@k"));
-    for verb in ["validate", "step", "run"] {
+    for verb in ["validate", "run"] {
         assert_stops_with(project.path(), verb, &line);
     }
 }
@@ -771,101 +884,161 @@ fn rigger_validate_accepts_a_list_repeating_a_step_kind_and_it_loads_as_declared
     }
 }
 
-/// One `rigger step` run in `root`: the wave it prints, each spawn's id with the roster its item
-/// carries, in id order since a lens step's spawns race, and whether it printed the run done.
-fn printed_step(root: &Path) -> (Vec<(String, Vec<String>)>, bool) {
-    let out = run_rigger_ok(root, &["step"]);
-    let step: serde_json::Value = serde_json::from_str(&out).expect("the step prints json");
-    let mut wave: Vec<(String, Vec<String>)> = step["wave"]
-        .as_array()
-        .expect("the step prints a wave")
-        .iter()
-        .map(|item| {
-            let roster = item["reviews"].as_array().map_or(Vec::new(), |roster| {
-                let tokens = roster
-                    .iter()
-                    .map(|token| token.as_str().unwrap().to_string());
-                tokens.collect()
-            });
-            (item["id"].as_str().unwrap().to_string(), roster)
-        })
-        .collect();
-    wave.sort();
-    (wave, step["done"] == serde_json::json!(true))
-}
-
-/// The answer a finding reviewer gives a walk's step.
+/// The answer a finding reviewer gives a step of a run.
 const NO_BLOCKER: &str = "reviewed: no blocker";
 
-/// The adjudicator verdict that lands a walk's round.
+/// The adjudicator verdict that lands a run's round.
 const APPROVE: &str = r#"{"verdict":"approve"}"#;
 
-/// The map-form panel a walk declares.
+/// The map-form panel a run declares.
 const MAP_PANEL: &str = "{ lenses: [a, b], adversary: x, adjudicator: z }";
 
-/// A finding a walked round raises: its id, the id of the spawn raising it and the file it flags.
+/// The list spelling [`MAP_PANEL`]'s canonical sequence.
+const MAP_PANEL_AS_LIST: &str =
+    "{ steps: [{ lenses: [a, b] }, { adversary: x }, { adjudicator: z }] }";
+
+/// A finding a run's round raises: its id, the id of the spawn raising it and the file it flags.
 type RaisedFinding<'a> = (&'a str, &'a str, &'a str);
 
-/// One step of a walk: its tokens, the roster each of them parks with and the answer each gets.
+/// One step of a round: its tokens, the roster each of them is requested with and the answer
+/// each gives.
 type WalkedStep<'a> = (&'a [&'a str], &'a [&'a str], &'a str);
 
-/// The workflow of a walk, for [`declaring`]: one stage `s` reviewed by its `{panel}`.
+/// The workflow of a run, for [`declaring`]: one stage `s` reviewed by its `{panel}`.
 const WALKED_WORKFLOW: &str = "defaults:\n  grounder: nop\n  budget: 60\ngates:\n  ok: { run: \
                                \"true\", kind: core }\nstages:\n  s:\n    agent: a\n    gates: \
                                [ok]\n    on_pass: none\n    review: {panel}\n";
 
-/// Drives a project reviewed by `panel` past its implementer: `rigger step` parks that spawn
-/// alone, and its commit of `feature.rs` and its result open the round. Returns the unit's
-/// worktree.
-fn implement_reviewed_by(root: &Path, panel: &str) -> PathBuf {
-    write_panel_project(root, &declaring(WALKED_WORKFLOW, panel));
-    let (wave, done) = printed_step(root);
-    assert_eq!(wave, [("s/implementer#0".to_string(), vec![])]);
-    assert!(!done);
-    let worktree = common::default_scratch_root(root).join("rigger-wt-s");
-    commit_files(&worktree, &[("feature.rs", "pub fn work() {}\n")], "wip");
-    run_rigger_ok(root, &["result", "s/implementer#0", "implemented the unit"]);
-    worktree
+/// The `feature.rs` the implementer of each attempt leaves in the unit's worktree.
+const FEATURE_BY_ATTEMPT: [&str; 2] = ["pub fn work() {}\n", "pub fn work() -> u8 { 1 }\n"];
+
+/// One `rigger run` over stage `s`, the fake host answering each spawn by its id.
+struct Walk<'a> {
+    /// Each attempt's review round: its steps, in the order they run.
+    rounds: &'a [&'a [WalkedStep<'a>]],
+    /// The one-token step's spawn whose launch dies, so the run respawns it once as `~retry1`,
+    /// which gives the answer its step spells.
+    respawned: Option<&'a str>,
+    /// The findings the reviewers raise through `rigger emit`, by the spawn id raising each.
+    raised: &'a [RaisedFinding<'a>],
 }
 
-/// Walks `steps` of stage `s` at `attempt`, a process per step: each parks exactly its tokens
-/// under its roster and `rigger result` answers every one of them. `attempt` is what follows the
-/// `#` of each spawn id, so `0~retry1` walks a respawn of attempt 0.
-fn walk_steps(root: &Path, attempt: impl Display, steps: &[WalkedStep]) {
-    walk_raising(root, attempt, steps, &[]);
-}
-
-/// [`walk_steps`], each parked spawn first raising, through `rigger emit` under its step token,
-/// the `raised` findings that name its id.
-fn walk_raising(
-    root: &Path,
-    attempt: impl Display,
-    steps: &[WalkedStep],
-    raised: &[RaisedFinding],
-) {
-    for (tokens, roster, answer) in steps {
-        let ids: Vec<String> = tokens
-            .iter()
-            .map(|token| format!("s/{token}#{attempt}"))
-            .collect();
-        let (wave, done) = printed_step(root);
-        let roster: Vec<String> = roster.iter().map(|token| token.to_string()).collect();
-        let parked = ids.iter().map(|id| (id.clone(), roster.clone()));
-        assert_eq!(wave, parked.collect::<Vec<_>>(), "{ids:?}");
-        assert!(!done, "{ids:?}");
-        for id in &ids {
-            let own = raised.iter().filter(|(_, raiser, _)| raiser == id);
-            for (finding, _, file) in own {
-                let by = spawn_role(id);
-                let data = serde_json::json!({
-                    "id": finding, "by": by, "summary": "a finding", "about": [file],
-                });
-                let data = data.to_string();
-                run_rigger_ok(root, &["emit", "--spawn", id, "ReviewFinding", &data]);
+impl Walk<'_> {
+    /// The fake host's arm: each attempt's implementer writes that attempt's `feature.rs`, each
+    /// reviewer raises its own findings then prints its step's answer, the respawned spawn dies,
+    /// and any spawn the walk does not name prints nothing.
+    fn arms(&self, root: &Path) -> String {
+        let bin = common::rigger_bin();
+        let mut branches = String::new();
+        for (attempt, feature) in FEATURE_BY_ATTEMPT.iter().enumerate() {
+            let feature = feature.escape_default();
+            branches += &format!(
+                "    s/implementer#{attempt}) printf '{feature}' > feature.rs; echo implemented ;;\n"
+            );
+        }
+        for (attempt, round) in self.rounds.iter().enumerate() {
+            for (tokens, _, answer) in *round {
+                for token in *tokens {
+                    let id = format!("s/{token}#{attempt}");
+                    let answering = if self.respawned == Some(id.as_str()) {
+                        branches += &format!("    {id}) exit 1 ;;\n");
+                        format!("{id}~retry1")
+                    } else {
+                        id
+                    };
+                    let own = self.raised.iter().filter(|(_, by, _)| *by == answering);
+                    let emits: String = own
+                        .map(|(finding, by, file)| {
+                            let data = serde_json::json!({
+                                "id": finding, "by": spawn_role(by), "summary": "a finding",
+                                "about": [file],
+                            });
+                            format!(
+                                "(cd '{}' && '{}' emit --spawn \"$RIGGER_SPAWN\" ReviewFinding \
+                                 '{data}') >&2; ",
+                                root.display(),
+                                bin.display()
+                            )
+                        })
+                        .collect();
+                    branches += &format!("    {answering}) {emits}echo '{answer}' ;;\n");
+                }
             }
-            run_rigger_ok(root, &["result", id, answer]);
+        }
+        format!("  *)\n    case \"$RIGGER_SPAWN\" in\n{branches}    *) ;;\n    esac\n    ;;\n")
+    }
+
+    /// Each wave of spawns the walk requests: per attempt its implementer, then each step's
+    /// spawns under the step's roster, the respawned spawn followed by its `~retry1`.
+    fn waves(&self) -> Vec<Vec<(String, Vec<String>)>> {
+        let mut waves = Vec::new();
+        for (attempt, round) in self.rounds.iter().enumerate() {
+            waves.push(vec![(format!("s/implementer#{attempt}"), vec![])]);
+            for (tokens, roster, _) in *round {
+                let roster: Vec<String> = roster.iter().map(|token| token.to_string()).collect();
+                let wave = |tail: &str| -> Vec<(String, Vec<String>)> {
+                    let ids = tokens
+                        .iter()
+                        .map(|token| format!("s/{token}#{attempt}{tail}"));
+                    ids.map(|id| (id, roster.clone())).collect()
+                };
+                let first = wave("");
+                let respawns = first.iter().any(|(id, _)| self.respawned == Some(id));
+                waves.push(first);
+                if respawns {
+                    waves.push(wave("~retry1"));
+                }
+            }
+        }
+        waves
+    }
+
+    /// Drives a project reviewed by `panel` through one `rigger run` to the adjudicator's approve,
+    /// asserts it requested exactly [`Walk::waves`], and returns its log.
+    fn run(&self, root: &Path, panel: &str) -> Vec<Event> {
+        write_panel_project(root, &declaring(WALKED_WORKFLOW, panel));
+        let scratch = tempfile::tempdir().unwrap();
+        let arms = self.arms(root);
+        let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms);
+        assert!(ok, "the run exits 0; stderr: {err}\nstdout: {out}");
+        assert_eq!(unit_state(&out), "reviewed", "{out}\n{err}");
+        let events = read_run_events(root);
+        assert_eq!(requested_waves(&events), self.waves());
+        events
+    }
+}
+
+/// The state `rigger run` prints its one unit `s` in.
+fn unit_state(out: &str) -> &str {
+    let line = out.lines().find(|line| line.trim_start().starts_with("s "));
+    line.and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("")
+}
+
+/// Each wave of spawns `events` requests, each spawn's id with its roster, in id order since a
+/// lens step's spawns race: a request after a result opens the next wave.
+fn requested_waves(events: &[Event]) -> Vec<Vec<(String, Vec<String>)>> {
+    let mut waves: Vec<Vec<(String, Vec<String>)>> = Vec::new();
+    let mut open = false;
+    for event in events {
+        if event.type_ == TYPE_SPAWN_RESULT {
+            open = false;
+        }
+        for request in requests(std::slice::from_ref(event)).unwrap() {
+            if !open {
+                waves.push(Vec::new());
+                open = true;
+            }
+            waves
+                .last_mut()
+                .unwrap()
+                .push((request.id, request.reviews));
         }
     }
+    for wave in &mut waves {
+        wave.sort();
+    }
+    waves
 }
 
 /// The five steps of [`REPEATED_KIND_LIST`], its adjudicator step answering `verdict`.
@@ -887,49 +1060,39 @@ fn repeated_kind_round(verdict: &str) -> [WalkedStep<'_>; 5] {
     ]
 }
 
-/// Given a list repeating the lens and adversary kinds, when the operator drives it through
-/// `rigger step`, a process per step answered by `rigger result`, then each step parks under its
-/// own token with the roster of every earlier spawn, and the adjudicator's approve ends the run.
+/// Given a list repeating the lens and adversary kinds, when a run drives it, then each step's
+/// spawns are requested together, once the step before has answered, under the step's own token
+/// with the roster of every earlier spawn, and the adjudicator's approve ends the run.
 #[test]
-fn rigger_step_walks_a_list_repeating_a_kind_under_each_steps_token_and_roster() {
+fn a_run_walks_a_list_repeating_a_kind_under_each_steps_token_and_roster() {
     let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    implement_reviewed_by(root, REPEATED_KIND_LIST);
-    walk_steps(root, 0, &repeated_kind_round(APPROVE));
-    assert_eq!(printed_step(root), (vec![], true));
+    let walk = Walk {
+        rounds: &[&repeated_kind_round(APPROVE)],
+        respawned: None,
+        raised: &[],
+    };
+    walk.run(dir.path(), REPEATED_KIND_LIST);
 }
 
 /// Given a list repeating a kind, when its adjudicator step rejects, then the reject is the
-/// round's as at HEAD: no `reviewed` stamp lands, the implementer is handed the required item at
-/// the next attempt, a second `rigger step` on that parked spawn mints nothing new, and the next
-/// round runs every step again under the same tokens and rosters. The log the walk leaves parses
-/// back through `review_step_of`, and `is_adjudicator` picks out the two verdicts, each read.
+/// round's: no `reviewed` stamp lands for it, the implementer is handed the required item at the
+/// next attempt, and the next round runs every step again under the same tokens and rosters. The
+/// log the run leaves parses back through `review_step_of`, and `is_adjudicator` picks out the
+/// two verdicts, each read.
 #[test]
-fn rigger_step_takes_a_rejected_list_through_remediation_into_a_round_of_the_same_tokens() {
+fn a_run_takes_a_rejected_list_through_remediation_into_a_round_of_the_same_tokens() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    let worktree = implement_reviewed_by(root, REPEATED_KIND_LIST);
+    let walk = Walk {
+        rounds: &[
+            &repeated_kind_round(REJECT_FEATURE),
+            &repeated_kind_round(APPROVE),
+        ],
+        respawned: None,
+        raised: &[],
+    };
+    let events = walk.run(root, REPEATED_KIND_LIST);
 
-    walk_steps(root, 0, &repeated_kind_round(REJECT_FEATURE));
-
-    let remediation = (vec![("s/implementer#1".to_string(), vec![])], false);
-    assert_eq!(printed_step(root), remediation);
-    assert_eq!(
-        printed_step(root),
-        remediation,
-        "a parked spawn parks again"
-    );
-    commit_files(
-        &worktree,
-        &[("feature.rs", "pub fn work() -> u8 { 1 }\n")],
-        "fix",
-    );
-    run_rigger_ok(root, &["result", "s/implementer#1", "closed the finding"]);
-
-    walk_steps(root, 1, &repeated_kind_round(APPROVE));
-    assert_eq!(printed_step(root), (vec![], true));
-
-    let events = read_run_events(root);
     let requests = requests(&events).unwrap();
     let mut parsed: Vec<_> = requests
         .iter()
@@ -1000,71 +1163,61 @@ fn rigger_step_takes_a_rejected_list_through_remediation_into_a_round_of_the_sam
     assert_eq!(stamps, ["s/reviewed#1"]);
 }
 
-/// Given a run parked mid-round on a map-form panel, when the operator rewrites the panel as the
-/// list spelling its canonical sequence and rebases, then the recorded step answers from the log
-/// and the rest of the round parks under the ids and rosters the map form mints, each requested
-/// once.
+/// Given a run on a map-form panel halted mid-round once its lenses answered, when the operator
+/// rewrites the panel as the list spelling its canonical sequence, then a relaunched run stops on
+/// the definition drift, and once rebased it answers the recorded steps from the log and requests
+/// the rest of the round under the ids and rosters the map form mints, no spawn of the round
+/// requested twice.
 #[test]
-fn rigger_step_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
+fn a_run_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    implement_reviewed_by(root, MAP_PANEL);
-    walk_steps(root, 0, &[(&["lens:a", "lens:b"], &[], NO_BLOCKER)]);
-
-    write_panel_project(
-        root,
-        &declaring(
-            WALKED_WORKFLOW,
-            "{ steps: [{ lenses: [a, b] }, { adversary: x }, { adjudicator: z }] }",
+    let lenses: WalkedStep = (&["lens:a", "lens:b"], &[], NO_BLOCKER);
+    let round: &[WalkedStep] = &[
+        lenses,
+        (&["adversary"], &["lens:a", "lens:b"], NO_BLOCKER),
+        (
+            &["adjudicator"],
+            &["lens:a", "lens:b", "adversary"],
+            APPROVE,
         ),
+    ];
+    let walk = Walk {
+        rounds: &[round],
+        respawned: None,
+        raised: &[],
+    };
+    let arms = walk.arms(root);
+    let scratch = tempfile::tempdir().unwrap();
+    let relaunch = |workflow: &str, panel: &str, args: &[&str]| {
+        write_panel_project(root, &declaring(workflow, panel));
+        let (out, err, ok, _fake) = run_on_arms(root, args, scratch.path(), &arms);
+        (out, err, ok, requested_waves(&read_run_events(root)))
+    };
+    let halts_after_the_lenses = WALKED_WORKFLOW.replace("budget: 60", "budget: 3");
+    let lenses_answered = walk.waves()[..2].to_vec();
+
+    let (out, err, ok, waves) = relaunch(&halts_after_the_lenses, MAP_PANEL, &["run"]);
+    assert!(ok, "premise: the run halts on its budget; stderr: {err}");
+    assert!(
+        out.contains("halted: budget exhausted: 3/3 spawns"),
+        "{out}"
     );
-    let (_, err, ok) = run_rigger(root, &["step"]);
+    assert_eq!(
+        waves, lenses_answered,
+        "premise: halted once the lenses answered"
+    );
+
+    let (_, err, ok, waves) = relaunch(&halts_after_the_lenses, MAP_PANEL_AS_LIST, &["run"]);
     assert!(!ok, "premise: the rewrite drifts the pinned definition");
     assert!(err.contains("definition drift"), "{err}");
-    run_rigger_ok(root, &["step", "--rebase-definition"]);
+    assert_eq!(waves, lenses_answered, "a drifted run requests nothing");
 
-    walk_steps(
-        root,
-        0,
-        &[
-            (&["adversary"], &["lens:a", "lens:b"], NO_BLOCKER),
-            (
-                &["adjudicator"],
-                &["lens:a", "lens:b", "adversary"],
-                APPROVE,
-            ),
-        ],
-    );
-    assert_eq!(printed_step(root), (vec![], true));
-
-    let requests = requests(&read_run_events(root)).unwrap();
-    let mut ids: Vec<&str> = requests.iter().map(|request| request.id.as_str()).collect();
-    ids.sort();
-    assert_eq!(
-        ids,
-        [
-            "s/adjudicator#0",
-            "s/adversary#0",
-            "s/implementer#0",
-            "s/lens:a#0",
-            "s/lens:b#0",
-        ]
-    );
-}
-
-/// Walks `round` at attempt 0, the one spawn of step `respawned` dying with a recorded error, so
-/// the conductor re-parks that step as `~retry1`, which gives the answer `round` spells.
-fn walk_respawning(root: &Path, round: &[WalkedStep], respawned: usize, raised: &[RaisedFinding]) {
-    let (before, rest) = round.split_at(respawned);
-    walk_raising(root, 0, before, raised);
-    let (died, after) = rest
-        .split_first()
-        .expect("the respawned step is in the round");
-    run_rigger_ok(root, &["step"]);
-    let id = format!("s/{}#0", died.0[0]);
-    run_rigger_ok(root, &["result", &id, "--error", "the reviewer died"]);
-    walk_raising(root, "0~retry1", std::slice::from_ref(died), raised);
-    walk_raising(root, 0, after, raised);
+    let rebase = ["run", "--rebase-definition"];
+    let (out, err, ok, waves) = relaunch(WALKED_WORKFLOW, MAP_PANEL_AS_LIST, &rebase);
+    assert!(ok, "the rebased run exits 0; stderr: {err}");
+    assert_eq!(unit_state(&out), "reviewed", "{out}\n{err}");
+    assert_eq!(waves, walk.waves());
 }
 
 /// The line `rigger stats` opens its spawn timing rows with.
@@ -1140,14 +1293,18 @@ struct ReadBack<'a> {
     review: &'a [(&'a str, &'a [&'a str])],
 }
 
-/// Walks `read_back`'s round to the adjudicator's approve through the compiled binary, then
-/// asserts each operator surface over the spawn ids and findings that walk left on the log.
+/// Drives `read_back`'s round to the adjudicator's approve through one `rigger run`, then
+/// asserts each operator surface over the spawn ids and findings that run left on the log.
 fn assert_read_back(read_back: ReadBack) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    implement_reviewed_by(root, read_back.panel);
-    walk_respawning(root, read_back.round, read_back.respawned, read_back.raised);
-    assert_eq!(printed_step(root), (vec![], true));
+    let respawned = format!("s/{}#0", read_back.round[read_back.respawned].0[0]);
+    let walk = Walk {
+        rounds: &[read_back.round],
+        respawned: Some(&respawned),
+        raised: read_back.raised,
+    };
+    walk.run(root, read_back.panel);
 
     let (quality, timing) = stats_read_back(root);
     assert_eq!(quality, read_back.quality);
@@ -1354,8 +1511,8 @@ fn rigger_init_scaffolds_exactly_the_agents_a_list_names() {
     let panel = "{ steps: [{ adversary: adversary }, { adjudicator: sdet }], \
          tiers: { light: { steps: [{ adjudicator: architecture-reviewer }] } } }";
     for template in [
-        "defaults:\n  review: {panel}\nstages:\n  s:\n    agent: rust-engineer\n",
-        "stages:\n  s:\n    agent: rust-engineer\n    review: {panel}\n",
+        "defaults:\n  review: {panel}\nstages:\n  s:\n    agent: implementer\n",
+        "stages:\n  s:\n    agent: implementer\n    review: {panel}\n",
     ] {
         let project = temp_project();
         write_scaffold(project.path(), &[], &declaring(template, panel));
@@ -1371,7 +1528,7 @@ fn rigger_init_scaffolds_exactly_the_agents_a_list_names() {
             [
                 "adversary.md",
                 "architecture-reviewer.md",
-                "rust-engineer.md",
+                "implementer.md",
                 "sdet.md",
             ],
             "{template}"
@@ -1476,7 +1633,7 @@ fn graph_around_gives_a_reviewer_of_either_form_one_edge_of_each_tier() {
     for workflow in workflows.as_flattened() {
         let project = temp_project();
         write_scaffold(project.path(), &[], workflow);
-        run_rigger_ok(project.path(), &["graph", "build"]);
+        common::cli::build_head(project.path());
         let (around, err, ok) = run_around(project.path(), "stage:implement", 1);
         assert!(ok, "graph --around must answer; stderr:\n{err}");
         let mut review_edges: Vec<(String, String, String)> = edge_lines(&around)
@@ -1537,8 +1694,10 @@ fn assert_winner_reviewed_aliases(panel: ReviewPanel, expected: &[&str]) {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     run(&cfg, &deps).unwrap();
 

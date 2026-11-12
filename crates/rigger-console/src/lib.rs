@@ -31,6 +31,9 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(test)]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]

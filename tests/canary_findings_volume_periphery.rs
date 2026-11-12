@@ -27,7 +27,7 @@
 //! populated map, decode it back); nothing else in the diff proves the pre-existing-data
 //! direction.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 
@@ -36,6 +36,7 @@ use serde_json::{json, Value};
 use common::fixtures::anchored_item as item;
 use common::fixtures::cfg_for;
 use common::fixtures::panel_with_lenses;
+use common::fixtures::test_spawn_host;
 use common::fixtures::CRITICAL_SUMMARY;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
 use rigger::canary_store::{default_jobs, run_canary};
@@ -148,6 +149,7 @@ fn run_canary_scores_findings_volume_independent_of_catch_and_project_canary_sum
         &store,
         &VolumeDriver,
         &cfg,
+        &test_spawn_host(),
         &panel,
         &corpus,
         default_jobs(),

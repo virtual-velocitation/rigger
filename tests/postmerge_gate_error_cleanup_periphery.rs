@@ -33,7 +33,8 @@
 //! for which that slugging is the identity transform, so the path is reconstructed here without
 //! calling any private helper.
 
-mod common;
+use crate::common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::workflow_cfg;
 use common::git::git_ok;
 
@@ -138,8 +139,10 @@ impl PostmergeFixture {
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: None,
         };
         run(&self.cfg, &deps).is_err()
     }

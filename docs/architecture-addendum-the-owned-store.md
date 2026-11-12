@@ -85,7 +85,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
    Readers map them without coordination; the only mutable files are the active journal's
    tail and the manifest, and the manifest changes by atomic rename.
 3. **Every index is a projection.** The graph, the type indexes and the run boundaries are
-   rebuildable from the journal, the ledger and the tree. Rebuild wins over any persisted
+   rebuildable from the journal and the tree. Rebuild wins over any persisted
    projection on mismatch.
 4. **A project costs nothing while idle.** No process holds an idle project's files or memory.
    The first workload mounts it; the last workload's end unmounts it after a bounded idle
@@ -120,7 +120,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
  |   journal index   (position -> segment, offset)  |     |   segments/*.seg       |
  |   type index      (type -> positions)            |     |   graph/base.gsnap     |
  |   tail subscriber (folds appends as they land)   |     |   graph/deltas/*.gdelta|
- +----------------+---------------------------------+     |   ledger.seg           |
+ +----------------+---------------------------------+     |   code/ (code store)   |
                   | mmap, read-only                        +------------------------+
    +--------------+-----------------------------+                 ^
    | clients: rigger status / peers / mcp /     |   cold read     |
@@ -147,8 +147,8 @@ specs 107 and 108 define; the engine gives each the physical home its lifecycle 
 |---|---|---|---|---|
 | knowledge | decisions, lessons, findings, verdicts, gate promotions, run starts | the log | never forgotten; superseded into history on evidence or consolidated upward | knowledge residue of every sealed segment |
 | episodic | a run's mechanics: spawns, progress, results, blast radii, touches | the log | lives with its run; archived to git when the run finishes | the run's own segment, then `refs/rigger/archive/<run>` |
-| perception | code structure, doc links, workflow shape | the tree | re-derived; the log keeps only a ledger entry per file generation | the ledger segment and the graph projection |
-| semantic projection | the graph: nodes, edges with validity, aliases, concepts | derived from the three above | rebuildable; refreshed as a snapshot plus deltas | `graph/base.gsnap` + `graph/deltas/` |
+| perception | code structure, doc links, workflow shape | the tree | re-derived at read from the code store's snapshot at a commit; the log keeps nothing of it | `store/code/` (docs/architecture-addendum-the-code-store.md) |
+| semantic projection | the record graph: decision, finding, lesson and artifact nodes, their edges with validity, aliases | derived from the log's knowledge and episodic records | rebuildable; refreshed as a snapshot plus deltas | `graph/base.gsnap` + `graph/deltas/` |
 
 Positions stay a single monotonic `u64` across the whole log, as today: a run's boundary is
 a position, a `valid_from` is a position, an archive names a position range. A record's
@@ -170,7 +170,7 @@ segment is SEALED. A record is:
  +----------+----------+----------+------------------+----------+
  | len u32  | pos u64  | kind u8  | payload (JSON)   | crc32    |
  +----------+----------+----------+------------------+----------+
-   kind: 0 = event, 1 = ledger (GenerationIngested / PassRecorded), 2 = progress
+   kind: 0 = event, 2 = progress
 ```
 
 Segment naming is by first position: `segments/000000003634950.seg`. A segment seals when
@@ -187,8 +187,9 @@ decisions into a file operation on an immutable file instead of a row-by-row rew
 ### 5.2 The manifest
 
 `MANIFEST` is a small versioned file listing every sealed segment with its position range,
-run id and digest, the active segment's name, the ledger segment, the current graph base
-snapshot and its position, and the format version. It is replaced by write-to-temp,
+run id and digest, the active segment's name, the current graph base
+snapshot and its position, and the format version. It sits beside `store/code/` and is
+published by the same CURRENT-pointer convention the code store uses. It is replaced by write-to-temp,
 `fsync`, `rename`. A reader opens the manifest first and sees a consistent set of files; a
 segment or snapshot not named by the manifest is garbage to be reaped by the owner.
 
@@ -218,7 +219,7 @@ size, never the log's:
 - **Knowledge by type** is the union of every sealed footer's type list for that type plus a
   scan of the active segment; a `read_stream_typed` on 17,424 knowledge events touches
   17,424 records and the footers, not 2.5 million records.
-- **Perception** is never read from the log by a command; the graph projection answers it.
+- **Perception** is never read from the log by a command; the code store answers it.
 
 `last_position(stream, type)` is a backward walk over footers that stops at the first
 segment whose type list is non-empty for that type, then a backward scan inside it.
@@ -226,7 +227,7 @@ segment whose type list is non-empty for that type, then a backward scan inside 
 ### 5.5 The graph projection
 
 The graph is a memory-resident structure in the mount owner and a QUERYABLE FILE for
-everyone else. The file, `graph/base.gsnap`, is a compressed sparse row (CSR) layout: a
+everyone else. It holds the record graph only; code lives in the code store. The file, `graph/base.gsnap`, is a compressed sparse row (CSR) layout: a
 sorted node table (id, kind, payload offset), forward and reverse adjacency arrays, an edge
 table (relation, `valid_from`, `valid_to`, source key), an alias table and a string pool,
 each section with its offset in a header. A client maps the file and answers `subgraph`,
@@ -259,14 +260,12 @@ measurable and cannot contend with appends because it never takes the lock.
 ### 5.7 Compaction and archive
 
 Compaction is structural work: only the mount owner does it, under the machine-scope
-`maintenance.lock`, one project at a time. Three operations, each a whole-segment act:
+`maintenance.lock`, one project at a time. Two operations, each a whole-segment act:
 
 - **Archive** (spec 114): a finished run's segments are written as one blob at
   `refs/rigger/archive/<run-id>`, a `RunArchived` record is appended, and the segments are
   replaced by their KNOWLEDGE RESIDUE, a new sealed segment holding only the run's knowledge
   records at their original positions. Positions are never renumbered.
-- **Ledger fold**: superseded generations in the ledger segment are dropped when spec 101's
-  compaction rule allows, rewriting the ledger segment.
 - **Snapshot**: the graph base is rewritten from the resident graph and the deltas removed.
 
 Why whole segments: rewriting one immutable file into another and swapping the manifest
@@ -279,8 +278,8 @@ On open, the owner: reads the manifest; verifies each sealed segment's digest la
 first map (a mismatch is a hard fault naming the file); truncates the active segment to
 its last valid record; rebuilds the journal and type indexes from footers plus the active
 segment; loads the graph base and deltas. Once per mount, in the background, it performs a
-FULL REBUILD of the graph from ledger, tree and knowledge records into a shadow structure
-and compares it with the loaded projection; on mismatch the rebuild wins and is published as
+FULL REBUILD of the record graph from the journal into a shadow structure and advances a
+code snapshot from empty to the stamp's commit, and compares both with what is loaded; on mismatch the rebuild wins and is published as
 the new base, and the mismatch is recorded as a `LessonLearned` about the store. Until the
 verify completes, `rigger status` labels the graph PROVISIONAL, as the world authority's
 snapshot rule requires.
@@ -407,28 +406,30 @@ one. Each spec leaves both backends selectable by config until the last removes 
    kind-2 records of the `progress` stream in the same journal, so a command opens one store
    handle per project root instead of three. Ends with the SQL log backend deleted.
 2. **Spec 110, the graph as a queryable file.** The CSR base snapshot (nodes, edges,
-   aliases, the applied-position set and the pending-proof table), delta files, the
+   aliases and the applied-position set; the record graph only), delta files, the
    resident graph in the owner, the client mapping path behind the same `Projection` port,
-   full rebuild from ledger plus tree plus knowledge with verify-on-mount and the
-   PROVISIONAL label. Ends with the SQL graph backend deleted and the SQL dependency gone
+   full rebuild of the record graph from the journal (with the code snapshot advanced from
+   empty) with verify-on-mount and the PROVISIONAL label. Ends with the SQL graph backend deleted and the SQL dependency gone
    from the build; the `store` lane joins `core` as pure Rust.
 3. **Spec 111, mounts and budgets.** Project identity in machine scope, the mount lifecycle
    with idle unmount, cold reads that never mount, the slot substrate with measured resident
    bytes, `budget.toml`, admission with refusal and the `resources` hold, the maintenance
    lock, and `rigger store status` naming every mounted project, its bytes and the budget.
 
-Specs 101, 107 and 108 land first and are the migration path: 101 fixes the read classes
-the footers serve, 107 makes the run the unit of archive and the graph rebuildable, 108
-fixes what a knowledge residue contains.
+The code store (docs/architecture-addendum-the-code-store.md) and specs 101, 107 and 108
+land first and are the migration path: the code store takes perception out of the log and the
+graph, 101 fixes the read classes the footers serve, 107 makes the run the unit of archive,
+108 fixes what a knowledge residue contains.
 
 ---
 
 ## 10. Acceptance (measured)
 
-1. **Rebuild determinism.** The graph rebuilt from segments, ledger and tree equals the
-   projection folded incrementally, byte for byte in the snapshot format, on this project's
+1. **Rebuild determinism.** The record graph rebuilt from the journal, plus a code snapshot
+   advanced from empty, equals the projection folded incrementally and the stored snapshot,
+   byte for byte in the snapshot formats, on this project's
    store and on a synthetic store of two superseded runs.
-2. **Cold read cost.** `rigger peers` on an unmounted project with a 73 MB snapshot maps
+2. **Cold read cost.** `rigger peers` on an unmounted project with a record-graph snapshot maps
    under 4 MB of pages and allocates under 16 MB of heap, asserted by a counting allocator
    and `mincore`.
 3. **Idle cost.** Ten minutes after a run finishes, no process holds any file under the

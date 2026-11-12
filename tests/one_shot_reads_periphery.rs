@@ -1,7 +1,7 @@
 //! Periphery (contract / API / integration) tests for spec 101 criterion 2: ONE-SHOT COMMANDS READ
 //! FROM THE BOUNDARY. `rigger status`, `rigger watch`, the dash snapshot, the side-car behind
-//! `rigger peers`, the MCP tools and the worker couriers (`prompt`, `scratch`, `result`,
-//! `reported`, `hook stop-failure`, `resume-unit`) read the run's own events from its boundary,
+//! `rigger peers`, the MCP tools, the worker couriers (`result`, `hook stop-failure`,
+//! `resume-unit`) and `rigger run` read the run's own events from its boundary,
 //! with the perception types excluded and the carried-over knowledge (decisions, lessons, findings)
 //! read by type, and the run's progress from its own stream. These run OUTSIDE the crate and
 //! guard what the inside-out tests are structurally blind to:
@@ -12,14 +12,14 @@
 //!    own scoped stream, so the store (not the caller) refuses what the selection refuses;
 //!  - the MCP tools used to hold a side-car subscription; nothing outside the crate pins that each
 //!    call now reads afresh (a decision recorded between two calls is seen by the second, at the
-//!    cost of exactly one more read), that the spawn-bound `rigger_progress` stamps the run the
-//!    boundary read names, nor that `rigger_activity` reads that run's progress stream alone;
+//!    cost of exactly one more read), nor that the spawn-bound `rigger_progress` stamps the run the
+//!    boundary read names;
 //!  - no counting double reaches into the compiled binary, so the binary tests make any read past
 //!    the slice observable instead: each perception event and every superseded run's own event in a
 //!    real 200,000-event log is made undecodable, so a command that materialized even one of them
 //!    would fail - and a control proves the poison does fail a command that reads it.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 use std::path::Path;
@@ -27,12 +27,11 @@ use std::process::Stdio;
 
 use common::cli::{rigger_db, rigger_file, run_rigger, run_stream_identity, temp_store_project};
 use common::fixtures::{
-    ev, generation_ingested, run_started, seed_one_shot_fixture, seed_one_shot_progress, types_of,
-    CountedRead, HandBuiltLog, OneShotFixture, PreLedgerStore, ReadCountingStore,
-    ONE_SHOT_PERCEPTION_TYPES,
+    ev, generation_ingested, run_started, seed_one_shot_fixture, seed_one_shot_progress,
+    stand_in_launches, types_of, CountedRead, HandBuiltLog, OneShotFixture, PreLedgerStore,
+    ReadCountingStore, ONE_SHOT_PERCEPTION_TYPES, RECORD_EACH_LAUNCH,
 };
 use rigger::conductor::STREAM;
-use rigger::driver::workflow::Driver;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision, TypeSelection};
@@ -159,38 +158,22 @@ fn call_tool(server: &Server, name: &str, args: Value) -> Value {
     })
 }
 
-/// `(id, live)` of each decision a `rigger_peers` reply holds, in order.
-fn live_decisions(reply: &Value) -> Vec<(String, bool)> {
-    reply["result"]["structuredContent"]["decisions"]
+/// The record lines a `rigger_peers` reply holds, best first.
+fn records(reply: &Value) -> Vec<String> {
+    reply["result"]["structuredContent"]["records"]
         .as_array()
-        .unwrap_or_else(|| panic!("a decisions array: {reply}"))
+        .unwrap_or_else(|| panic!("a records array: {reply}"))
         .iter()
-        .map(|d| {
-            (
-                d["id"].as_str().unwrap().to_string(),
-                d["live"].as_bool().unwrap(),
-            )
-        })
+        .map(|v| v.as_str().unwrap().to_string())
         .collect()
 }
 
-/// The `id`s in one section of a `rigger_peers` reply, in order.
-fn section_ids(reply: &Value, section: &str) -> Vec<String> {
-    reply["result"]["structuredContent"][section]
-        .as_array()
-        .unwrap_or_else(|| panic!("a {section} array: {reply}"))
-        .iter()
-        .map(|v| v["id"].as_str().unwrap().to_string())
-        .collect()
-}
-
-/// Given a spawn-bound MCP server over the 200,000-entry log, when an agent calls
+/// Given a spawn-bound MCP server over the 200,000-note log, when an agent calls
 /// `rigger_peers` scoped to a file, a peer then records a decision about that file, and the agent
 /// calls `rigger_peers` again and reports progress, then every call is exactly one read of the
 /// run from its boundary plus the typed carry-over - the second peers call sees the new decision
-/// LIVE at the cost of one more carried-over event, `rigger_progress` stamps its report with
-/// the run the boundary read names, and `rigger_activity` reads the run's progress from its own
-/// stream alone.
+/// LIVE at the cost of one more carried-over event, and `rigger_progress` stamps its report with
+/// the run the boundary read names.
 #[test]
 fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     let inner = Store::open(":memory:").unwrap();
@@ -200,15 +183,18 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     seed_one_shot_progress(&progress_inner, 1);
     let progress = ReadCountingStore::new(&progress_inner);
     let scratch = tempfile::tempdir().unwrap();
-    let driver = Driver::new();
-    let server = Server::new(&driver, &store, STREAM)
+    let server = Server::new(&store, STREAM)
         .with_progress(&progress, scratch.path().to_str().unwrap())
         .with_spawn("u/implementer#0");
 
     let first = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
-    assert_eq!(live_decisions(&first), [("d-c".to_string(), true)]);
-    assert_eq!(section_ids(&first, "findings"), ["f-c"]);
-    assert_eq!(section_ids(&first, "lessons"), Vec::<String>::new());
+    assert_eq!(
+        records(&first),
+        [
+            "finding f-c | LIVE | by lens | found c",
+            "decision d-c | LIVE | chose d-c"
+        ]
+    );
     assert_eq!(store.reads(), fixture.read(STREAM));
 
     inner
@@ -229,8 +215,12 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
 
     let second = call_tool(&server, "rigger_peers", json!({"files": ["c.rs"]}));
     assert_eq!(
-        live_decisions(&second),
-        [("d-c".to_string(), true), ("d-new".to_string(), true)],
+        records(&second),
+        [
+            "decision d-new | LIVE | chose new",
+            "finding f-c | LIVE | by lens | found c",
+            "decision d-c | LIVE | chose d-c"
+        ],
         "a decision recorded between two calls is seen by the second"
     );
     assert_eq!(
@@ -247,32 +237,6 @@ fn every_mcp_peers_and_progress_call_reads_the_run_afresh_from_its_boundary() {
     assert_eq!(store.materialized(), fixture.cost() + 2 * after.cost());
     assert_eq!(progress.reads(), [], "recording progress reads nothing");
 
-    // `rigger_activity` (the workflow surface): one read of the run, and ONE read of the run's
-    // own progress stream -
-    // its seeded report and the one just recorded - never a superseded run's reports.
-    let workflow = Server::new(&driver, &store, STREAM)
-        .with_progress(&progress, scratch.path().to_str().unwrap());
-    let activity = call_tool(&workflow, "rigger_activity", json!({}));
-    assert!(activity.get("result").is_some(), "{activity}");
-    assert_eq!(
-        store.reads(),
-        [
-            fixture.read(STREAM),
-            after.read(STREAM),
-            after.read(STREAM),
-            after.read(STREAM)
-        ]
-        .concat()
-    );
-    assert_eq!(
-        progress.reads(),
-        [CountedRead::Stream {
-            stream: "progress/run-c".to_string(),
-            from: 0,
-            forward: true,
-            materialized: 2,
-        }]
-    );
     let recorded = rigger::progress::read_run(&progress_inner, "run-c").unwrap();
     assert_eq!(
         recorded
@@ -316,6 +280,39 @@ fn rigger_ok(root: &Path, args: &[&str]) -> String {
     let (out, err, ok) = run_rigger(root, args);
     assert!(ok, "rigger {args:?} must succeed; stderr:\n{err}");
     out
+}
+
+/// `rigger run <args>` in `root` with the stand-in host answering every `Do the unit.` spawn
+/// `done`, which must succeed; the spawn of each launch, in launch order. The launches are read
+/// from the stand-in's own record, never from the store, so the poisoned log is read only by the
+/// run under test.
+fn run_ok(root: &Path, args: &[&str]) -> Vec<String> {
+    let (_out, err, ok, launched) = run_doing_the_unit(root, args);
+    assert!(ok, "rigger run {args:?} must succeed; stderr:\n{err}");
+    launched
+}
+
+/// `rigger run <args>` in `root` with the stand-in host answering every `Do the unit.` spawn
+/// `done`: its stdout, its stderr, whether it succeeded and the spawn of each launch.
+fn run_doing_the_unit(root: &Path, args: &[&str]) -> (String, String, bool, Vec<String>) {
+    let scratch = tempfile::tempdir().unwrap();
+    let args: Vec<&str> = std::iter::once("run").chain(args.iter().copied()).collect();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        root,
+        &args,
+        scratch.path(),
+        &format!("  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    echo done ;;\n"),
+    );
+    let launches = fake.path().join("bin/launches");
+    let launched = if launches.exists() {
+        stand_in_launches(&launches)
+            .into_iter()
+            .map(|launch| launch.spawn)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (out, err, ok, launched)
 }
 
 /// `rigger mcp` in `root`, answering one `rigger_peers` call on stdin; the reply's structured
@@ -400,8 +397,8 @@ fn seed_poisoned_project(
     let poisoned = poison(root, &format!("type IN ({perception})"));
     assert_eq!(
         poisoned,
-        200_100 + pre_ledger_rows.len(),
-        "every ledger entry of the flood and every pre-ledger derived row is poisoned"
+        pre_ledger_rows.len(),
+        "every pre-ledger derived row is poisoned"
     );
     poison(
         root,
@@ -413,7 +410,7 @@ fn seed_poisoned_project(
     )
 }
 
-/// Given a project whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// Given a project whose `events.db` holds two superseded runs and 200,000 notes before
 /// the current run's boundary, with each perception event and every superseded run's own event made
 /// undecodable, when the operator runs the one-shot commands, then each answers from the current
 /// run and every run's carried-over knowledge - a command that read past its slice would have
@@ -425,40 +422,31 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
     let root = dir.path();
     assert_eq!(
         seed_poisoned_project(root, &["the current campaign"], &CARRY_OVER, |_| {}),
-        6,
-        "both superseded runs' RunStarted, UnitStarted and note are poisoned"
+        200_006,
+        "both superseded runs' RunStarted, UnitStarted and notes are poisoned"
     );
 
-    // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE.
+    // `rigger peers`: every run's decisions, lessons and findings, the current run's LIVE and
+    // first, newest first within each.
+    let every = [
+        "finding f-c | LIVE | by lens | found c",
+        "decision d-c | LIVE | chose d-c",
+        "lesson l-a | learned a",
+        "finding f-b | HISTORICAL | by lens | found b",
+        "decision d-a | HISTORICAL | chose d-a",
+    ];
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-a | HISTORICAL | chose d-a | governs: a.rs\n\
-         decision d-c | LIVE | chose d-c | governs: c.rs\n\
-         lesson l-a | learned a | about: a.rs\n\
-         finding f-b | by lens | found b | about: b.rs\n\
-         finding f-c | by lens | found c | about: c.rs\n"
+        format!("{}\n", every.join("\n"))
     );
     assert_eq!(
         rigger_ok(root, &["peers", "c.rs"]),
-        "decision d-c | LIVE | chose d-c | governs: c.rs\n\
-         finding f-c | by lens | found c | about: c.rs\n"
+        "finding f-c | LIVE | by lens | found c\n\
+         decision d-c | LIVE | chose d-c\n"
     );
 
     // `rigger mcp`'s `rigger_peers`: the same records, answered on the first call.
-    assert_eq!(
-        mcp_peers(root),
-        json!({
-            "decisions": [
-                {"id": "d-a", "summary": "chose d-a", "governs": ["a.rs"], "live": false},
-                {"id": "d-c", "summary": "chose d-c", "governs": ["c.rs"], "live": true},
-            ],
-            "lessons": [{"id": "l-a", "summary": "learned a", "about": ["a.rs"]}],
-            "findings": [
-                {"id": "f-b", "by": "lens", "summary": "found b", "about": ["b.rs"]},
-                {"id": "f-c", "by": "lens", "summary": "found c", "about": ["c.rs"]},
-            ],
-        })
-    );
+    assert_eq!(mcp_peers(root), json!({"records": every}));
 
     // `rigger prime`: every run's decisions by type, newest first, after its instructions line.
     assert_eq!(
@@ -529,10 +517,10 @@ fn the_one_shot_commands_answer_from_the_run_without_materializing_a_derived_or_
 }
 
 /// Given the same poisoned project with a spawn parked and a unit escalated in the current run,
-/// when a worker's couriers run - `rigger prompt`, `rigger scratch`, `rigger reported`, `rigger
-/// hook stop-failure`, `rigger result` (`--if-absent`, and `--supersede` over the standing
-/// result) - and the operator runs `rigger resume-unit`, then each answers from the current run:
-/// a courier that read past the run's slice would have materialized a poisoned event and failed.
+/// when a worker's couriers run - `rigger hook stop-failure` and `rigger result` (then
+/// `--supersede` over the standing result) - and the operator runs `rigger resume-unit`, then each
+/// answers from the current run: a courier that read past the run's slice would have materialized
+/// a poisoned event and failed.
 #[test]
 fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_superseded_event() {
     let dir = temp_store_project();
@@ -564,18 +552,6 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
             .unwrap();
     });
 
-    assert_eq!(rigger_ok(root, &["prompt", spawn]), "probe the run\n");
-    let scratch = rigger_ok(root, &["scratch", spawn]);
-    assert!(
-        scratch.trim_end().ends_with("run-c/u_2fimplementer_230"),
-        "the spawn's scratch sits under the current run: {scratch}"
-    );
-    let (_out, err, ok) = run_rigger(root, &["reported", spawn]);
-    assert!(!ok, "no result is recorded yet");
-    assert!(
-        err.contains("has no recorded result yet"),
-        "reported answers from the run, not from a poisoned read: {err}"
-    );
     let hooked = rigger_ok(
         root,
         &[
@@ -591,18 +567,10 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
         hooked.starts_with("stop-failure recorded for u/implementer#0"),
         "{hooked}"
     );
-    let recorded = rigger_ok(root, &["result", spawn, "--if-absent", "done"]);
+    let recorded = rigger_ok(root, &["result", spawn, "done"]);
     assert!(
         recorded.starts_with("recorded result for u/implementer#0"),
         "{recorded}"
-    );
-    assert_eq!(
-        rigger_ok(root, &["result", spawn, "--if-absent", "again"]),
-        "u/implementer#0 already has a result; --if-absent left it untouched\n"
-    );
-    assert_eq!(
-        rigger_ok(root, &["reported", spawn]),
-        "u/implementer#0 ok\n"
     );
     let rerecorded = rigger_ok(root, &["result", spawn, "--supersede", "done again"]);
     assert!(
@@ -613,38 +581,26 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
     assert!(resumed.starts_with("resumed unit \"uc\""), "{resumed}");
 }
 
-/// Given a project that is NOT a git repo (so the step walks no tree and ingests nothing) whose
-/// `events.db` holds two superseded runs and 200,000 ledger entries before the current run's
+/// Given a project that is NOT a git repo (so the run walks no tree and ingests nothing) whose
+/// `events.db` holds two superseded runs and 200,000 notes before the current run's
 /// boundary, with each perception event and every superseded run's own event made undecodable, when
-/// the operator runs `rigger step`, then the step parks the stage's spawn in the current run, and
-/// after the spawn's result is recorded the next `rigger step` replays it and finishes the run -
-/// a step that read past the run's slice, or took the ingest seed's derived read without
-/// ingesting, would have materialized a poisoned event and failed.
+/// the operator runs `rigger run`, then the run adopts the current run, requests the stage's spawn
+/// in it and finishes on its answer - a run that read past the run's slice, or took the ingest
+/// seed's derived read without ingesting, would have materialized a poisoned event and failed.
 #[test]
-fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_or_superseded_event(
-) {
+fn a_run_that_does_not_ingest_advances_the_run_without_materializing_a_derived_or_superseded_event()
+{
     let dir = common::cli::temp_repoless_project();
     let root = dir.path();
     common::cli::seed_store(root);
     common::cli::write_workflow(root, "");
-    // Started over no criteria, as a step given no spec starts one, so the step adopts it.
+    // Started over no criteria, as a run given no spec starts one, so the run adopts it.
     seed_poisoned_project(root, &[], &CARRY_OVER, |_| {});
 
     assert_eq!(
-        rigger_ok(root, &["step"]),
-        concat!(
-            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
-            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
-            "\n"
-        ),
-        "the first step parks the stage's spawn"
-    );
-    rigger_ok(root, &["result", "a/implementer#0", "done"]);
-    assert_eq!(
-        rigger_ok(root, &["step"]),
-        "{\"wave\":[],\"done\":true}\n",
-        "the second step replays the result and finishes the run"
+        run_ok(root, &[]),
+        ["a/implementer#0"],
+        "the run launches the stage's spawn"
     );
     assert_eq!(
         rigger_ok(root, &["status"])
@@ -652,35 +608,35 @@ fn a_step_that_does_not_ingest_advances_the_run_without_materializing_a_derived_
             .take(2)
             .collect::<Vec<_>>(),
         ["run run-c", "a . 0/1 units . working"],
-        "the step advanced the run it adopted - no new run was minted (the stage's `on_pass: none` \
+        "the run advanced the run it adopted - no new run was minted (the stage's `on_pass: none` \
          lands nothing, so its unit is not counted integrated)"
     );
 
-    // Control: the step does materialize the run's own events, so poisoning one fails it - the
-    // poison is live for the step, not inert.
+    // Control: the run does materialize the run's own events, so poisoning one fails it - the
+    // poison is live for the run, not inert.
     assert_eq!(poison(root, "type = 'RunNote' AND meta != X'ff'"), 2);
-    let (_out, err, ok) = run_rigger(root, &["step"]);
+    let (_out, err, ok, _launched) = run_doing_the_unit(root, &[]);
     assert!(
         !ok,
-        "a step that materializes a poisoned run event fails: {err}"
+        "a run that materializes a poisoned run event fails: {err}"
     );
 }
 
-/// Given a git repo whose `events.db` holds two superseded runs and 200,000 ledger entries before
+/// Given a git repo whose `events.db` holds two superseded runs and 200,000 notes before
 /// the current run's boundary, with each perception event and every superseded run's event outside
 /// the carried-over and criterion-adoption types made undecodable, when the operator runs `rigger
-/// step --spec` over the current run's criterion, then the step starts the criterion's unit and
-/// parks its spawn in the current run - it read the superseded runs' lifecycle events for
+/// run --spec` over the current run's criterion, then the run starts the criterion's unit and
+/// requests its spawn in the current run - it read the superseded runs' lifecycle events for
 /// adoption, by type, and nothing else of theirs. A control then poisons the superseded runs'
-/// `RunStarted` and a fresh step's adoption read fails on it: the adoption read is live.
+/// `RunStarted` and a fresh run's adoption read fails on it: the adoption read is live.
 ///
-/// The light lane only: in the default lane a repo step folds the tree into the graph and its
+/// The light lane only: in the default lane a repo run folds the tree into the graph and its
 /// latest-generation seed is criterion 3's, not this criterion's.
 #[cfg(not(feature = "symbols"))]
 #[test]
-fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and_adoption_by_type()
+fn a_repo_run_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and_adoption_by_type()
 {
-    /// What a repo step that starts a criterion unit reads of a superseded run, spelled out: the
+    /// What a repo run that starts a criterion unit reads of a superseded run, spelled out: the
     /// carried-over types and the criterion-adoption lifecycle types.
     const CARRY_OVER_AND_ADOPTION: [&str; 8] = [
         "DecisionMade",
@@ -712,23 +668,22 @@ fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_an
     scaffold(root);
     assert_eq!(
         seed_poisoned_project(root, &[criterion], &CARRY_OVER_AND_ADOPTION, |_| {}),
-        2,
+        200_002,
         "both superseded runs' notes are poisoned"
     );
 
-    let step = rigger_ok(root, &["step", "--spec", "spec.md"]);
-    assert!(
-        step.contains(r#""id":"unit-1-alpha-lands-cleanly/implementer#0""#)
-            && step.contains(r#""done":false"#),
-        "the step parks the criterion unit's spawn: {step}"
+    assert_eq!(
+        run_ok(root, &["spec.md"]),
+        ["unit-1-alpha-lands-cleanly/implementer#0"],
+        "the run launches the criterion unit's spawn"
     );
     assert_eq!(
         rigger_ok(root, &["status"]).lines().next(),
         Some("run run-c"),
-        "the step advanced the run it adopted"
+        "the run advanced the run it adopted"
     );
 
-    // Control: a fresh step over the same log with the superseded runs' `RunStarted` poisoned too.
+    // Control: a fresh run over the same log with the superseded runs' `RunStarted` poisoned too.
     let control = common::git::temp_git_project_with_commit();
     scaffold(control.path());
     seed_poisoned_project(
@@ -744,10 +699,10 @@ fn a_repo_step_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_an
         ),
         2
     );
-    let (_out, err, ok) = run_rigger(control.path(), &["step", "--spec", "spec.md"]);
+    let (_out, err, ok, _launched) = run_doing_the_unit(control.path(), &["spec.md"]);
     assert!(
         !ok,
-        "a step whose adoption read meets a poisoned event fails: {err}"
+        "a run whose adoption read meets a poisoned event fails: {err}"
     );
 }
 
@@ -1337,7 +1292,7 @@ fn seed_undecodable_ledger_entries(root: &Path, run: Option<&str>) {
 
 /// Given a project whose run stream holds a ledger entry on each side of the run's `RunStarted`,
 /// both made undecodable, when the operator runs the one-shot commands and then drives the run
-/// with `rigger step`, then each answers from the run and its carried-over decisions - a reader
+/// with `rigger run`, then each answers from the run and its carried-over decisions - a reader
 /// that materialized a ledger entry would have failed on it.
 #[test]
 fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() {
@@ -1347,19 +1302,12 @@ fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() 
 
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
-         decision d-1 | LIVE | chose d-1 | governs: b.rs\n"
+        "decision d-1 | LIVE | chose d-1\n\
+         decision d-0 | HISTORICAL | chose d-0\n"
     );
     assert_eq!(
         mcp_peers(root),
-        json!({
-            "decisions": [
-                {"id": "d-0", "summary": "chose d-0", "governs": ["a.rs"], "live": false},
-                {"id": "d-1", "summary": "chose d-1", "governs": ["b.rs"], "live": true},
-            ],
-            "lessons": [],
-            "findings": [],
-        })
+        json!({"records": ["decision d-1 | LIVE | chose d-1", "decision d-0 | HISTORICAL | chose d-0"]})
     );
     assert_eq!(
         rigger_ok(root, &["prime"])
@@ -1382,20 +1330,9 @@ fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() 
     assert_eq!(rigger_ok(root, &["watch", "--once"]), "");
 
     assert_eq!(
-        rigger_ok(root, &["step"]),
-        concat!(
-            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
-            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
-            "\n"
-        ),
-        "the first step adopts the run and parks the stage's spawn"
-    );
-    rigger_ok(root, &["result", "a/implementer#0", "done"]);
-    assert_eq!(
-        rigger_ok(root, &["step"]),
-        "{\"wave\":[],\"done\":true}\n",
-        "the second step replays the result and finishes the run"
+        run_ok(root, &[]),
+        ["a/implementer#0"],
+        "the run adopts the run and launches the stage's spawn"
     );
     assert_eq!(
         rigger_ok(root, &["status"])
@@ -1408,7 +1345,7 @@ fn the_binary_answers_from_a_started_run_without_materializing_a_ledger_entry() 
 
 /// Given a project whose run stream holds two undecodable ledger entries and NO `RunStarted`, so
 /// the whole stream is the run, when the operator runs the one-shot commands and then `rigger
-/// step`, then each answers from the stream's other events and the step starts a run over them - a
+/// run`, then each answers from the stream's other events and the run starts a run over them - a
 /// reader that materialized a ledger entry would have failed on it.
 #[test]
 fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_entry() {
@@ -1418,8 +1355,8 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
 
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | LIVE | chose d-0 | governs: a.rs\n\
-         decision d-1 | LIVE | chose d-1 | governs: b.rs\n",
+        "decision d-1 | LIVE | chose d-1\n\
+         decision d-0 | LIVE | chose d-0\n",
         "with no run started the whole stream is the run, so both decisions are its own"
     );
     assert_eq!(
@@ -1430,14 +1367,9 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
     assert_eq!(rigger_ok(root, &["watch", "--once"]), "");
 
     assert_eq!(
-        rigger_ok(root, &["step"]),
-        concat!(
-            r#"{"wave":[{"id":"a/implementer#0","unit":"a","stage":"a","model":"sonnet","#,
-            r#""tools":["Read","Edit"],"dir":"","max_wall_clock":null,"marker_path":null,"#,
-            r#""cargo_target_dir":null}],"done":false}"#,
-            "\n"
-        ),
-        "the step starts a run over the stream and parks the stage's spawn"
+        run_ok(root, &[]),
+        ["a/implementer#0"],
+        "the run starts a run over the stream and launches the stage's spawn"
     );
     assert_eq!(
         rigger_ok(root, &["status"]).lines().nth(1),
@@ -1445,8 +1377,8 @@ fn the_binary_answers_from_an_unstarted_stream_without_materializing_a_ledger_en
     );
     assert_eq!(
         rigger_ok(root, &["peers"]),
-        "decision d-0 | HISTORICAL | chose d-0 | governs: a.rs\n\
-         decision d-1 | HISTORICAL | chose d-1 | governs: b.rs\n",
-        "the run the step started is after both decisions"
+        "decision d-1 | HISTORICAL | chose d-1\n\
+         decision d-0 | HISTORICAL | chose d-0\n",
+        "the run `rigger run` started is after both decisions"
     );
 }

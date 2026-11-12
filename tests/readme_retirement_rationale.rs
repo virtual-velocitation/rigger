@@ -24,7 +24,7 @@
 //! touches no backend symbol. It is deliberately NOT feature-gated: it runs identically in
 //! both feature lanes.
 
-mod common;
+use crate::common;
 
 use common::repo::assert_doc_carries_none_of;
 use common::repo::missing_rows;

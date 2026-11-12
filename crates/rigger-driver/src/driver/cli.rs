@@ -5,8 +5,7 @@
 //! the emit-protocol lines (DecisionMade / ReviewFinding / UnitProposed JSON, the
 //! same shape the EMIT_PROTOCOL / review_protocol have the agent pass to `rigger_emit`) and
 //! replays each through `emit`. So the cli path also records decisions, extends the
-//! living DAG (UnitProposed), and feeds the side-car - the only difference from the
-//! workflow driver is that emission is post-hoc, not live mid-run.
+//! living DAG (UnitProposed), and feeds the side-car - post-hoc, not live mid-run.
 
 use std::io::Write;
 use std::process::{Output, Stdio};
@@ -139,8 +138,8 @@ fn session_missing(out: &Output) -> bool {
     !out.status.success() && String::from_utf8_lossy(&out.stderr).contains(MISSING_SESSION)
 }
 
-/// `task` framed with the live-progress instruction ([`progress_framed`]), reported through
-/// Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
+/// `task` framed with the progress verb ([`progress_framed`]), the `rigger progress` command run
+/// through Bash since this host's spawn runs no bound server. (This synchronous, non-parking path has no
 /// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
 /// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {
@@ -161,9 +160,9 @@ impl AgentDriver for Driver {
     ) -> Result<AgentResult, Error> {
         let launched = self.launch(agent, prompt, opts);
         // The spawn's terminus: its process exited (or never started), whatever its outcome,
-        // and this host hands the result straight back in-process, never through the `rigger
-        // result` courier that reclaims a stepwise spawn's scratch - so reclaim the spawn's own
-        // scratch here, before anything below can return early.
+        // and this host hands the result straight back in-process, never through `rigger
+        // result` (which reclaims the scratch of a spawn it records) - so reclaim the spawn's
+        // own scratch here, before anything below can return early.
         reclaim_finished_spawn_scratch(opts);
         let (out, session) = launched?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -171,14 +170,14 @@ impl AgentDriver for Driver {
         // decisions/findings reach this driver only as lines it prints to stdout, in the
         // shape the EMIT_PROTOCOL / review_protocol give `rigger_emit`. Replay each
         // through `emit` so the cli path also records
-        // decisions, extends the living DAG (UnitProposed), and feeds the side-car -
-        // exactly what the workflow driver does live. Done BEFORE the exit-status
+        // decisions, extends the living DAG (UnitProposed), and feeds the side-car.
+        // Done BEFORE the exit-status
         // check so a partially-failed run still records what the agent decided.
         bridge_emits(&stdout, emit)?;
         // A blocking subprocess driver does not learn the resolved model id (spec 05 line
-        // 52 sources it from the worker's `rigger result --meta` on the stepwise path), so
-        // it leaves it empty and the metadata is then omitted. The session it ran as rides
-        // back for the conductor to record, so a later attempt can continue it.
+        // 52; the headless host reads it off the session's stream), so it leaves it empty and
+        // the metadata is then omitted. The session it ran as rides back for the conductor to
+        // record, so a later attempt can continue it.
         let result = AgentResult {
             output: stdout,
             resolved_model: String::new(),
@@ -209,8 +208,8 @@ fn is_emit_type(type_: &str) -> bool {
 ///
 /// An emit line is a single-line JSON object carrying its own `type` (one of
 /// `DecisionMade` / `ReviewFinding` / `UnitProposed`) and a `data` object - the
-/// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli and
-/// workflow paths record byte-identical events. Lines that are not JSON, not
+/// same `{type, data}` shape the rigger_emit MCP tool takes, so the cli path and
+/// the MCP tool record byte-identical events. Lines that are not JSON, not
 /// objects, or not one of the emit types are skipped (an agent prints plenty of
 /// other text). A flat object from an agent printing the fields beside `type`, with
 /// no `data` wrapper, is tolerated: the object minus `type` becomes the data.
@@ -261,17 +260,18 @@ fn bridge_emits(
 /// argument at `MAX_ARG_STRLEN` (131072 bytes), which a plan-critique task or a full persona
 /// crosses. The host writes the persona file from `opts.system_prompt` - the conductor's
 /// single persona source (`SpawnOpts::system_prompt`, set from `AgentDef::prompt`) - NOT from
-/// `agent.prompt`, so the cli and workflow paths thread the SAME persona and cannot diverge.
+/// `agent.prompt`, so the cli and headless hosts thread the SAME persona and cannot diverge.
 /// An empty persona omits the flag (the agent runs with the default system prompt).
 /// `opts.attempt` selects the cascade rung ([`AgentDef::model_for_attempt`], spec 10 unit 4): a `model_ladder`
 /// agent runs on the rung it escalated to for this remediation attempt.
 ///
 /// The spawn configuration follows (see [`spawn_config_args`]: permissions, then the
-/// operator's read-only `<rigger_bin> mcp` server, the session settings and the helpers),
-/// so this argv and the headless host's agree on everything but the protocol flags. This
-/// host keeps the operator's server rather than a spawn-bound one because its emits travel
-/// on stdout ([`bridge_emits`]), not through the server. Fails only when
-/// `opts.settings_json` is not a JSON object the session settings can merge into.
+/// operator's read-only `<rigger_bin> mcp` server, the session settings and the helpers
+/// `opts.host` carries), so this argv and the headless host's agree on everything but the
+/// protocol flags. This host keeps the operator's server rather than a spawn-bound one because
+/// its emits travel on stdout ([`bridge_emits`]), not through the server. Fails when
+/// `opts.settings_json` is not a JSON object the session settings can merge into, or a helper
+/// `opts.host` carries does not parse.
 pub fn build_args(
     agent: &AgentDef,
     persona: &SystemPromptFile,
@@ -287,11 +287,13 @@ pub fn build_args(
         args.push("--model".to_string());
         args.push(model);
     }
-    args.extend(allowed_tools_args(agent, &[])?);
+    args.extend(allowed_tools_args(agent, &opts.host, &[])?);
     args.extend(spawn_config_args(
+        agent,
         rigger_bin,
         &["mcp"],
         &opts.settings_json,
+        &opts.host,
     )?);
     Ok(args)
 }
@@ -299,25 +301,25 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
 
-    /// This host's frame reports through Bash, naming the spawn, since its spawn runs no bound
-    /// server, and closes the task.
+    /// This host's frame closes the task with its progress verb and that verb's arguments only:
+    /// the Bash command naming the spawn, since its spawn runs no bound server. When to report
+    /// is the communication built-in's.
     #[test]
     fn framed_closes_the_task_with_the_bash_progress_line() {
         let opts = SpawnOpts {
             id: "u/implementer#0".to_string(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         assert_eq!(
             framed("the task", &opts),
-            "the task\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a \
-             search, a build, a commit, a decision) report ONE short line of what you just did by \
-             running (Bash): rigger progress 'u/implementer#0' '<one line: what you just did>'. \
-             Keep it flowing while you work."
+            format!("the task{}", cli_progress_frame("u/implementer#0"))
         );
     }
+    use crate::test_support::cli_progress_frame;
     #[cfg(unix)]
-    use crate::test_support::{captured_system_prompt, PROMPT_CAPTURE_DIR};
+    use crate::test_support::{captured, PROMPT_CAPTURE_DIR};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Mutex;
@@ -447,7 +449,7 @@ thinking out loud, not json\n\
                     isolation: false,
                     parallel: false,
                     blast_radius: Vec::new(),
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -502,7 +504,7 @@ thinking out loud, not json\n\
                         ("SCCACHE_DIR".to_string(), "/shared/build-cache".to_string()),
                         ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
                     ],
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -522,7 +524,7 @@ thinking out loud, not json\n\
                     ..Default::default()
                 },
                 "task",
-                &SpawnOpts::default(),
+                &SpawnOpts::new(test_spawn_host()),
                 &emit,
             )
             .unwrap();
@@ -555,7 +557,7 @@ thinking out loud, not json\n\
         };
 
         let default = driver
-            .spawn(&agent, "task", &SpawnOpts::default(), &emit)
+            .spawn(&agent, "task", &SpawnOpts::new(test_spawn_host()), &emit)
             .unwrap();
         assert!(
             default
@@ -574,7 +576,7 @@ thinking out loud, not json\n\
                         "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS".to_string(),
                         "900000".to_string(),
                     )],
-                    ..Default::default()
+                    ..SpawnOpts::new(test_spawn_host())
                 },
                 &emit,
             )
@@ -608,7 +610,7 @@ thinking out loud, not json\n\
         };
         let opts = SpawnOpts {
             id: "u/implementer#2".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = driver.spawn(&agent, "task", &opts, &emit).unwrap();
         assert!(
@@ -622,7 +624,7 @@ thinking out loud, not json\n\
     #[test]
     fn a_finished_spawn_reclaims_its_own_scratch_and_spares_an_unfinished_siblings() {
         // The per-spawn scratch lifecycle on the blocking host (spec 34 criterion 1's two
-        // halves): this host records no result through the courier, so its own terminus
+        // halves): this host records no result through `rigger result`, so its own terminus
         // reclaims the `agent-scratch` leaf rigger names for the spawn, under the scratch root
         // its worktree sits in - while a sibling spawn of the same run that has not finished
         // keeps its own.
@@ -634,7 +636,7 @@ thinking out loud, not json\n\
             id: "u/adversary#0".into(),
             run_id: "r1".into(),
             dir: dir.to_string_lossy().into_owned(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let leaf = crate::driver::replay::spawn_scratch_path(&root, "r1", &opts.id).unwrap();
         let sibling =
@@ -697,7 +699,7 @@ thinking out loud, not json\n\
                 PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
             bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -713,14 +715,14 @@ thinking out loud, not json\n\
             })
             .unwrap();
 
-        let stdin = std::fs::read_to_string(capture.path().join("stdin")).unwrap();
+        let stdin = captured(capture.path(), "stdin");
         assert!(
             stdin.starts_with(&task),
             "the whole task arrived on stdin ({} bytes read)",
             stdin.len()
         );
         assert_eq!(
-            captured_system_prompt(capture.path()),
+            captured(capture.path(), "system-prompt"),
             persona,
             "the whole persona arrived through the system-prompt file"
         );
@@ -750,7 +752,7 @@ thinking out loud, not json\n\
                 PROMPT_CAPTURE_DIR.to_string(),
                 capture.path().to_string_lossy().into_owned(),
             )],
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
             bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -769,10 +771,8 @@ thinking out loud, not json\n\
             )
             .unwrap();
 
-        assert_eq!(captured_system_prompt(capture.path()), "You plan.");
-        assert!(std::fs::read_to_string(capture.path().join("stdin"))
-            .unwrap()
-            .starts_with("plan it"));
+        assert_eq!(captured(capture.path(), "system-prompt"), "You plan.");
+        assert!(captured(capture.path(), "stdin").starts_with("plan it"));
         let path = std::fs::read_to_string(capture.path().join("system-prompt-path")).unwrap();
         assert!(
             std::path::Path::new(&path).is_absolute(),
@@ -791,12 +791,14 @@ thinking out loud, not json\n\
             .unwrap_or_else(|| panic!("{flag} must be in the args: {args:?}"))
     }
 
-    /// `persona_tools` followed by the helpers' MCP tools, the `--allowed-tools` value a
-    /// persona declaring `persona_tools` runs with.
+    /// `persona_tools` followed by the MCP tools the test spawn host's helpers declare, the
+    /// `--allowed-tools` value a persona declaring `persona_tools` runs with.
     fn with_helper_tools(persona_tools: &str) -> String {
         format!(
             "{persona_tools},{}",
-            crate::hooks::helper_mcp_tools().unwrap().join(",")
+            crate::hooks::helper_mcp_tools(&test_spawn_host().helpers)
+                .unwrap()
+                .join(",")
         )
     }
 
@@ -806,7 +808,7 @@ thinking out loud, not json\n\
         SpawnOpts {
             system_prompt: system_prompt.to_string(),
             attempt,
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         }
     }
 
@@ -858,7 +860,7 @@ thinking out loud, not json\n\
         // conductor's single persona source - and reaches the session through the file
         // `--system-prompt-file` names; the grounded task travels on stdin, so `-p` carries
         // no positional prompt. The persona is NOT read from agent.prompt here, so the cli
-        // path uses the same persona source the workflow path does.
+        // path uses the same persona source the headless host does.
         let a = AgentDef {
             id: "impl".into(),
             model: "sonnet".into(),
@@ -962,9 +964,20 @@ thinking out loud, not json\n\
             "--session-id".to_string(),
             "sess-fresh".to_string(),
             "--allowed-tools".to_string(),
-            crate::hooks::helper_mcp_tools().unwrap().join(","),
+            crate::hooks::helper_mcp_tools(&test_spawn_host().helpers)
+                .unwrap()
+                .join(","),
         ];
-        expected.extend(spawn_config_args("rigger", &["mcp"], "").unwrap());
+        expected.extend(
+            spawn_config_args(
+                &AgentDef::default(),
+                "rigger",
+                &["mcp"],
+                "",
+                &test_spawn_host(),
+            )
+            .unwrap(),
+        );
         assert_eq!(args, expected);
     }
 
@@ -978,7 +991,7 @@ thinking out loud, not json\n\
     fn build_args_hands_the_spawn_the_operators_mcp_server_settings_and_helpers() {
         // A unit worktree carries no `.mcp.json` or `.claude/settings.json`, so the worker
         // gets them on its command line: the operator's read-only `rigger mcp` server alone,
-        // the three session settings and the two fan-out helpers.
+        // the three session settings and the two fan-out helpers its host carries.
         let a = AgentDef {
             id: "impl".into(),
             tools: vec!["Read".into(), "Agent".into()],
@@ -1001,21 +1014,19 @@ thinking out loud, not json\n\
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         let settings = &args[arg_index(&args, "--settings") + 1];
         assert!(
-            crate::hooks::carries_session_settings(settings.as_bytes()),
-            "the spawn's settings carry the prime hook, the grep-guard and the status line: {settings}"
+            crate::hooks::carries_session_settings(settings.as_bytes(), false),
+            "the spawn's settings carry the prime hook and the status line: {settings}"
         );
-        let agents = flag_json(&args, "--agents");
-        assert!(agents.get("lookup").is_some(), "{agents}");
-        assert!(agents.get("verify").is_some(), "{agents}");
+        assert_eq!(flag_json(&args, "--agents"), operator_helpers_agents_json());
         assert_eq!(args[arg_index(&args, "--permission-mode") + 1], "default");
         assert_eq!(args[arg_index(&args, "--permission-prompts") + 1], "none");
     }
 
     #[test]
     fn build_args_pre_approves_the_helpers_mcp_tools_once() {
-        // Under `--permission-prompts none` a tool nobody pre-approved is denied, so the
-        // `lookup` helper's graph calls must be on the allow list; a persona that already
-        // declares one does not get it twice.
+        // Under `--permission-prompts none` a tool nobody pre-approved is denied, so the rigger
+        // tools the host's `lookup` copy declares must be on the allow list; a persona that
+        // already declares one does not get it twice.
         let a = AgentDef {
             id: "impl".into(),
             tools: vec!["Read".into(), "mcp__rigger__rigger_graph".into()],
@@ -1024,7 +1035,7 @@ thinking out loud, not json\n\
         let args = args_for(&a, 0);
         assert_eq!(
             args[arg_index(&args, "--allowed-tools") + 1],
-            "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers"
+            "Read,mcp__rigger__rigger_graph,mcp__rigger__rigger_peers"
         );
     }
 
@@ -1062,33 +1073,45 @@ thinking out loud, not json\n\
 
     #[test]
     fn build_args_carries_the_spawns_own_settings_under_the_session_settings() {
-        let opts = SpawnOpts {
-            settings_json: "{\"model\":\"opus\"}".to_string(),
-            ..Default::default()
-        };
-        let args = build_args(
-            &AgentDef::default(),
-            &SystemPromptFile::default(),
-            &opts,
-            &fresh_session(),
-            "rigger",
-        )
-        .unwrap();
-        let settings = flag_json(&args, "--settings");
-        assert_eq!(
-            settings["model"], "opus",
-            "the spawn's own settings survive"
-        );
-        assert!(crate::hooks::carries_session_settings(
-            settings.to_string().as_bytes()
-        ));
+        // The grep-guard rides the spawn's settings exactly when its host carries it.
+        for grep_guard in [false, true] {
+            let opts = SpawnOpts {
+                settings_json: "{\"model\":\"opus\"}".to_string(),
+                ..SpawnOpts::new(crate::agent::SpawnHost {
+                    grep_guard,
+                    ..test_spawn_host()
+                })
+            };
+            let args = build_args(
+                &AgentDef::default(),
+                &SystemPromptFile::default(),
+                &opts,
+                &fresh_session(),
+                "rigger",
+            )
+            .unwrap();
+            let settings = flag_json(&args, "--settings");
+            assert_eq!(
+                settings["model"], "opus",
+                "the spawn's own settings survive (grep_guard {grep_guard})"
+            );
+            let settings = settings.to_string();
+            assert_eq!(
+                (
+                    crate::hooks::carries_session_settings(settings.as_bytes(), grep_guard),
+                    crate::hooks::carries_grep_guard(settings.as_bytes()),
+                ),
+                (true, grep_guard),
+                "the session settings, the grep-guard only when the host carries it: {settings}"
+            );
+        }
     }
 
     #[test]
     fn build_args_fails_when_the_spawns_settings_are_not_a_json_object() {
         let opts = SpawnOpts {
             settings_json: "[1]".to_string(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let err = build_args(
             &AgentDef::default(),
@@ -1194,7 +1217,7 @@ thinking out loud, not json\n\
     #[cfg(unix)]
     #[test]
     fn a_fresh_spawn_reports_the_session_it_started() {
-        let result = spawn_session_agent("the full task", SpawnOpts::default(), "");
+        let result = spawn_session_agent("the full task", SpawnOpts::new(test_spawn_host()), "");
         assert!(
             uuid::Uuid::parse_str(&result.session_id).is_ok(),
             "a fresh spawn reports the session id it minted: {result:?}"
@@ -1220,7 +1243,7 @@ thinking out loud, not json\n\
         let opts = SpawnOpts {
             resumed_from: "sess-prior".into(),
             resume_task: "fix exactly these".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = spawn_session_agent("the full task", opts, "sess-prior");
         assert!(
@@ -1247,7 +1270,7 @@ thinking out loud, not json\n\
         let opts = SpawnOpts {
             resumed_from: "sess-gone".into(),
             resume_task: "fix exactly these".into(),
-            ..Default::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         let result = spawn_session_agent("the full task", opts, "sess-other");
         assert!(

@@ -23,10 +23,8 @@
 //! periphery.rs` and `spawn_scratch_reap_authorized_root_periphery.rs` already close for their
 //! own call chains.
 
-mod common;
-use common::git::git_ok;
+use crate::common;
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use common::fixtures::{assert_teardown_reaps_what_is_rooted_inside, cleanup, sigterm_ignorer_in};
@@ -35,8 +33,8 @@ use common::wait_until;
 use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
-    reclaim_worktree_on_branch, review_fence_sibling, scratch_root, sweep_terminal,
-    unit_cache_sibling, unit_sibling, Worktree, UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
+    reclaim_worktree_on_branch, review_fence_sibling, unit_cache_sibling, unit_sibling, Worktree,
+    UNIT_GATE_SCRATCH_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// The teardown a [`reaps_before_removing`] case drives.
@@ -201,51 +199,6 @@ rigger::test_cases! {
         "a process rooted directly in the review worktree dir that Worktree::discard clears \
          via clear_worktree_dir must be reaped (SIGTERM then SIGKILL) BEFORE that dir is \
          removed - a bare git-worktree-remove/remove_dir_all here leaks it as an orphan",
-    );
-}
-
-#[test]
-fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real_api() {
-    // `sweep_terminal` (spec 79 criterion 1) is the crash-recovery teardown: it now reaps a
-    // terminal worktree BEFORE its `git worktree remove --force`, closing the class the
-    // spec's Goal names ("a build, test binary, or dash whose cwd is inside the removed dir
-    // survives the removal as an orphan"). `src/worktree.rs`'s own inline unit test proves
-    // this white-box; this test proves the SAME defect is closed from OUTSIDE the module,
-    // driving only `sweep_terminal`'s public signature exactly as `rigger step`'s crash
-    // recovery calls it.
-    let repo = tempfile::tempdir().unwrap();
-    let repo_path = repo.path().canonicalize().unwrap();
-    init_repo(&repo_path);
-    git_ok(&repo_path, &["checkout", "-b", "rigger-run"]);
-
-    let repo_str = repo_path.to_str().unwrap().to_string();
-    let root = scratch_root(&repo_str, "", None);
-
-    let done_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}sweepreaptest");
-    Worktree::create(&repo_str, &done_dir, "rigger/u/sweepreaptest", &root)
-        .expect("create a worktree whose tip is already an ancestor of rigger-run");
-    let done_path = Path::new(&done_dir).to_path_buf();
-
-    assert_teardown_reaps_what_is_rooted_inside(
-        &done_path,
-        None,
-        || {
-            let removed = sweep_terminal(
-                &repo_str,
-                &root,
-                "rigger-run",
-                &HashSet::new(),
-                &HashSet::new(),
-                &[],
-            )
-            .expect("sweep_terminal must still succeed");
-            assert_eq!(removed, 1, "the merged terminal worktree is swept");
-        },
-        "sweep_terminal, driven through the real public API",
-    );
-    assert!(
-        !done_path.exists(),
-        "the terminal worktree is still removed once its rooted process is reaped"
     );
 }
 

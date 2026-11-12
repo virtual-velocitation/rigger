@@ -1,0 +1,268 @@
+//! Periphery for `rigger gate <id>`: an agent's request that the run's driver gate its committed
+//! worktree. These run OUTSIDE the crates, over the compiled binary and the on-disk store.
+//!
+//! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
+//! information only, prints the result, says it recorded nothing and records nothing, a stale
+//! socket file included); the socket it asks, the one its driver addresses or else the one the
+//! shared path rule names; its refusals of an uncommitted tree, an undeclared gate and a relative
+//! address; and `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
+//!
+//! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
+//! and the refusals the driver makes), which `rigger-conductor`'s own tests drive through the run's
+//! serving entry point over an in-process channel, and the socket adapter, which
+//! `rigger-process`'s own tests drive.
+
+use crate::common;
+
+use std::path::Path;
+
+use common::cli::{
+    emit_refused, identified_git_project, run_rigger_envs, seed_store, with_run_store,
+    write_workflow,
+};
+use common::fixtures::git_ok;
+use rigger::eventstore::{Direction, Event};
+use rigger::run::STREAM;
+
+/// The workflow block declaring the one gate `g`, under no build budget, so the verb's run takes
+/// no slot from a machine-wide pool.
+const GATE_G: &str =
+    "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"true\"\n    kind: core\n";
+
+/// A committed project declaring gate `g`, its store seeded and its rigger state ignored, and the
+/// scratch directory its gate runs under.
+fn committed_project() -> (tempfile::TempDir, tempfile::TempDir) {
+    let root = identified_git_project();
+    seed_store(root.path());
+    write_workflow(root.path(), GATE_G);
+    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
+    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
+    git_ok(root.path(), &["add", "-A"]);
+    git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
+    (root, tempfile::tempdir().expect("a scratch dir"))
+}
+
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
+fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
+}
+
+/// Every GateVerdict in `root`'s store.
+fn gate_verdicts(root: &Path) -> Vec<Event> {
+    with_run_store(root, |store| {
+        store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.type_ == "GateVerdict")
+            .collect()
+    })
+}
+
+/// WITH NO DRIVER THE VERB INFORMS AND RECORDS NOTHING: GIVEN a committed project no driver
+/// serves, with no socket file or a stale one, WHEN an agent runs `rigger gate g`, THEN the gate
+/// runs, the verb prints its result and says it recorded nothing, and the store holds no verdict.
+#[test]
+fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
+    for stale in [false, true] {
+        let (root, scratch) = committed_project();
+        #[cfg(unix)]
+        if stale {
+            // A listener dropped without unlinking leaves a socket file nothing answers, at the
+            // path the verb asks by.
+            use std::os::unix::fs::DirBuilderExt;
+            let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(path.parent().unwrap())
+                .unwrap();
+            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+            assert!(path.exists(), "the stale socket file is in place");
+        }
+        let (out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
+        assert!(
+            ok,
+            "stale {stale}: rigger gate g exits 0 on a green gate; stderr:\n{err}"
+        );
+        assert!(
+            out.contains("PASS gate g"),
+            "stale {stale}: the verb prints the result: {out}"
+        );
+        assert!(
+            err.contains("no driver is serving this project") && err.contains("recorded nothing"),
+            "stale {stale}: the verb says it recorded nothing: {err}"
+        );
+        assert!(
+            gate_verdicts(root.path()).is_empty(),
+            "stale {stale}: nothing was recorded"
+        );
+    }
+}
+
+/// THE VERB ASKS WHERE THE DRIVER BINDS: GIVEN a socket bound by the shared path rule for the
+/// project under the verb's runtime directory, WHEN an agent runs `rigger gate g`, THEN the answer
+/// served there is what the verb reports.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
+    let (root, scratch) = committed_project();
+    let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
+    let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
+    let answer = |request: GateRequest| GateReply::Refused {
+        reason: format!("the driver heard gate {}", request.gate),
+    };
+    let (_out, err, ok) = std::thread::scope(|s| {
+        let serving = s.spawn(|| socket.serve(&answer));
+        let ran = rigger_in(root.path(), scratch.path(), &["gate", "g"]);
+        socket.close();
+        serving.join().unwrap().unwrap();
+        ran
+    });
+    assert!(!ok, "a refusal is the verb's error");
+    assert!(
+        err.contains("the driver heard gate g"),
+        "the verb reports the served answer: {err}"
+    );
+}
+
+/// THE VERB ASKS WHERE ITS DRIVER SAYS: GIVEN a socket served at a path the runtime directory
+/// does not derive, WHEN an agent runs `rigger gate g` with `RIGGER_GATE_SOCKET` naming it, THEN
+/// the answer served there is what the verb reports; WHEN the variable names a relative path, THEN
+/// the verb refuses naming it, runs no gate and records nothing.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_address() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
+    let (root, scratch) = committed_project();
+    let path = scratch.path().join("addressed").join("gate.sock");
+    let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
+    let answer = |request: GateRequest| GateReply::Refused {
+        reason: format!("the addressed driver heard gate {}", request.gate),
+    };
+    let ask_with = |address: &str| {
+        run_rigger_envs(
+            root.path(),
+            &["gate", "g"],
+            &[
+                ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+                ("XDG_RUNTIME_DIR", scratch.path().to_str().unwrap()),
+                (GATE_SOCKET_ENV, address),
+            ],
+        )
+    };
+    let (addressed, relative) = std::thread::scope(|s| {
+        let serving = s.spawn(|| socket.serve(&answer));
+        let addressed = ask_with(path.to_str().unwrap());
+        let relative = ask_with("addressed/gate.sock");
+        socket.close();
+        serving.join().unwrap().unwrap();
+        (addressed, relative)
+    });
+    for (why, (out, err, ok), said) in [
+        ("absolute", addressed, "the addressed driver heard gate g"),
+        ("relative", relative, "addressed/gate.sock"),
+    ] {
+        assert!(!ok, "{why}: the verb fails; stdout:\n{out}");
+        assert!(err.contains(said), "{why}: {err}");
+        assert!(!out.contains("gate g on"), "{why}: no gate ran: {out}");
+    }
+    assert!(
+        gate_verdicts(root.path()).is_empty(),
+        "nothing was recorded"
+    );
+}
+
+/// A RUNTIME DIRECTORY TOO LONG FOR A SOCKET IS NAMED: GIVEN a runtime directory so long that the
+/// project's socket path overflows the OS limit, WHEN an agent runs `rigger gate g`, THEN the verb
+/// names the runtime directory as the cause, runs the gate for information only and records
+/// nothing.
+#[cfg(unix)]
+#[test]
+fn a_runtime_directory_too_long_for_a_socket_is_named_and_the_verb_runs_for_information_only() {
+    let (root, scratch) = committed_project();
+    let long = scratch.path().join("r".repeat(120));
+    std::fs::create_dir_all(&long).unwrap();
+    let (out, err, ok) = run_rigger_envs(
+        root.path(),
+        &["gate", "g"],
+        &[
+            ("RIGGER_TMPDIR", scratch.path().to_str().unwrap()),
+            ("XDG_RUNTIME_DIR", long.to_str().unwrap()),
+        ],
+    );
+    assert!(ok, "the gate is green; stderr:\n{err}");
+    assert!(
+        out.contains("PASS gate g"),
+        "the verb prints the result: {out}"
+    );
+    assert!(
+        err.contains("the runtime directory") && err.contains("recorded nothing"),
+        "the verb names the cause and says it recorded nothing: {err}"
+    );
+    assert!(
+        gate_verdicts(root.path()).is_empty(),
+        "nothing was recorded"
+    );
+}
+
+#[test]
+fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_nothing() {
+    struct Case {
+        why: &'static str,
+        dirty: bool,
+        gate: &'static str,
+        says: &'static str,
+    }
+    let cases = [
+        Case {
+            why: "an uncommitted file",
+            dirty: true,
+            gate: "g",
+            says: "uncommitted changes",
+        },
+        Case {
+            why: "an undeclared gate",
+            dirty: false,
+            gate: "nope",
+            says: "the declared gates are: g",
+        },
+    ];
+    for case in cases {
+        let why = case.why;
+        let (root, scratch) = committed_project();
+        if case.dirty {
+            std::fs::write(root.path().join("loose.rs"), "loose\n").unwrap();
+        }
+        let (_out, err, ok) = rigger_in(root.path(), scratch.path(), &["gate", case.gate]);
+        assert!(!ok, "{why}: the verb exits non-zero");
+        assert!(
+            err.contains(case.says),
+            "{why}: stderr says {:?}:\n{err}",
+            case.says
+        );
+        assert!(
+            gate_verdicts(root.path()).is_empty(),
+            "{why}: nothing was recorded"
+        );
+    }
+}
+
+#[test]
+fn rigger_emit_refuses_a_gate_verdict_so_no_worker_can_forge_one() {
+    let (root, scratch) = committed_project();
+    let body = r#"{"gate":"g","pass":true,"flaky":false,"evidence":"PASS"}"#;
+    let (_out, err, ok) = rigger_in(root.path(), scratch.path(), &["emit", "GateVerdict", body]);
+    assert!(!ok, "rigger emit GateVerdict exits non-zero");
+    assert!(err.contains(&emit_refused("GateVerdict")), "stderr:\n{err}");
+    assert!(
+        gate_verdicts(root.path()).is_empty(),
+        "nothing was recorded"
+    );
+}

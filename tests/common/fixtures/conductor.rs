@@ -8,7 +8,18 @@ use rigger::eventstore::{Event, EventStore};
 use rigger::gate;
 use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 
-use super::{agent, gate_def, gate_def_inputs};
+use super::{agent, gate_def, gate_def_inputs, test_spawn_host};
+
+/// The one paragraph the lookup pointer every grounding slice carries renders, between its
+/// leading and trailing newline: the knowledge graph's four verbs, the combined lookup first, each
+/// with its one-line job, then one worked example each of "who calls" and "where is it defined".
+pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through four verbs: \
+     `rigger graph --lookup <term>...` (each term at once from the graph, a live scan of your \
+     working tree and the project's ranked prose), `rigger graph --around <file|entity>` \
+     (structure: callers, callees, neighbors), `rigger \
+     graph --show <entity>` (text: definition site and body), `rigger peers <file>...` (memory: \
+     decisions, findings, lessons). Who calls <name>: `rigger graph --around <name>`. Where is \
+     <name> defined: `rigger graph --show <name>`.";
 
 /// A no-op emit sink for an `AgentDriver::spawn` whose emits the test does not observe.
 pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
@@ -68,7 +79,7 @@ pub fn implementer_opts(id: &str) -> SpawnOpts {
         id: id.to_string(),
         attempt: 0,
         system_prompt: "You implement findings.".to_string(),
-        ..Default::default()
+        ..SpawnOpts::new(test_spawn_host())
     }
 }
 
@@ -91,6 +102,39 @@ pub fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
 /// A first round's reject requiring one correctness fix in `feature.rs`, the file the unit under
 /// review wrote.
 pub const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
+
+/// A first round's reject requiring three correctness fixes: two REQUIRED pattern items of
+/// different shapes either side of one plain item.
+pub const PATTERN_REJECT: &str = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"bound the retry","path":"feature.rs","correctness":true},{"finding":"close the handle","path":"lib.rs","correctness":true,"pattern":"leaked handles"}]}"#;
+
+/// The REQUIRED block [`PATTERN_REJECT`] hands the next attempt's implementer, through the blank
+/// line closing it: each item, and under each pattern item its shape and the DecisionMade `audit`
+/// it asks for.
+pub fn implementer_pattern_block(audit: &str) -> String {
+    format!(
+        "REQUIRED - review holds the next round to each of these:\n\
+         - feature.rs: scope the log read\n  \
+         PATTERN: unscoped log reads. Record DecisionMade `{audit}` for it.\n\
+         - feature.rs: bound the retry\n\
+         - lib.rs: close the handle\n  \
+         PATTERN: leaked handles. Record DecisionMade `{audit}` for it.\n\n"
+    )
+}
+
+/// The REQUIRED list [`PATTERN_REJECT`] hands every tier of the next review round, up to the
+/// sentence after it: each item, and under each pattern item its shape and the DecisionMade
+/// `audit` it names as the implementer's audit record.
+pub fn review_pattern_list(audit: &str) -> String {
+    format!(
+        "The items that round REQUIRED:\n\
+         - feature.rs: scope the log read\n  \
+         PATTERN: unscoped log reads. The implementer's audit record is DecisionMade `{audit}`.\n\
+         - feature.rs: bound the retry\n\
+         - lib.rs: close the handle\n  \
+         PATTERN: leaked handles. The implementer's audit record is DecisionMade `{audit}`.\n\
+         A finding outside that delta"
+    )
+}
 
 /// The `UnitStatus` markers in `events` carrying the `status` token, in log order.
 pub fn status_markers<'a>(events: &'a [Event], status: &str) -> impl Iterator<Item = &'a Event> {
@@ -358,13 +402,23 @@ impl AgentDriver for FifoAtLandingDriver {
 /// `.rigger/tmp` into the source tree. A run over a repo already resolves its scratch root from
 /// the repo and runs unchanged.
 pub fn run_isolated(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
+    isolated(cfg, deps, rigger::conductor::run)
+}
+
+/// `run` over `cfg` and `deps` with a repo-less run's scratch root pinned as [`run_isolated`]
+/// pins it, for a test driving the run through another entry point.
+pub fn isolated(
+    cfg: &Config,
+    deps: &Deps,
+    run: impl FnOnce(&Config, &Deps) -> Result<RunState, Error>,
+) -> Result<RunState, Error> {
     if !deps.repo.is_empty() {
-        return rigger::conductor::run(cfg, deps);
+        return run(cfg, deps);
     }
     let scratch = tempfile::tempdir().unwrap();
     let mut cfg = cfg.clone();
     cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
-    rigger::conductor::run(&cfg, deps)
+    run(&cfg, deps)
 }
 
 /// The conductor's ports for one run over `repo`: no grounder, no graph and no criteria.
@@ -383,8 +437,10 @@ pub fn bare_deps<'a>(
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     }
 }
 

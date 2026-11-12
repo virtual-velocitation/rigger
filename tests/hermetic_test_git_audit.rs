@@ -41,7 +41,7 @@
 //! outranks whatever a `GIT_CONFIG_GLOBAL`-pointed file says, verified by this file's own
 //! control/treatment pair, so that pre-existing use cannot defeat the runner's hermeticity).
 
-mod common;
+use crate::common;
 
 use common::repo::collect_rs_files;
 use common::repo::repo_text;

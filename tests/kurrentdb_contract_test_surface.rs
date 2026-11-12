@@ -23,7 +23,7 @@
 //!      report green with the test unrun. The test runs through the shared fixture
 //!      `with_kurrentdb` (tests/common/fixtures/kurrentdb.rs), which starts its container
 //!      through `start_kurrentdb` and hands a failed start to the one decision `start_failure`.
-//!      It skips - a stderr notice, `None`, and `with_kurrentdb` RETURNS without running the
+//!      It skips - a stderr notice, `None`, and `with_kurrentdb_container` RETURNS without running the
 //!      test's body - only when no runtime is reachable: DOCKER_HOST unset and no socket where
 //!      the client looks for one, or a socket that refuses the connection. An image pull whose
 //!      stream to the runtime broke is retried, up to `START_ATTEMPTS` starts in all. Every other
@@ -47,7 +47,7 @@
 //! image constant, identically in both
 //! feature lanes, a real member of each lane's `cargo test` battery.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE, START_ATTEMPTS,
@@ -58,11 +58,12 @@ use testcontainers::bollard::{Docker, API_DEFAULT_VERSION};
 use testcontainers::core::error::{ClientError, WaitContainerError};
 use testcontainers::TestcontainersError;
 
-/// The body of the first `fn <name>` in `src`, from its opening `{` to the matching `}`
+/// The body of the first `fn <name>(` in `src`, from its opening `{` to the matching `}`
 /// (brace-balanced, so nested blocks are included). Panics if the function or a balanced
 /// body is absent - the guard is worthless if it silently matches nothing.
 fn fn_body(src: &str, name: &str) -> String {
-    let sig = format!("fn {name}");
+    // Through the `(`, so `with_kurrentdb` never matches its prefix-sharing `with_kurrentdb_container`.
+    let sig = format!("fn {name}(");
     let at = src
         .find(&sig)
         .unwrap_or_else(|| panic!("`{sig}` not found in the adapter source"));
@@ -120,7 +121,7 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 /// force-unwrapped, a failed one goes to `start_failure` with the DOCKER_HOST the process sees and
 /// the attempt it was, that decision's `Retry` arm starts again, its `Skip` arm is the fixture's
 /// ONLY skip - the one no-runtime notice and the one `None` - and its `Fail` arm panics with the
-/// start's error. `with_kurrentdb` returns on that `None`, and `passes_the_contract` runs through
+/// start's error. `with_kurrentdb_container` (which `with_kurrentdb` delegates to) returns on that `None`, and `passes_the_contract` runs through
 /// `with_kurrentdb`. A regression in any of them is SILENT (see the module header), so it is
 /// pinned here at `cargo test` time.
 #[test]
@@ -208,16 +209,32 @@ fn the_contract_test_skips_only_without_a_container_runtime() {
         );
     }
 
-    // The shared lifecycle boots through that start and returns on its `None`, and the contract
-    // test runs through that lifecycle.
-    let lifecycle = squeeze(&fn_body(
-        &repo_text("tests/common/fixtures/kurrentdb.rs"),
-        "with_kurrentdb",
-    ));
+    // The one lifecycle lives in `with_kurrentdb_container`: it boots through that start, returns
+    // on its `None`, removes the container and re-raises the body's panic. `with_kurrentdb` only
+    // delegates to it, so no second lifecycle exists; the contract test runs through it.
+    let fixture_source = repo_text("tests/common/fixtures/kurrentdb.rs");
+    let lifecycle = squeeze(&fn_body(&fixture_source, "with_kurrentdb_container"));
+    for (needle, what) in [
+        (
+            "start_kurrentdb(&rt)else{return;",
+            "boot through `start_kurrentdb` and return when it yields no container",
+        ),
+        ("container.rm()", "remove the container"),
+        ("resume_unwind(", "re-raise a panic from the body"),
+    ] {
+        assert!(
+            lifecycle.contains(needle),
+            "`with_kurrentdb_container` is the one lifecycle and must {what} (spec 47 criterion 3); \
+             its body is:\n{lifecycle}"
+        );
+    }
+    let delegate = squeeze(&fn_body(&fixture_source, "with_kurrentdb"));
     assert!(
-        lifecycle.contains("start_kurrentdb(&rt)else{return;"),
-        "`with_kurrentdb` must boot its server through `start_kurrentdb` and return when it yields \
-         no container (spec 47 criterion 3); its body is:\n{lifecycle}"
+        delegate.contains("with_kurrentdb_container(")
+            && !delegate.contains("start_kurrentdb(")
+            && !delegate.contains("catch_unwind"),
+        "`with_kurrentdb` must only delegate to `with_kurrentdb_container`, never run a second \
+         lifecycle; its body is:\n{delegate}"
     );
     let contract = squeeze(&fn_body(
         &repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs"),
@@ -258,8 +275,13 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
     let no_socket = Docker::connect_with_unix(&path("absent.sock"), 120, API_DEFAULT_VERSION)
         .expect_err("no socket where nothing created one");
-    // The socket file outlives its listener, so the path exists and nothing accepts on it.
-    drop(std::os::unix::net::UnixListener::bind(path("refusing.sock")).unwrap());
+    // A stream socket bound to the path and never listening, so the path exists and refuses every
+    // connection. A socket that once listened can still accept one while a process another test
+    // spawns holds a copy of its descriptor between fork and exec, and the start then reaches it.
+    tokio::net::UnixSocket::new_stream()
+        .unwrap()
+        .bind(path("refusing.sock"))
+        .unwrap();
     let docker = Docker::connect_with_unix(&path("refusing.sock"), 120, API_DEFAULT_VERSION)
         .expect("a client for a socket that exists");
     let refused = container_runtime()
@@ -273,13 +295,15 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
 
 /// Failed starts on a runtime the client reached, one per way a start fails there: the server
 /// never reports ready in time, the runtime refuses the image's pull, the port does not bind, the
-/// daemon refuses to create the container.
-fn reachable_runtime_failures() -> [TestcontainersError; 4] {
+/// daemon refuses to create the container, the runtime accepts the connection and closes it before
+/// answering.
+fn reachable_runtime_failures() -> [TestcontainersError; 5] {
     let daemon = |message: &str| BollardError::DockerResponseServerError {
         status_code: 500,
         message: message.to_string(),
     };
     [
+        TestcontainersError::Client(ClientError::CreateContainer(closed_before_answering())),
         TestcontainersError::WaitContainer(WaitContainerError::StartupTimeout),
         TestcontainersError::Client(ClientError::PullImage {
             descriptor: format!("{}:{}", KURRENTDB_IMAGE.0, KURRENTDB_IMAGE.1),
@@ -292,6 +316,37 @@ fn reachable_runtime_failures() -> [TestcontainersError; 4] {
             "no space left on device",
         ))),
     ]
+}
+
+/// The error the client returns when the runtime accepts its connection and closes it before the
+/// request is sent: the client hands the unsent request back as `Canceled`. On the one-thread
+/// runtime the accepting task closes the connection before the client's connection task first runs.
+/// It shuts the connection down rather than dropping it, since a process another test spawns can
+/// hold a copy of the descriptor between fork and exec and keep a dropped one open.
+fn closed_before_answering() -> BollardError {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("closing.sock");
+    let error = container_runtime().block_on(async {
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            connection
+                .into_std()
+                .unwrap()
+                .shutdown(std::net::Shutdown::Both)
+                .unwrap();
+        });
+        Docker::connect_with_unix(path.to_str().unwrap(), 120, API_DEFAULT_VERSION)
+            .expect("a client for a socket that exists")
+            .create_container(None, Default::default())
+            .await
+            .expect_err("a connection closed before the answer fails the creation")
+    });
+    assert!(
+        error.to_string().ends_with("client error (Canceled)"),
+        "a connection the runtime closed before answering fails as `Canceled`: {error}"
+    );
+    error
 }
 
 /// A start that reached no container runtime skips the test while DOCKER_HOST is unset, or

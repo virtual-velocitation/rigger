@@ -200,82 +200,87 @@ impl Worktree {
         // against every other in-process admin-directory mutation this process makes for
         // the SAME repository (spec 103 criterion 4, widened at the checkin seam: see
         // `repo_admin_lock`'s doc comment for the race this closes and what it does not).
-        let repo_lock = repo_admin_lock(repo);
-        let _repo_guard = repo_lock.lock().unwrap();
-        // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
-        // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
-        // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
-        // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
-        // is a no-op, and a healthy registered worktree is never touched.
-        heal_corrupt_worktree_admin(repo);
-        ensure_scratch_root_cargo_config(dir);
-        if branch_exists(repo, branch) {
-            // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
-            // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
-            // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
-            // derives the SAME `dir` for this branch. If that dir already IS this branch's
-            // worktree, adopt it directly - a check on the dir's own HEAD, with no
-            // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
-            // branch already checked out). (This handles sequential resume/supersede, not
-            // a true create-race for the SAME branch name: two INDEPENDENT `Worktree::create`
-            // calls that both see one particular branch absent still race the underlying
-            // `git worktree add -b` for THAT branch - rigger never asks two units to create
-            // the same branch concurrently, so that shape is not a first-class case. The
-            // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
-            // `run_wave`, whose heal scans and adds could interleave and corrupt each
-            // other's admin entries - is now closed in-process by `repo_admin_lock` above
-            // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
-            // worktrees against this same repository, which only the `locked`/grace-period
-            // guards in `worktree_admin_is_corrupt` defend against.
-            // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
-            // different shape - N threads that already share one `&Worktree` - and that one
-            // IS serialized, by `reassert_mu`.)
-            if worktree_on_branch(dir, branch) {
-                return Ok(Worktree {
-                    dir: dir.to_string(),
-                    branch: branch.to_string(),
-                    repo: repo.to_string(),
-                    authorized_root: authorized_root.to_string(),
-                    reassert_mu: std::sync::Mutex::new(()),
-                });
-            }
-            // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
-            // is still checked out in a PRIOR process's registration - a killed or
-            // superseded `rigger step` - whose working dir may be at a different/old path
-            // or gone entirely). ADOPT the surviving registration when its dir survives,
-            // and prune-then-recreate when it does not; never fail on it.
-            if let Some(existing) = registered_worktree_for(repo, branch) {
-                if std::path::Path::new(&existing).is_dir() {
+        {
+            let repo_lock = repo_admin_lock(repo);
+            let _repo_guard = repo_lock.lock().unwrap();
+            // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
+            // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
+            // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
+            // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
+            // is a no-op, and a healthy registered worktree is never touched.
+            heal_corrupt_worktree_admin(repo);
+            ensure_scratch_root_cargo_config(dir);
+            if branch_exists(repo, branch) {
+                // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
+                // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
+                // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
+                // derives the SAME `dir` for this branch. If that dir already IS this branch's
+                // worktree, adopt it directly - a check on the dir's own HEAD, with no
+                // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
+                // branch already checked out). (This handles sequential resume/supersede, not
+                // a true create-race for the SAME branch name: two INDEPENDENT `Worktree::create`
+                // calls that both see one particular branch absent still race the underlying
+                // `git worktree add -b` for THAT branch - rigger never asks two units to create
+                // the same branch concurrently, so that shape is not a first-class case. The
+                // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
+                // `run_wave`, whose heal scans and adds could interleave and corrupt each
+                // other's admin entries - is now closed in-process by `repo_admin_lock` above
+                // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
+                // worktrees against this same repository, which only the `locked`/grace-period
+                // guards in `worktree_admin_is_corrupt` defend against.
+                // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
+                // different shape - N threads that already share one `&Worktree` - and that one
+                // IS serialized, by `reassert_mu`.)
+                if worktree_on_branch(dir, branch) {
                     return Ok(Worktree {
-                        dir: existing,
+                        dir: dir.to_string(),
                         branch: branch.to_string(),
                         repo: repo.to_string(),
                         authorized_root: authorized_root.to_string(),
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
-                git(repo, &["worktree", "prune"])?;
+                // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
+                // is still checked out in a PRIOR process's registration - a killed or
+                // superseded `rigger run` - whose working dir may be at a different/old path
+                // or gone entirely). ADOPT the surviving registration when its dir survives,
+                // and prune-then-recreate when it does not; never fail on it.
+                if let Some(existing) = registered_worktree_for(repo, branch) {
+                    if std::path::Path::new(&existing).is_dir() {
+                        return Ok(Worktree {
+                            dir: existing,
+                            branch: branch.to_string(),
+                            repo: repo.to_string(),
+                            authorized_root: authorized_root.to_string(),
+                            reassert_mu: std::sync::Mutex::new(()),
+                        });
+                    }
+                    git(repo, &["worktree", "prune"])?;
+                }
+                // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
+                // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
+                // registration not finalized) - or any crash that leaves a populated dir at
+                // this fixed path that is NOT a registered worktree on the branch - would make
+                // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
+                // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
+                // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
+                // Clear the unregistered leftover (deregister it if git still tracks it, else
+                // remove the bare dir) so the branch's committed checkpoint is checked out
+                // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
+                // cleared, never the durable branch - the branch's work is exactly what we reuse.
+                if std::path::Path::new(dir).exists() {
+                    clear_worktree_dir(repo, dir, authorized_root)?;
+                }
+                // Reuse the existing branch's committed work: check it out into the fresh
+                // worktree dir, no `-b` (which would refuse, the ref already exists).
+                git(repo, &["worktree", "add", dir, branch])?;
+            } else {
+                git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
             }
-            // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
-            // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
-            // registration not finalized) - or any crash that leaves a populated dir at
-            // this fixed path that is NOT a registered worktree on the branch - would make
-            // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
-            // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
-            // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
-            // Clear the unregistered leftover (deregister it if git still tracks it, else
-            // remove the bare dir) so the branch's committed checkpoint is checked out
-            // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
-            // cleared, never the durable branch - the branch's work is exactly what we reuse.
-            if std::path::Path::new(dir).exists() {
-                clear_worktree_dir(repo, dir, authorized_root)?;
-            }
-            // Reuse the existing branch's committed work: check it out into the fresh
-            // worktree dir, no `-b` (which would refuse, the ref already exists).
-            git(repo, &["worktree", "add", dir, branch])?;
-        } else {
-            git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
         }
+        // The admin directory is written; the refresh writes only the new worktree's own index,
+        // so it runs outside the repository's admin lock and a wave's creates never queue on it.
+        refresh_checked_out_index(dir)?;
         Ok(Worktree {
             dir: dir.to_string(),
             branch: branch.to_string(),
@@ -482,7 +487,7 @@ impl Worktree {
     ///
     /// For THROWAWAY review scaffolding whose deterministic branch/dir must never ADOPT a
     /// stale checkpoint: a review stage carries no durable work, so its branch is created
-    /// off the base HEAD and torn down each step. If a step CRASHES after the review
+    /// off the base HEAD and torn down each step. If the driver CRASHES after the review
     /// worktree is created but before cleanup, the deterministic review branch+dir survive
     /// pinned at the OLD base HEAD; on resume [`Self::create`] would ADOPT that surviving
     /// worktree (the fast path / registration adopt), and if sibling stages integrated onto
@@ -538,15 +543,15 @@ impl Worktree {
     /// every [`Self::integrate`] merges into (it merges into the repo's current branch).
     /// Checking it out is therefore mandatory, not incidental: it is what makes the run
     /// branch - not the operator's own branch - the isolation boundary the whole run
-    /// depends on. Idempotent, so it is safe to call at the top of every `rigger step`.
+    /// depends on. Idempotent, so it is safe to call at the top of every `rigger run`.
     ///
     /// Three cases, returning [`RunBranchSetup`] so the caller can report a divergence:
     ///
     /// - `branch` already exists: REUSE it - check it out if it is not the current
     ///   branch, and NEVER reset it, so the units a prior step integrated onto it are
     ///   preserved. `base` is NOT consulted here: once the run branch exists it is the
-    ///   run's durable anchor, and reusing it is exactly how a later step (or a fresh
-    ///   `rigger step` after an interruption) CONTINUES the accumulated run. Re-anchoring
+    ///   run's durable anchor, and reusing it is exactly how a later pass (or a resumed
+    ///   `rigger run` after an interruption) CONTINUES the accumulated run. Re-anchoring
     ///   an existing run branch to a different base would orphan every integrated unit,
     ///   so this method deliberately refuses to (`base` re-anchoring only happens on a
     ///   run branch that does not exist yet). Returns [`RunBranchSetup::Reused`].
@@ -555,12 +560,11 @@ impl Worktree {
     /// - `branch` absent and `base` does NOT resolve (e.g. the default `origin/main` on a
     ///   repo with no remote, a `master`-default repo, or a pre-fetch clone): create
     ///   `branch` off the current HEAD instead and check it out. This is NOT a no-op: on
-    ///   the native `rigger step` path there is no separate setup step (`cmd_step` IS the
-    ///   driver), so if this did nothing HEAD would stay on the operator's branch and the
+    ///   the `rigger run` path there is no separate setup step (the driver calls this
+    ///   itself), so if this did nothing HEAD would stay on the operator's branch and the
     ///   conductor would branch and merge machine-generated units directly onto it - the
     ///   exact opposite of the isolation the run branch exists for. Creating off HEAD
-    ///   preserves isolation (it mirrors the JS driver's `|| git checkout -B <run>`
-    ///   fallback); the caller learns the base was unresolvable via
+    ///   preserves isolation; the caller learns the base was unresolvable via
     ///   [`RunBranchSetup::CreatedFromHead`] and can warn. (`checkout -B` with no
     ///   start-point anchors on the current HEAD and also succeeds on an unborn HEAD.)
     pub fn ensure_run_branch(
@@ -619,8 +623,7 @@ impl Worktree {
     /// splits the entry across two NUL-separated fields - the NEW path first,
     /// then the original - so we keep the new path and skip the original field.
     pub fn changed_files(&self) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["status", "--porcelain", "-z"])?;
-        Ok(parse_status_z(&out))
+        uncommitted_paths(&self.dir)
     }
 
     /// Stage and commit the agent's changes on the worktree's branch, returning
@@ -1635,126 +1638,10 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-/// THE ONE HASH FUNCTION (spec 107): the object id git gives `bytes`, as `git hash-object --stdin`
-/// prints it under `root`. It applies no filter, so the id is that of the bytes as they are. Inside
-/// a repository ([`in_repository`]) it writes the object it hashes (`git hash-object -w`, spec 124,
-/// THE BLOB IS WRITTEN), so that repository's object database holds the bytes under the id it
-/// answers, and hardens it (`-c core.fsync=loose-object`), so the object is on disk when the call
-/// returns; outside one, where no object database stands, it hashes without writing. It starts at
-/// most two processes, each waited to its exit: the detection's, then the hash's. A detection whose
-/// `git` cannot start, which says nothing about whether the write is owed, and a hash process that
-/// cannot start, or that fails - a write that fails included - fail the hash, each naming the
-/// command line it ran or could not start with, the root and the cause ([`git_failure`]). A caller
-/// hashing more than once under one root binds it once ([`BlobHasher`]), so the detection runs once.
-pub fn hash_blob(root: &std::path::Path, bytes: &[u8]) -> Result<String, Error> {
-    BlobHasher::new(root).hash(bytes)
-}
-
-/// [`hash_blob`] bound to one root for the binding's life: its repository detection
-/// ([`in_repository`]) is answered at the first hash and kept, so every later hash starts one
-/// process, the hash's own. A detection whose `git` could not start fails the hash that asked, as
-/// [`hash_blob`]'s does, and is kept for none: the next hash detects again.
-pub struct BlobHasher {
-    root: std::path::PathBuf,
-    inside: std::sync::OnceLock<bool>,
-}
-
-impl BlobHasher {
-    /// The binding of [`hash_blob`] to `root`, which has detected nothing yet.
-    pub fn new(root: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            inside: std::sync::OnceLock::new(),
-        }
-    }
-
-    /// The object id git gives `bytes` under this binding's root, as [`hash_blob`] answers it.
-    pub fn hash(&self, bytes: &[u8]) -> Result<String, Error> {
-        let inside = match self.inside.get() {
-            Some(inside) => *inside,
-            None => {
-                let inside = in_repository(&self.root)?;
-                // Two hashes detecting at once answer the same root; the first kept stands.
-                let _ = self.inside.set(inside);
-                inside
-            }
-        };
-        hash_detected(&self.root, inside, bytes)
-    }
-}
-
-/// The hash [`hash_blob`] runs under `root` once its detection answered `inside`: writing the
-/// object inside a repository, hashing without a write outside one.
-fn hash_detected(root: &std::path::Path, inside: bool, bytes: &[u8]) -> Result<String, Error> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let args: &[&str] = if inside {
-        &[
-            "-c",
-            "core.fsync=loose-object",
-            "hash-object",
-            "-w",
-            "--no-filters",
-            "--stdin",
-        ]
-    } else {
-        &["hash-object", "--no-filters", "--stdin"]
-    };
-    let failed = |why: &str| git_failure(args, root, why);
-    let mut process = crate::subprocess::git_in(root)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| failed(&e.to_string()))?;
-    // A write to its input that fails is a process that stopped reading, which its exit status
-    // then says: git prints an id only once it has read its whole input.
-    if let Some(mut input) = process.stdin.take() {
-        let _ = input.write_all(bytes);
-    }
-    let out = process
-        .wait_with_output()
-        .map_err(|e| failed(&e.to_string()))?;
-    if !out.status.success() {
-        return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// The arguments of the one repository detection: `git rev-parse --git-dir` succeeds under a root
-/// inside a git repository.
-const REPOSITORY_DETECTION: [&str; 2] = ["rev-parse", "--git-dir"];
-
-/// Whether `root` is inside a git repository, so an object database stands there to read from and
-/// write to ([`REPOSITORY_DETECTION`] run under it, read by [`repository_answer`]). The one
-/// repository detection [`hash_blob`] and [`BlobBatch::start`] apply.
-fn in_repository(root: &std::path::Path) -> Result<bool, Error> {
-    repository_answer(
-        root,
-        crate::subprocess::git_in(root)
-            .args(REPOSITORY_DETECTION)
-            .output(),
-    )
-}
-
-/// What the repository detection's run under `root` answers: inside for a `git` that ran and
-/// succeeded, outside for one that ran and failed, and for one that could not start a failure
-/// naming the detection's command, the root and the cause - a `git` that never ran says nothing
-/// about where `root` is.
-fn repository_answer(
-    root: &std::path::Path,
-    ran: std::io::Result<std::process::Output>,
-) -> Result<bool, Error> {
-    ran.map(|out| out.status.success())
-        .map_err(|e| git_failure(&REPOSITORY_DETECTION, root, &e.to_string()))
-}
-
 /// The failure of the git command whose arguments are `args`, run under `root`, for the cause
 /// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
 /// not start with, so the text names the command that failed.
-fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
+pub(crate) fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
     Error(format!(
         "git {} in {}: {why}",
         args.join(" "),
@@ -1762,8 +1649,8 @@ fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
     ))
 }
 
-/// The one `git cat-file --batch` process a graph rebuild reads its ledger entries' blobs from
-/// (spec 107): started once for a repository, asked for one object at a time, and ended by
+/// The one `git cat-file --batch` process the code store's tree source reads its blobs from:
+/// started once for a repository, asked for one object at a time, and ended by
 /// closing its standard input and waiting for it on every exit path - when this is dropped -
 /// never by a signal. It runs with `GIT_NO_LAZY_FETCH=1`, so a blob a partial clone has not
 /// fetched is one git does not hold, never a network read.
@@ -1775,22 +1662,27 @@ pub struct BlobBatch {
 }
 
 impl BlobBatch {
-    /// Start the batch process over the repository holding `root` ([`BLOB_BATCH`], its start read
-    /// by [`batch_answer`]), or answer none when there is no object database to ask: `root` is
-    /// outside a git repository, or the detection's `git` ([`in_repository`]) cannot start, which
-    /// says nothing about where `root` is. Inside a repository a batch `git` that cannot start
-    /// fails the start, naming its command, the root and the cause: an object database stands
-    /// there to ask.
-    pub fn start(root: &std::path::Path) -> Result<Option<Self>, Error> {
+    /// Start the batch process as `git`, a git command run in `root`, over the repository holding
+    /// `root` ([`BLOB_BATCH`], its start read by [`batch_answer`]), or answer none when `root` lies
+    /// in no repository ([`crate::discover::rev_parse`]), so no object database stands there to
+    /// ask. Where git refuses inside a repository, and where a batch `git` cannot start there, the
+    /// start fails, naming the command, the root and the cause.
+    pub fn start(
+        root: &std::path::Path,
+        mut git: std::process::Command,
+    ) -> Result<Option<Self>, Error> {
+        use crate::discover::{rev_parse, Location};
         use std::process::Stdio;
 
-        if in_repository(root).ok() != Some(true) {
+        if rev_parse(root, Location::CommonDir)
+            .map_err(Error)?
+            .is_none()
+        {
             return Ok(None);
         }
         batch_answer(
             root,
-            crate::subprocess::git_in(root)
-                .args(BLOB_BATCH)
+            git.args(BLOB_BATCH)
                 .env("GIT_NO_LAZY_FETCH", "1")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -1846,7 +1738,7 @@ impl BlobBatch {
 /// The arguments of the one batch process a [`BlobBatch`] reads its blobs from.
 const BLOB_BATCH: [&str; 2] = ["cat-file", "--batch"];
 
-/// What the start of the batch process under `root` - a repository, as the detection answered -
+/// What the start of the batch process under `root` - a repository, as discovery found -
 /// answers, its spawn having answered `spawned`: the batch over a process that started, and for
 /// one that could not a failure naming the batch's command, the root and the cause
 /// ([`git_failure`]).
@@ -2001,11 +1893,10 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 
 /// Reclaim the per-unit build cache that is a SIBLING of the unit worktree at `worktree_dir`
 /// (Gap 19) - the ONE mutation authority for cache reclamation, called from every worktree
-/// removal path: [`Worktree::remove`] (the dominant graceful teardown), [`sweep_terminal`]
-/// (crash recovery), and [`reclaim_worktree_on_branch`] (the resume-path branch GC). A no-op
-/// for any dir that owns no such cache (a review worktree, or a unit whose gates never ran
-/// cargo, has none). Best-effort: a failed reclaim of a throwaway cache must never fail
-/// worktree teardown or abort the sweep.
+/// removal path: [`Worktree::remove`] (the dominant graceful teardown) and
+/// [`reclaim_worktree_on_branch`] (the resume-path branch GC). A no-op for any dir that owns
+/// no such cache (a review worktree, or a unit whose gates never ran cargo, has none).
+/// Best-effort: a failed reclaim of a throwaway cache must never fail worktree teardown.
 ///
 /// Also reclaims the gate store fence's own sibling scratch dir (spec 70 criterion 3,
 /// `cargo-target-<slug>{gate::STORE_FENCE_SUFFIX}`) at the SAME coordinate: `gate::
@@ -2080,16 +1971,15 @@ pub fn reclaim_gate_scratch_sibling(worktree_dir: &str, authorized_root: &str) {
 }
 
 /// The spec-83 (criterion 1) worktree-fence verdict for one unit's LATEST requested spawn:
-/// whether the unit's worktree may be reclaimed by a sweep this step runs, and the evidence
+/// whether the unit's worktree may be reclaimed by the branch GC this pass runs, and the evidence
 /// a log line can name so a vanished (or spared) worktree is attributable from the log
 /// afterward.
 ///
 /// A FENCE, not a replacement: a caller consults this only for a unit its OWN liveness
-/// signal (the ledger's terminal read, or [`sweep_terminal`]'s own ancestry-merge test)
-/// already reads as terminal - this closes the gap where that signal races ahead of a
-/// straggler spawn still working the SAME unit (a slower confirmatory review lens after the
-/// deciding verdict already integrated the unit - spec 83's `u81c1` observation), not a
-/// parallel or overriding notion of "unit in flight".
+/// signal (the ledger's terminal read) already reads as terminal - this closes the gap where
+/// that signal races ahead of a straggler spawn still working the SAME unit (a slower confirmatory
+/// review lens after the deciding verdict already integrated the unit - spec 83's `u81c1`
+/// observation), not a parallel or overriding notion of "unit in flight".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpawnFence {
     /// No spawn has EVER been requested for this unit - the fence has nothing to add; the
@@ -2098,12 +1988,12 @@ pub enum SpawnFence {
     /// The unit's LATEST requested spawn has no recorded result - keep the worktree live
     /// regardless of the caller's own terminal read. A MISSING liveness marker is never
     /// reapable evidence on its own (spec 83 Design): both "no marker yet" and "a fresh
-    /// marker" land here, since only a RECORDED RESULT (a real one, or the liveness sweep's
-    /// own stale-marker classification) ever moves a spawn out of this arm.
+    /// marker" land here, since only a RECORDED RESULT (a real one, or the liveness fault its
+    /// host records for a silent session) ever moves a spawn out of this arm.
     InFlight { spawn: String },
     /// The unit's LATEST requested spawn's result is recorded at event `position` `at` -
-    /// eligible for reclaim. `hung` names whether that result is the liveness sweep's own
-    /// stale-marker classification ([`crate::spawn::SpawnResult::is_liveness_fault`]) rather
+    /// eligible for reclaim. `hung` names whether that result is the liveness fault its host
+    /// recorded ([`crate::spawn::SpawnResult::is_liveness_fault`]) rather
     /// than a worker- or courier-reported outcome, for a more specific evidence line.
     Terminal {
         spawn: String,
@@ -2146,7 +2036,7 @@ impl SpawnFence {
             } => {
                 format!(
                     "unit {unit:?}: latest spawn {spawn:?} hung past its max_wall_clock \
-                     (the liveness sweep classified it at position {at})"
+                     (its liveness fault was recorded at position {at})"
                 )
             }
         }
@@ -2200,19 +2090,19 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
 /// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
 /// serves no in-flight unit. Unmerged branches are in-flight checkpoints and are left
 /// alone. Returns how many worktrees were removed. This is the "the loop cleans up
-/// after itself" half of Gap 14: crashed or superseded step processes leak worktrees,
+/// after itself" half of Gap 14: crashed or superseded run processes leak worktrees,
 /// and integrate-time removal alone never reclaims them.
 ///
 /// Removing a UNIT worktree also reclaims its sibling per-unit build cache
 /// (`cargo-target-<slug>`, Gap 19) via [`reclaim_cache_sibling`]. This is the CRASH-recovery
-/// half: a step process killed before it reached [`Worktree::remove`] leaves its worktree
+/// half: a run process killed before it reached [`Worktree::remove`] leaves its worktree
 /// still registered, so the graceful reclamation never ran and the sweep must reclaim the
 /// cache here. On the dominant graceful path [`Worktree::remove`] already reclaimed it, so
 /// this sweep never sees that worktree at all. Reclamation is best-effort and never aborts
 /// the sweep.
 /// `live_branches` is the `rigger/u/<slug>` set of the CURRENT run's non-terminal units (the
 /// same run-scoped fold the conductor already reads to decide liveness elsewhere - see
-/// `current_run_units` in `main.rs`), never a process-memory list. The merged-only ancestry
+/// `current_run_units` in the `rigger` binary), never a process-memory list. The merged-only ancestry
 /// rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff has a
 /// branch tip that IS an ancestor of `run_branch` (trivially - it never advanced past it)
 /// while the unit is still live in review, so `live_branches` is checked BEFORE the ancestry
@@ -2228,12 +2118,12 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
 /// recorded spawn at all ([`SpawnFence::NoSpawn`]) sweeps exactly as before -
 /// the fence has nothing to add and must never itself become a reason dead residue lingers.
 /// Every fence-relevant decision (kept in flight, or removed with its terminal/hung evidence)
-/// is printed, so a worktree's vanish - or its being spared - is attributable from the step's
+/// is printed, so a worktree's vanish - or its being spared - is attributable from the run's
 /// own log output after the fact.
 ///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the `rigger/u/<slug>` set of the
 /// CURRENTLY LOADED workflow's own stages - config, never the event log - so it stays
-/// populated even at this project's very first step, before a single event has ever been
+/// populated even at this project's very first run, before a single event has ever been
 /// recorded. It narrows ONLY the dirty-spare exception below to a unit THIS workflow actually
 /// declares: an unrelated, genuinely dead branch (a prior run's leftover, a hand-made test
 /// fixture) that happens to also be dirty is still reclaimed exactly as before this fix -
@@ -2296,14 +2186,14 @@ pub fn sweep_terminal_logged(
                 // between this sweep and `run_single_stage`'s halted-commit recovery
                 // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
                 // edit as its own `wip` commit the instant a unit's worktree is adopted, but
-                // `cmd_step` (main.rs) runs THIS sweep strictly BEFORE it ever gets that
+                // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
                 // chance. A candidate that still carries uncommitted changes - an in-progress
                 // merge or a real content conflict included, since either always leaves the
                 // tree dirty - has not yet had its edit captured, so removing it here would
                 // discard it outright rather than merely defer the capture. This spares the
                 // candidate regardless of the fence below (even `NoSpawn`, which normally
                 // defers entirely to the ancestry signal): a store desynced from the worktree
-                // on disk - a restored snapshot, or this project's very first step, adopting a
+                // on disk - a restored snapshot, or this project's very first run, adopting a
                 // worktree that already exists - never gets a chance to record a spawn before
                 // this sweep runs, so the fence alone cannot protect it. An unreadable status
                 // (`run_git` errors) is treated as dirty too - liveness here can only be
@@ -2323,14 +2213,14 @@ pub fn sweep_terminal_logged(
                 //
                 // The status read itself goes through [`path_is_dirty`] (round 3 fix,
                 // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
-                // shared primitive `reclaim_orphan_scratch` (main.rs) now calls too, rather than
+                // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
                 // each growing its own inline `git status` call that can silently pick a
                 // different failure direction. `unwrap_or(true)`: an unreadable status fails
                 // CLOSED (dirty), never open - see that function's own doc comment for why.
                 let dirty = declared_units.contains(branch) && path_is_dirty(&d).unwrap_or(true);
                 if dirty {
                     log(&format!(
-                        "rigger step: worktree sweep: kept {d:?} (branch {branch:?}) - \
+                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
                          uncommitted changes are pending the halt-recovery commit"
                     ));
                     continue;
@@ -2342,19 +2232,19 @@ pub fn sweep_terminal_logged(
                 let fence = spawn_fence(events, unit);
                 if !fence.permits_reclaim() {
                     log(&format!(
-                        "rigger step: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
+                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
                         fence.evidence(unit)
                     ));
                     continue;
                 }
                 if !matches!(fence, SpawnFence::NoSpawn) {
                     log(&format!(
-                        "rigger step: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
+                        "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
                         fence.evidence(unit)
                     ));
                 }
                 // Reap any process rooted inside this terminal worktree BEFORE removing it
-                // (spec 79, criterion 1): a crashed step process can leave a build or tool
+                // (spec 79, criterion 1): a crashed run process can leave a build or tool
                 // still running here, and this is the CRASH-recovery path, not the graceful
                 // `Worktree::remove` one - nothing else reaps it. `root` is the SAME resolved
                 // scratch root already used to confirm `d.starts_with(root)` above.
@@ -2505,12 +2395,15 @@ fn reap_dir_before_removal(dir: &str, authorized_root: &str) {
 /// below call it directly, bypassing `Worktree::create` and the lock entirely - that is fine,
 /// they exercise the heal predicate in isolation, not the concurrency guard.)
 pub fn heal_corrupt_worktree_admin(repo: &str) {
-    let Ok(common) = run_git(repo, &["rev-parse", "--git-common-dir"]) else {
+    use crate::discover::{rev_parse, Location};
+    // A heal that cannot find the common directory heals nothing, whether `repo` lies in no
+    // repository or git refuses there: the `git worktree add` it precedes runs git in the same
+    // repository and fails, naming git's refusal.
+    let Ok(Some(common)) = rev_parse(std::path::Path::new(repo), Location::CommonDir) else {
         return;
     };
-    let common = common.trim();
     let common_path = {
-        let p = std::path::Path::new(common);
+        let p = std::path::Path::new(&common);
         if p.is_absolute() {
             p.to_path_buf()
         } else {
@@ -2562,7 +2455,7 @@ pub fn heal_corrupt_worktree_admin(repo: &str) {
 /// This is defense IN ADDITION TO the heal predicate's own `locked`/grace-period guards
 /// above, never a replacement for them: a lock held by THIS process cannot serialize
 /// against a `git worktree` command some OTHER process runs against the same repository (a
-/// second `rigger step`, or an operator's own `git` invocation) - only the marker git
+/// second `rigger` process, or an operator's own `git` invocation) - only the marker git
 /// itself writes into the entry is authoritative across process boundaries.
 ///
 /// Keyed by the repo path exactly as the caller spells it (never canonicalized): every
@@ -2629,17 +2522,15 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 }
 
 /// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
-/// per-unit build cache - the branch-keyed half of the ordered teardown that both
-/// [`Worktree::remove`] (the graceful `run_stage` path) and [`sweep_terminal`] (crash
-/// recovery) already perform. git REFUSES to delete a branch that is still checked out in
-/// a worktree, so branch-GC on resume must remove the lingering worktree FIRST or the
-/// `git branch -D` fails and BOTH the branch and the worktree survive as per-unit debris.
+/// per-unit build cache - the branch-keyed half of the ordered teardown that
+/// [`Worktree::remove`] (the graceful `run_stage` path) already performs. git REFUSES to
+/// delete a branch that is still checked out in a worktree, so branch-GC on resume must remove the
+/// lingering worktree FIRST or the `git branch -D` fails and BOTH the branch and the worktree
+/// survive as per-unit debris.
 ///
-/// The residue this reclaims: a step process killed between its `UnitIntegrated` emit and
+/// The residue this reclaims: a driver process killed between its `UnitIntegrated` emit and
 /// [`Worktree::remove`] leaves a worktree still registered on the unit's now-integrated
-/// branch. The reaper ([`sweep_terminal`]) runs only on the `rigger step` path, so on the
-/// `rigger run` resume path the branch-GC must reclaim it here - the spec's "and remove
-/// its worktree if the reaper has not".
+/// branch, so the branch-GC a resumed `rigger run` performs reclaims it here.
 ///
 /// This composes the EXISTING single-authorities, minting no parallel teardown:
 /// [`registered_worktree_for`] finds the dir, [`clear_worktree_dir`] deregisters it
@@ -2696,31 +2587,91 @@ pub fn head_sha_of(dir: &str) -> String {
         .unwrap_or_default()
 }
 
+/// How far a file's recorded modification time can trail the system clock: filesystems stamp
+/// files from a coarse clock that advances once per scheduler tick, 10 ms at the coarsest
+/// common tick rate. A write this long past a second's boundary is stamped with the new second.
+const FILE_CLOCK_LAG: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Refreshes the index of the worktree just checked out at `dir`, so a read of it re-hashes no
+/// file. git compares a file's modification time with its index entry's to the second, so it
+/// cannot tell a file modified in the second the index was written from the one it recorded:
+/// it takes every such entry as possibly changed and re-hashes its file on every read that does
+/// not write the index back, as a read never does. A checkout writes its files and then its
+/// index within the same second, and a refresh in that second records it again; so the refresh
+/// waits until the clock has passed the second of the checkout's index write (at most a second,
+/// once per worktree), and the index it writes is then later than every file. The operator's
+/// own checkout is not rigger's to write: their own git refreshes it.
+///
+/// A refresh git refuses fails the create, as a git that cannot read the worktree it has just
+/// checked out fails every step after it as well.
+fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
+    use crate::discover::{rev_parse, Location};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let git_dir = rev_parse(std::path::Path::new(dir), Location::GitDir)
+        .map_err(Error)?
+        .ok_or_else(|| Error(format!("{dir} is in no git repository")))?;
+    let index = std::path::Path::new(&git_dir).join(crate::tree_source::INDEX);
+    let written = match std::fs::metadata(&index).and_then(|m| m.modified()) {
+        Ok(written) => written,
+        // A checkout that writes no index has no entry to re-hash.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(Error(format!("read {}: {e}", index.display()))),
+    };
+    // Nor has one of an empty tree, whose index lists no file: it needs no wait.
+    if git(dir, &["ls-files", "-z"])?.is_empty() {
+        return Ok(());
+    }
+    let second = written
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let past = UNIX_EPOCH + Duration::from_secs(second + 1) + FILE_CLOCK_LAG;
+    if let Ok(wait) = past.duration_since(SystemTime::now()) {
+        std::thread::sleep(wait);
+    }
+    git(dir, &["update-index", "-q", "--refresh"]).map(drop)
+}
+
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
-/// single `git status --porcelain -z` primitive [`sweep_terminal_logged`] and `main.rs`'s
-/// `reclaim_orphan_scratch` share (spec 89 round 3,
-/// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`). Round 2 had grown TWO
-/// separate inline `git status` calls at those last two sites instead of reusing the one
-/// abstraction already sitting right here, private to this module - and the pair silently
-/// diverged on which way to fail when the status read itself fails: `sweep_terminal_logged`'s
-/// treated an unreadable status as dirty (spare the tree), `reclaim_orphan_scratch`'s treated
-/// the IDENTICAL failure as clean (discard it), despite a doc comment on the latter claiming to
-/// mirror the former. `pub`, not `pub(crate)`, because `main.rs` is a separate binary crate
-/// that can only reach this module through `rigger::worktree::*` (see [`branch_tip`],
-/// [`ref_resolves`], [`path_in_ref`] for the same cross-crate shape).
+/// single `git status --porcelain -z` primitive every dirty-tree check shares (spec 89 round 3,
+/// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`), so no call site grows
+/// its own inline `git status` that could diverge on which way to fail when the status read
+/// itself fails. `pub`, not `pub(crate)`, because its callers live in other crates (see
+/// [`branch_tip`], [`ref_resolves`], [`path_in_ref`] for the same cross-crate shape).
 ///
 /// Returns `Err` exactly like the `git`/`run_git` primitives this is built on, so a caller
 /// picks its own fail direction explicitly rather than this function silently picking one for
-/// everybody. Both call sites this round fixes now pick the SAME direction on purpose -
-/// `unwrap_or(true)`, fail CLOSED, an unreadable status counts as dirty - because "A HALT NEVER
+/// everybody. A caller that guards a tree picks fail CLOSED on purpose - `unwrap_or(true)`,
+/// an unreadable status counts as dirty - because "A HALT NEVER
 /// DISCARDS A TREE" (spec 89, criterion 1) means an unreadable tree must default to "protect
 /// it", never "safe to remove".
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
+}
+
+/// The paths `git status --porcelain -z` reports changed in `dir`'s tree, untracked files
+/// included, in git's order ([`parse_status_z`]).
+pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
+    Ok(parse_status_z(&git(dir, &["status", "--porcelain", "-z"])?))
+}
+
+/// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
+/// the [`uncommitted_paths`], sorted, each once.
+pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error> {
+    let committed = git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?;
+    let mut paths: Vec<String> = committed
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .chain(uncommitted_paths(dir)?)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// Whether commit `ancestor` is in `descendant`'s history (either names any rev) in the
@@ -2729,21 +2680,94 @@ pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
     run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
-pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = crate::subprocess::git_in(dir)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+/// Which of a git run's streams its answer holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitOutput {
+    /// Standard output on success; standard error on failure.
+    Stdout,
+    /// Standard output followed by standard error, on success and on failure.
+    StdoutAndStderr,
+}
+
+/// The one runner of `git <args>` in `dir`: `Ok` when git succeeds, `Err` when it fails or
+/// cannot start, each holding the bytes `output` names (a start failure holds its message).
+pub fn git_output(
+    dir: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+    output: GitOutput,
+) -> Result<Vec<u8>, Vec<u8>> {
+    finish_git(start_git(dir, args), output)
+}
+
+/// `git <args>` in `dir`, started as [`start_command`] starts it.
+pub fn start_git(
+    dir: impl AsRef<std::ffi::OsStr>,
+    args: &[&str],
+) -> std::io::Result<std::process::Child> {
+    start_command(crate::subprocess::git_in(dir), args)
+}
+
+/// `git`, a git command, run with `args`, no input and its output streams piped, so several can
+/// run at once before [`finish_git`] waits for each.
+pub fn start_command(
+    mut git: std::process::Command,
+    args: &[&str],
+) -> std::io::Result<std::process::Child> {
+    git.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+}
+
+/// The answer of a git run [`start_git`] started, as [`git_output`] gives it.
+pub fn finish_git(
+    started: std::io::Result<std::process::Child>,
+    output: GitOutput,
+) -> Result<Vec<u8>, Vec<u8>> {
+    let out = waited(started)?;
+    let answer = match (output, out.status.success()) {
+        (GitOutput::Stdout, true) => out.stdout,
+        (GitOutput::Stdout, false) => out.stderr,
+        (GitOutput::StdoutAndStderr, _) => [out.stdout, out.stderr].concat(),
+    };
     if out.status.success() {
-        Ok(combined)
+        Ok(answer)
     } else {
-        Err(combined)
+        Err(answer)
     }
+}
+
+/// The answer of a git query [`start_git`] started that answers a quiet no by exiting 1, as
+/// `rev-parse --verify -q` and `symbolic-ref -q` do: standard output when git answers, none for
+/// that no, and standard error (the exit status when git said nothing) when git fails any other
+/// way or ends by a signal; a start failure holds its message.
+pub fn finish_git_query(
+    started: std::io::Result<std::process::Child>,
+) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    let out = waited(started)?;
+    match out.status.code() {
+        Some(0) => Ok(Some(out.stdout)),
+        Some(1) => Ok(None),
+        _ if out.stderr.is_empty() => Err(out.status.to_string().into_bytes()),
+        _ => Err(out.stderr),
+    }
+}
+
+/// The output of the git run `started` began, once it ends; a start or wait failure holds its
+/// message.
+fn waited(started: std::io::Result<std::process::Child>) -> Result<std::process::Output, Vec<u8>> {
+    started
+        .and_then(std::process::Child::wait_with_output)
+        .map_err(|e| e.to_string().into_bytes())
+}
+
+/// `git <args>` in `dir`, answering standard output and standard error together as text.
+pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    git_output(dir, args, GitOutput::StdoutAndStderr)
+        .map(text)
+        .map_err(text)
 }
 
 /// Resolve the run's scratch root - where transient worktrees live. Precedence:
@@ -2843,10 +2867,10 @@ pub fn sweep_orphan_scratch_roots(cache_dir: &std::path::Path) -> usize {
 /// never ran. [`scratch_root`] is this plus a `create_dir_all`, keeping ONE resolver.
 ///
 /// The DEFAULT rung (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE) is
-/// [`cache_scratch_root_from`] - `<cache-home>/rigger/<encoded repo>` - NEVER the old
-/// `<repo>/.rigger/tmp`: a spawn's own scratch, worktrees, and shared build cache used to
-/// nest INSIDE the live store tree, so a `tempfile::tempdir()` created under a spawn's own
-/// `TMPDIR` (or `rigger scratch`'s own printed container) walked up into the REAL repo's
+/// [`cache_scratch_root_from`] - `<cache-home>/rigger/<encoded repo>` - NEVER
+/// `<repo>/.rigger/tmp`: a spawn's own scratch, worktrees, and shared build cache nested
+/// INSIDE the live store tree would let a `tempfile::tempdir()` created under a spawn's own
+/// `TMPDIR` (or the `rigger_scratch` tool's container) walk up into the REAL repo's
 /// `.rigger/events.db` - either binding a store it should not have, or (spec 89 Problem 4)
 /// having a running spec's live unit worktrees swept as a stray fixture's. A repo-less
 /// caller or a homeless environment (neither `XDG_CACHE_HOME` nor `HOME` set) has nothing
@@ -2880,7 +2904,7 @@ pub fn scratch_root_path_with(
     match operator_chosen {
         // A root the operator chose that is still relative after its `~/` expansion resolves
         // against the repository, never against whatever directory the caller runs from, so a
-        // `rigger step` at the repo root and a `rigger reset` in a subdirectory read one root.
+        // `rigger run` at the repo root and a `rigger reset` in a subdirectory read one root.
         // `Path::join` keeps an absolute root as given, and an empty repo leaves a relative one
         // as given.
         Some(root) => std::path::Path::new(repo)
@@ -2965,15 +2989,19 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
 
 #[cfg(test)]
 mod blob_batch_tests {
-    //! Tests for [`BlobBatch`] (spec 107, THE REBUILD RE-EXTRACTS THE LEDGER): the one
-    //! `git cat-file --batch` process a rebuild reads its entries' blobs from.
+    //! Tests for [`BlobBatch`]: the one `git cat-file --batch` process blobs are read from.
 
-    use super::BlobBatch;
+    use super::{BlobBatch, Error};
     use crate::test_support::{
         git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
         temp_git_project_with_commit, write_file,
     };
     use std::path::Path;
+
+    /// The batch process over the repository holding `root`, run as the plain git there.
+    fn started(root: &Path) -> Result<Option<BlobBatch>, Error> {
+        BlobBatch::start(root, crate::subprocess::git_in(root))
+    }
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
     pub(super) fn asked(batch: &mut BlobBatch, id: &str) -> Result<Option<Vec<u8>>, String> {
@@ -2995,7 +3023,7 @@ mod blob_batch_tests {
         let empty = git_hash_object(root, "empty", true);
         let absent = "1111111111111111111111111111111111111111";
 
-        let mut batch = BlobBatch::start(root)
+        let mut batch = started(root)
             .unwrap()
             .expect("a repository starts the batch process");
         assert_eq!(
@@ -3034,7 +3062,7 @@ mod blob_batch_tests {
             .unwrap()
             .stdout;
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         for id in [
             "",
             "zz zz",
@@ -3060,7 +3088,7 @@ mod blob_batch_tests {
     fn outside_a_repository_no_batch_process_starts() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert!(matches!(BlobBatch::start(root), Ok(None)));
+        assert!(matches!(started(root), Ok(None)));
 
         git_init_quiet(root);
         write_file(
@@ -3068,7 +3096,7 @@ mod blob_batch_tests {
             b"held once the directory is a repository\n",
         );
         let id = git_hash_object(root, "a.txt", true);
-        let mut batch = BlobBatch::start(root)
+        let mut batch = started(root)
             .unwrap()
             .expect("a repository starts a batch process");
         assert_eq!(
@@ -3092,7 +3120,7 @@ mod blob_batch_tests {
         let bytes = std::fs::read(&object).unwrap();
         std::fs::write(&object, &bytes[..bytes.len() - 6]).unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(
             asked(&mut batch, &whole),
             Ok(Some(b"an object git holds whole\n".to_vec()))
@@ -3121,7 +3149,7 @@ mod blob_batch_tests {
         let corrupt = git_hash_object(root, "b.txt", true);
         std::fs::write(loose_object(root, &corrupt), b"garbage").unwrap();
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &corrupt), Ok(None));
         assert_eq!(
             asked(&mut batch, &whole),
@@ -3151,7 +3179,7 @@ mod blob_batch_tests {
         write_file(&root.join("a.txt"), b"the body\n");
         let text = git_hash_object(root, "a.txt", true);
 
-        let mut batch = BlobBatch::start(root).unwrap().unwrap();
+        let mut batch = started(root).unwrap().unwrap();
         assert_eq!(asked(&mut batch, &text), Ok(Some(b"the body\n".to_vec())));
         let running = processes_naming(root);
         assert_eq!(running.len(), 1, "one batch process: {running:?}");
@@ -3177,221 +3205,101 @@ mod tests {
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
 
-    /// What [`hash_blob`] answers for `bytes` under `root`: the object id, or the error's text.
-    fn hashed(root: &std::path::Path, bytes: &[u8]) -> Result<String, String> {
-        hash_blob(root, bytes).map_err(|e| e.0)
-    }
-
-    /// One line of text, the bytes the outside-a-repository and the failure hash tests both hash.
-    const HELLO: &[u8] = b"hello\n";
-
-    /// The object id git gives [`HELLO`].
-    const HELLO_ID: &str = "ce013625030ba8dba906f756967f9e9ca394464a";
-
-    /// THE ONE HASH FUNCTION outside a repository (spec 107): a tree that is no git repository
-    /// still answers the object id git gives the bytes - the id `git hash-object` prints for a
-    /// file holding them - for text, for the empty file and for bytes that are not UTF-8.
     #[test]
-    fn hash_blob_outside_a_repository_answers_the_object_id_git_hash_object_gives() {
-        use crate::test_support::{git_hash_object, write_file};
-
+    fn git_output_answers_the_streams_its_mode_names() {
+        // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
+        let rows: [(&str, &[&str], GitOutput, bool, &str); 4] = [
+            (
+                "stdout on success",
+                &["--version"],
+                GitOutput::Stdout,
+                true,
+                "git version",
+            ),
+            (
+                "stderr on failure",
+                &["var", "NOPE"],
+                GitOutput::Stdout,
+                false,
+                "usage",
+            ),
+            (
+                "both on success",
+                &["--version"],
+                GitOutput::StdoutAndStderr,
+                true,
+                "git version",
+            ),
+            (
+                "both on failure",
+                &["var", "NOPE"],
+                GitOutput::StdoutAndStderr,
+                false,
+                "usage",
+            ),
+        ];
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let binary = [0, 159, 146, 150, b'\n', 255];
-        write_file(&root.join("hello"), HELLO);
-        write_file(&root.join("empty"), b"");
-        write_file(&root.join("binary"), &binary);
-
-        assert_eq!(
-            [
-                hashed(root, HELLO),
-                hashed(root, b""),
-                hashed(root, &binary)
-            ],
-            [
-                Ok(HELLO_ID.to_string()),
-                Ok("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".to_string()),
-                Ok(git_hash_object(root, "binary", false)),
-            ]
-        );
-        assert_eq!(
-            [
-                git_hash_object(root, "hello", false),
-                git_hash_object(root, "empty", false)
-            ],
-            [HELLO_ID, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"]
-        );
+        for (name, args, mode, ok, holds) in rows {
+            let answer = git_output(dir.path(), args, mode);
+            assert_eq!(answer.is_ok(), ok, "{name}");
+            let text = String::from_utf8_lossy(answer.as_ref().unwrap_or_else(|e| e)).to_string();
+            assert!(text.contains(holds), "{name}: {text}");
+        }
     }
 
-    /// The hash applies no filter and writes the object it hashes only inside a repository (spec
-    /// 124, THE BLOB IS WRITTEN): in a repository whose attributes convert line endings, bytes
-    /// ending in CRLF hash as they are - not as the converted blob a path's hash would name - and
-    /// the object database, which did not hold them before the hash, holds them under that id
-    /// afterwards; outside a repository, where no object database stands, the same bytes hash to
-    /// the same id and the directory is left as the hash found it.
+    /// A git query answers its output, none for git's quiet no (exit 1), and a failure for any
+    /// other exit or a git that could not start.
+    #[cfg(unix)]
     #[test]
-    fn hash_blob_applies_no_filter_and_writes_the_object_only_inside_a_repository() {
-        use super::blob_batch_tests::asked;
-        use crate::test_support::{
-            dir_snapshot, git_hash_object, temp_git_project_with_commit, write_file,
-        };
-
-        let dir = temp_git_project_with_commit();
-        let root = dir.path();
-        write_file(&root.join(".gitattributes"), b"* text eol=lf\n");
-        write_file(&root.join("crlf.txt"), b"one\r\ntwo\r\n");
-        let filtered = git_hash_object(root, "crlf.txt", false);
-        let unfiltered = "4e349b596c5c9d38a82829fafbaf52281c21e319";
-        let held = || {
-            asked(
-                &mut BlobBatch::start(root)
-                    .unwrap()
-                    .expect("a repository starts the batch process"),
-                unfiltered,
-            )
-        };
-        assert_eq!(
-            held(),
-            Ok(None),
-            "the object database holds no such object yet"
-        );
-
-        assert_eq!(hashed(root, b"one\r\ntwo\r\n"), Ok(unfiltered.to_string()));
-        assert_ne!(filtered, unfiltered);
-        assert_eq!(held(), Ok(Some(b"one\r\ntwo\r\n".to_vec())));
-
-        let outside = tempfile::tempdir().unwrap();
-        assert!(
-            matches!(BlobBatch::start(outside.path()), Ok(None)),
-            "no object database stands outside a repository"
-        );
-        let found = dir_snapshot(outside.path(), "");
-        assert_eq!(
-            hashed(outside.path(), b"one\r\ntwo\r\n"),
-            Ok(unfiltered.to_string())
-        );
-        assert_eq!(
-            dir_snapshot(outside.path(), ""),
-            found,
-            "a hash outside a repository writes nothing"
-        );
-    }
-
-    /// A hash process that fails fails the hash, naming the command line it ran, the root and what
-    /// git said for that command line, on each of its two paths: outside a repository - a root
-    /// whose `.git` is a file git cannot read as one - the hash without a write fails; inside one
-    /// whose object database cannot take the object - a file stands where the object's directory
-    /// goes - the write, which hardens the loose object it writes, fails (spec 124, THE BLOB IS
-    /// WRITTEN), and the object database is left without the object.
-    #[test]
-    fn hash_blob_names_the_command_the_root_and_gits_own_failure() {
-        use super::blob_batch_tests::asked;
-        use crate::test_support::{git_init_quiet, loose_object_directory, write_file};
-        use std::io::Write;
-        use std::process::Stdio;
-
-        /// A row: how its root is laid out, the argument vector the hash's path runs there, and
-        /// what the object database under the root answers for the bytes' id after the hash - none
-        /// where none stands.
-        type Row = (
-            fn(&std::path::Path),
-            &'static [&'static str],
-            Option<Result<Option<Vec<u8>>, String>>,
-        );
-        let rows: [Row; 2] = [
-            (
-                |root| write_file(&root.join(".git"), b"not a gitfile\n"),
-                &["hash-object", "--no-filters", "--stdin"],
-                None,
-            ),
-            (
-                |root| {
-                    git_init_quiet(root);
-                    write_file(&loose_object_directory(root, HELLO_ID), b"");
-                },
-                &[
-                    "-c",
-                    "core.fsync=loose-object",
-                    "hash-object",
-                    "-w",
-                    "--no-filters",
-                    "--stdin",
-                ],
-                Some(Ok(None)),
-            ),
-        ];
-        for (lay_out, args, held) in rows {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path();
-            lay_out(root);
-            let mut git = crate::subprocess::git_in(root)
-                .args(args)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
+    fn a_git_query_answers_none_only_for_its_quiet_no() {
+        let ran = |script: &str| {
+            std::process::Command::new("sh")
+                .args(["-c", script])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
                 .spawn()
-                .unwrap();
-            // A git that fails before it reads its input may have closed it already.
-            let _ = git.stdin.take().unwrap().write_all(HELLO);
-            let said = git.wait_with_output().unwrap();
-            assert!(!said.status.success());
-            let said = String::from_utf8(said.stderr).unwrap();
-            assert!(!said.trim().is_empty());
-
-            assert_eq!(
-                hashed(root, HELLO),
-                Err(format!(
-                    "git {} in {}: {}",
-                    args.join(" "),
-                    root.display(),
-                    said.trim()
-                ))
-            );
-            assert_eq!(
-                BlobBatch::start(root)
-                    .unwrap()
-                    .map(|mut batch| asked(&mut batch, HELLO_ID)),
-                held
-            );
-        }
-    }
-
-    /// The one repository detection answers inside or outside only for a `git` that ran: run
-    /// under a repository it answers inside, run under a directory that is none it answers
-    /// outside, and a `git` that could not start - here inside a repository - answers neither:
-    /// its failure names the detection's command, the root and the cause, which [`hash_blob`]
-    /// fails on and [`BlobBatch::start`] reads as no object database to ask.
-    #[test]
-    fn the_repository_detection_tells_a_git_that_could_not_start_from_one_run_outside() {
-        use crate::test_support::temp_git_project_with_commit;
-
-        let inside = temp_git_project_with_commit();
-        let outside = tempfile::tempdir().unwrap();
-        let ran = |root: &std::path::Path| {
-            crate::subprocess::git_in(root)
-                .args(REPOSITORY_DETECTION)
-                .output()
         };
-        let could_not_start = || std::io::Error::from(std::io::ErrorKind::WouldBlock);
-        let rows = [
-            (inside.path(), ran(inside.path()), Ok(true)),
-            (outside.path(), ran(outside.path()), Ok(false)),
+        let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        /// (name, the run started, what the query answers)
+        type Row<'a> = (
+            &'a str,
+            std::io::Result<std::process::Child>,
+            Result<Option<&'a str>, &'a str>,
+        );
+        let rows: [Row; 5] = [
+            ("an answer", ran("echo main"), Ok(Some("main\n"))),
+            ("the quiet no", ran("exit 1"), Ok(None)),
             (
-                inside.path(),
-                Err(could_not_start()),
-                Err(format!(
-                    "git rev-parse --git-dir in {}: {}",
-                    inside.path().display(),
-                    could_not_start()
-                )),
+                "a failure",
+                ran("echo 'fatal: bad object' >&2; exit 128"),
+                Err("fatal: bad object\n"),
+            ),
+            (
+                "a failure that says nothing",
+                ran("exit 128"),
+                Err("exit status: 128"),
+            ),
+            (
+                "a git that could not start",
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "no git")),
+                Err("no git"),
             ),
         ];
-        for (root, ran, answer) in rows {
-            assert_eq!(repository_answer(root, ran).map_err(|e| e.0), answer);
+        for (name, started, expected) in rows {
+            let answer = finish_git_query(started)
+                .map(|out| out.map(text))
+                .map_err(text);
+            assert_eq!(
+                answer,
+                expected
+                    .map(|out| out.map(str::to_owned))
+                    .map_err(str::to_owned),
+                "{name}"
+            );
         }
     }
 
-    /// The batch process's start under a repository the detection answered: a `git` that started
+    /// The batch process's start under a repository discovery found: a `git` that started
     /// is the batch, and one that could not start fails the start, naming the batch's command, the
     /// root and the cause - never none, which would read every entry of a rebuild from the tree
     /// with an object database standing there to ask.
@@ -3511,7 +3419,7 @@ mod tests {
     }
 
     /// A fresh repo, its path and its scratch root; `on_run_branch` first checks out the
-    /// `rigger-run` branch every `sweep_terminal` test sweeps against.
+    /// `rigger-run` branch a run-branch test works against.
     fn scratch_repo(on_run_branch: bool) -> (tempfile::TempDir, String, String) {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
@@ -3537,6 +3445,40 @@ mod tests {
             &format!("{UNIT_WORKTREE_PREFIX}{slug}"),
             &format!("rigger/u/{slug}"),
         )
+    }
+
+    /// A worktree rigger checks out holds an index a later read takes as it is. git rewrites
+    /// an index it reads (a plain `git status` does) exactly when some entry's file may have
+    /// changed since the index was written: stat data that no longer matches, or a file
+    /// modified in the second the index was written, which git re-hashes on every read. So a
+    /// status that leaves the index's bytes and modification time as they were re-hashed
+    /// nothing, and neither will the reads after it.
+    #[test]
+    fn a_created_worktree_holds_an_index_a_later_read_rehashes_nothing_in() {
+        let (_repo, repo_path, root) = scratch_repo(false);
+        for i in 0..40 {
+            let file = std::path::Path::new(&repo_path).join(format!("f{i}.txt"));
+            std::fs::write(file, format!("file {i}\n")).unwrap();
+        }
+        run_git(&repo_path, &["add", "."]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "files"]).unwrap();
+        let (dir, _wt) = wt_at(&repo_path, &root, "fresh", "rigger/u/fresh");
+        let index = git(
+            &dir,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        )
+        .unwrap();
+        let index = std::path::PathBuf::from(index.trim());
+        let state = || {
+            let modified = std::fs::metadata(&index).unwrap().modified().unwrap();
+            (std::fs::read(&index).unwrap(), modified)
+        };
+        let checked_out = state();
+        run_git(&dir, &["status"]).unwrap();
+        assert!(
+            state() == checked_out,
+            "a later read rewrote the index of a worktree rigger had just checked out"
+        );
     }
 
     /// Create `dir` (with its parents) holding an `x` file for each of `files`.
@@ -5788,11 +5730,11 @@ mod tests {
     fn scratch_root_resolves_env_then_config_then_repo_default() {
         // Precedence: RIGGER_TMPDIR (passed as the override param) > defaults.workdir
         // > the cache-home default (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE
-        // TREE). The default no longer nests inside the repo's own `.rigger` - a spawn's
-        // own TMPDIR/CARGO_TARGET_DIR (via `rigger scratch`) used to resolve under
-        // `<repo>/.rigger/tmp`, so a `tempfile::tempdir()` created under it walked up into
-        // the REAL repo's `.rigger/events.db` and either bound a store it should not have,
-        // or (spec 89 Problem 4) had its live worktrees swept as a stray fixture's.
+        // TREE). The default never nests inside the repo's own `.rigger`: a spawn's own
+        // TMPDIR/CARGO_TARGET_DIR (via the `rigger_scratch` tool) resolving under
+        // `<repo>/.rigger/tmp` would let a `tempfile::tempdir()` created under it walk up
+        // into the REAL repo's `.rigger/events.db` and either bind a store it should not
+        // have, or (spec 89 Problem 4) have its live worktrees swept as a stray fixture's.
         //
         // This assertion reads (never mutates) the real `XDG_CACHE_HOME`/`HOME` so it never
         // races a concurrently-running test over process-global environment state; on a
@@ -5831,7 +5773,7 @@ mod tests {
             assert_eq!(
                 std::path::PathBuf::from(&dflt),
                 expected,
-                "must equal the SAME pure resolver `rigger scratch`/`validate`/the reaper share"
+                "must equal the SAME pure resolver the scratch tool, `validate` and the reaper share"
             );
         } else {
             assert_eq!(dflt, format!("{repo_path}/.rigger/tmp"));
@@ -6301,7 +6243,7 @@ mod tests {
     fn spawn_fence_scoped_out_of_a_prior_run_never_sees_its_resolved_spawn() {
         // A prior run's unit shared the same slug and its spawn is long resolved; an
         // UNSCOPED read would wrongly see it as terminal. Scoping to the current run (as
-        // `sweep_terminal`'s caller does) must show `NoSpawn` instead - the current run
+        // the conductor's branch GC does) must show `NoSpawn` instead - the current run
         // never requested anything for this unit.
         let store = Store::open(":memory:").unwrap();
         let prior =
@@ -6410,11 +6352,11 @@ mod tests {
         // (sdet-u89c1-sweep-terminal-discards-halted-tree): a worktree can exist, dirty, at
         // this exact "branch tip is an ancestor of run_branch, no spawn ever recorded" shape
         // for a REAL reason, not just the back-compat test above's clean one - a store
-        // restored from an older snapshot (or this project's very first `rigger step`) whose
+        // restored from an older snapshot (or this project's very first `rigger run`) whose
         // event log has not yet caught up to a worktree already sitting on disk. The
         // halted-commit recovery that would turn this dirt into a durable `wip` commit lives
-        // in `run_single_stage` (src/conductor.rs), which `cmd_step` calls strictly AFTER
-        // this sweep (main.rs) - so sweeping a dirty candidate here, before that recovery
+        // in `run_single_stage` (src/conductor.rs), which `rigger run` reaches strictly AFTER
+        // this sweep (`run_cli`) - so sweeping a dirty candidate here, before that recovery
         // ever runs, discards the tree outright rather than merely deferring its capture.
         // `SpawnFence::NoSpawn` alone (the back-compat test just above) must keep sweeping a
         // CLEAN worktree in this shape exactly as before; only DIRTY content changes the
@@ -6868,7 +6810,7 @@ mod tests {
         // owning process is already dead on this path, so no process reap is needed" - the spec
         // Goal names this claim WRONG. It tears down the lingering worktree through
         // `clear_worktree_dir`, which (like every other inventoried removal site) must reap
-        // whatever is rooted inside first: the step process that abandoned this worktree may
+        // whatever is rooted inside first: the process that abandoned this worktree may
         // have LEFT a build or tool still running behind it, so "the owning process is dead"
         // does not mean nothing is rooted in the dir. Fixing `clear_worktree_dir` transitively
         // covers this call site.
@@ -7044,7 +6986,7 @@ mod tests {
 
     #[test]
     fn create_adopts_a_branch_still_checked_out_in_a_prior_processes_worktree() {
-        // Step-process disposability (Gap 12): a killed `rigger step` leaves its
+        // Driver-process disposability (Gap 12): a killed `rigger run` leaves its
         // worktree REGISTERED with the branch checked out. A later process derives a
         // DIFFERENT dir for the same branch; git refuses a second checkout, so
         // `create` must ADOPT the surviving registration (returning ITS dir with the
@@ -7378,8 +7320,8 @@ mod tests {
         // `review_only_worktree` calls it unconditionally before `create()` on every
         // standalone-review-stage attempt, the crash-resume path this function's own doc
         // comment describes ("a resumed review step recomputes the same path and reclaims
-        // it instead of leaking a fresh worktree each process"). `remove`, `sweep_terminal`,
-        // and `reclaim_worktree_on_branch` already reclaim a fence sibling via
+        // it instead of leaking a fresh worktree each process"). `remove` and
+        // `reclaim_worktree_on_branch` already reclaim a fence sibling via
         // `reclaim_cache_sibling`; `discard` did not, so a process that crashed after a
         // fenced gate wrote a real events.db into `<dir>-store-fence` left it orphaned with
         // no teardown path guaranteed to ever reclaim it - populated here exactly as a real

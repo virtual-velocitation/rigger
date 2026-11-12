@@ -19,7 +19,7 @@
 //!    the serialized body carries NONE of their keys - byte-identical to the pre-criterion-2 shape a
 //!    files or full-derived cell already emitted - and the body is deterministic across re-projections.
 
-mod common;
+use crate::common;
 
 use common::fixtures::def_node as def;
 use common::fixtures::edge;

@@ -247,7 +247,8 @@ mod tests {
         assert_carries_the_review_method, builtin_body, builtin_section,
         house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
         rendered_shadowing_layer, shadowing_operator_layer, COMMUNICATION_NEAR_NAME,
-        NON_EMPTY_BLANK_BODIES, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
+        NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE, REPLACING_COMMUNICATION_BODY,
+        SHADOWING_LAYER_ADVISORIES,
     };
 
     #[test]
@@ -331,14 +332,14 @@ mod tests {
     }
 
     /// Spec 120, criterion 14: the third built-in entry, which the layer-order test above names
-    /// `communication`, carries the communication discipline's body: the old conductor
-    /// constant's every line after its heading line, verbatim.
+    /// `communication`, carries the communication discipline's body verbatim: the old conductor
+    /// constant's every line after its heading line, with the progress bullet spec 121 lands
+    /// after its last bullet, the progress cadence's one home now that every host's progress
+    /// text names only its verb and that verb's arguments.
     #[test]
     fn the_third_built_in_is_the_communication_discipline_verbatim() {
-        assert_eq!(
-            BUILTIN.get(2).map(|(_, body)| *body),
-            Some(
-                "You are one of several agents working concurrently against a shared event log. \
+        let body = format!(
+            "You are one of several agents working concurrently against a shared event log. \
                  Other agents act on what you record, live - so your communication is part of the \
                  work, not an afterthought.\n\
                  - Record EVERY decision the MOMENT you make it by calling the `rigger_emit` tool \
@@ -356,9 +357,14 @@ mod tests {
                  `supersedes` field cites the prior decision's id, and state why. Diverging \
                  silently splits the work; superseding explicitly keeps every agent on one \
                  story.\n\
+                 - {}\n\
                  The exact JSON shapes for these emits are given in your task instructions; this \
-                 section governs the DISCIPLINE and cadence - follow it on every turn.\n"
-            ),
+                 section governs the DISCIPLINE and cadence - follow it on every turn.\n",
+            PROGRESS_CADENCE.join(" ")
+        );
+        assert_eq!(
+            BUILTIN.get(2).map(|(_, body)| *body),
+            Some(body.as_str()),
             "the third built-in carries the communication discipline's body verbatim"
         );
     }
@@ -530,7 +536,7 @@ mod tests {
     fn the_working_discipline_carries_one_pass_and_the_fan_out_helpers() {
         let body = working_discipline();
         for heading in [
-            "## One pass, by excellence",
+            crate::test_support::ONE_PASS_HEADING,
             crate::test_support::FAN_OUT_HEADING,
         ] {
             assert_eq!(
@@ -653,7 +659,8 @@ mod tests {
     /// each search with its hit count and each site fixed, never every hit listed or
     /// dispositioned, a search term found inside a longer identifier no hit; and a probe that
     /// edits the tree - the sharpest case of a turn's end being the session's end - run to
-    /// completion and restored before the turn ends. No sentence-walk record, witness, rule
+    /// completion and restored before the turn ends; and the gate verb named, whose verdict on a
+    /// commit the driver reuses. No sentence-walk record, witness, rule
     /// search, one-home line or lens re-derivation is owed, and no hand mutation rule or
     /// per-literal shape search is carried. Read by its words, so a rewrap never moves a verdict.
     #[test]
@@ -666,10 +673,12 @@ mod tests {
         );
         let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
         for phrase in [
-            "run each check yourself, in your worktree, before you report; the checks owe no \
-             record.",
+            "run the checks your change needs yourself, in your worktree, before you report; the \
+             checks owe no record.",
             "The gates confirm, never discover.",
-            "Every gate the stage names is green on your committed tree before you report.",
+            "The stage's gates run the full battery on your committed tree and are the \
+             authority: you run only the checks your change needs",
+            "a gate failure comes back as the next round's finding",
             "regenerated and committed in the same commit that changed its inputs",
             "`git status --porcelain` is empty at head",
             "Tests are table-driven, and a test-side shape you add exists once.",
@@ -704,20 +713,17 @@ mod tests {
             "A predicate is a boolean expression or a SQL conjunct, one inside a query string, a \
              format string or a macro argument the production code executes included, read as \
              the code's own expression, each operator and literal of it. Check: name its home.",
-            "A whole-tree audit a rejection requires is bounded.",
-            "When a rejection's required items name a pattern - one defect shape recurring across \
-             sites - every site of that shape is fixed.",
-            "Check: the audit record the rejection asks for names each search command you ran \
-             with its hit count and each site you fixed with its location at head, and counts the \
-             rest; it never lists or dispositions every hit, and a search term found inside a \
-             longer identifier is not a hit.",
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
             "the attempt checkpoint commits whatever the worktree holds when your session ends",
             "the sharpest case of the rule that your turn's end is your session's end",
             "each run to completion inside your turn",
-        ] {
+        ]
+        .into_iter()
+        .chain(crate::test_support::BOUNDED_AUDIT)
+        .chain([crate::test_support::GATE_VERB_REUSE])
+        {
             assert!(
                 words.contains(phrase),
                 "the hand-over section must say {phrase:?}"
@@ -754,8 +760,8 @@ mod tests {
             !words.contains("(the project's graph, or your persona's fallback)"),
             "the caller read must name the graph's depth"
         );
-        // Tests are table-driven and the duplication gate is the instrument for twins, so the
-        // hand-over owes no per-literal shape search and no per-statement shape record.
+        // Tests are table-driven and a twin is a review note, so the hand-over owes no
+        // per-literal shape search and no per-statement shape record.
         assert!(
             !words.contains("One search per literal")
                 && !words.contains("The record is owed for every test-side shape"),

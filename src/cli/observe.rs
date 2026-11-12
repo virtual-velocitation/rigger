@@ -44,7 +44,7 @@ pub(crate) fn cmd_stats(args: &[String]) -> Res {
     // wrapper owns only the I/O boundary (which file, which project, and the printing);
     // the read-model edges live in the testable seam below.
     let selection = store_selection(None, None)?;
-    match stats_lines(&db_path("events.db"), &project_identity(), all, &selection)? {
+    match stats_lines(&db_path("events.db"), &project_identity()?, all, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -67,7 +67,7 @@ const NO_CANARY_MESSAGE: &str =
 /// LATEST canary run - per-tier catch rate, adjudicator correctness, and finding-order
 /// stability - folded from the project's DISTINCT canary stream (never the run stream).
 fn cmd_stats_canary() -> Res {
-    match canary_stats_lines(&db_path("events.db"), &project_identity())? {
+    match canary_stats_lines(&db_path("events.db"), &project_identity()?)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -113,11 +113,11 @@ fn dash_status_line(status: &dash::DashStatus) -> Option<String> {
         dash::DashStatus::Serving(url) => Some(format!("dashboard: {url}")),
         dash::DashStatus::NotServing { pid: Some(pid) } => Some(format!(
             "dashboard: not serving (marker names dead pid {pid}) - run 'rigger dash' or the \
-             next step restarts it"
+             next 'rigger run' restarts it"
         )),
         dash::DashStatus::NotServing { pid: None } => Some(
             "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or the \
-             next step restarts it"
+             next 'rigger run' restarts it"
                 .to_string(),
         ),
         dash::DashStatus::Unresponsive { url, pid } => Some(format!(
@@ -197,7 +197,7 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
     })?;
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
-    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record(&prog_store, &run_id, id, activity)?;
     println!("progress recorded for {id} (position {pos})");
     Ok(())
@@ -216,8 +216,7 @@ const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run 
 /// run-stream milestone, the latest progress report, and the liveness-marker age it reads in
 /// Rust here (so no consumer stats a file) - into one view: what each agent is at, what it is
 /// doing, how long since its last activity and heartbeat, and how long since its last store
-/// event (the blackout this closes). `--json` prints the machine shape the shim and the dash
-/// also consume; `--line` prints ONLY the core's one-line statusline (spec 94, criterion 5 -
+/// event (the blackout this closes). `--json` prints the machine shape the dash also consumes; `--line` prints ONLY the core's one-line statusline (spec 94, criterion 5 -
 /// the same command `rigger setup` registers as the editor's status bar); the default is a
 /// readable table. Read-only over the run store, the separate progress store, and the
 /// liveness markers.
@@ -296,18 +295,16 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // This run's progress, from the SEPARATE store's per-run stream (absent/empty is fine - the
     // store is created lazily by the first `rigger progress`).
     let prog_events: Vec<Event> = match Store::open(&loc.file("progress.db")) {
-        Ok(backend) => read_run_progress(&backend, &loc.identity(), &run_id),
+        Ok(backend) => read_run_progress(&backend, &loc.identity()?, &run_id),
         Err(_) => Vec::new(),
     };
 
-    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
-    // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
-    // configured remediation bound is read from the SAME config (via the shared
-    // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
-    // `#n/max` line matches the depth the run actually escalates at. An age reads through the
-    // run's hold intervals, so a step after a released hold reads the time outside it; the
-    // workflow's marker race reads `liveness_age_s` and would otherwise take a held step for a
-    // dead one (spec 105 LIVENESS).
+    // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here. The configured
+    // remediation bound is read from the SAME config (via the shared `scratch_defaults`, spec
+    // 83 criterion 2 round 2) so the current-blocker classifier's `#n/max` line matches the
+    // depth the run actually escalates at. An age reads through the run's hold intervals, so an
+    // age read after a released hold counts only the time outside it and a held spawn never
+    // reads as a dead one (spec 105 LIVENESS).
     let (workdir, max_retries) = scratch_defaults(&loc);
     let wave = spawn::step_result(run_events)?.wave;
     let liveness_ages: std::collections::HashMap<String, u64> = liveness_ages_for_wave(
@@ -325,13 +322,12 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
     // Spec 69, criterion 4: never printed (or, under `--json`, ever wired) on trust alone.
-    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME
-    // underlying probe [`dash_marker_serving`] wraps for the step path's own idempotent-start
-    // decision, so this surface and the step path can never disagree about whether a recorded
-    // dash is alive. A marker-less recorded URL (the guard-bound `rigger run` / `rigger
-    // serve` dash writes none) is unverifiable, not dead, and stays trusted exactly as before
-    // this criterion; a marker naming a DIFFERENT dash than the recorded URL (round 3,
-    // adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT "nothing to check" either -
+    // [`dash::dash_status`] probes with [`dash::dash_answer_on`] directly - the SAME probe
+    // `rigger watch` consumes, so the two surfaces can never disagree about whether a recorded
+    // dash is alive. A marker-less recorded URL (what a run leaves once it reaps its dash and
+    // removes the marker) is unverifiable, not dead, and stays trusted; a marker naming a DIFFERENT dash than the
+    // recorded URL (round 3, adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url) is NOT
+    // "nothing to check" either -
     // `dash_status` probes the URL's own port directly in that case, never the marker's
     // unrelated one. Computed HERE, before the `--json` early return below, so `--json`
     // carries the same truth as the human table (round 2: the prior placement after the
@@ -341,11 +337,8 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     if json {
         // The dashboard truth is APPENDED to the in-flight-agent array rather than wrapping
-        // it in a new top-level shape: the liveness courier (workflows/rigger.js:218) does
-        // `Array.isArray(arr) ? arr.find(a => a.id === id) : null` over this exact line, so
-        // the top level MUST stay a bare array - wrapping it in an object would silently and
-        // permanently blind spec 10/14's liveness watchdog (`find` never runs, every
-        // liveness read becomes `null`, "conservatively" treated as never-stale forever).
+        // it in a new top-level shape: a consumer that looks an agent up by `id` reads the
+        // top level as a bare array, so it MUST stay one.
         // Absent (nothing ever recorded) appends nothing, so a project with no dash history
         // gets byte-identical `--json` output to before this criterion; the appended object
         // carries no `id` field, so it can never collide with a real spawn id.
@@ -468,7 +461,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 /// ([`rigger::hold_probe::is_probed`]) and the supervisor's `latest_beat` is no older than the
 /// 90 s of LIVENESS ([`rigger::liveness::unwatched`]); otherwise `rigger release` ends it. A
 /// hold a clock set backwards dates after `now` reads as held no time.
-fn held_line(
+pub(crate) fn held_line(
     hold: &ledger::Hold,
     latest_beat: Option<std::time::SystemTime>,
     now: std::time::SystemTime,
@@ -590,9 +583,10 @@ fn unread_ci_note(ci: &watch::CiProbe, last: &mut Option<String>) -> Option<Stri
 /// `rigger_peers` tool does (both render through [`mcpserver::peers_json`]). The store
 /// is RESOLVED by walking up to the project's existing `.rigger` (refusing to fabricate
 /// one, spec 05 - see [`require_store_dir`]); the side-car reads the `conductor::STREAM` run
-/// from its boundary with the carried-over knowledge by type, and this command renders one
-/// readable line per decision / lesson / finding the shared core kept under its budget, then,
-/// when a section left records out, the core's `left_out` note as the last line.
+/// from its boundary with the carried-over knowledge by type, and this command prints the
+/// shared core's records, one line each, best-ranked first, then, when records were left out,
+/// the core's `left_out` note as the last line. The command runs as no spawn, so no unit's own
+/// records are raised.
 pub(crate) fn cmd_peers(args: &[String]) -> Res {
     let files: Vec<String> = args.to_vec();
 
@@ -601,62 +595,14 @@ pub(crate) fn cmd_peers(args: &[String]) -> Res {
     // log.
     let peers = over_the_run_store(|_, _, store| Ok(Sidecar::read(store, conductor::STREAM)?))?;
 
-    let result = mcpserver::peers_json(&peers, &files);
-    let decisions = result["decisions"].as_array().cloned().unwrap_or_default();
-    let lessons = result["lessons"].as_array().cloned().unwrap_or_default();
-    let findings = result["findings"].as_array().cloned().unwrap_or_default();
-    for d in &decisions {
-        println!("{}", peer_decision_line(d));
-    }
-    for l in &lessons {
-        let id = l["id"].as_str().unwrap_or_default();
-        let summary = l["summary"].as_str().unwrap_or_default();
-        let about = json_str_array(&l["about"]);
-        println!("lesson {id} | {summary} | about: {about}");
-    }
-    for f in &findings {
-        let id = f["id"].as_str().unwrap_or_default();
-        let by = f["by"].as_str().unwrap_or_default();
-        let summary = f["summary"].as_str().unwrap_or_default();
-        let about = json_str_array(&f["about"]);
-        println!("finding {id} | by {by} | {summary} | about: {about}");
+    let result = mcpserver::peers_json(&peers, &files, None);
+    for line in result["records"].as_array().into_iter().flatten() {
+        println!("{}", line.as_str().unwrap_or_default());
     }
     if let Some(note) = result["left_out"]["note"].as_str() {
         println!("{note}");
     }
     Ok(())
-}
-
-/// Render one `rigger peers` decision line, labeling its provenance LIVE (from the
-/// active run, or recorded before any run started) or HISTORICAL (a superseded run, or
-/// pre-boundary once a run has started) from the `live` flag the side-car derived via the
-/// single c1 run attribution (spec 21, unit 3; spec 101). The label makes
-/// a prior run's decision legible instead of alarming; grounding still surfaces cross-run
-/// decisions unchanged. A missing/false `live` flag renders HISTORICAL - the conservative
-/// default that matches the side-car's own default.
-fn peer_decision_line(d: &serde_json::Value) -> String {
-    let id = d["id"].as_str().unwrap_or_default();
-    let summary = d["summary"].as_str().unwrap_or_default();
-    let governs = json_str_array(&d["governs"]);
-    let provenance = if d["live"].as_bool().unwrap_or(false) {
-        "LIVE"
-    } else {
-        "HISTORICAL"
-    };
-    format!("decision {id} | {provenance} | {summary} | governs: {governs}")
-}
-
-/// Join a JSON array of strings into a comma-separated list for a `rigger peers`
-/// line (the `governs` / `about` files). A non-array or empty value renders as `-`.
-fn json_str_array(v: &serde_json::Value) -> String {
-    match v.as_array() {
-        Some(a) if !a.is_empty() => a
-            .iter()
-            .filter_map(|x| x.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => "-".to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -819,7 +765,7 @@ mod tests {
             dash_status_line(&dash::DashStatus::NotServing { pid: Some(4242) }),
             Some(
                 "dashboard: not serving (marker names dead pid 4242) - run 'rigger dash' or \
-                 the next step restarts it"
+                 the next 'rigger run' restarts it"
                     .to_string()
             ),
             "a matching marker proven dead names the pid and both self-heal paths, never a \
@@ -829,7 +775,7 @@ mod tests {
             dash_status_line(&dash::DashStatus::NotServing { pid: None }),
             Some(
                 "dashboard: not serving (recorded url is unreachable) - run 'rigger dash' or \
-                 the next step restarts it"
+                 the next 'rigger run' restarts it"
                     .to_string()
             ),
             "a directly-proven-dead url with no matching marker names both self-heal paths \
@@ -922,33 +868,6 @@ mod tests {
             })),
             "a probe that failed locally carries its url and its error, never not_serving"
         );
-    }
-
-    /// spec 21, unit 3: the exact line `rigger peers` PRINTS for a decision must label its
-    /// provenance - LIVE for a decision from the active run, HISTORICAL for one from a
-    /// superseded run - from the `live` flag the shared `peers_json` core threads through.
-    /// Asserting on the rendered line (not just the JSON) closes the gap where the printed
-    /// label was untested (sdet-u21peers-cmdpeers-render-label-untested).
-    #[test]
-    fn cmd_peers_prints_live_or_historical_per_decision_provenance() {
-        let live = peer_decision_line(&serde_json::json!({
-            "id": "d_new", "summary": "chose X", "governs": ["a.rs"], "live": true,
-        }));
-        assert_eq!(live, "decision d_new | LIVE | chose X | governs: a.rs");
-
-        let historical = peer_decision_line(&serde_json::json!({
-            "id": "d_old", "summary": "chose Y", "governs": ["b.rs"], "live": false,
-        }));
-        assert_eq!(
-            historical,
-            "decision d_old | HISTORICAL | chose Y | governs: b.rs"
-        );
-
-        // A missing `live` flag renders HISTORICAL - the conservative default.
-        let defaulted = peer_decision_line(&serde_json::json!({
-            "id": "d_bare", "summary": "z", "governs": [],
-        }));
-        assert_eq!(defaulted, "decision d_bare | HISTORICAL | z | governs: -");
     }
 
     /// Spec 38, criterion 3 (the ready-to-release handoff): the exact lines the `rigger

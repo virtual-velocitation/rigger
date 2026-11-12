@@ -34,7 +34,7 @@
 #[allow(dead_code)]
 mod watch;
 
-mod common;
+use crate::common;
 use common::git::git_ok;
 use common::git::git_out;
 

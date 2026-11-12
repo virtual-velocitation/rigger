@@ -3,27 +3,16 @@
 //! `#[test]`/`#[cfg(test)]` region inside an otherwise-included file - from graph NODE and EDGE
 //! creation, carried on the new `Def.is_test` / `SymRef.is_test` fields.
 //!
-//! These run OUTSIDE the crate, over the library's public surface, and guard two boundaries:
+//! These run OUTSIDE the crate, over the library's public surface, and guard these boundaries:
 //!
-//!  - the SERIALIZED-FORM back-compat contract of the two new fields - the same shape spec 37's
-//!    `enclosing` field carries (see `symbol_ref_caller_attribution.rs`). Both derive
-//!    `#[serde(default, skip_serializing_if = "std::ops::Not::not")]`, so (a) `is_test: false`
-//!    must serialize BYTE-IDENTICALLY to the pre-86 form - no `is_test` key at all, (b) `is_test:
-//!    true` must serialize the key and round-trip it through a real save/load, and (c) an index
-//!    persisted by a pre-86 binary (no `is_test` key on any definition or reference) must still
-//!    LOAD, defaulting every one to `is_test: false` rather than erroring on a missing field. The
-//!    inside-out unit tests never pin any of this: `store.rs`'s own round-trip test only proves
-//!    RE-serializing the SAME in-memory index twice is byte-STABLE, never that a false-throughout
-//!    index matches the pre-86 wire shape, and no unit test anywhere loads a hand-authored legacy
-//!    fixture missing the key. Parser-free, so this section runs in BOTH feature lanes.
 //!  - the exclusion rule's Done-when, driven end to end through the crate's PUBLIC API
-//!    (`project_batches` -> `Projector`) from OUTSIDE the crate: after ingesting a
+//!    (the code store's view of a tree) from OUTSIDE the crate: after ingesting a
 //!    fixture with product code, a `tests/` file, a `#[cfg(test)]` module and `#[test]`
 //!    functions, the graph holds a code-entity node for every product item and none for any test
 //!    item, and the `tests/` file carries no file container node at all - the concrete mechanism
 //!    behind "the files lens lists no test file as a subject" (the files lens folds by existing
 //!    file nodes; a file with none can never be one of its subjects). The implementer's own
-//!    `events.rs` unit tests already prove this same contract in-crate, but that proof rests on
+//!    `facts.rs` and `resolve.rs` unit tests already prove this same contract in-crate, but that proof rests on
 //!    the implementer's own understanding of the boundary - the periphery layer exists precisely
 //!    so that guarantee does not rest on one role's judgment alone, so this test drives the same
 //!    Done-when independently, over a fixture of its own, through the public surface only. Lives
@@ -35,7 +24,7 @@
 //!    product code-entity nodes. The implementer's own `extract.rs` unit test
 //!    (`negated_and_cfg_attr_predicates_naming_test_do_not_mark_the_item_test`) proves this at the
 //!    `FileSymbols` level, inside the crate; this test proves the SAME contract at the periphery,
-//!    end to end through `project_batches` -> `Projector`, so the guarantee that a
+//!    end to end through the code store's view, so the guarantee that a
 //!    dual-cfg mock's product half is never dropped does not rest on the author's own judgment.
 //!  - the round-3 fix for round 2's own recurrence (review REJECT `adj-u86c1-verdict-reject`
 //!    round 2, findings `arch-u86c1-r2-compound-not-predicate-still-marks-product-code-test` /
@@ -64,7 +53,7 @@
 //!    implementer's own `extract.rs` unit test
 //!    (`an_inner_cfg_test_attribute_marks_its_enclosing_module_and_the_module_marks_its_children`)
 //!    proves this at the `FileSymbols` level; this test proves the SAME contract at the
-//!    periphery, end to end through `project_batches` -> `Projector`.
+//!    periphery, end to end through the code store's view.
 //!  - the rest of `op-u86c1-r5-close-every-remaining-test-shape` (amending
 //!    `op-u86c1-r4-structural-attribute-walk-is-the-only-remedy`), which mandates round 5 close
 //!    every remaining test-shape item in one round, not one per round. Item 1 (the inner-attribute
@@ -90,7 +79,7 @@
 //!    the SAME public API, over a real tree in every registered language: a file at each pattern
 //!    is no node and proves the production definition it calls, each production control keeps
 //!    its definitions, and a pattern-named file an out-of-line `#[cfg(test)] mod` declares
-//!    proves nothing
+//!    proves what it calls, as a file in the test-module closure
 //!    (`a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls`);
 //!    and a design doc's mention of such a path mints no node
 //!    (`a_dev_only_design_doc_mention_never_becomes_a_live_node_through_the_public_api`), the
@@ -106,324 +95,14 @@
 //!    `#[cfg(unix)]` fn stay production
 //!    (`a_test_region_is_every_test_attributed_range_through_the_public_api`).
 
-mod common;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 #[cfg(feature = "symbols")]
 use Expect::{CodeEntity, Graphed, NoCodeEntity, NoneGraphed, NotGraphed};
 
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
-
-use rigger::grounder::symbols::model::{Def, Kind, Lang};
-use symbol_index::{
-    assert_saved_without_key, def, defining_f, legacy_file, rust_file, saved_with_key, sym_ref,
-};
-
-// ---- serialized-form / back-compat contract (parser-free model + store: BOTH feature lanes) ----
-//
-// Each additive field carries `#[serde(default, skip_serializing_if = ..)]`, so each gets the
-// same trio: its default value serializes with NO key (byte-identical to the form written before
-// the field existed), a set value serializes the key and survives a real save/load, and an index
-// persisted before the field existed still LOADS, defaulting it rather than erroring on a missing
-// field. `is_test` (spec 86) is the first; `is_out_of_line_module` (round 6,
-// `op-u86c1-r5-close-every-remaining-test-shape` item 2), `path_override` (round 7,
-// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`) and `enclosing_inline_module_path`
-// (round 9, `op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) each
-// mirror it one field later, since no unit test anywhere else pins their own
-// byte-identity/round-trip/legacy-default behavior: a test asserting only on one key's
-// presence/absence would pass a regression dropping another field's `skip_serializing_if`
-// (rewriting every historical index's bytes) or its `#[serde(default)]` (erroring an older index
-// dead instead of loading it) undetected.
-
-rigger::test_cases! {
-    /// `skip_serializing_if = "std::ops::Not::not"`: a definition/reference with `is_test: false`
-    /// must serialize with NO `is_test` key, so an index of product-only code (the overwhelmingly
-    /// common case) is byte-identical to what a pre-86 binary wrote. A regression dropping
-    /// `skip_serializing_if` would emit `"is_test":false` on every definition and reference in the
-    /// project, rewriting every historical index's bytes - defeating the field's whole "wholly
-    /// additive, no re-serialization churn" contract.
-    is_test_false_serializes_byte_identically_to_the_pre86_form: assert_saved_without_key(
-        "a.rs",
-        defining_f(vec![sym_ref("g", 2, None, false)]),
-        "is_test",
-        "product-only code (is_test: false throughout) must omit the is_test key \
-         entirely (byte-identical to the pre-86 on-disk form)",
-    );
-    is_out_of_line_module_false_serializes_byte_identically_to_the_pre_round6_form: assert_saved_without_key(
-        "a.rs",
-        rust_file(vec![def(Kind::Module, "inline_mod")], vec![]),
-        "is_out_of_line_module",
-        "an inline (has-a-body) module - is_out_of_line_module: false - must omit \
-         the key entirely, byte-identical to the pre-round-6 on-disk form",
-    );
-    path_override_none_serializes_byte_identically_to_the_pre_round7_form: assert_saved_without_key(
-        "parent.rs",
-        rust_file(vec![out_of_line_test_module(None, None)], vec![]),
-        "path_override",
-        "an out-of-line declaration with no #[path] attribute - path_override: \
-         None - must omit the key entirely, byte-identical to the pre-round-7 \
-         on-disk form",
-    );
-    enclosing_inline_module_path_none_serializes_byte_identically_to_the_pre_round9_form: assert_saved_without_key(
-        "parent.rs",
-        rust_file(
-            vec![out_of_line_test_module(Some("custom/dir/actual.rs"), None)],
-            vec![],
-        ),
-        "enclosing_inline_module_path",
-        "a declaration with no enclosing inline module - \
-         enclosing_inline_module_path: None - must omit the key entirely, \
-         byte-identical to the pre-round-9 on-disk form",
-    );
-}
-
-/// An out-of-line `#[cfg(test)] mod child;` declaration, optionally `#[path]`-overridden and
-/// nested inside inline modules.
-fn out_of_line_test_module(path_override: Option<&str>, enclosing: Option<&str>) -> Def {
-    Def {
-        is_test: true,
-        is_out_of_line_module: true,
-        path_override: path_override.map(Into::into),
-        enclosing_inline_module_path: enclosing.map(Into::into),
-        ..def(Kind::Module, "child")
-    }
-}
-
-#[test]
-fn is_test_true_serializes_the_key_and_round_trips() {
-    // The opposite direction of the same contract: a definition/reference WITH `is_test: true`
-    // serializes the key and round-trips through the real persistence boundary preserving it.
-    // Together with the false-case test above this pins both serde attributes on each field: drop
-    // `skip_serializing_if` and the false-case test reds; drop the field's persistence and this
-    // one reds.
-    let it_works = Def {
-        is_test: true,
-        ..def(Kind::Function, "it_works")
-    };
-    let loaded = saved_with_key(
-        "tests_mod.rs",
-        rust_file(
-            vec![it_works],
-            vec![sym_ref("helper", 2, Some("it_works"), true)],
-        ),
-        "is_test",
-        "an is_test: true definition/reference must serialize the is_test key",
-    );
-    let file = &loaded.files()["tests_mod.rs"];
-    assert!(
-        file.defs
-            .iter()
-            .find(|d| d.name == "it_works")
-            .unwrap()
-            .is_test,
-        "is_test: true survives a save/load round-trip on a definition"
-    );
-    assert!(
-        file.refs
-            .iter()
-            .find(|r| r.name == "helper")
-            .unwrap()
-            .is_test,
-        "is_test: true survives a save/load round-trip on a reference"
-    );
-}
-
-#[test]
-fn is_out_of_line_module_true_serializes_the_key_and_round_trips() {
-    let contract = Def {
-        is_test: true,
-        is_out_of_line_module: true,
-        ..def(Kind::Module, "contract")
-    };
-    let loaded = saved_with_key(
-        "parent.rs",
-        rust_file(vec![contract], vec![]),
-        "is_out_of_line_module",
-        "an out-of-line `mod name;` declaration - is_out_of_line_module: true - must serialize \
-         the key",
-    );
-    let file = &loaded.files()["parent.rs"];
-    assert!(
-        file.defs
-            .iter()
-            .find(|d| d.name == "contract")
-            .unwrap()
-            .is_out_of_line_module,
-        "is_out_of_line_module: true survives a save/load round-trip"
-    );
-}
-
-rigger::test_cases! {
-    path_override_some_serializes_the_key_and_round_trips: assert_child_field_round_trips(
-        out_of_line_test_module(Some("custom/dir/actual.rs"), None),
-        "path_override",
-        "a #[path = \"..\"]-overridden declaration - path_override: Some(..) - must serialize \
-         the key",
-        |d| d.path_override.clone(),
-        "custom/dir/actual.rs",
-        "path_override's exact string survives a save/load round-trip",
-    );
-    enclosing_inline_module_path_some_serializes_the_key_and_round_trips:
-        assert_child_field_round_trips(
-            out_of_line_test_module(Some("actual.rs"), Some("outer/middle")),
-            "enclosing_inline_module_path",
-            "a declaration nested inside one or more inline modules - \
-             enclosing_inline_module_path: Some(..) - must serialize the key",
-            |d| d.enclosing_inline_module_path.clone(),
-            "outer/middle",
-            "enclosing_inline_module_path's exact chain string survives a save/load round-trip",
-        );
-}
-
-/// Saving `child` alone in `parent.rs` serializes `key` (`why`), and the reloaded `child`
-/// definition's `field` is exactly `expected` (`survives`).
-fn assert_child_field_round_trips(
-    child: Def,
-    key: &str,
-    why: &str,
-    field: fn(&Def) -> Option<String>,
-    expected: &str,
-    survives: &str,
-) {
-    let loaded = saved_with_key("parent.rs", rust_file(vec![child], vec![]), key, why);
-    let file = &loaded.files()["parent.rs"];
-    assert_eq!(
-        field(file.defs.iter().find(|d| d.name == "child").unwrap()),
-        Some(expected.to_string()),
-        "{survives}"
-    );
-}
-
-#[test]
-fn a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_false() {
-    // `#[serde(default)]`: an `index.json` written by a pre-86 binary has definitions and
-    // references with NO `is_test` key at all (the shape pinned by the false-case test above: a
-    // product-only entry is exactly `{ "kind", "name", "line" }` / `{ "name", "line" }`).
-    // `store::load` must still deserialize it - not error on a missing field - folding every item
-    // `is_test: false`, never manufacturing a false exclusion of pre-86 data.
-    // A pre-86 index: one definition and one reference, neither carrying an `is_test` key.
-    let legacy = r#"{
-  "files": {
-    "legacy.rs": {
-      "lang": "Rust",
-      "defs": [
-        { "kind": "Function", "name": "legacy_fn", "line": 1 }
-      ],
-      "refs": [
-        { "name": "callee", "line": 2 }
-      ]
-    }
-  }
-}"#;
-    let file = legacy_file(
-        legacy,
-        "legacy.rs",
-        "a pre-86 index (no is_test key) must still load, not error",
-    );
-    assert_eq!(
-        file.defs.len(),
-        1,
-        "the legacy definition survives the load"
-    );
-    assert!(
-        !file.defs[0].is_test,
-        "a definition persisted before is_test existed defaults to false, not an error and not \
-         true"
-    );
-    assert_eq!(file.refs.len(), 1, "the legacy reference survives the load");
-    assert!(
-        !file.refs[0].is_test,
-        "a reference persisted before is_test existed defaults to false"
-    );
-    // The rest of the entry deserialized intact, so a wrong-shape fixture reds loudly here rather
-    // than passing vacuously on an empty load.
-    assert_eq!(file.lang, Lang::Rust);
-    assert_eq!(file.defs[0].name, "legacy_fn");
-    assert_eq!(file.refs[0].name, "callee");
-}
-
-/// The one `Module` definition of a legacy `index.json` whose definition carries exactly the
-/// already-shipped keys `keys` (each `, "key": value`), loaded through the real `store::load` -
-/// the shared fixture of the per-round back-compat checks below, each of which simulates an
-/// index written before one more additive field existed. `written_by` names that binary.
-fn legacy_module_def(keys: &str, written_by: &str) -> Def {
-    let def: serde_json::Value = serde_json::from_str(&format!(
-        r#"{{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}"#
-    ))
-    .expect("the legacy definition is JSON");
-    let legacy = symbol_index::rust_index_json(
-        "legacy_mod.rs",
-        serde_json::json!([def]),
-        serde_json::json!([]),
-    );
-    legacy_file(
-        &legacy,
-        "legacy_mod.rs",
-        &format!("an index written by the {written_by} binary must still load, not error"),
-    )
-    .defs[0]
-        .clone()
-}
-
-#[test]
-fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulting_to_false() {
-    // The round-1..5 binary: `is_test` already exists on the wire (round 1 shipped it), but
-    // `is_out_of_line_module` (round 6) does not - the narrower, more-realistic back-compat gap
-    // than the full pre-86 fixture above, which has NEITHER key.
-    let def = legacy_module_def(r#", "is_test": true"#, "round-1..5");
-    assert!(
-        def.is_test,
-        "the pre-existing is_test key still loads true, unaffected by the new field's absence"
-    );
-    assert!(
-        !def.is_out_of_line_module,
-        "a definition persisted before is_out_of_line_module existed defaults to false, not an \
-         error and not true - never manufacturing a false cross-file exclusion of old data"
-    );
-}
-
-#[test]
-fn a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_none() {
-    // The round-1..6 binary: is_test and is_out_of_line_module are already on the wire, but
-    // path_override (round 7) is not.
-    let def = legacy_module_def(
-        r#", "is_test": true, "is_out_of_line_module": true"#,
-        "round-1..6",
-    );
-    assert!(
-        def.is_out_of_line_module,
-        "the pre-existing is_out_of_line_module key still loads true, unaffected by the new \
-         field's absence"
-    );
-    assert_eq!(
-        def.path_override, None,
-        "a definition persisted before path_override existed defaults to None, not an error and \
-         not some stale guess - never manufacturing a false #[path] override for old data"
-    );
-}
-
-#[test]
-fn a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none()
-{
-    // The round-1..8 binary: is_test, is_out_of_line_module and path_override are already on the
-    // wire, but enclosing_inline_module_path (round 9) is not.
-    let def = legacy_module_def(
-        r#", "is_test": true, "is_out_of_line_module": true, "path_override": "custom/actual.rs""#,
-        "round-1..8",
-    );
-    assert_eq!(
-        def.path_override,
-        Some("custom/actual.rs".to_string()),
-        "the pre-existing path_override key still loads its value, unaffected by the new \
-         field's absence"
-    );
-    assert_eq!(
-        def.enclosing_inline_module_path, None,
-        "a definition persisted before enclosing_inline_module_path existed defaults to None, \
-         not an error and not some stale guess - never manufacturing a false enclosing-module \
-         chain for old data"
-    );
-}
+#[cfg(feature = "symbols")]
+use crate::symbol_index;
 
 // ---- the exclusion rule's Done-when, end to end via the public API (symbols lane only) ----
 
@@ -450,28 +129,23 @@ mod tests {
 }
 ";
 
-/// Writes each `(path, source)` pair (parent directories created) under a fresh temp root,
-/// folds that tree's whole-project ingest onto a fresh projector and returns the subgraph
-/// `depth` hops around `seeds` - the public `project_batches` -> `Projector` path every
-/// end-to-end test below drives.
+/// The subgraph `depth` hops around `seeds` the code store's view of a tree holding each
+/// `(path, source)` pair serves, composed beside an empty record half - the production
+/// extractor and composition every end-to-end test below drives.
 #[cfg(feature = "symbols")]
 fn ingested_subgraph(
     files: &[(&str, &str)],
     seeds: &[&str],
     depth: i64,
 ) -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::Projection;
-
-    let root = tempfile::tempdir().unwrap();
-    for (path, source) in files {
-        let path = root.path().join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, source).unwrap();
-    }
-    let seeds: Vec<String> = seeds.iter().map(|s| s.to_string()).collect();
-    common::fixtures::fold_events(common::project_events(root.path().to_str().unwrap()))
-        .subgraph(&seeds, depth)
-        .unwrap()
+    let records = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+    common::fixtures::files_subgraph(
+        &records,
+        &rigger_grounder::facts::FactsExtractor,
+        files,
+        seeds,
+        depth,
+    )
 }
 
 /// One expectation on the ingested subgraph's nodes, each naming an id and the rule it pins.
@@ -1039,9 +713,8 @@ rigger::test_cases! {
 /// `CodeEntityExtracted` event and reached the graph as ordinary product code, exactly the failure
 /// this test pins. The round-5 fix (`fix-u86c1-r5-inner-attribute-item`) closed item 1 of the
 /// mandate (the inner-attribute module form) only; this test is expected to FAIL until a future
-/// round resolves each test-shaped out-of-line module declaration to its file(s) at the
-/// events/index layer (where every file's path is known - `events.rs`'s `is_dev_only` /
-/// `project_batches`, per the mandate) and excludes them there, since a per-file extractor
+/// round resolves each test-shaped out-of-line module declaration to its file(s) where every
+/// file's path is known (today the code store's resolver, `resolve.rs`) and excludes them there, since a per-file extractor
 /// structurally cannot see an attribute that lives in a different file.
 #[cfg(feature = "symbols")]
 const PARENT_SRC: &str = "\
@@ -1089,8 +762,8 @@ rigger::test_cases! {
     /// sdet-author gap: the test above and
     /// `a_non_test_out_of_line_mod_and_an_inline_test_mod_never_
     /// exclude_a_coincidentally_named_sibling_file` below both place the declaring file and its
-    /// out-of-line target at the tempdir ROOT (`dir` empty), so `out_of_line_test_module_files`'s
-    /// `dir.is_empty()` branch is the only one any test in this round exercises. This repo's OWN
+    /// out-of-line target at the tempdir ROOT (`dir` empty), so `module_candidates`'s
+    /// empty-directory branch is the only one any test in this round exercises. This repo's OWN
     /// round-5-disclosed live instance `src/eventstore/mod.rs` (`#[cfg(test)] pub mod contract;`
     /// resolving to `src/eventstore/contract.rs`) is the OTHER branch: a `mod.rs`-named declaring
     /// file that itself lives in a subdirectory, so the resolved sibling path carries that same
@@ -1135,8 +808,8 @@ rigger::test_cases! {
 
 rigger::test_cases! {
     /// sdet-author gap: every out-of-line-resolution fixture in this file names a `mod` that DOES
-    /// resolve to a real file `idx` holds. `out_of_line_test_module_files`'s own doc comment claims
-    /// the resolution is matched against paths the index ACTUALLY holds, "never assumed" - a
+    /// resolve to a real file the tree holds. `module_target`'s own doc comment claims
+    /// the resolution is matched against paths the tree ACTUALLY holds, "never assumed" - a
     /// `#[cfg(test)] mod name;` declaration whose named file genuinely does not exist (a stale
     /// declaration, or a form this resolver does not yet reach - `#[path = ".."]`,
     /// `dec-u86c1-r6-path-and-nested-mod-not-yet-covered`) must not panic the whole ingest and must
@@ -1170,78 +843,9 @@ rigger::test_cases! {
     );
 }
 
-/// sdet-author gap: the out-of-line-resolution tests above read the flattened event list. The mandate
-/// (`op-u86c1-r5-close-every-remaining-test-shape` item 2, quoted in this file's own module doc)
-/// names TWO production entry points needing the fix - `events.rs`'s `is_dev_only` /
-/// `project_batches` - and `project_batches` is the ACTUAL entry point a live run drives
-/// (`conductor::RunCtx::ingest_project_batches`, spec 29c), not merely a test convenience;
-/// `out_of_line_test_module_files` is computed and applied at BOTH call sites independently (two
-/// inline `.filter(|(path, _)| !excluded.contains(...))` sites over the SAME shared helper, per
-/// `events.rs`'s own source), so nothing so far proves `project_batches`'s OWN copy of that wiring
-/// is correct per batch rather than only in the flattened list exercised everywhere else here.
-#[cfg(feature = "symbols")]
-#[test]
-fn project_batches_also_excludes_an_out_of_line_test_module_declarations_target_file() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::symbols::events::project_batches;
-    use std::collections::BTreeSet;
-
-    let root = tempfile::tempdir().unwrap();
-    // `lib.rs` (round 7: a directory-owning basename, see the sibling test above) - its
-    // out-of-line children resolve as FLAT same-directory siblings.
-    std::fs::write(root.path().join("lib.rs"), PARENT_SRC).unwrap();
-    std::fs::write(root.path().join("contract.rs"), OUT_OF_LINE_CHILD_SRC).unwrap();
-
-    let batches = project_batches(root.path().to_str().unwrap());
-    let files: BTreeSet<&str> = batches.iter().map(|(f, _, _)| f.as_str()).collect();
-    assert!(
-        files.contains("lib.rs"),
-        "the declaring file still contributes its own batch; files: {files:?}"
-    );
-    // Spec 86 criterion 3 (round 5, adj-u86c3-r4-out-of-line-exclusion-still-unmigrated)
-    // deliberately supersedes this test's own former "the file's batch is dropped entirely"
-    // pin: an out-of-line-excluded file's batch is no longer dropped before extract_events runs
-    // (that let a legacy entity a prior extraction created outlive every re-ingest forever) - it
-    // now contributes exactly ONE boundary-sentinel event, hollowed via events.rs's own
-    // `for_extraction`, so a re-ingest still supersedes whatever this file held before. The
-    // criterion-1 promise this test exists to pin is unchanged below: no REAL entity or edge for
-    // anything the excluded file defines ever reaches the graph.
-    let contract_batch = batches
-        .iter()
-        .find(|(f, _, _)| f == "contract.rs")
-        .map(|(_, evs, _)| evs)
-        .unwrap_or_else(|| {
-            panic!(
-                "project_batches (the entry point a live run actually drives, spec 29c) must \
-                     still contribute the out-of-line-excluded file's own boundary-sentinel \
-                     batch; files: \
-                     {files:?}"
-            )
-        });
-    assert_eq!(
-        contract_batch.len(),
-        1,
-        "the out-of-line-excluded file's batch is boundary-only - no real CodeEntityExtracted \
-         and no named EdgeInferred; got {contract_batch:?}"
-    );
-
-    let g = common::fixtures::fold_events(batches.into_iter().flat_map(|(_, events, _)| events))
-        .subgraph(&["lib.rs".to_string(), "contract.rs".to_string()], 3)
-        .unwrap();
-    assert!(
-        !g.nodes
-            .iter()
-            .any(|n| n.id == "contract.rs::assert_contract"),
-        "the excluded file's own definition must never reach the graph through this entry \
-         point either; nodes: {:?}",
-        g.nodes
-    );
-}
-
 rigger::test_cases! {
-    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, events.rs
-    /// `out_of_line_test_module_files`'s seed-loop `d.kind != Kind::Module ||
-    /// !d.is_out_of_line_module || !d.is_test` guard; the fixture's own target paths updated in
+    /// Mutation-efficacy pin (round 6 `cargo mutants` finding, on the test-module closure's
+    /// seed guard, today `Resolver::new` in `resolve.rs` seeding from test declarations only; the fixture's own target paths updated in
     /// round 7 to `module_dir`'s real per-file-module convention - `host_a.rs`/`host_b.rs` are
     /// non-mod.rs leaves, so their out-of-line children resolve under `host_a/`/`host_b/`, never as
     /// root-level same-directory siblings, or this fixture stops exercising the guard at all under
@@ -1302,84 +906,6 @@ rigger::test_cases! {
                  the is_out_of_line_module gate must block exclusion here",
             ),
         ],
-    );
-}
-
-/// Round 7 mutation-efficacy pin (`cargo mutants` finding, events.rs `out_of_line_test_module_files`'s
-/// CLOSURE-loop guard `d.kind != Kind::Module || !d.is_out_of_line_module`, mutated `||` to `&&`):
-/// through the REAL extraction pipeline, `is_out_of_line_module` is set true ONLY inside
-/// `extract()`'s `if d.kind == Kind::Module` arm (`model.rs`'s own field doc), so a
-/// non-`Module`-kind `Def` with `is_out_of_line_module: true` can never arise from parsing real
-/// source - but `Def`'s fields are plain `pub` and independently loadable from a PERSISTED index
-/// (`#[serde(default)]`, never re-derived from source on load), so a hand-edited or foreign-written
-/// index file CAN carry exactly this combination. The `d.kind != Kind::Module` half of the guard is
-/// what stops such a stray flag on an ordinary function/type/etc. from being treated as an
-/// out-of-line module declaration and resolved against unrelated files. Built directly via
-/// `SymbolIndex::insert_file` (bypassing `extract()` on purpose - the whole point is to model a
-/// hand-edited/persisted index, not real parsing): `host.rs` seeds a genuine out-of-line
-/// `#[cfg(test)]` module `excluded_file`, resolving to `host/excluded_file.rs`; that file's own
-/// `victim` definition is a `Function` (never a `Module`) but carries a STRAY
-/// `is_out_of_line_module: true` it could only get from tampered/foreign persisted data. Under the
-/// mutant this stray flag is enough to make `victim` resolve as if it declared an out-of-line
-/// module named `victim`, at `host/excluded_file/victim.rs` (`module_dir`'s convention for the
-/// leaf file `host/excluded_file.rs`) - a REAL, wholly unrelated product file placed exactly there
-/// to make the wrong exclusion observable.
-#[cfg(feature = "symbols")]
-#[test]
-fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exclusion() {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::symbols::model::SymbolIndex;
-    use rigger::grounder::symbols::store;
-
-    // One shared single-def-file builder for this test's three hand-crafted fixture files - the
-    // varying bits (kind/name/is_test/is_out_of_line_module) are exactly this test's own point of
-    // interest.
-    fn one_def_file(
-        kind: Kind,
-        name: &str,
-        is_test: bool,
-        is_out_of_line_module: bool,
-    ) -> rigger::grounder::symbols::model::FileSymbols {
-        let d = Def {
-            is_test,
-            is_out_of_line_module,
-            ..def(kind, name)
-        };
-        rust_file(vec![d], vec![])
-    }
-
-    let mut idx = SymbolIndex::default();
-    idx.insert_file(
-        "host.rs".into(),
-        one_def_file(Kind::Module, "excluded_file", true, true),
-    );
-    // `victim`'s is_out_of_line_module: true is never reachable via real extraction on a
-    // non-Module def (model.rs's own field doc); modeling a hand-edited/foreign persisted index
-    // on purpose - see the test's own doc comment above.
-    idx.insert_file(
-        "host/excluded_file.rs".into(),
-        one_def_file(Kind::Function, "victim", false, true),
-    );
-    idx.insert_file(
-        "host/excluded_file/victim.rs".into(),
-        one_def_file(Kind::Function, "victim_fn", false, false),
-    );
-    // The production ingest reads the persisted index, so persist this hand-built one.
-    let root = tempfile::tempdir().unwrap();
-    let root = root.path().to_str().unwrap();
-    store::save(&idx, root).unwrap();
-
-    let g = common::fixtures::fold_events(common::project_events(root))
-        .subgraph(&["host/excluded_file/victim.rs".to_string()], 3)
-        .unwrap();
-    assert!(
-        g.nodes
-            .iter()
-            .any(|n| n.id == "host/excluded_file/victim.rs::victim_fn"),
-        "a real, unrelated product file must never be swept into exclusion by a stray \
-         is_out_of_line_module flag on a NON-Module definition inside an already-excluded file - \
-         the kind guard must block cross-file resolution here regardless of that flag; nodes: {:?}",
-        g.nodes
     );
 }
 
@@ -1599,7 +1125,7 @@ rigger::test_cases! {
     /// Round 7 fix (`op-u86c1-r7-out-of-line-module-resolution-follows-rust`, closing round-6
     /// finding
     /// `sdet-u86c1-r6-out-of-line-mod-resolution-uses-declaring-files-directory-not-rusts-own-module-
-    /// nesting-path`): `out_of_line_test_module_files` used to resolve a `#[cfg(test)] mod name;`
+    /// nesting-path`): the out-of-line resolution used to resolve a `#[cfg(test)] mod name;`
     /// declaration to `<directory containing the DECLARING file>/<name>.rs`. That coincides with
     /// rustc's placement for some declaring files, among them a `mod.rs` and a crate root such as
     /// `src/lib.rs` - both of this repo's two disclosed live instances (`src/eventstore/mod.rs`,
@@ -1626,7 +1152,7 @@ rigger::test_cases! {
             ),
             ("parent/helper.rs", "pub fn real_test_helper() {}\n"),
             // An UNRELATED top-level file that merely happens to share the submodule's bare name,
-            // sitting where `out_of_line_test_module_files`'s "same directory as the declaring
+            // sitting where the old "same directory as the declaring
             // file" heuristic would actually look.
             ("helper.rs", "pub fn totally_unrelated_helper() {}\n"),
         ],
@@ -1637,7 +1163,7 @@ rigger::test_cases! {
                 "helper.rs::totally_unrelated_helper",
                 "an unrelated top-level file must never be swept into exclusion just \
                  because a DIFFERENT file's own child submodule happens to share its bare \
-                 name - `out_of_line_test_module_files` resolves off the DECLARING FILE's \
+                 name - a resolution off the DECLARING FILE's \
                  directory, not off Rust's actual per-file module-nesting rule, so a \
                  same-named sibling of the declaring file is wrongly treated as the \
                  declared module's target",
@@ -1787,21 +1313,16 @@ rigger::test_cases! {
     );
 }
 
-/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, has gone
-/// through the REAL `extract_concepts`/`extract_links` pass, `concept_events`/`link_events` and
-/// the always-compiled fold. Seeded from the doc alone: an excluded target must not exist to
-/// seed from.
+/// The graph three hops around `docs/architecture.md` once that doc, holding `md`, is the one
+/// file of a tree the code store's view reads through the REAL extractor ([`ingested_subgraph`]).
+/// Seeded from the doc alone: an excluded target must not exist to seed from.
 #[cfg(feature = "symbols")]
 fn design_doc_graph(md: &str) -> rigger::contextgraph::Graph {
-    use rigger::contextgraph::Projection;
-    use rigger::grounder::design::events::{concept_events, link_events};
-    use rigger::grounder::design::extract::{extract_concepts, extract_links};
-
-    let mut events = concept_events(&extract_concepts("docs/architecture.md", md));
-    events.extend(link_events(&extract_links("docs/architecture.md", md)));
-    common::fixtures::fold_events(events)
-        .subgraph(&["docs/architecture.md".to_string()], 3)
-        .unwrap()
+    ingested_subgraph(
+        &[("docs/architecture.md", md)],
+        &["docs/architecture.md"],
+        3,
+    )
 }
 
 /// Every edge of `g` that `keep` holds, as `(from, rel, to)`, sorted: the one edge projection
@@ -2050,12 +1571,13 @@ const PRODUCTION_CONTROLS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the public
-/// `project_batches` -> `Projector` path over a real tree in every registered language: a file
+/// Spec 116 criterion 1 (DEV-ONLY CODE MAKES NO NODE), end to end through the code
+/// store's view of a real tree in every registered language: a file
 /// at each DEV-ONLY PATHS pattern is no node, holds no node and ends no edge, and its one call
 /// is the one proof on the production definition it names; each production control is a file
-/// node holding its definitions, each contained by its parent, and proves nothing; and `src/tests/mod.rs`, which a pattern
-/// names and `#[cfg(test)] mod tests;` declares, is no node and proves nothing either.
+/// node holding its definitions, each contained by its parent, and proves nothing; and
+/// `src/tests/mod.rs`, which a pattern names and `#[cfg(test)] mod tests;` declares, is no node
+/// and, as a file in the test-module closure, proves the product definition it calls.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it_calls() {
@@ -2138,8 +1660,8 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
     assert_eq!(leaked_edges, Vec::<(&str, &str, &str)>::new());
 
     let product_prefix = format!("{PRODUCT}::");
-    // Each pattern's file proves the one definition it calls; the out-of-line module's call and
-    // the controls' calls prove nothing.
+    // Each pattern's file, the out-of-line test module's included, proves the one definition it
+    // calls; the controls' calls prove nothing.
     let proofs: BTreeMap<String, Vec<String>> = g
         .nodes
         .iter()
@@ -2157,7 +1679,10 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
         .iter()
         .map(|&(path, _, name, line)| (name.to_string(), vec![format!("{path}:{line}")]))
         .collect();
-    expected_proofs.insert("by_out_of_line_module".to_string(), vec![]);
+    expected_proofs.insert(
+        "by_out_of_line_module".to_string(),
+        vec![format!("{OUT_OF_LINE}:2")],
+    );
     expected_proofs.insert("by_production_only".to_string(), vec![]);
     assert_eq!(proofs, expected_proofs);
 }
@@ -2214,7 +1739,7 @@ extern \"C\" {
 ];
 
 /// Spec 116 criterion 11 (A TEST REGION IS EVERY TEST-ATTRIBUTED RANGE), end to end through the
-/// public `project_batches` -> `Projector` path: a `#[cfg(test)] const _` the name filter drops,
+/// code store's view: a `#[cfg(test)] const _` the name filter drops,
 /// a `#[cfg(test)] extern` block and a file opening `#![cfg(test)]` each make what they hold
 /// test, so none of it is a node or ends an edge, and the file a `mod` in that opened file
 /// declares is test code whole; a file opening an outer `#[cfg(test)] use` or
@@ -2229,7 +1754,8 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
     let seeds: Vec<&str> = TEST_REGION_FILES.iter().map(|&(path, _)| path).collect();
     let g = ingested_subgraph(TEST_REGION_FILES, &seeds, 3);
 
-    // Every production definition, and only those, is contained by its file.
+    // Every production definition, and only those, is contained by its file, and the production
+    // module `kept` contains the file it declares.
     assert_eq!(
         edges_where(&g, |e| e.rel == REL_CONTAINS),
         [
@@ -2238,6 +1764,7 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
             ("src/gated.rs", "src/gated.rs::gated_a"),
             ("src/gated.rs", "src/gated.rs::gated_b"),
             ("src/gated.rs", "src/gated.rs::kept"),
+            ("src/gated.rs::kept", "src/gated/kept.rs"),
             ("src/gated/kept.rs", "src/gated/kept.rs::in_kept"),
             ("src/regions.rs", "src/regions.rs::called_from_production"),
             ("src/regions.rs", "src/regions.rs::called_from_test"),
@@ -2307,7 +1834,7 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
 }
 
 rigger::test_cases! {
-    /// sdet-author gap, round 7: `resolve_out_of_line_target`'s nested `<module_dir>/<name>/mod.rs`
+    /// sdet-author gap, round 7: `module_candidates`'s nested `<module_dir>/<name>/mod.rs`
     /// fallback (`an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_
     /// sibling_exists`) only ever exercises it with `module_dir` NON-empty (a non-`mod.rs` leaf
     /// declaring file at the tempdir root, whose own `module_dir` is its own bare stem - a
@@ -2359,7 +1886,7 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
-    /// sdet-author gap, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
+    /// sdet-author gap, round 7: `module_candidates`'s `#[path]`-override branch
     /// (`a_path_attribute_override_redirects_out_of_line_resolution_through_the_public_api`) only
     /// ever places the declaring file at the tempdir ROOT, so `dir_of(declaring_path)` is empty and
     /// the override is resolved as the bare attribute string with no directory prefix at all
@@ -2412,17 +1939,18 @@ rigger::test_cases! {
 }
 
 rigger::test_cases! {
-    /// sdet finding, round 7: `resolve_out_of_line_target`'s `#[path]`-override branch
-    /// (`crates/rigger-grounder/src/grounder/symbols/events.rs`) joins the declaring file's own directory onto the raw
+    /// sdet finding, round 7: the `#[path]`-override branch of the out-of-line resolution
+    /// (today `module_candidates` in `crates/rigger-grounder/src/grounder/symbols/paths.rs`) joined
+    /// the declaring file's own directory onto the raw
     /// attribute string with a single `format!("{declaring_dir}/{p}")` and does no `..`/`.`
     /// normalization before looking the result up in `idx.files()`, whose keys are always the
     /// project's real, already-clean relative paths (never containing a literal `..` segment). A
     /// `#[path]` value that walks back up past the declaring file's own directory (`#[path =
     /// "../fixtures/actual.rs"]`, resolving `src/parent.rs`'s override to the literal string
     /// `"src/../fixtures/actual.rs"`) therefore never matches any real key,
-    /// `resolve_out_of_line_target` falls through its `contains_key` check to `None` ("a stale or
+    /// `module_candidates` falls through its `contains_key` check to `None` ("a stale or
     /// unresolvable declaration excludes nothing" per its own doc), and the actual target file is
-    /// left OUT of `out_of_line_test_module_files`, so its test code graphs as ordinary product
+    /// left OUT of the test-module closure, so its test code graphs as ordinary product
     /// code: the exact `Kind::Module`/`is_out_of_line_module` failure class every prior round of
     /// this unit was rejected for. This is not a contrived shape: this very repository's own house
     /// style already writes an upward-escaping `#[path = "../build/gitsemver.rs"]`
@@ -2476,7 +2004,7 @@ rigger::test_cases! {
     /// (see the `..dotdot..` test above) also breaks the SAME-DIRECTORY-EXPLICIT shape `#[path =
     /// "./x.rs"]`: `format!("{declaring_dir}/{p}")` on a declaring file `src/parent.rs` and
     /// override value `"./actual.rs"` yields the literal string `"src/./actual.rs"`, which never
-    /// matches `idx.files()`'s clean key `"src/actual.rs"` either, so `resolve_out_of_line_target`
+    /// matches `idx.files()`'s clean key `"src/actual.rs"` either, so `module_candidates`
     /// falls through to `None` and the actual target's test code graphs as ordinary product code. A
     /// narrow fix that only strips a leading/embedded `..` (matching just the sibling test's shape)
     /// would leave this `./` shape open - the fix under test is real logical path-segment
@@ -2566,7 +2094,7 @@ rigger::test_cases! {
     /// That collapsed string is syntactically a valid relative path but semantically WRONG (it
     /// walked back further than the declaring file's own tree allows), and nothing stops it from
     /// coincidentally matching a real, unrelated file's key - at which point
-    /// `resolve_out_of_line_target` treats that unrelated product file as the out-of-line module's
+    /// `module_candidates` treats that unrelated product file as the out-of-line module's
     /// resolved target and silently drops its whole entity set from the graph. This fixture
     /// reproduces the adjudication's own probe exactly: a ROOT-level declaring file (`parent.rs`,
     /// so its own directory is the empty string) whose `#[path = "../actual.rs"]` override has one
@@ -2574,7 +2102,7 @@ rigger::test_cases! {
     /// the raw string `"../actual.rs"`, popping past an already-empty stack on its very first
     /// segment - and a genuine, ALSO-root-level `actual.rs` that the collapsed remainder
     /// (`"actual.rs"`) happens to name, product code with no relation to the test module at all.
-    /// The correct behaviour is `resolve_out_of_line_target` finding no resolvable target for the
+    /// The correct behaviour is `module_candidates` finding no resolvable target for the
     /// malformed override (falling through to `None`, excluding nothing) - so `actual.rs`'s own
     /// product item must stay graphed, exactly as it would if the declaring file's stray override
     /// did not exist.

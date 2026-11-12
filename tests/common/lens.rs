@@ -1,7 +1,6 @@
-//! Fixtures for the dash's lens suites and the code lens's coupling layer: the lens under test,
-//! the graphs it folds and the rows a fold is asserted by.
+//! Fixtures for the dash's lens suites: the lens under test, the graphs it folds and the rows a
+//! fold is asserted by.
 
-use rigger::community::Coupling;
 use rigger::contextgraph::{Graph, KIND_CODE_ENTITY, KIND_CONCEPT, REL_REALIZES, TIER_EXTRACTED};
 use rigger::dash::{clustered_overview, reproject, Cluster, ClusterEdge, Lens};
 
@@ -29,18 +28,6 @@ pub fn files_lens_rows(graph: &Graph, subject: &str, members: usize) -> Vec<Stri
         rows.push(format!("concept {} <- {:?}", u.id, u.candidates));
     }
     rows
-}
-
-/// The `<node> <degree>` row of each node of the coupling layer the code lens detects
-/// communities over, built from `graph`.
-pub fn coupling_rows(graph: &Graph) -> Vec<String> {
-    let coupling = Coupling::from_graph(graph);
-    coupling
-        .nodes()
-        .iter()
-        .zip(coupling.degrees())
-        .map(|(node, degree)| format!("{node} {degree}"))
-        .collect()
 }
 
 /// Lens `name` (`code`, `concepts`, ...) at resolution grain `1`.

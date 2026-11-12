@@ -1,5 +1,5 @@
 //! Rigger's context-graph persistence adapter, ring 3 of the workspace: the SQLite projector
-//! behind the `Projection` port. It knows rusqlite, the filesystem and the domain; the root
+//! behind the `RecordFold` port. It knows rusqlite, the filesystem and the domain; the root
 //! `rigger` crate re-exports it under its historical `rigger::contextgraph::sqlite` path.
 
 #[cfg(test)]
@@ -47,6 +47,9 @@ use scratch_fixtures::temp_root;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(test)]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]

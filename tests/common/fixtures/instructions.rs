@@ -1,8 +1,13 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
-//! body's section headings and the review method its `## When you review` section holds; the
-//! critique method the adversary and adjudicator personas hold under their
-//! `## When you critique a spec or a plan` section and each persona's share of it; the
+//! body's section headings, the grounding method its one-pass section holds, the bounded-audit
+//! bullet and the gate-verb sentence its hand-over section holds, the lookup method its fan-out section holds and the review
+//! method its `## When you review` section holds; the
+//! communication body's sentences that state the cadence the task prompts leave to it; the
+//! critique method the adversary and adjudicator personas
+//! hold under their `## When you critique a spec or a plan` section and each persona's share of
+//! it; the unit size cap's scope sentence the planner and both critiquing personas state; the rule the sdet-author persona states for a documentation-only round and the fact its
+//! prompt states instead; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -12,8 +17,37 @@
 //! operator layer the instruction reporters are read over, with what `rigger instructions`,
 //! `rigger validate` and `rigger prime` report on it.
 
+/// The working-discipline body's opening section heading.
+pub const ONE_PASS_HEADING: &str = "## One pass, by excellence";
+
+/// The one sentence of the paragraph the working-discipline body's one-pass section holds after
+/// its first: what to do with each grounding section a task prompt shows.
+pub const GROUNDING_METHOD: &str = "When your task prompt shows the grounding of the files you \
+     touch, read their code neighborhood first, honor the design intent that governs them, do not \
+     repeat the mistakes in the lessons already learned about them, and address or refute the \
+     findings other reviewers have already raised about them.";
+
 /// The working-discipline body's hand-over section heading.
 pub const HAND_OVER_HEADING: &str = "## Hand over a tree the gates only confirm";
+
+/// The three sentences of the hand-over section's bounded-audit bullet, in its order: its bold
+/// title, the rule that every site of a rejection's pattern is fixed, and the Check bounding the
+/// audit record a REQUIRED pattern item names.
+pub const BOUNDED_AUDIT: [&str; 3] = [
+    "A whole-tree audit a rejection requires is bounded.",
+    "When a rejection's required items name a pattern - one defect shape recurring across sites - \
+     every site of that shape is fixed.",
+    "Check: the audit record the rejection asks for names each search command you ran with its hit \
+     count and each site you fixed with its location at head, and counts the rest; it never lists \
+     or dispositions every hit, and a search term found inside a longer identifier is not a hit.",
+];
+
+/// The one sentence of the working-discipline body's hand-over section that tells an author the
+/// gate verb exists: a gate run through `rigger gate <id>` on a commit is recorded, and the driver
+/// reuses its verdict for that commit.
+pub const GATE_VERB_REUSE: &str = "An author who wants a gate's verdict runs `rigger gate <id>` \
+     after committing, and the driver reuses that verdict for the same commit instead of running \
+     the gate again.";
 
 /// The working-discipline body's review section heading.
 pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
@@ -21,11 +55,24 @@ pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 /// The working-discipline body's fan-out section heading.
 pub const FAN_OUT_HEADING: &str = "## Fan out the mechanical work";
 
-/// The seven review sentences the working-discipline body's `## When you review` section holds,
+/// The two lookup-method sentences the fan-out section's `lookup` bullet ends with, in its order:
+/// the combined lookup before grep, then the `grep-fallback:` record a grep over the project's
+/// sources owes.
+pub const LOOKUP_METHOD: [&str; 2] = [
+    "Look things up with the combined lookup (`rigger_graph` `lookup`, or `rigger graph --lookup \
+     <term>...`), which answers from the knowledge graph, your working tree and the project's \
+     prose in one call, not by grepping the project's sources.",
+    "If the graph cannot answer and you fall back to grep over the project's sources, record it \
+     with a progress line `grep-fallback: <what the graph did not answer>` through the progress \
+     verb your task or your tool list names - one line before moving on - so the gap is visible \
+     in the log; filtering your own build or gate output is not a fallback.",
+];
+
+/// The nine review sentences the working-discipline body's `## When you review` section holds,
 /// in its order: the review method a reviewer prompt's discipline no longer carries, then the
 /// review rule - the three classes a blocking finding falls in, every other finding a note, where
-/// the run's notes go, and what a blocking finding names.
-pub const WHEN_YOU_REVIEW: [&str; 7] = [
+/// the run's notes go, how a note is checked and what it owes, and what a blocking finding names.
+pub const WHEN_YOU_REVIEW: [&str; 9] = [
     "Never re-run the gate battery, or any gate the gate evidence shows green on the tree under \
      review: the gates are the instrument that grades the work, and a review judges what they \
      cannot see.",
@@ -44,6 +91,8 @@ pub const WHEN_YOU_REVIEW: [&str; 7] = [
     "Where the workflow has a check-in stage - a stage that needs the fan-out implement template \
      - that stage fixes the run's notes once, before its gates; without one, the notes stay in the \
      run's log for the operator.",
+    "Check each note against the current tree.",
+    "A note owes no record beyond the commit that fixes it.",
     "A blocking finding names its class and, for (b) or (c), the criterion it reads; a verdict \
      whose findings are all notes is an approval, and a rejection requires only its blocking \
      findings.",
@@ -52,9 +101,22 @@ pub const WHEN_YOU_REVIEW: [&str; 7] = [
 /// The section heading a critiquing persona holds the critique method under.
 pub const WHEN_YOU_CRITIQUE_HEADING: &str = "## When you critique a spec or a plan";
 
+/// The unit size cap's scope sentence, spelled once for [`UNIT_SIZE_CAP_SCOPE`] and the unit-size
+/// rule of [`CRITIQUE_METHOD`].
+macro_rules! unit_size_cap_scope {
+    () => {
+        "The cap measures review scope - how much one review round must read - never code shape."
+    };
+}
+
+/// The unit size cap's scope sentence, which no prompt carries: the planner persona states it
+/// after its split sentence, and each critiquing persona after its unit-size rule.
+pub const UNIT_SIZE_CAP_SCOPE: &str = unit_size_cap_scope!();
+
 /// The critique sentences both the adversary's and the adjudicator's section hold: the section's
 /// scope, how a plan critique reads the text, Rules 7 and 8, the blast-radius note, the ownership
-/// defects, the numberless unit-size rule and the overlap rule.
+/// defects, the numberless unit-size rule with the cap's scope sentence after it, and the overlap
+/// rule.
 pub const CRITIQUE_METHOD: [&str; 8] = [
     "In a spec or plan critique this section's rules decide which finding blocks; the working \
      discipline's review rule decides a unit diff's findings.",
@@ -75,7 +137,10 @@ pub const CRITIQUE_METHOD: [&str; 8] = [
      not for mechanical overlap the partitioner already serializes.",
     "Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one \
      checkbox carrying two mitigations) are each a BLOCKING finding.",
-    "- Unit size: a unit over the cap your prompt states is a BLOCKING finding.",
+    concat!(
+        "- Unit size: a unit over the cap your prompt states is a BLOCKING finding. ",
+        unit_size_cap_scope!()
+    ),
     "- Overlap: judge ownership/coherence, not the overlap.",
 ];
 
@@ -131,6 +196,15 @@ pub fn critique_method_by_persona(
     ]
 }
 
+/// The rule the sdet-author persona's last section states for a round that changed documentation
+/// only, and no sdet-author prompt carries: the prompt states only the round's fact.
+pub const DOC_ONLY_ROUND_RULE: &str = "Extend the existing owner test's needle for the changed \
+     sentence, or add no pin; never a new test.";
+
+/// The fact the sdet-author's prompt, and a resumed sdet-author session's task, state on a round
+/// that changed documentation only.
+pub const DOC_ONLY_ROUND_FACT: &str = "This round changed documentation only.";
+
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
 pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
     let from = text.find(heading).expect("the text carries the heading");
@@ -166,7 +240,12 @@ pub fn assert_system_prompt_carries_the_review_method_once(tier: &str, system: &
 /// `text`, which `what` names, carries each review sentence `## When you review` holds exactly
 /// `times` times.
 pub fn assert_carries_the_review_method(what: &str, text: &str, times: usize) {
-    for sentence in WHEN_YOU_REVIEW {
+    assert_carries_each(what, text, &WHEN_YOU_REVIEW, times);
+}
+
+/// `text`, which `what` names, carries each of `sentences` exactly `times` times.
+pub fn assert_carries_each(what: &str, text: &str, sentences: &[&str], times: usize) {
+    for sentence in sentences {
         assert_eq!(
             text.matches(sentence).count(),
             times,
@@ -174,6 +253,38 @@ pub fn assert_carries_the_review_method(what: &str, text: &str, times: usize) {
         );
     }
 }
+
+/// The communication body's sentence that states when a decision is recorded.
+pub const RECORD_EACH_DECISION: &str = "Record EVERY decision the MOMENT you make it by calling \
+     the `rigger_emit` tool with type `DecisionMade`.";
+
+/// The communication body's sentence that states when a reviewer's finding is recorded.
+pub const RECORD_EACH_FINDING: &str = "If you are a reviewer, record EVERY finding the moment you \
+     find it by calling `rigger_emit` with type `ReviewFinding`.";
+
+/// The communication body's sentence that states when the peers' decisions are re-read.
+pub const CHECK_THE_PEERS: &str = "Between your actions, CHECK the `rigger_peers` tool (scoped to \
+     the files you are touching) to stay aware of what concurrent agents have already decided.";
+
+/// The communication body's two sentences that state what a peer's decision asks: never a silent
+/// contradiction, an explicit supersede instead.
+pub const SUPERSEDE_A_PEER: [&str; 2] = [
+    "NEVER silently contradict a peer's decision.",
+    "If you must change a direction a peer already set, SUPERSEDE it explicitly: emit a new \
+     `DecisionMade` whose `supersedes` field cites the prior decision's id, and state why.",
+];
+
+/// The communication body's progress bullet, sentence by sentence: when a spawn reports a progress
+/// line and why, stated once here for every host, whose progress text names only its verb and that
+/// verb's arguments.
+pub const PROGRESS_CADENCE: [&str; 3] = [
+    "After each significant step - a search, a file read, a build, a commit, a decision - report \
+     ONE short line of what you just did through the progress verb your task or your tool list \
+     names.",
+    "This is how an observer sees you working between the milestones you record, so a long silent \
+     stretch is never mistaken for a stall.",
+    "Keep it flowing WHILE you work; do not batch it at the end.",
+];
 
 /// The heading line the communication built-in opens in a composed system prompt.
 pub const COMMUNICATION_SECTION: &str = "\n## communication\n";

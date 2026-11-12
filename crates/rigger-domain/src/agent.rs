@@ -52,11 +52,11 @@ error_from_display!(
 pub struct AgentResult {
     pub output: String,
     /// The RESOLVED model id that actually ran this spawn (spec 05 line 52), or empty when
-    /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
-    /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
+    /// unknown. The replay driver surfaces it from the recorded result's metadata
+    /// ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
-    /// The headless host reads it off the session's stream; the cli and workflow drivers do not
-    /// learn it and leave it empty.
+    /// The headless host reads it off the session's stream; the cli driver does not learn it
+    /// and leaves it empty.
     pub resolved_model: String,
     /// The Claude Code session this spawn ran as - the id a later attempt or review round of
     /// the same role on the same unit continues with `--resume` ([`SpawnOpts::resumed_from`]).
@@ -78,13 +78,37 @@ pub struct AgentResult {
     pub resumed_from: String,
 }
 
-/// Per-spawn options.
-#[derive(Default)]
+/// The host values a headless spawn carries, resolved once per command by
+/// `rigger_driver::hooks::resolve_spawn_host` from the workflow's `defaults` and the operator's
+/// checkout, never set by hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnHost {
+    /// Whether the spawn's settings carry the PreToolUse grep-guard: `defaults.grep_guard`.
+    pub grep_guard: bool,
+    /// The fan-out helpers the spawn defines and pre-approves, one per helper rigger ships, in
+    /// its order: the operator's copy under `.claude/agents/` where the checkout holds one, else
+    /// the embedded text.
+    pub helpers: Vec<HelperCopy>,
+}
+
+/// One fan-out helper's definition as a spawn host resolved it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelperCopy {
+    /// The helper's file name under `.claude/agents/` (`lookup.md`, `verify.md`).
+    pub name: String,
+    /// The helper's definition: its frontmatter and its prompt body.
+    pub text: String,
+    /// Whether `text` is the operator's own copy, read from the checkout, rather than the
+    /// embedded one.
+    pub present: bool,
+}
+
+/// Per-spawn options, built through [`SpawnOpts::new`] from a resolved [`SpawnHost`].
 pub struct SpawnOpts {
     /// The spawn's DETERMINISTIC id (`{unit}/{role}#{attempt}`, see
-    /// [`spawn_id`](crate::spawn::spawn_id)). A stepwise/replay driver keys on it to
-    /// answer an already-recorded spawn from the log or to park an unrecorded one; every other
-    /// driver names the spawn by it. Empty for a caller that does not use stepwise replay.
+    /// [`spawn_id`](crate::spawn::spawn_id)). The replay driver and the headless host key on it
+    /// to answer an already-recorded spawn from the log or to park an unrecorded one; every other
+    /// driver names the spawn by it. Empty for a caller that does not replay from the log.
     pub id: String,
     /// The unit this spawn belongs to - the parked request's `unit` (and the display
     /// label's unit half). Empty when the caller does not park.
@@ -102,11 +126,9 @@ pub struct SpawnOpts {
     /// The agent's PERSONA - its role instructions, the markdown body of its
     /// `.rigger/agents/<id>.md` definition (`AgentDef::prompt`). It belongs as the
     /// agent's SYSTEM prompt, distinct from the grounded task `prompt`. The conductor
-    /// is the SINGLE place that sets it (from `agent_def.prompt`), so BOTH drivers
-    /// consume the same persona source and cannot diverge: the cli driver writes it to the
-    /// file `--system-prompt-file` names, the workflow driver carries it to the shim which
-    /// passes it to the Agent SDK `query()` as `options.systemPrompt`. Empty when the
-    /// agent declared no body.
+    /// is the SINGLE place that sets it (from `agent_def.prompt`), so every driver
+    /// consumes the same persona source and cannot diverge: a process host writes it to the
+    /// file `--system-prompt-file` names. Empty when the agent declared no body.
     pub system_prompt: String,
     /// The working directory the agent runs in: an isolated worktree, or "" for
     /// the current dir.
@@ -118,9 +140,8 @@ pub struct SpawnOpts {
     /// stage (§6). False for a single-worker stage.
     pub parallel: bool,
     /// The agent's blast-radius: the grounded seed files this spawn is scoped to
-    /// (§5.3). The workflow driver carries it to the shim, which fetches
-    /// blast-radius-filtered peer decisions and injects them at the tool boundary;
-    /// the cli driver (a subprocess) cannot do mid-run injection and ignores it.
+    /// (§5.3), carried onto the parked spawn request. A subprocess driver
+    /// cannot do mid-run injection and ignores it.
     pub blast_radius: Vec<String>,
     /// The id of the run this spawn belongs to (spec 06, unit 1), set by the conductor
     /// from the current run. A parking driver stamps it into the `SpawnRequested`
@@ -140,8 +161,9 @@ pub struct SpawnOpts {
     /// ([`gate::BuildEnv::vars`], empty when no wrapper is configured - today's
     /// ambient-environment behavior, unchanged), so its OWN `cargo test`/`cargo build`
     /// invocations hit the same wrapper cache under the same settings a gate build
-    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit `CARGO_TARGET_DIR`
-    /// (empty/absent when this spawn's `dir` owns no per-unit cache), so those SAME
+    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit
+    /// [`BUILD_CACHE_ENV`](crate::spawn::BUILD_CACHE_ENV) (absent when this spawn's `dir`
+    /// has no unit sibling, so a review-only, planner or canary spawn carries none), so those SAME
     /// invocations land in the one per-unit cache a gate build for that `dir` gets,
     /// never an embedded `target/` dir inside the worktree. The blocking cli driver
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
@@ -161,8 +183,12 @@ pub struct SpawnOpts {
     /// The per-spawn settings JSON (spec 104 criterion 1): the stream-json host merges the
     /// hooks bound to the spawn and rigger's session hooks and status line onto it, the cli
     /// host the session ones alone, and each passes the result as `--settings`. Empty means no
-    /// settings of the spawn's own; the workflow driver ignores this field.
+    /// settings of the spawn's own.
     pub settings_json: String,
+    /// The host values the spawn's launch follows: whether the session hosts merge the
+    /// PreToolUse grep-guard into [`settings_json`](Self::settings_json), and the fan-out
+    /// helpers they define and pre-approve.
+    pub host: SpawnHost,
     /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
     /// for a fresh launch. The conductor sets it on a later attempt or review round of a
     /// role whose earlier spawn on the same unit recorded its session
@@ -176,6 +202,32 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
+}
+
+impl SpawnOpts {
+    /// The options of a spawn carrying `host`, every other field empty, false or 0, for a
+    /// caller to spread its own fields over.
+    pub fn new(host: SpawnHost) -> SpawnOpts {
+        SpawnOpts {
+            id: String::new(),
+            unit: String::new(),
+            stage: String::new(),
+            attempt: 0,
+            system_prompt: String::new(),
+            dir: String::new(),
+            isolation: false,
+            parallel: false,
+            blast_radius: Vec::new(),
+            run_id: String::new(),
+            title: String::new(),
+            env: Vec::new(),
+            reviews: Vec::new(),
+            settings_json: String::new(),
+            host,
+            resumed_from: String::new(),
+            resume_task: String::new(),
+        }
+    }
 }
 
 /// The [`SpawnRequest`] a spawn parks, derived from the spawn's arguments alone - the ONE mapping
@@ -201,19 +253,19 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
         blast_radius: opts.blast_radius.clone(),
         max_wall_clock: agent.max_wall_clock,
         // The live work-line (spec 19a, c4): copy the conductor-threaded unit criterion onto
-        // the parked request so the persisted `SpawnRequested` - and the wave `rigger step`
-        // prints from it - carry the WORK the thin driver narrates.
+        // the parked request so the persisted `SpawnRequested` carries the WORK every reader of
+        // the request shows.
         title: opts.title.clone(),
         // The routed review roster (spec 67, criterion 4): copy the conductor-threaded
         // adversary/adjudicator roster onto the parked request, the same additive seam
-        // `title` establishes, so the wave carries it for `workflows/rigger.js` to render.
+        // `title` establishes, so the persisted request carries it for a reader to render.
         reviews: opts.reviews.clone(),
         // The build location the conductor chose (`spawn_env`), recorded so a driver that
         // cannot set the worker's environment names the same directory.
         cargo_target_dir: opts
             .env
             .iter()
-            .find(|(name, _)| name == "CARGO_TARGET_DIR")
+            .find(|(name, _)| name == crate::spawn::BUILD_CACHE_ENV)
             .map(|(_, dir)| dir.clone())
             .unwrap_or_default(),
     }
@@ -253,13 +305,12 @@ pub trait AgentDriver: Send + Sync {
 /// adapter to tell a park from a failure.
 pub const PARKED_MARKER: &str = "\u{1}rigger:spawn-parked\u{1}";
 
-/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: a
-/// stepwise/replay driver persisted the unrecorded spawn request, and the workflow driver and
-/// the held-run decorator found the serving session closed. On this signal the conductor
-/// unwinds the unit CLEANLY - no `UnitFailed`, no remediation - and the step ends once every
-/// in-flight spawn is parked; a later step replays the result the courier records, or a
-/// relaunch serves the spawn again. This is a normal failure, so a spawn that never parks is
-/// entirely unaffected.
+/// Construct the PARK signal a driver returns for spawn `id` it cannot answer in-process: the
+/// replay driver persisted the unrecorded spawn request. On this signal the conductor unwinds
+/// the unit CLEANLY - no `UnitFailed`, no remediation - and its pass ends once every in-flight
+/// spawn is parked; a later pass over the same log replays the result recorded for the spawn
+/// (`rigger result`). This is a normal failure, so a spawn that never parks is entirely
+/// unaffected.
 pub fn parked_spawn(id: &str) -> Error {
     Error(format!(
         "{PARKED_MARKER} spawn {id:?} parked: nothing serves it in-process"
@@ -590,6 +641,7 @@ fn failure_parts(e: &Error) -> Option<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::test_spawn_host;
 
     const RETRIES: &str = "none, the run retries by itself";
     const LOGIN: &str = "run claude auth login";
@@ -799,7 +851,7 @@ mod tests {
             ],
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
-            ..SpawnOpts::default()
+            ..SpawnOpts::new(test_spawn_host())
         };
         assert_eq!(
             spawn_request(&agent, "the task", &opts),

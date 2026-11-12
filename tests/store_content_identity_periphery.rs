@@ -34,7 +34,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use rigger::contextgraph::{Error as CgError, Projection, TYPE_DECISION_MADE};
+use rigger::contextgraph::{Error as CgError, RecordFold, TYPE_DECISION_MADE};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
@@ -48,7 +48,7 @@ use rigger::run_store::HoldSighting;
 // Doubles and fixtures
 // ---------------------------------------------------------------------------
 
-/// A `Projection` that records the positions handed to each `apply_batch` call (grouped
+/// A `RecordFold` that records the positions handed to each `apply_batch` call (grouped
 /// per call) and the positions handed to each per-event `apply`, so a test can prove
 /// exactly WHICH events were folded and at WHICH positions - the two facts a partially
 /// suppressed append can get wrong.
@@ -80,7 +80,7 @@ impl CapturingProjection {
     }
 }
 
-impl Projection for CapturingProjection {
+impl RecordFold for CapturingProjection {
     fn apply(&self, e: &Event, _access: rigger::contextgraph::FoldAccess) -> Result<(), CgError> {
         self.singles.lock().unwrap().push(e.position);
         Ok(())
@@ -96,7 +96,7 @@ impl Projection for CapturingProjection {
             .push(crate::common::fixtures::positions_of(events));
         Ok(())
     }
-    crate::projection_reads_nothing!();
+    crate::record_fold_owes_nothing!();
 }
 
 /// A consumer-implemented `EventStore` that reports EXACTLY the placements it was built
@@ -324,7 +324,7 @@ fn the_fold_uses_the_reported_positions_on_a_backend_whose_positions_have_gaps()
         .map(|i| Event::new("Gapped", vec![i as u8]))
         .collect();
 
-    let appended = folding_into(&gapped, Some(&cap as &dyn Projection), &|_| {})
+    let appended = folding_into(&gapped, Some(&cap as &dyn RecordFold), &|_| {})
         .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect("the append succeeds");
     assert_eq!(appended.fold, rigger::contextgraph::Fold::Folded);
@@ -358,7 +358,7 @@ fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
         .map(|i| Event::new("Silent", vec![i as u8]))
         .collect();
 
-    let appended = folding_into(&silent, Some(&cap as &dyn Projection), &|_| {})
+    let appended = folding_into(&silent, Some(&cap as &dyn RecordFold), &|_| {})
         .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect("an append that wrote nothing is not an error");
     assert_eq!(
@@ -395,7 +395,7 @@ fn a_report_that_does_not_answer_the_batch_is_refused_rather_than_folded() {
         .map(|i| Event::new("Derived", vec![i as u8]))
         .collect();
 
-    let err = folding_into(&miscounting, Some(&cap as &dyn Projection), &|_| {})
+    let err = folding_into(&miscounting, Some(&cap as &dyn RecordFold), &|_| {})
         .append_and_fold("run", ExpectedRevision::Any, &events)
         .expect_err("a report that cannot name what was written is not a smaller fold");
 
@@ -802,6 +802,7 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
         &silent,
         &NeverSpawns,
         &rigger::config::Config::default(),
+        &test_spawn_host(),
         &panel,
         &[],
         rigger::canary_store::default_jobs(),
@@ -847,8 +848,9 @@ fn cli_project() -> tempfile::TempDir {
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
-mod common;
+use crate::common;
 use common::cli::{init_event_log, pin_identity, temp_project};
+use common::fixtures::test_spawn_host;
 
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {

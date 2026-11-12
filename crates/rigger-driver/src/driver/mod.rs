@@ -1,7 +1,8 @@
 //! Agent drivers: adapters implementing the conductor's AgentDriver port. `claude_code` is the
 //! headless-session host `rigger run` and `rigger critique` launch their agents through;
-//! `workflow` is the in-Claude-Code alternative; `cli` is the blocking one-shot host `rigger
-//! canary` probes with; `replay` is the stepwise path `rigger step` drives.
+//! `cli` is the blocking one-shot host `rigger canary` probes with; `replay` answers a spawn
+//! from the run's log or parks an unrecorded one, the read the headless host makes before
+//! every launch (`replay::read_or_park`).
 //!
 //! Both process hosts launch a headless `claude` session, so what such a session needs
 //! beyond its protocol (permissions, MCP server, settings, helpers) is composed here once,
@@ -9,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use crate::agent::{Error, SpawnOpts};
+use crate::agent::{Error, SpawnHost, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
 use crate::progress::SpawnLaunched;
@@ -17,7 +18,6 @@ use crate::progress::SpawnLaunched;
 pub mod claude_code;
 pub mod cli;
 pub mod replay;
-pub mod workflow;
 
 /// The permission mode every headless spawn runs under (architecture addendum §4.1): paired
 /// with `--permission-prompts none`, whatever would otherwise prompt is DENIED (and, on the
@@ -37,13 +37,18 @@ pub(crate) fn bin_or_path_default<'s>(configured: &'s str, default: &'s str) -> 
 
 /// The `--allowed-tools` pair every headless spawn passes: the tools `agent` is granted
 /// ([`AgentDef::allowed_tools`]: `recurse: false` strips any fan-out tool, runaway-proof by
-/// construction, §3.1, §6), then the helpers' rigger MCP tools ([`hooks::helper_mcp_tools`]),
-/// then the `bound` tools the launching host's own server serves, each name once. The helpers'
-/// tools are pre-approved because under `--permission-prompts none` nothing answers a prompt, so
-/// a `lookup` would otherwise be denied every graph call it makes, and a host's `bound` tools for
-/// the same reason. Always present, since the helpers declare their tools.
-pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_mcp_tools()
+/// construction, §3.1, §6), then the rigger MCP tools of the helpers `host` carries
+/// ([`hooks::helper_mcp_tools`]), then the `bound` tools the launching host's own server serves,
+/// each name once. The helpers' tools are pre-approved because under `--permission-prompts none`
+/// nothing answers a prompt, so a `lookup` would otherwise be denied every graph call it makes,
+/// and a host's `bound` tools for the same reason. Always present; fails when a helper `host`
+/// carries does not parse.
+pub(crate) fn allowed_tools_args(
+    agent: &AgentDef,
+    host: &SpawnHost,
+    bound: &[&str],
+) -> Result<Vec<String>, Error> {
+    let helpers = hooks::helper_mcp_tools(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's allowed tools: {e}")))?;
     let mut tools = agent.allowed_tools();
     for tool in helpers
@@ -57,15 +62,12 @@ pub(crate) fn allowed_tools_args(agent: &AgentDef, bound: &[&str]) -> Result<Vec
     Ok(vec!["--allowed-tools".to_string(), tools.join(",")])
 }
 
-/// `task` framed with the live-progress instruction (spec 14) every process host gives, so a
-/// worker reports what it is doing between milestones. `report` is how the worker reports on this
-/// host, completing the sentence "report ONE short line of what you just did ...".
+/// `task` framed with the progress verb every process host gives (spec 14): the separator, then
+/// one line naming how a worker records a progress line on this host. `report` is that verb and
+/// its arguments, completing the sentence "record a progress line ...". When to report is the
+/// `communication` built-in's.
 pub(crate) fn progress_framed(task: &str, report: &str) -> String {
-    format!(
-        "{task}\n\n--- rigger driver ---\nLIVE PROGRESS: after each significant step (a search, a \
-         build, a commit, a decision) report ONE short line of what you just did {report}. Keep \
-         it flowing while you work."
-    )
+    format!("{task}\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line {report}.")
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming
@@ -376,38 +378,49 @@ pub(crate) fn system_prompt_file(
 ///
 /// - `--permission-mode default` with `--permission-prompts none`: see [`PERMISSION_MODE`];
 /// - `--mcp-config` names exactly one server, `<rigger_bin> <mcp_args..>` under
-///   [`hooks::MCP_SERVER_NAME`], and `--strict-mcp-config` keeps every other MCP configuration
-///   out. The host picks the server: the stream-json host binds each spawn its own
+///   [`hooks::MCP_SERVER_NAME`], marked to load its tools up front ([`hooks::spawn_mcp_config`]),
+///   and `--strict-mcp-config` keeps every other MCP configuration out. The host picks the server: the stream-json host binds each spawn its own
 ///   (`mcp --spawn <id>`, §4.3), the cli host the operator's read-only one (`mcp`, the entry
 ///   `rigger setup` writes into `.mcp.json`);
-/// - `--settings` is `settings_json` (may be empty) with the SessionStart prime hook, the
-///   PreToolUse grep-guard and the status line merged in. The host hands in what its spawn runs
-///   on: the stream-json host the spawn's own settings with the hooks bound to it already merged
+/// - `--settings` is `settings_json` (may be empty), with `advisorModel` set to the empty string
+///   when `agent` runs without the advisor ([`AgentDef::without_advisor`]), with the SessionStart
+///   prime hook and the status line merged in, and the PreToolUse grep-guard when `host` carries it
+///   ([`hooks::install_session_settings`]). The host hands in what its spawn runs on: the
+///   stream-json host the spawn's own settings with the hooks bound to it already merged
 ///   ([`hooks::install_spawn_hooks`]), the cli host the spawn's own settings alone;
-/// - `--agents` defines the `lookup` and `verify` fan-out helpers.
+/// - `--agents` defines the `lookup` and `verify` fan-out helpers `host` carries
+///   ([`hooks::helper_agents_json`]): the operator's copy of each where the checkout holds one.
 ///
-/// Fails only when `settings_json` is not a JSON object the session settings can merge into.
+/// Fails when `settings_json` is not a JSON object the session settings can merge into, or a
+/// helper `host` carries does not parse.
 pub(crate) fn spawn_config_args(
+    agent: &AgentDef,
     rigger_bin: &str,
     mcp_args: &[&str],
     settings_json: &str,
+    host: &SpawnHost,
 ) -> Result<Vec<String>, Error> {
-    let helpers = hooks::helper_agents_json()
+    let helpers = hooks::helper_agents_json(&host.helpers)
         .map_err(|e| Error(format!("driver: compose the spawn's agents: {e}")))?;
+    let own_settings = if agent.without_advisor() {
+        json_arg(
+            hooks::install_no_advisor(settings_json.as_bytes()),
+            "settings",
+        )?
+    } else {
+        settings_json.to_string()
+    };
     Ok(vec![
         "--permission-mode".to_string(),
         PERMISSION_MODE.to_string(),
         "--permission-prompts".to_string(),
         "none".to_string(),
         "--mcp-config".to_string(),
-        json_arg(
-            hooks::install_mcp_server(b"", hooks::MCP_SERVER_NAME, rigger_bin, mcp_args),
-            "MCP config",
-        )?,
+        json_arg(hooks::spawn_mcp_config(rigger_bin, mcp_args), "MCP config")?,
         "--strict-mcp-config".to_string(),
         "--settings".to_string(),
         json_arg(
-            hooks::install_session_settings(settings_json.as_bytes()),
+            hooks::install_session_settings(own_settings.as_bytes(), host.grep_guard),
             "settings",
         )?,
         "--agents".to_string(),
@@ -418,12 +431,16 @@ pub(crate) fn spawn_config_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::HelperCopy;
+    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
 
     /// `allowed_tools_args` over every order and repeat a grant can arrive in: the agent's own
-    /// tools, then the helpers', then the host's bound ones, each name once where it first came.
+    /// tools, then the host's helpers', then the host's bound ones, each name once where it first
+    /// came.
     #[test]
     fn allowed_tools_chain_the_agent_the_helpers_and_the_bound_tools_each_name_once() {
-        let helpers = hooks::helper_mcp_tools().unwrap();
+        let host = test_spawn_host();
+        let helpers = hooks::helper_mcp_tools(&host.helpers).unwrap();
         struct Case<'a> {
             name: &'a str,
             tools: Vec<&'a str>,
@@ -475,10 +492,113 @@ mod tests {
                 .chain(case.after_the_helpers.iter().copied())
                 .collect();
             assert_eq!(
-                allowed_tools_args(&agent, &case.bound).unwrap(),
+                allowed_tools_args(&agent, &host, &case.bound).unwrap(),
                 ["--allowed-tools".to_string(), expected.join(",")],
                 "{}",
                 case.name
+            );
+        }
+    }
+
+    /// Both readers of the spawn host's helpers read the copies the host carries and nothing
+    /// else: `spawn_config_args` builds `--agents` from them and `allowed_tools_args` pre-approves
+    /// the rigger tools they declare, and a copy that does not parse fails both, naming it.
+    #[test]
+    fn the_agents_and_the_pre_approval_are_the_helpers_the_host_carries() {
+        let operator = test_spawn_host().helpers;
+        let operator_json = operator_helpers_agents_json();
+        struct Row {
+            name: &'static str,
+            helpers: Vec<HelperCopy>,
+            agents: Result<serde_json::Value, &'static str>,
+            allowed: Result<&'static str, &'static str>,
+        }
+        let rows = [
+            Row {
+                name: "both operator copies",
+                helpers: operator.clone(),
+                agents: Ok(operator_json.clone()),
+                allowed: Ok("Read,mcp__rigger__rigger_peers,mcp__rigger__rigger_graph"),
+            },
+            Row {
+                name: "the verify copy alone declares no rigger tool",
+                helpers: vec![operator[1].clone()],
+                agents: Ok(serde_json::json!({ "verify": operator_json["verify"].clone() })),
+                allowed: Ok("Read"),
+            },
+            Row {
+                name: "a copy with no name",
+                helpers: vec![HelperCopy {
+                    text: "---\nmodel: haiku\n---\nbody\n".to_string(),
+                    ..operator[0].clone()
+                }],
+                agents: Err("conductor: driver: compose the spawn's agents: \
+                             hooks: helper agent lookup.md: no name"),
+                allowed: Err("conductor: driver: compose the spawn's allowed tools: \
+                              hooks: helper agent lookup.md: no name"),
+            },
+        ];
+        let agent = AgentDef {
+            tools: vec!["Read".to_string()],
+            ..AgentDef::default()
+        };
+        for row in rows {
+            let host = SpawnHost {
+                helpers: row.helpers,
+                ..test_spawn_host()
+            };
+            let agents = spawn_config_args(&AgentDef::default(), "rigger", &["mcp"], "", &host)
+                .map(|args| {
+                    let at = args.iter().position(|a| a == "--agents").unwrap();
+                    serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap()
+                });
+            assert_eq!(
+                agents.map_err(|e| e.to_string()),
+                row.agents.map_err(str::to_string),
+                "{}",
+                row.name
+            );
+            assert_eq!(
+                allowed_tools_args(&agent, &host, &[]).map_err(|e| e.to_string()),
+                row.allowed
+                    .map(|tools| vec!["--allowed-tools".to_string(), tools.to_string()])
+                    .map_err(str::to_string),
+                "{}",
+                row.name
+            );
+        }
+    }
+
+    /// Whichever host launches the spawn, its one MCP server is marked to load every tool it lists
+    /// into the session's prompt up front, so the graph tools are callable from the first turn
+    /// instead of sitting behind the host's tool search; the mark sits on rigger's own entry, the
+    /// only server the spawn configures.
+    #[test]
+    fn every_hosts_spawn_loads_the_rigger_tools_up_front() {
+        let rows: [(&str, &[&str]); 2] = [
+            (
+                "the stream-json host's spawn-bound server",
+                &["mcp", "--spawn", "u/implementer#0"],
+            ),
+            ("the cli host's read-only server", &["mcp"]),
+        ];
+        for (name, mcp_args) in rows {
+            let args = spawn_config_args(
+                &AgentDef::default(),
+                "rigger",
+                mcp_args,
+                "",
+                &test_spawn_host(),
+            )
+            .unwrap();
+            let at = args.iter().position(|a| a == "--mcp-config").unwrap();
+            let cfg: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
+            let servers = cfg["mcpServers"].as_object().unwrap();
+            assert_eq!(servers.len(), 1, "{name}: one server alone: {cfg}");
+            assert_eq!(
+                servers[hooks::MCP_SERVER_NAME]["alwaysLoad"],
+                serde_json::json!(true),
+                "{name}: rigger's tools load up front: {cfg}"
             );
         }
     }

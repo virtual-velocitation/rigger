@@ -1,5 +1,13 @@
 # 107 - Perception is re-derived: the log keeps knowledge, never the derived index
 
+**Status: partly superseded.** The ledger this spec defines is built
+(`crates/rigger-conductor/src/logged_generations.rs`). The code store (docs/architecture-addendum-the-code-store.md)
+removes what those sections built: the log keeps no entry per file generation, the tree is read at
+a commit, and the cross-file rules run at read. The ledger sections, units and criteria below are
+marked SUPERSEDED; the retention classes and the refusal of a derived append stand, and the code
+store adds GenerationIngested, CommunityAssigned, ConceptDerived and ConceptRealized to the
+refused derived types.
+
 **Goal:** rigger is a hive mind: its graph holds the project's whole understanding and serves each
 persona the slice it needs, and the append-only log is only the persistence underneath. That log
 keeps what the hive decided, learned and did; it stops holding what the hive merely perceived (the
@@ -36,23 +44,23 @@ landing with its function:
 | Position | Adds, with its first production caller | The tree after it |
 |---|---|---|
 | 1 | `retention`'s lists and the payload type (constants and a type, which the audit gate does not weigh) | unchanged behaviour |
-| 2 | `apply_generation` and `current_generation`, port methods landing with their implementations; the parse and `fold`'s asserter parameter, called by `fold_new` | no caller records an entry; tests fold hand-built ones |
-| 3 | `in_walk_scope`, `tree_bytes`, `workflow_doc` moved (`workflowdef` calls it); first caller `graph_index_lag_sample`'s candidate test | the advisory samples no unreadable or out-of-scope recorded path |
+| 2 | SUPERSEDED: `apply_generation` and `current_generation`, port methods landing with their implementations; the parse and `fold`'s asserter parameter, called by `fold_new` | no caller records an entry; tests fold hand-built ones |
+| 3 | SUPERSEDED: `in_walk_scope`, `tree_bytes`, `workflow_doc` moved (`workflowdef` calls it); first caller `graph_index_lag_sample`'s candidate test | the advisory samples no unreadable or out-of-scope recorded path |
 | 4 | `events::lower_file`, `walk_exclusions` and its stub, the `gd` and `gw` bytes forms, `batch_generation`; callers `project_batches_paced`, `file_batches`, `file_batch`, `load_workflow`, `key_batch` | the walk's batches unchanged |
-| 5 | the three total functions, `resolve_entry` and its stub, `BlobBatch`, `tree_root`, `fold_source`'s routing; first caller `rebuild_owed_graph` | a rebuild folds hand-built entries; both sinks write derived events |
-| 6 | `perceived_generations` and the type-list parameter; first caller the report | the report prints in both lanes |
-| 7 | `PERCEPTION_TYPES` in `read_run`'s two reads and the seed; existing callers | no reader meets an entry |
-| 8 | the group lookup's and `latest_generation`'s ledger reading; existing callers | both sinks' checks read an entry's generation |
-| 9 | `BatchSink`'s and `key_batch`'s flag; every walk and seeder | the sinks take the flag and ignore it |
-| 10 | `entry_of_batch`, `batch_is_current`, `GenerationIngested::event`, `hash_blob` with `Deps::hash_blob`, the ledger form; first caller `emit_keyed_batch` | the run's sink records entries, asking the store each batch; `rigger graph build` writes derived events through `batch_is_latest_recorded` and `keyed_derived_event` |
-| 11 | `LoggedGenerations`; caller the run's sink | the run's sink memoizes the log side |
-| 12 | `ingest_tree`'s ledger write; removes `batch_is_latest_recorded` and `keyed_derived_event` | no sink writes a derived event |
-| 13 | the two-sided advisory; removes the keys part and the parameter | the advisory reads the ledger |
+| 5 | SUPERSEDED: the three total functions, `resolve_entry` and its stub, `BlobBatch`, `tree_root`, `fold_source`'s routing; first caller `rebuild_owed_graph` | a rebuild folds hand-built entries; both sinks write derived events |
+| 6 | SUPERSEDED: `perceived_generations` and the type-list parameter; first caller the report | the report prints in both lanes |
+| 7 | SUPERSEDED: `PERCEPTION_TYPES` in `read_run`'s two reads and the seed; existing callers | no reader meets an entry |
+| 8 | SUPERSEDED: the group lookup's and `latest_generation`'s ledger reading; existing callers | both sinks' checks read an entry's generation |
+| 9 | SUPERSEDED: `BatchSink`'s and `key_batch`'s flag; every walk and seeder | the sinks take the flag and ignore it |
+| 10 | SUPERSEDED: `entry_of_batch`, `batch_is_current`, `GenerationIngested::event`, `hash_blob` with `Deps::hash_blob`, the ledger form; first caller `emit_keyed_batch` | the run's sink records entries, asking the store each batch; `rigger graph build` writes derived events through `batch_is_latest_recorded` and `keyed_derived_event` |
+| 11 | SUPERSEDED: `LoggedGenerations`; caller the run's sink | the run's sink memoizes the log side |
+| 12 | SUPERSEDED: `ingest_tree`'s ledger write; removes `batch_is_latest_recorded` and `keyed_derived_event` | no sink writes a derived event |
+| 13 | SUPERSEDED: the two-sided advisory; removes the keys part and the parameter | the advisory reads the ledger |
 | 14 | `reclaim_space`, `Reclamation`, `bytes_on_disk`; caller `prune_derived_index` | `PrunedDerived` holds the `Reclamation` |
 | 15 | `rebuild_unfinished` and the rebuild lock in `reset_derived`; caller the `--derived` verb as it stands | the prune refuses an unfinished rebuild and a held lock |
-| 16 | `shed_derived`, `count_derived`, `reclamation_lines`; caller `reset_derived`; removes `prune_derived_index` and `PrunedDerived` | the menu and the bloat advisory word the compaction (below) |
-| 17 | `derived_count_phrase`; removes the preview | the bloat advisory still words the compaction |
-| 18 | the bloat advisory's count; removes the measurement | every surface names the migration |
+| 16 | SUPERSEDED: `shed_derived`, `count_derived`, `reclamation_lines`; caller `reset_derived`; removes `prune_derived_index` and `PrunedDerived` | the menu and the bloat advisory word the compaction (below) |
+| 17 | SUPERSEDED: `derived_count_phrase`; removes the preview | the bloat advisory still words the compaction |
+| 18 | SUPERSEDED: the bloat advisory's count; removes the measurement | every surface names the migration |
 | 19 | the refusal with `class_of` | no derived append succeeds |
 | 20 | nothing | both lanes green |
 
@@ -122,6 +130,8 @@ Criterion 1 moves the `TYPE_` constants of `GatePromoted`, `GateDemoted`, `Scope
 its own `TYPE_SPEC_DEFECT` too, as it re-exports `TYPE_MANUAL_REVIEW`, so `retention` re-spells no
 type string.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
+
 **THE ENTRY AND ITS BATCH FOLD AS ONE.** The `Projection` port gains `apply_generation(entry,
 batch)`, where `batch` is a function it calls at most once and which answers the entry's batch, that
 it is unresolved, or an error, which fails the fold. The port is ungated and compiles in the `core`
@@ -182,6 +192,8 @@ rebuild passes over an entry whose payload does not parse, as it passes over any
 rejects; a re-extracted batch event's fold error is a store failure that propagates, never passed
 over, since the batch is this binary's own extraction.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
+
 **THE REBUILD RE-EXTRACTS THE LEDGER.** `rigger setup`'s rebuild (`rebuild_owed_graph`,
 `src/cli/setup.rs`, over `Projector::rebuild`) folds the log's live selection as spec 101 decided
 and hands each `GenerationIngested` to the ledger fold behind `apply_generation` with a function
@@ -203,7 +215,11 @@ the stage names), split out as a bytes form that `load_workflow` keeps calling a
 then `workflowdef::extract_events`, else (no bytes, bytes that are not UTF-8, a failed parse) the
 empty batch, as `project_events` answers. `excluded` changes only a parsed `gc` batch. An empty
 batch keys no event, so it has no generation, resolves no entry and is never recorded
-(`batches_within` and `project_batches` skip it). Criterion 4 splits out `events::lower_file` and
+(`batches_within` and `project_batches` skip it). The sinks and the rebuild's resolver read every
+half through `ingest::extraction`, which answers no bytes with `gc`'s batch for no bytes whatever
+the prefix, so a deleted `gd` or `gw` file records that boundary batch and its fold retires the
+file; only bytes a half extracts nothing from leave the empty batch. Criterion 4 splits out
+`events::lower_file` and
 the `gd` and `gw` bytes forms, each keeping the caller it has, and criterion 5 owns the three total
 functions over them at their first production caller, the rebuild's resolver; the sinks'
 `ingest::entry_of_batch` reuses them. ONE function, `ingest::walk_exclusions(root)`
@@ -274,7 +290,8 @@ first, never the test. An unkeyed batch's generation is ONE grounder function,
 rebuild's resolver `ingest::resolve_entry` calls it from criterion 5, criterion 9 changes only
 `key_batch`'s flag and criterion 10 calls `key_batch` from `ingest::entry_of_batch`. Source 3
 resolves every entry recorded from an input the function maps to the no-bytes batch, whatever became
-of the bytes; for `gd` and `gw` it yields the empty batch, which resolves nothing. In the default
+of the bytes; for `gd` and `gw` it yields that same no-bytes batch (`ingest::extraction`), so a
+deleted `gd` or `gw` file's entry resolves too. In the default
 lane, source 1 is skipped only outside a git repository or when the batch process cannot start at
 all, decided ONCE before the first entry, so an entry recorded from uncommitted bytes resolves while
 the tree's file extracts to its generation. A batch process that fails after it started (it dies, or
@@ -301,17 +318,21 @@ key and so sees a keyed derived row with no `META_GROUP`: the identities whose c
 whose path `grounder::tree_bytes` hands bytes that its half's function maps to a batch that is not
 empty (every `gc` input is; not applied in the light lane, where no extraction compiles): each of
 them records an entry at its next default-lane ingest of the file (SINK OUTCOMES row 9, its fold a
-re-recording of row 13 included), and a gone or out-of-scope `gc` path it does not count may record
-one too, by rows 10 and 11, when an integration reindex names it; the number prints in the default
+re-recording of row 13 included), and a path it does not count records one too: a gone path the
+graph holds, under any prefix, at the next whole-project walk (row 10), and an out-of-scope `gc`
+path when an integration reindex names it (row 11); the number prints in the default
 lane with a note saying the counted identities record an entry at their next ingest (criteria 10 and
-12 assert it), and a zero prints without the note. A deleted `gc` file's identity holds `gc`'s batch
-for no bytes once the walk's deletion ingest recorded it, so that ingest retires the file's facts,
-at a rebuild as live; a `gd` or `gw` identity whose file is gone or extracts to the empty batch is
-named by no ingest, so live it keeps what its last fold left, and after a rebuild it holds what its
+12 assert it), and a zero prints without the note. A deleted file's identity, under any prefix,
+holds the batch for no bytes once the walk's retirement batch recorded it, so that ingest retires
+the file's facts, at a rebuild as live; a `gd` or `gw` identity whose file extracts to the empty
+batch is named by no ingest, so live it keeps what its last fold left, and after a rebuild it
+holds what its
 latest resolvable entry gave, none for a migrated identity with no earlier entry (WHAT A REBUILD
 REPRODUCES). An identity whose path holds no such file is not counted: what it holds after a
 rebuild, nothing for a gone file with no resolvable entry, is its correct state. The `applied` rows
 of shed positions are outside spec 101's comparison surface.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
 
 **WHAT A REBUILD REPRODUCES, stated once.** An entry no source resolves is as if absent from the
 fold. For every identity whose latest entry resolves, a rebuild holds the same live facts and
@@ -357,6 +378,8 @@ layer returns through the next ingest. Its instances are the only accepted diffe
   supersedes on any unequal generation with no position check, so the live graph holds the
   generation and facts of whichever folded last until the next walk finds the batch not current and
   records again, where a rebuild folds in log order and holds the latest by position.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
 
 **PERCEPTION IS A LEDGER ENTRY.** Both ingest sinks, the run's `RunCtx::emit_keyed_batch`
 (`crates/rigger-conductor/src/conductor.rs`) and `rigger graph build`'s `ingest_tree`
@@ -441,6 +464,8 @@ the ledger type, criterion 8's. Criteria 10 and 12 own the sinks, the run's and 
 build`'s; criterion 7 owns no entry in `read_current_run`'s slice and none in the seeded key set,
 and criterion 12 N on the graph build line.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
+
 **THE LEDGER ANSWERS THE INDEX-LAG ADVISORY.** `rigger validate`'s graph index-lag advisory
 (`read_graph_index_lag`, `src/cli/validate.rs`) reads the run stream through criterion 6's
 `ingest::perceived_generations` (THE REBUILD block), never the whole stream, and reads `graph.db` as
@@ -468,6 +493,8 @@ and calls `project_scoped_latest_generations` no more. The keys part of
 `project_scoped_latest_generations`'s answer then has no production reader, so criterion 13 removes
 it, and `reference_replay_keys` (`tests/common/fixtures/ingest.rs`) collects its keys test-side from
 criterion 13 on.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
 
 **MIGRATION CONVERTS THE BACKLOG IN PLACE.** `rigger reset --derived` becomes the one-time migration
 and refuses in this order: a live writer (`refuse_derived_reset_if_live`), the one refusal
@@ -694,6 +721,8 @@ that clause observes criterion 6's number, and the default lane's rebuild-equali
   in N, beside the existing fold-loss clause; and the bloat and index-lag advisories on standard
   error; no line reaches `rigger step`'s standard output.
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes what the generation ledger built, which the code store removes.
+
 **STATE PLACEMENT.** The ledger is the log (`GenerationIngested`); the class of a type is code
 (`retention`); `graph.db` is a projection. An in-memory set of ingested generations, a `.rigger/`
 marker or a cache of resolved blobs is NOT an implementation of any of them; `LoggedGenerations` is
@@ -721,21 +750,21 @@ graph build` keeps none and asks the store each batch).
 | # | Case | Entry recorded | Fold | Emit | In graph build's N | Memo afterwards |
 |---|---|---|---|---|---|---|
 | 1 | the batch's key names no identity (none from `key_batch` does) | none | none | fails, naming the key | no | unchanged |
-| 2 | the log side's group lookup, `Projection::rebuild_owed` or `Projection::current_generation` fails | none | none | fails, naming the failed read | no | looked up when the lookup answered and a read of the graph's side failed, else unchanged |
-| 3 | CURRENT: the log and the graph both hold the batch's generation, a lagging lowering at that generation included (criterion 13's advisory names it) | none | none | succeeds | no | looked up |
+| 2 | SUPERSEDED: the log side's group lookup, `Projection::rebuild_owed` or `Projection::current_generation` fails | none | none | fails, naming the failed read | no | looked up when the lookup answered and a read of the graph's side failed, else unchanged |
+| 3 | SUPERSEDED: CURRENT: the log and the graph both hold the batch's generation, a lagging lowering at that generation included (criterion 13's advisory names it) | none | none | succeeds | no | looked up |
 | 4 | the graph owes its rebuild and the log side holds the batch's generation | none | none | succeeds | no | looked up |
-| 5 | not current; the read of the bytes fails for a reason other than absence | none | none | fails, naming the read | no | looked up |
-| 6 | not current; the sink's own extraction is itself current (a lagging lowering whose bytes extract to the generation both sides hold) | none | none | succeeds | no | looked up |
-| 7 | not current; the own extraction of a `gd` or `gw` file is the empty batch (deleted, truncated or made unparsable since the walk) | none | none: the identity keeps what its last fold left | succeeds | no | looked up |
-| 8 | not current; hashing the bytes of an extraction it will record fails, a hash process that cannot start included | none | none | fails, naming the hash | no | looked up |
-| 9 | not current; bytes read and extracted to a batch neither empty nor current, a lagging lowering whose generation both sides do not hold included | the extraction's generation, the bytes' blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
-| 10 | not current; a `gc` path holding no file (an absent path reads as no bytes) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
-| 11 | not current; a `gc` path outside the walk's scope, handed no bytes (the `gd` walk never hands one) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
-| 12 | an appended entry the graph folds (outcome (c), resolved) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the extraction folded at the entry's position | succeeds | yes | the entry's generation |
-| 13 | an appended entry that is a re-recording (THE ENTRY block's outcome (b)) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the `applied` row only | succeeds | no | the entry's generation |
+| 5 | SUPERSEDED: not current; the read of the bytes fails for a reason other than absence | none | none | fails, naming the read | no | looked up |
+| 6 | SUPERSEDED: not current; the sink's own extraction is itself current (a lagging lowering whose bytes extract to the generation both sides hold) | none | none | succeeds | no | looked up |
+| 7 | SUPERSEDED: not current; the own extraction of a `gd` or `gw` file's bytes is the empty batch (truncated or made unparsable since the walk) | none | none: the identity keeps what its last fold left | succeeds | no | looked up |
+| 8 | SUPERSEDED: not current; hashing the bytes of an extraction it will record fails, a hash process that cannot start included | none | none | fails, naming the hash | no | looked up |
+| 9 | SUPERSEDED: not current; bytes read and extracted to a batch neither empty nor current, a lagging lowering whose generation both sides do not hold included | the extraction's generation, the bytes' blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
+| 10 | SUPERSEDED: not current; a path holding no file, under any prefix (an absent path reads as no bytes; the whole-project walk hands one to every identity the graph holds whose path it no longer sees) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
+| 11 | SUPERSEDED: not current; a `gc` path outside the walk's scope, handed no bytes (the `gd` walk never hands one) | the generation of `gc`'s batch for no bytes, no blob, the walk's flag | by the graph's answer, rows 12 to 15 | succeeds unless the append fails (row 16) | by its fold's row | the entry's generation unless the append fails |
+| 12 | SUPERSEDED: an appended entry the graph folds (outcome (c), resolved) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the extraction folded at the entry's position | succeeds | yes | the entry's generation |
+| 13 | SUPERSEDED: an appended entry that is a re-recording (THE ENTRY block's outcome (b)) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | the `applied` row only | succeeds | no | the entry's generation |
 | 14 | an appended entry the ledger form refuses before folding (the graph owes its rebuild) | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | none: refused, `graph.db` still owing | succeeds at both sinks; the run's sink names the debt through the folding store's injected log (`Deps::log`), as `append_and_fold_batch` says every lost fold, and `rigger graph build`'s line names it in its fold-loss clause, which names the build's first lost fold | yes | the entry's generation |
 | 15 | an appended entry whose ledger fold fails | the entry of rows 9 to 11 (its generation, its blob or none, the walk's flag) | none: failed, `graph.db` marked owing (`mark_lost_fold`) | succeeds at both sinks; the run's sink names the failure through the folding store's injected log (`Deps::log`), as `append_and_fold_batch` says every lost fold, and `rigger graph build`'s line names it in its fold-loss clause, which names the build's first lost fold | yes | the entry's generation |
-| 16 | the append fails | none | none | fails, naming the store's error | no | looked up |
+| 16 | SUPERSEDED: the append fails | none | none | fails, naming the store's error | no | looked up |
 
 In the light lane neither sink walks anything (THE LIGHT LANE), so no row is reached. Criterion 10's
 continuation names a fixture for every row but 15 and 16, row 13's the identity whose pre-ledger
@@ -839,6 +868,9 @@ pin its text:
   scope in the diff.
 
 ## Done when
+
+Criteria 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17 and 18 are SUPERSEDED by the code store: they
+test what the generation ledger built, which the code store removes.
 
 - [ ] a test proves THE CLASSES ARE ONE TABLE: every event type a `TYPE_` constant under `src/` or `crates/` declares sits in exactly one class list, and folding each episodic type leaves the live projection unchanged,
   asserted by a source scan under `tests/` and a fold test in

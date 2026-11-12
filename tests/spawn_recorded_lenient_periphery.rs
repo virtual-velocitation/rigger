@@ -19,7 +19,7 @@
 //! file drives that public surface directly, as an external caller of the `rigger` library
 //! would (never through `console::palette_commands`), closing that gap.
 
-mod common;
+use crate::common;
 
 use rigger::eventstore::Event;
 use rigger::spawn::SpawnEvent;

@@ -982,11 +982,10 @@ pub(crate) mod tests {
         // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the upstream
         // tree-sitter-javascript tags.scm tags a `const`/`let` ONLY when its value is an
         // arrow/function expression, or an ES `export X = <literal>` assignment-form export -
-        // a syntax this project's plain CommonJS-style `workflows/rigger.js` never uses. A
-        // plain top-level constant therefore never became a graph entity at all - exactly
-        // the gap docs/audit/2026-09-graph-vs-grep.md questions 5 and 8 measured against that
-        // file's own `OUTER_WALL_CLOCK_SEC` (a ternary) and `FRESH` (a boolean coercion)
-        // constants. Both must now extract as `Kind::Constant` definitions.
+        // a syntax plain CommonJS-style scripts never use. A plain top-level constant
+        // therefore never became a graph entity at all - such as a ternary-valued
+        // `OUTER_WALL_CLOCK_SEC` or a boolean-coercion `FRESH`. Both must now extract as
+        // `Kind::Constant` definitions.
         let src = "const OUTER_WALL_CLOCK_SEC = Number(x) > 0 ? Number(x) : 900\nconst FRESH = !!a.fresh\n";
         let fs = crate::symbol_index::extracted("js", src);
         assert!(
@@ -1058,59 +1057,12 @@ pub(crate) mod tests {
         );
     }
 
-    /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
-    /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
-    /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
-    /// STRUCTURE), and one stamped `ts-tags-v4`, the generation before a reference carried its
-    /// `ref_kind` (spec 117); one stamped `ts-tags-v5` is current and loads.
-    #[test]
-    fn a_persisted_ts_tags_v2_index_is_not_current() {
-        use crate::grounder::symbols::model::SymbolIndex;
-        use crate::grounder::symbols::store;
-        let persisted = |grammar: &str| -> (bool, bool) {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().to_str().unwrap();
-            crate::symbol_index::persist_stamped(root, grammar, r#"{"files":{}}"#);
-            let index: SymbolIndex =
-                serde_json::from_slice(&std::fs::read(store::index_path(root)).unwrap()).unwrap();
-            (index.is_current(), store::load(root).is_some())
-        };
-        for (grammar, current) in [
-            ("ts-tags-v2", false),
-            ("ts-tags-v3", false),
-            ("ts-tags-v4", false),
-            ("ts-tags-v5", true),
-        ] {
-            let reading = if current {
-                "is current and loads"
-            } else {
-                "is not current and loads as absent"
-            };
-            assert_eq!(
-                persisted(grammar),
-                (current, current),
-                "a {grammar} index {reading}"
-            );
-        }
-    }
-
-    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
-    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
-    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
-    /// persisted before the change loads as absent. The fixtures set every part a persisted index
-    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves the digest.
-    #[test]
-    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
-        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        use crate::grounder::symbols::store;
-        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
-        const GOLDEN: [(&str, &str); 8] = [
-            (
-                "rs",
-                "\
+    /// The golden fixtures: an (extension, source) for each registered grammar and query and a
+    /// malformed Rust file. The extraction golden and the facts golden both digest them.
+    pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
+        (
+            "rs",
+            "\
 use crate::store::Ledger;
 pub const QUOTA_CAP: u32 = 3;
 pub struct Kestrel { size: u32 }
@@ -1132,59 +1084,59 @@ mod tests {
     fn t() { super::helper(1); }
 }
 ",
-            ),
-            ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
-            (
-                "cs",
-                "\
+        ),
+        ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
+        (
+            "cs",
+            "\
 class Box {
     const int Cap = 3;
     int Width() { return Calc(Cap); }
     static int Calc(int n) { return n; }
 }
 ",
-            ),
-            (
-                "ts",
-                "\
+        ),
+        (
+            "ts",
+            "\
 const LIMIT = 3;
 class Box {
     width(): number { return calc(LIMIT); }
 }
 function calc(n: number): number { return n; }
 ",
-            ),
-            (
-                "tsx",
-                "\
+        ),
+        (
+            "tsx",
+            "\
 const LABEL = \"x\";
 function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
 ",
-            ),
-            (
-                "js",
-                "\
+        ),
+        (
+            "js",
+            "\
 const LIMIT = 3;
 class Box {
     width() { return calc(LIMIT); }
 }
 function calc(n) { return n; }
 ",
-            ),
-            (
-                "go",
-                "\
+        ),
+        (
+            "go",
+            "\
 package p
 const Limit = 3
 type T struct{}
 func (T) Width() int { return calc(Limit) }
 func calc(n int) int { return n }
 ",
-            ),
-            (
-                "py",
-                "\
+        ),
+        (
+            "py",
+            "\
 LIMIT = 3
 class Box:
     def width(self):
@@ -1192,9 +1144,22 @@ class Box:
 def calc(n):
     return n
 ",
-            ),
-        ];
-        let extracted: Vec<(&str, FileSymbols)> = GOLDEN
+        ),
+    ];
+
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
+    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
+    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
+    /// extraction records fails here until the tag is bumped and the pair re-pinned, and a snapshot
+    /// of the code store written before the change is not trusted. The fixtures set every part a
+    /// snapshot stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind included, so a change to any of them moves the digest.
+    #[test]
+    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
+        let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
             .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
             .collect();
@@ -1246,7 +1211,8 @@ def calc(n):
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }
-        let digest = store::content_hash(&serde_json::to_string(&extracted).unwrap());
+        let digest =
+            crate::grounder::symbols::content_hash(&serde_json::to_string(&extracted).unwrap());
         assert_eq!(
             (GRAMMAR_TAGS_VERSION, digest.as_str()),
             PINNED,

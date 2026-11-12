@@ -14,26 +14,26 @@
 //! NOT OWNED HERE: the refusal a new run meets without a clean critique (criterion 2), and the
 //! plan-critique stop on a spec defect (criterion 5).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 
 use common::cli::{
-    assert_selected_server, critique_finding_id, emit, no_result_failure, pin_identity,
-    read_run_events, recorded_progress, resolve, rigger_file, run_payloads, run_rigger,
-    run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
-    seed_critique_spawn, seed_on_the_run, seed_run_events, seed_store, temp_project,
-    temp_repoless_project, write_spec_project,
+    assert_selected_server, critique_finding_id, declare_grep_guard, emit, no_result_failure,
+    pin_identity, read_run_events, recorded_progress, resolve, rigger_file, run_payloads,
+    run_rigger, run_rigger_envs, run_rigger_ok, run_stream_identity, seed_a_run, seed_critique,
+    seed_critique_spawn, seed_on_the_run, seed_store, temp_project, temp_repoless_project,
+    write_spec_project,
 };
 use common::fixtures::{
-    composed_system_prompt, git_ok, held_event, temp_git_project_with_commit, ADVISORY,
-    CLEAN_CRITIQUE, NO_VERDICT,
+    composed_system_prompt, git_ok, held_event, sorted_dir_names, temp_git_project_with_commit,
+    write_helper_copies, HelperFile, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT, OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, hold_critique_stub, hook_words,
-    stub_path, write_critique_stub_reporting, write_critique_stub_then, CRITIQUE_CONN,
-    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
+    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
+    hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
+    write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -65,6 +65,12 @@ const CRITIC: &str = "---\nid: critic\nmodel_ladder: [sonnet, opus]\ntools: [Rea
      Agent]\nisolation: none\n---\nYou are the CRITIC-PERSONA adversary.\n";
 const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nJudge. \
      End with {\"verdict\":\"approve\"}.\n";
+
+/// The critic's `--allowed-tools`: its replacement tools, which already hold every rigger tool
+/// the embedded helpers and the operator's copies declare, then the host's own grant.
+const CRITIC_PRE_APPROVAL: &str =
+    "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+     mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
 
 const SPEC_REL: &str = "specs/9-demo.md";
 const SPEC: &str = "# 9 - A demo spec\n\n## Design\n\nThe widget renders.\n\n## Done when\n\n\
@@ -188,38 +194,75 @@ fn stub_then(critique: &str, later: &str) -> (tempfile::TempDir, String) {
 
 /// Given a critique, when its critic launches, then its spawn-bound server runs the running
 /// executable, and the launch carries the write guard rooted at the critic's working directory and
-/// its spawn scratch container, and one `StopFailure` entry per category for its own spawn id, all
-/// on that same executable, beside the deny the spawn's own settings hold.
+/// its spawn scratch container, the session's grep guard exactly when the workflow declares
+/// `defaults.grep_guard`, and one `StopFailure` entry per category for its own spawn id, all on
+/// that same executable, beside the deny the spawn's own settings hold.
 #[test]
 fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
-    let dir = temp_project();
-    let root = std::fs::canonicalize(dir.path()).unwrap();
-    scaffold(&root, CRITIC_WORKFLOW);
-    let scratch = root.join("scratch");
-    let (work, path) = stub(REJECT);
-    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
-    assert!(ok, "the critique is recorded; stderr:\n{err}");
+    for grep_guard in [false, true] {
+        let dir = temp_project();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        scaffold(&root, CRITIC_WORKFLOW);
+        if grep_guard {
+            declare_grep_guard(&root);
+        }
+        let scratch = root.join("scratch");
+        let (work, path) = stub(REJECT);
+        let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+        assert!(ok, "the critique is recorded; stderr:\n{err}");
 
-    let hash = critique_hash(SPEC);
-    let spawn = critique_spawn_id(&hash, 0);
-    let container =
-        spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
-    let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
-    let argv = critique_stub_argv(work.path());
-    let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
-    let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
-    assert_eq!(
-        mcp["mcpServers"]["rigger"],
-        serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn]}),
-        "the critic's spawn-bound server runs the running executable"
-    );
-    let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-    assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots);
-    assert_eq!(
-        settings["permissions"]["deny"].as_array().map(Vec::len),
-        Some(CRITIC_DENIED_TOOLS.len()),
-        "the spawn's own settings survive the merge: {settings}"
-    );
+        let hash = critique_hash(SPEC);
+        let spawn = critique_spawn_id(&hash, 0);
+        let container =
+            spawn_scratch_path(scratch.to_str().unwrap(), &critique_unit(&hash), &spawn).unwrap();
+        let roots = [root, container].map(|root| root.to_str().unwrap().to_string());
+        let argv = critique_stub_argv(work.path());
+        let bin = std::fs::canonicalize(common::rigger_bin()).unwrap();
+        let mcp: Value = serde_json::from_str(flag_value(&argv, "--mcp-config")).unwrap();
+        assert_eq!(
+            mcp["mcpServers"]["rigger"],
+            serde_json::json!({"command": bin, "args": ["mcp", "--spawn", spawn], "alwaysLoad": true}),
+            "the critic's spawn-bound server runs the running executable, its tools loaded up front"
+        );
+        let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
+        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, grep_guard);
+        assert_eq!(
+            settings["permissions"]["deny"].as_array().map(Vec::len),
+            Some(CRITIC_DENIED_TOOLS.len()),
+            "the spawn's own settings survive the merge: {settings}"
+        );
+    }
+}
+
+/// Given a project holding the operator's own copies of both fan-out helpers, or of neither, when
+/// its critic launches, then the launch defines the helpers from those copies, else from the
+/// embedded text, and its pre-approval holds the rigger tools they declare once each among the
+/// critic's own: the operator's copy is the definition, resolved at the critique's root.
+#[test]
+fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
+    let rows: [(&str, &[HelperFile]); 2] =
+        [("no copy", &[]), ("both copies", &OPERATOR_HELPER_COPIES)];
+    for (name, copies) in rows {
+        let dir = temp_project();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        scaffold(&root, CRITIC_WORKFLOW);
+        write_helper_copies(&root, copies);
+        let (work, path) = stub(REJECT);
+        let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
+        assert!(ok, "{name}: the critique is recorded; stderr:\n{err}");
+
+        let argv = critique_stub_argv(work.path());
+        assert_eq!(
+            (
+                serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
+                flag_value(&argv, "--allowed-tools"),
+            ),
+            (handed_helpers_agents_json(copies), CRITIC_PRE_APPROVAL),
+            "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
+             ones, and its tools already hold the rigger tools either declares, so the \
+             pre-approval adds only the host's own"
+        );
+    }
 }
 
 /// Spec 105's stray record: given a project with a run, when a critic's session ends on an API
@@ -304,8 +347,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
-         mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch",
+        CRITIC_PRE_APPROVAL,
         "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
          the deny below wins over"
     );
@@ -1840,18 +1882,7 @@ fn critique_is_a_known_command_with_its_usage_line() {
 // handed to the critic from a configured rung and over an ambient one.
 // ---------------------------------------------------------------------------------------------
 
-/// The names under the project's `.rigger/` directory, sorted.
-fn rigger_dir_names(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(root.join(rigger::config::RIGGER_DIR))
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
-
-/// Given a project, when the operator hands `rigger run`, `rigger workflow` or `rigger critique` a
+/// Given a project, when the operator hands `rigger run` or `rigger critique` a
 /// second spec path or an unknown flag - before or after the spec - then each verb refuses through
 /// the one spec-positional rule they share: exactly one stderr line naming the verb and the
 /// argument, a non-zero exit, nothing on stdout and nothing written into the project.
@@ -1866,21 +1897,15 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
         ("PATH", path.as_str()),
         ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
     ];
-    let before = rigger_dir_names(root);
+    let rigger_dir = root.join(rigger::config::RIGGER_DIR);
+    let before = sorted_dir_names(&rigger_dir);
     for (args, refusal) in [
         (
             ["run", SPEC_REL, "specs/other.md"],
             "run: unexpected second positional argument \"specs/other.md\"",
         ),
         (["run", "--frob", SPEC_REL], "run: unknown flag \"--frob\""),
-        (
-            ["workflow", SPEC_REL, "specs/other.md"],
-            "workflow: unexpected second positional argument \"specs/other.md\"",
-        ),
-        (
-            ["workflow", SPEC_REL, "--frob"],
-            "workflow: unknown flag \"--frob\"",
-        ),
+        (["run", SPEC_REL, "--frob"], "run: unknown flag \"--frob\""),
         (
             ["critique", SPEC_REL, "--frob"],
             "critique: unknown flag \"--frob\"",
@@ -1898,7 +1923,7 @@ fn every_spec_taking_verb_refuses_a_second_spec_and_an_unknown_flag_through_the_
         );
     }
     assert_eq!(
-        rigger_dir_names(root),
+        sorted_dir_names(&rigger_dir),
         before,
         "a refused argument list writes nothing into the project"
     );
@@ -2116,41 +2141,6 @@ fn two_requests_parked_under_one_spawn_id_make_the_next_attempt_two() {
         ]
     );
     assert_eq!(review_findings(root), reject_copies(SPEC, 2, SPEC_REL));
-}
-
-/// Given one spawn id parked twice on the project's run stream with different prompts, another
-/// spawn parked between the two parks, when a worker fetches each spawn's prompt, then the run's
-/// fold over the one per-event request decode answers the re-parked id with the request parked
-/// last and the other spawn with its own: the critique count reads every park, while the run's
-/// fold collapses a re-parked id to its last request.
-#[test]
-fn a_spawn_id_parked_twice_on_the_run_answers_with_the_request_parked_last() {
-    let dir = temp_project();
-    let root = dir.path();
-    let parked = |id: &str, prompt: &str| {
-        json!({"id": id, "unit": "u", "stage": "implement", "prompt": prompt}).to_string()
-    };
-    let first = parked("u/implementer#0", "the first park");
-    let other = parked("u/sdet-author#0", "the other spawn");
-    let last = parked("u/implementer#0", "the last park");
-    seed_run_events(
-        root,
-        &[
-            (TYPE_SPAWN_REQUESTED, &first),
-            (TYPE_SPAWN_REQUESTED, &other),
-            (TYPE_SPAWN_REQUESTED, &last),
-        ],
-    );
-    assert_eq!(
-        run_rigger_ok(root, &["prompt", "u/implementer#0"]),
-        "the last park\n",
-        "a re-parked id answers with the request written last"
-    );
-    assert_eq!(
-        run_rigger_ok(root, &["prompt", "u/sdet-author#0"]),
-        "the other spawn\n",
-        "a spawn parked between the two parks keeps its own request"
-    );
 }
 
 /// Given a project with no git repository holding critique-named liveness and transcript

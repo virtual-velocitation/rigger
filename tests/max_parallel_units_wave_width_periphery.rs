@@ -36,7 +36,11 @@
 //! `occupancy_survives_a_crash_resume_...` unit test, exactly as the spec's own Done-when says
 //! ("pinned at `run_wave`").
 
+use crate::common;
+
 use std::path::Path;
+
+use common::fixtures::test_spawn_host;
 
 use rigger::conductor::{run, Deps};
 use rigger::config::{self, AgentDef, Config, Stage};
@@ -135,6 +139,7 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     // Three INDEPENDENT stages (`needs` empty on all three): `wave_ready` offers every one
@@ -167,8 +172,10 @@ fn max_parallel_units_bounds_real_concurrent_agent_spawns_through_a_real_conduct
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
 
     run(&cfg, &deps)

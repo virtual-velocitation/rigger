@@ -6,8 +6,12 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
-use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
-use crate::grounder::symbols::events::kind_str;
+use crate::contextgraph::{
+    CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
+    CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
+    CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE,
+    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
+};
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
@@ -1951,10 +1955,9 @@ fn token_tree_facts(tt: tree_sitter::Node, source: &[u8]) -> (bool, bool) {
 /// EXCLUSIVELY from `test`/`not`/`all`/`any`, naming no other cfg atom (a feature flag,
 /// `target_os`, a bare `debug_assertions`, ...) anywhere in it. Computed TOGETHER in one minimal
 /// recursive descent over the cfg predicate grammar `ident | not(P) | all(P, ...) | any(P, ...)`,
-/// never as two separate walks over the identical shape (a round-6 review finding /
-/// `docs/audit`'s own duplication scan: an earlier version of this fix shipped "names test" and
-/// "is pure" as two near-identical functions, exactly the duplicate-implementation shape this
-/// repo's own audit exists to catch) - `not(P)`'s "names test" answer can only be obtained by
+/// never as two separate walks over the identical shape (a round-6 review finding: an earlier
+/// version of this fix shipped "names test" and "is pure" as two near-identical functions) -
+/// `not(P)`'s "names test" answer can only be obtained by
 /// inverting P's own "names test" answer WHEN P is ALSO pure, so the `not` arm needs both facts
 /// about P at once:
 /// - a bare identifier (or a `key = "value"` attribute, e.g. `feature = "x"` - the leading
@@ -2089,22 +2092,6 @@ fn enclosing_def(
         .map(|(i, _)| i)
 }
 
-/// Where [`locate_extent`] bounds a definition's body. Each variant counts only the definitions
-/// at the recorded path, when one is given ([`Recorded::path`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Extent {
-    /// The 1-based, inclusive line range `[start, end]` of the definition's whole construct, its
-    /// body included: `start` the recorded line when a definition still sits there, else the live
-    /// line a drifted one healed to.
-    Bounded { start: u32, end: u32 },
-    /// No production definition of the name and kind sits at the recorded line or anywhere else
-    /// in the file, nor a lone one of the name at that line (deleted, not merely moved).
-    Missing,
-    /// The recorded line drifted and production definitions of the name and kind sit at this many
-    /// distinct lines, so which one moved cannot be told.
-    Ambiguous(usize),
-}
-
 /// A definition as its graph node records it, the one [`locate_extent`] bounds.
 #[derive(Clone, Copy, Debug)]
 pub struct Recorded<'a> {
@@ -2121,28 +2108,12 @@ pub struct Recorded<'a> {
 
 /// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
 /// runs over `source` under the INJECTED grammar and tags query, exactly as the code graph is
-/// extracted, and the `recorded` definition - named `name`, of kind `kind`, recorded at `line`,
-/// and, when its `path` is given, at that id path ([`Def::path`]), so a drifted `T::new` never
-/// heals onto `U::new` - is found among the production definitions - those not `is_test`, as
-/// `extract_events` drops them, since the graph holds no other - by three tiers, in order, its
-/// [`Def::end_line`] bounding the body, every tier reading only the definitions of the name at
-/// the given path:
-///
-/// 1. name, kind and line: the recorded site still holds it; when several do, the widest
-///    `end_line` wins.
-/// 2. name and line, the kind ignored, when exactly one definition matches: a definition whose
-///    kind changed in place since the last ingest still bounds at its recorded line.
-/// 3. name and kind at any line (spec 92): the recorded line drifted, and healing is safe only
-///    when one distinct line holds them (the widest `end_line` there winning); more lines are
-///    [`Extent::Ambiguous`], none [`Extent::Missing`].
-///
-/// The kind is compared through `kind_str`, so a field beside a same-named fn, or a variant
-/// inside its same-named enum, never widens or blocks a tier-1 or tier-3 match; at the recorded
-/// line tier 2 ignores the kind, so a lone same-named field there bounds the body when it sits at
-/// the path sought: with no `path` given, any such field; with one, only a field whose own path is
-/// that path - a field under a named container (`S.h`) never matches a function's (`h`), while a
-/// file-level field, under an anonymous class or a binding the name filter drops (Go's `var _`),
-/// has its leaf as its path and does. An `Err` is a grammar or query that cannot run over the
+/// extracted, and the 1-based, inclusive last line of the `recorded` definition's whole construct
+/// is the widest [`Def::end_line`] among the production definitions - those not `is_test`, as the
+/// graph holds no other - named `name`, of kind `kind`, at `line` and, when its `path` is given,
+/// at that id path ([`Def::path`]). The kind is compared through `kind_str`, so a field beside a
+/// same-named fn, or a variant inside its same-named enum, never widens the bound. `None` when no
+/// such definition sits at the line; an `Err` is a grammar or query that cannot run over the
 /// source.
 pub fn locate_extent(
     source: &str,
@@ -2150,7 +2121,7 @@ pub fn locate_extent(
     ts_language: &tree_sitter::Language,
     tags_query: &str,
     recorded: Recorded,
-) -> Result<Extent, String> {
+) -> Result<Option<u32>, String> {
     let Recorded {
         name,
         path,
@@ -2158,35 +2129,18 @@ pub fn locate_extent(
         line,
     } = recorded;
     let symbols = extract(source, lang, ts_language, tags_query)?;
-    let named: Vec<&Def> = symbols
+    Ok(symbols
         .defs
         .iter()
-        .filter(|d| !d.is_test && d.name == name && path.is_none_or(|path| d.path == path))
-        .collect();
-    // The widest end of each line holding a definition of the name and kind: tier 1 reads the
-    // recorded line's, tier 3 the one line's when one is all there is.
-    let mut of_kind: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-    for d in named.iter().filter(|d| kind_str(d.kind) == kind) {
-        let end = of_kind.entry(d.line).or_insert(d.end_line);
-        *end = (*end).max(d.end_line);
-    }
-    if let Some(&end) = of_kind.get(&line) {
-        return Ok(Extent::Bounded { start: line, end });
-    }
-    if let [only] = named.iter().filter(|d| d.line == line).collect::<Vec<_>>()[..] {
-        return Ok(Extent::Bounded {
-            start: line,
-            end: only.end_line,
-        });
-    }
-    Ok(match of_kind.len() {
-        0 => Extent::Missing,
-        1 => {
-            let (start, end) = of_kind.into_iter().next().expect("one line");
-            Extent::Bounded { start, end }
-        }
-        n => Extent::Ambiguous(n),
-    })
+        .filter(|d| {
+            !d.is_test
+                && d.name == name
+                && path.is_none_or(|path| d.path == path)
+                && kind_str(d.kind) == kind
+                && d.line == line
+        })
+        .map(|d| d.end_line)
+        .max())
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
@@ -2210,10 +2164,93 @@ fn line_of_byte(line_starts: &[usize], byte: usize) -> u32 {
         .saturating_sub(1) as u32
 }
 
+/// The lowercase, stable string for a rigger definition `Kind`, carried on a definition's facts
+/// and the code-entity node's `kind` attr. A rigger-owned rendering, never a grammar tag.
+pub(crate) fn kind_str(k: Kind) -> &'static str {
+    match k {
+        Kind::Function => CODE_KIND_FUNCTION,
+        Kind::Method => CODE_KIND_METHOD,
+        Kind::Type => CODE_KIND_TYPE,
+        Kind::Trait => CODE_KIND_TRAIT,
+        Kind::Impl => CODE_KIND_IMPL,
+        Kind::Module => CODE_KIND_MODULE,
+        Kind::Constant => CODE_KIND_CONSTANT,
+        Kind::Constructor => CODE_KIND_CONSTRUCTOR,
+        Kind::Macro => CODE_KIND_MACRO,
+        Kind::Declaration => CODE_KIND_DECLARATION,
+        Kind::Static => CODE_KIND_STATIC,
+        Kind::Variant => CODE_KIND_VARIANT,
+        Kind::Field => CODE_KIND_FIELD,
+        Kind::Variable => CODE_KIND_VARIABLE,
+        Kind::Property => CODE_KIND_PROPERTY,
+        Kind::Other => CODE_KIND_OTHER,
+    }
+}
+
+/// The lowercase, stable string for a rigger `Lang`, carried on a file's facts and the
+/// file / entity `lang` attr.
+pub(crate) fn lang_str(l: Lang) -> &'static str {
+    match l {
+        Lang::Rust => "rust",
+        Lang::CSharp => "csharp",
+        Lang::Js => "js",
+        Lang::Ts => "ts",
+        Lang::Go => "go",
+        Lang::Python => "python",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
+
+    /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
+    /// existed already holds, none renamed by reading it from a constant and none swapped for
+    /// another, and the kinds spec 116 adds (the caller rule's at criterion 2, the Rust data
+    /// definitions' at 6, Go's variable at 7, C#'s property at 8).
+    #[test]
+    fn each_kind_lowers_to_its_kind_string() {
+        assert_eq!(
+            [
+                Kind::Constant,
+                Kind::Function,
+                Kind::Impl,
+                Kind::Method,
+                Kind::Module,
+                Kind::Other,
+                Kind::Trait,
+                Kind::Type,
+                Kind::Constructor,
+                Kind::Macro,
+                Kind::Declaration,
+                Kind::Static,
+                Kind::Variant,
+                Kind::Field,
+                Kind::Variable,
+                Kind::Property,
+            ]
+            .map(kind_str),
+            [
+                "constant",
+                "function",
+                "impl",
+                "method",
+                "module",
+                "other",
+                "trait",
+                "type",
+                "constructor",
+                "macro",
+                "declaration",
+                "static",
+                "variant",
+                "field",
+                "variable",
+                "property",
+            ]
+        );
+    }
 
     #[test]
     fn extracts_a_rust_definition_and_a_reference() {
@@ -3692,9 +3729,9 @@ class K
         );
     }
 
-    /// Where [`locate_extent`] bounds the Rust definition named `name` of kind `kind` recorded at
-    /// `line` in `source`, at no path, under the registered Rust grammar and query.
-    fn located(source: &str, name: &str, kind: Kind, line: u32) -> Extent {
+    /// The last line [`locate_extent`] bounds the Rust definition named `name` of kind `kind`
+    /// recorded at `line` in `source` to, at no path, under the registered Rust grammar and query.
+    fn located(source: &str, name: &str, kind: Kind, line: u32) -> Option<u32> {
         let entry = crate::symbol_index::registered("rs");
         locate_extent(
             source,
@@ -3712,58 +3749,32 @@ class K
     }
 
     crate::test_cases! {
-        /// Tier 1: two definitions of the recorded name and kind at the recorded line bound by the
-        /// wider.
-        two_tier_one_matches_bound_by_the_wider: assert_eq!(
+        /// Two definitions of the recorded name and kind at the recorded line bound by the wider.
+        two_matches_bound_by_the_wider: assert_eq!(
             located("fn a() {} fn a() {\n}\n", "a", Kind::Function, 1),
-            Extent::Bounded { start: 1, end: 2 }
+            Some(2)
         );
-        /// Tier 1 reads the kind: a variant inside its same-named enum, both on the recorded line,
-        /// bounds to the variant, never the wider enum.
+        /// The bound reads the kind: a variant inside its same-named enum, both on the recorded
+        /// line, bounds to the variant, never the wider enum.
         a_variant_inside_its_same_named_enum_bounds_to_the_variant: assert_eq!(
             located("enum V { V {\n    a: u8,\n},\n}\n", "V", Kind::Variant, 1),
-            Extent::Bounded { start: 1, end: 3 }
+            Some(3)
         );
-        /// Tier 2: a definition whose kind changed at its recorded name and line bounds there,
-        /// beside a same-named definition of the recorded kind elsewhere in the file.
-        a_definition_whose_kind_changed_in_place_bounds_at_its_recorded_line: assert_eq!(
-            located(crate::extent_sources::KIND_CHANGED_IN_PLACE_SOURCE, "f", Kind::Function, 1),
-            Extent::Bounded { start: 1, end: 2 }
+        /// Two same-named definitions of other kinds at the recorded line bound nothing.
+        two_other_kinds_at_the_recorded_line_bound_nothing: assert_eq!(
+            located("struct g {} const g: u8 = 0;\n", "g", Kind::Function, 1),
+            None
         );
-        /// Tier 2 takes exactly one: two same-named definitions of other kinds at the recorded line
-        /// fall to tier 3, which heals to the one of the recorded kind.
-        two_other_kinds_at_the_recorded_line_fall_to_the_third_tier: assert_eq!(
-            located("struct g {} const g: u8 = 0;\nfn g() {\n}\n", "g", Kind::Function, 1),
-            Extent::Bounded { start: 2, end: 3 }
+        /// A `#[cfg(test)]` definition at the recorded line bounds nothing: the graph holds
+        /// production code only.
+        a_cfg_test_definition_bounds_nothing: assert_eq!(
+            located("#[cfg(test)]\nfn x() {}\n", "x", Kind::Function, 2),
+            None
         );
-        /// Tier 3: a drifted fn beside a same-named field heals to the fn, the field never making
-        /// the name ambiguous.
-        a_drifted_fn_beside_a_same_named_field_heals: assert_eq!(
-            located(crate::extent_sources::FN_BESIDE_SAME_NAMED_FIELD_SOURCE, "h", Kind::Function, 1),
-            Extent::Bounded { start: 5, end: 6 }
-        );
-        /// Tier 3 reads production definitions only: a drifted fn beside its `#[cfg(test)]` twin
-        /// heals to the production one.
-        a_drifted_production_fn_beside_a_cfg_test_twin_bounds_to_the_production_one: assert_eq!(
-            located("\nfn x() {\n}\n#[cfg(test)]\nfn x() {}\n", "x", Kind::Function, 1),
-            Extent::Bounded { start: 2, end: 3 }
-        );
-        /// Tier 3 refuses an ambiguous name: two drifted definitions of the name and kind at two
-        /// lines are left unbounded.
-        an_ambiguous_drifted_name_is_left_unbounded: assert_eq!(
-            located("fn other() {}\nfn dup() {}\nfn dup() {}\n", "dup", Kind::Function, 1),
-            Extent::Ambiguous(2)
-        );
-        /// Two same-named definitions of other kinds at the recorded line, and none of the recorded
-        /// kind anywhere, are missing: tier 2 takes exactly one, tier 3 finds no line.
-        two_other_kinds_at_the_recorded_line_and_none_of_its_kind_are_missing: assert_eq!(
-            located(crate::extent_sources::TWO_OTHER_KINDS_AT_ONE_LINE_SOURCE, "g", Kind::Function, 1),
-            Extent::Missing
-        );
-        /// A name no definition carries anywhere in the file is missing.
-        a_name_defined_nowhere_is_missing: assert_eq!(
+        /// A name no definition carries anywhere in the file bounds nothing.
+        a_name_defined_nowhere_bounds_nothing: assert_eq!(
             located("fn other() {}\n", "gone", Kind::Function, 1),
-            Extent::Missing
+            None
         );
     }
 

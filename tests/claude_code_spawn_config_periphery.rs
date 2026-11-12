@@ -8,15 +8,21 @@
 //! real `claude`, which records the exact argv it was started with to a file this test owns
 //! (outside the worktree) - so every assertion reads what really reached the child process.
 //! The expected values are rebuilt here from the same `hooks` installers `rigger setup` uses and
-//! from the committed `.claude/agents/*.md`, never a hand copy.
+//! from the committed `.claude/agents/*.md`, never a hand copy: each launch's host is resolved at
+//! the repository root by the production resolver, so those committed files are the operator's
+//! helper copies it hands over.
 //!
-//! Also pinned here, because both are what an operator's own session sees of the same concern:
+//! Also pinned here, because each is what an operator's own session sees of the same concern:
 //! `rigger prime` (the SessionStart hook's command) exits quietly when its reader closes the
-//! pipe, and `rigger validate` advises when the checkout carries none of these hooks.
+//! pipe, `rigger validate` advises when the checkout carries none of these hooks, and it fails
+//! naming an operator's helper copy that does not parse.
 
-mod common;
-use common::cli::{run_rigger, setup_ok, temp_project};
-use common::fixtures::{git_commit_all, git_out, implementer_opts, temp_git_project_with_commit};
+use crate::common;
+use common::cli::{failure_line, nameless_copy_refusal, run_rigger, setup_ok, temp_project};
+use common::fixtures::{
+    git_commit_all, git_out, implementer_opts, temp_git_project_with_commit, write_helper_copy,
+    NAMELESS_HELPER_COPY, OPERATOR_HELPER_COPIES,
+};
 use common::repo::repo_root;
 
 use std::path::Path;
@@ -72,6 +78,8 @@ fn launch_handing(
         hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
+    opts.host = hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root())
+        .expect("the repository's helper copies resolve");
     opts.dir = dir.to_string_lossy().into_owned();
     opts.settings_json = settings_json.to_string();
     opts.env = vec![(
@@ -129,14 +137,12 @@ fn flag_json(argv: &[String], flag: &str) -> Value {
     serde_json::from_str(value).unwrap_or_else(|e| panic!("{flag} is not JSON ({e}): {value}"))
 }
 
-/// The session settings `rigger setup` installs into an empty `.claude/settings.json`, merged
-/// onto `base` by the same `hooks` installers: the SessionStart prime hook, the PreToolUse
-/// grep-guard and the status line.
+/// The session settings a spawn whose host leaves the grep-guard off carries, as every launch
+/// here does, merged onto `base` by the same `hooks` installers `rigger setup` runs: the
+/// SessionStart prime hook and the status line.
 fn installed_session_settings(base: &[u8]) -> Value {
     let primed = hooks::install_session_start(base, "rigger prime").unwrap();
-    let guarded =
-        hooks::install_pretooluse_hook(&primed, "Grep|Bash", "rigger grep-guard").unwrap();
-    let with_line = hooks::install_status_line(&guarded, "rigger status --line").unwrap();
+    let with_line = hooks::install_status_line(&primed, "rigger status --line").unwrap();
     serde_json::from_slice(&with_line).unwrap()
 }
 
@@ -171,13 +177,17 @@ fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
 /// and `--strict-mcp-config` keeps any other configuration out.
 fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
-    let installed =
-        hooks::install_mcp_server(b"", "rigger", RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID])
-            .unwrap();
+    let installed = hooks::spawn_mcp_config(RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID]).unwrap();
     assert_eq!(
         flag_json(argv, "--mcp-config"),
         serde_json::from_slice::<Value>(&installed).unwrap(),
         "the spawn's MCP config is the installer-built spawn-bound server"
+    );
+    assert_eq!(
+        flag_json(argv, "--mcp-config")["mcpServers"]["rigger"]["alwaysLoad"],
+        Value::Bool(true),
+        "the spawn loads rigger's tools into its prompt up front, never behind the host's tool \
+         search"
     );
     assert!(
         argv.iter().any(|a| a == "--strict-mcp-config"),
@@ -347,7 +357,7 @@ const HOOKS_ADVISORY: &str = "does not carry rigger's session hooks";
 fn validate_advises_when_the_checkout_has_no_hooks_installed() {
     let proj = temp_project();
     let root = proj.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    setup_ok(root, &[]);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "validate succeeds on a set-up project; stderr:\n{err}");
@@ -366,4 +376,27 @@ fn validate_advises_when_the_checkout_has_no_hooks_installed() {
         err.contains(HOOKS_ADVISORY) && err.contains("rigger setup"),
         "without the hooks validate advises and names the fix; stderr:\n{err}"
     );
+}
+
+/// Given a set-up project, when the operator's copy of a fan-out helper does not parse, then
+/// `rigger validate` fails naming the copy and its fault, and once the copy is the operator's own
+/// well-formed helper it passes: the definition every spawn would carry is checked before a run.
+#[test]
+fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
+    let proj = temp_project();
+    let root = proj.path();
+    setup_ok(root, &[]);
+    let rows = [
+        (
+            "a copy with no name",
+            NAMELESS_HELPER_COPY,
+            Some(nameless_copy_refusal(Path::new("."), "verify.md")),
+        ),
+        ("the operator's own copy", OPERATOR_HELPER_COPIES[1].1, None),
+    ];
+    for (name, text, failure) in rows {
+        write_helper_copy(root, "verify.md", text);
+        let (_out, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(failure_line(ok, &err), failure, "{name}; stderr:\n{err}");
+    }
 }

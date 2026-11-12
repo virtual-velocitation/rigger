@@ -1,4 +1,6 @@
 use super::*;
+use rigger_domain::code_view::{Tests, ViewFilter};
+use rigger_domain::composed::Label;
 
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
@@ -17,11 +19,17 @@ const DASH_REAP_STALE_ENV: &str = "RIGGER_DASH_REAP_STALE_SECS";
 pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
-    // (spec 39, criterion 3) - passed only by the DETACHED step-path spawn, never the
-    // guard-bound `rigger run` / `run_workflow` dash (which keeps its `ReapedChild`).
+    // (spec 39, criterion 3) - never passed by the guard-bound `rigger run` dash (which keeps
+    // its `ReapedChild`). `--exit-on-stdin-close` makes this dash exit once its stdin reaches
+    // its end: the `rigger run` dash passes it, so the run's pipe bounds the dash's life.
+    // `--port-from <n>` binds the first free port at or above `n` instead of the one fixed
+    // `--port`, and prints the URL it serves at as a line on stdout: the `rigger run` dash passes
+    // it, so the address the run records is the one its own dash bound.
     let mut export: Option<String> = None;
     let mut port: u16 = dash::DEFAULT_PORT;
+    let mut first_free = false;
     let mut reap_on_idle = false;
+    let mut exit_on_stdin_close = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -33,14 +41,16 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                         .ok_or("dash: --export expects a path")?,
                 );
             }
-            "--port" => {
+            flag @ ("--port" | "--port-from") => {
                 i += 1;
                 port = args
                     .get(i)
                     .and_then(|p| p.parse().ok())
-                    .ok_or("dash: --port expects a port number (1-65535)")?;
+                    .ok_or_else(|| format!("dash: {flag} expects a port number (1-65535)"))?;
+                first_free = flag == "--port-from";
             }
             "--reap-on-idle" => reap_on_idle = true,
+            "--exit-on-stdin-close" => exit_on_stdin_close = true,
             other => return Err(format!("dash: unknown argument {other:?}").into()),
         }
         i += 1;
@@ -49,7 +59,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     let events_db = db_path("events.db");
     let graph_db = db_path("graph.db");
     let progress_db = db_path("progress.db");
-    let identity = project_identity();
+    let identity = project_identity()?;
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
     // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
@@ -62,7 +72,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
     // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
     // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
-    // `reclaim_spawn_scratch`/`cmd_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
+    // `reclaim_spawn_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
     // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`
     // fleet AND a passing `Config::validate` just to learn these two fields; `arch-u83c3-dash-
     // scratch-defaults-not-migrated` found `cmd_dash` was left on the old pattern, silently
@@ -78,7 +88,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         dir: PathBuf::from(RIGGER_DIR),
     });
     let scratch_root = {
-        let repo = git_repo();
+        let repo = git_repo()?;
         // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
         // configured `workdir`) is an EXPLICIT override that `worktree::scratch_root_path`
         // already answers correctly with no git repo at all (its own first match arm checks the
@@ -96,8 +106,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             String::new()
         } else {
             // The dash only READS this root (marker probes); it never places work under it,
-            // so it resolves without creating - creation is the step's, and creation is
-            // where the cache home's orphan-root reclaim runs.
+            // so it resolves without creating - creation is the run's (`scratch_root_from_env`),
+            // and creation is where the cache home's orphan-root reclaim runs.
             rigger::worktree::scratch_root_path_from_env(&repo, &workdir)
         }
     };
@@ -119,7 +129,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // criterion 5) - resolved ONLY when this is the detached, self-reaping singleton
     // (`--reap-on-idle`) and the environment has a state home (a homeless environment holds no
     // registry, so the watcher never starts and the dash simply serves). `None` for the guard-bound
-    // `rigger run` / `run_workflow` dash, which never starts a watcher (it keeps its `ReapedChild`).
+    // `rigger run` dash, which never starts a watcher (it keeps its `ReapedChild`).
     // Retargets spec 39's per-run liveness snapshot at the singleton: the reap trigger is now the
     // registry (every instance on the machine), not this one project's run, so no per-RUN inputs
     // are captured here. Spec 62 criterion 5 adds a second, per-PROJECT (never per-run) signal
@@ -150,18 +160,21 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
         // the dash's own project by default, an attached instance's LOCAL graph projection when
         // one is selected, or an empty graph for a since-gone selector - never an error.
-        move |instance: Option<&str>| -> contextgraph::Graph {
+        move |instance: Option<&str>, tests: Tests| -> dash::GraphRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity),
-                DashAttach::Instance(inst) => dash_attach_graph(&inst),
-                DashAttach::Empty => contextgraph::Graph::default(),
+                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests),
+                DashAttach::Instance(inst) => dash_attach_graph(&inst, tests),
+                DashAttach::Empty => dash::GraphRead {
+                    label: Some(unattached(instance)),
+                    ..dash::GraphRead::default()
+                },
             }
         }
     };
 
     // The DIRECTED-CALL provider for `/api/graph?view=calls` (spec 52, criterion 4): the SAME lazy
     // direct-projection provider the whole-graph views use, but running the store-side directed
-    // traversal `Projection::calls` (the execution path / call sites of a seed) instead of reading
+    // traversal `ContextGraph::calls` (the execution path / call sites of a seed) instead of reading
     // the whole graph. Opened only on a call request, never on the state poll; per-request-open and
     // best-effort like `graph_provider`, so an absent / empty graph or a seed with no calls degrades
     // to an empty `CallGraph`, never an error. Chooses WHICH store to walk from the same spec-50
@@ -174,16 +187,20 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
               seed: &[String],
               direction: contextgraph::Direction,
               depth: i64,
-              tier_floor: &str|
-              -> contextgraph::CallGraph {
+              tier_floor: &str,
+              tests: Tests|
+              -> dash::CallsRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => {
-                    dash_read_calls(&graph_db, &identity, seed, direction, depth, tier_floor)
-                }
+                DashAttach::Local => dash_read_calls(
+                    &graph_db, &identity, seed, direction, depth, tier_floor, tests,
+                ),
                 DashAttach::Instance(inst) => {
-                    dash_attach_calls(&inst, seed, direction, depth, tier_floor)
+                    dash_attach_calls(&inst, seed, direction, depth, tier_floor, tests)
                 }
-                DashAttach::Empty => contextgraph::CallGraph::default(),
+                DashAttach::Empty => dash::CallsRead {
+                    label: Some(unattached(instance)),
+                    ..dash::CallsRead::default()
+                },
             }
         }
     };
@@ -208,7 +225,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 DashAttach::Instance(inst) => Ok(dash_attach_inputs(&inst)),
                 DashAttach::Empty => Ok((
                     Vec::new(),
-                    contextgraph::Graph::default(),
+                    dash::GraphRead {
+                        label: Some(unattached(instance)),
+                        ..dash::GraphRead::default()
+                    },
                     Vec::new(),
                     std::collections::HashMap::new(),
                 )),
@@ -248,7 +268,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 provider(None).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             let html = dash::render_export(
                 &events,
-                &graph,
+                dash::LabelledGraph::from(&graph),
                 &progress,
                 &liveness,
                 max_retries,
@@ -264,8 +284,15 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
             // DIRECTLY - no free-port search. If a rigger dash is already serving that address,
             // report it and exit 0 (never a second dash, never a drifted port); a non-dash
             // holder is a genuine conflict the bind error surfaces (resolve it with `--port`).
+            // `--port-from` searches instead and never short-circuits: the dash that binds is the
+            // one that chose the port.
             let addr = SocketAddr::from(([127, 0, 0, 1], port));
-            match dash::bind_singleton(addr) {
+            let bound = if first_free {
+                dash::bind_first_free_from(port).map(dash::SingletonBind::Bound)
+            } else {
+                dash::bind_singleton(addr)
+            };
+            match bound {
                 Ok(dash::SingletonBind::AlreadyServing(existing)) => {
                     // The singleton is the point: a second invocation reports the ONE known
                     // address and exits cleanly instead of starting a rival dash.
@@ -285,10 +312,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 }
                 Err(e) => Err(e.into()),
                 Ok(dash::SingletonBind::Bound(listener)) => {
-                    // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): the
-                    // detached step-path SINGLETON is started with `--reap-on-idle`, so a
-                    // background thread polls the machine-global instance registry AND the
-                    // agent-liveness markers of THIS project plus EVERY OTHER registered project
+                    // Self-reap on machine idle (spec 50, criterion 5; spec 62, criterion 5): a
+                    // SINGLETON started with `--reap-on-idle` runs a background thread that polls
+                    // the machine-global instance registry AND the agent-liveness markers of THIS
+                    // project plus EVERY OTHER registered project
                     // (round 2's cross-project widening - `watch_and_self_reap_on_idle`'s own doc
                     // comment), exiting this process only once NONE of that shows anything live -
                     // leaving no orphaned dash on a quiet machine, while surviving one project's
@@ -297,11 +324,17 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                     // project's own registry entry ages out. This retargets spec 39's per-run
                     // liveness trigger at the machine-level singleton; it is driven by the
                     // registry plus every known project's own agent-liveness check, NOT by any
-                    // single `step` process exiting. Read-only: the watcher only reads the
-                    // registry and stats marker files. The guard-bound `rigger run` /
-                    // `run_workflow` dash omits the flag and keeps its `ReapedChild` reaping
+                    // single run's process exiting. Read-only: the watcher only reads the
+                    // registry and stats marker files. The guard-bound `rigger run` dash
+                    // omits the flag and keeps its `ReapedChild` reaping
                     // instead. Started ONLY on the branch that actually binds and serves - a
                     // short-circuited singleton invocation serves nothing and starts no watcher.
+                    if exit_on_stdin_close {
+                        std::thread::spawn(exit_once_stdin_closes);
+                    }
+                    if first_free {
+                        println!("http://{}/", listener.local_addr()?);
+                    }
                     if let Some(registry_dir) = reap_registry_dir {
                         let poll = dash_reap_poll();
                         let idle_window = dash_reap_idle_window();
@@ -386,7 +419,7 @@ fn foreign_instance_scratch_root(root: &str) -> String {
 }
 
 /// The dash self-reap watcher loop (spec 50, criterion 5; spec 62, criterion 5), run on a
-/// background thread inside the detached step-path SINGLETON dash. On each `poll` tick it reads
+/// background thread inside a `--reap-on-idle` SINGLETON dash. On each `poll` tick it reads
 /// the machine-global instance registry read-only ([`rigger::registry::read_live`], which prunes
 /// entries whose heartbeat has aged past `idle_window`) AND scans for a fresh in-flight AGENT
 /// liveness marker ([`rigger::liveness::any_marker_fresh`], the SAME marker mechanism `rigger
@@ -402,7 +435,7 @@ fn foreign_instance_scratch_root(root: &str) -> String {
 /// ANY registered project whose courier cadence has lapsed even as THAT project's own registry
 /// entry ages out (spec 62 criterion 5's headline, now closed for every registered project, not
 /// only the launching one), and reaps only on a genuinely idle machine - driven by the registry
-/// plus every known project's own agent-liveness check, NOT by any single `step` process
+/// plus every known project's own agent-liveness check, NOT by any single run's process
 /// exiting. The `ever_seen_live` latch is the startup-race guard (a just-ensured singleton must
 /// not reap before its ensuring run writes its entry); it stays scoped to the registry,
 /// unchanged by the agent-liveness addition.
@@ -462,14 +495,19 @@ fn watch_and_self_reap_on_idle(
                 )
             });
         if dash::should_reap_singleton(live.len(), ever_seen_live, agent_live) {
-            // Self-reap: exit the whole process so the detached singleton leaves no orphan on a
-            // quiet machine. The stale `.rigger/dash.marker` this leaves behind is deliberately NOT
-            // removed - a next run's first `step` already tolerates it (`dash_start_needed` probes
-            // the recorded pid, sees it dead, and starts a fresh dash), and removing it here would
-            // race a successor dash that may already have rewritten the marker with its own live pid.
+            // Self-reap: exit the whole process so the singleton leaves no orphan on a quiet
+            // machine.
             std::process::exit(0);
         }
     }
+}
+
+/// Read this process's stdin to its end, then exit the process: a dash started with
+/// `--exit-on-stdin-close` lives exactly as long as the pipe its starter holds open, which the
+/// system closes however that starter ends, its own teardown or none.
+fn exit_once_stdin_closes() {
+    let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+    std::process::exit(0);
 }
 
 /// Read this project's CURRENT-run events and run id from `events_db` under `identity` through
@@ -495,21 +533,79 @@ fn dash_read_run(
 }
 
 /// Build the context subgraph around the run's own units/decisions/findings from
-/// `graph_db` (seeds via [`dash::graph_seeds`]). Best-effort: an absent graph (a grep-only
-/// run never builds one) or any query error yields an empty graph, so the rest of the dash
-/// still serves.
-fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextgraph::Graph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::Graph::default();
-    }
+/// `graph_db` (seeds via [`dash::graph_seeds`]), with what that read describes (spec 6.1).
+/// Best-effort: an absent graph (a grep-only run never builds one) or any query error yields an
+/// empty graph with the reason it read none, so the rest of the dash still serves. A run with no
+/// seeds opens no store, so its read describes nothing.
+fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> dash::GraphRead {
     let seeds = dash::graph_seeds(events);
     if seeds.is_empty() {
-        return contextgraph::Graph::default();
+        return dash::GraphRead::default();
     }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p.subgraph(&seeds, 2).unwrap_or_default(),
-        Err(_) => contextgraph::Graph::default(),
+    let (graph, label) = described(dash_read(graph_db, identity, Tests::default(), |g| {
+        g.subgraph(&seeds, 2)
+    }));
+    dash::GraphRead {
+        graph,
+        label: Some(label),
+        ..dash::GraphRead::default()
     }
+}
+
+/// What `read` answers of the context graph (7.3) over the record graph at `graph_db`, compared
+/// with the worktree of the checkout whose `.rigger/` holds it, with the label of that same open
+/// (spec 6.1), taken once `read` has withheld what it withholds; the reason, when no graph was
+/// built there or it cannot be opened or read, so the dash states it in place of a graph.
+fn dash_read<T>(
+    graph_db: &str,
+    identity: &str,
+    tests: Tests,
+    read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
+) -> Result<(T, Label), String> {
+    dash_open(graph_db, identity, tests, |graph| {
+        let answer = read(graph.as_ref())?;
+        Ok((answer, graph.stamp_label()))
+    })
+}
+
+/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it.
+fn dash_open<T>(
+    graph_db: &str,
+    identity: &str,
+    tests: Tests,
+    read: impl FnOnce(Box<dyn ContextGraph + '_>) -> Result<(T, Label), contextgraph::Error>,
+) -> Result<(T, Label), String> {
+    let path = Path::new(graph_db);
+    if !path.exists() {
+        return Err(format!("no graph has been built at {graph_db}"));
+    }
+    let records = Projector::open(graph_db, identity)
+        .map_err(|e| format!("the graph at {graph_db} cannot be opened: {e}"))?;
+    let checkout = path
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new(""));
+    let worktree =
+        tree_of(checkout).map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
+    let read_graph = ReadGraph::new(&records, worktree);
+    let graph = read_graph
+        .open(ViewFilter { tests })
+        .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+    read(graph).map_err(|e| format!("the graph cannot be read: {}", e.0))
+}
+
+/// What a dash graph read describes: the label of its open, or why it read no graph.
+fn described<T: Default>(read: Result<(T, Label), String>) -> (T, dash::GraphLabel) {
+    match read {
+        Ok((answer, label)) => (answer, dash::GraphLabel::Read(label)),
+        Err(reason) => (T::default(), dash::GraphLabel::Unread(reason)),
+    }
+}
+
+/// Why a request naming `instance` reads no graph: no registered instance has that id.
+fn unattached(instance: Option<&str>) -> dash::GraphLabel {
+    let id = instance.unwrap_or_default();
+    dash::GraphLabel::Unread(format!("no registered instance is named {id:?}"))
 }
 
 /// The WHOLE projection for the `/api/graph` provider (spec 45, criterion 2): the direct-projection
@@ -521,18 +617,23 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> contextg
 /// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
-fn dash_read_whole_graph(graph_db: &str, identity: &str) -> contextgraph::Graph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::Graph::default();
-    }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p.whole().unwrap_or_default(),
-        Err(_) => contextgraph::Graph::default(),
+fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
+    let ((graph, withheld, tests_hidden), label) =
+        described(dash_open(graph_db, identity, tests, |g| {
+            let tests_hidden = g.hidden_tests()?.len();
+            let read = g.into_whole()?;
+            Ok(((read.graph, read.withheld, tests_hidden), read.label))
+        }));
+    dash::GraphRead {
+        graph,
+        tests_hidden,
+        withheld,
+        label: Some(label),
     }
 }
 
 /// The DIRECTED-CALL walk for the `/api/graph?view=calls` provider (spec 52, criterion 4): the
-/// store-side `Projection::calls` traversal (the seed's execution path or call sites) read through
+/// store-side `ContextGraph::calls` traversal (the seed's execution path or call sites) read through
 /// the SAME lazy direct-projection open as [`dash_read_whole_graph`], never the polled read. Opens
 /// the projection per request and runs the walk `direction`/`depth`/`tier_floor` select. Best-effort
 /// exactly like the whole-graph read: an absent graph (a grep-only run never builds one), an open
@@ -545,15 +646,14 @@ fn dash_read_calls(
     direction: contextgraph::Direction,
     depth: i64,
     tier_floor: &str,
-) -> contextgraph::CallGraph {
-    if !Path::new(graph_db).exists() {
-        return contextgraph::CallGraph::default();
-    }
-    match Projector::open(graph_db, identity) {
-        Ok(p) => p
-            .calls(seed, direction, depth, tier_floor)
-            .unwrap_or_default(),
-        Err(_) => contextgraph::CallGraph::default(),
+    tests: Tests,
+) -> dash::CallsRead {
+    let (calls, label) = described(dash_read(graph_db, identity, tests, |g| {
+        g.calls(seed, direction, depth, tier_floor)
+    }));
+    dash::CallsRead {
+        calls,
+        label: Some(label),
     }
 }
 
@@ -567,12 +667,21 @@ fn dash_attach_calls(
     direction: contextgraph::Direction,
     depth: i64,
     tier_floor: &str,
-) -> contextgraph::CallGraph {
+    tests: Tests,
+) -> dash::CallsRead {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_calls(&graph_db, &inst.project, seed, direction, depth, tier_floor)
+    dash_read_calls(
+        &graph_db,
+        &inst.project,
+        seed,
+        direction,
+        depth,
+        tier_floor,
+        tests,
+    )
 }
 
 /// This run's progress from the SEPARATE progress store (spec 14), for the dash's live
@@ -590,9 +699,9 @@ fn dash_read_progress(progress_db: &str, identity: &str, run_id: &str) -> Vec<Ev
 
 /// The liveness-marker age (whole seconds since last touch) for each in-flight spawn in
 /// `events` (the current run's slice), read HERE in Rust so the dash PRESENTS it (spec 14) -
-/// the same stat the retired probe did, done by rigger rather than a spawned agent. Each marker
-/// is read under the root its request recorded, `scratch_root` only for one that recorded none
-/// (spec 101); a spawn found under neither has no age.
+/// a stat of each marker's modification time, done by rigger rather than a spawned agent. Each
+/// marker is read under the root its request recorded, `scratch_root` only for one that recorded
+/// none (spec 101); a spawn found under neither has no age.
 fn dash_read_liveness(
     events: &[Event],
     scratch_root: &str,
@@ -748,35 +857,27 @@ fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
 /// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
 /// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
 /// run seeded none. Best-effort/empty-degrade like the local read.
-fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
+fn dash_attach_graph(inst: &rigger::registry::Instance, tests: Tests) -> dash::GraphRead {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_whole_graph(&graph_db, &inst.project)
+    dash_read_whole_graph(&graph_db, &inst.project, tests)
 }
 
 /// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
 /// read-only MCP surface, the one `rigger setup` registers into `.mcp.json` for the
-/// interactive Claude Code session. Unlike `rigger serve`/`cmd_serve` (the
-/// workflow-driver bridge a loop run spawns, which anchors a run branch and creates unit
-/// worktrees the moment it starts), this command has no run to drive and touches
-/// NOTHING on disk beyond opening the existing event store, side-car, grounder, and
-/// context graph read-only: it answers `rigger_peers`, `rigger_ground`, and
-/// `rigger_graph` over stdio, the same three lookups a loop agent has (`rigger_peers`
-/// through the shim's proxy to `rigger serve`; `ground`/`graph --show`/`graph --around`
-/// as the CLI commands its persona names) - given to an interactive session as tools
+/// interactive session. This command has no run to drive and touches NOTHING on disk
+/// beyond opening the existing event store, side-car, grounder, and context graph
+/// read-only: it answers `rigger_peers`, `rigger_ground`, and `rigger_graph` over stdio,
+/// the same three lookups a loop agent has - given to an interactive session as tools
 /// instead of a shell.
 ///
-/// Served through the SAME [`mcpserver::Server`] the workflow-driver bridge (`cmd_serve`
-/// above) uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
-/// [`Server::with_graph`](mcpserver::Server::with_graph) exactly like that call site already
-/// wires `with_graph`/`with_progress` - ONE read loop, JSON-RPC dispatch, and ok/err envelope
-/// answering both tool surfaces, rather than a second small stdio loop reaching for the
-/// concrete grounder/`Projector` across the crate boundary. `rigger_next`/`rigger_result`
-/// need a live `Driver`, but this surface never calls them (wiring a grounder is what marks a
-/// `Server` as the lookup-only surface - see [`mcpserver::Server`]'s own doc comment) - a
-/// freshly constructed, never-`spawn`ed one satisfies the constructor with no side effects.
+/// Served through the SAME [`mcpserver::Server`] a spawn-bound `rigger mcp --spawn <id>`
+/// uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
+/// [`Server::with_graph`](mcpserver::Server::with_graph) - ONE read loop, JSON-RPC dispatch,
+/// and ok/err envelope answering both tool surfaces, rather than a second small stdio loop
+/// reaching for the concrete grounder/`Projector` across the crate boundary.
 ///
 /// Grounder resolution is NEVER propagated with `?`: a misconfigured/unavailable grounder
 /// (no `defaults.grounder` pinned on a `--no-default-features` build with no `symbols`
@@ -810,22 +911,21 @@ fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::
 /// registers into `.mcp.json`. With `--spawn <id>` (spec 104, THE SPAWN MCP SERVER,
 /// criterion 3), the launched agent's own spawn-bound surface instead - every write it
 /// serves (`rigger_emit`, `rigger_progress`) attributed to `id` BY CONSTRUCTION, over the
-/// SAME progress-store + scratch-root resolution `cmd_progress`/`cmd_scratch` already use,
-/// never a second parallel one.
+/// SAME progress-store + scratch-root resolution `cmd_progress` already uses, never a second
+/// parallel one.
 pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let spawn = parse_mcp_spawn_flag(args)?;
     over_the_run_store(|loc, selection, store| {
-        let grounder_name = config_store::load(".")
-            .map(|cfg| cfg.workflow.defaults.grounder)
-            .unwrap_or_default();
-        let grounder = select_grounder(&grounder_name);
+        let grounder = configured_grounder();
         // The resolved store's own graph, so a server started in a linked worktree serves and folds
         // into the owning repository's graph, never one opened in the worktree. Opened as it
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
-        let graph = loc.graph(selection)?;
-        let driver = rigger::driver::workflow::Driver::new();
+        let identity = loc.identity()?;
+        let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
+        // `rigger_graph` reads the graph composed for the caller's own tree.
+        let context = ReadGraph::new(&graph, caller_tree()?);
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -833,9 +933,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             .is_some()
             .then(|| Store::open(&loc.file("progress.db")))
             .transpose()?;
-        let prog_store = prog_backend
-            .as_ref()
-            .map(|b| Namespaced::new(b, &loc.identity()));
+        let prog_store = prog_backend.as_ref().map(|b| Namespaced::new(b, &identity));
         let scratch_root = if spawn.is_some() {
             let repo = loc
                 .dir
@@ -848,8 +946,11 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let mut server =
-            mcpserver::Server::new(&driver, store, conductor::STREAM).with_graph(graph.as_ref());
+        let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
+        let mut server = mcpserver::Server::new(store, conductor::STREAM)
+            .with_graph(&graph)
+            .with_context(&context)
+            .with_lookup(&lookup);
         server = server.with_grounder(match &grounder {
             Ok(g) => Ok(g.as_ref()),
             Err(e) => Err(e.to_string()),
@@ -875,39 +976,30 @@ mod tests {
     /// decisions/findings, hence an EMPTY `graph_seeds` - a seed naming a real node still returns
     /// its neighborhood and the whole-graph overview still returns its clusters, instead of the
     /// `Graph::default()` dead-end the run-seeded read produced.
+    #[cfg(feature = "symbols")]
     #[test]
     fn dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty() {
         use std::collections::HashMap;
 
         let dir = tempfile::tempdir().unwrap();
-        let graph_path = dir.path().join("graph.db");
+        let root = dir.path();
+        crate::test_support::git_ok_with_identity(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join(".rigger")).unwrap();
+        let graph_path = root.join(".rigger").join("graph.db");
         let graph_path = graph_path.to_str().unwrap();
         let identity = "reachtest";
 
-        // A projection built from CODE INGEST alone (spec 29a: CodeEntityExtracted + EdgeInferred),
-        // exactly what a cold-checkout `graph build` folds. No decision, no finding - so nothing a
-        // run would seed a subgraph from.
-        {
-            let p = Projector::open(graph_path, identity).unwrap();
-            let def = serde_json::json!({
-                "file": "src/combat.rs", "name": "apply_damage",
-                "kind": "function", "line": 7, "lang": "rust",
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&def).unwrap(),
-            );
-            e.position = 1;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-            let refr =
-                serde_json::json!({ "file": "src/combat.rs", "name": "clamp", "lang": "rust" });
-            let mut e2 = Event::new(
-                contextgraph::TYPE_EDGE_INFERRED,
-                serde_json::to_vec(&refr).unwrap(),
-            );
-            e2.position = 2;
-            crate::test_support::folds(&p, std::slice::from_ref(&e2));
-        }
+        // A tree holding CODE INGEST alone: the code store's view of the committed `src/combat.rs`,
+        // one definition and one reference, beside a record half with no record. No decision, no
+        // finding - so nothing a run would seed a subgraph from.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src").join("combat.rs"),
+            "pub fn apply_damage() { clamp(); }\n",
+        )
+        .unwrap();
+        crate::test_support::commit_tree(root);
+        Projector::open(graph_path, identity).unwrap();
 
         // Precondition = the never-built dead-end. The run log carries no content events, so
         // `graph_seeds` is EMPTY and the OLD run-seeded read collapses to `Graph::default()`.
@@ -916,7 +1008,7 @@ mod tests {
             dash::graph_seeds(&no_run_events).is_empty(),
             "the never-built repo has no run seeds"
         );
-        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events);
+        let run_seeded = dash_read_graph(graph_path, identity, &no_run_events).graph;
         assert!(
             run_seeded.nodes.is_empty(),
             "the run-seeded read is the empty dead-end this criterion removes, got {run_seeded:?}"
@@ -924,7 +1016,7 @@ mod tests {
 
         // The fix: the graph provider reads the whole projection directly, so a real code node is
         // reachable with no run seeds at all.
-        let whole = dash_read_whole_graph(graph_path, identity);
+        let whole = dash_read_whole_graph(graph_path, identity, Tests::Exclude).graph;
         assert!(
             whole
                 .nodes
@@ -983,6 +1075,63 @@ mod tests {
         );
     }
 
+    /// The run-seeded read the polled snapshot draws its decisions from states what it read: the
+    /// label of its open over a built graph, the reason over a graph never built or a worktree git
+    /// refuses to read, and nothing when the run seeds no read.
+    #[test]
+    fn the_run_seeded_read_states_what_it_describes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::test_support::git_ok_with_identity(root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join(".rigger")).unwrap();
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        crate::test_support::commit_tree(root);
+        let graph_path = root.join(".rigger").join("graph.db");
+        let graph_db = graph_path.to_str().unwrap();
+        let identity = "labeltest";
+        let decided = vec![Event::new(
+            contextgraph::TYPE_DECISION_MADE,
+            br#"{"id":"d-1","summary":"s","governs":["a.txt"]}"#.to_vec(),
+        )];
+
+        let read = dash_read_graph(graph_db, identity, &decided);
+        assert_eq!(
+            read.label,
+            Some(dash::GraphLabel::Unread(format!(
+                "no graph has been built at {graph_db}"
+            ))),
+            "a graph never built is stated, never an empty graph alone"
+        );
+
+        Projector::open(graph_db, identity).unwrap();
+        let read = dash_read_graph(graph_db, identity, &decided);
+        match read.label {
+            Some(dash::GraphLabel::Read(label)) => assert_eq!(
+                label.worktree,
+                root.to_str().unwrap(),
+                "the label names the checkout that holds the graph"
+            ),
+            other => panic!("a built graph's read states its label, got {other:?}"),
+        }
+
+        let read = dash_read_graph(graph_db, identity, &[]);
+        assert_eq!(read.label, None, "a run with no seeds opens no store");
+
+        // A checkout whose git administrative directory is gone: git refuses inside it.
+        std::fs::rename(root.join(".git"), root.join(".git-moved")).unwrap();
+        let gone = root.join(".git-gone");
+        std::fs::write(root.join(".git"), format!("gitdir: {}\n", gone.display())).unwrap();
+        let read = dash_read_graph(graph_db, identity, &decided);
+        let want = format!("the worktree of {graph_db} cannot be read: ");
+        match read.label {
+            Some(dash::GraphLabel::Unread(reason)) => assert!(
+                reason.starts_with(&want),
+                "a worktree git refuses is stated as unread, got {reason:?}"
+            ),
+            other => panic!("a worktree git refuses reads no graph, got {other:?}"),
+        }
+    }
+
     /// Spec 45 GLOBAL CONSTRAINT (read-only provider, L33-34 / L72-73): the direct-projection
     /// provider is READ-ONLY, and "the dash still starts before the store exists; an absent graph
     /// degrades to an empty result, never an error". `dash_read_whole_graph` over an ABSENT graph db
@@ -1007,7 +1156,7 @@ mod tests {
         );
 
         // (a) The read degrades to an EMPTY graph, never an error.
-        let whole = dash_read_whole_graph(graph_db, identity);
+        let whole = dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph;
         assert!(
             whole.nodes.is_empty() && whole.edges.is_empty(),
             "an absent projection reads as an empty graph, got {whole:?}"
@@ -1024,7 +1173,9 @@ mod tests {
         // The composed provider closure the dash consults on /api/graph (main.rs, the
         // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
         // absent path.
-        let provider = || -> contextgraph::Graph { dash_read_whole_graph(graph_db, identity) };
+        let provider = || -> contextgraph::Graph {
+            dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph
+        };
         let via_provider = provider();
         assert!(
             via_provider.nodes.is_empty() && via_provider.edges.is_empty(),

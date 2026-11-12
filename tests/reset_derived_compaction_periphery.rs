@@ -1,34 +1,30 @@
-//! PERIPHERY (contract / API / integration) tests for `rigger reset --derived`, the one-time
-//! migration of the event log, driven through the built binary and read back from the files an
+//! PERIPHERY (contract / API / integration) tests for `rigger reset --derived`, the delete of the
+//! event log's derived events, driven through the built binary and read back from the files an
 //! operator can open.
 //!
-//! What this file holds, each a property the migration must keep at the command's surface:
+//! What this file holds, each a property the delete must keep at the command's surface:
 //!
-//!   1. **The namespace boundary.** The migration reaches the run stream of the project it was
-//!      run in and no other: a store shared with a project whose identity differs from this one
-//!      by a character SQL reads as a wildcard is left byte-for-byte, and the bare menu previews
-//!      that one stream's derived events and no neighbour's, as `rigger validate`'s log-bloat
+//!   1. **The namespace boundary.** The delete reaches the run stream of the project it was run
+//!      in and no other: a store shared with a project whose identity differs from this one by a
+//!      character SQL reads as a wildcard is left byte-for-byte, and the bare menu previews that
+//!      one stream's derived events and no neighbour's, as `rigger validate`'s log-bloat
 //!      advisory warns of that one stream's alone.
 //!   2. **The flag registry.** Each mode is named at most once and the two compose in either
 //!      order, each reporting its own work.
 //!   3. **The shipped operator-facing artifacts.** The usage the binary prints and the committed
-//!      documents say what the migration does, and the documents are the current render.
+//!      documents say what the delete does, and the documents are the current render.
 //!   4. **Two accumulations, two modes.** `--runs` changes the graph and leaves the log alone,
-//!      `--derived` converts the log and writes nothing to the graph, and composing them does
+//!      `--derived` deletes from the log and writes nothing to the graph, and composing them does
 //!      exactly both.
-//!   5. **The store the command walked up to.** Run from a nested worktree it migrates the
-//!      project's store and reads each file under the tree that store belongs to, never under
-//!      the working directory's own top level.
+//!   5. **The store the command walked up to.** Run from a nested worktree it deletes from the
+//!      project's store, never from one under the working directory's own top level.
 //!   6. **The number.** The bytes the command says it reclaimed are the bytes the log lost on
 //!      disk.
-//!   7. **The blob is written.** Inside a repository the entry the migration writes names a blob
-//!      the project's object database holds, the bytes the tree holds, though no commit holds it.
 
-mod common;
-use common::fixtures::git_hash_object;
-use common::git::{assert_holds_no_object, held_blob, object_ids, run_git};
+use crate::common;
+use common::git::run_git;
 
-use common::cli::migrated_lines;
+use common::cli::deleted_line;
 use common::cli::pin_identity;
 use common::cli::pre_ledger_batch;
 use common::cli::reclaimed_line;
@@ -37,8 +33,8 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
-use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_SHED_LINE};
-use common::fixtures::{file_len, meta_replay_key, plant_free_pages, pragma_i64};
+use common::cli::{LOG_LEFT_AS_IT_STANDS_LINE, NOTHING_TO_DELETE_LINE};
+use common::fixtures::{file_len, plant_free_pages, pragma_i64};
 use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
@@ -122,30 +118,6 @@ fn seed_project(root: &Path, rounds: u64) {
     );
 }
 
-/// The ledger entry the migration converts the seeded batch into: the generation `h1` of
-/// `src/a.rs`, a batch of two events, recording `blob`.
-fn seeded_entry(blob: &str) -> Event {
-    common::fixtures::generation_ingested("gc", "src/a.rs", "h1", blob, false).event(2)
-}
-
-/// The rows of `rows` holding a ledger entry, each as `(position, payload, replay key)`.
-fn entries(rows: &[Row]) -> Vec<(i64, Vec<u8>, Option<String>)> {
-    rows.iter()
-        .filter(|r| r.2 == rigger::retention::TYPE_GENERATION_INGESTED)
-        .map(|r| (r.0, r.4.clone(), meta_replay_key(&r.5)))
-        .collect()
-}
-
-/// `(position, payload, replay key)` of [`seeded_entry`] standing at `position`.
-fn entry_at(position: i64, blob: &str) -> (i64, Vec<u8>, Option<String>) {
-    let entry = seeded_entry(blob);
-    (
-        position,
-        entry.data.clone(),
-        Some("gc/src/a.rs@h1#2".to_string()),
-    )
-}
-
 /// What `rigger reset --derived` printed of the migration: `out` from its first own line.
 fn derived_report(out: &str) -> &str {
     let at = out
@@ -184,27 +156,16 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
         out,
-        migrated_lines(1, 2 * ROUNDS as usize, 0) + LOG_LEFT_AS_IT_STANDS_LINE,
-        "the migration converts the target's one batch and sheds its twelve derived events"
+        deleted_line(2 * ROUNDS as usize) + LOG_LEFT_AS_IT_STANDS_LINE,
+        "the delete removes the target's twelve derived events"
     );
 
-    // Inside the target: the run's own event as it stood, then the entry at the first row of the
-    // last recording of the batch, and nothing else.
+    // Inside the target: the run's own event as it stood, and nothing else.
     let after = raw_rows(&db);
-    let migrated = rows_in(&after, &target_prefix);
-    let last_batch = &seeded_target[seeded_target.len() - 2];
-    assert_eq!(migrated.len(), 2);
-    assert_eq!(migrated[0], seeded_target[0]);
     assert_eq!(
-        entries(&migrated),
-        vec![entry_at(last_batch.0, "")],
-        "the entry stands where the latest batch's first row stood, recording no blob for a \
-         file the tree does not hold"
-    );
-    assert_eq!(
-        (migrated[1].3.as_str(), migrated[1].6),
-        (last_batch.3.as_str(), last_batch.6),
-        "the rewritten row keeps its id and its revision"
+        rows_in(&after, &target_prefix),
+        vec![seeded_target[0].clone()],
+        "the target keeps its run's own event, byte-for-byte, and no derived event"
     );
 
     // AND NOWHERE ELSE. Every other namespace is byte-for-byte identical, INCLUDING each row's
@@ -219,7 +180,105 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
             "reset --derived on {TARGET} must leave {project}'s streams byte-for-byte untouched"
         );
     }
-    assert_eq!(before.len() - after.len(), 2 * ROUNDS as usize - 1);
+    assert_eq!(before.len() - after.len(), 2 * ROUNDS as usize);
+}
+
+/// One row of each of the eight derived types ([`rigger::retention::DERIVED_TYPES`]), in list
+/// order.
+fn one_row_of_each_derived_type() -> Vec<Event> {
+    rigger::retention::DERIVED_TYPES
+        .iter()
+        .map(|type_| Event::new(*type_, b"{}".to_vec()))
+        .collect()
+}
+
+/// Given a run stream holding a decision and one row of each of the eight derived types, beside a
+/// stream whose name only starts with the run stream's and a second project's run stream, each
+/// holding the eight too, when `rigger reset --derived` runs while a trigger aborts the delete of
+/// the list's last type, then it fails and every row stands; and when it runs again without the
+/// trigger, then it deletes the eight rows of the run stream, names them, and leaves the decision
+/// and every row of the other two streams as they stood.
+#[test]
+fn reset_derived_deletes_every_derived_row_in_one_transaction() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let db = rigger_file(root, "events.db");
+    let project = run_stream_identity(root);
+    let backend = Store::open(db.to_str().unwrap()).expect("open the event log");
+    let pre_ledger = common::fixtures::PreLedgerStore {
+        db: &db,
+        inner: &backend,
+    };
+    let decision = Event::new(
+        rigger::contextgraph::TYPE_DECISION_MADE,
+        br#"{"id":"d-kept","summary":"s","governs":["src/a.rs"],"supersedes":""}"#.to_vec(),
+    );
+    let look_alike = format!("{}s", rigger::conductor::STREAM);
+    for (namespace, stream, events) in [
+        (
+            project.as_str(),
+            rigger::conductor::STREAM,
+            [vec![decision], one_row_of_each_derived_type()].concat(),
+        ),
+        (
+            project.as_str(),
+            look_alike.as_str(),
+            one_row_of_each_derived_type(),
+        ),
+        (
+            "other",
+            rigger::conductor::STREAM,
+            one_row_of_each_derived_type(),
+        ),
+    ] {
+        Namespaced::new(&pre_ledger, namespace)
+            .append(stream, ExpectedRevision::Any, &events)
+            .expect("seed the stream");
+    }
+    drop(backend);
+    let run_stream = format!(
+        "{}{}",
+        Namespaced::prefix_for(&project),
+        rigger::conductor::STREAM
+    );
+    let before = raw_rows(&db);
+    let last_type = rigger::retention::DERIVED_TYPES[7];
+    let hold = rusqlite::Connection::open(&db).expect("open the event log");
+    hold.execute_batch(&format!(
+        "CREATE TRIGGER hold BEFORE DELETE ON events WHEN old.type = '{last_type}' \
+         BEGIN SELECT RAISE(ABORT, 'held'); END;"
+    ))
+    .expect("plant the trigger");
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert_eq!(
+        (ok, raw_rows(&db) == before),
+        (false, true),
+        "a delete that fails on its last row deletes none; stdout: {out}; stderr: {err}"
+    );
+
+    hold.execute_batch("DROP TRIGGER hold;")
+        .expect("drop the trigger");
+    drop(hold);
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    let kept: Vec<Row> = before
+        .iter()
+        .filter(|row| {
+            row.1 != run_stream || !rigger::retention::DERIVED_TYPES.contains(&row.2.as_str())
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        (ok, out.lines().next(), raw_rows(&db)),
+        (true, Some(deleted_line(8).trim_end()), kept.clone(),),
+        "the run stream's eight derived rows are deleted and every other row stands; stderr: \
+         {err}"
+    );
+    assert_eq!(
+        (before.len() - kept.len(), kept.len()),
+        (8, 1 + 2 * 8),
+        "premise: eight rows were the run stream's derived rows"
+    );
 }
 
 /// The three projects [`store_shared_by_three_projects`] seeds into one store file, each with the
@@ -256,12 +315,13 @@ fn rows_held_by_each_sharing_project(rows: &[Row]) -> [usize; 3] {
 /// (twelve derived events), a neighbour whose
 /// identity differs from it by a character SQL reads as a wildcard (four) and an unrelated one
 /// (two) - when the operator runs bare `rigger reset`, then its `--derived` line names the twelve
-/// events of the one file identity this project's run stream holds and no neighbour's, and every
-/// row of the file stands as it stood; when `rigger reset --derived` then sheds exactly those
-/// twelve, bare `rigger reset` says none is left to shed while each neighbour still holds its own.
+/// events this project's run stream holds and no neighbour's, and every
+/// row of the file stands as it stood; when `rigger reset --derived` then deletes exactly those
+/// twelve, bare `rigger reset` says none is left to delete while each neighbour still holds its
+/// own.
 #[test]
 fn bare_reset_names_the_derived_events_of_its_own_namespace_alone_on_a_store_it_shares() {
-    use common::cli::{derived_menu_line_naming, derived_menu_lines, NOTHING_TO_SHED_MENU_LINE};
+    use common::cli::{derived_menu_line_naming, derived_menu_lines, NOTHING_TO_DELETE_MENU_LINE};
 
     let dir = store_shared_by_three_projects();
     let root = dir.path();
@@ -272,7 +332,7 @@ fn bare_reset_names_the_derived_events_of_its_own_namespace_alone_on_a_store_it_
     let (menu, menu_err, menu_ok) = run_rigger(root, &["reset"]);
     assert_eq!(
         (menu_ok, derived_menu_lines(&menu)),
-        (true, vec![derived_menu_line_naming(12, 1).as_str()]),
+        (true, vec![derived_menu_line_naming(12).as_str()]),
         "the menu names this project's twelve derived events and none of the six its neighbours \
          hold; its stderr: {menu_err}"
     );
@@ -285,35 +345,34 @@ fn bare_reset_names_the_derived_events_of_its_own_namespace_alone_on_a_store_it_
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (shed_ok, shed),
-        (true, migrated_lines(1, 12, 0) + LOG_LEFT_AS_IT_STANDS_LINE),
-        "the derived reset sheds the twelve events the menu named; its stderr: {shed_err}"
+        (true, deleted_line(12) + LOG_LEFT_AS_IT_STANDS_LINE),
+        "the derived reset deletes the twelve events the menu named; its stderr: {shed_err}"
     );
-    let migrated = raw_rows(&db);
+    let deleted = raw_rows(&db);
     assert_eq!(
-        held(&migrated),
-        [2, 5, 3],
-        "the target keeps its run's own event and the one entry, each neighbour every row"
+        held(&deleted),
+        [1, 5, 3],
+        "the target keeps its run's own event, each neighbour every row"
     );
 
     let (after, after_err, after_ok) = run_rigger(root, &["reset"]);
     assert_eq!(
         (after_ok, derived_menu_lines(&after)),
-        (true, vec![NOTHING_TO_SHED_MENU_LINE]),
-        "the menu says none is left to shed, the neighbours' six derived events being no part of \
-         what this project's derived reset sheds; its stderr: {after_err}"
+        (true, vec![NOTHING_TO_DELETE_MENU_LINE]),
+        "the menu says none is left to delete, the neighbours' six derived events being no part \
+         of what this project's derived reset deletes; its stderr: {after_err}"
     );
     assert_eq!(
         raw_rows(&db),
-        migrated,
-        "the menu changes no row once migrated"
+        deleted,
+        "the menu changes no row once deleted"
     );
 }
 
 /// Given one store file holding three projects ([`store_shared_by_three_projects`]), when the
 /// operator runs `rigger validate` in the first, then it exits 0 and warns once naming the twelve
-/// derived events of the one file identity this project's run stream holds and no neighbour's,
-/// and every row of the file stands as it stood; and once `rigger reset --derived` has migrated
-/// this project, `rigger validate` prints no such warning while each neighbour still holds its
+/// derived events this project's run stream holds and no neighbour's, and every row of the file
+/// stands as it stood; and once `rigger reset --derived` has deleted them in this project, `rigger validate` prints no such warning while each neighbour still holds its
 /// own derived events.
 #[test]
 fn validate_warns_of_the_derived_events_of_its_own_namespace_alone_on_a_store_it_shares() {
@@ -339,7 +398,7 @@ fn validate_warns_of_the_derived_events_of_its_own_namespace_alone_on_a_store_it
     let (_, err, ok) = run_rigger(root, &["validate"]);
     assert_eq!(
         (ok, bloat_lines(&err)),
-        (true, vec![bloat_advisory_naming(12, 1).as_str()]),
+        (true, vec![bloat_advisory_naming(12).as_str()]),
         "validate names this project's twelve derived events and none of the six its neighbours \
          hold; its stderr: {err}"
     );
@@ -352,28 +411,28 @@ fn validate_warns_of_the_derived_events_of_its_own_namespace_alone_on_a_store_it
     let (shed, shed_err, shed_ok) = run_rigger(root, &["reset", "--derived"]);
     assert_eq!(
         (shed_ok, shed),
-        (true, migrated_lines(1, 12, 0) + LOG_LEFT_AS_IT_STANDS_LINE),
-        "premise: the derived reset sheds the twelve events the advisory named; its stderr: \
+        (true, deleted_line(12) + LOG_LEFT_AS_IT_STANDS_LINE),
+        "premise: the derived reset deletes the twelve events the advisory named; its stderr: \
          {shed_err}"
     );
-    let migrated = raw_rows(&db);
+    let deleted = raw_rows(&db);
     assert_eq!(
-        rows_held_by_each_sharing_project(&migrated),
-        [2, 5, 3],
-        "premise: the target keeps its run's own event and the one entry, each neighbour every row"
+        rows_held_by_each_sharing_project(&deleted),
+        [1, 5, 3],
+        "premise: the target keeps its run's own event, each neighbour every row"
     );
 
     let (_, after_err, after_ok) = run_rigger(root, &["validate"]);
     assert_eq!(
         (after_ok, bloat_lines(&after_err)),
         (true, vec![""; 0]),
-        "a migrated project draws no warning, the neighbours' six derived events being no part \
-         of what its derived reset sheds; its stderr: {after_err}"
+        "a project whose derived events are deleted draws no warning, the neighbours' six \
+         derived events being no part of what its derived reset deletes; its stderr: {after_err}"
     );
     assert_eq!(
         raw_rows(&db),
-        migrated,
-        "the advisory changes no row once migrated"
+        deleted,
+        "the advisory changes no row once deleted"
     );
 }
 
@@ -416,8 +475,8 @@ fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
     );
     assert_eq!(
         derived_report(&out),
-        migrated_lines(1, 6, 0) + LOG_LEFT_AS_IT_STANDS_LINE,
-        "the composed --derived migration reports exactly what it reports alone"
+        deleted_line(6) + LOG_LEFT_AS_IT_STANDS_LINE,
+        "the composed --derived delete reports exactly what it reports alone"
     );
 }
 
@@ -557,9 +616,8 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// SENTINEL context; these two files are rendered from the REAL one. "The sentinel render
 /// carries the paragraph" and "the committed file equals a fresh real render" together still do
 /// not give "the committed file carries the paragraph", so the shipped bytes are read directly
-/// and held to the things an operator must know before running the migration: WHAT IT CONVERTS,
-/// what it deletes, what it leaves alone, what it reports, WHAT IT COSTS, and that the two modes
-/// compose.
+/// and held to the things an operator must know before running the delete: what it deletes,
+/// what it leaves alone, what it reports, WHAT IT COSTS, and that the two modes compose.
 ///
 /// AND THEN TO THE RENDERER'S OWN TEXT, WORD FOR WORD, which is the assertion that goes red on
 /// staleness: a uniformly stale render satisfies every substring, and so does a stale render
@@ -575,16 +633,16 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
 
         for (fact, needle) in [
             ("name the command", "rigger reset --derived"),
-            ("say which store it migrates", "EVENT LOG"),
-            ("say it runs once", "ONE-TIME MIGRATION"),
-            (
-                "say what it CONVERTS",
-                "rewrites the first row of the file's LATEST derived batch into that \
-                 generation's ledger entry, in place",
-            ),
+            ("say which store it deletes from", "EVENT LOG"),
+            ("say it runs in one transaction", "in one transaction"),
             (
                 "say what it deletes",
-                "deletes every other derived event, so no derived event is left behind",
+                "deletes every derived event of the project's run stream, so no derived event \
+                 is left behind",
+            ),
+            (
+                "say setup runs it",
+                "`rigger setup` runs the same delete itself",
             ),
             ("say what it costs everything else", "byte-for-byte"),
             ("say the file actually shrinks", "shrinks on disk"),
@@ -593,12 +651,8 @@ fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
                 "writes nothing to graph.db",
             ),
             (
-                "say the unkeyed count has its own line",
-                "on its own line, how many of those named no file",
-            ),
-            (
                 "say what a second run reports",
-                "there is no derived event to shed",
+                "there is no derived event to delete",
             ),
             (
                 "say where the compaction stages its copy of the log",
@@ -722,6 +776,7 @@ fn docs_context_for_paragraph_comparison() -> rigger::docs::DocsContext {
         watch_poll_interval_secs: 999_999,
         reject_recurrence_diagnose_threshold: 999,
         grep_guard_message: "not the real grep-guard message".into(),
+        global_constraints: vec!["not a real constraint".into()],
     }
 }
 
@@ -861,6 +916,28 @@ fn seed_both_stores(root: &Path, rounds: u64) {
     common::fixtures::folds(&graph, &written);
 }
 
+/// A record `reset --runs` pruned from the graph still reads by its id: `rigger graph --show`
+/// falls back to the event log, which the prune never touches, and prints the record exactly as
+/// it printed the graph's node before the prune, with one line saying where it was read from.
+#[test]
+fn graph_show_reads_a_pruned_record_from_the_event_log() {
+    let project = pinned_project();
+    seed_both_stores(project.path(), 1);
+    let show = || {
+        let (out, err, ok) = run_rigger(project.path(), &["graph", "--show", DEAD_DECISION]);
+        assert!(ok, "graph --show must succeed; stderr: {err}\n{out}");
+        out
+    };
+    let before = show();
+    let (out, err, ok) = run_rigger(project.path(), &["reset", "--runs"]);
+    assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
+    assert_eq!(
+        show(),
+        format!("{before}  (read from the event log: the graph no longer holds this record)\n"),
+        "before the prune the graph printed: {before:?}"
+    );
+}
+
 /// `rigger reset` drives TWO modes over TWO stores, and each one tells the operator it left the
 /// other alone: `reset --runs` prints that it deletes no event from the log, and the shipped
 /// `--derived` guidance says it writes nothing to graph.db. Both claims are load-bearing
@@ -935,13 +1012,13 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
          it' is a claim about a mode that did nothing; it dropped {dropped:?}"
     );
 
-    // `--derived` MIGRATES THE LOG AND ONLY THE LOG. The shipped guidance tells an operator it
+    // `--derived` DELETES FROM THE LOG AND ONLY THE LOG. The shipped guidance tells an operator it
     // writes nothing to graph.db, so the live graph is unchanged.
     let (out, err, ok) = run_rigger(derived_only.path(), &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
         out,
-        migrated_lines(1, 2 * ROUNDS as usize, 0) + LOG_LEFT_AS_IT_STANDS_LINE
+        deleted_line(2 * ROUNDS as usize) + LOG_LEFT_AS_IT_STANDS_LINE
     );
     assert_eq!(
         graph_rows(&rigger_file(derived_only.path(), "graph.db")),
@@ -952,14 +1029,8 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let after_derived_log = raw_rows(&rigger_file(derived_only.path(), "events.db"));
     assert_eq!(
         seed_log.len() - after_derived_log.len(),
-        2 * ROUNDS as usize - 1,
-        "the migration keeps one row of the derived index, rewritten into its entry, and sheds \
-         the rest; it said: {out:?}"
-    );
-    assert_eq!(
-        entries(&after_derived_log),
-        vec![entry_at(seed_log[seed_log.len() - 2].0, "")],
-        "the entry stands at the first row of the latest recording of the batch"
+        2 * ROUNDS as usize,
+        "the delete removes every row of the derived index; it said: {out:?}"
     );
 
     // COMPOSED: exactly the two effects. The log is what `--derived` alone leaves and the graph is
@@ -997,13 +1068,12 @@ fn git_in(root: &Path, args: &[&str]) {
 }
 
 // ---------------------------------------------------------------------------------------
-// 16. The store the command migrates is the store it walked up to.
+// 16. The store the command deletes from is the store it walked up to.
 //
 // `cmd_reset` resolves the store by walking up from the working directory, runs the project
 // identity migration against that store, and only then the mode. From a worktree nested inside
 // the project the walk reaches the project's store, so everything the command reads - the
-// identity, the run stream and the tree each file is read from - is the store's own, never the
-// working directory's.
+// identity and the run stream - is the store's own, never the working directory's.
 // ---------------------------------------------------------------------------------------
 
 /// The durable identity the fixtures below mint. A fixed string rather than a derivation of the
@@ -1045,19 +1115,8 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     (legacy, minted)
 }
 
-/// What the project's tree holds at `src/a.rs`, and what the nested worktree holds at the same
-/// path: two different contents, so the blob the entry records says which tree was read.
-const TREE_BODY: &[u8] = b"pub fn alpha() {}\n";
-const WORKTREE_BODY: &[u8] = b"pub fn alpha() { let _nested = 1; }\n";
-
-/// Write [`TREE_BODY`] at `src/a.rs` under `root`: the file of the batch the seeding records.
-fn plant_the_tree_body(root: &Path) {
-    std::fs::create_dir_all(root.join("src")).expect("create src");
-    std::fs::write(root.join("src").join("a.rs"), TREE_BODY).expect("write the tree's file");
-}
-
 #[test]
-fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_to() {
+fn a_reset_from_a_nested_worktree_deletes_from_the_store_it_walked_up_to() {
     const ROUNDS: u64 = 4;
 
     // Two identically seeded projects. One is reset from its own root, the other from a worktree
@@ -1068,9 +1127,6 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
     let (legacy_a, minted_a) = seed_project_under_the_legacy_namespace(from_root.path(), ROUNDS);
     let (legacy_b, minted_b) =
         seed_project_under_the_legacy_namespace(from_worktree.path(), ROUNDS);
-    for root in [from_root.path(), from_worktree.path()] {
-        plant_the_tree_body(root);
-    }
 
     let nested = from_worktree.path().join("wt");
     git_in(
@@ -1081,16 +1137,6 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
         !nested.join(".rigger").exists(),
         "the nested worktree must carry no store of its own, or the walk would stop at a shadow \
          instead of reaching the project's store"
-    );
-    std::fs::create_dir_all(nested.join("src")).expect("create the worktree's src");
-    std::fs::write(nested.join("src").join("a.rs"), WORKTREE_BODY)
-        .expect("write the worktree's file");
-    let tree_blob = rigger::worktree::hash_blob(from_worktree.path(), TREE_BODY)
-        .expect("hash the tree's bytes");
-    assert_ne!(
-        tree_blob,
-        rigger::worktree::hash_blob(&nested, WORKTREE_BODY).expect("hash the worktree's bytes"),
-        "the two trees must hold different bytes, or the blob cannot say which was read"
     );
 
     let before_a = raw_rows(&rigger_file(from_root.path(), "events.db"));
@@ -1110,35 +1156,27 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
          project's store from there: {err_b}\n{out_b}"
     );
 
-    // THE MIGRATION DID THE WORK, from the worktree exactly as from the root. A report of
-    // nothing to shed here is the failure this test exists for: it is what an identity
-    // migration anchored at the process's working directory produces.
+    // THE DELETE DID THE WORK, from the worktree exactly as from the root. A report of nothing
+    // to delete here is the failure this test exists for: it is what an identity migration
+    // anchored at the process's working directory produces.
     for (where_, out) in [("the root", &out_a), ("a nested worktree", &out_b)] {
         assert_eq!(
             derived_report(out),
-            migrated_lines(1, 2 * ROUNDS as usize, 0) + LOG_LEFT_AS_IT_STANDS_LINE,
-            "reset --derived run from {where_} must migrate the legacy-namespaced history it \
+            deleted_line(2 * ROUNDS as usize) + LOG_LEFT_AS_IT_STANDS_LINE,
+            "reset --derived run from {where_} must delete from the legacy-namespaced history it \
              walked up to; got {out:?}"
         );
     }
 
-    // THE IDENTITY MIGRATION MOVED THE HISTORY rather than leaving it stranded, and THE BLOB IS
-    // THE TREE'S: each entry records the object id of the bytes under the tree the store belongs
-    // to, which from the nested worktree is not the working directory's own top level.
-    for (where_, root, legacy, minted, before) in [
-        (
-            "the root",
-            from_root.path(),
-            &legacy_a,
-            &minted_a,
-            &before_a,
-        ),
+    // THE IDENTITY MIGRATION MOVED THE HISTORY rather than leaving it stranded, and the delete
+    // left the run's own event alone.
+    for (where_, root, legacy, minted) in [
+        ("the root", from_root.path(), &legacy_a, &minted_a),
         (
             "a nested worktree",
             from_worktree.path(),
             &legacy_b,
             &minted_b,
-            &before_b,
         ),
     ] {
         let after = raw_rows(&rigger_file(root, "events.db"));
@@ -1152,10 +1190,10 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
             "every surviving row must live under the minted namespace after a reset from {where_}"
         );
         assert_eq!(
-            entries(&after),
-            vec![entry_at(before[before.len() - 2].0, &tree_blob)],
-            "the entry a reset from {where_} writes stands at the first row of the latest \
-             recording and records the blob of the file under the store's own tree"
+            after.iter().map(|r| r.2.as_str()).collect::<Vec<_>>(),
+            ["RunStarted", rigger::contextgraph::TYPE_DECISION_MADE],
+            "a reset from {where_} leaves the run's own event and the identity migration's record, \
+             and no derived event"
         );
     }
 
@@ -1319,7 +1357,7 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(
         ok,
-        "the migration must succeed; stdout {out:?}, stderr {err:?}"
+        "the delete must succeed; stdout {out:?}, stderr {err:?}"
     );
 
     let pages_after = pragma_i64(&db, "page_count");
@@ -1328,8 +1366,8 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
         .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"));
     assert_eq!(
         out,
-        migrated_lines(1, 8, 0) + &reclaimed_line(reclaimed),
-        "the migration's counts, then the one line of the measured reclamation"
+        deleted_line(8) + &reclaimed_line(reclaimed),
+        "the delete's count, then the one line of the measured reclamation"
     );
     assert!(
         pages_after < pages_before,
@@ -1364,60 +1402,22 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     );
 }
 
-/// Run again on the migrated log there is nothing to shed, and the log is left as it stands.
+/// Run again once the derived events are deleted there is nothing to delete, and the log is left
+/// as it stands.
 #[test]
-fn a_second_reset_of_a_migrated_log_sheds_nothing_and_leaves_the_file_as_it_stands() {
+fn a_second_reset_deletes_nothing_and_leaves_the_file_as_it_stands() {
     let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
     let (first, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert!(ok, "the migration must succeed; stderr: {err}\n{first}");
-    let migrated = raw_rows(&rigger_file(root, "events.db"));
+    assert!(ok, "the delete must succeed; stderr: {err}\n{first}");
+    let deleted = raw_rows(&rigger_file(root, "events.db"));
 
     let (again, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "the second run must succeed; stderr: {err}\n{again}");
     assert_eq!(
         again,
-        NOTHING_TO_SHED_LINE.to_string() + LOG_LEFT_AS_IT_STANDS_LINE
+        NOTHING_TO_DELETE_LINE.to_string() + LOG_LEFT_AS_IT_STANDS_LINE
     );
-    assert_eq!(raw_rows(&rigger_file(root, "events.db")), migrated);
-}
-
-// ---------------------------------------------------------------------------------------
-// 24. THE BLOB IS WRITTEN: the entry the migration writes names a blob the project's object
-// database holds (spec 124, criterion 2).
-// ---------------------------------------------------------------------------------------
-
-/// GIVEN a project inside a repository whose object database holds no object, its log holding
-/// one pre-ledger batch of `src/a.rs` and its tree that file's bytes, uncommitted,
-/// WHEN the operator runs `rigger reset --derived`,
-/// THEN the migration writes the batch's ledger entry under the id git gives the bytes, and the
-/// object database holds that one object, the bytes the tree holds.
-#[test]
-fn a_reset_writes_the_blob_of_the_entry_it_migrates_into_the_object_database() {
-    let dir = temp_rigger_project();
-    let root = dir.path();
-    seed_project(root, 1);
-    plant_the_tree_body(root);
-    assert_holds_no_object(root);
-    let blob = git_hash_object(root, "src/a.rs", false);
-
-    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-
-    assert_eq!(
-        (ok, out),
-        (true, migrated_lines(1, 2, 0) + LOG_LEFT_AS_IT_STANDS_LINE),
-        "the migration converts the one batch; stderr: {err}"
-    );
-    assert_eq!(
-        entries(&raw_rows(&rigger_file(root, "events.db"))),
-        // The batch's first row, after the run's start at position 1.
-        vec![entry_at(2, &blob)],
-        "the entry records the blob of the bytes the tree holds"
-    );
-    assert_eq!(
-        (object_ids(root), held_blob(root, &blob)),
-        (BTreeSet::from([blob.clone()]), Some(TREE_BODY.to_vec())),
-        "the object database holds the entry's blob, the tree's bytes, and no other object"
-    );
+    assert_eq!(raw_rows(&rigger_file(root, "events.db")), deleted);
 }

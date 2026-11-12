@@ -20,10 +20,10 @@
 //! identity claim whose Design and Notes never decide removal (F11), and the corpus snapshot
 //! pins the F10 and F11 totals.
 
-mod common;
+use crate::common;
 
-use common::cli::run_rigger;
 use common::cli::temp_project;
+use common::cli::{run_on_arms, run_rigger};
 use common::repo::repo_text;
 use std::path::Path;
 
@@ -1789,12 +1789,12 @@ rigger::test_cases! {
 
 /// Spec 112, *THE VALIDATE TELLS*: the in-run `load_criteria` prints the preflight tells
 /// through the same formatter `rigger validate` uses. Given a spec whose criteria 1 and 2
-/// measure `rigger step` and whose criterion 3 claims a byte-identical rebuild its Design
-/// never decides removal for, when the operator launches `rigger step --spec` on it, then
-/// stderr carries the twin and both F11 lines in full before the launch refuses for an
-/// unrelated reason (no reachable base), so no agent ever spawns.
+/// measure `rigger status` and whose criterion 3 claims a byte-identical rebuild its Design
+/// never decides removal for, when the operator launches `rigger run` on it, then stderr
+/// carries the twin and both F11 lines in full before the launch refuses for an unrelated
+/// reason (no reachable base), so no agent ever spawns.
 #[test]
-fn step_prints_the_preflight_tells_before_the_launch() {
+fn a_run_prints_the_preflight_tells_before_the_launch() {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
@@ -1802,21 +1802,17 @@ fn step_prints_the_preflight_tells_before_the_launch() {
     std::fs::write(
         root.join("spec.md"),
         "# Widget\n\n## Design\n\nThe step reads the store once.\n\n## Done when\n\n\
-         - [ ] `rigger step` reads no `derived` event. This criterion OWNS the exclusion.\n\
-         - [ ] `rigger step` costs at most one read. This criterion OWNS the query.\n\
+         - [ ] `rigger status` reads no `derived` event. This criterion OWNS the exclusion.\n\
+         - [ ] `rigger status` costs at most one read. This criterion OWNS the query.\n\
          - [ ] the rebuilt graph is byte-identical to the original. This criterion OWNS the \
          rebuild.\n",
     )
     .unwrap();
-    let (_out, err, ok) = run_rigger(
+    let (_out, err, ok, _fake) = run_on_arms(
         root,
-        &[
-            "step",
-            "--spec",
-            "spec.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
+        &["run", "spec.md", "--base", "origin/does-not-exist"],
+        &root.join("scratch"),
+        "",
     );
     assert!(
         !ok && err.contains("no reachable base"),
@@ -1828,7 +1824,7 @@ fn step_prints_the_preflight_tells_before_the_launch() {
             "warning: spec spec.md: F10",
             &[
                 "warning: spec spec.md: F10 landing-order circularity (criterion 2): twin \
-               measured surface `rigger step` with criterion 1; if either lands first without \
+               measured surface `rigger status` with criterion 1; if either lands first without \
                the other, does its own text hold? simulate the landing order and split \
                ownership at the seam in Design",
             ],
@@ -2027,7 +2023,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 140,
+        shape_total, 144,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
@@ -2036,11 +2032,12 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          single physical lines - and therefore over-long to this heuristic - so their full \
          text survives the first-physical-line extractor truncation that spec 80 itself \
          fixes; once 80's fix is in the operator binary, new specs wrap normally again and \
-         this pin only ever decreases from those files, plus 54 hits added by \
+         this pin only ever decreases from those files, plus 58 hits added by \
          specs/120-rigger-is-language-and-process-agnostic.md (8 F2, 15 F6) and \
-         specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (12 F2, 19 F6) \
+         specs/121-every-prompt-the-binary-ships-is-contract-or-framing.md (15 F2, 20 F6) \
          (operator review 2026-10-20: multi-clause and over-long criteria, advisory output on \
-         the two specs' own text), plus 4 hits added by \
+         the two specs' own text; specs/121's preflight rewrite adds 3 F2 and 1 F6 of the same \
+         kind), plus 4 hits added by \
          specs/123-the-spec-critique-passes-to-exhaustion.md (0 F2, 4 F6: its four criteria \
          are over-long, advisory output on the spec's own text); a changed total otherwise means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \

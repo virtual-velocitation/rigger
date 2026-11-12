@@ -32,7 +32,7 @@ use std::process::Output;
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
-mod common;
+use crate::common;
 use common::cli::make_store_conn_unreadable;
 use common::cli::rigger_file;
 use common::cli::temp_rigger_project;

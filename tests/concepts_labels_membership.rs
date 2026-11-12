@@ -2,7 +2,7 @@
 //! its most-central DOCUMENT's title as its label (lexicographic tie-break, document-first over a
 //! rationale, with a deterministic fallback when no document is present), and a code node reached by
 //! no intent edge belongs to NO concept. They run OUTSIDE the crate, over the library's PUBLIC
-//! derivation surface (`rigger::concepts::{intent_layer, derive, events}`), so they pin the label and
+//! derivation surface (`rigger::concepts::{intent_layer, derive}`), so they pin the label and
 //! membership CONTRACT a downstream consumer relies on, not an internal detail:
 //!
 //!  - the LABEL is chosen by intent-degree, ties broken to the lexicographically-smallest document id
@@ -12,8 +12,6 @@
 //!    a local comment does not.
 //!  - a DOCUMENTLESS concept still gets a deterministic label: its most-central member's `name`, else
 //!    its id - never empty, never first-seen-by-id.
-//!  - the derivation is the LABEL AUTHORITY: the fold carries the pass-computed label verbatim onto
-//!    the concept super-node rather than recomputing it, so the label survives the log round trip.
 //!  - HONEST MEMBERSHIP: a code node reached only by a non-intent edge (a dev-loop
 //!    `decision --GOVERNS--> file`, harness machinery) never enters the intent layer, so it joins no
 //!    concept - a concept is an idea, not a bucket of leftovers.
@@ -24,17 +22,16 @@
 //! file-to-file edge never enters it) and a PURE STAR (one hub, degree-1 leaves) for the single-hub
 //! cases. Every symbol used is always-compiled, so these run identically in BOTH feature lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::pair_map;
-use rigger::concepts::{derive, events, intent_layer, Derivation, DEFAULT_RESOLUTION};
+use rigger::concepts::{derive, intent_layer, Derivation, DEFAULT_RESOLUTION};
 use rigger::contextgraph::{
-    Graph, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE,
-    KIND_RATIONALE, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
+    Graph, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_HANDBOOK_RULE, KIND_RATIONALE,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TIER_EXTRACTED,
 };
-use rigger::eventstore::Event;
 
 /// Derive concepts over `g`'s intent layer at the default grain - the public pass the criterion owns.
 fn derive_default(g: &Graph) -> Derivation {
@@ -46,14 +43,6 @@ fn derive_default(g: &Graph) -> Derivation {
 fn label_of(d: &Derivation, member: &str) -> String {
     let concept = &pair_map(&d.members)[member];
     pair_map(&d.concepts)[concept].clone()
-}
-
-/// Fold `events` into a FRESH in-memory projection (positions assigned in order, as a rebuild replays
-/// them) and return the whole live graph - so a test can read what the fold actually persisted.
-fn fold(events: &[Event]) -> Graph {
-    common::fixtures::fold_events(events.iter().cloned())
-        .whole()
-        .unwrap()
 }
 
 /// A concept holding a titled design-doc AND a MORE-CENTRAL rationale in ONE connected region. The
@@ -201,32 +190,6 @@ fn a_rationale_is_not_a_label_source() {
         label_of(&d, "docs/kg.md"),
         "The knowledge graph",
         "the titled document names the concept, never the more-central rationale"
-    );
-}
-
-#[test]
-fn the_folded_concept_node_carries_the_pass_computed_document_label() {
-    // The derivation is the LABEL AUTHORITY: it computes each concept's label once (the most-central
-    // document's title) and the events carry it onto the folded concept super-node, which the fold
-    // stores verbatim rather than recomputing from the graph. Folding a concept that holds a titled
-    // doc plus a more-central rationale, the concept node's `label` attr is the DOC's title - so the
-    // honest, document-first label survives the round trip through the event log into the graph.
-    let g = doc_with_more_central_rationale();
-    let d = derive_default(&g);
-    let concept_id = pair_map(&d.members)["docs/kg.md"].clone();
-
-    let folded = fold(&events(&d));
-    let concept_node = folded
-        .nodes
-        .iter()
-        .find(|n| n.id == concept_id && n.kind == KIND_CONCEPT)
-        .expect("the concept super-node folded from the recorded events");
-    assert_eq!(
-        concept_node.attrs.get("label").map(String::as_str),
-        Some("The knowledge graph"),
-        "the fold carries the pass-computed document label onto the concept node, never a recomputed \
-         (rationale) one; got {:?}",
-        concept_node.attrs
     );
 }
 

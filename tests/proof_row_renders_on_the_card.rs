@@ -1,8 +1,8 @@
 //! Periphery (integration) test for spec 86 criterion 2's METADATA CARD client seam: the served
 //! page's own `renderCard` draws a PROOF row on a code-entity subject's card - "proven by N tests"
 //! with the evidence `file:line`s on expand, or the explicit amber "no test reaches this entity"
-//! state when `proven_by` is `0`. Absence of proof is itself information the audit (spec 85) and
-//! reviewers want, so the empty state renders explicitly rather than hiding the row - the ONE
+//! state when `proven_by` is `0`. Absence of proof is itself information reviewers
+//! want, so the empty state renders explicitly rather than hiding the row - the ONE
 //! behavioral fact a structural grep on the served bytes cannot make (a grep sees the markup exists;
 //! it cannot prove `renderCard` actually chooses the right branch for a given `Card`). Driven by the
 //! served page's OWN script under node's built-in `vm` (hermetic, no npm) through a DOM shim,
@@ -11,12 +11,11 @@
 //! integration test compiles as its own independent crate, so the harness plumbing cannot be shared
 //! via a plain `use`).
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 
-#[path = "common/vm_harness.rs"]
-mod vm_harness;
+use crate::vm_harness;
 use vm_harness::vm_harness;
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /

@@ -1,5 +1,6 @@
-//! Shared test support for the integration suites - compiled into each suite that declares
-//! `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
+//! Shared test support for the integration suites - compiled once into `all` (a suite there
+//! reaches it with `use crate::common;`) and into each suite with its own `[[test]]` entry that
+//! declares `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance: an item used by one suite is genuinely unused in the next).
 //!
 //! Its first, still-largest concern is WHERE the product binary is: a shared home because it
@@ -165,8 +166,13 @@ pub fn rigger_bin() -> PathBuf {
 /// that spawn's and subject it to the emit core's id-ownership check. A test that drives the
 /// stamp re-sets it with `.env(...)` on the returned `Command`, which wins.
 ///
+/// Also strips an ambient [`rigger::gate_channel::GATE_SOCKET_ENV`]: a suite run from inside a
+/// unit's spawn inherits the address of the live driver's gate socket, so every fixture
+/// `rigger gate` would ask that driver instead of the fixture's own. A test that drives the
+/// address re-sets it with `.env(...)`, which wins.
+///
 /// Also pins [`KEEP_AWAKE_ENV`] to a recording fake writing under [`test_cache_home`] (spec
-/// 105, KEEP-AWAKE): a `rigger run` or `rigger serve` left on the OS adapter would hold the
+/// 105, KEEP-AWAKE): a `rigger run` left on the OS adapter would hold the
 /// operator's real machine awake, or print the keep-awake unavailable line on a host lacking the
 /// facility, so no test outside the adapter's own rows depends on the host's power facility. A
 /// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,
@@ -178,7 +184,7 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
 /// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
@@ -202,6 +208,7 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env_remove(rigger::driver::SPAWN_ENV);
+    cmd.env_remove(rigger::gate_channel::GATE_SOCKET_ENV);
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     let record = test_cache_home().join("keep-awake");
     cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
@@ -522,57 +529,6 @@ pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
         .collect();
     keys.sort_unstable();
     keys
-}
-
-/// Every event the production whole-project ingest
-/// ([`rigger::grounder::symbols::events::project_batches`]) emits for the project at `root`, its
-/// per-file batches flattened in their sorted file order.
-#[cfg(feature = "symbols")]
-pub fn project_events(root: &str) -> Vec<rigger::eventstore::Event> {
-    rigger::grounder::symbols::events::project_batches(root)
-        .into_iter()
-        .flat_map(|(_, batch, _)| batch)
-        .collect()
-}
-
-/// The payloads of every `type_` event the production whole-project ingest emits for `root`.
-#[cfg(feature = "symbols")]
-pub fn project_payloads(root: &Path, type_: &str) -> Vec<serde_json::Value> {
-    fixtures::payloads_of_type(&project_events(root.to_str().unwrap()), type_)
-}
-
-/// The `CodeEntityExtracted` payloads the production whole-project ingest emits for `root`
-/// ([`project_payloads`]).
-#[cfg(feature = "symbols")]
-pub fn code_entity_payloads(root: &Path) -> Vec<serde_json::Value> {
-    project_payloads(root, rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED)
-}
-
-/// A payload's `name` and one key's JSON value, `None` when it has no such key.
-pub type NameAndKey = (String, Option<serde_json::Value>);
-
-/// Each of `payloads` as its `name` and its `key` ([`NameAndKey`]).
-pub fn names_and_key(payloads: &[serde_json::Value], key: &str) -> Vec<NameAndKey> {
-    payloads
-        .iter()
-        .map(|payload| {
-            (
-                payload["name"].as_str().unwrap().to_string(),
-                payload.get(key).cloned(),
-            )
-        })
-        .collect()
-}
-
-/// `payload`, a `CodeEntityExtracted` payload's JSON, read as the public payload type, beside
-/// whether that type serializes back to `payload` itself.
-pub fn code_entity_round_trip(
-    payload: &serde_json::Value,
-) -> (rigger::contextgraph::CodeEntityExtracted, bool) {
-    let typed: rigger::contextgraph::CodeEntityExtracted =
-        serde_json::from_value(payload.clone()).unwrap();
-    let back = serde_json::to_value(&typed).unwrap() == *payload;
-    (typed, back)
 }
 
 /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt` (so

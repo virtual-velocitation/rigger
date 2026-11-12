@@ -43,14 +43,15 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
         panic!("the served route reads no run-scoped store input")
     };
-    let graph_provider = |_instance: Option<&str>| -> Graph {
+    let graph_provider = |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
         panic!("the served route opens no whole-graph projection")
     };
     let calls_provider = |_instance: Option<&str>,
                           _seeds: &[String],
                           _dir: Direction,
                           _depth: i64,
-                          _floor: &str|
+                          _floor: &str,
+                          _tests: rigger::code_view::Tests|
      -> CallGraph { panic!("the served route opens no calls projection") };
     let instances_provider =
         || -> Vec<InstanceView> { panic!("the served route reads no instance registry") };
@@ -106,16 +107,26 @@ pub fn get_raw(target: &str) -> Vec<u8> {
 /// here is always this attempt's own server's.
 pub fn try_fetch_over<G>(path: &str, graph_provider: G, poll_graph: Graph) -> Option<String>
 where
-    G: Fn(Option<&str>) -> Graph + Send + 'static,
+    G: Fn(Option<&str>, rigger::code_view::Tests) -> Graph + Send + 'static,
 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let addr = listener.local_addr().ok()?;
 
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
+        Ok((
+            Vec::new(),
+            poll_graph.clone().into(),
+            Vec::new(),
+            HashMap::new(),
+        ))
     };
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+        |_: Option<&str>,
+         _: &[String],
+         _: Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| CallGraph::default();
     let instances_provider = Vec::new;
     // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     std::thread::spawn(move || {
@@ -165,8 +176,10 @@ pub fn fetch_with_retry(what: &str, attempt: impl Fn() -> Option<String>) -> Str
 }
 
 /// A whole-graph provider serving `graph` for every instance.
-pub fn graph_provider_of(graph: Graph) -> impl Fn(Option<&str>) -> Graph + Send + 'static {
-    move |_instance: Option<&str>| graph.clone()
+pub fn graph_provider_of(
+    graph: Graph,
+) -> impl Fn(Option<&str>, rigger::code_view::Tests) -> Graph + Send + 'static {
+    move |_instance: Option<&str>, _tests: rigger::code_view::Tests| graph.clone()
 }
 
 /// `GET path` over a real loopback socket against a dash whose whole-graph and state-poll

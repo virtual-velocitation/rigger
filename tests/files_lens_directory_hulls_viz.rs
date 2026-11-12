@@ -28,7 +28,7 @@
 //! the other's test - proving the overview alone would leave the re-projection panel's directory hulls
 //! (spec 55's subject x lens surface, e.g. a concept re-grained by files) structurally unguarded.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 

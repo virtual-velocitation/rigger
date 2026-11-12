@@ -14,7 +14,7 @@
 //!    cost with, and nothing pins that it records each call exactly - a failed one and a
 //!    subscription's deliveries included - and forwards it unchanged.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{drop_the_log, ev, CountedRead, ReadCountingStore};
 use rigger::eventstore::namespace::Namespaced;

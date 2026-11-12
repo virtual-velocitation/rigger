@@ -47,11 +47,12 @@
 //! names `a-residue.rs` and the residue file survives into the integrated tree). Restoring
 //! the call verbatim (`git diff` on `crates/` clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::fixtures::test_spawn_host;
 use common::git::git_ok;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{
@@ -181,8 +182,10 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     run(&cfg, &deps1).expect(
         "a same-chunk sibling park on a lenses-only panel must not fail the run - the round \
@@ -219,8 +222,10 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps2).expect("the resumed window must finish the round");
     assert_eq!(

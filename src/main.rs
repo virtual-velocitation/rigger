@@ -1,8 +1,8 @@
 //! The harness CLI and the single composition root: it constructs the concrete
 //! adapters (event store, agent driver, grounder, projector) and injects them into
 //! the conductor, which depends only on ports. `rigger run` executes the configured
-//! workflow - the agent driver (`--driver cli|workflow`) and the event store
-//! (`--eventstore sqlite|kurrentdb`) are selected by flag; `rigger graph` inspects
+//! workflow, spawning each agent as its own host CLI process - the event store
+//! (`--eventstore sqlite|kurrentdb`) is selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.
 
 mod cli;
@@ -18,16 +18,11 @@ use cli::*;
 // git) - but only from `validate`'s comparison path, never from `rigger version`'s own
 // self-report, which stays the compile-time-only `GITSEMVER_VERSION` const below. The
 // Global constraint ("version values are computed at COMPILE time only - no runtime git
-// or tool invocation") reads narrowly, scoped to that self-report: `git_is_ancestor`
-// (below) already shells to git live inside this exact command for the analogous
-// spec-18-criterion-9 workflow-drift ordering diagnostic, an established precedent for a
-// runtime tool/git call from `validate` for comparison purposes.
+// or tool invocation") reads narrowly, scoped to that self-report: a runtime tool/git call
+// from `validate` for comparison purposes is in bounds.
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
-#[cfg(test)]
-#[path = "../tests/common/source_audit.rs"]
-mod source_audit;
 #[cfg(test)]
 #[path = "../tests/common/fixtures/mod.rs"]
 mod test_support;
@@ -36,20 +31,13 @@ mod test_support;
 /// subcommand names: the runtime reads it (the unknown-command help below names the
 /// known commands from it) and `rigger docs` reads it so the generated discipline's
 /// command list is code-derived, not hand-copied. Keep it in step with the `main`
-/// dispatch match below - the same must-agree discipline [`RUN_BRANCH`] keeps with the
-/// JS driver. `docs_context` and the `commands_registry_agrees_with_dispatch` test guard
+/// dispatch match below. `docs_context` and the `commands_registry_agrees_with_dispatch` test guard
 /// it against drift.
 const SUBCOMMANDS: &[&str] = &[
     "run",
-    "step",
     "resume-unit",
     "hold",
     "release",
-    "reported",
-    "prompt",
-    "scratch",
-    "serve",
-    "workflow",
     "graph",
     "stats",
     "canary",
@@ -59,9 +47,8 @@ const SUBCOMMANDS: &[&str] = &[
     "dash",
     "watch",
     "ground",
-    "reindex",
-    "symbols-index",
     "emit",
+    "gate",
     "progress",
     "result",
     "peers",
@@ -84,7 +71,7 @@ const SUBCOMMANDS: &[&str] = &[
 /// The subcommands whose arguments are not their own flags, so a `-h` or `--help` among them is
 /// one of those arguments, handed over like any other, never a request for help:
 /// - `emit`, `result` and `progress` take a payload recorded as given: an event's type and JSON
-///   body, an agent's output or failure text and its JSON meta, an activity line.
+///   body, an agent's output or failure text, an activity line.
 /// - `ground` takes a free-text query, and `--help` is a fair thing to look up.
 /// - `mcp`, `grep-guard`, `guard-write` and `hook` are launched by the host, from the argv its
 ///   server or hook registration composes, and the host reads their answer. `guard-write` fails
@@ -142,15 +129,9 @@ fn main() {
     }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
-        "step" => cmd_step(&args[2..]),
         "resume-unit" => cmd_resume_unit(&args[2..]),
         "hold" => cmd_hold(&args[2..]),
         "release" => cmd_release(&args[2..]),
-        "reported" => cmd_reported(&args[2..]),
-        "prompt" => cmd_prompt(&args[2..]),
-        "scratch" => cmd_scratch(&args[2..]),
-        "serve" => cmd_serve(&args[2..]),
-        "workflow" => cmd_workflow(&args[2..]),
         "graph" => cmd_graph(&args[2..]),
         "stats" => cmd_stats(&args[2..]),
         "canary" => cmd_canary(&args[2..]),
@@ -160,9 +141,8 @@ fn main() {
         "dash" => cmd_dash(&args[2..]),
         "watch" => cmd_watch(&args[2..]),
         "ground" => cmd_ground(&args[2..]),
-        "reindex" => cmd_reindex(&args[2..]),
-        "symbols-index" => cmd_symbols_index(&args[2..]),
         "emit" => cmd_emit(&args[2..]),
+        "gate" => cmd_gate(&args[2..]),
         "progress" => cmd_progress(&args[2..]),
         "result" => cmd_result(&args[2..]),
         "peers" => cmd_peers(&args[2..]),
@@ -210,17 +190,8 @@ const USAGE_TEXT: &str =
     "rigger - a config-driven, event-sourced multi-agent dev-loop harness\n\n\
 usage:\n  \
 rigger run [spec] [opts]    run the workflow (opts below)\n  \
-rigger step [--spec <path>]      advance the run one frontier via the replay driver\n            \
-[--base <ref>]        and print the newly parked spawn wave + a done flag\n                              \
-as JSON. --base (default origin/main) anchors a NEW run\n                              \
-branch; if it is unresolvable the branch is created off\n                              \
-HEAD. An existing run branch is reused, never reset.\n                              \
---fresh begins a NEW run for the spec even if the latest\n                              \
-matches (pass on the first step to restart a wedged run);\n                              \
---rebase-definition accepts a drifted definition and\n                              \
-continues, else a live-run step HALTS on definition drift\n  \
 rigger resume-unit <unit>   give an escalated unit of the current run more attempts\n            \
-[--attempts <n>]  (default 1) on its same branch: the next `rigger step`\n                              \
+[--attempts <n>]  (default 1) on its same branch: the next `rigger run`\n                              \
 re-parks its implementer there. Refuses, recording\n                              \
 nothing, when the unit is not escalated or its branch\n                              \
 is gone\n  \
@@ -230,32 +201,16 @@ new run, or `rigger run` reaching done does. Refuses,\n                         
 recording nothing, when no run is live\n  \
 rigger release              end the current run's hold, whichever writer declared\n                              \
 it; with no hold open it records nothing and says so\n  \
-rigger reported <id>        exit 0 iff spawn <id> already has a recorded result in\n                              \
-this project's run stream (else non-zero). A read-only check\n                              \
-of whether a spawn reported yet; the death courier records\n                              \
-atomically instead via `rigger result --if-absent`\n  \
-rigger prompt <id>          print the parked spawn's full prompt (persona + task).\n                              \
-The step wave is a slim manifest; each worker fetches its\n                              \
-own prompt from the log by spawn id (spawn-by-reference);\n                              \
-it refuses a spawn that already ended on a real result\n  \
-rigger scratch <id>         print spawn <id>'s own rigger-assigned scratch container\n                              \
-(the exact dir the per-spawn reclaim reaps at its terminus);\n                              \
-a worker points agent-created scratch and manual\n                              \
-CARGO_TARGET_DIR there instead of an unbucketed literal\n  \
-rigger workflow [spec]      turn-key: launch the per-project Node driver, which\n                              \
-spawns `rigger serve`, runs each agent via the Agent\n                              \
-SDK, and drives the loop (one command; run `rigger\n                              \
-setup` first - it provisions the driver in .rigger/shim/)\n  \
-rigger serve [opts]         run as an MCP server the driver connects to\n  \
+rigger graph --lookup <term>... answer each term from the graph, your tree and its prose\n  \
 rigger graph --around <id>  print the context subgraph around a node\n  \
 rigger graph --show <entity> print an entity's definition site + line-numbered body\n                              \
 (the text half of lookup; resolves a full id, a bare name or a path)\n  \
-rigger graph build          fold the project's source into the graph from a cold\n                              \
-checkout (no run required)\n  \
-rigger graph communities    derive the code lens's coupling communities offline and\n                              \
-[--resolution <r>]          record them as events (deterministic; default r=1.0)\n  \
-rigger graph concepts       derive the concepts lens's intent-layer grouping offline\n                              \
-[--resolution <r>]          and record them as events (deterministic; default r=1.0)\n  \
+rigger graph build          advance the project's code store to the head, from a\n                              \
+cold checkout or a live one (no run required)\n  \
+rigger graph communities    print the code store's coupling communities, read-only\n                              \
+[--resolution <r>]          (stored at the default r=1.0; any other r is computed)\n  \
+rigger graph concepts       print the code store's intent-layer concepts, read-only\n                              \
+[--resolution <r>]          (stored at the default r=1.0; any other r is computed)\n  \
 rigger stats                print the run's operator metrics: first-pass yield,\n                              \
 per-gate remediation counts, escalation rate, and\n                              \
 review approve/reject counts. --canary reports the\n                              \
@@ -286,7 +241,7 @@ config edit (\"did that change regress first-pass yield?\")\n  \
 rigger status [--json|--line] present the live per-agent view of the current run: for\n                              \
 each in-flight agent, what it is doing (latest progress),\n                              \
 its heartbeat age, and how long since its last store event\n                              \
-(the blackout). --json prints the shim/dash machine shape;\n                              \
+(the blackout). --json prints the dash machine shape;\n                              \
 --line prints only the one-line statusline (the same line\n                              \
 `rigger setup` registers as the editor's status bar)\n  \
 rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
@@ -305,25 +260,23 @@ anomalies and exits (cron/CI); default streams (poll every\n                    
 with the driver dead\n  \
 rigger ground <query> [k]   print up to k (default 8) repo references the project's\n                              \
 configured grounder finds for <query>, as `file:line: text`\n  \
-rigger reindex <file>...    incrementally re-index the named files in the project's\n                              \
-persisted grounding index (the grounder's reindex), so a\n                              \
-later `rigger ground` reflects just-landed changes\n  \
-rigger symbols-index [dir]  build + persist the structural symbol index over [dir]\n                              \
-(default .) and print its path + file count - the fresh-\n                              \
-process determinism harness for the symbols grounder (spec 15)\n  \
 rigger emit <type> <json>   append {{type, data:<json>}} to the event store and fold\n                              \
 it into the context graph (the CLI form of rigger_emit)\n  \
+rigger gate <id>            ask the driver serving this run to run declared gate <id>\n                              \
+on this unit worktree's committed tree; it signs and\n                              \
+records the verdict and reuses a green one for that commit\n                              \
+instead of running the gate again. With no driver serving,\n                              \
+runs the gate for information only and records nothing.\n                              \
+Refuses uncommitted changes\n  \
 rigger progress <id> <act>  record one live progress line for spawn <id> to the\n                              \
 separate .rigger/progress.db (never the run stream), so an\n                              \
 observer can see what a working agent is doing between\n                              \
 milestones - `rigger status` and the dash present it\n  \
-rigger result <id> [out]    record a parked spawn's outcome to the run log so the next\n                              \
-step advances past it: <out> (or stdin) is the agent's output\n                              \
-(with --error, its failure message). It refuses to replace\n                              \
-the result of a spawn that already ended unless\n                              \
---supersede (the explicit repair); a step's liveness\n                              \
-fault is always replaceable. --if-absent records only\n                              \
-if the id has no result; --meta <json> adds bookkeeping\n  \
+rigger result <id> [out]    record a spawn's outcome to the run log, which the next\n                              \
+`rigger run` answers that spawn from: <out> (or stdin) is\n                              \
+the agent's output (with --error, its failure message). It\n                              \
+refuses to replace the result of a spawn that already\n                              \
+ended unless --supersede, the repair a reviewer halt names\n  \
 rigger peers [file ...]     print peer decisions, lessons, and findings from the\n                              \
 context graph, scoped to the given files (the CLI form of\n                              \
 rigger_peers)\n  \
@@ -339,22 +292,22 @@ alive and every spawn of the run has ended on a real\n                          
 result, it also closes the current run's units whose\n                              \
 branch work is landed on rigger-run, appending the\n                              \
 UnitIntegrated a hand landing never recorded; a dead run's\n                              \
-hung spawn (answered only by the step's liveness fault)\n                              \
+hung spawn (answered only by its liveness fault)\n                              \
 keeps them open and is named with its remedy,\n                              \
 `rigger result <id>`. It removes a stale graph.db.pruned,\n                              \
 the pruned copy a rebuild's stopped swap\n                              \
 left, unless another `rigger setup` or `rigger reset` holds graph.db.lock\n  \
-rigger reset --derived      migrate the EVENT LOG, once: rewrite the first row of\n                              \
-each file's latest derived batch into that generation's\n                              \
-ledger entry, in place, delete every other derived\n                              \
-event, and vacuum so the file shrinks on disk.\n                              \
+rigger reset --derived      delete every derived event of the EVENT LOG in one\n                              \
+transaction (`rigger setup` runs the same delete once\n                              \
+its rebuilt graph is in place), and vacuum so the file\n                              \
+shrinks on disk.\n                              \
 Every other event survives;\n                              \
 composes with --runs (each sheds its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \
 in-flight spawn's marker inside its wall-clock bound,\n                              \
 or a driver registration's heartbeat inside the idle\n                              \
 window), naming what is live (a dead driver's run is\n                              \
-not): the migration\n                              \
+not): the delete\n                              \
 leaves revision gaps by design, and a stale writer can\n                              \
 reissue one and reorder the log - the corruption this\n                              \
 guard exists to prevent. --force-live skips the check\n                              \
@@ -392,10 +345,8 @@ rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\
 an agents/ folder) and install the Claude Code\n                              \
 SessionStart hook (it runs `rigger prime`)\n  \
 rigger setup                full setup: everything `init` does, PLUS install the\n                              \
-native /rigger Claude Code workflow (.claude/workflows/\n                              \
-rigger.js) and provision the JS driver (.rigger/shim/ +\n                              \
-npm install). After it: run `/rigger <spec>` in Claude\n                              \
-Code (primary), or `rigger workflow` as a fallback\n  \
+registry skills, the MCP server entry and the session\n                              \
+settings. After it: `rigger run <spec> --base <ref>`\n  \
 rigger docs                 render the code-derived docs (every registry skill and\n                              \
 handbook page) into their committed paths\n  \
 rigger docs --check         check every rendered output against a fresh render,\n                              \
@@ -414,9 +365,7 @@ agent can identify the exact binary. Also `--version`\n  \
 rigger help [<command>]     print this text, or given a command, only its entry: the\n                              \
 one `rigger <command> --help` prints for each command\n                              \
 whose arguments are its own flags\n\n\
-run/serve options:\n  \
---driver <cli|workflow>          cli (default): standalone claude subprocess;\n                                   \
-workflow: in-Claude-Code MCP server\n  \
+run options:\n  \
 --eventstore <sqlite|kurrentdb>  sqlite (default): embedded file in .rigger/;\n                                   \
 kurrentdb: shared server backend, always available\n  \
 --conn <url>                     KurrentDB connection url (or set KURRENTDB_CONN)\n  \

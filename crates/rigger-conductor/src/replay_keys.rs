@@ -2,10 +2,9 @@
 //! key appends nothing. It is seeded from the run's recorded events and extended with each key
 //! this process emits.
 //!
-//! Perception is not in it (spec 107): neither a derived event's key nor a ledger entry's is ever
-//! seeded, and the run's ingest sink asks no key set what to record - the log's latest generation
-//! and the graph's current one decide that (`ingest::entry_of_batch`), so a replay key of
-//! perception is unique to nothing and no reader treats it as such.
+//! Perception is not in it: neither a derived event's key nor a ledger entry's is ever seeded,
+//! since the run records no code facts in the log - the code store holds them - so a replay key
+//! of perception is unique to nothing and no reader treats it as such.
 
 use std::collections::HashSet;
 use std::sync::Mutex;

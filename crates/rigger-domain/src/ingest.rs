@@ -16,8 +16,8 @@ use crate::eventstore::{Error, Event, EventStore};
 /// perception names a generation and is unique to nothing (spec 107). Folds and
 /// projections ignore it, like [`crate::contextgraph::META_ACTOR`].
 ///
-/// It is DEFINED HERE, beside [`key_batch`] which builds the `<prefix>/<file>@<hash>#<i>` form and
-/// [`project_scoped_latest_generations`] which parses it back, rather than in the orchestrator that also
+/// It is DEFINED HERE, beside [`project_scoped_latest_generations`] which parses the
+/// `<prefix>/<file>@<hash>#<i>` form a recorded log's derived-index keys take, rather than in the orchestrator that also
 /// stamps it. That predicate is the reference the group lookup BOTH a live run's sink and a cold
 /// `rigger graph build` ask is held to, so reading the name out of `crate::conductor` would point this module
 /// UP at the orchestrator and couple every future caller of the predicate to it for a wire-format
@@ -26,7 +26,7 @@ use crate::eventstore::{Error, Event, EventStore};
 pub const META_REPLAY_KEY: &str = "replay_key";
 
 /// The DERIVED INDEX event types: the re-derivable projection of the project's own sources that
-/// [`key_batch`] above keys, and the ONLY types eligible for project-scoped suppression.
+/// a recorded log keys `<prefix>/<file>@<hash>#<i>`, and the ONLY types eligible for project-scoped suppression.
 ///
 /// This is a code-owned discriminator, not a string convention, and it is what makes the
 /// fail-safe direction a property of the code: a reader's key comparison is reached only by an
@@ -53,7 +53,7 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// BATCH IDENTITY - which file's batch this is - , the byte range of that batch's CONTENT
 /// GENERATION)`, both indexing `key`. `None` when the key is not that shape.
 ///
-/// This is THE parser of the form [`key_batch`] builds: the suppression predicate below cuts its
+/// This is THE parser of that form: the suppression predicate below cuts its
 /// identity and generation from it. A reader that re-spells the format instead is not a style
 /// problem: a hand-rolled copy of this split had drifted by one byte at the identity boundary while
 /// the assertion written to catch that drift stayed green over both spellings, because it only
@@ -62,9 +62,9 @@ pub fn is_derived_index_type(type_: &str) -> bool {
 /// The identity deliberately carries the `<prefix>` segment, so one file's code (`gc`) and design
 /// (`gd`) batches are two independent identities that never overwrite each other's generation -
 /// and it is read as the WHOLE key's leading span, never by sniffing the prefix's VALUE.
-/// [`key_batch`] takes its prefix from the CALLER, so a value sniff would rest on an unenforced
+/// The prefix was the minting caller's choice, so a value sniff would rest on an unenforced
 /// cross-module naming habit; the shape (a `/`, an `@`, and a `#<digits>` tail) is what the key
-/// authority actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
+/// form actually guarantees. `<file>` may itself contain `/`, `@` or `#`, so the tail and the
 /// hash are split from the RIGHT.
 ///
 /// The identity range ends BEFORE the `@` that separates it from the generation: the identity
@@ -159,34 +159,6 @@ pub fn batch_is_current(logged: Option<&str>, graph: GraphSide, generation: &str
         }
 }
 
-/// WHERE A WALK HANDS ITS BATCHES (spec 101): a sink taking one file's WHOLE keyed batch at a
-/// time, with the batch's flag (spec 107) - whether the walk excluded the batch's identity as an
-/// out-of-line test module's. Every walk entry takes one, and [`sink_walked_batches`] hands one
-/// to the walk it drives, so the shape is spelled once. Any closure over a batch and its flag is
-/// one. The walk answers the flag; a sink never computes it.
-pub trait BatchSink: FnMut(&[(String, &Event)], bool) {}
-
-impl<F: FnMut(&[(String, &Event)], bool) + ?Sized> BatchSink for F {}
-
-/// A WALK INTO A FALLIBLE SINK (spec 101): drive `walk`, handing each batch it produces to `sink`
-/// with the flag the walk handed it, and answer the FIRST error the sink returned. A failed batch
-/// never stops the walk - every batch after it still reaches the sink - and its error is never
-/// swallowed. The one policy both ingest
-/// sinks walk under, the run's sink and a cold `rigger graph build`, so a batch whose lookup
-/// or append failed is answered the same way by both: the walk fails.
-pub fn sink_walked_batches<E>(
-    walk: impl FnOnce(&mut dyn BatchSink),
-    mut sink: impl FnMut(&[(String, &Event)], bool) -> Result<(), E>,
-) -> Result<(), E> {
-    let mut first = None;
-    walk(&mut |keyed, excluded| {
-        if let Err(e) = sink(keyed, excluded) {
-            first.get_or_insert(e);
-        }
-    });
-    first.map_or(Ok(()), Err)
-}
-
 /// The derived index's CONTENT-IDENTITY POLICY as one value: the metadata key a derived event
 /// carries its content key under, the four types that carry content identity, and WHICH of those
 /// types re-assert a fact in place rather than superseding the subject's prior recording.
@@ -231,8 +203,7 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// Neither ingest sink reads a slice to decide what it records (spec 101): both ask
 /// [`latest_generation`], answered by the store's group lookup. This is the reference that
 /// lookup is held to - the lookup's contract test asserts it answers what this answers on the same
-/// log - and what [`perceived_generations`] answers over its one typed read. The rule, in the
-/// order it is applied:
+/// log. The rule, in the order it is applied:
 ///
 /// 1. **Type first.** Only a recording of perception is eligible
 ///    ([`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES)): a keyed derived row or the
@@ -259,25 +230,6 @@ pub fn project_scoped_latest_generations(
         .filter_map(|e| derived_key_parts(e.meta.get(META_REPLAY_KEY)?))
         .map(|(identity, generation)| (identity.to_string(), generation.to_string()))
         .collect()
-}
-
-/// THE LOG SIDE OF PERCEPTION (spec 107): each identity's latest recorded generation on
-/// `stream`, a ledger entry's or a keyed derived row's alike, as
-/// [`project_scoped_latest_generations`] answers it over ONE typed read of
-/// [`PERCEPTION_TYPES`](crate::retention::PERCEPTION_TYPES) from the stream's start. The
-/// generation is cut from each row's replay key, never looked up by group, so a keyed derived row
-/// recorded with no group is seen. On a store whose derived rows are not yet shed the read holds
-/// every one of them at once.
-pub fn perceived_generations(
-    store: &dyn EventStore,
-    stream: &str,
-) -> Result<std::collections::HashMap<String, String>, Error> {
-    let recorded = store.read_stream_typed(
-        stream,
-        0,
-        crate::eventstore::TypeSelection::Only(&crate::retention::PERCEPTION_TYPES),
-    )?;
-    Ok(project_scoped_latest_generations(&recorded))
 }
 
 /// [`batch_is_current`]'s whole truth table: the log's latest generation and the graph's side
@@ -428,7 +380,7 @@ mod dedup_tests {
     fn two_files_whose_paths_contain_an_at_sign_stay_two_batch_identities() {
         // The identity/generation split direction is load-bearing and rigger is project-agnostic:
         // `@` is an ordinary character in a real path (a vendored `pkg@1.2.3/` directory, a scoped
-        // package folder), and only `key_batch`'s OWN trailing `@<hash>` separates identity from
+        // package folder), and only the key form's OWN trailing `@<hash>` separates identity from
         // generation. Splitting from the LEFT instead would cut both keys below at their FIRST `@`,
         // collapsing two different files onto the single identity `gc/vendor/pkg` - and since their
         // (mis-parsed) generations then differ, the later file would RETIRE the earlier file's keys
@@ -511,9 +463,9 @@ mod dedup_tests {
 /// answering one fixed head, so every arm of the reader is driven directly.
 #[cfg(test)]
 mod group_lookup_tests {
-    use super::{latest_generation, sink_walked_batches, BatchSink, META_REPLAY_KEY};
+    use super::{latest_generation, META_REPLAY_KEY};
     use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED, TYPE_REVIEW_FINDING};
-    use crate::eventstore::{Event, GroupHead};
+    use crate::eventstore::GroupHead;
     use crate::test_support::GroupLookupOnly;
     use std::collections::BTreeMap;
 
@@ -598,53 +550,5 @@ mod group_lookup_tests {
                 "{why} answers no generation, so its batch re-emits"
             );
         }
-    }
-
-    #[test]
-    fn a_walk_reaches_every_batch_past_a_failed_one_and_answers_the_first_error() {
-        let ev = Event::new(TYPE_CODE_ENTITY_EXTRACTED, vec![]);
-        let batches: Vec<(Vec<(String, &Event)>, bool)> =
-            [("a", true), ("b", false), ("c", false), ("d", true)]
-                .iter()
-                .map(|(file, excluded)| (vec![(format!("gc/{file}.rs@h#0"), &ev)], *excluded))
-                .collect();
-        let walk = |sink: &mut dyn BatchSink| {
-            for (batch, excluded) in &batches {
-                sink(batch, *excluded);
-            }
-        };
-
-        let mut sunk = Vec::new();
-        let answer = sink_walked_batches(walk, |keyed, excluded| {
-            let key = keyed[0].0.clone();
-            sunk.push((key.clone(), excluded));
-            if key.starts_with("gc/b") || key.starts_with("gc/d") {
-                Err(key)
-            } else {
-                Ok(())
-            }
-        });
-        assert_eq!(
-            answer,
-            Err("gc/b.rs@h#0".to_string()),
-            "the walk answers its FIRST failed batch's error, never a later one's"
-        );
-        assert_eq!(
-            sunk,
-            [
-                ("gc/a.rs@h#0".to_string(), true),
-                ("gc/b.rs@h#0".to_string(), false),
-                ("gc/c.rs@h#0".to_string(), false),
-                ("gc/d.rs@h#0".to_string(), true),
-            ],
-            "a failed batch never stops the walk: every batch reaches the sink, in walk order, \
-             with the flag the walk handed it"
-        );
-
-        assert_eq!(
-            sink_walked_batches(walk, |_, _| Ok::<(), String>(())),
-            Ok(()),
-            "a walk whose every batch lands answers Ok"
-        );
     }
 }

@@ -57,8 +57,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use common::fixtures::{
-    drop_the_log, fixture_script, host_hold, no_emit, payloads_of_type, types_of, wait_until_for,
-    CwdGuard, FailAppendContaining, LandsBehind, RETRIES_BY_ITSELF,
+    drop_the_log, fixture_script, host_hold, no_emit, payloads_of_type, test_spawn_host, types_of,
+    wait_until_for, CwdGuard, FailAppendContaining, LandsBehind, RETRIES_BY_ITSELF,
 };
 use common::is_running;
 use common::repo::SILENT_PAST_THE_POLL;
@@ -213,7 +213,7 @@ fn opts(id: &str) -> SpawnOpts {
     SpawnOpts {
         id: id.to_string(),
         run_id: "run-1".to_string(),
-        ..Default::default()
+        ..SpawnOpts::new(test_spawn_host())
     }
 }
 
@@ -4555,8 +4555,7 @@ fn a_release_behind_the_hosts_held_read_relaunches_the_session_naming_the_hold()
         hold_sink: Some(&run),
         ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
     };
-    let held =
-        rigger::held::HeldDriver::new(&host, &run, rigger::held::Results::Recorded, None, &|| {});
+    let held = rigger::held::HeldDriver::new(&host, &run, &|| {});
 
     let outcome = held.spawn(
         &AgentDef::default(),

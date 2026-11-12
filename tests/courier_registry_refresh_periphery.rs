@@ -1,7 +1,7 @@
 //! Spec 62, criterion "COURIERS KEEP THE INSTANCE LIVE" (unit u62c4), driven through the BUILT
 //! `rigger` binary.
 //!
-//! Before this unit, only the run driver (`run`/`step`/`serve`, via `register_run_instance`)
+//! Before this unit, only the run driver (`run`/`step`, via `register_run_instance`)
 //! ever touched the machine-global instance registry (spec 50): a one-shot registration plus a
 //! background heartbeat thread held for the life of the run. A courier (`progress`, `emit`,
 //! `result`) is a separate, short-lived invocation with no such thread and no registration call

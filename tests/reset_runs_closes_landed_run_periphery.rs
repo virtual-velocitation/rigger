@@ -8,9 +8,9 @@
 //! it as the active run. `reset --runs` records the missing `UnitIntegrated` for exactly such a
 //! unit: its branch carries work of its own, that work is an ancestor of the run branch, every
 //! spawn of the run has ended on a real result (a relaunched driver resumes an unanswered spawn and
-//! re-parks one answered only by the step's liveness fault, whatever its marker says; a dead run's
+//! re-parks one answered only by its liveness fault, whatever its marker says; a dead run's
 //! hung spawn is named with its `rigger result` remedy), and nothing is driving the run - no
-//! `rigger step` holds the step lock, no in-flight spawn's liveness marker is younger than its
+//! `rigger run` holds the step lock, no in-flight spawn's liveness marker is younger than its
 //! wall-clock bound, and no DRIVER registration for the store is younger than the idle window (spec
 //! 101's liveness, the one both reset modes read). A courier's (`emit`, `result`, `progress`)
 //! discovery refresh of the registry is not a driver's: the operator's own courier seconds before
@@ -19,7 +19,7 @@
 //! These drive the COMPILED binary against a real git repo and `.rigger/events.db`, because the
 //! observable contract is the log the operator's next `rigger status` folds.
 
-mod common;
+use crate::common;
 
 use common::cli::{
     configure_workdir, hold_step_lock, init_event_log, liveness_fault_body, plant_marker,
@@ -97,7 +97,7 @@ fn project(commit_work: bool, land: bool) -> tempfile::TempDir {
 struct Around {
     /// The in-flight spawn's liveness marker, touched this many seconds ago (`None`: no marker).
     marker_secs_ago: Option<u64>,
-    /// A `rigger step` holds the step lock for the whole reset.
+    /// A `rigger run` holds the step lock for the whole reset.
     step_lock: bool,
     /// A DRIVER's registration for this store last heartbeat this many ms ago (`None`: no entry).
     heartbeat_ms_ago: Option<u64>,
@@ -302,8 +302,8 @@ rigger::test_cases! {
             "a live run",
         );
     };
-    /// A `rigger step` holding the step lock is driving the run: a landed branch stays open.
-    reset_runs_leaves_a_landed_run_open_while_a_step_holds_the_lock: assert_left_open(
+    /// A `rigger run` holding the step lock is driving the run: a landed branch stays open.
+    reset_runs_leaves_a_landed_run_open_while_the_step_lock_is_held: assert_left_open(
         true,
         true,
         &[],
@@ -433,7 +433,7 @@ fn reset_runs_leaves_a_landed_unit_open_while_another_units_spawn_awaits_its_res
 }
 
 /// Seeds [`DEAD_RUN`] then a spawn result the log cannot decode, runs `reset --runs` - with a
-/// `rigger step` holding the step lock throughout when `step_lock` - and asserts it fails naming
+/// `rigger run` holding the step lock throughout when `step_lock` - and asserts it fails naming
 /// the undecodable result and records nothing.
 fn assert_a_malformed_spawn_result_fails_the_close(step_lock: bool) {
     let dir = project(true, true);
@@ -475,9 +475,9 @@ rigger::test_cases! {
     reset_runs_fails_on_a_malformed_spawn_result_and_closes_nothing:
         assert_a_malformed_spawn_result_fails_the_close(false);
     /// The close reads which spawns await their result before it asks whether the driver is dead,
-    /// so the same undecodable result fails `reset --runs` even while a `rigger step` holds the
+    /// so the same undecodable result fails `reset --runs` even while a `rigger run` holds the
     /// step lock - never a success that skipped the read.
-    reset_runs_fails_on_a_malformed_spawn_result_even_while_a_step_holds_the_lock:
+    reset_runs_fails_on_a_malformed_spawn_result_even_while_the_step_lock_is_held:
         assert_a_malformed_spawn_result_fails_the_close(true);
 }
 

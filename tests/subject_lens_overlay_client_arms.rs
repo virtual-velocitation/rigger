@@ -22,12 +22,11 @@
 //! compiles on BOTH the default and the `--no-default-features` lane (the seam is not feature-gated),
 //! so this guards the client seam in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 
-#[path = "common/vm_harness.rs"]
-mod vm_harness;
+use crate::vm_harness;
 use vm_harness::vm_harness;
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
@@ -84,7 +83,7 @@ function __view(url){
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetched.push(String(url));
-    return Promise.resolve({ json: function(){ return Promise.resolve(__view(url)); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -165,7 +164,7 @@ const fetch = function(url){
   // boundary this guard pins: the client must DEGRADE to a message, never throw or leave a dead panel.
   if (s.indexOf("lens=") !== -1 && s.indexOf("seed=") !== -1 && s.indexOf("seed=&") === -1)
     return Promise.reject(new Error("simulated re-projection fetch failure"));
-  return Promise.resolve({ json: function(){ return Promise.resolve(__view(s)); } });
+  return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(s)); } });
 };
 "#;
 

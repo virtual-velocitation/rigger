@@ -1024,7 +1024,7 @@ fn symbol_index_is_byte_identical_across_processes() {
 
 - [ ] **Step 2: Run it to see it fail (or pass)**
 
-Run: `cargo test --test cli symbol_index_is_byte_identical -v 2>&1 | tail -8`
+Run: `cargo test --test all cli::symbol_index_is_byte_identical -v 2>&1 | tail -8`
 Expected: PASS if the model is BTreeMap-clean; if it FAILS, a `HashMap`/`HashSet` leaked into the serialized path - find and replace it with `BTreeMap`/`BTreeSet`.
 
 - [ ] **Step 3: Commit**

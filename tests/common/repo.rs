@@ -1,5 +1,5 @@
-//! Fixtures that read this repository's own checked-in files: sources, docs, manifests (as text,
-//! or with the lock through cargo's resolver) and the committed audit ledgers.
+//! Fixtures that read this repository's own checked-in files: sources, docs and manifests (as
+//! text, or with the lock through cargo's resolver).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -27,12 +27,6 @@ pub fn cargo_tree(args: &[&str]) -> Output {
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
 }
-
-/// The committed simplification audit report, relative to [`repo_root`].
-pub const AUDIT_REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
-
-/// The committed duplication catalog, relative to [`repo_root`].
-pub const DUPLICATION_CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
@@ -221,27 +215,37 @@ pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec
         .collect()
 }
 
+/// The session's grep guard as [`hook_words`] reads it: the tools it matches and the words of the
+/// command it runs.
+pub fn grep_guard_hook() -> (String, Vec<String>) {
+    let words = ["rigger", "grep-guard"].map(str::to_string);
+    ("Grep|Bash".to_string(), words.to_vec())
+}
+
 /// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
-/// `bin` with `roots` in order, then the session's grep guard, and under `StopFailure` one entry
-/// per category running `bin` for `spawn`, in category order.
+/// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
+/// workflow's `defaults.grep_guard`) declares it, and under `StopFailure` one entry per category
+/// running `bin` for `spawn`, in category order.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
     spawn: &str,
     roots: &[String],
+    grep_guard: bool,
 ) {
     let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
     let mut guard = words(&[bin, "guard-write"]);
     for root in roots {
         guard.extend(words(&["--root", root]));
     }
+    let mut pre_tool_use = vec![("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard)];
+    if grep_guard {
+        pre_tool_use.push(grep_guard_hook());
+    }
     assert_eq!(
         hook_words(settings, "PreToolUse"),
-        [
-            ("Edit|MultiEdit|Write|NotebookEdit".to_string(), guard),
-            ("Grep|Bash".to_string(), words(&["rigger", "grep-guard"])),
-        ],
-        "the write guard, then the session's grep guard: {settings}"
+        pre_tool_use,
+        "the write guard, then the session's grep guard when declared ({grep_guard}): {settings}"
     );
     let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
         .iter()
@@ -266,6 +270,40 @@ pub fn assert_carries_spawn_hooks(
     );
 }
 
+/// The rigger tools the embedded helpers declare, once each in helper then declaration order,
+/// comma-joined as a launch's pre-approval lists them.
+pub const EMBEDDED_HELPER_TOOLS: &str =
+    "mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers";
+
+/// The record, progress and scratch tools a `rigger run` launch's bound server serves,
+/// comma-joined as the launch's pre-approval closes on them.
+pub const BOUND_TOOLS: &str =
+    "mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+
+/// The `--agents` value a launch carries over a checkout whose `.claude/agents/` holds exactly
+/// `copies`, each one of the [`super::fixtures::OPERATOR_HELPER_COPIES`]: a copied helper is
+/// defined by its [`super::fixtures::operator_helpers_agents_json`] entry, every other one by its
+/// embedded text, this repository's own committed `.claude/agents/` helper.
+pub fn handed_helpers_agents_json(copies: &[super::fixtures::HelperFile]) -> serde_json::Value {
+    let operator = super::fixtures::operator_helpers_agents_json();
+    let mut agents = serde_json::Map::new();
+    for (file, embedded) in rigger::hooks::HELPER_AGENTS {
+        let name = file.trim_end_matches(".md");
+        let def = if copies.iter().any(|(copied, _)| copied == file) {
+            operator[name].clone()
+        } else {
+            let copy = rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: embedded.to_string(),
+                present: false,
+            };
+            rigger::hooks::helper_agents_json(&[copy]).unwrap()[name].clone()
+        };
+        agents.insert(name.to_string(), def);
+    }
+    serde_json::Value::Object(agents)
+}
+
 /// The value `argv` carries right after `flag`.
 pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     let at = argv
@@ -273,6 +311,20 @@ pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
         .position(|a| a == flag)
         .unwrap_or_else(|| panic!("the argv carries {flag}: {argv:?}"));
     &argv[at + 1]
+}
+
+/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn, the helpers its
+/// `--agents` defines and the tools its `--allowed-tools` pre-approves.
+pub fn launch_helpers(launches: &Path) -> Vec<(String, serde_json::Value, String)> {
+    super::fixtures::stand_in_launches(launches)
+        .into_iter()
+        .map(|launch| {
+            let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
+                .expect("the helpers are JSON");
+            let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
+            (launch.spawn, agents, tools)
+        })
+        .collect()
 }
 
 /// The task the critique stub under `work` was handed on its first spawn: the `content` of the
@@ -291,44 +343,6 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 /// The argv the critique stub under `work` was started with on its first spawn.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
-}
-
-/// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
-/// consumer relies on - failing loudly, naming both, when it does not decode.
-pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str) -> T {
-    serde_json::from_str(&repo_text(rel))
-        .unwrap_or_else(|e| panic!("{rel} does not deserialize as the documented {contract}: {e}"))
-}
-
-/// The committed JSON ledger `rel`, decoded as `contract`, holds at least one entry - a
-/// downstream consumer pinning counts against it never silently sees nothing.
-pub fn assert_committed_ledger_is_nonempty<T: serde::de::DeserializeOwned>(
-    rel: &str,
-    contract: &str,
-) {
-    let entries: Vec<T> = committed_json(rel, contract);
-    assert!(
-        !entries.is_empty(),
-        "{rel} deserialized to zero entries - a downstream consumer pinning counts against \
-         this file would silently see nothing"
-    );
-}
-
-/// Decoding the committed JSON file `rel` as `contract` and re-encoding it reproduces the
-/// committed bytes exactly - a downstream consumer decoding and re-encoding it never silently
-/// diverges from the committed artifact.
-pub fn assert_committed_json_round_trips<T>(rel: &str, contract: &str)
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let decoded: T = committed_json(rel, contract);
-    let mut reencoded = serde_json::to_string_pretty(&decoded).expect("the contract re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        repo_text(rel),
-        reencoded,
-        "{rel} does not round-trip byte-for-byte through the documented {contract}"
-    );
 }
 
 /// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
@@ -476,72 +490,4 @@ pub fn missing_rows(text: &str, table: &[(&str, &str)], label: &str) -> Vec<Stri
         .filter(|(_, needle)| !text.contains(needle))
         .map(|(name, needle)| format!("{name}  ({label}: {needle:?})"))
         .collect()
-}
-
-/// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
-/// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `bareRoleOf`/`personaOf`/
-/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess, for a wave
-/// item `id` titled `title`, stamped with `req.unit` and `req.reviews` when given (omitted
-/// entirely otherwise, as an ordinary build unit's wave item). Returns the rendered label, or
-/// `None` when `node` is not on PATH (missing node is an environment fact, never a test failure).
-pub fn worker_label(
-    id: &str,
-    title: &str,
-    unit: Option<&str>,
-    reviews: Option<&[&str]>,
-) -> Option<String> {
-    let src = repo_text("workflows/rigger.js");
-    let verb_table = super::fixtures::js_declaration(&src, "const PERSONA_VERB = {");
-    let roster_table = super::fixtures::js_declaration(&src, "const ROSTER_VERB = {");
-    let bare_role_of = super::fixtures::js_declaration(&src, "function bareRoleOf(role) {");
-    let persona_of = super::fixtures::js_declaration(&src, "function personaOf(role) {");
-    let first_sentence = super::fixtures::js_declaration(&src, "function firstSentence(s) {");
-    let role_attempt = super::fixtures::js_declaration(&src, "function roleAttempt(id) {");
-    let worker_label = super::fixtures::js_declaration(&src, "function workerLabel(req) {");
-
-    let mut req = serde_json::json!({ "id": id, "title": title });
-    if let Some(unit) = unit {
-        req["unit"] = serde_json::Value::String(unit.to_string());
-    }
-    if let Some(reviews) = reviews {
-        req["reviews"] = serde_json::Value::Array(
-            reviews
-                .iter()
-                .map(|s| serde_json::Value::String(s.to_string()))
-                .collect(),
-        );
-    }
-    let req = req.to_string();
-    let script = format!(
-        "{verb_table}\n{roster_table}\n{bare_role_of}\n{persona_of}\n{first_sentence}\n\
-         {role_attempt}\n{worker_label}\n\
-         process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
-    );
-
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match std::process::Command::new(&node)
-        .arg(f.path())
-        .arg(&req)
-        .output()
-    {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "the real workerLabel must run without throwing on {req}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            let text = String::from_utf8_lossy(&out.stdout).into_owned();
-            Some(text.trim_end_matches('\n').to_string())
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
 }

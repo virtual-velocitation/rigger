@@ -1,138 +1,16 @@
-//! Periphery (contract / integration) tests for spec 37 criterion 1: the extractor attributes
-//! each reference to its INNERMOST enclosing function (the caller; a reference no function
-//! encloses takes its innermost enclosing definition), recorded on the `SymRef.enclosing` field.
+//! Periphery (integration) test for spec 37 criterion 1: the extractor attributes each reference
+//! to its INNERMOST enclosing function (the caller; a reference no function encloses takes its
+//! innermost enclosing definition), recorded on the `SymRef.enclosing` field.
 //!
-//! These run OUTSIDE the crate, over the library's public surface, and guard the boundary the
-//! inside-out unit tests are structurally blind to. The inside-out `extract` test asserts only the
-//! in-memory attribution and never serializes; the store's `save_load_roundtrips` uses a
-//! reference-LESS sample, so it never exercises `SymRef`'s serialized form at all. Two boundaries
-//! are therefore untested at the base tree:
-//!
-//!  - the SERIALIZED-FORM back-compat contract of the new field. `SymRef` derives
-//!    Serialize/Deserialize and the persisted symbol index is a projection of it onto disk
-//!    (`store::save` / `store::load` write `.rigger/symbols/index.json`). The field carries
-//!    `#[serde(default, skip_serializing_if = "Option::is_none")]`, so (a) a caller-less reference
-//!    must serialize BYTE-IDENTICALLY to the pre-37 form - no `enclosing` key at all - and (b) an
-//!    index persisted by a pre-37 binary (references with no `enclosing` key) must still LOAD,
-//!    folding every reference caller-less rather than failing on a missing field. This drives the
-//!    real persistence boundary and pins the raw on-disk JSON a rebuild actually replays. Parser-
-//!    free, so it runs in BOTH feature lanes.
-//!  - the extractor's attribution SURVIVING that persistence boundary end-to-end: a caller
-//!    attributed in-memory while building the index must still be `Some(caller)` after a save/load
-//!    round-trip, and a top-level reference must stay `None`. This half drives the public
-//!    `build_index` entry point through the real tree-sitter extraction pass, so it lives in the
-//!    `symbols` lane only.
-
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
-
-use rigger::grounder::symbols::model::Lang;
-use symbol_index::{
-    assert_saved_without_key, defining_f, g_called_in_f, legacy_file, saved_with_key, sym_ref,
-};
-
-// ---- serialized-form / back-compat contract (parser-free model + store: BOTH feature lanes) ----
-
-#[test]
-fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
-    // `skip_serializing_if = "Option::is_none"`: a reference with no enclosing caller must serialize
-    // with NO `enclosing` key, so an index of caller-less references is byte-identical to what a
-    // pre-37 binary wrote. A regression dropping `skip_serializing_if` would emit `"enclosing":
-    // null` on every reference and rewrite every historical index's bytes - defeating the field's
-    // whole "wholly additive, no re-serialization churn" contract (spec 37).
-    assert_saved_without_key(
-        "a.rs",
-        defining_f(vec![
-            sym_ref("G", 2, None, false),
-            sym_ref("H", 3, None, false),
-        ]),
-        "enclosing",
-        "a caller-less index must omit the enclosing key entirely (byte-identical to the pre-37 \
-         on-disk form)",
-    );
-}
-
-#[test]
-fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
-    // The opposite direction of the same contract: a reference WITH a caller serializes the
-    // enclosing name and round-trips through the real persistence boundary preserving it. Together
-    // with the caller-less test above this pins BOTH serde attributes on the field: drop
-    // `skip_serializing_if` and the caller-less test reds; drop the field's persistence and this
-    // one reds.
-    let loaded = saved_with_key(
-        "a.rs",
-        defining_f(vec![g_called_in_f()]),
-        "enclosing",
-        "a caller-attributed reference must serialize its enclosing key",
-    );
-    let refs = &loaded.files()["a.rs"].refs;
-    assert_eq!(
-        refs.iter()
-            .find(|r| r.name == "G")
-            .unwrap()
-            .enclosing
-            .as_deref(),
-        Some("f"),
-        "the enclosing caller survives a save/load round-trip"
-    );
-}
-
-#[test]
-fn a_pre37_persisted_index_loads_folding_references_caller_less() {
-    // `#[serde(default)]`: an `index.json` written by a pre-37 binary has references with NO
-    // `enclosing` key at all (the shape verified against the live serializer: a caller-less ref is
-    // exactly `{ "name", "line" }`). `store::load` must still deserialize it - NOT return `None`
-    // from a missing-field error - folding every reference caller-less. This pins the raw on-disk
-    // JSON contract a rebuild replays, deliberately as bytes rather than through the Rust type.
-    // A pre-37 index: two references carrying only `name` + `line`, no `enclosing` key.
-    let legacy = r#"{
-  "files": {
-    "legacy.rs": {
-      "lang": "Rust",
-      "defs": [
-        { "kind": "Function", "name": "caller_fn", "line": 1 }
-      ],
-      "refs": [
-        { "name": "G", "line": 2 },
-        { "name": "H", "line": 5 }
-      ]
-    }
-  }
-}"#;
-    let file = legacy_file(
-        legacy,
-        "legacy.rs",
-        "a pre-37 index (references without an enclosing key) must still load, not error",
-    );
-    // Every reference folds caller-less - the missing key defaults to `None`.
-    assert_eq!(
-        file.refs.len(),
-        2,
-        "both legacy references survive the load"
-    );
-    for r in &file.refs {
-        assert_eq!(
-            r.enclosing, None,
-            "a reference persisted before the enclosing field existed folds caller-less, not an error"
-        );
-    }
-    // The rest of the entry deserialized intact, so a wrong-shape fixture reds loudly here rather
-    // than passing vacuously on an empty load.
-    assert_eq!(file.lang, Lang::Rust);
-    assert_eq!(file.defs.len(), 1);
-    assert_eq!(file.defs[0].name, "caller_fn");
-}
-
-// ---- extractor attribution survives the persistence boundary (symbols lane only) ----
+//! It runs OUTSIDE the crate, over the library's public `build_index` entry point and the real
+//! tree-sitter extraction pass, so it lives in the `symbols` lane only.
 
 #[cfg(feature = "symbols")]
 #[test]
-fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
-    // End-to-end across the extract -> model -> store seam through the PUBLIC `build_index` entry
-    // point (which the inside-out `extract` unit test bypasses): a call inside a function body must
-    // attribute to that function AND survive serialization, and a top-level reference must stay
-    // caller-less across the round-trip. A regression that lost the attribution, or a serde change
-    // that dropped the field on save/load, reds here.
+fn extractor_attributes_each_reference_to_its_innermost_enclosing_definition() {
+    // Through the PUBLIC `build_index` entry point (which the inside-out `extract` unit test
+    // bypasses): a call inside a function body must attribute to that function, and a top-level
+    // reference must stay caller-less.
     let dir = tempfile::tempdir().unwrap();
     // `fn f` calls `G()`; the `impl Draw for Widget` header's `Draw` bound attributes to the impl
     // block (a definition of its own); the top-level `setup!()` call belongs to no definition.
@@ -143,7 +21,7 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     .unwrap();
     let root = dir.path().to_str().unwrap();
 
-    let (_, loaded) = symbol_index::built_and_reloaded(root);
+    let loaded = rigger::grounder::symbols::build_index(root, None);
 
     let refs = &loaded
         .files()
@@ -157,7 +35,7 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     assert_eq!(
         g.enclosing.as_deref(),
         Some("f"),
-        "a call inside fn f attributes to f and the caller survives save/load"
+        "a call inside fn f attributes to f"
     );
     let draw = refs
         .iter()
@@ -166,7 +44,7 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
     assert_eq!(
         draw.enclosing.as_deref(),
         Some("impl Draw for Widget"),
-        "an impl header's trait bound attributes to its impl and survives save/load"
+        "an impl header's trait bound attributes to its impl"
     );
     let setup = refs
         .iter()
@@ -174,6 +52,6 @@ fn extractor_attribution_survives_the_build_index_save_load_pipeline() {
         .expect("the top-level setup! call is extracted as a reference");
     assert_eq!(
         setup.enclosing, None,
-        "a top-level reference outside every definition stays caller-less across save/load"
+        "a top-level reference outside every definition stays caller-less"
     );
 }

@@ -42,7 +42,7 @@
 //! changes to the port and fails RED the moment the front door and the code disagree
 //! about the contract a consumer must implement.
 
-mod common;
+use crate::common;
 
 use common::repo::assert_doc_carries_none_of;
 use common::repo::missing_rows;

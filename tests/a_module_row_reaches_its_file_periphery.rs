@@ -12,9 +12,10 @@
 //!  - `rigger graph communities` couples no `mod` node to its module's file, so a module file whose
 //!    one structural edge is its declaration's joins no community.
 
-mod common;
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+#[cfg(feature = "symbols")]
+use crate::common;
+#[cfg(feature = "symbols")]
+use crate::symbol_index;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{
@@ -81,7 +82,8 @@ fn graph_rebuild_settles_a_mod_declaration_as_its_candidates_and_its_declaration
 /// `fn y`,
 /// WHEN the operator runs `rigger graph --around src/lib.rs::x --depth 1`,
 /// THEN the subgraph is the declaring file, the `mod` node and its module file, joined by the
-/// declaring file's `CONTAINS` onto the `mod` node and the `mod` node's onto its file.
+/// declaring file's `CONTAINS` onto the `mod` node and the `mod` node's onto its file, beside the
+/// community the tree's grouping joins them to at read.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_around_a_mod_node_prints_its_contains_onto_its_module_file() {
@@ -89,10 +91,13 @@ fn graph_around_a_mod_node_prints_its_contains_onto_its_module_file() {
     assert_eq!(
         common::cli::run_around(project.path(), MOD_NODE, 1).0,
         "subgraph around \"src/lib.rs::x\" (depth 1):\n\
+         \x20 node community/1/0            community\n\
          \x20 node src/lib.rs               file\n\
          \x20 node src/lib.rs::x            code-entity\n\
          \x20 node src/x.rs                 file\n\
+         \x20 edge src/lib.rs -IN_COMMUNITY-> community/1/0\n\
          \x20 edge src/lib.rs -CONTAINS-> src/lib.rs::x\n\
+         \x20 edge src/lib.rs::x -IN_COMMUNITY-> community/1/0\n\
          \x20 edge src/lib.rs::x -CONTAINS-> src/x.rs\n"
     );
 }
@@ -100,8 +105,8 @@ fn graph_around_a_mod_node_prints_its_contains_onto_its_module_file() {
 /// GIVEN the built project whose `src/lib.rs` declares `mod x;` and whose `src/x.rs` holds one
 /// `use` and nothing else, so its one structural edge is the declaration's `CONTAINS`,
 /// WHEN the operator runs `rigger graph communities`,
-/// THEN detection couples the two nodes of `src/lib.rs` alone: one community over two coupled
-/// nodes, `src/x.rs` none of them.
+/// THEN the report shows detection coupling the two nodes of `src/lib.rs` alone: one community
+/// over two nodes, `src/x.rs` none of them.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_communities_couples_no_mod_node_to_its_module_file() {
@@ -111,7 +116,7 @@ fn graph_communities_couples_no_mod_node_to_its_module_file() {
     ]);
     assert_eq!(
         common::cli::run_rigger_ok(project.path(), &["graph", "communities"]),
-        "graph communities: detected 1 community over 2 coupled node(s) at resolution 1 \
-         (2 membership event(s) recorded into .rigger/graph.db)\n"
+        "graph communities: 1 community over 2 node(s) at resolution 1\n\
+         community/1/0\t2\tsrc/lib.rs\n"
     );
 }

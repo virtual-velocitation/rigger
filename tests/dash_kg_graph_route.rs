@@ -24,14 +24,13 @@
 //! `dash`, `contextgraph` are compiled on BOTH the default and the `--no-default-features` lane (none
 //! feature-gated), so this guards the served boundary in both lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use common::fixtures::around_nodes;
 use common::fixtures::chain_graph;
 use common::fixtures::edge;
 use common::fixtures::star_graph;
@@ -48,6 +47,13 @@ use rigger::contextgraph::{
 };
 use rigger::dash::{self, DashInputs};
 use serde_json::json;
+
+/// The node objects of a `rigger_graph` `around` answer, sorted by id.
+fn around_nodes(answer: &serde_json::Value) -> Vec<serde_json::Value> {
+    let mut nodes = answer["nodes"].as_array().expect("a node list").clone();
+    nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    nodes
+}
 
 /// A tier-tagged fixture neighborhood: a unit `u1`, the decision `d1` that DECIDED it (extracted),
 /// and a code entity `c1` the decision REFERENCES (inferred). A depth-2 walk from `u1` reaches all
@@ -268,7 +274,7 @@ const fetch = function(url){
     // A card=<id> fetch (spec 63 c2) resolves gracefully empty here - this harness's own fixture
     // is the plain-neighborhood shape __NB, which carries no card field.
     const body = String(url).indexOf("card=") !== -1 ? { card: null } : __NB;
-    return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -437,11 +443,11 @@ fn the_served_graph_route_percent_decodes_a_special_char_seed_over_the_socket() 
         edges: vec![Edge {
             from: raw_id.to_string(),
             to: "src/conductor.rs".to_string(),
-            rel: "explains".to_string(),
+            rel: "explains".into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
     // encodeURIComponent("src/conductor.rs#L19930") == "src%2Fconductor.rs%23L19930".
@@ -632,7 +638,7 @@ const fetch = function(url){
     // fixtures carry no card field.
     const body = String(url).indexOf("card=") !== -1 ? { card: null }
       : String(url).indexOf("from=") !== -1 ? __NB_PATH : __NB_SEED;
-    return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -705,11 +711,11 @@ fn the_served_graph_route_percent_decodes_special_char_path_endpoints() {
     let edge = |from: &str, to: &str| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: "explains".to_string(),
+        rel: "explains".into(),
         valid_from: 0,
         valid_to: None,
         source: 0,
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     };
     // A 3-node chain of special-char endpoints: from -> mid -> to, so the shortest path is all three.
     let graph = Graph {
@@ -823,11 +829,11 @@ fn the_served_graph_route_carries_the_seed_nodes_explain_provenance_over_the_soc
     let edge = |from: &str, to: &str, rel: &str, tier: &str, source: u64| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to: None,
         source,
-        tier: tier.to_string(),
+        tier: tier.to_string().into(),
     };
     // The seed decision `d1` DECIDED `u1` (event 7, extracted) and REFERENCES `c1` (event 9,
     // inferred): its provenance is two edges folded by two DISTINCT events at two tiers.
@@ -924,11 +930,11 @@ fn the_served_graph_route_omits_explain_for_an_unknown_seed_and_is_empty_for_an_
         edges: vec![Edge {
             from: "d1".to_string(),
             to: "u1".to_string(),
-            rel: REL_DECIDED.to_string(),
+            rel: REL_DECIDED.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
 
@@ -1369,11 +1375,11 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
             edges: vec![Edge {
                 from: "shared-seed".to_string(),
                 to: neighbor.to_string(),
-                rel: REL_REFERENCES.to_string(),
+                rel: REL_REFERENCES.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         }
     };
@@ -1391,7 +1397,12 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
         let polled_graph = build("polled-neighbor");
         let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((Vec::new(), polled_graph.clone(), Vec::new(), HashMap::new()))
+            Ok((
+                Vec::new(),
+                polled_graph.clone().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         };
 
         // The SEPARATE lazy provider: it counts every consultation and yields the REAL neighbor
@@ -1399,14 +1410,19 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let lazy_graph = build("lazy-neighbor");
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>| -> Graph {
-            hits_for_provider.fetch_add(1, Ordering::SeqCst);
-            lazy_graph.clone()
-        };
-        let calls_provider =
-            |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-                rigger::contextgraph::CallGraph::default()
+        let graph_provider =
+            move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
+                hits_for_provider.fetch_add(1, Ordering::SeqCst);
+                lazy_graph.clone()
             };
+        let calls_provider = |_: Option<&str>,
+                              _: &[String],
+                              _: rigger::contextgraph::Direction,
+                              _: i64,
+                              _: &str,
+                              _tests: rigger::code_view::Tests| {
+            rigger::contextgraph::CallGraph::default()
+        };
         let instances_provider = Vec::new;
 
         std::thread::spawn(move || {
@@ -1548,4 +1564,67 @@ fn the_graph_routes_give_a_file_its_members_and_a_member_its_file_with_no_contai
         json!([entity(NESTED_METHOD), entity(FILE_MATE)]),
         "{card}"
     );
+}
+
+/// The DOM shim the graph header's harness touches: elements with text, `hidden` and a class list.
+const LABEL_SHIM: &str = r#"
+function __El(id){ this.id=id; this._html=""; this._text=""; this.hidden=true; this._classes={};
+  this._listeners={}; this.dataset={}; const self=this;
+  this.classList = { toggle: function(c,on){ if (on) self._classes[c]=true; else delete self._classes[c]; },
+    add: function(c){ self._classes[c]=true; }, remove: function(c){ delete self._classes[c]; },
+    contains: function(c){ return !!self._classes[c]; } }; }
+Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
+Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
+__El.prototype.querySelectorAll = function(){ return []; };
+__El.prototype.querySelector = function(){ return new __El(""); };
+__El.prototype.setAttribute = function(){};
+__El.prototype.getAttribute = function(){ return null; };
+__El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
+__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
+const __els = {};
+const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+const window = { addEventListener: function(){} };
+const setTimeout = function(){ return 0; };
+const setInterval = function(){ return 0; };
+// Each graph reply carries the headers its URL names: label= a label, error= an error, else none.
+const fetch = function(url){
+  const u = String(url);
+  const sent = {};
+  const at = function(k){ const m = u.match(new RegExp("[?&]" + k + "=([^&]*)")); return m ? m[1] : null; };
+  if (at("label") !== null) sent["X-Rigger-Graph-Label"] = at("label");
+  if (at("error") !== null) sent["X-Rigger-Graph-Error"] = at("error");
+  return Promise.resolve({
+    headers: { get: function(k){ return Object.prototype.hasOwnProperty.call(sent, k) ? sent[k] : null; } },
+    json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); }
+  });
+};
+"#;
+
+/// Driver: three graph replies in turn, one carrying a percent-encoded label, one an error, one
+/// neither, each read through the page's one graph fetch; the header shows the decoded label, then
+/// the error marked as one, then keeps the error a reply stating nothing does not replace.
+const LABEL_DRIVER: &str = r#"
+;(async function(){
+  const box = el("kglabel");
+  const rows = [
+    ["label=describes%20c1%3B%201%20file%20in%20%2Fw%2F%C3%BC%20differs%3B%203%20withheld",
+     "describes c1; 1 file in /w/ü differs; 3 withheld", false],
+    ["error=no%20graph%20has%20been%20built", "no graph has been built", true],
+    ["", "no graph has been built", true],
+  ];
+  for (const [query, shown, error] of rows) {
+    await graphFetch("/api/graph?" + query);
+    if (box.hidden) throw new Error(query + ": the header is hidden");
+    if (box.textContent !== shown) throw new Error(query + ": the header shows " + JSON.stringify(box.textContent));
+    if (box.classList.contains("kglabel-error") !== error) throw new Error(query + ": error marking is not " + error);
+  }
+  console.log("OK the-graph-header-shows-what-each-read-describes");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard (spec 6.1): every graph read goes through `graphFetch`, which shows the reply's
+    /// label in the explorer's header, decoded, or the reason no graph could be read, marked as an
+    /// error; a reply stating neither leaves the header as it was.
+    the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
 }

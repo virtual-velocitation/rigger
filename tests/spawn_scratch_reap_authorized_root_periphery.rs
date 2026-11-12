@@ -1,7 +1,7 @@
 //! Periphery (cross-module, real-binary) test for spec 78 round 2's core production fix
 //! (decision `u78c2r2-authorized-root-caller-supplied`) at its HIGHEST-TRAFFIC real entry
 //! point: `driver::replay::reclaim_spawn_registered_scratch`, the ONE reap authority both `rigger
-//! result` and `cmd_step`'s liveness sweep converge on (its own doc comment says so).
+//! result` and the headless host's spawn close converge on.
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
@@ -28,7 +28,7 @@
 
 use std::path::Path;
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;

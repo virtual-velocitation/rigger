@@ -24,7 +24,7 @@
 //! 1. `a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree`: a
 //!    real `driver::cli::Driver` spawns a real fixture-script "agent"
 //!    (`tests/fixtures/cargo-build-agent.sh`) with its cwd set to a REAL git worktree
-//!    (`worktree::Worktree::create`, the same entry point `rigger step` uses) and
+//!    (`worktree::Worktree::create`, the same entry point `rigger run` uses) and
 //!    `SpawnOpts.env` carrying the SAME `CARGO_TARGET_DIR` value production code derives
 //!    for that worktree (`worktree::unit_cache_sibling`). The agent runs a genuine `cargo
 //!    build` against a minimal crate seeded into the worktree; the test reads the REAL
@@ -44,6 +44,7 @@ use std::path::Path;
 
 use common::env_test_lock;
 use common::fixtures::no_emit;
+use common::fixtures::test_spawn_host;
 use common::git::temp_git_project_with_commit;
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
@@ -126,7 +127,7 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
         // The exact env `RunCtx::spawn_env` would produce for this worktree with no
         // wrapper configured: only its own per-unit CARGO_TARGET_DIR.
         env: vec![("CARGO_TARGET_DIR".to_string(), target_dir.clone())],
-        ..Default::default()
+        ..SpawnOpts::new(test_spawn_host())
     };
     let result = driver
         .spawn(&agent, "build something", &opts, &no_emit)
@@ -183,7 +184,7 @@ fn a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
         dir: String::new(),
         isolation: false,
         env: Vec::new(),
-        ..Default::default()
+        ..SpawnOpts::new(test_spawn_host())
     };
     let result = driver
         .spawn(&agent, "no-op", &opts, &no_emit)

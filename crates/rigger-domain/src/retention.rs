@@ -1,10 +1,10 @@
 //! THE CLASSES OF EVENT, decided by type (spec 107): the lists that say which events the log
 //! keeps as knowledge, which are a run's episodes and which are perception the tree re-derives.
 //!
-//! DERIVED is [`crate::ingest::DERIVED_INDEX_TYPES`], the derived index. EPISODIC is
-//! [`EPISODIC_TYPES`]. KNOWLEDGE is every other type, the ledger entry
-//! [`TYPE_GENERATION_INGESTED`] among them, so this module declares no knowledge list. The lists
-//! cite each type's own constant and re-spell no type string.
+//! DERIVED is [`DERIVED_TYPES`]: the derived index, the ledger entry that stood for a batch of
+//! it and the three grouping types, all of which the code store re-derives from the tree.
+//! EPISODIC is [`EPISODIC_TYPES`]. KNOWLEDGE is every other type, so this module declares no
+//! knowledge list. The lists cite each type's own constant and re-spell no type string.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +34,8 @@ pub struct GenerationIngested {
     /// The object id of the bytes the batch was extracted from, as git prints it, or empty when
     /// the path held no file.
     pub blob: String,
-    /// The walk's flag: whether `walk_exclusions` names the entry's identity. It changes only a
-    /// parsed `gc` batch.
+    /// The walk's flag as recorded: whether the walk that wrote the entry excluded its identity.
+    /// It changes only a parsed `gc` batch.
     pub excluded: bool,
 }
 
@@ -86,6 +86,20 @@ pub const PERCEPTION_TYPES: [&str; 5] = [
     TYPE_GENERATION_INGESTED,
 ];
 
+/// DERIVED: every type the code store re-derives from the tree - the four types of the derived
+/// index, the ledger entry that stood for a batch of them, and the three grouping types - the
+/// one list the log refuses an append of.
+pub const DERIVED_TYPES: [&str; 8] = [
+    DERIVED_INDEX_TYPES[0],
+    DERIVED_INDEX_TYPES[1],
+    DERIVED_INDEX_TYPES[2],
+    DERIVED_INDEX_TYPES[3],
+    TYPE_GENERATION_INGESTED,
+    crate::contextgraph::TYPE_COMMUNITY_ASSIGNED,
+    crate::contextgraph::TYPE_CONCEPT_DERIVED,
+    crate::contextgraph::TYPE_CONCEPT_REALIZED,
+];
+
 /// EPISODIC: a run's mechanics. No cross-run fold reads these types, and folding one changes
 /// neither the live projection nor the fold state: it writes only its `applied` row.
 pub const EPISODIC_TYPES: [&str; 20] = [
@@ -114,7 +128,7 @@ pub const EPISODIC_TYPES: [&str; 20] = [
 /// What the log does with an event of a type, as far as any caller branches on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// Perception the tree re-derives: a type of [`DERIVED_INDEX_TYPES`], which no store
+    /// A type of [`DERIVED_TYPES`], which the code store re-derives from the tree and no store
     /// accepts in an append.
     Derived,
     /// Every other type, kept live: knowledge, a run's episodes and a type no list names.
@@ -124,7 +138,7 @@ pub enum Class {
 /// The class of the event type `type_`: [`Class::Derived`] for a type of the derived list and
 /// [`Class::Kept`] for every other, so a type no list names is kept live and never refused.
 pub fn class_of(type_: &str) -> Class {
-    if crate::ingest::is_derived_index_type(type_) {
+    if DERIVED_TYPES.contains(&type_) {
         Class::Derived
     } else {
         Class::Kept
@@ -217,23 +231,23 @@ mod tests {
     #[test]
     fn class_of_answers_derived_for_each_type_of_the_derived_list_and_kept_for_every_other() {
         assert_eq!(
-            DERIVED_INDEX_TYPES.map(class_of),
-            [Class::Derived; 4],
+            DERIVED_TYPES.map(class_of),
+            [Class::Derived; 8],
             "every type of the derived list"
         );
         assert_eq!(
             [
-                TYPE_GENERATION_INGESTED,
                 EPISODIC_TYPES[0],
                 crate::contextgraph::TYPE_ALIAS_DEFINED,
                 "ReviewVerdict",
                 "codeentityextracted",
+                "communityassigned",
                 "",
             ]
             .map(class_of),
             [Class::Kept; 6],
-            "the ledger entry, an episodic type, a knowledge type, a type no list names, a \
-             derived type spelled in another case and the empty type"
+            "an episodic type, a knowledge type, a type no list names, a derived type spelled \
+             in another case, a grouping type spelled in another case and the empty type"
         );
     }
 

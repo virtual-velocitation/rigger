@@ -18,7 +18,8 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::gate::ExecRunner;
 
-use crate::real_driver_spy::RealDriverSpy;
+use super::real_driver_spy::RealDriverSpy;
+use crate::common::fixtures::test_spawn_host;
 
 const UNIT: &str = "a";
 const GATE: &str = "envgate";
@@ -99,6 +100,7 @@ fn one_gate_workflow(build: BuildConfig, gate_kind: &str, gate_cmd: &str) -> Con
             kind: gate_kind.into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.build = build;
@@ -127,7 +129,9 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     }
 }

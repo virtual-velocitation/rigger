@@ -4,8 +4,8 @@
 //! lenses feed), the `nodes()` / `degrees()` accessors the concept label picker reads, and
 //! `partition` -> `Grouping` (the lens-agnostic detection result), then re-casts the code lens's
 //! `detect` as a THIN ADAPTER over `partition`. Those are newly-`pub` and are the load-bearing cross-
-//! lens seam, yet neither lens's own tests isolate them: the community suite drives `detect` /
-//! `from_graph`, and the concepts suite drives `derive` / the binary. This file guards the shared
+//! lens seam, yet neither lens's own tests isolate them: the community suite drives `detect` over
+//! the code store, and the concepts suite drives `derive` / the binary. This file guards the shared
 //! contract directly, over the library's public surface:
 //!
 //!  - `from_edges` ASSEMBLY: self-loops dropped, `a -> b` and `b -> a` collapse to one undirected

@@ -130,9 +130,7 @@
 //! wrapper_is_absent_from_path` - a config-validation concern, not a real-subprocess one),
 //! the build-budget flock (unit 3), and the `validate`/`setup` reporting surfaces (unit 5,
 //! though `rigger validate`'s "none"/resolved-name report is already covered by
-//! `tests/cli.rs`'s own spec 65 unit 2 tests). The turn-key Agent-SDK path
-//! (`shim/shim.mjs`) carries no diff in this unit (a separate, not-yet-wired injection
-//! site per the implementer's own record) and so is not exercised here either.
+//! `tests/cli.rs`'s own spec 65 unit 2 tests).
 //!
 //! Nothing here is feature-gated: `BuildEnv`, `ExecRunner`, `cli::Driver`, and
 //! `config::load` are all compiled and exercised in both feature lanes.

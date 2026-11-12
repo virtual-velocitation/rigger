@@ -21,10 +21,11 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
-mod common;
+use crate::common;
 
 use common::fixtures::cfg_for;
 use common::fixtures::lens_only_panel;
+use common::fixtures::test_spawn_host;
 use rigger::canary::TIER_LENS;
 use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
@@ -118,6 +119,7 @@ fn assert_caught_by(id: &str, anchor: &str, caught_by: &[&str], why: &str) {
         &store,
         &AttributionDriver,
         &cfg_for(PANEL_AGENTS),
+        &test_spawn_host(),
         &lens_only_panel(),
         &corpus,
         default_jobs(),

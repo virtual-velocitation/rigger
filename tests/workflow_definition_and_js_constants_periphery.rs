@@ -1,82 +1,30 @@
-//! Periphery (API / integration) tests for spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED:
-//! the workflow-definition indexer (`src/grounder/workflowdef.rs`, new pub `extract_events` /
-//! `project_events` / `project_batches`, plus new pub `KIND_STAGE` / `REL_NEEDS` / `REL_RUNS` /
-//! `REL_REVIEWS`) and the JavaScript plain-constant tags fix (`crates/rigger-grounder/src/grounder/symbols/registry.rs`).
+//! Periphery tests for spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED, through the shipped
+//! binary: `rigger graph build` over a committed tree advances the code store over the workflow
+//! definition (`.rigger/workflow.yml`: stages, gates, agents and their `NEEDS`/`RUNS`/`REVIEWS`
+//! edges, the review-panel fallback rule included) and the JavaScript files (plain top-level
+//! constants, never a function-valued one double-tagged) in one walk, and `rigger graph --show` /
+//! `--around` answer them from the composed view. A JavaScript file the grammar cannot parse is
+//! indexed as far as the parse reaches, with a `partial` marker on its file node, and a
+//! well-formed sibling never carries the marker.
 //!
-//! Every existing test of this criterion's new code (`workflowdef::tests`, the new
-//! `contextgraph::sqlite::tests::workflow_definition_events_fold_into_...` fold test, and
-//! `registry.rs`'s / `grounder.rs`'s new JS-constant tests) calls the crate's INTERNAL functions
-//! directly - `extract()`, `p.subgraph(...)` after hand-built events, `Symbols::open(..).ground(..)`.
-//! None of them drive the SHIPPED `rigger` binary, so none of them can see:
-//!
-//! 1. That `extract_events` / `project_events` / `project_batches` - now PUBLIC API reachable as
-//!    `rigger::grounder::workflowdef::...` - actually get WIRED to the cold `rigger graph build`
-//!    path (`cmd_graph_build` -> `ingest::ingest_project_batched` -> the shared `walk_batches`,
-//!    src/ingest.rs) and to `rigger graph --show` / `--around` (`Projector::locate` / `subgraph`,
-//!    src/contextgraph/sqlite.rs) reading the SAME `graph.db` the build wrote - an in-process call
-//!    to `extract_events` proves the pure computation, never that the CLI a reader actually runs
-//!    reaches it.
-//! 2. That the fold arm's new `KIND_STAGE`/`KIND_GATE`/`KIND_AGENT` and
-//!    `REL_NEEDS`/`REL_RUNS`/`REL_REVIEWS` match arms (contextgraph/sqlite.rs `fold()`) apply to
-//!    events MINTED BY THE REAL EXTRACTION PASS off a REAL `.rigger/workflow.yml` file - the
-//!    existing fold test constructs `DocConceptExtracted`/`DocLinkExtracted` events by hand, which
-//!    cannot prove `workflowdef::extract` ever emits a payload the fold arm actually accepts.
-//! 3. That the workflow-definition half and the JavaScript half ride the SAME shared walk
-//!    together, through the ONE wired entry point an operator or the conductor actually calls -
-//!    the existing `ingest.rs` unit test proves the wiring in-process; this proves it through the
-//!    binary.
-//! 4. That the review-panel fallback rule, now extracted to `config::Workflow::effective_review_panel`
-//!    (`pub(crate)`, shared by a live run's `conductor::RunCtx::effective_review_panel` and this
-//!    indexer's `workflowdef::reviewers_of`), produces the CORRECT `REVIEWS` edges - and only those
-//!    edges - end to end off a real YAML file, including the negative case (the review-less
-//!    producer stage, whose units the run never reviews, gets no edge at all).
-//! 5. That a plain top-level JS/`.mjs` constant - the exact `docs/audit/2026-09-graph-vs-grep.md`
-//!    questions 5 and 8 gap - surfaces as a `kind constant` entity through `rigger graph --show`
-//!    AND appears as a node under `rigger graph --around <file>` (the neighborhood surface a reader
-//!    actually uses to answer "what does this file define"), and that a function-valued const is
-//!    never double-tagged, through the SAME shared JS tags query the code-entity extraction (not
-//!    just the `ground` index) now uses.
-//! 6. That the CONSTRAINTS WALK's degraded-parse promise (specs/92, line 62-63: "a JavaScript file
-//!    with syntax the grammar cannot parse - indexed as far as the parse reaches, with a `partial`
-//!    marker on the file node, never dropped silently") holds through a REAL cold `rigger graph
-//!    build` - review round 3's adversary caught this as entirely UNIMPLEMENTED
-//!    (`adv-u2c2-partial-marker-unimplemented`) and round 4 closed it at the data-model/fold layer
-//!    (`FileSymbols::partial`, threaded through `CodeEntityExtracted`/`EdgeInferred`, stamped onto
-//!    the file node's `partial` attr by `contextgraph::sqlite`'s fold). Round 4's own tests
-//!    (`extract.rs`, `events.rs`) prove this by calling `extract()` / `build_index()` /
-//!    `project_batches()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
-//!    never through the CLI's actual cold-build entry point (`cmd_graph_build`) writing the REAL
-//!    persisted `graph.db` a reader's `--around` then queries. Proven here instead: a real
-//!    malformed `workflows/*.js` file run through a real `rigger graph build`, read back from the
-//!    SAME persisted store via the crate's own public `Projection::subgraph` - the identical read
-//!    `--around` performs - carries the marker; a well-formed sibling never does; and the malformed
-//!    file's well-formed prefix is still indexed, never dropped.
-//!
-//! Scope is strictly criterion 2 (the JavaScript and definition indexers). Criterion 1 (reindex
-//! freshness / the lag advisory), criterion 3 (`ground`'s ranking) and criterion 4 (`rigger setup`
-//! / the lookup hook / the shipped skill) are owned by sibling units and are deliberately not
-//! exercised here.
+//! Scope is strictly criterion 2 (the JavaScript and definition indexers); `ground`'s ranking and
+//! `rigger setup` are exercised elsewhere.
 
 #[cfg(feature = "symbols")]
-use rigger::contextgraph::sqlite::Projector;
-#[cfg(feature = "symbols")]
-use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, KIND_FILE};
+use rigger::contextgraph::{KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves, and
 // every suite that spawns the product then dies with a bare NotFound.
-mod common;
-
 #[cfg(feature = "symbols")]
-use common::cli::ingested_count;
+use crate::common;
+
 #[cfg(feature = "symbols")]
 use common::cli::run_around;
 #[cfg(feature = "symbols")]
 use common::cli::run_rigger;
-#[cfg(feature = "symbols")]
-use common::cli::run_stream_identity;
 #[cfg(feature = "symbols")]
 use common::cli::temp_project;
 
@@ -146,11 +94,10 @@ fn seed_js_files(root: &Path) {
     .unwrap();
 }
 
-/// WIRING, at the shared-walk seam (`src/ingest.rs` `walk_batches` calling
-/// `grounder::workflowdef::project_batches`, alongside the code half's JS extraction) and at the
-/// CLI entry point (`cmd_graph_build`) both this criterion's halves are reached through: ONE
-/// `rigger graph build` over a project carrying BOTH a real `.rigger/workflow.yml` and a real
-/// `workflows/rigger.js` must make BOTH a workflow-definition entity and a JS-constant entity
+/// WIRING, at the code store's read of one tree (`facts.rs` extracting the workflow definition
+/// alongside the code half's JS extraction) and at the CLI entry point (`cmd_graph_build`) both
+/// this criterion's halves are reached through: ONE `rigger graph build` over a project carrying
+/// BOTH a real `.rigger/workflow.yml` and a real `workflows/rigger.js` must make BOTH a workflow-definition entity and a JS-constant entity
 /// resolvable afterward - proving the whole product is covered in one pass, not two accidentally
 /// disjoint indexers a reader would have to invoke separately.
 #[cfg(feature = "symbols")]
@@ -161,13 +108,9 @@ fn graph_build_wires_the_workflow_definition_and_javascript_indexers_into_one_sh
     seed_workflow_yml(root);
     seed_js_files(root);
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(ok, "graph build must succeed; stderr: {err}; stdout: {out}");
-    assert!(
-        ingested_count(&out) > 0,
-        "sanity: a project with a real workflow.yml and a real .js file must ingest something; \
-         got:\n{out}"
-    );
 
     let (stage_out, stage_err, stage_ok) =
         run_rigger(root, &["graph", "--show", "stage:implement"]);
@@ -204,6 +147,7 @@ fn graph_show_and_around_expose_stage_gate_and_agent_entities_with_needs_and_run
     let root = dir.path();
     seed_workflow_yml(root);
 
+    common::fixtures::commit_tree(root);
     let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         build_ok,
@@ -272,6 +216,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
     let root = dir.path();
     seed_workflow_yml(root);
 
+    common::fixtures::commit_tree(root);
     let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         build_ok,
@@ -389,6 +334,7 @@ fn graph_around_tags_a_tiers_light_reviewer_with_reviews_light_never_the_plain_r
     )
     .unwrap();
 
+    common::fixtures::commit_tree(root);
     let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         build_ok,
@@ -486,14 +432,11 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
     let root = dir.path();
     seed_js_files(root);
 
+    common::fixtures::commit_tree(root);
     let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         build_ok,
         "graph build must succeed; stderr: {build_err}; stdout: {build_out}"
-    );
-    assert!(
-        ingested_count(&build_out) > 0,
-        "sanity: the JS/mjs fixtures must actually get ingested; got:\n{build_out}"
     );
 
     // Q8: OUTER_WALL_CLOCK_SEC (a ternary-valued constant).
@@ -561,7 +504,7 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
 /// grammar cannot fully parse must still be indexed as far as the parse reaches, with a `partial`
 /// marker stamped on its file node - proven here off a REAL `rigger graph build` (not a hand-built
 /// event fed to an in-memory store), reading back the SAME persisted `graph.db` the CLI wrote
-/// through the crate's own public `Projection::subgraph`, the identical read `--around` performs.
+/// through the crate's own public `ContextGraph::subgraph`, the identical read `--around` performs.
 /// A well-formed sibling file must never carry the marker, and the malformed file's well-formed
 /// prefix (a function ahead of its syntax error) must still be indexed, never dropped silently.
 #[cfg(feature = "symbols")]
@@ -582,28 +525,23 @@ fn a_real_malformed_js_file_carries_the_partial_marker_through_a_real_graph_buil
     )
     .unwrap();
 
+    common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(root, &["graph", "build"]);
     assert!(
         ok,
         "graph build must succeed even over a malformed JS file; stderr: {err}; stdout: {out}"
     );
-    assert!(
-        ingested_count(&out) > 0,
-        "sanity: the malformed and well-formed fixtures must actually get ingested; got:\n{out}"
-    );
 
-    let id = run_stream_identity(root);
-    let gp = Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id)
-        .expect("the real graph.db a real `rigger graph build` just wrote must open");
-    let g = gp
-        .subgraph(
-            &[
-                "workflows/broken.js".to_string(),
-                "workflows/whole.js".to_string(),
-            ],
-            1,
-        )
-        .expect("a subgraph read over the real persisted store must succeed");
+    let built = common::cli::BuiltGraph::of(root);
+    let g = rigger::contextgraph::ContextGraph::subgraph(
+        &built.composed(),
+        &[
+            "workflows/broken.js".to_string(),
+            "workflows/whole.js".to_string(),
+        ],
+        1,
+    )
+    .expect("a subgraph read over the real persisted store must succeed");
 
     let broken = g
         .nodes
@@ -617,7 +555,7 @@ fn a_real_malformed_js_file_carries_the_partial_marker_through_a_real_graph_buil
         broken.attrs.get("partial").map(String::as_str),
         Some("true"),
         "a real malformed JS file run through a REAL `rigger graph build` must carry the partial \
-         marker on its file node, read back through the same public Projection::subgraph the \
+         marker on its file node, read back through the same public ContextGraph::subgraph the \
          CLI's own --around uses; got attrs {:?}",
         broken.attrs
     );

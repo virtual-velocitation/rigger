@@ -17,7 +17,7 @@
 //! prove the library-level behavior; this file proves it end to end through the compiled
 //! binary, at both entry points the finding named.
 
-mod common;
+use crate::common;
 use common::cli::run_rigger;
 use common::cli::temp_project;
 
@@ -28,7 +28,7 @@ use std::path::Path;
 /// not, because a broken-but-PRESENT workflow.yml was misread as an ABSENT one.
 const DEFAULT_FLEET: &[&str] = &[
     "planner.md",
-    "rust-engineer.md",
+    "implementer.md",
     "architecture-reviewer.md",
     "sdet.md",
     "adversary.md",
@@ -112,7 +112,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
         "the two referenced agents must be scaffolded by the first init"
     );
     for unreferenced in [
-        "rust-engineer.md",
+        "implementer.md",
         "architecture-reviewer.md",
         "sdet.md",
         "adjudicator.md",
@@ -143,7 +143,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
     );
 
     for unreferenced in [
-        "rust-engineer.md",
+        "implementer.md",
         "architecture-reviewer.md",
         "sdet.md",
         "adjudicator.md",

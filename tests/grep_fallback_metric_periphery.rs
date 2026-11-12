@@ -35,14 +35,14 @@
 //! `progress`, `metrics`, `dash`, and `eventstore::sqlite` are not feature-gated, so this guards
 //! the counted-fallback contract on BOTH the default and the `--no-default-features` lane.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 
 use common::fixtures::ev;
 use common::fixtures::positioned;
 use rigger::contextgraph::Graph;
-use rigger::dash::{build_state, state_json};
+use rigger::dash::{build_state, state_json, LabelledGraph};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
 use rigger::metrics::grep_fallbacks;
@@ -212,6 +212,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
     let with = build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &progress_events,
         &liveness,
@@ -223,6 +224,7 @@ fn build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchange
     let without = build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &empty,
         &liveness,
@@ -273,7 +275,7 @@ fn the_state_json_body_always_carries_the_grep_fallbacks_key_even_at_zero() {
 
     let body = state_json(
         &events,
-        &Graph::default(),
+        LabelledGraph::from(&Graph::default()),
         &empty,
         &liveness,
         3,

@@ -1573,7 +1573,7 @@ mod tests {
     #[test]
     fn ensure_started_adopts_the_same_criteria_run_without_re_minting() {
         // Resume / idle re-run / replay step: the same criteria adopt the existing run and
-        // append NOTHING, so a run is never fragmented across step processes.
+        // append NOTHING, so a run is never fragmented across driver processes.
         let store = Store::open(":memory:").unwrap();
         let first = ensure_started(&store, &["crit".to_string()]).unwrap();
         let again = ensure_started(&store, &["crit".to_string()]).unwrap();

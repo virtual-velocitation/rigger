@@ -11,14 +11,13 @@
 //! is feature-gated), so these tests run in both. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use common::served::get_raw;
 use common::served::header_value;
 use common::served::split_response;
 
-#[path = "common/served_asset.rs"]
-mod served_asset;
+use crate::served_asset;
 use served_asset::served_binary_asset;
 
 /// The woff2 format's own magic header, `wOF2`.

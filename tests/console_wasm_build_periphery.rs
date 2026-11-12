@@ -37,7 +37,7 @@
 //! through, that EVERY inherited `CARGO_FEATURE_*` is scrubbed, the success return path's
 //! artifact path, and that a nonzero exit returns `Err` rather than panicking.
 
-mod common;
+use crate::common;
 
 #[path = "../crates/rigger-dash/build/console_wasm.rs"]
 #[allow(dead_code)]

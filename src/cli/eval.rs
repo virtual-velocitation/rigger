@@ -149,7 +149,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // the SAME namespaced run stream `rigger validate`'s drift advisory folds, so the warning
     // and this trigger can never disagree on what "the model changed" means.
     if if_model_changed {
-        let drift = read_model_drift(&db_path("events.db"), &project_identity())?;
+        let drift = read_model_drift(&db_path("events.db"), &project_identity()?)?;
         if !drift.changed() {
             println!(
                 "canary: no resolved-model change since the previous run - skipping (run \
@@ -208,6 +208,8 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // CLONE of `cfg` - the loaded config (and the file it came from) is never mutated, and
     // an un-pinned tier's agent is byte-for-byte what the config declared.
     let cfg = canary_store::apply_model_pins(&cfg, &panel, &args.model_pins);
+    // The host values every canary spawn carries, resolved once at the canary's start.
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new("."))?;
 
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
@@ -217,7 +219,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
         migrate_local_identity(None)?;
     }
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
+    let store = Namespaced::new(backend.as_ref(), &project_identity()?);
     let driver = cli::Driver::default();
 
     // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
@@ -229,6 +231,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
         &store,
         &driver,
         &cfg,
+        &spawn_host,
         &panel,
         &corpus,
         args.jobs,
@@ -288,7 +291,7 @@ pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
     let db = db_path("events.db");
     let events = if !selection.log_absent(&db) {
         let backend = resolve_store(&selection, &db)?;
-        let store = Namespaced::new(backend.as_ref(), &project_identity());
+        let store = Namespaced::new(backend.as_ref(), &project_identity()?);
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?
     } else {
         Vec::new()

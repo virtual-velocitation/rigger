@@ -23,7 +23,7 @@
 //! PATH. `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_claims;
 
@@ -53,7 +53,7 @@ __El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
 const window = { addEventListener: function(){} };
 const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
+const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
 const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
 `;

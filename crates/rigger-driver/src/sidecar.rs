@@ -3,13 +3,17 @@
 //! file-isolation boundary - worktrees isolate the files, the event stream shares the
 //! decisions.
 
+use std::cmp::Reverse;
+use std::collections::HashSet;
+
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::contextgraph;
 use crate::contextgraph::query::referenced_id;
 use crate::eventstore::{self, Event, EventStore};
-use crate::run;
+use crate::run::{self, RunOf};
+use crate::spawn::{review_step_of, spawn_role, unit_of, META_SPAWN};
 
 /// A peer's decision, as the side-car surfaces it to an agent.
 #[derive(Clone, Debug, Deserialize)]
@@ -30,6 +34,9 @@ pub struct PeerDecision {
     pub live: bool,
 }
 
+/// The note a show surface gives beside a record it read from the log ([`Sidecar::site_of`]).
+pub const LOGGED_SITE_NOTE: &str = "read from the event log: the graph no longer holds this record";
+
 /// A peer reviewer's finding, as the side-car surfaces it to a concurrent reviewer.
 /// This is how concurrent lenses see each other's findings LIVE: a lens emits a
 /// ReviewFinding, the side-car's catch-up subscription picks it up, and a fellow
@@ -44,12 +51,22 @@ pub struct PeerFinding {
     pub summary: String,
     #[serde(default)]
     pub about: Vec<String>,
+    /// The file (or `file:line` cite) it names beside `about`.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// The unit it was raised on.
+    #[serde(default)]
+    pub unit: String,
+    /// Whether the reviewer marked it as its sign-off (`"sign_off": true`) rather than a
+    /// finding about the code; absent, as on every older finding, it reads as an ordinary one.
+    #[serde(default)]
+    pub sign_off: bool,
 }
 
 /// A lesson a prior run's escalation recorded, as the side-car surfaces it. Lessons
 /// fold ABOUT the files the failed unit touched, so they scope on `about` exactly like
 /// a [`PeerFinding`], and `rigger peers <file>` lists them beside the file's decisions and
-/// findings (the newest under the lessons section's budget).
+/// findings (ranked with them under the reply's one budget).
 #[derive(Clone, Debug, Deserialize)]
 pub struct PeerLesson {
     pub id: String,
@@ -57,6 +74,9 @@ pub struct PeerLesson {
     pub summary: String,
     #[serde(default)]
     pub about: Vec<String>,
+    /// The file (or `file:line` cite) it names beside `about`.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// A peer record the side-car surfaces: the event type it folds from, and the files it
@@ -64,9 +84,27 @@ pub struct PeerLesson {
 pub trait Peer: DeserializeOwned {
     /// The event type every record of this kind is decoded from.
     const EVENT_TYPE: &'static str;
+    /// The noun a reader names this kind by: `decision`, `lesson` or `finding`.
+    const NOUN: &'static str;
     /// The references a record of this kind is scoped on, each naming the node id
     /// [`referenced_id`] reads from it.
     const SCOPE: fn(&Self) -> &[String];
+    /// The record's id, the one `rigger graph --show <id>` resolves.
+    const ID: fn(&Self) -> &str;
+    /// The record's summary.
+    const SUMMARY: fn(&Self) -> &str;
+    /// The reviewer a record names as its author, empty for a kind that names none.
+    const BY: fn(&Self) -> &str = |_| "";
+    /// Whether the record is a reviewer's marked sign-off, which ranks with ceremony
+    /// ([`is_ceremony`]); false for a kind that carries no such mark.
+    const SIGN_OFF: fn(&Self) -> bool = |_| false;
+    /// Every location the fold ties a record of this kind to, each read through
+    /// [`referenced_id`] by [`Sidecar::site_of`]: its [`Self::SCOPE`] unless the kind names more.
+    const LOCATIONS: fn(&Self) -> Vec<&str> =
+        |r| (Self::SCOPE)(r).iter().map(String::as_str).collect();
+    /// The attrs the fold gives a record of this kind's node: its summary unless the kind
+    /// carries more.
+    const ATTRS: fn(&Self) -> Vec<(&'static str, &str)> = |r| vec![("summary", (Self::SUMMARY)(r))];
 
     /// Every record of this kind in `seen`, in stream order - each matching event's body
     /// decoded, an undecodable one skipped.
@@ -80,7 +118,10 @@ pub trait Peer: DeserializeOwned {
 
 impl Peer for PeerDecision {
     const EVENT_TYPE: &'static str = contextgraph::TYPE_DECISION_MADE;
+    const NOUN: &'static str = "decision";
     const SCOPE: fn(&Self) -> &[String] = |d| &d.governs;
+    const ID: fn(&Self) -> &str = |d| &d.id;
+    const SUMMARY: fn(&Self) -> &str = |d| &d.summary;
 
     /// Each decision carries a LIVE/HISTORICAL provenance label (spec 21, unit 3),
     /// derived from the SINGLE c1 run attribution - [`run::run_attribution`] keyed by
@@ -91,16 +132,13 @@ impl Peer for PeerDecision {
     /// label only makes provenance legible; `graph_context` still surfaces cross-run
     /// decisions unchanged.
     fn collect(seen: &[Event]) -> Vec<Self> {
-        let attribution = run::run_attribution(seen);
-        let active = run::current_run_id(seen);
+        let provenance = Provenance::over(seen);
         seen.iter()
             .enumerate()
             .filter(|(_, e)| e.type_ == Self::EVENT_TYPE)
             .filter_map(|(i, e)| {
                 let mut d: PeerDecision = serde_json::from_slice(&e.data).ok()?;
-                d.live = attribution
-                    .get(&i)
-                    .is_some_and(|run_of| run_of.is_live(active.as_deref()));
+                d.live = provenance.live(i) == Some(true);
                 Some(d)
             })
             .collect()
@@ -109,12 +147,116 @@ impl Peer for PeerDecision {
 
 impl Peer for PeerFinding {
     const EVENT_TYPE: &'static str = contextgraph::TYPE_REVIEW_FINDING;
+    const NOUN: &'static str = "finding";
     const SCOPE: fn(&Self) -> &[String] = |f| &f.about;
+    const ID: fn(&Self) -> &str = |f| &f.id;
+    const SUMMARY: fn(&Self) -> &str = |f| &f.summary;
+    const BY: fn(&Self) -> &str = |f| &f.by;
+    const SIGN_OFF: fn(&Self) -> bool = |f| f.sign_off;
+    const LOCATIONS: fn(&Self) -> Vec<&str> = |f| about_and_file(&f.about, &f.file);
+    const ATTRS: fn(&Self) -> Vec<(&'static str, &str)> =
+        |f| vec![("summary", &f.summary), ("by", &f.by), ("unit", &f.unit)];
 }
 
 impl Peer for PeerLesson {
     const EVENT_TYPE: &'static str = contextgraph::TYPE_LESSON_LEARNED;
+    const NOUN: &'static str = "lesson";
     const SCOPE: fn(&Self) -> &[String] = |l| &l.about;
+    const ID: fn(&Self) -> &str = |l| &l.id;
+    const SUMMARY: fn(&Self) -> &str = |l| &l.summary;
+    const LOCATIONS: fn(&Self) -> Vec<&str> = |l| about_and_file(&l.about, &l.file);
+}
+
+/// A lesson's or finding's locations as the fold reads them: each `about` reference, then its
+/// `file`.
+fn about_and_file<'a>(about: &'a [String], file: &'a Option<String>) -> Vec<&'a str> {
+    about.iter().chain(file).map(String::as_str).collect()
+}
+
+/// The single c1 run attribution ([`run::run_attribution`] keyed by event index, plus
+/// [`run::current_run_id`]) over ONE read, so every record's provenance comes from the same
+/// slice its index points into.
+struct Provenance {
+    attribution: std::collections::BTreeMap<usize, RunOf>,
+    active: Option<String>,
+}
+
+impl Provenance {
+    fn over(seen: &[Event]) -> Self {
+        Provenance {
+            attribution: run::run_attribution(seen),
+            active: run::current_run_id(seen),
+        }
+    }
+
+    /// Whether the record at index `i` belongs to the active run (`Some(true)`) or to a
+    /// superseded run or the pre-boundary stretch (`Some(false)`), or `None` for a record the
+    /// attribution exempts from any run (a lesson) or does not attribute.
+    fn live(&self, i: usize) -> Option<bool> {
+        match self.attribution.get(&i)? {
+            RunOf::Lesson => None,
+            run_of => Some(run_of.is_live(self.active.as_deref())),
+        }
+    }
+}
+
+/// Whether `e` is ceremony: a decision recorded as review bookkeeping rather than as a ruling
+/// about the code - a judging seat's verdict (its [`META_SPAWN`] role is a review step, see
+/// [`review_step_of`]) or a definition re-pin (it carries [`run::META_DEFINITION`]). A review
+/// finding is ceremony only when its reviewer marked it as a sign-off ([`Peer::SIGN_OFF`]); any
+/// other finding is the content a verdict rests on, whatever its id or summary says.
+fn is_ceremony(e: &Event) -> bool {
+    e.type_ == contextgraph::TYPE_DECISION_MADE
+        && (e
+            .meta
+            .get(META_SPAWN)
+            .is_some_and(|spawn| review_step_of(spawn_role(spawn)).is_some())
+            || e.meta.contains_key(run::META_DEFINITION))
+}
+
+/// How many distinct files of `scope` the references `refs` name, each side read through
+/// [`referenced_id`].
+fn files_named(scope: &HashSet<&str>, refs: &[String]) -> usize {
+    refs.iter()
+        .map(|f| referenced_id(f))
+        .filter(|f| scope.contains(f))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// One peer record of any kind, as [`Sidecar::ranked`] hands it back: what a reader needs to
+/// name it on one line and read the whole of it by id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RankedPeer {
+    /// Its kind's [`Peer::NOUN`].
+    pub noun: &'static str,
+    /// Its id, the one `rigger graph --show <id>` resolves.
+    pub id: String,
+    /// The reviewer it names as its author, empty for a kind that names none.
+    pub by: String,
+    pub summary: String,
+    /// LIVE (`Some(true)`) when it belongs to the active run, HISTORICAL (`Some(false)`) when
+    /// it belongs to a superseded run or the pre-boundary stretch, `None` for a lesson, which
+    /// no run owns.
+    pub live: Option<bool>,
+}
+
+/// Where a record ranks in [`Sidecar::ranked`], best first: the derived order compares the
+/// fields top to bottom, so each field breaks the ties of the one above it.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    /// Ceremony ranks below every ruling, finding and lesson ([`is_ceremony`], or a finding
+    /// marked as a sign-off).
+    ceremony: bool,
+    /// The calling unit's own records rank first.
+    other_unit: bool,
+    /// A superseded run's records rank below the active run's (the calling unit's spec) and
+    /// below lessons, which no run supersedes.
+    superseded: bool,
+    /// A record naming more of the passed files ranks higher.
+    files_named: Reverse<usize>,
+    /// The newer record ranks higher.
+    at: Reverse<usize>,
 }
 
 /// Sidecar is ONE read of the run's peer records (spec 101): the run's own events from its
@@ -143,6 +285,42 @@ impl Sidecar {
         T::collect(&self.seen)
     }
 
+    /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
+    /// prints a graph node, for an id the graph no longer holds (a `rigger reset --runs` prune
+    /// deletes no event): its kind, the distinct locations it names ([`Peer::LOCATIONS`]) as its
+    /// degree, and the fold's attrs ([`Peer::ATTRS`]); a restated id reads as its latest record.
+    pub fn site_of(&self, id: &str) -> Option<contextgraph::EntitySite> {
+        self.site_of_kind::<PeerDecision>(id)
+            .or_else(|| self.site_of_kind::<PeerLesson>(id))
+            .or_else(|| self.site_of_kind::<PeerFinding>(id))
+    }
+
+    /// [`Self::site_of`] over the records of kind `T`.
+    fn site_of_kind<T: Peer>(&self, id: &str) -> Option<contextgraph::EntitySite> {
+        let record = T::collect(&self.seen)
+            .into_iter()
+            .rfind(|r| (T::ID)(r) == id)?;
+        let attrs = (T::ATTRS)(&record)
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        let degree = (T::LOCATIONS)(&record)
+            .into_iter()
+            .map(referenced_id)
+            .collect::<HashSet<_>>()
+            .len();
+        Some(contextgraph::EntitySite {
+            id: id.to_string(),
+            kind: T::NOUN.to_string(),
+            file: None,
+            line: 0,
+            degree,
+            attrs,
+            unresolved: Vec::new(),
+        })
+    }
+
     /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3): a peer record is
     /// relevant only when the files its [`Peer::SCOPE`] references name (a decision's `governs`,
     /// a finding's or lesson's `about`) intersect the files the agent's blast-radius names, each
@@ -155,16 +333,74 @@ impl Sidecar {
         if blast_radius.is_empty() {
             return all;
         }
-        let scope: std::collections::HashSet<&str> =
-            blast_radius.iter().map(|f| referenced_id(f)).collect();
+        let scope: HashSet<&str> = blast_radius.iter().map(|f| referenced_id(f)).collect();
         all.into_iter()
-            .filter(|p| {
-                (T::SCOPE)(p)
-                    .iter()
-                    .any(|f| scope.contains(referenced_id(f)))
-            })
+            .filter(|p| files_named(&scope, (T::SCOPE)(p)) > 0)
             .collect()
     }
+
+    /// Every decision, lesson and finding scoped to `files` as [`Self::peers_for`] scopes them,
+    /// ranked best first for the spawn `caller` (`None` when the caller is no spawn): ceremony
+    /// last ([`is_ceremony`], and every finding marked as a sign-off), then the caller's own unit's records first, then the active run's
+    /// records and lessons before a superseded run's, then those naming more of `files`, then
+    /// the newest. A reader that keeps a prefix of this list keeps the most relevant records.
+    pub fn ranked(&self, files: &[String], caller: Option<&str>) -> Vec<RankedPeer> {
+        let scope: HashSet<&str> = files.iter().map(|f| referenced_id(f)).collect();
+        let context = RankContext {
+            provenance: Provenance::over(&self.seen),
+            scope,
+            unit: caller.and_then(unit_of),
+        };
+        let mut ranked: Vec<(Rank, RankedPeer)> = Vec::new();
+        self.rank_into::<PeerDecision>(&context, &mut ranked);
+        self.rank_into::<PeerLesson>(&context, &mut ranked);
+        self.rank_into::<PeerFinding>(&context, &mut ranked);
+        ranked.sort_by(|a, b| a.0.cmp(&b.0));
+        ranked.into_iter().map(|(_, peer)| peer).collect()
+    }
+
+    /// Push every record of kind `T` that `context`'s scope admits onto `ranked`, each beside
+    /// its [`Rank`].
+    fn rank_into<T: Peer>(&self, context: &RankContext, ranked: &mut Vec<(Rank, RankedPeer)>) {
+        for (at, e) in self.seen.iter().enumerate() {
+            if e.type_ != T::EVENT_TYPE {
+                continue;
+            }
+            let Ok(record) = serde_json::from_slice::<T>(&e.data) else {
+                continue;
+            };
+            let named = files_named(&context.scope, (T::SCOPE)(&record));
+            if !context.scope.is_empty() && named == 0 {
+                continue;
+            }
+            let live = context.provenance.live(at);
+            let own = context.unit.is_some()
+                && e.meta.get(META_SPAWN).and_then(|s| unit_of(s)) == context.unit;
+            let rank = Rank {
+                ceremony: is_ceremony(e) || (T::SIGN_OFF)(&record),
+                other_unit: !own,
+                superseded: live == Some(false),
+                files_named: Reverse(named),
+                at: Reverse(at),
+            };
+            let peer = RankedPeer {
+                noun: T::NOUN,
+                id: (T::ID)(&record).to_string(),
+                by: (T::BY)(&record).to_string(),
+                summary: (T::SUMMARY)(&record).to_string(),
+                live,
+            };
+            ranked.push((rank, peer));
+        }
+    }
+}
+
+/// What [`Sidecar::ranked`] ranks every record against: the read's run attribution, the passed
+/// files, and the calling spawn's unit.
+struct RankContext<'a> {
+    provenance: Provenance,
+    scope: HashSet<&'a str>,
+    unit: Option<&'a str>,
 }
 
 #[cfg(test)]
@@ -319,6 +555,220 @@ mod tests {
                 "the decision, finding and lesson scoped to {blast_radius}"
             );
         }
+    }
+
+    /// A record a superseded run left in the log reads back by its id as the show surfaces print
+    /// a graph node: its kind, the distinct locations it names (a lesson's or finding's `about`
+    /// and `file`, a decision's `governs`) as its degree, and the attrs the fold gives it; a
+    /// restated id reads as its latest record, and an id no record holds reads as none.
+    #[test]
+    fn site_of_reads_a_record_by_id_from_the_log() {
+        use serde_json::json;
+        let store = Store::open(":memory:").unwrap();
+        let events = [
+            crate::test_support::run_started("r1", &[]),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "first",
+                       "about": ["a.rs", "a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "restated",
+                       "about": ["a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-file", "by": "adversary", "unit": "u1", "summary": "at a line",
+                       "file": "c.rs:9"}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-old", "summary": "learned", "about": ["a.rs"], "file": "d.rs"}),
+                &[],
+            ),
+            crate::test_support::run_started("r2", &[]),
+        ];
+        store.append("run", ExpectedRevision::Any, &events).unwrap();
+        let sidecar = Sidecar::read(&store, "run").unwrap();
+        let site = |id: &str, kind: &str, degree: usize, attrs: &[(&str, &str)]| {
+            Some(contextgraph::EntitySite {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                file: None,
+                line: 0,
+                degree,
+                attrs: attrs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                unresolved: Vec::new(),
+            })
+        };
+        assert_eq!(
+            ["f-old", "d-old", "f-file", "l-old", "nope"].map(|id| sidecar.site_of(id)),
+            [
+                site(
+                    "f-old",
+                    contextgraph::KIND_FINDING,
+                    2,
+                    &[("by", "lens:sdet"), ("summary", "restated")]
+                ),
+                site(
+                    "d-old",
+                    contextgraph::KIND_DECISION,
+                    1,
+                    &[("summary", "chose X")]
+                ),
+                site(
+                    "f-file",
+                    contextgraph::KIND_FINDING,
+                    1,
+                    &[
+                        ("by", "adversary"),
+                        ("summary", "at a line"),
+                        ("unit", "u1")
+                    ]
+                ),
+                site(
+                    "l-old",
+                    contextgraph::KIND_LESSON,
+                    2,
+                    &[("summary", "learned")]
+                ),
+                None,
+            ]
+        );
+    }
+
+    /// One `type_` event carrying `body`, stamped with each `(key, value)` of `meta`.
+    fn stamped(type_: &str, body: serde_json::Value, meta: &[(&str, &str)]) -> Event {
+        meta.iter().fold(
+            Event::new(type_, serde_json::to_vec(&body).unwrap()),
+            |e, (key, value)| e.with_meta(*key, *value),
+        )
+    }
+
+    /// A log holding a record of every rank tier, oldest first: `d-prior`, unit u1's ruling from
+    /// before the run; the run's `RunStarted`; `d-verdict`, u1's adjudicator verdict; `d-rebase`, a
+    /// definition re-pin; `d-own` and `f-own`, u1's ruling and lens finding; `f-signoff`, u1's
+    /// lens sign-off, marked `sign_off`; `f-review-complete`, u2's lens finding whose id and summary
+    /// read as a sign-off but which carries no mark; `d-both`, u2's ruling
+    /// on a.rs and a line of b.rs; `d-peer`, u2's ruling on a.rs; `l-a`, a lesson about a.rs; and
+    /// `d-off`, a ruling on c.rs alone. Ranked for `caller` over `files`, as `(id, live)` pairs.
+    fn ranked_ids(files: &[&str], caller: Option<&str>) -> Vec<(String, Option<bool>)> {
+        use serde_json::json;
+        let decision = |id: &str, governs: &[&str], meta: &[(&str, &str)]| {
+            stamped(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": id, "summary": id, "governs": governs}),
+                meta,
+            )
+        };
+        let events = [
+            decision("d-prior", &["a.rs"], &[(META_SPAWN, "u1/implementer#0")]),
+            crate::test_support::run_started("r1", &[]),
+            decision("d-verdict", &["a.rs"], &[(META_SPAWN, "u1/adjudicator#0")]),
+            decision("d-rebase", &["a.rs"], &[(run::META_DEFINITION, "h2")]),
+            decision("d-own", &["a.rs"], &[(META_SPAWN, "u1/implementer#0")]),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-own", "by": "lens:sdet", "summary": "f", "about": ["a.rs"]}),
+                &[(META_SPAWN, "u1/lens:sdet#0")],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-signoff", "by": "lens:sdet", "summary": "s", "about": ["a.rs"],
+                       "sign_off": true}),
+                &[(META_SPAWN, "u1/lens:sdet#0")],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-review-complete", "by": "lens:sdet",
+                       "summary": "REVIEW COMPLETE: approve", "about": ["a.rs"]}),
+                &[(META_SPAWN, "u2/lens:sdet#0")],
+            ),
+            decision(
+                "d-both",
+                &["a.rs", "b.rs:3"],
+                &[(META_SPAWN, "u2/implementer#0")],
+            ),
+            decision("d-peer", &["a.rs"], &[(META_SPAWN, "u2/implementer#0")]),
+            stamped(
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-a", "summary": "l", "about": ["a.rs"]}),
+                &[],
+            ),
+            decision("d-off", &["c.rs"], &[]),
+        ];
+        let store = Store::open(":memory:").unwrap();
+        store.append("run", ExpectedRevision::Any, &events).unwrap();
+        let files: Vec<String> = files.iter().map(|f| f.to_string()).collect();
+        Sidecar::read(&store, "run")
+            .unwrap()
+            .ranked(&files, caller)
+            .into_iter()
+            .map(|p| (p.id, p.live))
+            .collect()
+    }
+
+    /// Asserts [`ranked_ids`] over `files` for `caller` is `expected`, each id's `live` label
+    /// being HISTORICAL for `d-prior`, none for the lesson `l-a`, and LIVE for the rest.
+    fn assert_ranked(files: &[&str], caller: Option<&str>, expected: &[&str]) {
+        let live = |id: &str| match id {
+            "d-prior" => Some(false),
+            "l-a" => None,
+            _ => Some(true),
+        };
+        let expected: Vec<(String, Option<bool>)> = expected
+            .iter()
+            .map(|id| (id.to_string(), live(id)))
+            .collect();
+        assert_eq!(ranked_ids(files, caller), expected);
+    }
+
+    crate::test_cases! {
+        /// For a spawn of unit u1: u1's own records first (live before its prior run's), then the
+        /// rest by the files they name and then by age, the lesson ranking with the live records,
+        /// and every judging seat's verdict, marked sign-off and definition re-pin last, u1's own
+        /// first among them; a finding whose text reads as a sign-off but carries no mark ranks as
+        /// a finding; the c.rs ruling is out of scope.
+        ranked_puts_the_callers_own_unit_first_and_ceremony_last: assert_ranked(
+            &["a.rs", "b.rs"],
+            Some("u1/implementer#1"),
+            &[
+                "f-own", "d-own", "d-prior", "d-both", "l-a", "d-peer", "f-review-complete",
+                "f-signoff", "d-verdict", "d-rebase",
+            ],
+        );
+        /// With no calling spawn, no unit is raised: the record naming both files leads, then
+        /// the live records and the lesson newest first, the prior run's ruling after them and
+        /// the ceremony last, newest first.
+        ranked_without_a_caller_orders_by_files_named_then_age: assert_ranked(
+            &["a.rs", "b.rs"],
+            None,
+            &[
+                "d-both", "l-a", "d-peer", "f-review-complete", "f-own", "d-own", "d-prior",
+                "f-signoff", "d-rebase", "d-verdict",
+            ],
+        );
+        /// Unscoped, every record is in and none names a passed file, so age orders each tier.
+        ranked_unscoped_holds_every_record_newest_first_within_a_tier: assert_ranked(
+            &[],
+            None,
+            &[
+                "d-off", "l-a", "d-peer", "d-both", "f-review-complete", "f-own", "d-own",
+                "d-prior", "f-signoff", "d-rebase", "d-verdict",
+            ],
+        );
     }
 
     crate::test_cases! {

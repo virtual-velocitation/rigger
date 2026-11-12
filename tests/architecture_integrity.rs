@@ -38,7 +38,7 @@
 //! and touches no backend symbol. It is deliberately NOT feature-gated: it runs
 //! identically in both feature lanes.
 
-mod common;
+use crate::common;
 use common::repo::{repo_root, repo_text};
 use std::path::PathBuf;
 

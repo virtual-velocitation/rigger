@@ -57,7 +57,8 @@
 //! guard (spec 103 criterion 2, not this unit's scope) and the integration re-gate (spec 103
 //! criterion 3, not this unit's scope).
 
-mod common;
+use crate::common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::{fan_out_stage, plan_stage, workflow_cfg};
 use common::fixtures::{unit_proposal, ProposingPlannerDriver};
 use common::git::temp_git_project_with_commit;
@@ -118,8 +119,10 @@ fn proposal_integrates_verified_by(proposals: &[&[&str]], output: &'static str, 
         graph: None,
         criteria: vec![CRITERION.to_string()],
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps).unwrap();
 

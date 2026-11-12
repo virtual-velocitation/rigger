@@ -295,6 +295,10 @@
     font-size: 12px; color: var(--muted); margin: 0 0 8px; overflow-wrap: anywhere; }
   .kghead b { color: var(--ink); }
   .kgsubjectlens[hidden] { display: none; }
+  /* What the graph on show describes (spec 6.1): the label of the read that answered it, or why no
+     graph could be read, which reads as an error rather than an empty graph. */
+  .kglabel[hidden] { display: none; }
+  .kglabel.kglabel-error { color: var(--warn); }
   .kgtoggle { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: auto;
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
@@ -395,7 +399,9 @@
          always present. -->
     <div class="kghead" id="kghead">
       <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
+      <span class="kglabel" id="kglabel" hidden></span>
       <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
+      <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
     </div>
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
@@ -476,6 +482,7 @@
         </div>
         <div class="card" style="grid-column: 1 / -1;">
           <h3>Decision history</h3>
+          <div class="kglabel" id="decisionslabel" hidden></div>
           <div class="wrap" id="decisions"></div>
         </div>
       </div>
@@ -515,10 +522,35 @@ let selectedInstance = (function () {
 // need no re-fetch.
 let lastInstances = [];
 
+// The tests filter (the "Show tests" toggle): `exclude` shows product code only, `include` product
+// and tests, `only` tests. It rides every /api/graph request through apiUrl.
+let kgTests = "exclude";
+
 // Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
 // /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
 // registry projection and is NEVER threaded - it lists every instance regardless of the selection.
+// Every graph read goes through here, so the graph header states what the graph on show describes:
+// the label of the read that answered it, or why no graph could be read (spec 6.1). The server sends
+// both beside the body, percent-encoded; a reply carrying neither leaves the header as it was.
+async function graphFetch(path) {
+  const resp = await fetch(apiUrl(path), { cache: "no-store" });
+  const label = resp.headers.get("X-Rigger-Graph-Label");
+  const error = resp.headers.get("X-Rigger-Graph-Error");
+  if (label !== null || error !== null) {
+    const box = el("kglabel");
+    box.textContent = decodeURIComponent(error !== null ? error : label);
+    box.classList.toggle("kglabel-error", error !== null);
+    box.hidden = false;
+  }
+  return resp;
+}
+
 function apiUrl(path) {
+  // The explorer's tests filter rides every graph read, so no view reads past it; `exclude` is the
+  // server's default and is never sent, which keeps every default request unchanged.
+  if (path.startsWith("/api/graph") && kgTests !== "exclude") {
+    path += (path.includes("?") ? "&" : "?") + "tests=" + encodeURIComponent(kgTests);
+  }
   if (!selectedInstance) return path;
   const sep = path.includes("?") ? "&" : "?";
   return path + sep + "instance=" + encodeURIComponent(selectedInstance);
@@ -642,6 +674,13 @@ function render(state) {
   // <summary> line previews `id + a one-line summary` and the body reveals the FULL reasoning on
   // click, so a multi-KB decision collapses to one line but expands whole - no framework, no
   // inline multi-KB dumps. Superseded entries stay struck through in the collapsed line.
+  // The snapshot's graph states what it describes: the label of the read that answered it, or why
+  // no graph could be read (spec 6.1); a snapshot with no graph read carries neither.
+  const read = graph.label || {};
+  const readBox = el("decisionslabel");
+  readBox.textContent = read.unread !== undefined ? read.unread : (read.read || "");
+  readBox.className = read.unread !== undefined ? "kglabel kglabel-error" : "kglabel";
+  readBox.hidden = read.unread === undefined && read.read === undefined;
   const decisions = graph.decisions || [];
   el("decisions").innerHTML = decisions.length ? decisions.map(d =>
     '<details class="decision' + (d.superseded ? " struck" : "") + '"'
@@ -790,6 +829,23 @@ function syncOverlayToggle() {
   t.className = "kgtoggle" + (kgOverlay ? " active" : "");
 }
 
+// Reflect the tests filter on its static toggle: "Show tests" while tests are hidden, else which
+// tests are shown.
+function syncTestsToggle() {
+  const t = el("kgteststoggle");
+  if (!t) return;
+  t.textContent = { exclude: "Show tests", include: "tests: shown", only: "tests: only" }[kgTests];
+  t.className = "kgtoggle" + (kgTests === "exclude" ? "" : " active");
+}
+
+// Step the tests filter exclude -> include -> only -> exclude and re-read the current view under it:
+// the seeded neighborhood when one is open, else the whole-graph overview.
+function setTests(next) {
+  kgTests = next;
+  syncTestsToggle();
+  if (kgSeed) seedGraph(kgSeed); else loadKgOverview();
+}
+
 // Reveal the SUBJECT-STICKY lens control when a subject is focused, hide it otherwise (spec 55 c4).
 // While shown it carries the files/code/concepts tabs (data-lens, subject-sticky through onLensPick)
 // and a whole-graph CLEAR (data-kgclear). A static element, so revealing it never touches a view body.
@@ -867,7 +923,7 @@ function renderCard(card) {
   const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
   // The PROOF row (spec 86 criterion 2): "proven by N tests" with the evidence file:lines on
   // expand, or the explicit amber "no test reaches this entity" state - absence of proof is
-  // itself information the audit (spec 85) and reviewers want, so this is NEVER omitted like an
+  // itself information reviewers want, so this is NEVER omitted like an
   // empty chip row above (`row`'s own `chips ? ... : ""` would silently hide a zero-proof entity
   // exactly like an entity with no decisions/findings, which is the wrong default here).
   const proofRow = c => {
@@ -909,7 +965,7 @@ function renderCard(card) {
 async function loadCard(id) {
   if (!LIVE || !id) { renderCard(null); return; }
   try {
-    const body = await (await fetch(apiUrl("/api/graph?card=" + encodeURIComponent(id)), { cache: "no-store" })).json();
+    const body = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
     renderCard(body.card || null);
   } catch (e) {
     renderCard(null);
@@ -941,8 +997,8 @@ async function reprojectSubject(subject) {
     return;
   }
   try {
-    const rp = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(subject)
-      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)), { cache: "no-store" })).json();
+    const rp = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
+      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution))).json();
     await overlayFor(rp.nodes);
     renderReprojection(rp);
   } catch (e) {
@@ -996,7 +1052,7 @@ function renderReprojection(rp) {
     return;
   }
   const dims = kgDims();
-  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label }));
+  const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
   const edges = ((rp && rp.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
   const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
   const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
@@ -1005,7 +1061,7 @@ function renderReprojection(rp) {
     fill: n => kindColor(n.kind),
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
-    label: n => (n.label || n.id) + " (" + n.count + ")",
+    label: n => (n.label || n.id) + " (" + n.count + ")" + (n.tests ? " \u00b7 " + n.tests + " tests" : ""),
     edgeWidth: e => 0.6 + 4 * (e.weight / maxW),
     // DIRECTORY HULLS (spec 63 c3): a files re-grain's clusters ARE files too, so the same directory
     // grouping applies here; code/concepts re-grains opt out (undefined groupOf), unchanged.
@@ -1031,8 +1087,8 @@ async function loadRationale(nodes) {
   const ids = (nodes || []).map(n => n.id).filter(Boolean);
   if (!LIVE || !ids.length) return;
   try {
-    const body = await (await fetch(apiUrl("/api/graph?explain="
-      + ids.map(encodeURIComponent).join(",")), { cache: "no-store" })).json();
+    const body = await (await graphFetch("/api/graph?explain="
+      + ids.map(encodeURIComponent).join(","))).json();
     (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
   } catch (e) { /* the overlay is best-effort; no badges on failure */ }
 }
@@ -1218,8 +1274,7 @@ async function seedGraph(seed) {
     return;
   }
   try {
-    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2"),
-      { cache: "no-store" })).json();
+    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2")).json();
     await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
@@ -1236,9 +1291,8 @@ async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
   try {
-    const g = await (await fetch(apiUrl("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target)),
-      { cache: "no-store" })).json();
+    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target))).json();
     await overlayFor(g.nodes);
     renderGraph(g);
   } catch (e) {
@@ -1900,6 +1954,7 @@ function renderKgOverview(ov) {
   });
   const toolbar = '<div class="kgtoolbar">' + controls + ' &middot; ' + total + " node" + (total === 1 ? "" : "s")
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
+    + (ov.tests_hidden ? " &middot; " + ov.tests_hidden + " tests hidden" : "")
     + " - click a cluster to drill in</div>";
   el("kgpanel").innerHTML = toolbar + svg;
   bindKgView();
@@ -1992,7 +2047,7 @@ async function loadKgOverview() {
     const q = (kgLens === "code" || kgLens === "concepts")
       ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
-    const ov = await (await fetch(apiUrl("/api/graph" + q), { cache: "no-store" })).json();
+    const ov = await (await graphFetch("/api/graph" + q)).json();
     renderKgOverview(ov);
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
@@ -2019,7 +2074,7 @@ async function drillCluster(key) {
     const q = (kgLens === "code" || kgLens === "concepts")
       ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
       : "";
-    const nb = await (await fetch(apiUrl("/api/graph?cluster=" + encodeURIComponent(key) + q), { cache: "no-store" })).json();
+    const nb = await (await graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q)).json();
     await overlayFor(nb.nodes);
     renderKgDrill(nb);
   } catch (e) {
@@ -2057,8 +2112,8 @@ async function seedCalls(seed, dir) {
     return;
   }
   try {
-    const cg = await (await fetch(apiUrl("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
-      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6"), { cache: "no-store" })).json();
+    const cg = await (await graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6")).json();
     await overlayFor(cg.nodes);
     renderKgCalls(cg);
   } catch (e) {
@@ -2233,6 +2288,12 @@ function wireSelectToSeed() {
   el("kghead").addEventListener("click", ev => {
     const overlay = ev.target.closest("[data-overlay]");
     if (overlay) { ev.preventDefault(); setOverlay(!kgOverlay); return; }
+    const tests = ev.target.closest("[data-tests]");
+    if (tests) {
+      ev.preventDefault();
+      setTests({ exclude: "include", include: "only", only: "exclude" }[kgTests]);
+      return;
+    }
     const clear = ev.target.closest("[data-kgclear]");
     if (clear) { ev.preventDefault(); loadKgOverview(); return; }
     const lens = ev.target.closest("[data-lens]");
@@ -2368,6 +2429,7 @@ wireSelectToSeed();
 // paint. Both are no-ops on their view bodies (the additive guarantee).
 syncSubjectLens();
 syncOverlayToggle();
+syncTestsToggle();
 // The docked memory rail (spec 63 c5) starts hidden too - no subject is focused before the first
 // paint (matches the static markup's own `hidden` attribute; a no-op on the panel body).
 renderMemoryRail(null);

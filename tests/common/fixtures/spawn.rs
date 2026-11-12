@@ -22,6 +22,86 @@ pub fn test_request(
     }
 }
 
+/// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
+/// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off, over a checkout holding
+/// exactly the [`OPERATOR_HELPER_COPIES`], so a spawn that reads its helpers anywhere but the
+/// host carries the embedded text instead of these copies, and a test pinning the copies goes
+/// red. A test that needs the flag set spreads this one.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
+    rigger_domain::agent::SpawnHost {
+        grep_guard: false,
+        helpers: OPERATOR_HELPER_COPIES
+            .iter()
+            .map(|(file, text)| rigger_domain::agent::HelperCopy {
+                name: file.to_string(),
+                text: text.to_string(),
+                present: true,
+            })
+            .collect(),
+    }
+}
+
+/// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
+pub type HelperFile<'a> = (&'a str, &'a str);
+
+/// An operator's own copies of the two fan-out helpers: each differs from the embedded helper in
+/// every field, and the `lookup` copy declares two of the three rigger tools the embedded one
+/// does, in another order.
+pub const OPERATOR_HELPER_COPIES: [HelperFile; 2] = [
+    (
+        "lookup.md",
+        "---\nname: lookup\ndescription: The operator's own lookup helper.\nmodel: sonnet\n\
+         tools: mcp__rigger__rigger_peers, mcp__rigger__rigger_graph, Read\n---\n\
+         Answer one question about one node, the operator's way.\n",
+    ),
+    (
+        "verify.md",
+        "---\nname: verify\ndescription: The operator's own verify helper.\nmodel: haiku\n\
+         tools: Read, Bash\n---\nRun one check, the operator's way.\n",
+    ),
+];
+
+/// An operator's helper copy that does not parse: its frontmatter names no helper.
+pub const NAMELESS_HELPER_COPY: &str = "---\nmodel: haiku\n---\nRun one check.\n";
+
+/// The rigger tools [`OPERATOR_HELPER_COPIES`] declare, once each in helper then declaration
+/// order, comma-joined as a launch's pre-approval lists them.
+pub const OPERATOR_HELPER_TOOLS: &str = "mcp__rigger__rigger_peers,mcp__rigger__rigger_graph";
+
+/// Write `text` as the operator's helper copy `file` under `root`'s `.claude/agents/`.
+pub fn write_helper_copy(root: &std::path::Path, file: &str, text: impl AsRef<[u8]>) {
+    let agents = root.join(".claude/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join(file), text).unwrap();
+}
+
+/// Write each of `copies` as an operator's helper copy under `root` ([`write_helper_copy`]).
+pub fn write_helper_copies(root: &std::path::Path, copies: &[HelperFile]) {
+    for (file, text) in copies {
+        write_helper_copy(root, file, text);
+    }
+}
+
+/// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
+/// other frontmatter fields with `tools` as a list, and its body as the prompt.
+pub fn operator_helpers_agents_json() -> serde_json::Value {
+    serde_json::json!({
+        "lookup": {
+            "description": "The operator's own lookup helper.",
+            "model": "sonnet",
+            "tools": ["mcp__rigger__rigger_peers", "mcp__rigger__rigger_graph", "Read"],
+            "prompt": "Answer one question about one node, the operator's way.\n"
+        },
+        "verify": {
+            "description": "The operator's own verify helper.",
+            "model": "haiku",
+            "tools": ["Read", "Bash"],
+            "prompt": "Run one check, the operator's way.\n"
+        }
+    })
+}
+
 /// One row per `SpawnResult` among `events`, in their order: its id, output and error, and
 /// whether it is a liveness fault.
 pub fn spawn_result_rows(events: &[Event]) -> Vec<(String, String, String, bool)> {
@@ -54,21 +134,70 @@ pub fn fixture_script(script: &str) -> String {
 /// `tests/fixtures/prompt-capture-agent.sh` copies what it was handed into.
 pub const PROMPT_CAPTURE_DIR: &str = "PROMPT_CAPTURE_DIR";
 
-/// The system prompt the prompt-capture agent copied into `capture`: the text of the file its
-/// `--system-prompt-file` argument named.
-pub fn captured_system_prompt(capture: &std::path::Path) -> String {
-    std::fs::read_to_string(capture.join("system-prompt")).unwrap()
+/// The text of the file `file` the prompt-capture agent wrote into `capture`: `system-prompt`,
+/// the text of the file its `--system-prompt-file` argument named; `stdin`, the headless host's
+/// first stream-json line, or everything the cli host wrote.
+pub fn captured(capture: &std::path::Path, file: &str) -> String {
+    std::fs::read_to_string(capture.join(file)).unwrap()
 }
 
 /// The task a stand-in `claude` saved at `path`: the `content` of the host's first stream-json
 /// user message.
 pub fn recorded_task(path: &std::path::Path) -> String {
-    let line = std::fs::read_to_string(path).unwrap();
+    first_message_task(&std::fs::read_to_string(path).unwrap())
+}
+
+/// The task the headless host's first stream-json user message `line` carries: its `content`.
+pub fn first_message_task(line: &str) -> String {
     let message: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     message["message"]["content"]
         .as_str()
         .expect("the first user message carries its task as text")
         .to_string()
+}
+
+/// The frame the cli host closes spawn `id`'s task with: the driver's separator, then the line
+/// naming the `rigger progress` command and its arguments only.
+pub fn cli_progress_frame(id: &str) -> String {
+    format!(
+        "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running (Bash): \
+         rigger progress '{id}' '<one line: what you just did>'."
+    )
+}
+
+/// The `rigger_progress` entry a spawn's own MCP server lists: what the tool records and its one
+/// argument, with no word on when to report.
+pub fn progress_tool_entry() -> serde_json::Value {
+    serde_json::json!({
+        "name": "rigger_progress",
+        "description": "Record one live progress line for the spawn this server is bound to, so \
+                        an observer sees you working between milestones.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "activity": {
+                    "type": "string",
+                    "description": "a short one-line description of what you just did"
+                }
+            },
+            "required": ["activity"]
+        }
+    })
+}
+
+/// The `rigger_scratch` entry a spawn's own MCP server lists: the reaped scratch container every
+/// probe repo, worktree, test build and build cache lives under, naming no toolchain's cache
+/// variable, with no argument.
+pub fn scratch_tool_entry() -> serde_json::Value {
+    serde_json::json!({
+        "name": "rigger_scratch",
+        "description": "Your own rigger-assigned scratch container - the one \
+                        directory every probe repo, verification worktree, test \
+                        build, or build cache you create must live under, never \
+                        /tmp or a session scratchpad. Reaped once your result \
+                        records.",
+        "inputSchema": {"type": "object", "properties": {}}
+    })
 }
 
 /// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
@@ -78,6 +207,71 @@ pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
         .split_terminator('\0')
         .map(str::to_string)
         .collect()
+}
+
+/// One launch a stand-in `claude` put on record through `tests/fixtures/launch-args.sh`'s
+/// `record_launch`.
+pub struct StandInLaunch {
+    /// The spawn the launch ran as.
+    pub spawn: String,
+    /// Its working directory, every link resolved.
+    pub cwd: String,
+    /// The arguments it was started with.
+    pub argv: Vec<String>,
+    /// The system prompt it was served, when its arm recorded it ([`RECORD_EACH_LAUNCH`]).
+    pub system_prompt: Option<String>,
+    /// Its first user message, the stream-json line carrying the task it was served
+    /// ([`first_message_task`]), when its arm recorded it ([`RECORD_EACH_LAUNCH`]).
+    pub first_message: Option<String>,
+}
+
+/// The opening of an arm of the `claude-code-arms-agent.sh` stand-in whose launches all stay on
+/// record, through the stand-in's `record_launch`: the launch leaves its argv, working directory
+/// and spawn in a directory of its own under `launches`, with the system prompt and first user
+/// message it was served beside them, which [`stand_in_launches`] reads back.
+pub const RECORD_EACH_LAUNCH: &str = r#"    record_launch "$here/launches" "$@"
+    printf '%s' "$sp" > "$here/launches/$$/system-prompt"
+    printf '%s' "$first" > "$here/launches/$$/first-message"
+"#;
+
+/// Each launch put on record under `dir`, in the order of its spawn.
+pub fn stand_in_launches(dir: &std::path::Path) -> Vec<StandInLaunch> {
+    let mut launches: Vec<StandInLaunch> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|launch| {
+            let launch = launch.unwrap().path();
+            let read = |name: &str| std::fs::read_to_string(launch.join(name)).unwrap();
+            let served = |name: &str| std::fs::read_to_string(launch.join(name)).ok();
+            StandInLaunch {
+                spawn: read("spawn"),
+                cwd: read("cwd").trim_end().to_string(),
+                argv: recorded_argv(&launch.join("argv")),
+                system_prompt: served("system-prompt"),
+                first_message: served("first-message"),
+            }
+        })
+        .collect();
+    launches.sort_by(|a, b| a.spawn.cmp(&b.spawn));
+    launches
+}
+
+/// The task the one launch of `spawn` recorded under `dir` was served, its first user message's
+/// content ([`first_message_task`]): panics naming the spawns on record unless exactly one launch
+/// ran as `spawn` and its arm recorded the message.
+pub fn served_task(dir: &std::path::Path, spawn: &str) -> String {
+    let launches = stand_in_launches(dir);
+    let named: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+    match launches
+        .iter()
+        .filter(|l| l.spawn == spawn)
+        .collect::<Vec<_>>()[..]
+    {
+        [StandInLaunch {
+            first_message: Some(first),
+            ..
+        }] => first_message_task(first),
+        _ => panic!("one launch of {spawn} recording its task; on record: {named:?}"),
+    }
 }
 
 /// Write `dir/claude-arms`, the shell `case` over the system prompt `$sp` the checked-in

@@ -1,9 +1,30 @@
 //! Workflow-configuration fixtures: agents, review panels and gates, the scopes a panel is
-//! declared in with the refusals its rules give there, and the project directories a test
-//! creates, the operator instruction directory among them.
+//! declared in with the refusals its rules give there, the project directories a test
+//! creates, the operator instruction directory among them, and the agent files `rigger init`
+//! scaffolds.
 
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, ReviewStep, Stage, Workflow};
 use std::path::{Path, PathBuf};
+
+/// The language-neutral `implementer` persona `rigger init` seeds as
+/// `.rigger/agents/implementer.md` when no gate template set matches the project, byte for byte.
+pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
+    "---\nid: implementer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
+     Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
+     fully-specified unit inside your worktree.\nWrite the failing test first, confirm \
+     RED, implement minimally, confirm GREEN, run\nthe named gates, commit. Report the \
+     final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n";
+
+/// The names in the directory `dir`, sorted.
+pub fn sorted_dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
 
 /// `dir`, created with its parents.
 pub fn created_dir(dir: PathBuf) -> PathBuf {
@@ -54,6 +75,18 @@ pub fn cfg_for(ids: &[&str]) -> Config {
     }
     c
 }
+
+/// Define a bare [`agent`] `id` in `cfg` and declare it the workflow's test author
+/// (`defaults.test_author`), the agent the build seam spawns under the `sdet-author` role token.
+pub fn declare_test_author(cfg: &mut Config, id: &str) {
+    cfg.agents.insert(id.to_string(), agent(id));
+    cfg.workflow.defaults.test_author = id.to_string();
+}
+
+/// The refusal a load gives a workflow whose `defaults.test_author` names `ghost`, which no agent
+/// defines.
+pub const GHOST_TEST_AUTHOR_REFUSAL: &str =
+    "defaults.test_author references unknown agent \"ghost\"";
 
 /// A lens step of `ids`.
 pub fn lenses(ids: &[&str]) -> ReviewStep {
@@ -463,6 +496,7 @@ pub fn gate_def_inputs(run: &str, inputs: &[&str]) -> Gate {
         kind: "core".to_string(),
         inputs: inputs.iter().map(|s| s.to_string()).collect(),
         requires: Vec::new(),
+        post_merge: true,
     }
 }
 

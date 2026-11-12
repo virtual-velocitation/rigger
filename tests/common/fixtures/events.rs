@@ -55,9 +55,8 @@ pub fn naming(type_: &str) -> (String, String) {
     (
         type_.to_string(),
         format!(
-            "event store: append refused: {type_} is a derived event, which the tree re-derives - \
-             the log keeps the ledger entry of its generation and no event of this batch was \
-             written"
+            "event store: append refused: {type_} is a derived event, which the code store \
+             re-derives from the tree - no event of this batch was written"
         ),
     )
 }
@@ -97,38 +96,28 @@ pub fn payloads_of_type(events: &[Event], type_: &str) -> Vec<serde_json::Value>
         .collect()
 }
 
+/// The `(gate, pass)` of every `GateVerdict` in `events` that records a gate run, in order; a
+/// settle record, the row whose `settled` list cites the passes a gate battery acted on, records
+/// none.
+pub fn gate_outcomes(events: &[Event]) -> Vec<(String, bool)> {
+    payloads_of_type(events, rigger::contextgraph::TYPE_GATE_VERDICT)
+        .iter()
+        .filter(|verdict| verdict.get("settled").is_none())
+        .map(|verdict| {
+            (
+                verdict["gate"].as_str().unwrap_or_default().to_string(),
+                verdict["pass"].as_bool().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
 /// The summary of every lesson in `events` that records a stage failed in its wave, in order.
 pub fn wave_lessons(events: &[Event]) -> Vec<String> {
     payloads_of_type(events, rigger::contextgraph::TYPE_LESSON_LEARNED)
         .iter()
         .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
         .filter(|summary| summary.contains("failed in its wave"))
-        .collect()
-}
-
-/// The `(name, ref_kind)` of each of `payloads` that carries a `ref_kind` (spec 117: a tagged
-/// `EdgeInferred`), in order.
-pub fn tagged_payloads(payloads: &[serde_json::Value]) -> Vec<(&str, &str)> {
-    payloads
-        .iter()
-        .filter_map(|p| Some((p["name"].as_str()?, p["ref_kind"].as_str()?)))
-        .collect()
-}
-
-/// The `(name, caller, ref_kind)` of each of `payloads` (an `EdgeInferred`'s), each absent one
-/// `None`, in order.
-pub fn named_references(
-    payloads: &[serde_json::Value],
-) -> Vec<(Option<&str>, Option<&str>, Option<&str>)> {
-    payloads
-        .iter()
-        .map(|p| {
-            (
-                p["name"].as_str(),
-                p["caller"].as_str(),
-                p["ref_kind"].as_str(),
-            )
-        })
         .collect()
 }
 
@@ -525,38 +514,6 @@ impl EventStore for ReadsFailWhenArmed<'_> {
         self.read_allowed()?;
         self.inner.read_stream_typed(stream, from, selection)
     }
-}
-
-/// A store that runs `land` inside its next run read once `armed` is set, ahead of that read's
-/// first call, then disarms: the world moving inside a reader's read rather than between two of
-/// its reads. The run read's two calls and an append reach `inner`; every other method panics.
-pub struct LandsInTheNextRead<'a> {
-    pub inner: &'a dyn EventStore,
-    pub armed: &'a std::sync::atomic::AtomicBool,
-    pub land: &'a (dyn Fn() + Sync),
-}
-
-impl EventStore for LandsInTheNextRead<'_> {
-    refuse_event_store_calls!(
-        "only the run read and an append are reachable":
-        read_stream,
-        read_all,
-        read_all_page,
-        log_head,
-        subscribe_all,
-        subscribe_stream,
-        read_stream_positions,
-        read_stream_batched,
-        latest_in_group,
-    );
-    crate::delegate_event_store_reads!(append);
-    fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
-        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            (self.land)();
-        }
-        self.inner.last_position(stream, event_type)
-    }
-    crate::delegate_event_store_reads!(typed);
 }
 
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
@@ -1168,7 +1125,7 @@ pub struct OneShotFixture {
     /// The per-stream revision of the current run's `RunStarted`.
     pub boundary: Revision,
     /// The current run's own events a one-shot read hands back: its `RunStarted`, its decision,
-    /// its finding and its two notes (never the ledger entries appended during it).
+    /// its finding and its two notes.
     pub run_events: usize,
     /// The `DecisionMade`, `LessonLearned` and `ReviewFinding` events of every run.
     pub carry_over: usize,
@@ -1245,26 +1202,14 @@ pub fn entry_of_a_batch(
     .event(n)
 }
 
-/// `n` ledger entries of perception, each a generation of its own of one of four files.
+/// `n` notes of a superseded run, the bulk of a long-lived log that no one-shot read carries.
 #[cfg(any(feature = "store", not(feature = "core")))]
-fn flood_entries(n: usize) -> Vec<Event> {
-    (0..n)
-        .map(|i| {
-            entry_of_a_batch(
-                "gc",
-                &format!("src/f{}.rs", i % 4),
-                &format!("h{i}"),
-                1,
-                "",
-                false,
-            )
-        })
-        .collect()
+fn flood_notes(n: usize) -> Vec<Event> {
+    (0..n).map(|_| ev("RunNote", "{}")).collect()
 }
 
-/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 ledger entries
-/// of perception before the current run's boundary, then the current run (started over
-/// `criteria`) with entries of its own appended during it. Each prior run left a decision, a lesson or a
+/// THE ONE-SHOT FIXTURE (spec 101): `stream` holds two superseded runs with 200,000 notes before
+/// the current run's boundary, then the current run (started over `criteria`). Each prior run left a decision, a lesson or a
 /// finding the current run carries over, and a note of its own no one-shot read carries; the
 /// current run holds a decision and a finding of its own plus two notes.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -1295,7 +1240,7 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&flood_entries(10_000));
+        append(&flood_notes(10_000));
     }
     append(&[
         run_started("run-b", &["another prior campaign"]),
@@ -1307,14 +1252,13 @@ pub fn seed_one_shot_fixture(
         ev("RunNote", "{}"),
     ]);
     for _ in 0..10 {
-        append(&flood_entries(10_000));
+        append(&flood_notes(10_000));
     }
     append(&[run_started("run-c", criteria), ev("RunNote", "{}")]);
     let boundary = store
         .last_position(stream, "RunStarted")
         .expect("the fixture's boundary reads")
         .expect("the fixture started a run");
-    append(&flood_entries(50));
     append(&[
         decision("d-c", "c.rs"),
         ev(
@@ -1323,7 +1267,6 @@ pub fn seed_one_shot_fixture(
         ),
         ev("RunNote", "{}"),
     ]);
-    append(&flood_entries(50));
     OneShotFixture {
         boundary,
         run_events: 5,

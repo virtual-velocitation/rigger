@@ -29,7 +29,7 @@
 //! PATH. `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_claims;
 use rigger::dash;
@@ -60,7 +60,7 @@ __El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
 const window = { addEventListener: function(){} };
 const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
+const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
 const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
 `;
@@ -80,7 +80,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// STRUCTURAL: the served page wires the LAYERED call-DAG path (`opts.layout`) with the BARE 4-arg
 /// `forceLayout` signature - no radius/label accessors - so that path never density-scales. This is the
 /// complement of the density proof's assertion that the FORCE path is fed the 6-arg accessor call; both
-/// together pin the c2 wiring: force scales, layered does not. Runs in the shim-only lane (no node).
+/// together pin the c2 wiring: force scales, layered does not. Needs no `node` runtime.
 #[test]
 fn the_served_page_wires_the_layered_path_without_the_density_accessors() {
     let page = dash::live_page();

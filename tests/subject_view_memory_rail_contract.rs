@@ -26,7 +26,7 @@
 //! here is feature-gated), so these tests run in both. No reference to any external tool or project;
 //! hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 

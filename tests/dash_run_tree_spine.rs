@@ -28,7 +28,7 @@
 //! BOTH the default and the `--no-default-features` lane - none is feature-gated - so these guard
 //! the boundary in both lanes.
 
-mod common;
+use crate::common;
 
 use rigger::spawn::SpawnEvent;
 use std::collections::HashMap;
@@ -101,6 +101,7 @@ fn state_json(events: &[Event], progress: &[Event], liveness: &HashMap<String, u
     let state = dash::build_state(
         events,
         &Graph::default(),
+        None,
         false,
         progress,
         liveness,
@@ -178,7 +179,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
         Ok((
             events.clone(),
-            Graph::default(),
+            Graph::default().into(),
             progress.clone(),
             liveness.clone(),
         ))
@@ -194,13 +195,17 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     let addr = listener.local_addr().unwrap();
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
-    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let graph_provider =
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
     // The lazy directed-call provider (spec 52, criterion 4): this test drives the state poll, which
     // never consults it, so an empty walk satisfies `serve`'s calls-provider bound.
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
+        |_: Option<&str>,
+         _: &[String],
+         _: rigger::contextgraph::Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| { rigger::contextgraph::CallGraph::default() };
     // The landing provider (spec 50, criterion 3): this test drives the state poll, not
     // `/api/instances`, so an empty registry list satisfies `serve`'s `Fn() -> Vec<InstanceView>`.
     let instances_provider = Vec::new;

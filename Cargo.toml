@@ -1,5 +1,6 @@
 [package]
 name = "rigger"
+autotests = false
 version = "0.3.0"
 edition = "2021"
 description = "A config-driven, event-sourced multi-agent dev-loop harness"
@@ -20,7 +21,7 @@ repository = "https://github.com/virtual-velocitation/rigger"
 # edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
 # resolution behavior never depends on an implicit default.
 [workspace]
-members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash"]
+members = [".", "crates/console-core", "crates/rigger-domain", "crates/rigger-store-sqlite", "crates/rigger-graph-sqlite", "crates/rigger-process", "crates/rigger-worktree-git", "crates/rigger-gates-shell", "crates/rigger-driver", "crates/rigger-grounder", "crates/rigger-config-files", "crates/rigger-conductor", "crates/rigger-console", "crates/rigger-dash", "crates/rigger-store"]
 resolver = "2"
 
 # THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
@@ -39,6 +40,77 @@ path = "src/lib.rs"
 [[bin]]
 name = "rigger"
 path = "src/main.rs"
+
+# Every integration suite is a module of the one `all` executable (one link of the whole
+# workspace instead of one per file). A suite that changes process-global state (environment,
+# cwd) or needs an exact process shape keeps its own executable below.
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "boundary_audit"
+path = "tests/boundary_audit.rs"
+
+[[test]]
+name = "build_budget_slots_periphery"
+path = "tests/build_budget_slots_periphery.rs"
+
+[[test]]
+name = "build_env_authority_periphery"
+path = "tests/build_env_authority_periphery.rs"
+
+[[test]]
+name = "claude_code_launch_wire_periphery"
+path = "tests/claude_code_launch_wire_periphery.rs"
+
+[[test]]
+name = "claude_code_stream_periphery"
+path = "tests/claude_code_stream_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_boundary_periphery"
+path = "tests/courier_registry_refresh_boundary_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_fence_periphery"
+path = "tests/courier_registry_refresh_fence_periphery.rs"
+
+[[test]]
+name = "courier_registry_refresh_periphery"
+path = "tests/courier_registry_refresh_periphery.rs"
+
+[[test]]
+name = "dash_console_stream_periphery"
+path = "tests/dash_console_stream_periphery.rs"
+
+[[test]]
+name = "gate_scratch_root_periphery"
+path = "tests/gate_scratch_root_periphery.rs"
+
+[[test]]
+name = "gate_store_fence_periphery"
+path = "tests/gate_store_fence_periphery.rs"
+
+[[test]]
+name = "graph_around_code_first"
+path = "tests/graph_around_code_first.rs"
+
+[[test]]
+name = "kurrentdb_store_threads"
+path = "tests/kurrentdb_store_threads.rs"
+
+[[test]]
+name = "product_binary_authority_periphery"
+path = "tests/product_binary_authority_periphery.rs"
+
+[[test]]
+name = "registry_refresh_driver_courier_convergence_periphery"
+path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
+
+[[test]]
+name = "spawn_target_dir_periphery"
+path = "tests/spawn_target_dir_periphery.rs"
 
 [features]
 # `symbols` (deterministic structural grounding, spec 15) is ON BY DEFAULT: the
@@ -59,7 +131,7 @@ default = ["symbols", "store"]
 # that lane. `store` stays the name-carrying half of the check and the literal feature
 # a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
 # surface without `symbols`.
-store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store", "rigger-dash/store"]
+store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store", "rigger-dash/store", "rigger-store/store"]
 # THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
 # `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
 # `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
@@ -68,7 +140,7 @@ store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlit
 # builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
 # dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
 # already unconditional.
-core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core", "rigger-dash/core"]
+core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core", "rigger-dash/core", "rigger-store/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -121,6 +193,8 @@ rigger-console = { path = "crates/rigger-console", default-features = false }
 # like the crates above; its own `store`/`core` features (forwarded above) gate it exactly as the
 # root gated it, and its build script embeds the console core only in the lanes that compile it.
 rigger-dash = { path = "crates/rigger-dash", default-features = false }
+# The owned store (ring 3): the shared file format and the code store, its lanes forwarded above.
+rigger-store = { path = "crates/rigger-store", default-features = false }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`

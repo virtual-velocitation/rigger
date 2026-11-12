@@ -26,7 +26,7 @@
 //! It is intentionally NOT feature-gated: it reads YAML files and runs a shell script, touching
 //! no turbovec/grep symbols, so it runs identically in every lane that runs it.
 
-mod common;
+use crate::common;
 use common::repo::{repo_root, repo_text, stub_path, table_declares_key, table_lines};
 use common::shell_outcome;
 use std::process::Command;
@@ -194,10 +194,11 @@ fn ci_runs_the_no_default_and_core_lanes_through_the_lanes_script() {
 }
 
 /// The loop runs each non-default lane through the lanes script as a gate of its own, so a lane
-/// is an instrument, never a reviewer's hand run: every implement round gates the no-default
-/// lane, and the check-in gates both lanes on the merged tree.
+/// is an instrument, never a reviewer's hand run: every implement round gates both lanes, so a
+/// lane that stops compiling is caught at the unit that broke it, and the check-in gates both
+/// again on the merged tree.
 #[test]
-fn the_loop_gates_the_no_default_lane_every_round_and_both_lanes_at_check_in() {
+fn the_loop_gates_both_lanes_every_round_and_again_at_check_in() {
     let cfg = common::cli::loaded_config(&repo_root());
     let lane_gates = |stage: &str| -> Vec<String> {
         cfg.workflow.stages[stage]
@@ -212,7 +213,10 @@ fn the_loop_gates_the_no_default_lane_every_round_and_both_lanes_at_check_in() {
             })
             .collect()
     };
-    assert_eq!(lane_gates("implement"), ["lane-no-default=no-default"]);
+    assert_eq!(
+        lane_gates("implement"),
+        ["lane-no-default=no-default", "lane-core=core"]
+    );
     assert_eq!(
         lane_gates("checkin"),
         ["lane-no-default=no-default", "lane-core=core"]

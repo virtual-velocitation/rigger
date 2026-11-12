@@ -25,7 +25,8 @@
 //! proving delivery into `coverage`/`spec_criterion` proves delivery to all of them at once; this
 //! file does not re-walk each call site separately.
 
-mod common;
+use crate::common;
+use common::fixtures::test_spawn_host;
 use common::fixtures::NoopDriver;
 
 use common::repo::repo_text;
@@ -97,6 +98,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     // The fan-out TEMPLATE: `deps.criteria` below drives the conductor's own baseline-unit
@@ -130,8 +132,10 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         // no synthetic reshaping between extraction and delivery.
         criteria: vec![criterion.clone()],
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps).unwrap();
 

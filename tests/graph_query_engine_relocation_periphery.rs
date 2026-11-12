@@ -36,7 +36,7 @@
 //! suite - these tests run on both the default and the `--no-default-features` lane. No reference to
 //! any external tool or project; hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::edge;
 use common::fixtures::node_with_attrs as node;
@@ -294,11 +294,11 @@ fn an_edge_with_valid_to_set_round_trips_through_json() {
         edges: vec![Edge {
             from: "src/a.rs".to_string(),
             to: "src/a.rs::widget".to_string(),
-            rel: REL_CONTAINS.to_string(),
+            rel: REL_CONTAINS.into(),
             valid_from: 1,
             valid_to: Some(9),
             source: 3,
-            tier: "inferred".to_string(),
+            tier: "inferred".into(),
         }],
     };
     let loaded = graph_load(&serde_json::to_vec(&superseded).unwrap()).unwrap();

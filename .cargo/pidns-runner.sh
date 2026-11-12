@@ -92,23 +92,23 @@ export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT
 # parent exits; `--kill-child` then takes the test binary with it. The plain path gets the
 # same mark so a CI container cannot hang a sweep either.
 #
-# Memory bound (2026-09-02; resized for a sweep's concurrency 2026-09-28, gap 92): cap each test
-# process's address space. A cargo-mutants mutant of a loop allocated ~32G on 2026-09-02 and the
-# kernel OOM killer's collateral ended the operator's session, so a cap went in at 24G - sized
-# for ONE runaway. A mutation sweep is never one process: `cargo mutants -j 3` runs three copies
-# of the suite, each with nextest's one-process-per-test fan-out (32 at once on this box), so a
-# runaway mutant is up to ~100 identical runaways. On 2026-09-24 eight concurrent children of one
-# loop mutant each grew to ~5.5G inside 15 s - every one under 24G - and the global OOM killer
-# took the check-in step itself. 4 GiB is the cap: it is past the whole suite's largest
-# legitimate test (the suite passes under it), and a runaway child fails its own allocation at
-# 4G instead of growing until the machine does. The WHOLE sweep is bounded separately by the
-# mutation gate's own memory scope (.rigger/gates/mutation.sh); this cap bounds each process.
-# RIGGER_TEST_AS_BYTES overrides it for one invocation. The test process also runs on two malloc
-# arenas: glibc reserves 64 MiB of address space for each arena and opens another whenever a
-# thread finds the others locked, up to eight per core, so a binary running its tests on many
-# threads grows its address space with lock contention rather than with memory and reaches the
-# cap under load; two arenas keep the cap measuring what the tests really allocate.
-as_bytes="${RIGGER_TEST_AS_BYTES:-4294967296}"
+# Memory bound: cap each test process's address space at 7 GiB. The cap bounds ADDRESS SPACE,
+# not resident memory, and is sized from the root package's integration tests, which are ONE
+# executable (`all`, about 2,700 tests on up to 128 threads): measured on the default lane at the
+# default thread count, its peak virtual size (VmPeak) is 3.06 GiB and its peak resident memory
+# 1.1 GiB (1.6 GiB over the cargo process tree), so the cap is about twice the virtual peak,
+# rounded up to a whole GiB. It also bounds a runaway: a mutation sweep is never one process
+# (`cargo mutants -j 3` runs three copies of the suite, each with nextest's one-process-per-test
+# fan-out, 32 at once on a 32-core box), so a runaway mutant is up to ~100 identical runaways,
+# and eight children that each grow past the cap fail their own allocation instead of growing
+# until the global OOM killer ends the operator's session. The WHOLE sweep is bounded separately
+# by the mutation gate's own memory scope (.rigger/gates/mutation.sh); this cap bounds each
+# process. RIGGER_TEST_AS_BYTES overrides it for one invocation. The test process also runs on
+# two malloc arenas: glibc reserves 64 MiB of address space for each arena and opens another
+# whenever a thread finds the others locked, up to eight per core, so a binary running its tests
+# on many threads grows its address space with lock contention rather than with memory and
+# reaches the cap under load; two arenas keep the cap measuring what the tests really allocate.
+as_bytes="${RIGGER_TEST_AS_BYTES:-7516192768}"
 export MALLOC_ARENA_MAX=2
 if [ "${RIGGER_PIDNS:-on}" = "off" ]; then
   # TERM here, not KILL: `timeout` forwards a TERM it receives to the test binary and exits;

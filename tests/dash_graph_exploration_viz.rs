@@ -21,7 +21,7 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -232,7 +232,7 @@ let __graphView = __view;
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetched.push(String(url));
-    return Promise.resolve({ json: function(){ return Promise.resolve(__graphView(url)); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__graphView(url)); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };

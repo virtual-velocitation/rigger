@@ -30,7 +30,7 @@
 //! module and unreachable from here regardless). Neither `canary` nor `parallel` is feature-
 //! gated, so this test is compiled unconditionally and runs in both feature lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -43,6 +43,7 @@ use common::fixtures::critical_verdict;
 use common::fixtures::emit_review_finding;
 use common::fixtures::item;
 use common::fixtures::panel_with_lenses;
+use common::fixtures::test_spawn_host;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
 use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
@@ -141,6 +142,7 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
         &store,
         &driver,
         &cfg,
+        &test_spawn_host(),
         &panel,
         &corpus,
         rigger::canary_store::default_jobs(),

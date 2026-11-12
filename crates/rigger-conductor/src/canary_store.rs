@@ -26,7 +26,7 @@ use crate::canary::{
 #[cfg(test)]
 use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
-    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnOpts,
+    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnHost, SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
@@ -129,7 +129,7 @@ fn parse_item(s: &str) -> Result<CanaryItem, Error> {
 /// A deterministic content hash over the loaded corpus (MODEL PINNING criterion's scorecard
 /// header): every item's scored fields, in the corpus's own id-sorted order ([`load_corpus`]
 /// already sorts it), fold through the crate's ONE stable content-hash primitive
-/// ([`crate::grounder::symbols::store::content_hash`]) rather than growing an eighth parallel
+/// ([`crate::grounder::symbols::content_hash`]) rather than growing an eighth parallel
 /// FNV-1a copy (the consolidation of the existing seven is separately tracked, out of this
 /// criterion's scope). Any change to any item's content moves the hash; the same corpus
 /// content always hashes the same, across processes and machines.
@@ -151,7 +151,7 @@ pub fn corpus_hash(corpus: &[CanaryItem]) -> String {
         s.push_str(&item.review);
         s.push('\n');
     }
-    crate::grounder::symbols::store::content_hash(&s)
+    crate::grounder::symbols::content_hash(&s)
 }
 
 /// A parsed `--model <tier>=<id>` pin set (MODEL PINNING criterion): tier label
@@ -235,10 +235,15 @@ pub fn record_header(
 /// it actually finishes rather than every item's outcome arriving in one simultaneous burst
 /// once the whole corpus is done. `rigger canary` (`cmd_canary`) wires this to a stdout
 /// print; a caller with nothing to report passes a no-op.
+///
+/// `host` is the spawn host the caller resolved once at its start: every reviewer spawn of the
+/// run carries it ([`canary_opts`]).
+#[allow(clippy::too_many_arguments)]
 pub fn run_canary(
     store: &dyn EventStore,
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     panel: &ReviewPanel,
     corpus: &[CanaryItem],
     jobs: usize,
@@ -271,7 +276,7 @@ pub fn run_canary(
     let (item_workers, lens_workers) = spawn_budget(jobs, corpus.len());
     let (scored, _engaged) = crate::parallel::map_ordered(corpus, item_workers, |item| {
         let start = Instant::now();
-        let outcome = score_item(driver, cfg, &steps, adjudicator, item, lens_workers);
+        let outcome = score_item(driver, cfg, host, &steps, adjudicator, item, lens_workers);
         // Fire the progress hook the INSTANT this item's own score completes, on
         // whichever worker thread just finished it - NOT after map_ordered has joined
         // every item_workers thread. The aggregation loop below only ever sees the
@@ -420,6 +425,7 @@ fn adjudicator_of(steps: &[ReviewStep]) -> Result<&str, Error> {
 fn score_item(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     steps: &[ReviewStep],
     adjudicator: &str,
     item: &CanaryItem,
@@ -456,7 +462,14 @@ fn score_item(
         let k = step_ordinal(steps, index);
         let (results, _engaged) =
             crate::parallel::map_ordered(step.agents(), lens_workers, |agent| {
-                run_review_tier(driver, cfg, item, agent, &review_step_role(kind, agent, k))
+                run_review_tier(
+                    driver,
+                    cfg,
+                    host,
+                    item,
+                    agent,
+                    &review_step_role(kind, agent, k),
+                )
             });
         for raised in results {
             let (raised, resolved) = raised?;
@@ -475,7 +488,7 @@ fn score_item(
     // authority the live loop uses. Position-bias probe: re-present the same findings, the
     // whole list across steps, reversed - a verdict that flips on order alone is unstable.
     let ordered: Vec<&Finding> = findings.iter().collect();
-    let (approved, resolved) = adjudicate(driver, cfg, adjudicator, item, &ordered, "a")?;
+    let (approved, resolved) = adjudicate(driver, cfg, host, adjudicator, item, &ordered, "a")?;
     if !resolved.is_empty() {
         resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
     }
@@ -487,7 +500,7 @@ fn score_item(
         let mut reversed: Vec<&Finding> = ordered.clone();
         reversed.reverse();
         let (approved_reversed, resolved) =
-            adjudicate(driver, cfg, adjudicator, item, &reversed, "b")?;
+            adjudicate(driver, cfg, host, adjudicator, item, &reversed, "b")?;
         if !resolved.is_empty() {
             resolved_models.insert(ROLE_ADJUDICATOR.to_string(), resolved);
         }
@@ -518,20 +531,26 @@ fn score_item(
 /// Run one agent of a lens or adversary step against a canary item under its step's `role`
 /// token and collect the findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
-/// token; the emit callback captures every `ReviewFinding` it emits (the cli driver
+/// token - without the build cache sentence, since a canary spawn's environment carries no
+/// build cache ([`canary_opts`]); the emit callback captures every `ReviewFinding` it emits (the cli driver
 /// bridges a subprocess reviewer's stdout findings through the same callback). The second
 /// element of the returned pair is the spawn's ACTUALLY-resolved model id (MODEL PINNING
 /// criterion), sourced from `AgentResult::resolved_model`.
 fn run_review_tier(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     item: &CanaryItem,
     agent_id: &str,
     role: &str,
 ) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
-    let prompt = format!("{}\n\n{}", review_header(item), review_protocol(role));
-    let opts = canary_opts(item, role, agent, &cfg.instructions);
+    let prompt = format!(
+        "{}\n\n{}",
+        review_header(item),
+        review_protocol(role, false)
+    );
+    let opts = canary_opts(item, role, agent, &cfg.instructions, host);
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
 }
@@ -543,6 +562,7 @@ fn run_review_tier(
 fn adjudicate(
     driver: &dyn AgentDriver,
     cfg: &Config,
+    host: &SpawnHost,
     adjudicator: &str,
     item: &CanaryItem,
     findings: &[&Finding],
@@ -550,7 +570,7 @@ fn adjudicate(
 ) -> Result<(bool, String), Error> {
     let agent = agent_of(cfg, adjudicator, ROLE_ADJUDICATOR)?;
     let prompt = adjudicator_prompt(item, findings);
-    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions);
+    let mut opts = canary_opts(item, ROLE_ADJUDICATOR, agent, &cfg.instructions, host);
     // Distinguish the two probe spawns (natural vs reversed order) by id.
     opts.id = format!("{}:{ordinal}", opts.id);
     let (result, _findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
@@ -567,14 +587,16 @@ fn agent_of<'a>(cfg: &'a Config, agent_id: &str, role: &str) -> Result<&'a Agent
     })
 }
 
-/// The spawn options for a canary reviewer: a deterministic per-item, per-role id and the
-/// discipline-composed system prompt. A canary reviewer owns no worktree - it reviews the
-/// corpus snippet in the prompt - so it runs with no isolation and an empty blast radius.
+/// The spawn options for a canary reviewer: a deterministic per-item, per-role id, the
+/// discipline-composed system prompt and the `host` [`run_canary`]'s caller resolved. A canary
+/// reviewer owns no worktree - it reviews the corpus snippet in the prompt - so it runs with no
+/// isolation and an empty blast radius.
 fn canary_opts(
     item: &CanaryItem,
     role: &str,
     agent: &AgentDef,
     instructions: &[Instruction],
+    host: &SpawnHost,
 ) -> SpawnOpts {
     SpawnOpts {
         id: format!("canary:{}:{role}", item.id),
@@ -603,14 +625,14 @@ fn canary_opts(
         settings_json: String::new(),
         resumed_from: String::new(),
         resume_task: String::new(),
+        ..SpawnOpts::new(host.clone())
     }
 }
 
 /// Spawn a reviewer and collect every `ReviewFinding` it emits (the lens/adversary work
 /// channel), returning its stdout and the collected findings. Reuses the emit-callback
 /// seam the live review path uses, so this works on every driver: a fake test driver
-/// calls `emit` directly, the cli driver bridges a subprocess's stdout findings, and the
-/// workflow driver emits them live.
+/// calls `emit` directly, and the cli driver bridges a subprocess's stdout findings.
 fn spawn_collecting(
     driver: &dyn AgentDriver,
     agent: &AgentDef,
@@ -688,6 +710,7 @@ mod tests {
     use crate::test_support::cfg_for;
     use crate::test_support::item;
     use crate::test_support::panel_with_lenses;
+    use crate::test_support::test_spawn_host;
     use crate::test_support::PANEL_AGENTS as STEP_AGENTS;
     use crate::test_support::{anchor_of, ADVERSARY_FIRST_LIST, REPEATED_KIND_LIST};
 
@@ -701,7 +724,15 @@ mod tests {
     ) -> Result<(CanaryOutcome, BTreeMap<String, String>), Error> {
         let steps = panel.steps();
         let adjudicator = adjudicator_of(&steps)?;
-        score_item(driver, cfg, &steps, adjudicator, item, lens_workers)
+        score_item(
+            driver,
+            cfg,
+            &test_spawn_host(),
+            &steps,
+            adjudicator,
+            item,
+            lens_workers,
+        )
     }
 
     fn panel() -> ReviewPanel {
@@ -714,8 +745,8 @@ mod tests {
         }
     }
 
-    /// `canary_opts` builds the REAL canary-reviewer spawn options, never
-    /// `SpawnOpts::default()`: the deterministic `canary:<item>:<role>` id/unit, the
+    /// `canary_opts` builds the REAL canary-reviewer spawn options, never a bare
+    /// `SpawnOpts::new`: the deterministic `canary:<item>:<role>` id/unit, the
     /// `"canary"` stage, and the agent's own composed system prompt - a default (empty
     /// id/unit/stage/system_prompt) would file the spawn under no unit at all and run it
     /// with no persona.
@@ -730,7 +761,7 @@ mod tests {
             prompt: "REVIEW CAREFULLY".to_string(),
             ..Default::default()
         };
-        let opts = canary_opts(&item, "lens:sdet", &a, &[]);
+        let opts = canary_opts(&item, "lens:sdet", &a, &[], &test_spawn_host());
         assert_eq!(opts.id, "canary:item-1:lens:sdet");
         assert_eq!(opts.unit, "canary:item-1");
         assert_eq!(opts.stage, "canary");
@@ -744,7 +775,7 @@ mod tests {
             body: "House rule for canaries.".to_string(),
         }];
         assert!(
-            canary_opts(&item, "lens:sdet", &a, &house)
+            canary_opts(&item, "lens:sdet", &a, &house, &test_spawn_host())
                 .system_prompt
                 .contains("House rule for canaries."),
             "the operator instruction layer must reach a canary reviewer's system prompt"
@@ -755,8 +786,8 @@ mod tests {
         );
         // The canary contract this function's own doc states: no worktree, no live
         // work-line, no build env, no routed review roster - every one of these happens
-        // to also be `SpawnOpts::default()`'s value, so together with the assertions
-        // above (which a bare `Default::default()` fails) this pins the REAL function,
+        // to also be a bare `SpawnOpts::new`'s value, so together with the assertions
+        // above (which a bare `SpawnOpts::new` fails) this pins the REAL function,
         // not a stand-in.
         assert!(opts.dir.is_empty());
         assert!(!opts.isolation);
@@ -1210,6 +1241,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(PANEL_AGENTS),
+            &test_spawn_host(),
             &panel(),
             &corpus,
             2,
@@ -1259,6 +1291,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(PANEL_AGENTS),
+            &test_spawn_host(),
             &p,
             &corpus,
             1,
@@ -1409,7 +1442,17 @@ mod tests {
             },
         };
         let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, jobs, &|_, _| {}).unwrap();
+        let report = run_canary(
+            &store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            jobs,
+            &|_, _| {},
+        )
+        .unwrap();
         assert_eq!(report.outcomes.len(), 3);
         for outcome in &report.outcomes {
             assert_eq!(outcome.caught_by, vec![TIER_LENS.to_string()]);
@@ -1461,15 +1504,33 @@ mod tests {
 
         let serial_store = Store::open(":memory:").unwrap();
         let serial_progress: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        let serial = run_canary(&serial_store, &driver, &c, &p, &corpus, 1, &|o, _| {
-            serial_progress.lock().unwrap().push(o.id.clone());
-        })
+        let serial = run_canary(
+            &serial_store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            1,
+            &|o, _| {
+                serial_progress.lock().unwrap().push(o.id.clone());
+            },
+        )
         .unwrap();
         let parallel_store = Store::open(":memory:").unwrap();
         let parallel_progress: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-        let parallel = run_canary(&parallel_store, &driver, &c, &p, &corpus, 12, &|o, _| {
-            parallel_progress.lock().unwrap().push(o.id.clone());
-        })
+        let parallel = run_canary(
+            &parallel_store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            12,
+            &|o, _| {
+                parallel_progress.lock().unwrap().push(o.id.clone());
+            },
+        )
         .unwrap();
 
         assert_eq!(
@@ -1562,13 +1623,22 @@ mod tests {
             },
         };
         let store = Store::open(":memory:").unwrap();
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 2, &|o, _| {
-            if o.id == "fast" {
-                let (lock, cvar) = &*released;
-                *lock.lock().unwrap() = true;
-                cvar.notify_all();
-            }
-        })
+        let report = run_canary(
+            &store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            2,
+            &|o, _| {
+                if o.id == "fast" {
+                    let (lock, cvar) = &*released;
+                    *lock.lock().unwrap() = true;
+                    cvar.notify_all();
+                }
+            },
+        )
         .unwrap();
         assert_eq!(
             report.outcomes.len(),
@@ -1619,14 +1689,23 @@ mod tests {
 
         let store = Store::open(":memory:").unwrap();
         let seen: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
-        let report = run_canary(&store, &driver, &c, &p, &corpus, 1, &|o, elapsed| {
-            seen.lock().unwrap().push((
-                o.id.clone(),
-                o.verdict_correct,
-                o.caught_by.clone(),
-                elapsed,
-            ));
-        })
+        let report = run_canary(
+            &store,
+            &driver,
+            &c,
+            &test_spawn_host(),
+            &p,
+            &corpus,
+            1,
+            &|o, elapsed| {
+                seen.lock().unwrap().push((
+                    o.id.clone(),
+                    o.verdict_correct,
+                    o.caught_by.clone(),
+                    elapsed,
+                ));
+            },
+        )
         .unwrap();
 
         let seen = seen.into_inner().unwrap();
@@ -1873,6 +1952,7 @@ mod tests {
         agent: String,
         prompt: String,
         roster: Vec<String>,
+        host: SpawnHost,
     }
 
     /// A driver recording every spawn it receives, in order. A reviewer raises one finding whose
@@ -1922,6 +2002,7 @@ mod tests {
                 agent: a.id.clone(),
                 prompt: prompt.to_string(),
                 roster: opts.reviews.clone(),
+                host: opts.host.clone(),
             });
             if role.starts_with(ROLE_ADJUDICATOR) {
                 return Ok(AgentResult {
@@ -1980,7 +2061,7 @@ mod tests {
                     format!(
                         "{}\n\n{}",
                         review_header(&step_item()),
-                        review_protocol(&spawn.role)
+                        review_protocol(&spawn.role, false)
                     ),
                     "{}",
                     spawn.role
@@ -2217,6 +2298,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(&STEP_AGENTS),
+            &test_spawn_host(),
             panel,
             &[step_item()],
             1,
@@ -2251,6 +2333,43 @@ mod tests {
             );
     }
 
+    /// Every reviewer spawn of a canary run carries the spawn host its caller resolved, the
+    /// guard flag set or not, and the helper copies with it.
+    #[test]
+    fn every_canary_spawn_carries_the_host_its_caller_resolved() {
+        for grep_guard in [false, true] {
+            let host = SpawnHost {
+                grep_guard,
+                ..test_spawn_host()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let driver = RecordingPanel::catching_at(&[]);
+            run_canary(
+                &store,
+                &driver,
+                &cfg_for(&STEP_AGENTS),
+                &host,
+                &declared_panel(REPEATED_KIND_LIST),
+                &[step_item()],
+                1,
+                &|_, _| {},
+            )
+            .unwrap();
+            let carried: Vec<(String, SpawnHost)> = driver
+                .spawns()
+                .iter()
+                .map(|spawn| (spawn.role.clone(), spawn.host.clone()))
+                .collect();
+            let expected: Vec<(String, SpawnHost)> = driver
+                .spawned_roles()
+                .into_iter()
+                .map(|role| (role, host.clone()))
+                .collect();
+            assert_eq!(expected.len(), 7, "grep_guard {grep_guard}: {expected:?}");
+            assert_eq!(carried, expected, "grep_guard {grep_guard}");
+        }
+    }
+
     #[test]
     fn run_canary_records_the_score_of_a_repeated_kind_list() {
         let store = Store::open(":memory:").unwrap();
@@ -2259,6 +2378,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(&STEP_AGENTS),
+            &test_spawn_host(),
             &declared_panel(REPEATED_KIND_LIST),
             &[step_item()],
             1,
@@ -2372,6 +2492,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(PANEL_AGENTS),
+            &test_spawn_host(),
             &panel(),
             &corpus,
             2,
@@ -2406,6 +2527,7 @@ mod tests {
             &store,
             &driver,
             &cfg_for(PANEL_AGENTS),
+            &test_spawn_host(),
             &panel(),
             &corpus,
             1,

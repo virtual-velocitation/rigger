@@ -121,9 +121,15 @@ where
 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
     let addr = listener.local_addr().expect("learn the bound port");
-    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let graph_provider =
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+        |_: Option<&str>,
+         _: &[String],
+         _: Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| CallGraph::default();
     let instances_provider = Vec::<InstanceView>::new;
     std::thread::spawn(move || {
         let _ = dash::serve_on(
@@ -146,7 +152,7 @@ fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
         move |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((
                 store.events.lock().unwrap().clone(),
-                Graph::default(),
+                Graph::default().into(),
                 store.progress.lock().unwrap().clone(),
                 store.liveness.lock().unwrap().clone(),
             ))
@@ -178,7 +184,7 @@ fn serve_multi_instance_dash(
                 .unwrap_or(&default);
             Ok((
                 store.events.lock().unwrap().clone(),
-                Graph::default(),
+                Graph::default().into(),
                 store.progress.lock().unwrap().clone(),
                 store.liveness.lock().unwrap().clone(),
             ))
@@ -1039,7 +1045,12 @@ fn with_no_activity_the_stream_emits_only_prompt_heartbeats_never_a_liveness_fra
 fn serve_test_dash_over_fixed_events(events: Vec<Event>) -> std::net::SocketAddr {
     serve_dash_with_provider(
         move |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((events.clone(), Graph::default(), Vec::new(), HashMap::new()))
+            Ok((
+                events.clone(),
+                Graph::default().into(),
+                Vec::new(),
+                HashMap::new(),
+            ))
         },
     )
 }

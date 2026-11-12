@@ -1,103 +1,41 @@
-//! Periphery for spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): the cross-module seam
-//! `RunCtx::run_single_stage` (`src/conductor.rs`) opens onto `Worktree::commit`
-//! (`src/worktree.rs`) - a prior incarnation's abandoned edit, left uncommitted in a unit's
-//! deterministic worktree by a halt (a liveness sweep, the outer wall clock, a crash), is
-//! captured as a `wip(<unit>): tree of halted spawn <id>` commit the instant this process
-//! adopts that worktree, and the fresh implementer's own prompt names the recovery commit
-//! and says "finish and report; do not start over".
+//! Periphery for spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), with spec 103's
+//! HALTED-SPAWN CHECKPOINT: the seam `RunCtx::run_single_stage` (`src/conductor.rs`) opens onto
+//! `Worktree::commit` (`src/worktree.rs`). A halted spawn (one the log shows was requested, that
+//! carries no result, with no other spawn of its unit live) leaves its edit uncommitted in the
+//! unit's deterministic worktree; the next `rigger run` that adopts the worktree captures it as a
+//! `wip(<unit>): tree of halted spawn <id>` commit, and the relaunched implementer's task names
+//! that commit and says "finish and report; do not start over".
 //!
-//! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TEST. `conductor.rs`'s own
-//! `a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt`
-//! proves the ALGORITHM correct - but entirely IN-PROCESS: one `run(&cfg, &deps)` call, a
-//! `Stub` driver whose `prompts_by_agent` is a private in-memory map read directly by the
-//! test, never the compiled binary's own store or its own `rigger prompt` command. It cannot
-//! prove what this criterion actually promises an operator: that the recorded prompt a real
-//! courier fetches with `rigger prompt <id>` - reading the SAME `events.db` a completely
-//! separate `rigger step` process wrote to - carries the recovery commit and the verbatim
-//! instruction. This file closes that gap through the compiled binary, a real git worktree,
-//! and a real `Store::open` round trip across two independent process invocations.
+//! The conductor's own tests prove the algorithm in-process, against a stub driver's in-memory
+//! prompts. What they cannot see, and what this file drives through the compiled binary, a real
+//! git worktree, a store written before the run starts and the task the fake host was served:
 //!
-//! Also closes the paired negative-space gap the implementer's own test does not touch: the
-//! OVERWHELMINGLY common case (no prior incarnation, a freshly created clean worktree) must
-//! commit NOTHING and say NOTHING about a halt - through the real binary, not by inspection.
+//! - a run over a genuinely halted spawn records exactly one recovery commit, the relaunched
+//!   implementer's task names it, and a relaunched run never repeats it;
+//! - every shape the checkpoint's guard refuses (no prior worktree, a dirty worktree no spawn
+//!   was ever requested for, a live sibling spawn of the unit, a named spawn that already
+//!   answered) records no recovery commit and serves no recovery text, while the tree's content
+//!   still lands on the unit's branch;
+//! - a resumed reviewed unit whose worktree holds a crash-frozen merge conflict reaches the
+//!   idempotent merge path instead of the checkpoint's conflict-marker refusal;
+//! - conflict-marker lookalike text in a file the unit never touched never blocks a
+//!   checkpoint commit.
 //!
-//! NOT OWNED HERE: `Worktree::commit`'s conflict-marker refusal itself (`src/worktree.rs`'s
-//! own `mod tests`, `commit_refuses_a_worktree_with_a_merge_left_in_progress`,
-//! `commit_refuses_when_tracked_content_carries_conflict_marker_text`, and
-//! `commit_ignores_conflict_marker_lookalike_text_in_an_untouched_tracked_file`, already
-//! exercise that guard directly against a real git repo through the public `Worktree` API),
-//! and the `regenerate_conflicted_paths` integration-merge finalize path that also now runs
-//! through the same guarded `commit` (already covered end-to-end, at the real binary
-//! boundary, by `tests/integrate_conflict_merge_periphery.rs`).
-//!
-//! ROUND 2 FIX (three interaction defects a reject verdict named - none visible to the
-//! implementer's own in-process unit tests, each proven a real regression here by reverting
-//! this file's fixes and confirming the exact failure the round-2 commit describes):
-//!
-//! (a) `a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops`. The
-//! `cmd_step`-start `sweep_terminal` / `reclaim_orphan_scratch` backstops (`main.rs`) both run
-//! BEFORE `run_single_stage`'s halted-commit capture ever gets a chance to run (`ensure_run_
-//! branch` mints `rigger-run` at the SAME tip a pre-existing halted worktree branches from,
-//! on this project's very first step - so both authorities already see it as "merged" before
-//! anything else touches it) - either one discarding the dirty candidate outright defeats the
-//! capture by racing it on process control-flow order alone. `sweep_terminal`'s own `mod
-//! tests` (`sweep_terminal_spares_a_dirty_no_spawn_worktree_pending_halt_recovery`) and
-//! `main.rs`'s own (`reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree`) each prove
-//! their OWN function correct in isolation; neither drives BOTH authorities in the SAME real
-//! `cmd_step` invocation the way an operator's process actually does.
-//!
-//! (b) `a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempotent_path`.
-//! `run_single_stage`'s halted-commit capture must never trip its conflict-marker refusal on a
-//! resumed `ResumePhase::Reviewed` unit whose worktree ALREADY carries a genuine, still-
-//! unresolved merge conflict from a prior window's crash - it must skip straight to the
-//! existing `merge_into_worktree`/`merge_in_progress` idempotent resume path (spec 88). The
-//! implementer's own new `conductor.rs` unit test
-//! (`a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path`)
-//! proves this in-process, with a `Store::open(":memory:")` and one `run(&cfg, &deps)` call.
-//! This drives it through the compiled binary as a genuinely separate process reading a real
-//! on-disk store a completely different process wrote to - the shape this file's own header
-//! already argues for above.
-//!
-//! (c) `an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpoint_
-//! commit`. `Worktree::commit`'s conflict-marker scan must be scoped to the CALLER's own
-//! touched-or-unmerged paths, never an unconditional whole-tracked-tree content scan that can
-//! false-positive on lookalike text in a file nobody touched. Deliberately isolated from (a):
-//! a plain two-step implementer flow with no pre-existing worktree, so the sweep backstops
-//! never enter the picture and only the checkpoint-commit's own scope guard is exercised.
-//!
-//! ROUND 3 FIX (`both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_
-//! unreadable_status_read`): a reject-round finding
-//! (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`, live-confirmed by
-//! `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race` against a real
-//! corrupted worktree admin dir) caught a gap defect (a) above cannot see: the two step-start
-//! authorities agreeing a worktree is dirty by CONTENT says nothing about what happens when
-//! the underlying `git status` READ ITSELF fails - round 2 shipped with `sweep_terminal_logged`
-//! failing CLOSED (spare) on that error and `reclaim_orphan_scratch`'s own independently
-//! hardcoded status call failing OPEN (discard) on the IDENTICAL error, despite a doc comment
-//! claiming the two already mirrored each other. Round 3 replaced both inline calls with one
-//! shared `rigger::worktree::path_is_dirty` free fn. This drives that fix through the REAL
-//! compiled binary with a `git` shim that fails the underlying read itself (not merely
-//! reporting dirty content) for exactly the first two real invocations against the candidate,
-//! then lets every later call - including the halted-commit capture's own, once adoption
-//! proceeds - reach the genuine git unmodified.
+//! NOT OWNED HERE: `Worktree::commit`'s conflict-marker refusal itself (`src/worktree.rs`'s own
+//! `mod tests`), and the `regenerate_conflicted_paths` integration-merge finalize path end to end
+//! (`tests/integrate_conflict_merge_periphery.rs`).
 
-mod common;
+use crate::common;
 
-use common::cli::run_rigger;
-use common::cli::run_rigger_envs;
-use common::cli::seed_run_events;
+use common::cli::{run_on_arms, seed_run_events};
 use common::cli::{write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER};
-use common::git::git_ok;
-use common::git::git_out;
-use common::git::temp_git_project_with_commit;
-use std::path::Path;
-use std::process::Command;
+use common::fixtures::{first_message_task, stand_in_launches, StandInLaunch, RECORD_EACH_LAUNCH};
+use common::git::{git_ok, git_out, temp_git_project_with_commit};
+use std::path::{Path, PathBuf};
 
-/// Scaffold a single, real-worktree implementer unit named "solo": one gate (`ok`, always
-/// green), no review tier, `on_pass: none` (verified but never merged - the minimal shape
-/// that reaches a durable, inspectable unit branch without a merge or a review panel's own
-/// agents to answer). Mirrors `tests/cli.rs`'s `write_unit_review_lenses_workflow` minus its
-/// `review:` block - this file needs the unit's own durable worktree, not the review layer.
+/// A single, real-worktree implementer unit named "solo": one gate (`ok`, always green), no
+/// review tier, `on_pass: none` (verified but never merged), the minimal shape that reaches a
+/// durable, inspectable unit branch.
 const SOLO_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
@@ -113,13 +51,24 @@ stages:
 "#,
 };
 
-/// The DETERMINISTIC worktree dir `stage_worktree`'s `Worktree::create` derives for a unit named
-/// `unit` in `root`'s default (unconfigured) scratch root - the product's own
-/// [`rigger::conductor::unit_worktree_dir`] over `common::default_scratch_root`, so a worktree a
-/// test pre-seeds lands exactly where every step-start sweep and the conductor's adoption look.
-fn default_unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
-    let scratch = common::default_scratch_root(root);
-    std::path::PathBuf::from(rigger::conductor::unit_worktree_dir(
+/// The spawn every halt below names: the solo unit's first implementer attempt.
+const NAMED_SPAWN: &str = "solo/implementer#0";
+
+/// The subject of the recovery commit a run records for [`NAMED_SPAWN`]'s halted tree.
+const RECOVERY_SUBJECT: &str = "wip(solo): tree of halted spawn solo/implementer#0";
+
+/// The instruction a relaunched implementer's task carries when its tree was recovered.
+const RECOVERY_INSTRUCTION: &str = "do not start over";
+
+/// The worker's arm: each launch on record, it reports and changes nothing.
+fn quiet_worker_arm() -> String {
+    format!("  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    echo done\n    ;;\n")
+}
+
+/// The deterministic worktree dir of `unit` under the scratch root `scratch`, the product's own
+/// [`rigger::conductor::unit_worktree_dir`], where a run adopts it.
+fn unit_worktree_dir(scratch: &Path, unit: &str) -> PathBuf {
+    PathBuf::from(rigger::conductor::unit_worktree_dir(
         scratch.to_str().expect("a utf-8 scratch root"),
         unit,
     ))
@@ -129,472 +78,326 @@ fn unit_branch(unit: &str) -> String {
     format!("rigger/u/{unit}")
 }
 
-/// Pre-create unit `unit`'s durable worktree exactly as `Worktree::create`'s
-/// branch-does-not-exist-yet path would (`git worktree add -b <branch> <dir> HEAD`), then
-/// leave `file` uncommitted in it with `content` - a worktree that already exists, dirty,
-/// on disk (a restored snapshot, a desynced store) with NO spawn EVER recorded for it in
-/// the log at all. Spec 103, THE HALTED-SPAWN CHECKPOINT, decided this shape is NOT a
-/// genuine halt (the named spawn must itself carry a real `SpawnRequested`) - kept, under
-/// its own name, for the tests below that exercise the step-start SWEEP authorities'
-/// (`sweep_terminal`/`reclaim_orphan_scratch`, `main.rs`) own sparing behavior for exactly
-/// this no-spawn-recorded shape, independent of whether the checkpoint itself goes on to
-/// capture it. See [`seed_and_halt_a_dispatched_spawn`] for the genuine-halt shape.
-fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> std::path::PathBuf {
-    let dir = default_unit_worktree_dir(root, unit);
-    let branch = unit_branch(unit);
+/// A canonical scratch root of its own, kept alive by the returned guard.
+fn scratch_root() -> (tempfile::TempDir, PathBuf) {
+    let held = tempfile::tempdir().unwrap();
+    let scratch = std::fs::canonicalize(held.path()).unwrap();
+    (held, scratch)
+}
+
+/// What one `rigger run` answered: its stdout, stderr and success, and every launch the fake host
+/// put on record, in spawn order.
+struct Run {
+    out: String,
+    err: String,
+    ok: bool,
+    launches: Vec<StandInLaunch>,
+}
+
+impl Run {
+    /// The spawn of each launch, in spawn order.
+    fn spawns(&self) -> Vec<&str> {
+        self.launches.iter().map(|l| l.spawn.as_str()).collect()
+    }
+
+    /// The task the one launch of `spawn` was served.
+    fn served(&self, spawn: &str) -> String {
+        match self
+            .launches
+            .iter()
+            .filter(|l| l.spawn == spawn)
+            .collect::<Vec<_>>()[..]
+        {
+            [StandInLaunch {
+                first_message: Some(first),
+                ..
+            }] => first_message_task(first),
+            _ => panic!(
+                "one launch of {spawn} recording its task; on record: {:?}",
+                self.spawns()
+            ),
+        }
+    }
+
+    /// Whether the run state it printed shows `unit` verified.
+    fn verified(&self, unit: &str) -> bool {
+        self.out
+            .lines()
+            .any(|line| line.split_whitespace().collect::<Vec<_>>() == [unit, "verified"])
+    }
+}
+
+/// `rigger run` over `root` under the scratch root `scratch`, the fake host answering from
+/// `arms`.
+fn run_over(root: &Path, scratch: &Path, arms: &str) -> Run {
+    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch, arms);
+    let on_record = fake.path().join("bin/launches");
+    let launches = if on_record.exists() {
+        stand_in_launches(&on_record)
+    } else {
+        Vec::new()
+    };
+    Run {
+        out,
+        err,
+        ok,
+        launches,
+    }
+}
+
+/// Create unit `unit`'s durable worktree under `scratch` exactly as `Worktree::create`'s
+/// branch-does-not-exist-yet path would (`git worktree add -b <branch> <dir> HEAD`), then leave
+/// each of `files` uncommitted in it.
+fn seed_dirty_worktree(root: &Path, scratch: &Path, unit: &str, files: &[(&str, &str)]) {
+    let dir = unit_worktree_dir(scratch, unit);
     git_ok(
         root,
         &[
             "worktree",
             "add",
             "-b",
-            &branch,
+            &unit_branch(unit),
             dir.to_str().unwrap(),
             "HEAD",
         ],
     );
-    std::fs::write(dir.join(file), content).unwrap();
-    let status = git_out(&dir, &["status", "--porcelain"]);
+    for (file, content) in files {
+        std::fs::write(dir.join(file), content).unwrap();
+    }
     assert!(
-        !status.is_empty(),
-        "setup must leave the pre-created worktree genuinely dirty: {status:?}"
-    );
-    dir
-}
-
-/// Genuinely halt unit `unit`'s implementer spawn (spec 103, THE HALTED-SPAWN CHECKPOINT):
-/// run a REAL priming `rigger step` first, so its worktree is created and its own
-/// `SpawnRequested` (attempt 0) lands in the log exactly as production dispatch would, then
-/// leave `file` uncommitted in that SAME worktree with `content` directly on disk - never
-/// through `rigger result` - simulating the agent editing the tree and then being halted (a
-/// liveness sweep, the outer wall clock, a crash) before it could ever commit or report.
-/// This is the real-binary, real-git, two-process stand-in for `conductor.rs`'s own
-/// in-process `Worktree::create` + `park_in_run` + `std::fs::write` setup: the checkpoint's own
-/// guard requires the named spawn to carry a real `SpawnRequested` before any dirty tree is
-/// ever captured, so a genuine halt can only be built ACROSS a real prior dispatch, never
-/// materialized on a worktree that has never been adopted by any `rigger step` at all.
-fn seed_and_halt_a_dispatched_spawn(
-    root: &Path,
-    unit: &str,
-    file: &str,
-    content: &str,
-) -> std::path::PathBuf {
-    let (prime_out, prime_err, prime_ok) = run_rigger(root, &["step"]);
-    assert!(
-        prime_ok,
-        "the priming step (the halted spawn's own real dispatch) must succeed; \
-         stderr: {prime_err}"
-    );
-    assert!(
-        prime_out.contains(&format!(r#""id":"{unit}/implementer#0""#)),
-        "the priming step must park {unit}/implementer#0 fresh, giving it a real \
-         SpawnRequested to halt later; got: {prime_out:?}"
-    );
-    let dir = default_unit_worktree_dir(root, unit);
-    std::fs::write(dir.join(file), content).unwrap();
-    let status = git_out(&dir, &["status", "--porcelain"]);
-    assert!(
-        !status.is_empty(),
-        "setup must leave the primed worktree genuinely dirty: {status:?}"
-    );
-    dir
-}
-
-/// The full end-to-end proof, across TWO real `rigger step` processes (spec 103, THE
-/// HALTED-SPAWN CHECKPOINT: the checkpoint fires only for a spawn the log already shows was
-/// requested): the first process dispatches `solo/implementer#0` for real; between the two
-/// processes, its worktree is dirtied directly on disk with no `rigger result` ever
-/// recorded - the halt. The SECOND process must (1) capture the abandoned edit as its own
-/// `wip` commit on the unit's durable branch, (2) leave the abandoned file's content intact
-/// inside that commit, and (3) still report `solo/implementer#0` as the (still parked, still
-/// unanswered) wave entry. A THIRD, independent `rigger step` while the spawn is still
-/// parked must not repeat the capture: the branch keeps exactly one such commit and its tip
-/// does not move.
-///
-/// NOT covered here: the ORIGINAL `rigger prompt` claim this test made before spec 103 (that
-/// the fresh implementer's prompt names the recovery commit) required the checkpoint and the
-/// spawn's OWN first dispatch to land in the SAME process - the exact "dirty tree, nothing
-/// ever requested" shape spec 103 now refuses to capture at all (see
-/// `seed_halted_worktree`'s own doc comment and the tests below that exercise it). Across two
-/// real, independent `rigger step` processes, the spawn's prompt is fixed by its own
-/// dispatch in the FIRST process and the replay driver never re-emits a refreshed one for an
-/// id that already has a request and no result - a pre-existing driver characteristic this
-/// criterion's own guard did not create and does not own (recorded as
-/// `d-u103c5-cross-window-prompt-not-refreshed`).
-#[test]
-fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_names_it() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
-    // the agent dies mid-edit - dirtying the SAME worktree the priming step just adopted,
-    // with no `rigger result` ever recorded.
-    let wt_dir =
-        seed_and_halt_a_dispatched_spawn(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
-
-    // Process 2: the recovery step. `solo/implementer#0` already has a real `SpawnRequested`
-    // and no result - a genuine halt - so the checkpoint must fire this time.
-    let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the recovery step must succeed; stderr: {err1}");
-    assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the same still-unanswered implementer must still be the reported wave entry; \
-         got: {out1:?}"
-    );
-
-    // The recovery commit landed on the unit's durable branch, and the worktree itself is
-    // clean again - the abandoned edit was swept IN, not discarded and not left dangling.
-    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
-    let log = git_out(root, &["log", "--pretty=%H %s", &unit_branch("solo")]);
-    let recovery_line = log
-        .lines()
-        .find(|l| l.ends_with(expected_subject))
-        .unwrap_or_else(|| {
-            panic!(
-                "the branch must carry a wip commit recovering the halted tree; wanted a \
-                 line ending {expected_subject:?}, got:\n{log}\nrecovery step stderr (evidence \
-                 of what actually happened to the halted worktree before recovery could \
-                 run):\n{err1}"
-            )
-        });
-    let recovery_sha = recovery_line
-        .split_whitespace()
-        .next()
-        .expect("log line must start with a sha")
-        .to_string();
-    let tree_status = git_out(&wt_dir, &["status", "--porcelain"]);
-    assert!(
-        tree_status.is_empty(),
-        "the recovery commit must leave the worktree clean: {tree_status:?}"
-    );
-    let survived = git_out(root, &["show", &format!("{recovery_sha}:halted-work.txt")]);
-    assert_eq!(
-        survived, "abandoned mid-edit",
-        "the halted spawn's own file must survive, byte-for-byte, inside the recovery commit"
-    );
-
-    // A THIRD, independent step process - the spawn is still parked, nothing has resulted
-    // it - must NOT repeat the capture: no second wip commit, and the branch tip is exactly
-    // where the recovery step left it (the ordinary, overwhelmingly common no-op path).
-    let tip_after_step1 = git_out(root, &["rev-parse", &unit_branch("solo")]);
-    let (out2, err2, ok2) = run_rigger(root, &["step"]);
-    assert!(ok2, "the third step must succeed; stderr: {err2}");
-    assert!(
-        out2.contains(r#""id":"solo/implementer#0""#),
-        "the same still-parked implementer must still be the reported wave entry; \
-         got: {out2:?}"
-    );
-    let tip_after_step2 = git_out(root, &["rev-parse", &unit_branch("solo")]);
-    assert_eq!(
-        tip_after_step1, tip_after_step2,
-        "a later step over the same still-parked spawn must not add another commit"
-    );
-    let log_after = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert_eq!(
-        log_after.lines().filter(|l| *l == expected_subject).count(),
-        1,
-        "the recovery commit must appear exactly once on the branch, never repeated on a \
-         later poll of the same parked spawn: {log_after}"
+        !git_out(&dir, &["status", "--porcelain"]).is_empty(),
+        "setup must leave the worktree genuinely dirty"
     );
 }
 
-/// The paired negative-space case: a unit whose worktree is created FRESH by `rigger step`
-/// itself (the overwhelmingly common path - no prior incarnation, nothing to recover) must
-/// commit nothing extra and say nothing about a halt, through the real binary. Proves the
-/// new capture is silent in the case that runs on every other unit in the entire suite,
-/// not merely correct in the one dirty case the test above drives at.
-#[test]
-fn an_ordinary_freshly_created_worktree_never_gains_a_halt_recovery_commit_or_prompt_text() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must park at attempt 0; got: {out:?}"
-    );
-
-    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert!(
-        !log.lines()
-            .any(|l| l.starts_with("wip(solo): tree of halted spawn")),
-        "a freshly created, never-touched worktree must never gain a halt-recovery commit: \
-         {log:?}"
-    );
-
-    let (prompt_out, prompt_err, prompt_ok) = run_rigger(root, &["prompt", "solo/implementer#0"]);
-    assert!(
-        prompt_ok,
-        "rigger prompt must succeed for the parked implementer; stderr: {prompt_err}"
-    );
-    assert!(
-        !prompt_out.to_lowercase().contains("halted spawn")
-            && !prompt_out.contains("do not start over"),
-        "the ordinary first prompt must carry no halt-recovery language at all; \
-         got:\n{prompt_out}"
-    );
-}
-
-/// Round 2 fix, defect (a): a unit's worktree can be dirty at the exact "branch tip is an
-/// ancestor of `rigger-run`, no spawn ever recorded" shape on THIS project's very first
-/// `rigger step` - `ensure_run_branch` mints `rigger-run` at the current HEAD before the
-/// step-start sweeps ever run, and a worktree seeded (by a restored snapshot, or external
-/// tampering) off that SAME HEAD is trivially an ancestor of it from the first instant.
-/// `sweep_terminal` and `reclaim_orphan_scratch` (`main.rs`) both run BEFORE
-/// `run_single_stage`'s halted-commit capture ever gets a chance - so either one discarding
-/// this candidate outright, before the capture runs, destroys the content permanently rather
-/// than merely deferring its capture by one step. This proves BOTH authorities still spare
-/// it, in the SAME real `cmd_step` invocation, through the compiled binary.
-///
-/// Spec 103, THE HALTED-SPAWN CHECKPOINT: this exact shape - NO spawn ever recorded for the
-/// unit - is precisely the one the checkpoint's own guard now refuses to treat as a genuine
-/// halt (see `seed_halted_worktree`'s own doc comment), so unlike before spec 103, the sweep
-/// sparing this candidate no longer implies `run_single_stage` goes on to capture it as a wip
-/// commit. What this test still owns and proves: the sweep authorities themselves must never
-/// discard un-owned dirty content outright - they still spare it, log that they did, and the
-/// content still survives on disk, uncommitted, exactly as it would for ANY unrecognized
-/// dirty worktree they must not destroy.
-#[test]
-fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
-
-    let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the first step must succeed; stderr: {err1}");
-    assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must still park at attempt 0 despite the pre-existing dirty tree \
-         racing the step-start sweeps; got: {out1:?}"
-    );
-    assert!(
-        err1.contains("worktree sweep: kept") && err1.contains("halt-recovery commit"),
-        "the sweep must explicitly log that it kept this declared, dirty candidate rather \
-         than silently doing nothing; stderr: {err1}"
-    );
-
-    // The content survived BOTH backstops - never discarded - but since no spawn was EVER
-    // recorded for this unit, the checkpoint's own guard (spec 103) correctly refuses to
-    // capture it as a wip recovery commit: it stays exactly where the sweep left it,
-    // uncommitted.
-    assert!(
-        wt_dir.join("halted-work.txt").exists(),
-        "the abandoned edit must survive both step-start sweep backstops untouched"
-    );
-    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
-    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert!(
-        !log.lines().any(|l| l == expected_subject),
-        "no spawn was ever requested for this unit, so the checkpoint's guard (spec 103) \
-         must refuse to fabricate a halt-recovery commit even though the sweeps spared the \
-         content; got:\n{log}"
-    );
-    let status = git_out(&wt_dir, &["status", "--porcelain"]);
-    assert!(
-        !status.is_empty(),
-        "the content is uncaptured, so the worktree is still dirty: {status:?}"
-    );
-    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
-    assert_eq!(
-        content, "abandoned mid-edit\n",
-        "the un-owned content itself must be completely unaffected on disk"
-    );
-}
-
-/// Spec 103, THE HALTED-SPAWN CHECKPOINT's THIRD guard condition, through the real binary:
-/// even when the named spawn itself was genuinely requested and carries no result (by itself
-/// a halt, per the first test above), the checkpoint must not fire while ANOTHER spawn of the
-/// SAME unit - any role, any attempt - is still LIVE (its own liveness marker touched more
-/// recently than its own wall-clock bound). `conductor.rs`'s own in-process
-/// `a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live`
-/// proves the algorithm with one `run(&cfg, &deps)` call and a `Stub` driver; it cannot prove
-/// the seam actually composes across a real process boundary, reading back the exact
-/// `liveness::marker_path` a separate, real spawned agent would be touching. This closes that
-/// gap: process 1 dispatches `solo/implementer#0` for real and it is halted exactly as the
-/// first test above builds it; a SIBLING spawn of "solo" (attempt 1) is then seeded directly
-/// into the same real on-disk store `seed_run_events` already appends to (mirroring that
-/// helper's own precedent for a conductor-owned event type `rigger emit` refuses to mint) and
-/// its marker is planted, fresh, at the exact path `rigger::liveness::marker_path` derives for
-/// the run a real prior `rigger step` process actually started - never a guessed or
-/// hand-duplicated path. Process 2 must then leave the tree exactly as process 1's halt left
-/// it: no recovery commit, still parked, still dirty.
-#[test]
-fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
-    // the agent dies mid-edit - dirtying the SAME worktree, no `rigger result` ever recorded.
-    // By itself (the first test above) this is a genuine halt the checkpoint would capture.
-    let wt_dir =
-        seed_and_halt_a_dispatched_spawn(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
-
-    // A SIBLING spawn of the SAME unit "solo" - attempt 1, bounded, requested and STILL
-    // LIVE - seeded directly into the real store the priming step just wrote to, at the SAME
-    // run the priming step started (appended after its `RunStarted`, before any later one).
-    let mut sibling =
-        common::spawn_request("solo", "solo", rigger::spawn::ROLE_IMPLEMENTER, 1, "task");
-    sibling.max_wall_clock = Some(3600);
-    seed_run_events(
-        root,
-        &[(
+/// The log a driver that died mid-spawn leaves: run `r1` started, unit `solo` started on its
+/// branch, [`NAMED_SPAWN`] requested, then each event of `after`.
+fn seed_requested_spawn(root: &Path, after: &[(&str, String)]) {
+    let named = common::spawn_request("solo", "solo", rigger::spawn::ROLE_IMPLEMENTER, 0, "go");
+    let mut events = vec![
+        (
+            "RunStarted",
+            serde_json::json!({"run": "r1", "criteria": []}).to_string(),
+        ),
+        (
+            "UnitStarted",
+            serde_json::json!({"id": "solo", "agent": "worker", "branch": unit_branch("solo")})
+                .to_string(),
+        ),
+        (
             rigger::spawn::TYPE_SPAWN_REQUESTED,
-            &serde_json::to_value(&sibling).unwrap().to_string(),
-        )],
-    );
-    // The sibling's own liveness marker, touched right now - well inside its 3600s bound -
-    // at the EXACT path production derives (same scratch root [`default_unit_worktree_dir`]'s own doc
-    // comment already asserts against, same run id the priming step just minted).
-    let scratch = common::default_scratch_root(root);
-    // The run id the real priming process minted, read back from the SAME on-disk store at the
-    // SAME project identity [`seed_run_events`] appends to - never hardcoded or guessed.
-    let run_id = common::cli::current_run_id_of(root)
-        .expect("a real prior `rigger step` process must already have minted a run id");
-    let marker = rigger::liveness::marker_path(scratch.to_str().unwrap(), &run_id, &sibling.id)
-        .expect("a non-degenerate spawn id always encodes a marker path");
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(&marker, b"heartbeat").unwrap();
-
-    // Process 2: re-adopts the dirty worktree. `solo/implementer#0` alone would be a genuine
-    // halt, but the live sibling must suppress the capture.
-    let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the step must succeed; stderr: {err1}");
-    assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the same still-unanswered implementer must still be the reported wave entry; \
-         got: {out1:?}"
-    );
-
-    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
-    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert!(
-        !log.lines().any(|l| l == expected_subject),
-        "a live sibling spawn of the same unit must suppress the wip recovery commit even \
-         though the named spawn is itself genuinely requested and resultless; got:\n{log}\n\
-         step stderr: {err1}"
-    );
-    let tree_status = git_out(&wt_dir, &["status", "--porcelain"]);
-    assert!(
-        !tree_status.is_empty(),
-        "the tree is uncaptured while the sibling is live, so it must still be dirty: \
-         {tree_status:?}"
-    );
-    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
-    assert_eq!(
-        content, "abandoned mid-edit\n",
-        "the un-owned content itself must be completely unaffected on disk"
-    );
+            serde_json::to_value(&named).unwrap().to_string(),
+        ),
+    ];
+    events.extend(after.iter().map(|(t, b)| (*t, b.clone())));
+    let borrowed: Vec<(&str, &str)> = events.iter().map(|(t, b)| (*t, b.as_str())).collect();
+    seed_run_events(root, &borrowed);
 }
 
-/// Spec 103, THE HALTED-SPAWN CHECKPOINT's SECOND guard condition, through the real binary and
-/// the exact shape the spec's own Problem statement names: "`run_single_stage` commits whatever
-/// the unit worktree holds ... even when the named spawn already has a result and reviewers are
-/// live in the shared worktree; it committed a reviewer's temporary red-repro edit above an
-/// approved tip". `crates/rigger-driver/src/liveness.rs`'s own
-/// `spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result` proves the guard
-/// white-box, on the pure function alone; nothing before this test wires it through
-/// `run_single_stage` at all - the sibling round-trip test above only ever runs `rigger step`
-/// a SECOND time BEFORE any result exists. This drives it end to end: process 1 dispatches
-/// `solo/implementer#0` for real, its real work is recorded with a real `rigger result` (so
-/// the named spawn now carries an ordinary, non-fault result), and only THEN does something
-/// else dirty the SAME worktree again - unrelated to the implementer's own committed diff,
-/// mirroring a reviewer's own edit landing after the spawn already answered. Process 2 must
-/// never mistake that later dirt for the named spawn's own halt.
-#[test]
-fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_real_result() {
+/// What the solo unit's worktree and log hold as a run over it starts.
+#[derive(Clone, Copy)]
+enum Prior {
+    /// Nothing: the run creates the worktree itself.
+    Fresh,
+    /// A dirty worktree on disk (a restored snapshot, a desynced store) and no spawn ever
+    /// requested for the unit.
+    DirtyUnrequested,
+    /// [`NAMED_SPAWN`] requested and never answered, its edit left uncommitted: a genuine halt.
+    Halted,
+    /// The genuine halt, beside a sibling spawn of the same unit (attempt 1, bounded, its
+    /// liveness marker fresh) that is still live.
+    HaltedBesideALiveSibling,
+    /// [`NAMED_SPAWN`] requested and answered, its own edit and a later, unrelated edit (a
+    /// reviewer's temporary repro) both uncommitted.
+    DirtyAfterTheNamedSpawnAnswered,
+}
+
+impl Prior {
+    /// Plant this prior state for `root` under `scratch`, returning the files it leaves
+    /// uncommitted in the unit's worktree.
+    fn plant(self, root: &Path, scratch: &Path) -> Vec<(&'static str, &'static str)> {
+        let halted = vec![("halted-work.txt", "abandoned mid-edit\n")];
+        match self {
+            Prior::Fresh => Vec::new(),
+            Prior::DirtyUnrequested => {
+                seed_dirty_worktree(root, scratch, "solo", &halted);
+                halted
+            }
+            Prior::Halted => {
+                seed_dirty_worktree(root, scratch, "solo", &halted);
+                seed_requested_spawn(root, &[]);
+                halted
+            }
+            Prior::HaltedBesideALiveSibling => {
+                seed_dirty_worktree(root, scratch, "solo", &halted);
+                let mut sibling =
+                    common::spawn_request("solo", "solo", rigger::spawn::ROLE_IMPLEMENTER, 1, "go");
+                sibling.max_wall_clock = Some(3600);
+                seed_requested_spawn(
+                    root,
+                    &[(
+                        rigger::spawn::TYPE_SPAWN_REQUESTED,
+                        serde_json::to_value(&sibling).unwrap().to_string(),
+                    )],
+                );
+                let marker =
+                    rigger::liveness::marker_path(scratch.to_str().unwrap(), "r1", &sibling.id)
+                        .expect("a non-degenerate spawn id encodes a marker path");
+                std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+                std::fs::write(&marker, b"heartbeat").unwrap();
+                halted
+            }
+            Prior::DirtyAfterTheNamedSpawnAnswered => {
+                let files = vec![
+                    ("work.rs", "pub fn work() {}\n"),
+                    ("reviewer-repro.txt", "temporary red repro\n"),
+                ];
+                seed_dirty_worktree(root, scratch, "solo", &files);
+                seed_requested_spawn(
+                    root,
+                    &[(
+                        "SpawnResult",
+                        format!(r#"{{"id":"{NAMED_SPAWN}","output":"implemented"}}"#),
+                    )],
+                );
+                files
+            }
+        }
+    }
+
+    /// The spawns a run over this prior state launches: none once the named spawn answered,
+    /// else the named spawn itself, relaunched or fresh.
+    fn launches(self) -> Vec<&'static str> {
+        match self {
+            Prior::DirtyAfterTheNamedSpawnAnswered => Vec::new(),
+            _ => vec![NAMED_SPAWN],
+        }
+    }
+}
+
+/// The sha of each recovery commit `branch` carries, newest first.
+fn recovery_commits(root: &Path, branch: &str) -> Vec<String> {
+    git_out(root, &["log", "--pretty=%H %s", branch])
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(_, subject)| *subject == RECOVERY_SUBJECT)
+        .map(|(sha, _)| sha.to_string())
+        .collect()
+}
+
+/// Given the solo unit at `prior`, when `rigger run` drives it, then the run verifies the unit;
+/// it records exactly one recovery commit when `recovered` and none otherwise; every file the
+/// prior state left uncommitted lands on the unit's branch byte for byte (in the recovery commit
+/// when there is one) and the worktree is left clean; the run launches exactly the spawns the
+/// prior state leaves owed, and each one's task names the recovery commit and says "do not
+/// start over" exactly when `recovered`; and a relaunched run over the finished run moves the
+/// branch no further and repeats no recovery commit.
+fn a_run_over_a_solo_unit(prior: Prior, recovered: bool) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
+    let (_held, scratch) = scratch_root();
+    let left = prior.plant(root, &scratch);
+    let branch = unit_branch("solo");
 
-    // Process 1: dispatches solo/implementer#0 for real.
-    let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the first step must succeed; stderr: {err1}");
+    let run = run_over(root, &scratch, &quiet_worker_arm());
     assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must park at attempt 0; got: {out1:?}"
+        run.ok && run.verified("solo"),
+        "the run verifies the unit; stdout: {}\nstderr: {}",
+        run.out,
+        run.err
     );
 
-    // The implementer's own real edit, then its real, non-fault result - recorded through the
-    // real `rigger result` command, exactly like an ordinary successful attempt.
-    let wt_dir = default_unit_worktree_dir(root, "solo");
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    let (_out, result_err, result_ok) =
-        run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
-    assert!(
-        result_ok,
-        "recording the implementer's real result must succeed; stderr: {result_err}"
-    );
-
-    // Between this window and the next, something else dirties the SAME worktree with content
-    // the implementer never wrote - the reviewer's own temporary repro edit, left uncommitted,
-    // landing above an already-answered spawn.
-    std::fs::write(wt_dir.join("reviewer-repro.txt"), "temporary red repro\n").unwrap();
-    let status = git_out(&wt_dir, &["status", "--porcelain"]);
-    assert!(
-        !status.is_empty(),
-        "setup must leave the tree dirty: {status:?}"
-    );
-
-    // Process 2: `solo/implementer#0` already has a real result - guard 2 - so no matter how
-    // dirty the tree is when this window starts, the checkpoint must not mistake it for a halt.
-    let (out2, err2, ok2) = run_rigger(root, &["step"]);
-    assert!(ok2, "the second step must succeed; stderr: {err2}");
-    assert!(
-        out2.contains(r#""done":true"#),
-        "the unit (a single-gate, unreviewed, on_pass: none stage) must still reach its \
-         terminal verified state once the real result is in; got: {out2:?}"
-    );
-
-    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
-    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert!(
-        !log.lines().any(|l| l == expected_subject),
-        "the named spawn already carries a real result, so a dirty tree at the start of the \
-         next window must never be captured as its own halt-recovery commit; got:\n{log}\n\
-         step 2 stderr: {err2}"
-    );
-
-    // The content is never lost - it still lands, through the ordinary per-attempt checkpoint
-    // this criterion does not own, just never under the halt-recovery message above.
-    let committed_work = git_out(root, &["show", &format!("{}:work.rs", unit_branch("solo"))]);
+    let recovery = recovery_commits(root, &branch);
     assert_eq!(
-        committed_work, "pub fn work() {}",
-        "the implementer's own real edit must still land in the committed tree"
+        recovery.len(),
+        usize::from(recovered),
+        "recovery commits on {branch}; log:\n{}",
+        git_out(root, &["log", "--pretty=%s", &branch])
     );
-    let committed_extra = git_out(
-        root,
-        &[
-            "show",
-            &format!("{}:reviewer-repro.txt", unit_branch("solo")),
-        ],
+    let landed_in = recovery.first().cloned().unwrap_or_else(|| branch.clone());
+    for (file, content) in &left {
+        assert_eq!(
+            git_out(root, &["show", &format!("{landed_in}:{file}")]),
+            content.trim_end(),
+            "{file} lands on {landed_in} byte for byte, never discarded"
+        );
+    }
+    let worktree = unit_worktree_dir(&scratch, "solo");
+    assert!(
+        !worktree.exists() || git_out(&worktree, &["status", "--porcelain"]).is_empty(),
+        "the run leaves nothing uncommitted in the unit's worktree"
+    );
+
+    assert_eq!(
+        run.spawns(),
+        prior.launches(),
+        "the spawns the run launches"
+    );
+    for spawn in prior.launches() {
+        let task = run.served(spawn);
+        assert_eq!(
+            (
+                task.contains(RECOVERY_INSTRUCTION),
+                recovery
+                    .first()
+                    .is_some_and(|sha| task.contains(sha.as_str())),
+            ),
+            (recovered, recovered),
+            "{spawn}'s task names the recovery commit and says not to start over exactly when \
+             the tree was recovered; task:\n{task}"
+        );
+    }
+
+    let tip = git_out(root, &["rev-parse", &branch]);
+    let relaunched = run_over(root, &scratch, &quiet_worker_arm());
+    assert!(
+        relaunched.ok,
+        "the relaunched run succeeds; stderr: {}",
+        relaunched.err
     );
     assert_eq!(
-        committed_extra, "temporary red repro",
-        "the post-result dirt must still land in the committed tree, never silently discarded"
+        (
+            git_out(root, &["rev-parse", &branch]),
+            recovery_commits(root, &branch)
+        ),
+        (tip, recovery),
+        "a relaunched run over the finished run moves the branch no further and repeats no \
+         recovery commit"
     );
 }
 
-/// Round 2 fix, defect (b): a resumed `ResumePhase::Reviewed` unit whose worktree ALREADY
-/// carries a genuine, still-unresolved merge conflict from a prior window's real crash (a
-/// liveness sweep, the outer wall clock) must reach the existing `merge_into_worktree`/
-/// `merge_in_progress` idempotent resume path (spec 88) - never trip `run_single_stage`'s
-/// halted-commit capture's conflict-marker refusal first, which would turn a resumable state
-/// into a hard, no-attempt-charged error.
+rigger::test_cases! {
+    /// A genuine halt: the run records the recovery commit holding the abandoned edit, and the
+    /// relaunched implementer is told to finish from it.
+    a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_relaunched_prompt_names_it:
+        a_run_over_a_solo_unit(Prior::Halted, true);
+    /// The common path: a worktree the run creates itself gains no recovery commit, and its
+    /// implementer no recovery text.
+    an_ordinary_freshly_created_worktree_never_gains_a_halt_recovery_commit_or_prompt_text:
+        a_run_over_a_solo_unit(Prior::Fresh, false);
+    /// A dirty worktree no spawn was ever requested for is no halt: nothing is recorded as one,
+    /// and its content is kept, landing on the unit's branch.
+    a_declared_units_dirty_worktree_with_no_requested_spawn_keeps_its_content_without_a_wip_commit:
+        a_run_over_a_solo_unit(Prior::DirtyUnrequested, false);
+    /// A live sibling spawn of the unit suppresses the capture though the named spawn alone
+    /// would be a halt.
+    a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live:
+        a_run_over_a_solo_unit(Prior::HaltedBesideALiveSibling, false);
+    /// A named spawn that already answered is no halt, however dirty a later edit left the tree.
+    a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_real_result:
+        a_run_over_a_solo_unit(Prior::DirtyAfterTheNamedSpawnAnswered, false);
+}
+
+/// A resumed reviewed unit whose worktree already carries a genuine, unresolved merge conflict
+/// from a prior run's crash reaches the idempotent `merge_into_worktree`/`merge_in_progress`
+/// resume path (spec 88) and never trips the halted-commit capture's conflict-marker refusal,
+/// which would turn a resumable state into a hard error.
 ///
-/// The pre-crash state is built directly through the PUBLIC `Worktree` API (`create` +
-/// `merge_into_worktree`), never through a `run()` call - a real `run()` call that reached
-/// this same state and then genuinely errored would ALSO tear its own worktree down as
-/// ordinary cleanup (confirmed empirically: a real crash is the only way this exact shape
-/// arises, exactly why the implementer's own unit test builds it the same way), so this
-/// mirrors that construction one layer further out - a real git worktree, and a real
-/// `Store::open` round trip a completely separate `rigger step` process reads back - the
-/// shape this file's own header already argues for.
+/// The pre-crash state is built through the public `Worktree` API (`create` +
+/// `merge_into_worktree`): a run that reached this state and then errored would tear its own
+/// worktree down, so a crash is the only way the shape arises. The run adopts it from a store
+/// written before it started.
 #[test]
 fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempotent_path() {
     let dir = temp_git_project_with_commit();
@@ -617,29 +420,29 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
          review:\n      adjudicator: judge\n",
     )
     .unwrap();
+    let (_held, scratch) = scratch_root();
 
-    // The unit's OWN deterministic worktree/branch, created directly at the same dir/branch
-    // `stage_worktree`'s adopt-by-path-lookup would derive - and, critically, never `.remove()`d,
-    // so the real `rigger step` below ADOPTS this exact on-disk state rather than a fresh one.
-    let repo_path = root.to_str().unwrap().to_string();
-    let wt_dir = default_unit_worktree_dir(root, "s");
+    // The unit's own deterministic worktree and branch, never removed, so the run adopts this
+    // exact on-disk state.
+    let wt_dir = unit_worktree_dir(&scratch, "s");
     let unit_wt = rigger::worktree::Worktree::create(
-        &repo_path,
+        root.to_str().unwrap(),
         wt_dir.to_str().unwrap(),
         &unit_branch("s"),
         "",
     )
     .unwrap();
     std::fs::write(wt_dir.join("shared.rs"), "UNIT VERSION\n").unwrap();
-    let approved = unit_wt.commit("rigger: prior window work").unwrap();
     assert!(
-        !approved.is_empty(),
-        "the prior window must commit the approved work"
+        !unit_wt
+            .commit("rigger: prior window work")
+            .unwrap()
+            .is_empty(),
+        "the prior run must commit the approved work"
     );
 
-    // The checked-out repo independently gains a DIFFERENT version of the same path since -
-    // exactly what an already-integrated batch-mate would have landed by the time this unit's
-    // own merge finally runs.
+    // The checked-out repo gains a different version of the same path since: what an
+    // already-integrated batch-mate would have landed by the time this unit's merge runs.
     std::fs::write(root.join("shared.rs"), "RUN VERSION\n").unwrap();
     git_ok(root, &["add", "shared.rs"]);
     git_ok(
@@ -652,9 +455,8 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
         ],
     );
 
-    // Simulate the interruption directly: a PRIOR incarnation's own `integrate_and_emit`
-    // already ran exactly this merge and was killed before conflict resolution ever ran,
-    // leaving MERGE_HEAD and literal conflict-marker text sitting in `shared.rs` untouched.
+    // The prior run's integration ran this merge and died before conflict resolution, leaving
+    // MERGE_HEAD and literal conflict-marker text in `shared.rs`.
     match unit_wt
         .merge_into_worktree("rigger: integrate s (interrupted before this ever finished)")
         .unwrap()
@@ -674,14 +476,14 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
         unit_wt.merge_in_progress(),
         "setup must leave a genuine merge in progress, unresolved"
     );
-    let conflicted_before = std::fs::read_to_string(wt_dir.join("shared.rs")).unwrap();
     assert!(
-        conflicted_before.contains("<<<<<<<"),
-        "setup must leave real conflict-marker text in place: {conflicted_before:?}"
+        std::fs::read_to_string(wt_dir.join("shared.rs"))
+            .unwrap()
+            .contains("<<<<<<<"),
+        "setup must leave real conflict-marker text in place"
     );
 
-    // The prior window's recorded lifecycle: implemented, verified, and adjudicator-approved -
-    // seeded directly into the real on-disk store a separate `rigger step` process reads back.
+    // The prior run's recorded lifecycle: implemented, verified and adjudicator-approved.
     seed_run_events(
         root,
         &[
@@ -705,274 +507,89 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
         ],
     );
 
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(
-        ok,
-        "a resumed unit's own already-in-progress merge conflict must reach the idempotent \
-         merge_into_worktree/merge_in_progress path, never trip the halted-commit capture's \
-         conflict-marker refusal first; stderr: {err}"
+    let arms = format!(
+        "  *\"Do the unit.\"*|*\"Adjudicate it.\"*)\n{RECORD_EACH_LAUNCH}    echo done\n    ;;\n"
     );
+    let run = run_over(root, &scratch, &arms);
     assert!(
-        out.contains(r#""done":true"#) && out.contains(r#""wave":[]"#),
-        "the conflict is confined to a registered regenerable path: it must resolve with NO \
-         new lifecycle spawn at all (never a re-spawned implementer or adjudicator), proving \
-         the real conflict-handling path ran rather than some other fallback; got: {out:?}"
+        run.ok,
+        "a resumed unit's in-progress merge conflict reaches the idempotent merge path, never \
+         the halted-commit capture's conflict-marker refusal; stdout: {}\nstderr: {}",
+        run.out, run.err
     );
     assert_eq!(
-        std::fs::read_to_string(root.join("shared.rs")).unwrap(),
-        "REGENERATED\n",
-        "the run branch must carry the real regeneration, not a discarded or half-merged tree"
+        run.spawns(),
+        Vec::<&str>::new(),
+        "a conflict confined to a registered regenerable path resolves with no implementer or \
+         adjudicator launched, so the conflict-handling path ran rather than a fallback"
     );
-    // The halted-commit capture's own guard fired (skipped the commit outright) rather than
-    // ever running it: the ONLY commit this unit's own side ever gained is the prior window's
-    // real work, folded straight into the merge's own commit - never an extra `wip(s):` one.
-    let merge_commit_parents = git_out(root, &["log", "--pretty=%P", "-1", "rigger-run"]);
     assert_eq!(
-        merge_commit_parents.split_whitespace().count(),
+        git_out(root, &["show", "rigger-run:shared.rs"]),
+        "REGENERATED",
+        "the run branch carries the regeneration, not a discarded or half-merged tree"
+    );
+    assert_eq!(
+        git_out(root, &["log", "--pretty=%P", "-1", "rigger-run"])
+            .split_whitespace()
+            .count(),
         2,
-        "the run branch's tip must be the real regenerate-and-merge commit (two parents), not \
-         some other shape; got parents: {merge_commit_parents:?}"
+        "the run branch's tip is the regenerate-and-merge commit, with two parents"
+    );
+    assert!(
+        !git_out(root, &["log", "--pretty=%s", "rigger-run"]).contains("wip(s):"),
+        "the capture skipped the conflicted tree: no recovery commit"
     );
 }
 
-/// Round 2 fix, defect (c): `Worktree::commit`'s conflict-marker scan must be confined to the
-/// CALLER's own touched-or-unmerged paths - never an unconditional whole-tracked-tree content
-/// scan that can false-positive on conflict-marker-lookalike text sitting in a file nobody
-/// touched. Deliberately isolated from defect (a)'s own test: a plain two-step implementer
-/// flow with NO pre-existing worktree at all, so the step-start sweep backstops never enter
-/// the picture and only the checkpoint-commit's own scope guard is exercised. Proven a real
-/// regression (not merely a plausible one) by reverting to the pre-round-2 `worktree.rs`: this
-/// exact scenario then fails on step 1 itself - even a brand-new, freshly-adopted worktree's
-/// own halted-commit capture (a no-op "nothing to commit" on a truly clean tree) still ran the
-/// unconditional whole-tree scan first and refused on the lookalike text.
+/// `Worktree::commit`'s conflict-marker scan is confined to the caller's own touched or unmerged
+/// paths: conflict-marker lookalike text in a tracked file the unit never touched never blocks
+/// the per-attempt checkpoint commit. No worktree exists before the run, so only the checkpoint
+/// commit's own scope guard is exercised.
 #[test]
 fn an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpoint_commit() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    // A file already committed BEFORE this unit's worktree ever branches - never edited by
-    // this unit - that merely happens to contain literal conflict-marker-lookalike text (a
-    // Markdown/prose example of what a real conflict looks like).
-    std::fs::write(
-        root.join("conflict-markers-doc.txt"),
-        "Git conflict markers look like:\n<<<<<<< ours\nold\n=======\nnew\n>>>>>>> theirs\n",
-    )
-    .unwrap();
+    // Committed before the unit's worktree branches and never edited by the unit: prose
+    // showing what a real conflict looks like.
+    let lookalike =
+        "Git conflict markers look like:\n<<<<<<< ours\nold\n=======\nnew\n>>>>>>> theirs\n";
+    std::fs::write(root.join("conflict-markers-doc.txt"), lookalike).unwrap();
     git_ok(root, &["add", "conflict-markers-doc.txt"]);
     git_ok(root, &["commit", "-q", "-m", "document conflict markers"]);
+    let (_held, scratch) = scratch_root();
 
-    let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the first step must succeed; stderr: {err1}");
-    assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must park at attempt 0; got: {out1:?}"
+    // The implementer's own edit, a different file, left uncommitted for the run's checkpoint.
+    let arms = format!(
+        "  *\"Do the unit.\"*)\n{RECORD_EACH_LAUNCH}    printf 'pub fn work() {{}}\\n' > work.rs\n    echo implemented\n    ;;\n"
     );
-
-    // The implementer's own real edit - a DIFFERENT file, left uncommitted for the
-    // conductor's own per-attempt checkpoint commit to pick up.
-    let wt_dir = default_unit_worktree_dir(root, "solo");
-    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
-    let (_out, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
+    let run = run_over(root, &scratch, &arms);
     assert!(
-        ok,
-        "recording the implementer result must succeed; stderr: {err}"
+        run.ok && run.verified("solo"),
+        "the checkpoint commit is never blocked by lookalike text in a file the unit never \
+         touched, so the unit verifies; stdout: {}\nstderr: {}",
+        run.out,
+        run.err
     );
-
-    // Step 2 is where the conductor's own checkpoint commit runs, over a worktree whose
-    // TRACKED CONTENT includes the untouched lookalike file end to end - the false-positive
-    // shape this criterion closes.
-    let (out2, err2, ok2) = run_rigger(root, &["step"]);
-    assert!(
-        ok2,
-        "the checkpoint commit must never be blocked by conflict-marker-lookalike text in a \
-         file this unit never touched; stderr: {err2}"
-    );
-    assert!(
-        out2.contains(r#""done":true"#),
-        "the unit (a single-gate, unreviewed, on_pass: none stage) must reach its terminal \
-         verified state once the checkpoint commit succeeds; got: {out2:?}"
-    );
-    let committed = git_out(root, &["show", &format!("{}:work.rs", unit_branch("solo"))]);
     assert_eq!(
-        committed, "pub fn work() {}",
-        "the implementer's own real edit must have actually landed in the checkpoint commit"
+        run.spawns(),
+        [NAMED_SPAWN],
+        "the run launches the implementer once"
     );
-    let untouched = git_out(
-        root,
-        &[
-            "show",
-            &format!("{}:conflict-markers-doc.txt", unit_branch("solo")),
-        ],
-    );
-    assert!(
-        untouched.contains("<<<<<<<"),
-        "the untouched lookalike file's own content must be completely unaffected: {untouched:?}"
-    );
-}
-
-/// Resolve the REAL `git` binary's absolute path from THIS process's own, as-yet-unmodified
-/// `PATH` - captured before [`stage_status_failing_git_shim`] below could shadow it, so the
-/// shim script always execs the genuine binary directly rather than searching a `PATH` this
-/// file is about to prefix.
-fn real_git_path() -> String {
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg("command -v git")
-        .output()
-        .expect("locate the real git binary via the shell's own PATH search");
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(
-        !path.is_empty(),
-        "git must be resolvable on PATH to build the status-failing shim"
-    );
-    path
-}
-
-/// Stage a `git` SHIM directory (never on the real `PATH`) whose one script, driven entirely
-/// by env vars the caller sets on the spawned `rigger` process, fails the first
-/// `$SDET_FAIL_STATUS_TIMES` real invocations of `-C $SDET_FAIL_STATUS_DIR status --porcelain
-/// -z` - the EXACT argv `rigger::worktree::path_is_dirty`'s own `git`/`run_git` primitive
-/// builds (`src/worktree.rs`) - then execs the real git (`$SDET_REAL_GIT`, see
-/// [`real_git_path`]) for every OTHER invocation immediately, and for a MATCHING one too once
-/// that budget is spent. The git repository itself is never touched or corrupted by this -
-/// only this one exact command shape, against this one exact directory, is ever intercepted -
-/// so nothing here engages `Worktree::create`'s own, unrelated admin self-heal
-/// (`heal_corrupt_worktree_admin`), which a REAL corrupted-admin-dir repro (the shape
-/// `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race` used) would.
-/// Returns the shim's own directory, to be prefixed onto `PATH`.
-fn stage_status_failing_git_shim(root: &Path) -> std::path::PathBuf {
-    let bindir = root.join("shim-bin");
-    std::fs::create_dir_all(&bindir).unwrap();
-    let shim = bindir.join("git");
-    std::fs::write(
-        &shim,
-        r#"#!/bin/sh
-if [ "$1" = "-C" ] && [ "$2" = "$SDET_FAIL_STATUS_DIR" ] && [ "$3" = "status" ] \
-    && [ "$4" = "--porcelain" ] && [ "$5" = "-z" ]; then
-    n=$(cat "$SDET_FAIL_STATUS_COUNTER" 2>/dev/null)
-    n=${n:-0}
-    if [ "$n" -lt "$SDET_FAIL_STATUS_TIMES" ]; then
-        echo $((n + 1)) > "$SDET_FAIL_STATUS_COUNTER"
-        echo "fatal: simulated unreadable git status (sdet periphery shim)" >&2
-        exit 128
-    fi
-fi
-exec "$SDET_REAL_GIT" "$@"
-"#,
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    bindir
-}
-
-/// ROUND 3 FIX (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`, live-
-/// confirmed by `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race`):
-/// round 2's own `a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops`
-/// above proves both step-start authorities spare a worktree that LOOKS dirty (real
-/// uncommitted content) - it cannot tell that apart from a worktree whose git status READ
-/// ITSELF fails, and round 2 shipped with exactly that gap: `sweep_terminal_logged`
-/// (worktree.rs) fell back to `unwrap_or(false)` on `run_git`'s `Err` (dirty=true, spare),
-/// while `reclaim_orphan_scratch`'s OWN independently-hardcoded `git status` call (main.rs)
-/// collapsed the IDENTICAL failure to `dirty=false` (discard) - the opposite direction on the
-/// same input, live-reproduced against a real corrupted worktree admin dir. Round 3 replaced
-/// both inline calls with the one shared `rigger::worktree::path_is_dirty` free fn,
-/// `unwrap_or(true)` at both sites.
-///
-/// This proves the fix through the REAL compiled binary without corrupting the git
-/// repository itself (see [`stage_status_failing_git_shim`]'s own doc comment for why not): a
-/// `git` shim on `PATH` fails the underlying `status --porcelain -z` READ itself (never
-/// merely reporting dirty CONTENT) for exactly the first two real invocations against this
-/// worktree - one budget slot per authority - then passes every later matching call straight
-/// through to the genuine git, so the rest of the pipeline completes exactly as it does
-/// without the shim (spec 103: since no spawn was ever recorded for this unit, that "rest of
-/// the pipeline" no longer includes a halt-recovery commit - see this test's own body). The
-/// shim's own counter file, read back after the step, independently confirms BOTH real call
-/// sites actually reached the shared primitive
-/// and actually hit the simulated failure - a count other than 2 means one of them stopped
-/// sharing it (round 2's own duplicated-and-diverges defect returning) or the fail-closed
-/// budget leaked into a later, unrelated read; content-only dirtiness (the round-2 test above)
-/// cannot distinguish either regression from a pass.
-#[test]
-fn both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_unreadable_status_read() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
-
-    let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
-
-    let real_git = real_git_path();
-    let shim_dir = stage_status_failing_git_shim(root);
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    let shimmed_path = format!("{}:{}", shim_dir.display(), orig_path);
-    let counter = tempfile::NamedTempFile::new().expect("create the shim's counter file");
-    let counter_path = counter.path().to_string_lossy().into_owned();
-    let fail_dir = wt_dir.to_string_lossy().into_owned();
-
-    let (out1, err1, ok1) = run_rigger_envs(
-        root,
-        &["step"],
-        &[
-            ("PATH", shimmed_path.as_str()),
-            ("SDET_REAL_GIT", real_git.as_str()),
-            ("SDET_FAIL_STATUS_DIR", fail_dir.as_str()),
-            ("SDET_FAIL_STATUS_TIMES", "2"),
-            ("SDET_FAIL_STATUS_COUNTER", counter_path.as_str()),
-        ],
-    );
-    assert!(
-        ok1,
-        "the step must still succeed even though both backstops' own status read genuinely \
-         errors for this candidate; stderr: {err1}"
-    );
-    assert!(
-        out1.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must still park at attempt 0 despite both status reads erroring; \
-         got: {out1:?}"
-    );
-    assert!(
-        err1.contains("worktree sweep: kept") && err1.contains("halt-recovery commit"),
-        "sweep_terminal_logged must still log that it kept this candidate, exactly as it does \
-         for a content-dirty tree, when the status read itself is what failed; stderr: {err1}"
-    );
-
-    let hits: u32 = std::fs::read_to_string(counter.path())
-        .unwrap_or_default()
-        .trim()
-        .parse()
-        .unwrap_or(0);
     assert_eq!(
-        hits, 2,
-        "both real call sites - sweep_terminal_logged and reclaim_orphan_scratch - must reach \
-         the shared path_is_dirty primitive and hit the simulated unreadable-status failure \
-         exactly once each; a count other than 2 means one of them stopped sharing the \
-         primitive (round 2's own duplicated-and-diverges defect) or the fail-closed budget \
-         leaked into a later, unrelated status read; got {hits} matching shim invocations"
+        git_out(root, &["show", &format!("{}:work.rs", unit_branch("solo"))]),
+        "pub fn work() {}",
+        "the implementer's edit lands in the checkpoint commit"
     );
-
-    // Neither authority force-removed the candidate: the abandoned edit is still on disk.
-    // Spec 103, THE HALTED-SPAWN CHECKPOINT: no spawn was ever recorded for this unit (the
-    // same `seed_halted_worktree` shape as the test above), so the checkpoint's own guard
-    // correctly refuses to fabricate a recovery commit here even once adoption proceeds past
-    // the shim's budget - it stays exactly where the sweep left it, uncommitted.
-    assert!(
-        wt_dir.join("halted-work.txt").exists(),
-        "the abandoned edit must survive both backstops despite the simulated read failures"
-    );
-    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
-    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
-    assert!(
-        !log.lines().any(|l| l == expected_subject),
-        "no spawn was ever requested for this unit, so no halt-recovery commit must appear \
-         even once the shim's budget is spent and the real status read resumes; got:\n{log}"
-    );
-    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
     assert_eq!(
-        content, "abandoned mid-edit\n",
-        "the un-owned content itself must be completely unaffected on disk"
+        git_out(
+            root,
+            &[
+                "show",
+                &format!("{}:conflict-markers-doc.txt", unit_branch("solo"))
+            ]
+        ),
+        lookalike.trim_end(),
+        "the untouched lookalike file's content is unaffected"
     );
 }

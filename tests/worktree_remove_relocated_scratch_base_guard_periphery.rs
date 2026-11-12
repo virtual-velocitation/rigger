@@ -42,7 +42,7 @@
 //! that fix holds: independently re-run against the round-2 diff, it PASSES - a live process
 //! under a relocated scratch root is reaped exactly as it always was for the default case.
 
-mod common;
+use crate::common;
 
 use common::fixtures::assert_teardown_reaps_what_is_rooted_inside;
 use common::git::init_repo;

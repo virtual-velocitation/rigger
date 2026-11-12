@@ -28,8 +28,9 @@ use std::fmt::Write as _;
 /// The typed, code-derived facts the discipline templates interpolate. Every field is
 /// a value that could drift from behavior if hand-copied, so the composition root
 /// populates each one FROM the code definition the runtime uses (see `docs_context` in
-/// the binary). A project overlay merges by overriding fields here BEFORE rendering, so
-/// repo specifics and the shared discipline share this one pipeline.
+/// the binary); `global_constraints`, a project's own, starts empty there. A project overlay
+/// merges by overriding fields here BEFORE rendering, so repo specifics and the shared
+/// discipline share this one pipeline.
 ///
 /// Removing or renaming a field breaks every template that interpolates it at COMPILE
 /// time - that is the load-bearing property: the templates are validated against this
@@ -72,6 +73,10 @@ pub struct DocsContext {
     /// with, so the skill's lookup section can never describe a different rule than the
     /// installed hook actually enforces.
     pub grep_guard_message: String,
+    /// This project's own Global constraints, one line each under step 6 of
+    /// `planning-a-spec` (spec 121, criterion 13). A project-overlay override point; empty in
+    /// the shared render, so the committed skill names no project's constraints.
+    pub global_constraints: Vec<String>,
 }
 
 /// One `rigger watch` signal's canonical name and response (spec 69), carried on
@@ -85,8 +90,8 @@ pub struct WatchSignalFact {
 }
 
 /// Render the `using-rigger` skill: a self-contained front-door that tells an agent
-/// WHEN and HOW to drive the loop. Distinct from the `/rigger` workflow (which RUNS the
-/// loop); this skill tells an agent when to reach for it and how to stay on the rails.
+/// WHEN and HOW to drive the loop. Distinct from `rigger run` (which RUNS the loop); this
+/// skill tells an agent when to reach for it and how to stay on the rails.
 ///
 /// The skill opens with loadable frontmatter (a name and a description) so it installs
 /// as a discoverable skill, then carries the shared discipline body. Every drift-prone
@@ -149,21 +154,18 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(s, "## The one blessed driver\n");
     let _ = writeln!(
         s,
-        "Drive every run through the native /rigger workflow (visible in /workflows and on \
-         the dashboard at 127.0.0.1:{port}). It launches the loop and keeps the event log, the \
-         ledger, and the context graph consistent with one another. These anti-patterns split \
-         the run's state away from that shared record and must be avoided:\n",
+        "Drive every run with `rigger run <spec> --base <ref>`, started in the background: it \
+         launches one host process per agent, keeps the event log, the ledger, and the context \
+         graph consistent with one another, and drives the run to done or to a unit handed back. \
+         Follow it with `rigger status`, `rigger watch`, and the dashboard at \
+         127.0.0.1:{port}. These anti-patterns split the run's state away from that shared \
+         record and must be avoided:\n",
         port = ctx.dash_port
     );
     let _ = writeln!(
         s,
         "- Polling git or ps by hand to guess progress. Read the dashboard or `rigger \
          status`; the by-hand view misses the ledger and the graph."
-    );
-    let _ = writeln!(
-        s,
-        "- Hand-driving `rigger step` in a shell. The driver owns stepping; a hand step \
-         races the driver and can double-spawn or wedge the frontier."
     );
     let _ = writeln!(
         s,
@@ -175,7 +177,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "The knowledge graph is the lookup surface - reach for it before grepping the project's \
-         sources. Three verbs answer the three questions you have about the code: `rigger graph \
+         sources. One call answers most lookups: `rigger graph --lookup <term>...` (the \
+         `rigger_graph` tool's `lookup`) answers each term at once from the graph (definition \
+         site, callers, callees), a live scan of your working tree and the project's ranked prose \
+         (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
+         source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
          `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
@@ -190,12 +196,15 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "`rigger setup` puts these same lookups directly in THIS session's hands too: it \
          registers a `rigger` MCP server (`.mcp.json`) exposing `rigger_peers`, `rigger_ground`, \
          and `rigger_graph` as tools here - the same three lookups a loop agent has, instead of a \
-         shell - and installs a PreToolUse hook that bounces every `Grep` tool call and every \
-         `grep`-invoking Bash command in this project, with no target it lets through, with the \
+         shell - and, when the workflow declares `defaults.grep_guard: true`, installs a \
+         PreToolUse hook that bounces every `Grep` tool call and every Bash command in this \
+         project that invokes `grep`, or a `sed` or `awk` that selects lines by a pattern, with \
+         no target it lets through, with the \
          message \"{message}\" - unless the Bash command ends with a `# --literal` comment (the \
          shell discards the comment, so the marker never reaches grep whichever PreToolUse hook \
-         rewrites the command). The graph stays the path of least resistance in this very \
-         session, and a literal-text grep is the deliberate act `--literal` names, not a habit.\n",
+         rewrites the command). With the guard installed, the graph stays the path of least \
+         resistance in this very session, and a literal-text grep is the deliberate act \
+         `--literal` names, not a habit.\n",
         message = ctx.grep_guard_message,
     );
 
@@ -210,30 +219,24 @@ fn discipline_body(ctx: &DocsContext) -> String {
          live query reads, so the file grows on disk without bound even though the live \
          graph the loop grounds on does not. Keep it lean before a large run with `rigger \
          reset --runs`, which prunes that dead-run accumulation and reclaims the disk it \
-         held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene \
-         through a real command, NOT a hand-driven `rigger step`: hand-stepping races the \
-         driver (see the one-blessed-driver anti-patterns above), whereas `rigger reset \
-         --runs` is a one-shot prune you run BEFORE launching the loop.\n"
+         held; a very stale graph should be pruned this way first. This is PRE-RUN hygiene: \
+         `rigger reset --runs` is a one-shot prune you run BEFORE launching the loop, never \
+         against a live one.\n"
     );
-    let _ = writeln!(s, "## Event log hygiene: the one-time migration\n");
+    let _ = writeln!(s, "## Event log hygiene: the derived events\n");
     let _ = writeln!(
         s,
-        "The EVENT LOG keeps knowledge, never the derived index: an ingest records one ledger \
-         entry per file generation, and the graph re-derives the code entities, inferred edges, \
-         design links and doc concepts from your sources. A log recorded before that still holds \
-         the derived index itself, every generation of every file, and `rigger reset --derived` \
-         is the ONE-TIME MIGRATION that converts it: for each file it rewrites the first row of \
-         the file's LATEST derived batch into that generation's ledger entry, in place, and \
-         deletes every other derived event, so no derived event is left behind and events.db \
-         shrinks on disk. Every other event survives byte-for-byte - lessons, decisions, \
-         findings, gate verdicts, and the whole run history `rigger stats` and replay read. It \
-         writes nothing to graph.db, so the live graph is unchanged, and a later rebuild \
-         re-derives each entry's batch from the repository's objects and the tree. It reports \
-         the entries it converted, the derived events it shed and, on its own line, how many of \
-         those named no file - no replay key, or one that does not parse; no entry re-asserts \
-         what such an event asserted, so the live graph keeps it only until the first rebuild. \
-         Run again on a migrated log it says there is no derived event to shed - that is the \
-         expected report, not a failure. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
+        "The EVENT LOG keeps knowledge, never the derived index: the graph re-derives the code \
+         entities, inferred edges, design links, doc concepts, communities and concepts from your \
+         sources, and the log refuses every derived event. A log recorded before that still holds \
+         them, and `rigger reset --derived` DELETES THEM: in one transaction it deletes every \
+         derived event of the project's run stream, so no derived event is left behind and \
+         events.db shrinks on disk. `rigger setup` runs the same delete itself once the graph it \
+         rebuilds stands in place of the old one. Every other event survives byte-for-byte - \
+         lessons, decisions, findings, gate verdicts, and the whole run history `rigger stats` \
+         and replay read. It writes nothing to graph.db, so the live graph is unchanged. It \
+         reports how many derived events it deleted. Run again on a cleared log it says there is \
+         no derived event to delete - that is the expected report, not a failure. WHAT IT COSTS TO RUN: the compaction rewrites events.db in full and holds \
          a COMPLETE COPY of the log in the process's MEMORY while it does, never in a temporary \
          directory, so it needs free memory of about the size of your log, no \
          temporary-directory setting changes where the copy goes, and a crash leaves no \
@@ -242,29 +245,29 @@ fn discipline_body(ctx: &DocsContext) -> String {
          before it replaces the old pages, and the partition holding .rigger/ needs about the \
          compacted size of the log free while it does. A machine short of that memory or that \
          room fails the rewrite and nothing else: the rewrite rolls back and the log stays as \
-         the migration left it. It rewrites only when the FILE is holding reclaimable free \
+         the delete left it. It rewrites only when the FILE is holding reclaimable free \
          pages, which is not the same as this run having shed something: a run with nothing \
          to shed from an already-compact log leaves the file exactly as it found it and says \
          so, while a run that sheds nothing from a log still holding free pages \
          reclaims them. That is what makes the re-run a real remedy - if the rewrite fails after \
-         the migration has committed, the command still reports what it converted and shed and \
+         the delete has committed, the command still reports what it deleted and \
          names the failure, and because that change is durable and the space it freed is still \
          free in the file, re-running it is both safe and the way to reclaim that space. The two \
          flags COMPOSE \
          and each sheds its own accumulation: `rigger reset --runs --derived` sheds the dead-run \
          graph rows and the derived index in one pass. Both are one-shot maintenance you run \
          BETWEEN runs, never against a live one - and `--derived` ENFORCES that itself: the \
-         migration leaves revision gaps by design, and a writer whose cursor was built before it \
+         delete leaves revision gaps by design, and a writer whose cursor was built before it \
          ran could reissue a gap and reorder the log, so it refuses while the run is live - a \
-         `rigger step` holds its lock, an in-flight spawn (one with no recorded result, or only \
-         the step's liveness fault) has a liveness marker younger than its wall-clock bound, or \
+         `rigger run` holds its lock, an in-flight spawn (one with no recorded result, or only \
+         its liveness fault) has a liveness marker younger than its wall-clock bound, or \
          a driver registration for this store has a heartbeat inside the idle window - naming \
          what it found. A run whose driver died is not live: units it left non-terminal never \
          block the compaction, a spawn with no marker never does, and an in-flight spawn stops \
          blocking once its marker outlives the spawn's bound or a real result is recorded for \
          it. An unbounded spawn's marker never outlives its bound, so record that spawn's \
-         result to end it. Every `rigger step`, `run` and `serve` registers as the run's \
-         driver, so the last step's stamp counts as a live driver for the idle window; a \
+         result to end it. Every `rigger run` registers as the run's driver, so the last \
+         run's stamp counts as a live driver for the idle window; a \
          courier's (`emit`, `result`, `progress`) discovery refresh of that registration never \
          does. `--force-live` overrides the refusal for an operator certain no writer is using \
          the store; it checks nothing.\n"
@@ -307,14 +310,12 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "`rigger hold --reason <text>` holds the current run for you, the text recorded as the \
-         hold's reason: a run driven by `rigger run` or `rigger serve` launches no agent while a \
+         hold's reason: a run driven by `rigger run` launches no agent while a \
          hold stands, a session already running finishes, and no probe ends your hold. It \
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe, which only `rigger run` runs: under `rigger serve` a hold stands \
-         until a release or the start of a new run ends it. With no hold open it records \
-         nothing and says so.\n"
+         after the next probe. With no hold open it records nothing and says so.\n"
     );
 
     let _ = writeln!(s, "## Auto-integration on approve\n");
@@ -344,8 +345,7 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "Run `rigger version` to see the exact binary and its build provenance and to \
-         diagnose drift between the installed /rigger workflow and the binary that would run \
-         it. This repo keeps its specs in {specs}. The full command surface is: {cmds}.\n",
+         diagnose drift between the binary on your path and the tree it was built from. This repo keeps its specs in {specs}. The full command surface is: {cmds}.\n",
         specs = ctx.specs_location,
         cmds = ctx.subcommands.join(", ")
     );
@@ -375,14 +375,30 @@ fn discipline_body(ctx: &DocsContext) -> String {
     s
 }
 
-/// The `planning-a-spec` skill's body: the authoring procedure for writing, splitting, or
+/// Render the `planning-a-spec` skill: the authoring procedure for writing, splitting, or
 /// amending a spec before or during a rigger loop run (the authoring counterpart to
-/// `using-rigger`'s driving discipline). Unlike `using-rigger`, it carries no code-derived
-/// facts to interpolate, so it is a plain constant rather than a `DocsContext`-parameterized
-/// template.
-const PLANNING_A_SPEC_BODY: &str = r#"---
+/// `using-rigger`'s driving discipline). Its one interpolated fact is the project's own Global
+/// constraints: when [`DocsContext::global_constraints`] lists any, a "This project's:" line
+/// and one `- ` line per entry follow step 6's paragraph; an empty list renders step 6 alone.
+fn render_planning_a_spec_skill(ctx: &DocsContext) -> String {
+    let mut s = PLANNING_A_SPEC_THROUGH_STEP_6.to_string();
+    if !ctx.global_constraints.is_empty() {
+        s.push_str("This project's:\n");
+        for constraint in &ctx.global_constraints {
+            let _ = writeln!(s, "- {constraint}");
+        }
+        s.push('\n');
+    }
+    s.push_str(PLANNING_A_SPEC_FROM_STEP_7);
+    s
+}
+
+/// The `planning-a-spec` skill from its frontmatter through step 6's paragraph and the blank
+/// line after it, the text [`render_planning_a_spec_skill`] sets the project's constraint list
+/// after.
+const PLANNING_A_SPEC_THROUGH_STEP_6: &str = r#"---
 name: planning-a-spec
-description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching /rigger on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
+description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching `rigger run` on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
 ---
 
 # Planning a spec
@@ -397,7 +413,7 @@ because skipping it has a recorded escalation attached.
 ## The recipe
 
 **1. Ground the Goal in evidence.** State the problem with measured numbers and real anchors
-(`file.rs:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
+(`path/to/file:line`, event counts, durations) - look them up via `rigger graph --show/--around` and
 `rigger peers`, not memory. A goal an implementer can re-verify is a goal an adjudicator can
 hold the line on.
 
@@ -426,7 +442,7 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 - ownership INSIDE the checkbox ("This criterion OWNS the selection surface") with exclusions
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
   one's");
-- the code it touches named in backticks (`run_wave`, `crates/x/src/ingest.rs`). The unit's
+- the code it touches named in backticks (`run_wave`, `src/ingest`). The unit's
   blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
   criterion naming no code runs alone, graph or no graph. A span naming a defined symbol grounds
   on its definition and references, an undefined name on the files holding it as a whole word,
@@ -437,16 +453,20 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
-**6. Carry the house constraints.** Hyphens not em dashes (U+2014 fails the diff gate); both
-feature lanes green; no new event type unless the spec's whole point is one; fallback stated
-for any criterion that might be impossible; anything the gates cannot see flagged for the
-adjudicator to demand evidence on.
+**6. Carry the project's own Global constraints.** State them once in the spec; every unit
+inherits them: no new event type unless the spec's whole point is one; fallback stated for any
+criterion that might be impossible; anything the gates cannot see flagged for the adjudicator to
+demand evidence on.
 
-**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
+"#;
+
+/// The `planning-a-spec` skill from step 7 to its end, the text [`render_planning_a_spec_skill`]
+/// sets after the project's constraint list.
+const PLANNING_A_SPEC_FROM_STEP_7: &str = r#"**7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
 critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
 model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
-before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
-workflow only.
+before a large run; anchor `--base` on the ref the work must land on. Launch with `rigger run <spec> --base <ref>`
+only.
 
 ## Amending mid-run
 
@@ -475,8 +495,8 @@ escalates? Restart fresh: durable branches carry the work, the budget resets.
 /// The `spec-preflight` skill's body (spec 112, criterion 4): the pre-launch procedure that runs
 /// after `planning-a-spec` - the landing-order simulation, the per-criterion corner walk and the
 /// `rigger critique` adversary pass, then resolving and recording every BLOCKING finding. Spec
-/// 112 ships it byte for byte as the fenced block closing its Notes section. Like
-/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant.
+/// 112 ships it byte for byte as the fenced block closing its Notes section. It carries no
+/// code-derived facts, so it is a plain constant.
 const SPEC_PREFLIGHT_BODY: &str = r#"---
 name: spec-preflight
 description: Use before launching any rigger spec, after planning-a-spec - simulate landing order and walk every criterion's corners, then run rigger critique on the spec and close every BLOCKING finding before launch.
@@ -609,10 +629,10 @@ When a review or plan-critique reject names a defect in the spec itself:
 /// measured outcomes. This is a HANDBOOK PAGE, not a skill (it carries no frontmatter and
 /// is not in [`skill_registry`]) - it is the "how to produce a loop-ready spec" companion
 /// the `planning-a-spec` skill and `authoring-loops.md`'s shape rules both point readers
-/// at. Self-contained: a consumer needs no access to this repo's history to use it. Like
-/// [`PLANNING_A_SPEC_BODY`], it carries no code-derived facts, so it is a plain constant
-/// rather than a `DocsContext`-parameterized template, which the binary's handbook-page list
-/// holds as a [`DocBody::Static`].
+/// at. Self-contained: a consumer needs no access to this repo's history to use it. It
+/// carries no code-derived facts, so it is a plain constant rather than a
+/// `DocsContext`-parameterized template, which the binary's handbook-page list holds as a
+/// [`DocBody::Static`].
 pub const PLANNING_FIELD_GUIDE_BODY: &str = r#"# Planning a loop run: the field guide
 
 The handbook's [authoring-loops](authoring-loops.md) rules say what a loop-ready spec IS. This
@@ -809,7 +829,7 @@ this guide as a procedure.
 pub enum DocBody {
     /// Rendered from the docs context.
     Rendered(fn(&DocsContext) -> String),
-    /// Committed as-is (`planning-a-spec`, `spec-preflight`, the planning field guide).
+    /// Committed as-is (`spec-preflight`, the planning field guide).
     Static(&'static str),
 }
 
@@ -864,7 +884,7 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-reset-store",
         "Store hygiene for rigger's own state - growing .rigger/ disk usage, \
-         the bloat advisory from `rigger validate`, or `rigger step`/replay running slow. \
+         the bloat advisory from `rigger validate`, or replay running slow. \
          Read this before running `rigger reset` or touching any store file by hand.",
         &[
             "rigger keeps three stores under `.rigger/`, and only one of them holds anything \
@@ -888,27 +908,26 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
-             (no `rigger step` or `rigger run` holds the lock, no in-flight spawn's liveness \
+             (no `rigger run` holds the lock, no in-flight spawn's liveness \
              marker is younger than its wall-clock bound, no driver registration for the store \
              has a heartbeat inside the idle window) and every spawn of the run has ended on a \
              real result, it also closes the current run's units whose branch work is already \
              landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
              conductor mints, so `rigger status` stops reporting the finished run as working. It \
-             only appends; a live run is left untouched. A spawn answered only by the step's \
-             liveness fault has not ended - the step halts on it and a relaunched driver re-parks \
-             it - so a dead run with a hung spawn stays open and the reset names it: record its \
-             real result with `rigger result <id>`, then rerun `rigger reset --runs`. A `rigger \
-             step` registers as the run's driver just as `run` and `serve` do, so a hand-landed \
-             unit closes once the last step's stamp is older than the idle window; a courier's \
+             only appends; a live run is left untouched. A spawn answered only by its liveness \
+             fault has not ended - the run halts on it and a relaunched driver re-parks it - so \
+             a dead run with a hung spawn stays open and the reset names it: record its real \
+             result with `rigger result <id>`, then rerun `rigger reset --runs`. Every `rigger \
+             run` registers as the run's driver, so a hand-landed unit closes once the last \
+             run's stamp is older than the idle window; a courier's \
              (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
              own courier just before the reset never holds it back.",
-            "- `rigger reset --derived` migrates `events.db`, once: for each file it rewrites the \
-             first row of the file's latest derived batch into that generation's ledger entry, \
-             in place, deletes every other derived event, and vacuums so the file shrinks on \
-             disk. Every other event - every decision, finding, lesson, gate verdict, the whole \
-             run history - survives byte-for-byte. The migration runs on the embedded sqlite \
-             backend only, and it refuses (unless overridden with `--force-live`) while a run \
-             is live against the store.",
+            "- `rigger reset --derived` deletes every derived event of `events.db` in one \
+             transaction and vacuums so the file shrinks on disk; `rigger setup` runs the same \
+             delete once the graph it rebuilds is in place. Every other event - every decision, \
+             finding, lesson, gate verdict, the whole run history - survives byte-for-byte. The \
+             delete runs on the embedded sqlite backend only, and it refuses (unless overridden \
+             with `--force-live`) while a run is live against the store.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
              per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
@@ -921,11 +940,10 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
         "Never touch `events.db`, `graph.db`, or `progress.db` with raw SQL, `rm`, or any \
          tool outside `rigger reset`. The event log is append-only truth: a hand-edit or a \
          hand-deleted row can desync the graph from the log in ways `rigger reset \
-         --derived`'s own migration is specifically built to avoid. A store \
+         --derived`'s own delete is specifically built to avoid. A store \
          file that is genuinely corrupt is an incident to fix at its root, never a reason \
          to reach for a database client.\n",
-        "rigger-build-graph if `graph.db` needs regenerating rather than pruning; \
-         rigger-reindex if only the symbols index is stale.\n",
+        "rigger-build-graph if `graph.db` needs regenerating rather than pruning.\n",
     )
 }
 
@@ -941,8 +959,8 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
         &[],
         &[
             "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
-             no run, no `RunStarted`, and nothing on the event log but one ledger entry per file \
-             batch whose generation moved, since the tree re-derives the batch itself. \
+             no run, no `RunStarted`, and nothing on the event log, since the graph re-derives \
+             each file's batch from the tree. \
              It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
              REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
@@ -957,41 +975,8 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
          `rigger graph build` already does FOR you, incrementally, without erasing anything \
          first. If lookups are empty, just run `rigger graph build`; only reach for \
          rigger-reset-store if you specifically mean to prune, not rebuild.\n",
-        "rigger-reindex for a narrower staleness problem - one that is really about the \
-         symbols grounding index, not the whole structural graph; rigger-reset-store for \
-         pruning `graph.db`'s dead-run accumulation rather than rebuilding it.\n",
-    )
-}
-
-/// Render the `rigger-reindex` skill (spec 68, criterion 2): the targeted refresh for the
-/// symbols grounding index. `ctx` is accepted only to match the registry's uniform
-/// signature; nothing here is drift-prone enough to interpolate from it.
-fn render_reindex_skill(_ctx: &DocsContext) -> String {
-    render_operation_skill(
-        "rigger-reindex",
-        "Refresh the symbols grounding index - a `rigger graph`/`rigger ground` \
-         lookup that names an entity the current tree no longer holds, or the \
-         index-staleness advisory from `rigger validate`. Read this before rebuilding the \
-         whole graph over an index-freshness problem.",
-        &[],
-        &[
-            "`rigger reindex <file>...` re-parses ONLY the named files and persists the delta to \
-             the project's symbols grounding index at `.rigger/symbols/` - the fast, targeted fix \
-             for an index that has drifted from files you just changed (a unit's own commit, a \
-             rebase, a branch switch). It is scoped strictly to the symbols index, a DIFFERENT \
-             store from the structural context graph, so it costs only the named files, never a \
-             walk of the whole tree.\n",
-            "Name every file whose content changed since the index was last built; an unnamed \
-             file's stale entry is left exactly as it was.\n",
-        ],
-        "Do not reach for a whole-graph rebuild (see rigger-build-graph) or a store wipe to \
-         fix a lookup that is really an index-freshness problem: naming the stale files and \
-         reindexing exactly them is both cheaper and more targeted than rebuilding the whole \
-         structural graph over a handful of drifted entries. Reserve a whole-graph rebuild \
-         for when the graph itself is missing or empty, not for a symbols lookup that just \
-         needs the files it names re-parsed.\n",
-        "rigger-build-graph for the whole-project structural graph; rigger-reset-store for \
-         the stores' own hygiene.\n",
+        "rigger-reset-store for pruning `graph.db`'s dead-run accumulation rather than \
+         rebuilding it.\n",
     )
 }
 
@@ -1014,9 +999,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              Under an open hold the heartbeat age stops at the hold's start, so a driver that \
              dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on \
              wall clock and names it.\n",
-            "Relaunch the same blessed driver on the same spec WITHOUT `--fresh` - `rigger run \
-             <spec>`, `rigger serve <spec>` / `rigger workflow <spec>`, or the native `/rigger \
-             <spec>` workflow with its `fresh` argument left unset. Because the run lives in the \
+            "Relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
+             --base <ref>`, in the background as before. Because the run lives in the \
              event log, not in the dead process, the conductor's own run-starting step adopts \
              the existing run instead of minting a new one: it replays the log, rebuilds its \
              in-memory state, and continues exactly where the dead driver left off. No unit \
@@ -1032,19 +1016,12 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
             "A run that is HELD, not dead, launches nothing until the hold ends, and its driver \
              decides what ends it. A `rigger run` driver stays alive through the hold, and a \
              passing probe ends an outage hold by itself, save a `model_not_found` hold, which \
-             runs none. `rigger serve` runs no probe, so its hold stands until `rigger release` \
-             or the start of a new run ends it, and a wait still open when its session closes \
-             parks the spawn; a relaunch then continues the run. A `rigger workflow` driver \
-             drains its live workers and stops on a held run, and `rigger release` and a new \
-             `rigger workflow` resume it. `rigger release` ends any hold at once. No probe ends \
+             runs none. `rigger release` ends any hold at once. No probe ends \
              one you declared with `rigger hold --reason <text>`: `rigger release` does, as do \
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so.\n",
         ],
-        "Never hand-drive `rigger step` yourself in a shell to \"help it along\" - the \
-         driver owns stepping, and a hand step races it, which can double-spawn a unit or \
-         wedge the frontier (see using-rigger). And do not reach for `--fresh` reflexively \
-         just because a run looks stuck: on a merely-interrupted run it abandons the \
+        "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
          nothing - reserve it for the genuinely wedged-terminal case above.\n",
         "rigger-handle-an-escalation for the run-level and unit-level terminal states \
@@ -1078,8 +1055,7 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
             "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
              attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
-             --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` \
-             workflow with `fresh` set) - against the same, otherwise-unchanged spec: the \
+             <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
              with a clean remediation budget.\n",
         ],
@@ -1197,10 +1173,8 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              that line alone. `rigger watch --once` IS the accurate check: it verifies the \
              recorded marker by actually probing its port, and prints a `dash liveness` line \
              naming the dead PID when nothing answers there - trust that over a bare status \
-             line. `rigger run` and `rigger serve` never write that marker at all (only \
-             `rigger step` does) - for those two drivers `rigger watch` falls back to probing \
-             the recorded dash URL's OWN port directly, and its `dash liveness` line still \
-             fires, just without a pid to name.\n",
+             line. With no marker recorded, `rigger watch` probes the recorded dash URL's OWN port \
+             directly, and its `dash liveness` line still fires, just without a pid to name.\n",
             "Restart with a plain `rigger dash` (no flags needed for the default address). The \
              singleton bind then does the right thing either way: if the address is genuinely \
              free it binds and serves; if a live rigger dash is already there after all, it \
@@ -1213,15 +1187,14 @@ fn render_restore_the_dash_skill(_ctx: &DocsContext) -> String {
              prints that exact PID on its dash-liveness line. RESUME that \
              process if it is merely stopped (a suspended terminal, a paused container), or KILL \
              it if it is dead weight - THAT pid, the one the marker and `rigger watch`'s own \
-             line actually name - then restart with `rigger dash`. When NO marker was ever \
-             recorded (`rigger run` / `rigger serve`), `rigger watch`'s line names no pid at all \
+             line actually name - then restart with `rigger dash`. When NO marker is recorded, \
+             `rigger watch`'s line names no pid at all \
              - skip straight to restarting with `rigger dash`; its singleton bind never fights a \
              genuinely-live dash, and a bind failure against a real non-dash holder is then a \
              manual, outside-`rigger` situation, never one to guess a pid for.\n",
         ],
-        "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb the step \
-         path itself writes and overwrites, and a hand-edited value only makes the next real \
-         dash's own self-heal harder to trust. And never kill a process by PORT-ADJACENT \
+        "Never hand-edit the dash marker file to \"fix\" it - it is a breadcrumb rigger reads to \
+         name a pid, and a hand-edited value only names the wrong one. And never kill a process by PORT-ADJACENT \
          GUESSWORK (\"kill whatever's near the dash port\") - resume or kill the EXACT pid \
          the marker and `rigger watch`'s own line name, never a guess, and never one you \
          found some other way when the line names none at all.\n",
@@ -1303,7 +1276,7 @@ pub const OPERATOR_BINARY_PROHIBITION: &str = "\n## Operator binary boundary\n\n
 /// One skill this binary owns end-to-end (spec 68, criterion 1: the skill registry): a
 /// name and its [`DocBody`] (before the operator-binary prohibition is stamped on), rendered
 /// from the code-derived [`DocsContext`]. An entry whose content carries no drift-prone facts
-/// (`planning-a-spec`, `spec-preflight`) is a static body that ignores `ctx`.
+/// (`spec-preflight`) is a static body that ignores `ctx`.
 ///
 /// [`skill_registry`] is the ONE enumeration every surface walks - `rigger docs` (renders
 /// each entry to its committed source), `rigger setup` (installs each entry, overlay
@@ -1327,7 +1300,7 @@ impl SkillEntry {
 }
 
 /// The skill registry (spec 68, criterion 1): `using-rigger` (the driving discipline),
-/// `planning-a-spec` (the authoring discipline), the five-member per-operation family
+/// `planning-a-spec` (the authoring discipline), the four-member per-operation family
 /// (spec 68, criterion 2), the three watch-discipline skills (spec 69, criterion 1) and
 /// `spec-preflight` (spec 112, criterion 4) - one skill per operation, joining this same list
 /// by appending entries, never by adding a second, independently-walked enumeration.
@@ -1339,7 +1312,7 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         },
         SkillEntry {
             name: "planning-a-spec",
-            body: DocBody::Static(PLANNING_A_SPEC_BODY),
+            body: DocBody::Rendered(render_planning_a_spec_skill),
         },
         SkillEntry {
             name: "rigger-reset-store",
@@ -1348,10 +1321,6 @@ pub fn skill_registry() -> Vec<SkillEntry> {
         SkillEntry {
             name: "rigger-build-graph",
             body: DocBody::Rendered(render_build_graph_skill),
-        },
-        SkillEntry {
-            name: "rigger-reindex",
-            body: DocBody::Rendered(render_reindex_skill),
         },
         SkillEntry {
             name: "rigger-resume-a-run",
@@ -1421,6 +1390,10 @@ mod tests {
             watch_poll_interval_secs: 424_242,
             reject_recurrence_diagnose_threshold: 909_090,
             grep_guard_message: "sentinel grep-guard message".to_string(),
+            // Empty, as the shared render leaves it: `planning-a-spec` renders its step 6
+            // alone here, and the overlay's list is pinned where it is applied, the binary's
+            // skill install.
+            global_constraints: Vec::new(),
         }
     }
 
@@ -1614,19 +1587,18 @@ mod tests {
         }
     }
 
-    /// The shipped operator guidance for the ONE-TIME MIGRATION (spec 107): the discipline body
-    /// names `rigger reset --derived` as the event log's own migration, beside `--runs`, the
-    /// graph's prune.
+    /// The shipped operator guidance for the DELETE of the derived events: the discipline body
+    /// names `rigger reset --derived` as the event log's own prune, beside `--runs`, the graph's
+    /// prune.
     ///
-    /// It pins what an operator must know before running a command that rewrites and deletes
-    /// rows of an append-only log: WHAT IT CONVERTS (the first row of each file's latest derived
-    /// batch, into that generation's ledger entry, in place), WHAT IT DELETES (every other
-    /// derived event, so none is left behind), WHAT IT COSTS everything else (nothing - every
-    /// other event survives byte-for-byte), that the FILE shrinks, what it says when run again,
-    /// and that the two flags COMPOSE. Both shipped outputs render from `discipline_body`, so the
+    /// It pins what an operator must know before running a command that deletes rows of an
+    /// append-only log: WHAT IT DELETES (every derived event of the run stream, in one
+    /// transaction, so none is left behind), WHAT IT COSTS everything else (nothing - every
+    /// other event survives byte-for-byte), that the FILE shrinks, that setup runs it, what it
+    /// says when run again, and that the two flags COMPOSE. Both shipped outputs render from `discipline_body`, so the
     /// skill and the handbook chapter cannot disagree and a drift here would drift for every
     /// consumer at once. The `rigger-reset-store` skill renders its own `--derived` bullet, so it
-    /// is held to the same conversion here.
+    /// is held to the same delete here.
     #[test]
     fn discipline_names_reset_derived_as_the_event_logs_own_prune() {
         let ctx = sentinel_ctx();
@@ -1636,16 +1608,16 @@ mod tests {
         ] {
             for (fact, needle) in [
                 ("name the command", "rigger reset --derived"),
-                ("say which store it migrates", "EVENT LOG"),
-                ("say it is run once", "ONE-TIME MIGRATION"),
-                (
-                    "say what it converts, and where",
-                    "rewrites the first row of the file's LATEST derived batch into that \
-                     generation's ledger entry, in place",
-                ),
+                ("say which store it deletes from", "EVENT LOG"),
+                ("say it runs in one transaction", "in one transaction"),
                 (
                     "say what it deletes",
-                    "deletes every other derived event, so no derived event is left behind",
+                    "deletes every derived event of the project's run stream, so no derived \
+                     event is left behind",
+                ),
+                (
+                    "say setup runs it",
+                    "`rigger setup` runs the same delete itself",
                 ),
                 ("say every other event survives it", "byte-for-byte"),
                 ("say events.db shrinks", "shrinks on disk"),
@@ -1654,12 +1626,8 @@ mod tests {
                     "writes nothing to graph.db",
                 ),
                 (
-                    "say the unkeyed events are reported on their own line",
-                    "on its own line, how many of those named no file",
-                ),
-                (
                     "say what a second run reports",
-                    "there is no derived event to shed",
+                    "there is no derived event to delete",
                 ),
                 (
                     "show the two flags composing",
@@ -1674,10 +1642,13 @@ mod tests {
                 "only the recordings of its LATEST generation",
                 "LATEST event per replay key",
                 "WHAT IT CANNOT RECLAIM",
+                "ONE-TIME MIGRATION",
+                "ledger entry",
             ] {
                 assert!(
                     !out.contains(stale),
-                    "{label} must not describe the compaction the migration replaced ({stale:?})"
+                    "{label} must not describe the compaction or the migration the delete \
+                     replaced ({stale:?})"
                 );
             }
 
@@ -1741,25 +1712,25 @@ mod tests {
         }
         let reset_store = render_reset_store_skill(&ctx);
         for needle in [
-            "rewrites the first row of the file's latest derived batch into that generation's \
-             ledger entry, in place, deletes every other derived event",
-            "The migration runs on the embedded sqlite backend only",
-            "`rigger reset --derived`'s own migration is specifically built to avoid",
+            "deletes every derived event of `events.db` in one transaction",
+            "The delete runs on the embedded sqlite backend only",
+            "`rigger reset --derived`'s own delete is specifically built to avoid",
         ] {
             assert!(
                 reset_store.contains(needle),
-                "the reset-store skill must state what the migration converts and deletes, \
+                "the reset-store skill must state what the delete removes, \
                  where it runs, and why a hand-edit is never its substitute ({needle:?})"
             );
         }
         assert!(
             !reset_store.contains("compact"),
-            "the reset-store skill must not describe the migration as a compaction"
+            "the reset-store skill must not describe the delete as a compaction"
         );
     }
 
     /// Spec 58, criterion 3 (the habit half): the shared discipline body carries the same
-    /// three-verb lookup guidance the grounding pointer does - `rigger graph --around` (structure),
+    /// lookup guidance the grounding pointer does - `rigger graph --lookup` (graph, tree and prose
+    /// at once) first, then `rigger graph --around` (structure),
     /// `rigger graph --show` (text), `rigger peers` (memory) - states the rule plainly (the graph
     /// is the lookup surface; grep on the project's sources is a fallback worth reporting, not a
     /// habit), and names the fallback-reporting instruction (`grep-fallback:` via `rigger
@@ -1772,6 +1743,10 @@ mod tests {
             ("skill", render_using_rigger_skill(&ctx)),
             ("handbook", render_handbook_discipline(&ctx)),
         ] {
+            assert!(
+                out.contains("rigger graph --lookup"),
+                "{label} must name the combined lookup `rigger graph --lookup`"
+            );
             assert!(
                 out.contains("rigger graph --around"),
                 "{label} must name the STRUCTURE verb `rigger graph --around`"
@@ -1868,7 +1843,7 @@ mod tests {
     /// registry (not just a placeholder).
     #[test]
     fn planning_a_spec_render_carries_frontmatter_and_the_recipe() {
-        let out = PLANNING_A_SPEC_BODY;
+        let out = skill_body("planning-a-spec", &sentinel_ctx());
         assert!(
             out.starts_with("---\nname: planning-a-spec\n"),
             "must open with skill frontmatter naming it; got: {}",
@@ -1887,19 +1862,18 @@ mod tests {
     }
 
     /// Spec 68, criterion 2 (extended by spec 69, criterion 1 with the three watch-discipline
-    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the five-member
+    /// skills, and by spec 112, criterion 4 with `spec-preflight`): the four-member
     /// per-operation family, the three watch skills AND the preflight skill are IN the
     /// registry, each name present exactly once, alongside (not instead of) `using-rigger`
     /// and `planning-a-spec`.
     #[test]
-    fn registry_names_all_five_per_operation_skills_exactly_once_each() {
+    fn registry_names_all_four_per_operation_skills_exactly_once_each() {
         let names: Vec<&str> = skill_registry().iter().map(|e| e.name).collect();
         for expected in [
             "using-rigger",
             "planning-a-spec",
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
             "rigger-watch-a-run",
@@ -1915,8 +1889,8 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            11,
-            "the registry must have exactly 11 entries; got {names:?}"
+            10,
+            "the registry must have exactly 10 entries; got {names:?}"
         );
     }
 
@@ -1933,10 +1907,6 @@ mod tests {
                 &["disk usage", "bloat advisory", "rigger validate"],
             ),
             ("rigger-build-graph", &["empty", "first setup"]),
-            (
-                "rigger-reindex",
-                &["no longer holds", "index-staleness advisory"],
-            ),
             (
                 "rigger-resume-a-run",
                 &["dead driver", "in flight", "stale heartbeat"],
@@ -1999,7 +1969,6 @@ mod tests {
         for name in [
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
         ] {
@@ -2035,7 +2004,6 @@ mod tests {
         let family = [
             "rigger-reset-store",
             "rigger-build-graph",
-            "rigger-reindex",
             "rigger-resume-a-run",
             "rigger-handle-an-escalation",
         ];
@@ -2102,7 +2070,6 @@ mod tests {
         let anchors: &[(&str, &str)] = &[
             ("rigger-reset-store", "rigger reset --derived"),
             ("rigger-build-graph", "rigger graph build"),
-            ("rigger-reindex", "rigger reindex <file>"),
             ("rigger-resume-a-run", "adopts the existing run"),
             ("rigger-handle-an-escalation", "the unit's durable branch"),
         ];
@@ -2408,26 +2375,26 @@ mod tests {
         &text[from..from + len]
     }
 
-    /// The `spec-preflight` registry entry's own body, before the operator-binary stamp.
-    fn spec_preflight_body(ctx: &DocsContext) -> String {
+    /// The registry entry `name`'s own body for `ctx`, before the operator-binary stamp.
+    fn skill_body(name: &str, ctx: &DocsContext) -> String {
         let registry = skill_registry();
         let entry = registry
             .iter()
-            .find(|e| e.name == "spec-preflight")
-            .expect("spec-preflight must be in the registry");
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{name} must be in the registry"));
         entry.body.render(ctx)
     }
 
     /// Spec 112, criterion 4 (THE SHIPPED SKILL): `spec-preflight` is a registry entry whose
-    /// body, like `planning-a-spec`'s, ignores `ctx` (two different contexts render it alike),
-    /// opens with its loadable frontmatter and carries its sections in order: why, when, the
-    /// four steps, and the mid-run amendment.
+    /// body ignores `ctx` (two different contexts render it alike), opens with its loadable
+    /// frontmatter and carries its sections in order: why, when, the four steps, and the mid-run
+    /// amendment.
     #[test]
     fn spec_preflight_is_a_registry_skill_carrying_its_four_steps_in_order() {
-        let body = spec_preflight_body(&sentinel_ctx());
+        let body = skill_body("spec-preflight", &sentinel_ctx());
         assert_eq!(
             body,
-            spec_preflight_body(&real_watch_facts_ctx()),
+            skill_body("spec-preflight", &real_watch_facts_ctx()),
             "the spec-preflight body carries no code-derived fact, so it ignores ctx"
         );
         assert!(
@@ -2474,7 +2441,7 @@ mod tests {
             "the field guide's catalog runs F1 to F11"
         );
 
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
         let header = "| Signature in the run | Catalog class | Fix at spec time |\n|---|---|---|\n";
         let rows = &skill[skill.find(header).expect("the churn table") + header.len()..];
         let mut labels = Vec::new();
@@ -2554,9 +2521,9 @@ mod tests {
     #[test]
     fn the_shipped_docs_carry_one_corner_list_of_eight() {
         let ctx = sentinel_ctx();
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &ctx);
         let guide = PLANNING_FIELD_GUIDE_BODY;
-        let preflight = spec_preflight_body(&ctx);
+        let preflight = skill_body("spec-preflight", &ctx);
         let discipline = crate::test_support::builtin_body("working-discipline");
         for (label, list) in [
             (
@@ -2565,7 +2532,7 @@ mod tests {
             ),
             (
                 "planning-a-spec step 3",
-                section(skill, "**3. Run the constraints walk.**", "**4. "),
+                section(&skill, "**3. Run the constraints walk.**", "**4. "),
             ),
             (
                 "the field guide's F3 countermeasure",
@@ -2600,9 +2567,9 @@ mod tests {
     /// under a workflow with a critic, `rigger critique <spec>` before launch.
     #[test]
     fn planning_a_spec_step_7_runs_spec_preflight_and_the_critique_before_launch() {
-        let skill = PLANNING_A_SPEC_BODY;
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
         let step = section(
-            skill,
+            &skill,
             "**7. Preflight, then launch.**",
             "## Amending mid-run",
         );
@@ -2612,6 +2579,49 @@ mod tests {
                  critique <spec>` before launch."
             ),
             "step 7 must name spec-preflight and the critique before launch; got:\n{step}"
+        );
+    }
+
+    /// The `planning-a-spec` body the shipped docs context renders reads exactly `expected` from
+    /// the first `start` up to the `end` after it.
+    fn assert_planning_a_spec_reads(start: &str, end: &str, expected: &str) {
+        let skill = skill_body("planning-a-spec", &sentinel_ctx());
+        assert_eq!(
+            section(&skill, start, end),
+            expected,
+            "planning-a-spec from {start:?} to {end:?}"
+        );
+    }
+
+    crate::test_cases! {
+        /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): with
+        /// no project constraints in the context, step 6 is the generic step alone - its title,
+        /// then the one sentence every spec carries - and no project list follows it.
+        planning_a_spec_step_6_carries_the_projects_own_global_constraints:
+            assert_planning_a_spec_reads(
+                "**6. ",
+                "**7. ",
+                "**6. Carry the project's own Global constraints.** State them once in the spec; \
+                 every unit\ninherits them: no new event type unless the spec's whole point is \
+                 one; fallback stated for any\ncriterion that might be impossible; anything the \
+                 gates cannot see flagged for the adjudicator to\ndemand evidence on.\n\n",
+            );
+        /// Spec 121, criterion 13: step 1's example anchors name a neutral path, no language's
+        /// file extension.
+        planning_a_spec_step_1_anchors_on_a_neutral_path: assert_planning_a_spec_reads(
+            "**1. ",
+            "**2. ",
+            "**1. Ground the Goal in evidence.** State the problem with measured numbers and \
+             real anchors\n(`path/to/file:line`, event counts, durations) - look them up via \
+             `rigger graph --show/--around` and\n`rigger peers`, not memory. A goal an \
+             implementer can re-verify is a goal an adjudicator can\nhold the line on.\n\n",
+        );
+        /// Spec 121, criterion 13: step 5's example of the code a criterion names is a symbol
+        /// and a neutral path, no language's source tree.
+        planning_a_spec_step_5_names_code_by_a_neutral_path: assert_planning_a_spec_reads(
+            "- the code it touches",
+            " The unit's",
+            "- the code it touches named in backticks (`run_wave`, `src/ingest`).",
         );
     }
 }

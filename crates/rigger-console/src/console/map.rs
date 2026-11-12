@@ -239,7 +239,7 @@ pub fn build(graph: &Graph) -> MapModel {
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
         // A code entity with NO `name` attr is a BARE placeholder, never a real
-        // definition. `Coupling::from_graph` canonicalizes every RESOLVABLE bare reference onto
+        // definition. The code store's coupling layer canonicalizes every RESOLVABLE bare reference onto
         // its unique call-target definition, reading a definition as a node with a non-empty
         // name (`query::node_name`), but an AMBIGUOUS one (more than one call target of its leaf
         // elsewhere, or none) keeps its own placeholder id and still joins a community as a
@@ -382,7 +382,7 @@ pub fn build(graph: &Graph) -> MapModel {
             continue;
         }
         if ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()) {
-            edges.push((e.from.clone(), e.to.clone(), e.rel.clone()));
+            edges.push((e.from.clone(), e.to.clone(), e.rel.to_string()));
         }
     }
 
@@ -1127,7 +1127,7 @@ pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
 ];
 
 /// The neutral colour a [`DrawEntity::kind`] outside [`KIND_COLOURS`] paints with (`method`,
-/// `impl`, `module`, `other` - see `crates/rigger-grounder/src/grounder/symbols/events.rs::kind_str` - or an empty/
+/// `impl`, `module`, `other` - see `crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_str` - or an empty/
 /// unknown kind): these are structural definition kinds, not vocabulary Design's own "four kind
 /// colours" distinguishes on sight, so they share ONE default rather than growing a fifth
 /// hand-picked colour.
@@ -1235,11 +1235,11 @@ mod tests {
         Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }
     }
 
@@ -2556,11 +2556,11 @@ mod tests {
         let about = |finding: &str, subject: &str| Edge {
             from: finding.to_string(),
             to: subject.to_string(),
-            rel: REL_ABOUT.to_string(),
+            rel: REL_ABOUT.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         g.edges.push(about("f1", "src/worktree.rs::hub"));
         g.edges.push(about("f2", "src/worktree.rs::hub"));

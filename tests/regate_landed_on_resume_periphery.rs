@@ -31,9 +31,10 @@
 //! SAME store+repo and must re-derive the real landed sha and pre_merge purely from that durable
 //! row, re-gate the landed commit, and reach `UnitIntegrated` with the actual merged sha - never
 //! re-spawning the unit's implementer/lens/judge lifecycle at all. The single unit lands as a
-//! fast-forward, so the landed commit IS the commit call 1's pre-merge gate proved green: the
-//! resumed post-merge verdict is a cache-hit replay of that green, which call 2 only knows from
-//! the content cache it reseeds from the log - the crash-resume pin for that reseed.
+//! fast-forward, so the landed commit IS the commit call 1's pre-merge gate proved green, but
+//! call 1 signed that green under its own key, which call 2 cannot verify: the resumed post-merge
+//! gate runs again rather than replaying it, since a pass an earlier process recorded never seeds
+//! the content cache.
 //!
 //! GAP 2 (event type / serialized form - back-compat, the OTHER half of the same probe hit),
 //! `a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior`. Every
@@ -47,13 +48,14 @@
 //! recording no post-merge-gate verdict and reporting `UnitIntegrated` with the same empty
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::count_status_marker;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
+use common::fixtures::test_spawn_host;
 use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::temp_git_project_with_commit;
@@ -195,8 +197,10 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resu
             graph: None,
             criteria: Vec::new(),
             log: &|_| {},
-            hash_blob: &|_| Ok(String::new()),
             check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: None,
         };
         let err = match run(&cfg, &deps) {
             Ok(_) => panic!(
@@ -242,8 +246,10 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resu
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps2).expect("call 2 must resume and re-gate the already-landed tree");
     assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
@@ -269,9 +275,10 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_regates_on_resu
             )
         });
     assert!(
-        resumed.meta.contains_key("cache_hit_of"),
-        "the fast-forward landed the very commit call 1 gated green, so the resumed post-merge \
-         gate replays that green from the cache call 2 reseeded from the log: {resumed:?}"
+        !resumed.meta.contains_key("cache_hit_of"),
+        "the green call 1 recorded was signed under call 1's key, which call 2 cannot verify, so \
+         the resumed post-merge gate runs again rather than replaying it from the cache: \
+         {resumed:?}"
     );
     let integrated = events_after_call_2
         .iter()
@@ -393,8 +400,10 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps).expect(
         "a legacy landed row missing pre_merge must never crash or error out a resumed run",

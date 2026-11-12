@@ -3,7 +3,7 @@
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
-//! crates and guard the two boundaries a tagged reference crosses on its way to an operator:
+//! crates and guard the boundary a tagged reference crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
@@ -15,22 +15,17 @@
 //!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
-//!    fold no edge and prove no definition, while their call proves one;
-//!  - the persisted symbol index: `SymRef.ref_kind` is written for a tagged reference and omitted
-//!    for a call, the form an index saved before the field existed holds, and reads back so a
-//!    reloaded index counts no tagged reference as a call.
+//!    fold no edge and prove no definition, while their call proves one.
 
-mod common;
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+#[cfg(feature = "symbols")]
+use crate::common;
+#[cfg(feature = "symbols")]
+use crate::symbol_index;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_USER as USER};
-use rigger::contextgraph::REF_KIND_TYPE;
-use rigger::grounder::symbols::model::{FileSymbols, Lang, SymRef};
 #[cfg(feature = "symbols")]
 use symbol_index::USE_ONLY_SOURCE;
-use symbol_index::{defining_f, g_called_in_f, SavedIndex};
 
 /// The file the use-only rebuild adds, holding [`USE_ONLY_SOURCE`].
 #[cfg(feature = "symbols")]
@@ -143,8 +138,12 @@ fn graph_build_lists_a_staged_reference_s_file_never_its_fn_as_referenced_not_ca
     let (_project, graph) = common::cli::built_graph(&common::fixtures::REFERENCE_KINDS_TREE);
 
     assert_eq!(
-        [DEFINER_ENTITIES[0], DEFINER_ENTITIES[1]]
-            .map(|seed| common::fixtures::referenced_not_called_ids(&graph, seed)),
+        [DEFINER_ENTITIES[0], DEFINER_ENTITIES[1]].map(|seed| {
+            common::fixtures::referenced_not_called_ids(
+                &common::fixtures::records_graph(&graph),
+                seed,
+            )
+        }),
         [[USER], [USER]],
         "a fn-level row lists its file"
     );
@@ -178,7 +177,10 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
         "the const read's edge retires with its one definition"
     );
     assert_eq!(
-        common::fixtures::referenced_not_called_ids(&removed, DEFINER_ENTITIES[1]),
+        common::fixtures::referenced_not_called_ids(
+            &common::fixtures::records_graph(&removed),
+            DEFINER_ENTITIES[1]
+        ),
         Vec::<String>::new(),
         "nothing references a removed definition"
     );
@@ -202,7 +204,7 @@ fn graph_rebuild_retires_a_staged_reference_with_its_definition_and_lands_it_on_
 /// included.
 #[cfg(feature = "symbols")]
 fn staged_edges(
-    graph: &rigger::contextgraph::sqlite::Projector,
+    graph: &(impl rigger::contextgraph::Neighbors + ?Sized),
 ) -> Vec<(String, String, String, i64, u64)> {
     common::fixtures::live_edges(graph)
         .into_iter()
@@ -327,7 +329,7 @@ const TEST_ATTRIBUTED_SOURCE: &str = "#[cfg(test)]\nuse crate::shapes::Kestrel;\
 /// WHEN the operator runs `rigger graph build`,
 /// THEN no `REFERENCES` or `CALLS` edge stands and `draw` alone carries the test code's evidence
 /// (`proven_by`): its `use`, type reference and const read prove neither `Kestrel` nor
-/// `QUOTA_CAP`, and the production ingest emits no `ref_kind` event for any of them.
+/// `QUOTA_CAP`.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
@@ -337,7 +339,7 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
         ("src/probe.rs", TEST_REGION_SOURCE),
         ("src/gated.rs", TEST_ATTRIBUTED_SOURCE),
     ] {
-        let (project, graph) = common::cli::built_graph(&[definer, test_code]);
+        let (_project, graph) = common::cli::built_graph(&[definer, test_code]);
 
         assert_eq!(
             common::fixtures::landed(&graph),
@@ -351,68 +353,5 @@ fn graph_build_proves_a_definition_by_test_code_s_call_alone() {
             "{}: the test code's call to `draw` is its one proof",
             test_code.0
         );
-        let edges =
-            common::project_payloads(project.path(), rigger::contextgraph::TYPE_EDGE_INFERRED);
-        assert_eq!(
-            common::fixtures::tagged_payloads(&edges),
-            [],
-            "{}: test code emits no ref_kind event",
-            test_code.0
-        );
     }
-}
-
-/// A Rust file defining `f`, whose body calls `G` and names the type `Kestrel` on line 2.
-fn a_call_beside_a_type_reference() -> FileSymbols {
-    defining_f(vec![
-        g_called_in_f(),
-        SymRef {
-            ref_kind: Some(REF_KIND_TYPE.into()),
-            name: "Kestrel".into(),
-            ..g_called_in_f()
-        },
-    ])
-}
-
-/// The persisted index writes `ref_kind` for the type reference alone - the call is written
-/// without the key, the form an index saved before the field existed holds - and reads the file
-/// back whole, so the reloaded index counts the call and never the type reference.
-#[test]
-fn the_persisted_index_keeps_a_tagged_reference_out_of_the_reloaded_calls() {
-    let file = "a.rs";
-    let saved = SavedIndex::save(file, a_call_beside_a_type_reference());
-    assert_eq!(
-        saved.bytes.matches("\"ref_kind\"").count(),
-        1,
-        "only the tagged reference writes the key; got:\n{}",
-        saved.bytes
-    );
-    let reloaded = saved.reload();
-    assert_eq!(reloaded.files()[file], a_call_beside_a_type_reference());
-    let calls: Vec<&str> = reloaded.files()[file]
-        .calls()
-        .map(|r| r.name.as_str())
-        .collect();
-    assert_eq!(calls, ["G"]);
-    assert_eq!(
-        ["G", "Kestrel"].map(|name| reloaded.reference_degree(name, Lang::Rust)),
-        [1, 0]
-    );
-}
-
-/// The index the public `build_index` extracts from the reference-kinds tree reads back from
-/// the real persistence boundary whole, its tagged references with their kinds and callers.
-#[cfg(feature = "symbols")]
-#[test]
-fn build_index_tags_survive_the_save_load_pipeline() {
-    let dir = tempfile::tempdir().unwrap();
-    common::fixtures::write_files(dir.path(), &common::fixtures::REFERENCE_KINDS_TREE);
-
-    let (built, reloaded) = symbol_index::built_and_reloaded(dir.path().to_str().unwrap());
-
-    assert_eq!(reloaded.files(), built.files());
-    assert_eq!(
-        symbol_index::tagged_refs(&reloaded.files()[USER]),
-        common::fixtures::REFERENCE_KINDS_USER_TAGGED
-    );
 }

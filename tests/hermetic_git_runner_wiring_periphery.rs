@@ -19,7 +19,7 @@
 //! so it can observe its own environment directly, the same way `src/worktree.rs`'s and
 //! `src/conductor.rs`'s ~43 `git commit` sites (which set no identity of their own) actually do.
 
-mod common;
+use crate::common;
 use common::repo::repo_text;
 
 /// The identity + no-prompt keys criterion 1 completes (spec 90's own Design text: "this spec

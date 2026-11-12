@@ -4,15 +4,16 @@ use std::time::{Duration, Instant};
 /// Whether the tracked `.rigger/project.id` is present (and non-blank) for the project at
 /// `root`, resolved relative to the git top-level (else `root`) - the same anchoring
 /// [`project_identity_at`] uses. `false` means identity falls back to the volatile basename,
-/// which `rigger validate` surfaces as a rename-orphans-history hazard.
-fn has_tracked_project_id(root: &Path) -> bool {
-    let toplevel = git_repo_at(root);
+/// which `rigger validate` surfaces as a rename-orphans-history hazard. An error when git refuses
+/// inside a repository ([`git_repo_at`]).
+fn has_tracked_project_id(root: &Path) -> Result<bool, String> {
+    let toplevel = git_repo_at(root)?;
     let base: &Path = if toplevel.is_empty() {
         root
     } else {
         Path::new(&toplevel)
     };
-    read_project_id(base).is_some()
+    Ok(read_project_id(base).is_some())
 }
 
 /// How long `rigger validate` waits on `claude auth status --json` for the login it reports.
@@ -46,31 +47,6 @@ fn print_claude_login() {
             CLAUDE_LOGIN_BOUND.as_secs()
         ),
     }
-}
-
-/// The `rigger validate` GRAPH INDEX LAG sample (spec 107, THE LEDGER ANSWERS THE INDEX-LAG
-/// ADVISORY): reads the log's side from `store` in ONE typed read of the perception types
-/// ([`rigger::ingest::perceived_generations`]), never the whole stream, and hands it to
-/// [`rigger::ingest::graph_index_lag_sample`], the one authority that draws the bounded candidate
-/// list from it and compares each candidate's current bytes, read under `root`, against its
-/// latest recording and against `graph`'s current generation. With no `graph` the log's side
-/// alone is compared.
-fn read_graph_index_lag(
-    store: &dyn EventStore,
-    graph: Option<&dyn contextgraph::Projection>,
-    root: &Path,
-) -> Result<Vec<String>, rigger::eventstore::Error> {
-    let latest = rigger::ingest::perceived_generations(store, conductor::STREAM)?;
-    Ok(rigger::ingest::graph_index_lag_sample(root, &latest, graph))
-}
-
-/// The graph the index-lag advisory compares against: the project's `graph.db` when it stands
-/// ([`standing_graph`]) and owes no rebuild. An owed graph is not asked, nor one whose debt
-/// cannot be read: the advisory then compares the log's side alone.
-fn graph_to_compare(graph_db: &str, project: &str) -> Option<Projector> {
-    let graph = standing_graph(graph_db, project)?;
-    let owed = graph.rebuild_owed().ok()?;
-    (!owed).then_some(graph)
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -195,6 +171,9 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         config: cfg,
         gate_requirements,
     } = config_store::load_with_gate_requirements(".")?;
+    // The operator's helper copies are the definition every spawn carries, so a copy that cannot
+    // be read or does not parse fails here, naming its file, as every spawning command would.
+    hooks::resolved_helpers(root)?;
     // Static verdict-line lint (spec 18, unit 1): a gating adjudicator whose persona only
     // records its verdict via `rigger_emit` - never on its result output - is a guaranteed
     // stall, because the integration gate reads the result channel, not emitted events. This
@@ -211,6 +190,14 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
+    // The stamp line: the tip the code store describes, advanced to the operator checkout's head
+    // first, and how many files the caller's tree differs from it by. A store that cannot be
+    // opened is said, never a refusal: the config is what validate judges.
+    match open_project_code_store(rigger_store::code::Mode::Read) {
+        Ok(Some(opened)) => println!("{}", opened.line()),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: the code store cannot be opened: {e}"),
+    }
     // NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): warn when a fan-out
     // implement template declares no gates at all - the author-time half of the runtime
     // invariant `conductor::run` enforces once a spec actually decomposes against the
@@ -254,7 +241,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
-    for advisory in validate_advisories(root) {
+    for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard)? {
         eprintln!("{advisory}");
     }
     // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
@@ -273,7 +260,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
     // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
     // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
-    // deletes anything (cleanup stays with the step-start sweep).
+    // deletes anything (cleanup stays with the run-start sweeps and the run teardown).
     // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
     // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
     // degrading to a wrong-store read that would misreport live worktrees/branches as residue
@@ -284,9 +271,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
     // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
-    // A store-read failure just skips the advisory (never fails validate), exactly like the
-    // git-backed advisories above swallow a missing/erroring git.
-    if let Ok(drift) = read_model_drift(&db_path("events.db"), &project_identity()) {
+    // A store-read failure just skips the advisory (never fails validate); git refusing inside a
+    // repository fails it, as it does every advisory above.
+    let identity = project_identity()?;
+    if let Ok(drift) = read_model_drift(&db_path("events.db"), &identity) {
         if let Some(advisory) = model_drift_advisory(&drift) {
             eprintln!("{advisory}");
         }
@@ -298,53 +286,17 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // direction only - the spec's repair stays a documented operator procedure, never a
     // command). A store-read failure just skips the advisory (never fails validate), exactly
     // like the model-drift advisory above.
-    if let Ok(signatures) = read_order_signatures(&db_path("events.db"), &project_identity()) {
+    if let Ok(signatures) = read_order_signatures(&db_path("events.db"), &identity) {
         for advisory in order_signature_advisories(&signatures) {
             eprintln!("{advisory}");
         }
     }
-    // INDEX STALENESS advisory (spec 68, VALIDATE ADVISORIES): warn when the persisted
-    // `symbols` grounding index has drifted from the tree and name `rigger reindex`. Cost-
-    // bounded and ungated (Design) - see `grounder::symbols::staleness`'s own docs for the
-    // measurement itself. `None` when there is no persisted index (nothing to compare
-    // against) or no disagreement; this never fails validate.
-    if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
-        eprintln!("{}", index_staleness_message(&drift));
-    }
-    // GRAPH INDEX LAG advisory (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY): warn when
-    // a bounded sample of files the log has recorded extracts, from the bytes the tree holds
-    // now, to a generation the log's latest recording and `graph.db` do not both hold -
-    // staleness the integration-time reindex is supposed to prevent, surfaced before it is felt
-    // rather than discovered by a stale `graph --show` line. The tree is read under the ONE
-    // ROOT, the top level of the repository holding the store's `.rigger/`, which the entries'
-    // paths are relative to. An absent store has recorded nothing, and a store-read failure
-    // just skips the advisory (never fails validate), exactly like the model-drift advisory
-    // above.
-    let project = project_identity();
-    let graph = graph_to_compare(&db_path("graph.db"), &project);
-    let lagging = store_selection(None, None).and_then(|sel| {
-        with_project_store(&db_path("events.db"), &project, &sel, |store| {
-            read_graph_index_lag(
-                store,
-                graph
-                    .as_ref()
-                    .map(|graph| graph as &dyn contextgraph::Projection),
-                &tree_root(&cwd().join(RIGGER_DIR)),
-            )
-        })
-    });
-    if let Ok(Some(lagging)) = lagging {
-        if let Some(advisory) = graph_index_lag_advisory(&lagging) {
-            eprintln!("{advisory}");
-        }
-    }
-    // LOG BLOAT advisory (spec 107, THE OPERATOR IS TOLD WHAT THE MIGRATION SHEDS): warn while
-    // the event log still holds a derived event and name `rigger reset --derived`, the migration
-    // that sheds it. Reads the store's own count ([`Store::count_derived`]), the read the reset
-    // menu prints and the migration acts on. `None` on a server-backed project (the migration is
-    // a mechanic of the sqlite store), on a project with no events.db yet, or on any read
+    // LOG BLOAT advisory: warn while the event log still holds a derived event and name `rigger
+    // reset --derived`, the delete that removes it. Reads the store's own count
+    // ([`Store::count_derived`]), the read the reset menu prints and the delete acts on. `None`
+    // on a server-backed project (the delete is a mechanic of the sqlite store), on a project with no events.db yet, or on any read
     // failure; this never fails validate and never creates a store that does not already exist.
-    if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &project_identity()) {
+    if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &identity) {
         eprintln!("{advisory}");
     }
     // FOOTPRINT ACCOUNTING (spec 77 criterion 6): rigger's total on-disk footprint by
@@ -352,9 +304,9 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // threshold), plus an advisory for any category whose dead share breaches the
     // threshold, naming the reclaiming command. A store-ACCESS-miss failure degrades to an
     // empty report (mirrors residue_advisories/read_run_units); only a genuine store-
-    // SELECTION failure is worth surfacing, and it already will be by the residue block
-    // above sharing the same read - so this stays a silent skip, never a second error path
-    // for the identical cause.
+    // SELECTION failure or git refusing inside a repository is worth surfacing, and either
+    // already will be by the residue block above sharing the same read - so this stays a silent
+    // skip, never a second error path for the identical cause.
     if let Ok((totals, advisories)) = footprint_report_for(&cfg) {
         for line in totals {
             println!("{line}");
@@ -363,25 +315,14 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
-    // RETIRED CODE-ENTITY advisory (spec 86 criterion 3, THE MIGRATION IS DELIBERATE): report,
-    // once, how many code-entity nodes the graph's own supersession has retired since their last
-    // extraction - what makes the test-exclusion migration's shrink VISIBLE to the operator
-    // rather than a silent internal bookkeeping fact (`rigger::contextgraph::sqlite::Projector::
-    // retired_code_entity_count` is the one counting authority; this never re-derives it). `None`
-    // on every reason there is nothing honest to report (see `retired_entities_advisory_for`'s own
-    // doc), so this never fails validate.
-    if let Some(advisory) = retired_entities_advisory_for(&db_path("graph.db"), &project_identity())
-    {
-        eprintln!("{advisory}");
-    }
     // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
     // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
     // writes nothing to it. Validate alone then says how many events the file passed over, by
     // cause (spec 124, CATCH-UP LINES).
-    if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &project_identity()) {
+    if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &identity) {
         eprintln!("{note}");
     }
-    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &project_identity()) {
+    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &identity) {
         eprintln!("{note}");
     }
     // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
@@ -464,40 +405,29 @@ fn gate_requirement_lines(gates: &[GateRequirements]) -> Vec<String> {
 }
 
 /// The non-fatal `rigger validate` advisories (spec 05:55), in report order:
-///   (a) the installed `/rigger` workflow has drifted from this binary's embedded copy;
-///   (b) tracked `.rigger/` files carry uncommitted modifications;
-///   (c) the checkout's `.claude/settings.json` lacks rigger's session hooks.
+///   (a) tracked `.rigger/` files carry uncommitted modifications;
+///   (b) the checkout's `.claude/settings.json` lacks rigger's session hooks, or carries the
+///       grep-guard `grep_guard` (the workflow's `defaults.grep_guard`) does not declare.
 /// Both are warnings only - they are collected here and printed to stderr by the caller
-/// without affecting the exit status. Rooted at `root` so the seam is testable against a
-/// temp dir without mutating the process-wide current directory.
-fn validate_advisories(root: &Path) -> Vec<String> {
+/// without affecting the exit status; git refusing inside a repository is the error. Rooted at
+/// `root` so the seam is testable against a temp dir without mutating the process-wide current
+/// directory.
+fn validate_advisories(root: &Path, grep_guard: bool) -> Result<Vec<String>, String> {
     let mut advisories = Vec::new();
     // Identity durability (spec 09): without a tracked project.id, identity is the volatile
     // directory basename, so a rename away orphans this project's run history. Warn (like
     // the other drift advisories) so it is seen before a rename loses the log.
-    if !has_tracked_project_id(root) {
+    if !has_tracked_project_id(root)? {
         advisories.push(format!(
             "warning: no tracked {RIGGER_DIR}/{PROJECT_ID_FILE}; this project's identity falls \
              back to the directory basename, so renaming the checkout orphans its run history. \
              Run `rigger setup` (or `rigger init`) to mint a durable id, then commit it."
         ));
     }
-    // Workflow-drift diagnostic (spec 18, criterion 9): when the installed workflow differs
-    // from this binary's embedded copy, name WHICH side is stale (the installed workflow vs
-    // the binary) using the embedded build provenance and give the directive fix, rather
-    // than an ambiguous "they differ". The binary's provenance and the git ancestry oracle
-    // are wired here at the edge; the decision itself is the pure [`drift_side`].
-    if let Some(advisory) =
-        workflow_drift_advisory(root, BUILD_PROVENANCE, |a, b| git_is_ancestor(root, a, b))
-    {
-        advisories.push(advisory);
-    }
     if let Some(dirty) = uncommitted_rigger_advisory(root) {
         advisories.push(dirty);
     }
-    if let Some(advisory) = session_hooks_advisory(root) {
-        advisories.push(advisory);
-    }
+    advisories.extend(session_hooks_advisory(root, grep_guard));
     // Spec 74, criterion 2: the missing-go-gitsemver-binary advisory (fires whenever
     // THIS binary's own embedded version carries the `+unversioned` marker, regardless
     // of cause) and the behind-the-tree advisory (fires when the checkout's freshly
@@ -511,83 +441,28 @@ fn validate_advisories(root: &Path) -> Vec<String> {
     if let Some(advisory) = behind_the_tree_advisory(root, GITSEMVER_VERSION, BUILD_PROVENANCE) {
         advisories.push(advisory);
     }
-    advisories
+    Ok(advisories)
 }
 
-/// The INDEX STALENESS advisory line (spec 68, VALIDATE ADVISORIES), rendered from an already-
-/// computed [`rigger::grounder::symbols::IndexDrift`] (the pure formatting stays separate from
-/// the gathering in [`rigger::grounder::symbols::staleness`], exactly like
-/// [`build_environment_report`] above). Names counts per kind of disagreement - never just a
-/// bare "it drifted" - and the fix, `rigger reindex`.
-fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> String {
-    let mut parts = Vec::new();
-    if !drift.added.is_empty() {
-        parts.push(format!(
-            "{} file(s) on disk not yet in the index",
-            drift.added.len()
-        ));
-    }
-    if !drift.removed.is_empty() {
-        parts.push(format!(
-            "{} indexed file(s) no longer on disk",
-            drift.removed.len()
-        ));
-    }
-    if !drift.changed.is_empty() {
-        parts.push(format!(
-            "{} sampled file(s) whose content changed",
-            drift.changed.len()
-        ));
-    }
-    format!(
-        "warning: the symbols grounding index ({}) has drifted from the tree ({}). Run \
-         `rigger reindex <file>...` to refresh it.",
-        rigger::grounder::symbols::store::index_path(".").display(),
-        parts.join(", "),
-    )
-}
-
-/// The GRAPH INDEX LAG advisory line (spec 107, THE LEDGER ANSWERS THE INDEX-LAG ADVISORY),
-/// rendered from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`]
-/// named: each one's current bytes extract to a generation other than its latest ledger entry's
-/// or other than `graph.db`'s current one. `None` when the sample is empty - nothing to warn
-/// about, not merely nothing measured (the pure formatting stays separate from the gathering,
-/// exactly like [`index_staleness_message`] above). Names every lagging file (never just a bare
-/// count) and the command the line points the operator at, `rigger graph build`: the verb that
-/// re-perceives the tree, recording each lagging file's ledger entry and folding it through the
-/// one function the integration reindex also calls ([`rigger::ingest::entry_of_batch`]).
-/// `rigger reindex` refreshes the symbols index alone, so it moves neither side compared.
-fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
-    if lagging.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger graph build` to refresh it.",
-        lagging.len(),
-        lagging.join(", "),
-    ))
-}
-
-/// The LOG BLOAT advisory line (spec 107), rendered from an already-read
-/// [`DerivedCount`] - pure formatting, separate from the gathering in [`bloat_advisory_for`].
-/// `None` for a count holding no derived event; any other names what the log still holds and
-/// `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
+/// The LOG BLOAT advisory line, rendered from an already-read count of derived events
+/// ([`Store::count_derived`]) - pure formatting, separate from the gathering in
+/// [`bloat_advisory_for`]. `None` for a count of none; any other names what the log still holds
+/// and `rigger reset --derived` - the one reading of a count, [`derived_events_held`], which the
 /// reset menu's line asks too.
-fn bloat_advisory(counted: &DerivedCount) -> Option<String> {
+fn bloat_advisory(counted: usize) -> Option<String> {
     derived_events_held(counted).map(|held| {
         format!(
-            "warning: the event log still holds {held}; run `rigger reset --derived` to migrate \
-             them into the ledger."
+            "warning: the event log still holds {held}; run `rigger reset --derived` to delete \
+             them."
         )
     })
 }
 
 /// Gather the LOG BLOAT advisory's input (spec 107): open the sqlite event log at `path` and
-/// count the derived index `project`'s run stream holds ([`Store::count_derived`]), the read
-/// the reset menu prints and the migration acts on, so the advisory never names a count
-/// `rigger reset --derived` would not shed. `None`, never an error, on every reason there is
-/// nothing to count: a server-backed project (the migration does not run there - see
+/// count the derived events `project`'s run stream holds ([`Store::count_derived`]), the read
+/// the reset menu prints and the delete acts on, so the advisory never names a count `rigger
+/// reset --derived` would not delete. `None`, never an error, on every reason there is nothing
+/// to count: a server-backed project (the delete does not run there - see
 /// [`cmd_reset`]), or a project with no `events.db` file YET - checked BEFORE opening anything,
 /// because [`open_sqlite_store`] (like [`Store::open`] under it) creates a missing file, and a
 /// read-only advisory must never have that side effect. Any read error after that point (a
@@ -600,70 +475,22 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
     }
     let store = open_sqlite_store(path).ok()?;
     let counted = store.count_derived(&run_stream_of(project)).ok()?;
-    bloat_advisory(&counted)
-}
-
-/// The RETIRED CODE-ENTITY advisory line (spec 86 criterion 3, THE MIGRATION IS DELIBERATE),
-/// rendered from an already-measured count - pure formatting, separate from the gathering in
-/// [`retired_entities_advisory_for`]. `None` when nothing has been retired: the steady-state
-/// case, and the honest answer before any re-ingest has excluded or removed anything.
-fn retired_entities_advisory(n: usize) -> Option<String> {
-    if n == 0 {
-        return None;
-    }
-    let noun = if n == 1 { "entity" } else { "entities" };
-    Some(format!(
-        "{n} code-{noun} retired (no longer reachable by any live edge; history stays in the \
-         log, never a store wipe)"
-    ))
-}
-
-/// Gather + measure the RETIRED CODE-ENTITY advisory's input (spec 86 criterion 3): open the graph
-/// at `graph_db`, scoped to `project`, and read
-/// [`rigger::contextgraph::sqlite::Projector::retired_code_entity_count`] - the ONE counting
-/// authority the migration's supersession backs (never a second, shadow count). The context graph
-/// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
-/// the shape of, `Projector` is the only [`Projection`] this binary ever opens), so this needs no
-/// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
-/// report: no `graph.db` file YET, or one that does not open ([`standing_graph`]), or any read
-/// error after that point, exactly like the log-bloat and index-staleness advisories above
-/// swallow one.
-fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
-    let graph = standing_graph(graph_db, project)?;
-    retired_entities_advisory(graph.retired_code_entity_count().ok()?)
-}
-
-/// Whether the `/rigger` workflow installed at `<root>/.claude/workflows/rigger.js` has
-/// DRIFTED from the embedded [`RIGGER_WORKFLOW`] this binary ships. `false` when the file
-/// is absent (nothing installed, so nothing to drift) or byte-identical to the embedded
-/// copy; `true` only when an installed file differs. This is the single source of truth
-/// for the "installed vs embedded workflow" comparison - it reuses the same
-/// [`workflow_path`] and [`RIGGER_WORKFLOW`] that [`install_workflow`] writes, so the
-/// drift check and the install can never disagree on what "the workflow" is.
-fn installed_workflow_drifted(root: &Path) -> bool {
-    match std::fs::read(workflow_path(root)) {
-        Ok(bytes) => bytes != RIGGER_WORKFLOW.as_bytes(),
-        Err(_) => false, // absent or unreadable: no installed workflow to surface drift for
-    }
+    bloat_advisory(counted)
 }
 
 /// Whether commit `ancestor` is an ancestor of commit `descendant` in the git repository
 /// rooted at `root`: `Some(true)`/`Some(false)` when git can decide, `None` when it cannot
 /// (git unavailable, not a repo, or either id unresolvable - e.g. an operator project that
 /// does not carry rigger's history). Uses `git merge-base --is-ancestor`, whose exit status
-/// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable. This
-/// is the ordering oracle the [`drift_side`] decision injects, so the pure decision stays
-/// testable in both directions without a live repo.
+/// is 0 for an ancestor and 1 otherwise; any other status is treated as undecidable.
 ///
 /// Spec 74, criterion 2 periphery finding: captures the child's stdout/stderr (`.output()`)
 /// rather than inheriting the parent's (`.status()`), so an unresolvable `ancestor` - the
 /// exact "does not carry rigger's history" case this doc comment already calls out as
 /// normal and silently handled via `None` - never leaks git's own `fatal: Not a valid
-/// object name ...` onto the CALLER's stderr. Before this fix `behind_the_tree_advisory`
-/// (below) called this UNCONDITIONALLY on every `rigger validate` invocation, so the leak
-/// fired on nearly every non-self-hosting target project, not merely the rare drifted-
-/// workflow-with-recorded-provenance case [`workflow_drift_advisory`] alone would reach;
-/// mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
+/// object name ...` onto the CALLER's stderr. `behind_the_tree_advisory` (below) calls
+/// this on every `rigger validate` invocation, so a leak would fire on nearly every
+/// non-self-hosting target project; mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
     let out = subprocess::command("git")
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
@@ -726,7 +553,7 @@ fn missing_gitsemver_binary_advisory(installed_version: &str) -> Option<String> 
 /// separately by [`missing_gitsemver_binary_advisory`] - a string comparison against a
 /// fallback marker would be meaningless noise here), the git order was undecidable, or
 /// the checkout is not (or no longer) ahead. `commit_distance` is injected so this stays
-/// pure and testable without a live repo - mirrors [`drift_side`]'s injected-oracle shape.
+/// pure and testable without a live repo.
 fn behind_the_tree_message(
     installed_version: &str,
     checkout_version: &str,
@@ -751,16 +578,15 @@ fn behind_the_tree_message(
 
 /// Gather the behind-the-tree advisory (spec 74, criterion 2) at `root`, given
 /// `installed_version` and `installed_commit` (the composition root wires
-/// [`GITSEMVER_VERSION`] and [`BUILD_PROVENANCE`] - the SAME commit-determined identity
-/// [`workflow_drift_advisory`] already uses, per the spec's global constraint that
-/// stored provenance keeps the build hash as its identity key). Re-derives the
+/// [`GITSEMVER_VERSION`] and [`BUILD_PROVENANCE`] - the commit-determined identity, per the
+/// spec's global constraint that stored provenance keeps the build hash as its identity
+/// key). Re-derives the
 /// CHECKOUT's current version through the SAME derivation seam criterion 1 embeds at
 /// compile time ([`gitsemver::derive_version`], reused here rather than reimplemented -
 /// a live, runtime invocation of `go-gitsemver`/git for VALIDATE's comparison
 /// specifically, never for `rigger version`'s own compile-time-only self-report; see the
 /// `mod gitsemver` doc comment above for why this is in-bounds). "Ahead" is decided by
-/// real git ANCESTRY of `installed_commit` in `HEAD` (mirrors [`git_is_ancestor`]'s
-/// existing role in [`drift_side`]) rather than a hand-rolled semver comparison: under
+/// real git ANCESTRY of `installed_commit` in `HEAD` (via [`git_is_ancestor`]) rather than a hand-rolled semver comparison: under
 /// this project's Mainline config the derived order is monotonic with commit order along
 /// one line of history, and ancestry is the more literal reading of the Problem
 /// statement's own "behind the tree" framing, with no new dependency. Only when
@@ -780,102 +606,39 @@ fn behind_the_tree_advisory(
     behind_the_tree_message(installed_version, &checkout_version, distance)
 }
 
-/// Which side of an installed-vs-embedded workflow drift is stale (spec 18, criterion 9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DriftSide {
-    /// The installed workflow is from a NEWER build than this binary: the binary is stale
-    /// (rebuild it).
-    BinaryStale,
-    /// The installed workflow is older than - or was hand-edited away from - this binary's
-    /// embedded copy: the workflow is stale (`rigger setup` to refresh it).
-    WorkflowStale,
-}
-
-/// Decide which side of a workflow drift is stale from the two builds' provenance, using an
-/// injected ancestry oracle so the decision is pure and testable in both directions. Names
-/// the BINARY as stale ONLY when the installed workflow's build is provably newer (this
-/// binary's build is a proper ancestor of it). Every other case (the installed build equals
-/// this binary from a local hand-edit, no recorded provenance, or an undecidable order)
-/// resolves to the actionable refresh directive, so the diagnostic is never the ambiguous
-/// "they differ".
-fn drift_side(
-    installed_provenance: Option<&str>,
-    binary_provenance: &str,
-    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
-) -> DriftSide {
-    match installed_provenance {
-        Some(installed)
-            if installed != binary_provenance
-                && is_ancestor(binary_provenance, installed) == Some(true) =>
-        {
-            DriftSide::BinaryStale
-        }
-        _ => DriftSide::WorkflowStale,
-    }
-}
-
-/// The workflow-drift advisory (spec 18, criterion 9): when the installed `/rigger` workflow
-/// differs from this binary's embedded copy, name WHICH side is stale using the build
-/// provenance and give the directive fix (rebuild the binary vs `rigger setup`), never an
-/// ambiguous "they differ". `None` when there is no drift. `binary_provenance` and the
-/// ancestry oracle are injected so the message is testable for both drift directions without
-/// a live git repo; the composition root wires [`BUILD_PROVENANCE`] and [`git_is_ancestor`].
-fn workflow_drift_advisory(
-    root: &Path,
-    binary_provenance: &str,
-    is_ancestor: impl Fn(&str, &str) -> Option<bool>,
-) -> Option<String> {
-    if !installed_workflow_drifted(root) {
-        return None;
-    }
-    let path = workflow_path(root);
-    let installed_provenance = installed_workflow_provenance(root);
-    Some(
-        match drift_side(
-            installed_provenance.as_deref(),
-            binary_provenance,
-            is_ancestor,
-        ) {
-            DriftSide::BinaryStale => format!(
-                "warning: the installed /rigger workflow ({}) is from a newer build ({}) than \
-                 this rigger binary (build {}); the binary is stale. Rebuild rigger so the \
-                 workflow and the binary that drives it are the same build.",
-                path.display(),
-                installed_provenance.as_deref().unwrap_or("a newer build"),
-                binary_provenance,
-            ),
-            DriftSide::WorkflowStale => format!(
-                "warning: the installed /rigger workflow ({}) has drifted from this rigger \
-                 binary's embedded copy (build {}); the installed workflow is stale. Run \
-                 `rigger setup` to refresh it so the workflow and the binary that drives it \
-                 are the same build.",
-                path.display(),
-                binary_provenance,
-            ),
-        },
-    )
-}
-
 /// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
 /// `None` when the tracked `.rigger/` tree is clean (or the project is not a git repo, or
 /// git is unavailable - in which case there is nothing to flag). Runs `git status
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
-/// Warn when the checkout's `.claude/settings.json` lacks any of the session settings
-/// `rigger setup` installs (the prime hook, the grep-guard, the status line): a headless spawn
-/// gets them from the host, but the operator's own interactive session reads them from here.
-fn session_hooks_advisory(root: &Path) -> Option<String> {
+/// The warnings on the checkout's `.claude/settings.json`, in order: one when it lacks any of
+/// the session settings `rigger setup` installs (the prime hook and the status line, and the
+/// grep-guard when `grep_guard`, the workflow's `defaults.grep_guard`, declares it), and one when
+/// it carries the grep-guard the workflow does not declare. A headless spawn gets its settings
+/// from the host, but the operator's own interactive session reads them from here.
+fn session_hooks_advisory(root: &Path, grep_guard: bool) -> Vec<String> {
     let settings = std::fs::read(root.join(".claude").join("settings.json")).unwrap_or_default();
-    if rigger::hooks::carries_session_settings(&settings) {
-        return None;
+    let mut advisories = Vec::new();
+    if !rigger::hooks::carries_session_settings(&settings, grep_guard) {
+        advisories.push(if grep_guard {
+            "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook, the PreToolUse grep-guard and the status line), so an \
+             interactive session in this checkout starts unprimed and without the graph-first \
+             lookup guard. Run `rigger setup` to install them."
+        } else {
+            "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook and the status line), so an interactive session in this \
+             checkout starts unprimed. Run `rigger setup` to install them."
+        });
     }
-    Some(
-        "warning: .claude/settings.json does not carry rigger's session hooks (the SessionStart \
-         prime hook, the PreToolUse grep-guard and the status line), so an interactive session \
-         in this checkout starts unprimed and without the graph-first lookup guard. Run \
-         `rigger setup` to install them."
-            .to_string(),
-    )
+    if !grep_guard && rigger::hooks::carries_grep_guard(&settings) {
+        advisories.push(
+            "warning: .claude/settings.json carries the PreToolUse grep-guard, which the \
+             workflow does not declare (`defaults.grep_guard` is not true), so it still denies a \
+             grep in an interactive session in this checkout. Run `rigger setup` to remove it.",
+        );
+    }
+    advisories.into_iter().map(str::to_string).collect()
 }
 
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
@@ -904,7 +667,7 @@ fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
 /// Given `git status --porcelain` output already scoped to `.rigger/`, return the paths
 /// of TRACKED files with uncommitted modifications. Untracked (`??`) and ignored (`!!`)
 /// entries are excluded - the criterion flags TRACKED files, and a machine-local
-/// untracked/ignored file (e.g. `.rigger/events.db`, `.rigger/shim/`) is not a drift the
+/// untracked/ignored file (e.g. `.rigger/events.db`, `.rigger/graph.db`) is not a drift the
 /// operator must commit. A porcelain line is `XY <path>` (two status columns, a space,
 /// then the path); rename entries (`R  old -> new`) are reported verbatim.
 fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
@@ -938,7 +701,7 @@ fn residue_advisories(
     // The repo whose `<repo>/.rigger/tmp` the run uses (spec 77 criterion 6:
     // [`owning_repo_root`] is the SAME authority [`footprint_report_for`] resolves its own
     // scratch root from). Keeps the scanned scratch root aligned with the run's actual one.
-    let repo = owning_repo_root(&cwd);
+    let repo = owning_repo_root(&cwd)?;
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
         &repo,
         &cfg.workflow.defaults.workdir,
@@ -973,7 +736,7 @@ fn residue_advisories(
 /// rooted under the scratch root: a leak the teardown reap missed, or a process left running
 /// while no teardown is active. ONE advisory per process, each naming its pid and command, so
 /// an operator can see and reclaim it - surfaced only, like the residue block, never a hard
-/// failure and never a kill (the teardown reap in `src/worktree.rs` / `cmd_step` is the only
+/// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
 /// kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
 /// empty where the dir or `/proc` is absent, this is a graceful no-op (empty, never an error)
@@ -990,7 +753,7 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
             format!(
                 "warning: process rooted under the scratch root (surfaced only - validate \
                  never reaps it): {named} - its cwd is under {}; it outlives a dir rigger owns \
-                 until the next teardown or step reaps it.",
+                 until the next teardown or run start reaps it.",
                 scratch_root.display()
             )
         })
@@ -1041,12 +804,12 @@ fn read_run_units_or_why(
     // [`require_store_dir`] server branch uses), binding identity to the main repo root and
     // letting [`resolve_store`] reach the server.
     let loc = if sel.is_sqlite() {
-        let Some(dir) = find_store_dir_from(cwd) else {
+        let Some(dir) = find_store_dir_from(cwd)? else {
             return Ok(Ok(RunUnits::default()));
         };
         StoreLocation { dir }
     } else {
-        server_store_location(cwd)
+        server_store_location(cwd)?
     };
     // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
     // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
@@ -1056,7 +819,7 @@ fn read_run_units_or_why(
         Ok(backend) => backend,
         Err(e) => return Ok(Err(format!("the run log cannot be opened: {e}"))),
     };
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let store = Namespaced::new(backend.as_ref(), &loc.identity()?);
     Ok(store
         .read_stream(conductor::STREAM, 0, Direction::Forward)
         .map(|events| current_run_units(&events))
@@ -1105,7 +868,7 @@ pub(super) fn measure_footprint(
     cwd: &Path,
     workdir: &str,
 ) -> Result<(Vec<FootprintCategory>, Option<String>), Box<dyn std::error::Error>> {
-    let repo = owning_repo_root(cwd);
+    let repo = owning_repo_root(cwd)?;
     let rigger_dir = Path::new(&repo).join(RIGGER_DIR);
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(&repo, workdir));
     let (run_units, liveness_unknown) = match read_run_units_or_why(cwd)? {
@@ -1187,8 +950,7 @@ fn check_docs(root: &Path) -> Res {
 /// [`rendered_docs`] order (registry order, then
 /// [`HANDBOOK_PAGES`] order). An ABSENT (or unreadable) output is skipped - these are
 /// rigger's OWN committed docs, and an operator project never carries them, so their
-/// absence is not drift (the same "nothing installed, nothing to drift" rule
-/// [`installed_workflow_drifted`] applies to the workflow). Byte comparison (not
+/// absence is not drift (nothing installed, nothing to drift). Byte comparison (not
 /// `read_to_string`): a committed file corrupted to non-UTF-8 is genuinely drifted, and
 /// comparing bytes catches it rather than silently skipping it. Renders through the ONE
 /// list [`write_docs`] writes, so the check and the write can never disagree on what "the
@@ -1386,7 +1148,7 @@ mod tests {
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
-                         !! .rigger/shim/node_modules\n";
+                         !! .rigger/graph.db\n";
         let dirty = dirty_tracked_paths(porcelain);
         assert_eq!(
             dirty,
@@ -1406,136 +1168,7 @@ mod tests {
         assert!(dirty_tracked_paths("").is_empty());
     }
 
-    #[test]
-    fn installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-
-        // Absent: nothing installed, so there is no drift to surface.
-        assert!(
-            !installed_workflow_drifted(root),
-            "an absent installed workflow is not drift"
-        );
-
-        // Identical to the embedded copy: not drift.
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
-        assert!(
-            !installed_workflow_drifted(root),
-            "an installed workflow byte-identical to the embedded copy is not drift"
-        );
-
-        // Differs from the embedded copy: drift.
-        std::fs::write(&path, "// stale installed workflow\n").unwrap();
-        assert!(
-            installed_workflow_drifted(root),
-            "an installed workflow differing from the embedded copy IS drift"
-        );
-    }
-
     // ---- spec 18, criterion 9: workflow-drift "which side is stale" diagnostic --------
-
-    #[test]
-    fn drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer() {
-        // This binary's build is a PROPER ANCESTOR of the build that wrote the installed
-        // workflow: the installed workflow is newer, so the BINARY is stale.
-        let binary_is_ancestor = |ancestor: &str, descendant: &str| -> Option<bool> {
-            Some(ancestor == "binary" && descendant == "installed")
-        };
-        assert_eq!(
-            drift_side(Some("installed"), "binary", binary_is_ancestor),
-            DriftSide::BinaryStale,
-            "a provably-newer installed workflow makes the binary stale"
-        );
-
-        // The installed workflow's build is OLDER (this binary is not its ancestor): the
-        // WORKFLOW is stale.
-        assert_eq!(
-            drift_side(Some("installed"), "binary", |_, _| Some(false)),
-            DriftSide::WorkflowStale,
-            "an older installed workflow makes the workflow stale"
-        );
-
-        // Undecidable order (git cannot resolve one of the ids, e.g. an operator project
-        // that lacks rigger's history): fall back to the actionable refresh directive.
-        assert_eq!(
-            drift_side(Some("installed"), "binary", |_, _| None),
-            DriftSide::WorkflowStale,
-            "an undecidable order falls back to refreshing the workflow"
-        );
-
-        // No recorded provenance (an older install with no sidecar): refresh directive, and
-        // the ancestry oracle is never consulted.
-        assert_eq!(
-            drift_side(None, "binary", |_, _| panic!(
-                "ancestry must not be consulted without a recorded provenance"
-            )),
-            DriftSide::WorkflowStale,
-            "a missing provenance falls back to refreshing the workflow"
-        );
-
-        // The installed build EQUALS this binary but the content drifted (a local
-        // hand-edit): refresh directive, ancestry never consulted.
-        assert_eq!(
-            drift_side(Some("binary"), "binary", |_, _| panic!(
-                "ancestry must not be consulted for a same-build hand-edit"
-            )),
-            DriftSide::WorkflowStale,
-            "a same-build content edit falls back to refreshing the workflow"
-        );
-    }
-
-    #[test]
-    fn workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-
-        // No drift (byte-identical to the embedded copy): no advisory at all.
-        std::fs::write(&path, RIGGER_WORKFLOW).unwrap();
-        assert!(
-            workflow_drift_advisory(root, "binary", |_, _| None).is_none(),
-            "no advisory when the installed workflow matches the embedded copy"
-        );
-
-        // Drift the installed workflow and record it as written by a NEWER build.
-        std::fs::write(&path, "// drifted installed workflow\n").unwrap();
-        std::fs::write(workflow_provenance_path(root), "installed-newer\n").unwrap();
-        let binary_stale = workflow_drift_advisory(root, "binary-old", |anc, desc| {
-            Some(anc == "binary-old" && desc == "installed-newer")
-        })
-        .expect("a drifted workflow yields an advisory");
-        assert!(
-            binary_stale.contains("the binary is stale")
-                && binary_stale.to_lowercase().contains("rebuild")
-                && binary_stale.contains("installed-newer")
-                && binary_stale.contains("binary-old"),
-            "the binary-stale advisory names the binary as stale, says rebuild, and cites \
-             both provenances; got: {binary_stale}"
-        );
-        assert!(
-            !binary_stale.contains("they differ"),
-            "the advisory must never be the ambiguous 'they differ'; got: {binary_stale}"
-        );
-
-        // Same drifted file, but recorded as an OLDER build: the WORKFLOW is stale.
-        std::fs::write(workflow_provenance_path(root), "installed-old\n").unwrap();
-        let workflow_stale = workflow_drift_advisory(root, "binary-new", |_, _| Some(false))
-            .expect("a drifted workflow yields an advisory");
-        assert!(
-            workflow_stale.contains("the installed workflow is stale")
-                && workflow_stale.contains("rigger setup")
-                && workflow_stale.contains(".claude/workflows/rigger.js"),
-            "the workflow-stale advisory names the workflow as stale, says `rigger setup`, \
-             and names the file; got: {workflow_stale}"
-        );
-        assert!(
-            !workflow_stale.contains("they differ"),
-            "the advisory must never be the ambiguous 'they differ'; got: {workflow_stale}"
-        );
-    }
 
     /// A fresh repo at `root` with a linear history of `commits` commits (each rewriting one
     /// file), returning their ids oldest first.
@@ -1761,22 +1394,46 @@ mod tests {
         );
     }
 
+    /// The settings advisories over the checkout's `.claude/settings.json`, by what it carries and
+    /// whether the workflow declares the grep-guard: the missing-hooks warning names the guard
+    /// only when declared, and a guard the workflow does not declare is named stale.
     #[test]
-    fn validate_advisories_warns_on_workflow_drift_naming_the_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let path = workflow_path(root);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "// drifted\n").unwrap();
-
-        let advisories = validate_advisories(root);
-        assert!(
-            advisories
-                .iter()
-                .any(|a| a.contains("drifted") && a.contains(".claude/workflows/rigger.js")),
-            "a drifted installed workflow yields a drift advisory naming the file; got: \
-             {advisories:?}"
-        );
+    fn session_hooks_advisory_reads_the_declared_grep_guard() {
+        let missing_guarded = "warning: .claude/settings.json does not carry rigger's session \
+             hooks (the SessionStart prime hook, the PreToolUse grep-guard and the status line), \
+             so an interactive session in this checkout starts unprimed and without the \
+             graph-first lookup guard. Run `rigger setup` to install them.";
+        let missing = "warning: .claude/settings.json does not carry rigger's session hooks (the \
+             SessionStart prime hook and the status line), so an interactive session in this \
+             checkout starts unprimed. Run `rigger setup` to install them.";
+        let stale = "warning: .claude/settings.json carries the PreToolUse grep-guard, which the \
+             workflow does not declare (`defaults.grep_guard` is not true), so it still denies a \
+             grep in an interactive session in this checkout. Run `rigger setup` to remove it.";
+        let primed = rigger::hooks::install_session_settings(b"", false).unwrap();
+        let guarded = rigger::hooks::install_session_settings(b"", true).unwrap();
+        let guard_alone = rigger::hooks::install_grep_guard(b"").unwrap();
+        let rows = [
+            (None, true, vec![missing_guarded]),
+            (None, false, vec![missing]),
+            (Some(primed.as_slice()), false, vec![]),
+            (Some(primed.as_slice()), true, vec![missing_guarded]),
+            (Some(guarded.as_slice()), true, vec![]),
+            (Some(guarded.as_slice()), false, vec![stale]),
+            (Some(guard_alone.as_slice()), false, vec![missing, stale]),
+        ];
+        for (settings, grep_guard, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(settings) = settings {
+                std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+                std::fs::write(dir.path().join(".claude/settings.json"), settings).unwrap();
+            }
+            assert_eq!(
+                session_hooks_advisory(dir.path(), grep_guard),
+                expected,
+                "{:?} with grep_guard {grep_guard}",
+                settings.map(String::from_utf8_lossy)
+            );
+        }
     }
 
     #[test]
@@ -1881,8 +1538,8 @@ mod tests {
         let root = dir.path();
         // No project.id: identity is the legacy basename (unchanged pre-spec-09 behavior).
         let basename = root.file_name().unwrap().to_str().unwrap().to_string();
-        assert_eq!(project_identity_at(root), basename);
-        assert_eq!(legacy_identity_at(root), basename);
+        assert_eq!(project_identity_at(root).unwrap(), basename);
+        assert_eq!(legacy_identity_at(root).unwrap(), basename);
 
         // A tracked project.id, when present (and trimmed), IS the identity - it survives a
         // directory rename because it does not track the basename.
@@ -1892,15 +1549,15 @@ mod tests {
             "  durable-id-42 \n",
         )
         .unwrap();
-        assert_eq!(project_identity_at(root), "durable-id-42");
+        assert_eq!(project_identity_at(root).unwrap(), "durable-id-42");
         // The legacy resolver ignores the file, so the migration can still name the "before".
-        assert_eq!(legacy_identity_at(root), basename);
-        assert!(has_tracked_project_id(root));
+        assert_eq!(legacy_identity_at(root).unwrap(), basename);
+        assert!(has_tracked_project_id(root).unwrap());
 
         // A blank id file is treated as absent (falls back), never an empty identity.
         std::fs::write(root.join(RIGGER_DIR).join(PROJECT_ID_FILE), "   \n").unwrap();
-        assert_eq!(project_identity_at(root), basename);
-        assert!(!has_tracked_project_id(root));
+        assert_eq!(project_identity_at(root).unwrap(), basename);
+        assert!(!has_tracked_project_id(root).unwrap());
     }
 
     // --- Spec 65 unit 5: `rigger validate` SURFACES the resolved wrapper, cache dir, and
@@ -2139,137 +1796,20 @@ mod tests {
         assert!(model_drift_advisory(&metrics::ModelDrift::default()).is_none());
     }
 
-    // --- Spec 68, VALIDATE ADVISORIES: the two pure formatters (INDEX STALENESS, LOG BLOAT) ---
-
-    #[test]
-    fn index_staleness_message_names_every_kind_of_disagreement_and_the_fix() {
-        let drift = rigger::grounder::symbols::IndexDrift {
-            added: vec!["new.rs".to_string()],
-            removed: vec!["gone.rs".to_string()],
-            changed: vec!["edited.rs".to_string()],
-        };
-        let msg = index_staleness_message(&drift);
-        assert!(msg.starts_with("warning:"), "advisory: {msg}");
-        assert!(
-            msg.contains('1'),
-            "the message must carry the per-kind counts: {msg}"
-        );
-        assert!(
-            msg.contains("rigger reindex"),
-            "the message must name the fix: {msg}"
-        );
-    }
-
-    // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
-    // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
-    // own implementation) ---
-
-    #[test]
-    fn graph_index_lag_advisory_names_every_lagging_file_and_the_fix() {
-        let lagging = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-        let msg = graph_index_lag_advisory(&lagging).expect("a non-empty sample draws an advisory");
-        assert!(msg.starts_with("warning:"), "advisory: {msg}");
-        assert!(
-            msg.contains("src/a.rs") && msg.contains("src/b.rs"),
-            "the message must name every lagging file: {msg}"
-        );
-        assert!(
-            msg.contains("Run `rigger graph build` to refresh it.") && !msg.contains("reindex"),
-            "the message must name the verb that records and folds the lagging entries: {msg}"
-        );
-    }
-
-    #[test]
-    fn graph_index_lag_advisory_is_none_when_the_sample_is_empty() {
-        assert_eq!(graph_index_lag_advisory(&[]), None);
-    }
-
-    /// The advisory reads the log's side in ONE typed read of the perception types from the
-    /// stream's start and no whole-stream read (spec 107): over a log holding a run's start, a
-    /// stale ledger entry of a file the tree holds and an entry of a file it does not, it
-    /// materializes the two entries alone, and with no graph to ask names the stale file where
-    /// an extraction is compiled and nothing where none is.
-    #[test]
-    fn the_index_lag_advisory_reads_the_log_in_one_typed_read_of_the_perception_types() {
-        use crate::test_support::{generation_ingested, CountedRead, ReadCountingStore};
-
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("kept.rs"), "fn kept() {}\n").unwrap();
-        let inner = Store::open(":memory:").unwrap();
-        inner
-            .append(
-                conductor::STREAM,
-                ExpectedRevision::Any,
-                &[
-                    Event::new("RunStarted", b"{}".to_vec()),
-                    generation_ingested("gc", "kept.rs", "stale", "", false).event(1),
-                    generation_ingested("gc", "gone.rs", "stale", "", false).event(1),
-                ],
-            )
-            .unwrap();
-        let store = ReadCountingStore::new(&inner);
-
-        let lagging = read_graph_index_lag(&store, None, dir.path()).unwrap();
-
-        let sampled: &[&str] = if cfg!(feature = "symbols") {
-            &["kept.rs"]
-        } else {
-            &[]
-        };
-        assert_eq!(lagging, sampled);
-        assert_eq!(
-            store.reads(),
-            [CountedRead::Typed {
-                stream: conductor::STREAM.to_string(),
-                from: 0,
-                only: true,
-                types: rigger::retention::PERCEPTION_TYPES
-                    .map(String::from)
-                    .to_vec(),
-                materialized: 2,
-            }]
-        );
-    }
+    // --- Spec 68, VALIDATE ADVISORIES: the LOG BLOAT advisory's pure formatter ---
 
     #[test]
     fn bloat_advisory_is_none_for_a_count_holding_no_derived_event_and_names_any_other() {
-        assert_eq!(bloat_advisory(&DerivedCount::default()), None);
-        let one = DerivedCount {
-            shed: 1,
-            unkeyed: 0,
-            identities: ["gc/a.rs".to_string()].into(),
-        };
         assert_eq!(
-            bloat_advisory(&one).as_deref(),
-            Some(
-                "warning: the event log still holds 1 derived events of 1 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
-        );
-        // Decided by the events alone: rows naming no identity are still derived events left.
-        let all_unkeyed = DerivedCount {
-            shed: 7,
-            unkeyed: 7,
-            identities: Default::default(),
-        };
-        assert_eq!(
-            bloat_advisory(&all_unkeyed).as_deref(),
-            Some(
-                "warning: the event log still holds 7 derived events of 0 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
-        );
-        let two_identities = DerivedCount {
-            shed: 7,
-            unkeyed: 1,
-            identities: ["gc/a.rs", "gd/a.rs"].map(String::from).into(),
-        };
-        assert_eq!(
-            bloat_advisory(&two_identities).as_deref(),
-            Some(
-                "warning: the event log still holds 7 derived events of 2 file identities; run \
-                 `rigger reset --derived` to migrate them into the ledger."
-            )
+            [0, 7].map(bloat_advisory),
+            [
+                None,
+                Some(
+                    "warning: the event log still holds 7 derived event(s); run `rigger reset \
+                     --derived` to delete them."
+                        .to_string()
+                ),
+            ]
         );
     }
 
@@ -2277,8 +1817,6 @@ mod tests {
     /// contract: with NO store file at `<tempdir>/.rigger/<filename>` at all, `advisory_for` must
     /// return `None` BEFORE opening anything (opening would create the file - a read-only
     /// advisory's forbidden side effect), and the file must genuinely stay absent afterwards.
-    /// `bloat_advisory_for` and `retired_entities_advisory_for` (spec 86 criterion 3) share this
-    /// exact contract and this exact test shape - one helper, never two near-identical bodies.
     fn assert_advisory_for_never_fabricates_a_missing_store(
         filename: &str,
         advisory_for: impl Fn(&str, &str) -> Option<String>,
@@ -2299,73 +1837,5 @@ mod tests {
     #[test]
     fn bloat_advisory_for_never_fabricates_a_store_that_does_not_exist() {
         assert_advisory_for_never_fabricates_a_missing_store("events.db", bloat_advisory_for);
-    }
-
-    // --- Spec 86 criterion 3, THE MIGRATION IS DELIBERATE: the RETIRED CODE-ENTITY advisory ---
-
-    #[test]
-    fn retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization() {
-        assert_eq!(
-            retired_entities_advisory(0),
-            None,
-            "nothing retired is not worth an operator's attention"
-        );
-        let one = retired_entities_advisory(1).expect("a count of one must still be reported");
-        assert!(one.contains('1'), "advisory: {one}");
-        assert!(
-            one.contains("entity") && !one.contains("entities"),
-            "singular wording for exactly one: {one}"
-        );
-        let many = retired_entities_advisory(3).expect("a count above one must be reported");
-        assert!(many.contains('3'), "advisory: {many}");
-        assert!(
-            many.contains("entities"),
-            "plural wording for more than one: {many}"
-        );
-    }
-
-    #[test]
-    fn retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist() {
-        assert_advisory_for_never_fabricates_a_missing_store(
-            "graph.db",
-            retired_entities_advisory_for,
-        );
-    }
-
-    #[test]
-    fn retired_entities_advisory_for_reads_the_projectors_own_counting_authority() {
-        // An end-to-end check that the advisory's gathering half is wired to the SAME counting
-        // authority the fold-level migration tests exercise directly
-        // (`contextgraph::sqlite::migration_c3`), never a second, shadow count.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".rigger").join("graph.db");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        {
-            let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
-            // A legacy test-entity node, then the empty structural boundary that retires it -
-            // exactly the migration's own fold-level shape.
-            let def = serde_json::json!({
-                "file": "tests/integration.rs", "name": "an_integration_test", "kind": "function",
-                "line": 2, "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                serde_json::to_vec(&def).unwrap(),
-            );
-            e.position = 1;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-            let boundary = serde_json::json!({
-                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
-            });
-            let mut e = Event::new(
-                contextgraph::TYPE_EDGE_INFERRED,
-                serde_json::to_vec(&boundary).unwrap(),
-            );
-            e.position = 2;
-            crate::test_support::folds(&p, std::slice::from_ref(&e));
-        }
-        let advisory = retired_entities_advisory_for(path.to_str().unwrap(), "proj")
-            .expect("the migration retired exactly one entity, so the advisory must fire");
-        assert!(advisory.contains('1'), "advisory: {advisory}");
     }
 }
