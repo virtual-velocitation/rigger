@@ -11538,8 +11538,77 @@ mod leaf_keys_c1 {
             ],
         );
         let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
-        assert_eq!(cluster_counts(&re), vec![("a.rs", 3), ("d.rs", 1)]);
+        assert_eq!(cluster_counts(&re), vec![("a.rs", 1), ("d.rs", 1)]);
         assert_eq!(re.unresolved, Vec::new());
+    }
+}
+
+/// Spec 119's member rule at the files re-projection: a placeholder standing in for a member.
+#[cfg(test)]
+mod stand_in_c1 {
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
+    use super::*;
+    use crate::test_support::{def_node, one_community_graph, plain, ONE_COMMUNITY};
+
+    /// One row: the case, the community's members, the definitions outside it, and the counts.
+    type StandInCase<'a> = (&'a str, Vec<Node>, Vec<Node>, Vec<(&'a str, usize)>);
+
+    /// Each row: the community's members, the definitions outside it, and the file buckets the
+    /// files re-projection counts. A placeholder whose one candidate definition is a member
+    /// stands in for it and is not counted again; any other placeholder counts in the bucket it
+    /// resolves to, and `total` stays the member set's size.
+    #[test]
+    fn reproject_files_counts_a_placeholder_standing_in_for_a_member_once() {
+        let placeholder = |id: &str| plain(id, KIND_CODE_ENTITY);
+        let cases: [StandInCase<'_>; 4] = [
+            (
+                "a definition and the placeholder resolving to it",
+                vec![
+                    def_node("src/a.rs::run", "run"),
+                    placeholder("src/b.rs::%run"),
+                ],
+                vec![],
+                vec![("src/a.rs", 1)],
+            ),
+            (
+                "two placeholders standing in for one member",
+                vec![
+                    def_node("src/a.rs::run", "run"),
+                    placeholder("src/b.rs::%run"),
+                    placeholder("src/c.rs::%run"),
+                ],
+                vec![],
+                vec![("src/a.rs", 1)],
+            ),
+            (
+                "a placeholder whose one candidate is outside the subject",
+                vec![
+                    def_node("src/a.rs::run", "run"),
+                    placeholder("src/b.rs::%helper"),
+                ],
+                vec![def_node("src/c.rs::helper", "helper")],
+                vec![("src/a.rs", 1), ("src/c.rs", 1)],
+            ),
+            (
+                "a placeholder whose one candidate is outside, beside one standing in",
+                vec![
+                    def_node("src/a.rs::run", "run"),
+                    placeholder("src/b.rs::%run"),
+                    placeholder("src/b.rs::%helper"),
+                ],
+                vec![def_node("src/c.rs::helper", "helper")],
+                vec![("src/a.rs", 1), ("src/c.rs", 1)],
+            ),
+        ];
+        for (case, members, outside, want) in cases {
+            let size = members.len();
+            let mut g = one_community_graph(ONE_COMMUNITY, members);
+            g.nodes.extend(outside);
+            let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
+            assert_eq!(cluster_counts(&re), want, "{case}");
+            assert_eq!(unresolved_frontiers(&re), Vec::new(), "{case}");
+            assert_eq!(re.total, size, "{case}");
+        }
     }
 }
 
@@ -11552,8 +11621,9 @@ mod file_half_c13 {
     use crate::test_support::{def_node, one_community_graph, plain, ONE_COMMUNITY};
 
     /// An extensionless file's definition `Makefile::all` and the placeholder another file
-    /// folds for its leaf fold under `Makefile`, a `file` node under its own path whatever its
-    /// last segment, and a dotted decision `v1.2-choice` under no file.
+    /// folds for its leaf fold under `Makefile`, counted once since the placeholder stands in for
+    /// the definition, a `file` node under its own path whatever its last segment, and a dotted
+    /// decision `v1.2-choice` under no file.
     #[test]
     fn reproject_files_folds_an_extensionless_files_entity_under_its_file() {
         let g = one_community_graph(
@@ -11568,7 +11638,7 @@ mod file_half_c13 {
         let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
         assert_eq!(
             cluster_counts(&re),
-            vec![("Makefile", 2), ("src/utils/Makefile", 1)]
+            vec![("Makefile", 1), ("src/utils/Makefile", 1)]
         );
         assert_eq!(unresolved_frontiers(&re), vec![("v1.2-choice", Vec::new())]);
     }

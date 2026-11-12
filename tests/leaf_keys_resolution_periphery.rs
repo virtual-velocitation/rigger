@@ -50,10 +50,11 @@ fn leaf_graph(placeholder: &str, beside: Vec<Node>) -> Graph {
 /// GIVEN a placeholder whose leaf is the name of a nested definition in another file, WHEN the
 /// files lens folds the whole graph and re-grains the concept, THEN the placeholder folds under
 /// the nested definition's file, carrying its edge while the whole fold counts only the file's
-/// members; a second definition of the leaf leaves it unresolved with both
-/// candidates; a node of an empty `name` is no candidate but a placeholder of its id's leaf; a
-/// doubled sigil leaves the leaf one sigil, which nothing defines; and the placeholder of the
-/// empty leaf, `src/c.rs::%`, has no definition, which no node of an empty `name` gives.
+/// members and the re-grain counts it once with the member it stands in for; a second definition
+/// of the leaf leaves it unresolved with both candidates; a node of an empty `name` is no
+/// candidate but a placeholder of its id's leaf; a doubled sigil leaves the leaf one sigil, which
+/// nothing defines; and the placeholder of the empty leaf, `src/c.rs::%`, has no definition,
+/// which no node of an empty `name` gives.
 #[test]
 fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
     assert_eq!(
@@ -62,7 +63,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
             "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
-            "concept src/a.rs 2",
+            "concept src/a.rs 1",
             "concept src/c.rs 1",
         ],
         "the placeholder's leaf `new` is the nested definition's name"
@@ -93,7 +94,7 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
             "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
-            "concept src/a.rs 2",
+            "concept src/a.rs 1",
             "concept src/c.rs 1",
         ],
         "an empty `name` defines nothing: that node resolves by its id's leaf like a placeholder"
@@ -127,8 +128,8 @@ fn the_files_lens_folds_a_placeholder_onto_the_nested_definition_of_its_leaf() {
 }
 
 /// GIVEN the same graph served, WHEN the operator re-grains the concept by files through the
-/// `/api/graph` route, THEN the placeholder folds under the nested definition's file and no
-/// member is unresolved.
+/// `/api/graph` route, THEN the placeholder folds under the nested definition's file, standing in
+/// for it, and no member is unresolved.
 #[test]
 fn the_served_files_regrain_folds_a_placeholder_onto_the_nested_definition() {
     let body = served_json(&leaf_graph(PLACEHOLDER, Vec::new()), SUB_C_FILES_ROUTE);
@@ -138,7 +139,7 @@ fn the_served_files_regrain_folds_a_placeholder_onto_the_nested_definition() {
             "subject": "concept/1/0",
             "total": 3,
             "clusters": [
-                { "key": "src/a.rs", "kind": "code-entity", "count": 2 },
+                { "key": "src/a.rs", "kind": "code-entity", "count": 1 },
                 { "key": "src/c.rs", "kind": "code-entity", "count": 1 },
             ],
             "edges": [{ "from": "src/a.rs", "to": "src/c.rs", "weight": 1 }],

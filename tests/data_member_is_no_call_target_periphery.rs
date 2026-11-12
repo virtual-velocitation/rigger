@@ -547,7 +547,8 @@ fn lens_graph(kind: &str, with_fn: bool) -> Graph {
 /// realize, THEN the member sits under its own file; with no fn of the leaf the placeholder
 /// folds nowhere and is unresolved with no candidate; with one fn of the leaf it resolves onto
 /// that fn's file alone, carrying that file's edge while the whole fold counts only the file's
-/// members. A fn in the member's place takes the placeholder.
+/// members. A fn in the member's place takes the placeholder, which stands in for that member
+/// and is not counted again.
 #[test]
 fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_onto_it() {
     for kind in NON_TARGETS {
@@ -582,10 +583,10 @@ fn the_files_lens_folds_a_member_under_its_own_file_and_resolves_no_placeholder_
             "whole src/a.rs 1",
             "whole src/c.rs 1",
             "whole src/a.rs -- src/c.rs 1",
-            "concept src/a.rs 2",
+            "concept src/a.rs 1",
             "concept src/c.rs 1",
         ],
-        "a fn in the member's place takes the placeholder"
+        "a fn in the member's place takes the placeholder, which stands in for it"
     );
 }
 
