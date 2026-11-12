@@ -1775,11 +1775,12 @@ impl<'r> ReadGraph<'r> {
 }
 
 impl ReadGraph<'_> {
-    /// How the caller's worktree compares with `head`, as the composed graph's label states it.
-    fn honesty(&self, head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
+    /// How the worktree `head` was opened for compares with it, as the composed graph's label
+    /// states it.
+    fn honesty(head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
         rigger_domain::composed::Honesty {
-            worktree: self.worktree.display().to_string(),
-            diff: head.diff.clone(),
+            worktree: head.worktree.display().to_string(),
+            compared: head.compared,
             behind: head.behind.clone(),
         }
     }
@@ -1787,7 +1788,11 @@ impl ReadGraph<'_> {
 
 impl OpenGraph for ReadGraph<'_> {
     fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
-        open_head(&self.worktree)
+        self.head_in(&self.worktree)
+    }
+
+    fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+        open_head(worktree)
     }
 
     fn open_on(
@@ -1799,7 +1804,7 @@ impl OpenGraph for ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            self.honesty(head),
+            Self::honesty(head),
         )?;
         Ok(Box::new(composed))
     }
@@ -1816,7 +1821,7 @@ impl OpenGraph for ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            self.honesty(&head),
+            Self::honesty(&head),
         )?;
         ask(&composed)
     }
@@ -1835,8 +1840,8 @@ fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> 
 #[cfg(not(feature = "symbols"))]
 fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::TreeSource;
-    // The light lane shares the symbols lane's `Head` shape without a store: the tree's own
-    // difference from the worktree over a view that holds no fact.
+    // The light lane shares the symbols lane's `Head` shape without a store: a view that holds no
+    // fact, so none is overlaid, compared with the worktree as the symbols lane's is.
     let source: Box<dyn TreeSource> = match main_repo_root(worktree)? {
         Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(&root)),
         None => Box::new(rigger_store::code::DirTreeSource::new(worktree)),
@@ -1850,8 +1855,9 @@ fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> 
     };
     Ok(rigger_domain::code_view::Head {
         view: Box::new(rigger_domain::code_view::FactsView::new(stamp, Vec::new())),
-        diff,
+        compared: rigger_domain::code_view::Compared::of(diff.as_ref().map_err(String::as_str)),
         behind: None,
+        worktree: worktree.to_path_buf(),
     })
 }
 

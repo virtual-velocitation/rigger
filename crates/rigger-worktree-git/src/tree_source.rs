@@ -139,6 +139,19 @@ fn fields(out: &[u8]) -> impl Iterator<Item = &[u8]> {
     out.split(|b| *b == 0).filter(|f| !f.is_empty())
 }
 
+/// The top of the checkout `worktree` lies in, which a diff names its paths from.
+fn toplevel(worktree: &Path) -> Result<PathBuf, String> {
+    let top = rev_parse(worktree, Location::Toplevel)?;
+    top.map(PathBuf::from)
+        .ok_or_else(|| format!("{} is in no git repository", worktree.display()))
+}
+
+/// Whether `file` is a regular file, not followed through a symlink: the worktree's side of a
+/// file a listing keeps.
+fn regular(file: &Path) -> bool {
+    std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_file())
+}
+
 /// The blob a listing line names, when the line is a file a listing keeps.
 fn file_side(mode: &str, blob: &str) -> Option<String> {
     FILE_MODES.contains(&mode).then(|| blob.to_owned())
@@ -208,11 +221,13 @@ impl TreeSource for GitTreeSource {
         Ok(entries)
     }
 
-    /// Staged and unstaged edits both count: a path the tree holds is changed when the
-    /// worktree's bytes differ or are gone, and a path it does not hold is untracked unless
-    /// git ignores it. A change of the worktree's mode alone leaves the bytes as they were, so
-    /// it is no change. The diff and the untracked listing run at once, the diff over a copy of
-    /// the worktree's index ([`IndexCopy`]).
+    /// Staged and unstaged edits both count, each path named as a listing reads it
+    /// ([`FILE_MODES`]): a file the tree holds is modified when the worktree's bytes differ and
+    /// deleted when they are gone or no longer a file, and a file it does not hold is untracked
+    /// unless git ignores it. A change of the worktree's mode alone leaves the bytes as they were,
+    /// so it is no change. Every path is named from the top of the checkout, from whichever of its
+    /// directories `worktree` is. The diff and the untracked listing run at once, the diff over a
+    /// copy of the worktree's index ([`IndexCopy`]).
     fn changed_against_worktree(
         &self,
         tree: &str,
@@ -222,7 +237,7 @@ impl TreeSource for GitTreeSource {
             "-c",
             "core.fileMode=false",
             "diff",
-            "--name-status",
+            "--raw",
             "-z",
             "--no-renames",
             "--no-relative",
@@ -234,6 +249,8 @@ impl TreeSource for GitTreeSource {
             "--exclude-standard",
             "-z",
             "--full-name",
+            "--",
+            ":/",
         ];
         let listing_started = start_command(read_git(worktree), &listing);
         let status = IndexCopy::of(worktree).and_then(|copy| {
@@ -245,25 +262,64 @@ impl TreeSource for GitTreeSource {
         let (status, others) = (status?, others?);
         let mut out = WorktreeDiff::default();
         let mut status = fields(&status);
-        while let (Some(kind), Some(path)) = (status.next(), status.next()) {
-            let Ok(path) = std::str::from_utf8(path) else {
+        // `:<tree mode> <worktree mode> <object> <object> <status>`, then the path.
+        while let (Some(meta), Some(path)) = (status.next(), status.next()) {
+            let (Ok(meta), Ok(path)) = (std::str::from_utf8(meta), std::str::from_utf8(path))
+            else {
                 continue;
             };
-            if kind == b"A" {
-                out.untracked.push(path.to_owned());
-            } else {
-                out.changed.push(path.to_owned());
-            }
+            let mut modes = meta.trim_start_matches(':').split(' ');
+            let mut kept = || modes.next().is_some_and(|mode| FILE_MODES.contains(&mode));
+            let side = match (kept(), kept()) {
+                (true, true) => &mut out.modified,
+                (true, false) => &mut out.deleted,
+                (false, true) => &mut out.untracked,
+                (false, false) => continue,
+            };
+            side.push(path.to_owned());
         }
-        for path in fields(&others).filter_map(|p| std::str::from_utf8(p).ok()) {
-            if !out.changed.iter().any(|c| c == path) {
-                out.untracked.push(path.to_owned());
-            }
+        let others: Vec<&str> = fields(&others)
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .collect();
+        if !others.is_empty() {
+            let top = toplevel(worktree)?;
+            let new = others.into_iter().filter(|path| regular(&top.join(path)));
+            out.untracked.extend(new.map(str::to_owned));
         }
-        out.changed.sort();
-        out.untracked.sort();
-        out.untracked.dedup();
+        // A file the tree holds that the worktree holds outside its index (one with no index
+        // holds every file so) is in the worktree all the same: modified, its bytes read.
+        let held_untracked = |path: &String| out.untracked.contains(path);
+        let (back, deleted): (Vec<String>, Vec<String>) =
+            out.deleted.drain(..).partition(held_untracked);
+        out.deleted = deleted;
+        out.untracked.retain(|path| !back.contains(path));
+        out.modified.extend(back);
+        for paths in [&mut out.modified, &mut out.deleted, &mut out.untracked] {
+            paths.sort();
+            paths.dedup();
+        }
         Ok(out)
+    }
+
+    /// Reads each path from the top of `worktree`'s checkout as a listing keeps a file: a
+    /// regular file's bytes as they stand, with no git filter applied.
+    fn read_worktree(
+        &self,
+        worktree: &Path,
+        paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String> {
+        let top = toplevel(worktree)?;
+        for path in paths {
+            let file = top.join(path);
+            if !regular(&file) {
+                return Err(format!("{} is not a regular file", file.display()));
+            }
+            let bytes =
+                std::fs::read(&file).map_err(|e| format!("read {}: {e}", file.display()))?;
+            sink(path, &bytes);
+        }
+        Ok(())
     }
 
     /// Reads every blob through one `git cat-file --batch`; a blob the repository does not hold
@@ -643,7 +699,8 @@ mod tests {
             stage: &'static [&'static str],
             /// Paths made executable in the worktree before the diff.
             chmod: &'static [&'static str],
-            changed: &'static [&'static str],
+            modified: &'static [&'static str],
+            deleted: &'static [&'static str],
             untracked: &'static [&'static str],
         }
         let base: Files = &[
@@ -658,7 +715,8 @@ mod tests {
                 delete: &[],
                 stage: &[],
                 chmod: &[],
-                changed: &[],
+                modified: &[],
+                deleted: &[],
                 untracked: &[],
             },
             Row {
@@ -667,7 +725,8 @@ mod tests {
                 delete: &[],
                 stage: &[],
                 chmod: &[],
-                changed: &["a.txt"],
+                modified: &["a.txt"],
+                deleted: &[],
                 untracked: &[],
             },
             Row {
@@ -676,7 +735,8 @@ mod tests {
                 delete: &[],
                 stage: &["a.txt"],
                 chmod: &[],
-                changed: &["a.txt"],
+                modified: &["a.txt"],
+                deleted: &[],
                 untracked: &[],
             },
             Row {
@@ -685,7 +745,8 @@ mod tests {
                 delete: &["b.txt"],
                 stage: &[],
                 chmod: &[],
-                changed: &["b.txt"],
+                modified: &[],
+                deleted: &["b.txt"],
                 untracked: &[],
             },
             Row {
@@ -694,7 +755,8 @@ mod tests {
                 delete: &[],
                 stage: &[],
                 chmod: &[],
-                changed: &[],
+                modified: &[],
+                deleted: &[],
                 untracked: &["new.txt"],
             },
             Row {
@@ -703,7 +765,8 @@ mod tests {
                 delete: &[],
                 stage: &["new.txt"],
                 chmod: &[],
-                changed: &[],
+                modified: &[],
+                deleted: &[],
                 untracked: &["new.txt"],
             },
             Row {
@@ -712,7 +775,8 @@ mod tests {
                 delete: &[],
                 stage: &[],
                 chmod: &[],
-                changed: &[],
+                modified: &[],
+                deleted: &[],
                 untracked: &[],
             },
             Row {
@@ -721,7 +785,8 @@ mod tests {
                 delete: &[],
                 stage: &[],
                 chmod: &["a.txt"],
-                changed: &[],
+                modified: &[],
+                deleted: &[],
                 untracked: &[],
             },
             Row {
@@ -730,7 +795,8 @@ mod tests {
                 delete: &["b.txt"],
                 stage: &[],
                 chmod: &[],
-                changed: &["a.txt", "b.txt"],
+                modified: &["a.txt"],
+                deleted: &["b.txt"],
                 untracked: &["z/new.txt"],
             },
         ];
@@ -753,11 +819,66 @@ mod tests {
             assert_eq!(
                 diff,
                 WorktreeDiff {
-                    changed: owned(row.changed),
+                    modified: owned(row.modified),
+                    deleted: owned(row.deleted),
                     untracked: owned(row.untracked),
                 },
                 "{}",
                 row.name
+            );
+        }
+    }
+
+    /// A symlink holds no bytes a listing reads facts from, in the tree or the worktree: a file
+    /// the worktree turned into a symlink is deleted, a symlink it turned into a file is
+    /// untracked, and an untracked symlink is no difference. From a directory below the top, the
+    /// diff names every path from the top, and a read hands a file's bytes and refuses a symlink.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_no_file_in_the_diff_or_the_read() {
+        use std::os::unix::fs::symlink;
+        let dir = repo(&[("a.txt", "a\n"), ("b.txt", "b\n"), ("sub/c.txt", "c\n")]);
+        let root = dir.path();
+        symlink("a.txt", root.join("l")).unwrap();
+        git_commit_all(root, "link");
+        let source = GitTreeSource::new(root);
+        let head = source.head().unwrap();
+        remove(root, &["a.txt", "l"]);
+        symlink("b.txt", root.join("a.txt")).unwrap();
+        write(
+            root,
+            &[
+                ("l", "now a file\n"),
+                ("sub/c.txt", "c2\n"),
+                ("top.txt", "t\n"),
+            ],
+        );
+        symlink("b.txt", root.join("new.lnk")).unwrap();
+        let below = root.join("sub");
+        let diff = source.changed_against_worktree(&head.tree, &below).unwrap();
+        let owned =
+            |paths: &[&str]| -> Vec<String> { paths.iter().map(|p| (*p).to_owned()).collect() };
+        let want = WorktreeDiff {
+            modified: owned(&["sub/c.txt"]),
+            deleted: owned(&["a.txt"]),
+            untracked: owned(&["l", "top.txt"]),
+        };
+        assert_eq!(diff, want);
+        // (the paths read, the bytes handed, whether the read is refused)
+        let rows: [(&[&str], &[&str], bool); 3] = [
+            (&["sub/c.txt", "l"], &["c2\n", "now a file\n"], false),
+            (&["a.txt"], &[], true),
+            (&["gone.txt"], &[], true),
+        ];
+        for (paths, want, refused) in rows {
+            let mut read = Vec::new();
+            let got = source.read_worktree(&below, paths, &mut |_, bytes| {
+                read.push(String::from_utf8_lossy(bytes).into_owned())
+            });
+            assert_eq!(
+                (read.as_slice(), got.is_err()),
+                (&owned(want)[..], refused),
+                "{paths:?}"
             );
         }
     }
@@ -772,13 +893,14 @@ mod tests {
             /// The worktree to read, readied beside the checkout `main`, whose head commit holds
             /// `a.txt` and `b.txt`.
             worktree: fn(&Path) -> PathBuf,
-            changed: &'static [&'static str],
+            /// The files the diff names modified: none but where the worktree has no index.
+            modified: &'static [&'static str],
         }
         let rows = [
             Row {
                 name: "the main checkout",
                 worktree: Path::to_path_buf,
-                changed: &[],
+                modified: &[],
             },
             Row {
                 name: "a linked worktree, whose index is in its own administrative directory",
@@ -788,15 +910,15 @@ mod tests {
                     git_ok(main, &["worktree", "add", "-q", "--detach", at]);
                     linked
                 },
-                changed: &[],
+                modified: &[],
             },
             Row {
-                name: "a checkout with no index, which git reads as every file deleted",
+                name: "a checkout with no index, which holds every file outside its index",
                 worktree: |main| {
                     std::fs::remove_file(main.join(".git").join("index")).unwrap();
                     main.to_path_buf()
                 },
-                changed: &["a.txt", "b.txt"],
+                modified: &["a.txt", "b.txt"],
             },
         ];
         for row in rows {
@@ -822,12 +944,12 @@ mod tests {
                 "{}: the worktree's index",
                 row.name
             );
-            let changed = row.changed.iter().map(|p| (*p).to_owned()).collect();
+            let modified = row.modified.iter().map(|p| (*p).to_owned()).collect();
             assert_eq!(
                 diff,
                 WorktreeDiff {
-                    changed,
-                    untracked: Vec::new(),
+                    modified,
+                    ..WorktreeDiff::default()
                 },
                 "{}",
                 row.name

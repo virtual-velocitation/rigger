@@ -6,7 +6,7 @@
 
 use rigger_domain::code_facts::Stamp;
 use rigger_domain::code_view::{
-    AdvanceCodeStore, CodeView, Head, OpenCodeView, TreeSource, Withheld, WorktreeDiff,
+    AdvanceCodeStore, CodeView, Compared, Head, OpenCodeView, TreeSource, WorktreeDiff,
 };
 use rigger_domain::composed::Label;
 use rigger_grounder::facts::{open_store, read_head, store_fingerprint};
@@ -62,12 +62,14 @@ impl CodeStore {
     }
 
     /// The honesty label ([`Label`]) of `opened` read from `worktree`: the tip it describes, how
-    /// many files `worktree` differs from it by, and why it is behind the head when it is.
+    /// many of `worktree`'s files a reader there takes over it, and why it is behind the head when
+    /// it is.
     pub fn label(&self, opened: &Opened, worktree: &Path) -> Label {
+        let diff = self.differing(opened, worktree);
         Label::describing(
             &opened.view.stamp().tip,
             worktree.display().to_string(),
-            &Withheld::of(self.differing(opened, worktree)),
+            Compared::of(diff.as_ref().map_err(String::as_str)),
             opened.behind.as_ref().map(ToString::to_string),
         )
     }

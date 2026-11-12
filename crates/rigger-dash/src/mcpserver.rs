@@ -703,8 +703,9 @@ callers and callees; a term resolves exactly, by case or separator variant, by p
 and one that resolves to no entity is answered with the nearest names), `text` (every line of your \
 working tree holding the term, scanned live) and `prose:<kind>` (specs, their criteria, personas, \
 instructions, skills, docs, decisions, lessons and findings, ranked by relevance). Every section \
-answers from your own working tree: a graph hit in a file that differs there from the commit \
-the graph describes is withheld and counted in the label heading the section. Same as `rigger graph --lookup <term>...`. `show` \
+answers from your own working tree: the graph takes each file that differs there from the \
+commit it was built at from your tree, and the label heading the section says so; a tree that \
+cannot be compared withholds every graph hit and counts them in the label. Same as `rigger graph --lookup <term>...`. `show` \
 <entity> gives its definition site (same as `rigger graph --show <entity>`); `around` \
 <file|entity> (optionally `depth`) its structural neighborhood (same as `rigger graph --around \
 <file|entity> --depth <n>`). Worked examples - who calls <name>: pass `around` <name>; where is \
@@ -2518,6 +2519,12 @@ mod tests {
         impl crate::contextgraph::OpenGraph for Spy<'_> {
             fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
                 self.inner.head()
+            }
+            fn head_in(
+                &self,
+                worktree: &std::path::Path,
+            ) -> Result<rigger_domain::code_view::Head, String> {
+                self.inner.head_in(worktree)
             }
             fn open_on(
                 &self,

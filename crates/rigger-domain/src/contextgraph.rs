@@ -4,6 +4,7 @@
 //! sqlite projector lives in `rigger-graph-sqlite`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -1136,6 +1137,10 @@ pub trait OpenGraph: Send + Sync {
     /// compared with the reader's worktree, or why it cannot be read: the one open a reader that
     /// reads the head beside the graph hands both reads.
     fn head(&self) -> Result<Head, String>;
+
+    /// [`head`](OpenGraph::head) compared with `worktree` rather than the reader's own: the open a
+    /// reader makes for work done in another worktree of the project, such as a unit's.
+    fn head_in(&self, worktree: &Path) -> Result<Head, String>;
 
     /// The graph composed over `head`, a view [`head`](OpenGraph::head) opened, under `filter`, or
     /// why it cannot be read: a reader that also reads `head` itself reads one tree in both.

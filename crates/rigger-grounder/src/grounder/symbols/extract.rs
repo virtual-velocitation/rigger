@@ -14,7 +14,7 @@ use crate::contextgraph::{
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
-use tree_sitter_tags::{TagsConfiguration, TagsContext};
+use tree_sitter::StreamingIterator;
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
 /// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
@@ -237,9 +237,138 @@ fn record_def(
     None
 }
 
-/// Extract one file's definitions and references by running the INJECTED grammar's tag query
-/// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
-/// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
+/// A grammar's `tags` query compiled against the grammar: what [`extract`] runs over a source.
+/// Compiling is the costly step and matching the per-file one, so the registry compiles each of
+/// its grammar and query pairs once per process ([`LanguageEntry::tags`]).
+///
+/// [`LanguageEntry::tags`]: crate::grounder::symbols::registry::LanguageEntry::tags
+pub struct CompiledTags {
+    language: tree_sitter::Language,
+    query: tree_sitter::Query,
+    /// What each of the query's captures is to the tags reading, by capture index.
+    captures: Vec<Capture>,
+}
+
+/// What one capture of a tags query is to the tags reading ([`CompiledTags::tags_in`]).
+enum Capture {
+    /// `@name`: the node naming the tag.
+    Name,
+    /// `@definition.<kind>`: a definition of the kind its suffix names.
+    Definition(Kind),
+    /// `@reference.<kind>`: a reference.
+    Reference,
+    /// `@doc`: a doc comment, which upstream queries capture and the reading passes over.
+    Doc,
+}
+
+/// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
+/// name's byte range and start row, and the kind it defines (`None` for a reference).
+struct Tag {
+    range: std::ops::Range<usize>,
+    name_range: std::ops::Range<usize>,
+    row: usize,
+    definition: Option<Kind>,
+}
+
+impl CompiledTags {
+    /// `tags_query` compiled against `language`, or an `Err` naming the tags-config step when the
+    /// query is malformed, does not fit the grammar, or captures what the tags reading does not
+    /// read (anything but `@name`, `@doc`, `@definition.*` and `@reference.*`).
+    pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
+        let query = tree_sitter::Query::new(language, tags_query)
+            .map_err(|e| format!("symbols: tags config: {e}"))?;
+        let captures = query
+            .capture_names()
+            .iter()
+            .map(|name| match *name {
+                "name" => Ok(Capture::Name),
+                "doc" => Ok(Capture::Doc),
+                _ => match (
+                    name.strip_prefix("definition."),
+                    name.strip_prefix("reference."),
+                ) {
+                    (Some(kind), _) => Ok(Capture::Definition(kind_of(kind))),
+                    (_, Some(_)) => Ok(Capture::Reference),
+                    _ => Err(format!(
+                        "symbols: tags config: the capture @{name} is not one a tags query \
+                         makes: @name, @doc, @definition.* or @reference.*"
+                    )),
+                },
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            language: language.clone(),
+            query,
+            captures,
+        })
+    }
+
+    /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
+    /// order the tree-sitter tags convention yields them: a match whose captures hold a name and a
+    /// definition or reference makes a tag, unless its name node holds a parse error; of the
+    /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
+    /// is yielded once a later-matched name starts past its name's end, the rest in name order
+    /// when the matches run out. Within a match the last name capture names it and the last
+    /// definition or reference capture is the tagged node.
+    fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&self.query, root, source.as_bytes());
+        // The tags not yet yielded, in (name end, name start) order, each with the pattern that
+        // made it.
+        let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
+        let mut tags = Vec::new();
+        loop {
+            while queue.len() > 1
+                && queue
+                    .back()
+                    .is_some_and(|(last, _)| queue[0].0.name_range.end < last.name_range.start)
+            {
+                tags.extend(queue.pop_front().map(|(tag, _)| tag));
+            }
+            let Some(found) = matches.next() else {
+                break;
+            };
+            let mut name = None;
+            let mut tagged = None;
+            for capture in found.captures {
+                match self.captures[capture.index as usize] {
+                    Capture::Name => name = Some(capture.node),
+                    Capture::Definition(kind) => tagged = Some((capture.node, Some(kind))),
+                    Capture::Reference => tagged = Some((capture.node, None)),
+                    Capture::Doc => {}
+                }
+            }
+            let (Some(name), Some((node, definition))) = (name, tagged) else {
+                continue;
+            };
+            if name.has_error() {
+                continue;
+            }
+            let name_range = name.byte_range();
+            let node_range = node.byte_range();
+            let tag = Tag {
+                range: node_range.start.min(name_range.start)..node_range.end.max(name_range.end),
+                row: name.start_position().row,
+                name_range,
+                definition,
+            };
+            let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
+            match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
+                Ok(at) if queue[at].1 > found.pattern_index => {
+                    queue[at] = (tag, found.pattern_index);
+                }
+                Ok(_) => {}
+                Err(at) => queue.insert(at, (tag, found.pattern_index)),
+            }
+        }
+        tags.extend(queue.into_iter().map(|(tag, _)| tag));
+        tags
+    }
+}
+
+/// Extract one file's definitions and references by running the INJECTED grammar's compiled tag
+/// query over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
+/// supplies the compiled grammar and query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
 ///
 /// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and in its caller range
@@ -269,41 +398,30 @@ fn record_def(
 /// the file has the self type's leaf, else the impl block's.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
-/// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
+/// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.
-pub fn extract(
-    source: &str,
-    lang: Lang,
-    ts_language: &tree_sitter::Language,
-    tags_query: &str,
-) -> Result<FileSymbols, String> {
-    let config = TagsConfiguration::new(ts_language.clone(), tags_query, "")
-        .map_err(|e| format!("symbols: tags config: {e}"))?;
-    let mut ctx = TagsContext::new();
-    let (tags, _) = ctx
-        .generate_tags(&config, source.as_bytes(), None)
-        .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
-    // the full grammar), read for what the tags pass cannot express: a tagged definition's own
-    // node, impl blocks, tuple fields, test attributes, and out-of-line module declarations. This
-    // is still the one function touching tree-sitter, so the single-parsing-authority invariant
-    // (5.5.3) survives. A `Parser::set_language` or `parse` failure here is defensive only:
-    // `ts_language` already configured the tags query above, using the identical language, so
-    // this path degrades to an `Err` rather than a panic without ever being expected to fire in
-    // practice.
+pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymbols, String> {
+    // The one parse of `source`: the tags query runs over this tree, and the reads of what the
+    // tags cannot express (a tagged definition's own node, impl blocks, tuple fields, test
+    // attributes, out-of-line module declarations) read the same tree. This is the one function
+    // touching tree-sitter, so the single-parsing-authority invariant (5.5.3) holds. A
+    // `Parser::set_language` or `parse` failure is defensive only: the query compiled against the
+    // same language, so this path degrades to an `Err` rather than a panic without ever being
+    // expected to fire in practice.
     let mut parser = tree_sitter::Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&tags.language)
         .map_err(|e| format!("symbols: parser language: {e}"))?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
+    let tags = tags.tags_in(root, source);
     let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
-    // see `enclosing_def`) with its name and kind, and each reference's byte position. Collected
+    // see `enclosing_defs`) with its name and kind, and each reference's byte position. Collected
     // in this single tag pass; the enclosing definition is resolved below so the reference order
     // the emit pass depends on stays untouched.
     let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
@@ -312,13 +430,12 @@ pub fn extract(
     let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
-        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
         let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
             continue;
         };
-        // 1-based line from the tag span's start row.
-        let line = tag.span.start.row as u32 + 1;
-        if tag.is_definition {
+        // 1-based line from the tag name's start row.
+        let line = tag.row as u32 + 1;
+        if let Some(kind) = tag.definition {
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
             // definition is filtered by, recorded under and ranked by as a caller is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
@@ -326,7 +443,7 @@ pub fn extract(
                 lang,
                 &text,
                 node,
-                kind_of(config.syntax_type_name(tag.syntax_type_id)),
+                kind,
                 (tag.range.clone(), def_leaf(node, name), line),
                 &mut defs,
                 &mut def_ranges,
@@ -347,7 +464,8 @@ pub fn extract(
     // references attribute to the impl (the impl -> trait and impl -> type links) unless a
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
-    for block in impl_blocks(root, source.as_bytes()) {
+    let structure = StructuralNodes::of(root, lang);
+    for block in impl_blocks(&structure.impls, source.as_bytes()) {
         defs.push(def_of(
             &text,
             block.range.clone(),
@@ -373,7 +491,7 @@ pub fn extract(
     // once every definition's test status is known.
     let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
     if lang == Lang::Rust {
-        for tagged in rust_references(root, source.as_bytes()) {
+        for tagged in rust_references(&structure, source.as_bytes()) {
             if let Some((impl_range, self_leaf)) = tagged.impl_from {
                 impl_rows.push((refs.len(), impl_range, self_leaf));
             }
@@ -445,13 +563,16 @@ pub fn extract(
         d.path = path;
         d.parent = parent;
     }
-    // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
+    // Attribute each reference to its caller (`enclosing_defs`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116), named by that definition's path (spec
     // 119 criterion 8: `T::new`, never the leaf `new`). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
-    for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
-        r.enclosing = enclosing_def(&def_ranges, pos).map(|i| defs[i].path.clone());
+    for (r, caller) in refs
+        .iter_mut()
+        .zip(enclosing_defs(&def_ranges, &ref_positions))
+    {
+        r.enclosing = caller.map(|i| defs[i].path.clone());
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
     // every test-attributed range (`test_regions`: a definition directly annotated
@@ -463,7 +584,13 @@ pub fn extract(
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
     // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(source.as_bytes(), root, &def_ranges, &dropped);
+    let regions = test_regions(
+        source.as_bytes(),
+        root,
+        &def_ranges,
+        &dropped,
+        &structure.gated,
+    );
     if !regions.is_empty() {
         for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -549,8 +676,9 @@ const GATED_NON_DEFINITIONS: [&str; 4] = [
 /// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
 /// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
 /// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
-/// each node of [`GATED_NON_DEFINITIONS`] - an extern block, a container that yields no
-/// definition, and a `use` or a statement (spec 117), which a reference sits in; and
+/// each `gated` node, the file's [`GATED_NON_DEFINITIONS`] ([`StructuralNodes`]) - an extern
+/// block, a container that yields no definition, and a `use` or a statement (spec 117), which a
+/// reference sits in; and
 /// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
 /// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
@@ -562,6 +690,7 @@ fn test_regions(
     root: tree_sitter::Node,
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
     dropped: &[std::ops::Range<usize>],
+    gated: &[tree_sitter::Node],
 ) -> Vec<std::ops::Range<usize>> {
     let mut regions: Vec<_> = def_ranges
         .iter()
@@ -571,10 +700,9 @@ fn test_regions(
         .cloned()
         .collect();
     regions.extend(
-        GATED_NON_DEFINITIONS
+        gated
             .iter()
-            .flat_map(|kind| nodes_of_kind(root, kind))
-            .filter(|node| node_preceded_by_test_attribute(*node, source))
+            .filter(|node| node_preceded_by_test_attribute(**node, source))
             .map(|node| node.byte_range()),
     );
     if opens_with_inner_test_attribute(root.named_child(0), source) {
@@ -686,14 +814,79 @@ struct ImplBlock {
     targets: Vec<(String, u32, usize)>,
 }
 
-/// Every `impl_item` anywhere under `root` (an impl nested in a function or module included), in
-/// source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node kind, so a file of any
-/// other language has none.
-fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
-    nodes_of_kind(root, "impl_item")
-        .into_iter()
-        .filter_map(|node| impl_block(node, source))
+/// Each of the file's `impl_item` nodes `impls` ([`StructuralNodes`]: an impl nested in a function
+/// or module included), in source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node
+/// kind, so a file of any other language has none.
+fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
+    impls
+        .iter()
+        .filter_map(|&node| impl_block(node, source))
         .collect()
+}
+
+/// The nodes the structural reads of one parsed tree start from, gathered in ONE WALK of it, each
+/// list in source order: every `use_declaration` and every `impl_item` ([`rust_references`],
+/// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
+/// node [`rust_references`] reads - each one outside an [`OPAQUE_KINDS`] subtree, a
+/// `use_declaration` read whole by its leaves and never descended.
+struct StructuralNodes<'t> {
+    uses: Vec<tree_sitter::Node<'t>>,
+    impls: Vec<tree_sitter::Node<'t>>,
+    gated: Vec<tree_sitter::Node<'t>>,
+    references: Vec<tree_sitter::Node<'t>>,
+}
+
+impl<'t> StructuralNodes<'t> {
+    /// The one preorder walk of the tree under `root`, `root` included, by a single cursor.
+    fn of(root: tree_sitter::Node<'t>, lang: Lang) -> Self {
+        let mut nodes = StructuralNodes {
+            uses: Vec::new(),
+            impls: Vec::new(),
+            gated: Vec::new(),
+            references: Vec::new(),
+        };
+        let mut cursor = root.walk();
+        let mut depth = 0usize;
+        // The depth of the node whose subtree the walk is in and `references` leaves out.
+        let mut unread_from: Option<usize> = None;
+        loop {
+            let node = cursor.node();
+            let kind = node.kind();
+            match kind {
+                "use_declaration" => nodes.uses.push(node),
+                "impl_item" => nodes.impls.push(node),
+                _ => {}
+            }
+            if GATED_NON_DEFINITIONS.contains(&kind) {
+                nodes.gated.push(node);
+            }
+            if lang == Lang::Rust && unread_from.is_none() {
+                let opaque = OPAQUE_KINDS.contains(&kind);
+                if !opaque {
+                    nodes.references.push(node);
+                }
+                if opaque || kind == "use_declaration" {
+                    unread_from = Some(depth);
+                }
+            }
+            if cursor.goto_first_child() {
+                depth += 1;
+                continue;
+            }
+            loop {
+                if unread_from == Some(depth) {
+                    unread_from = None;
+                }
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return nodes;
+                }
+                depth -= 1;
+            }
+        }
+    }
 }
 
 /// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
@@ -817,7 +1010,8 @@ impl UseLeaf<'_> {
     }
 }
 
-/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one under `root` in source order. A
+/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one in the file the walk `structure`
+/// gathered ([`StructuralNodes`]), in source order. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
 /// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
@@ -827,17 +1021,18 @@ impl UseLeaf<'_> {
 /// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
 /// carrying the impl's range and its self type's leaf. A macro's token tree, an attribute, a
 /// `macro_rules!` body and a visibility path stage nothing, and no name [`excluded`] stages.
-fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
-    let uses: Vec<UseLeaf> = nodes_of_kind(root, "use_declaration")
-        .into_iter()
-        .flat_map(|decl| use_leaves(decl, source))
+fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef> {
+    let uses: Vec<UseLeaf> = structure
+        .uses
+        .iter()
+        .flat_map(|&decl| use_leaves(decl, source))
         .collect();
     let std_imports: Vec<&str> = uses
         .iter()
         .filter(|u| u.roots_at_std())
         .map(|u| u.bound.as_str())
         .collect();
-    let impls = nodes_of_kind(root, "impl_item");
+    let impls = &structure.impls;
     let headers: Vec<usize> = impls
         .iter()
         .flat_map(|i| {
@@ -868,7 +1063,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             });
         }
     };
-    for node in reference_nodes(root) {
+    for &node in &structure.references {
         match node.kind() {
             "use_declaration" => {
                 let leaves = uses
@@ -928,7 +1123,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             _ => {}
         }
     }
-    for block in impls {
+    for &block in impls {
         let (Some(trait_node), Some(self_type)) = (
             block.child_by_field_name("trait"),
             block.child_by_field_name("type"),
@@ -947,26 +1142,6 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             type_root(trait_node, source).as_deref(),
             Some((block.byte_range(), self_leaf.to_string())),
         );
-    }
-    out
-}
-
-/// Every node under `root` [`rust_references`] reads, in source order: each node outside an
-/// [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never descended.
-fn reference_nodes(root: tree_sitter::Node) -> Vec<tree_sitter::Node> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if OPAQUE_KINDS.contains(&node.kind()) {
-            continue;
-        }
-        out.push(node);
-        if node.kind() == "use_declaration" {
-            continue;
-        }
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.children(&mut cursor).collect();
-        stack.extend(children.into_iter().rev());
     }
     out
 }
@@ -2061,35 +2236,72 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The index in `def_ranges` of the reference at `pos`'s CALLER, whose `defs` entry at that
-/// index names it by its path (spec 119 criterion 8): the innermost FUNCTION-LIKE definition
-/// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
-/// innermost definition of any other kind that does, else `None` when `pos` lies outside every
-/// definition (a top-level reference such as an import or a module-level call), the file then
-/// being the caller. A `Declaration` is never a caller: its range is skipped, so a reference in
-/// a signature takes the next enclosing definition. Each definition tag carries the byte range of
-/// the WHOLE tagged construct - the function body included, not just its name span - so a
-/// reference inside a body falls within its definition's range. "Innermost" is the smallest
-/// containing range, so a reference in a nested function attributes to the nested one, not its
-/// outer scope, while a data definition, impl, trait or module nested in a function leaves its
-/// references the function's. Deterministic for identical input: ties on span break on the range
-/// start, then the definition name.
-fn enclosing_def(
+/// The index in `def_ranges` of the CALLER of the reference at each of `positions`, in the order
+/// `positions` gives, whose `defs` entry at that index names it by its path (spec 119 criterion
+/// 8): the innermost FUNCTION-LIKE definition (`Function`, `Method`, `Constructor`, `Macro`) whose
+/// byte range contains the position, else the innermost definition of any other kind that does,
+/// else `None` when the position lies outside every definition (a top-level reference such as an
+/// import or a module-level call), the file then being the caller. A `Declaration` is never a
+/// caller: its range is skipped, so a reference in a signature takes the next enclosing
+/// definition. Each definition tag carries the byte range of the WHOLE tagged construct - the
+/// function body included, not just its name span - so a reference inside a body falls within its
+/// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
+/// function attributes to the nested one, not its outer scope, while a data definition, impl,
+/// trait or module nested in a function leaves its references the function's. Deterministic for
+/// identical input: ties on span break on the range start, then the definition name, then the
+/// first definition recorded.
+///
+/// ONE SWEEP over the positions in ascending order: a definition opens when the sweep reaches its
+/// range's start and closes at its end, and each position takes the least open definition by that
+/// order, so the attribution costs a sort and a logarithmic step per definition and reference,
+/// never a scan of every definition per reference.
+fn enclosing_defs(
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
-    pos: usize,
-) -> Option<usize> {
-    def_ranges
-        .iter()
-        .enumerate()
-        .filter(|(_, (range, _, kind))| *kind != Kind::Declaration && range.contains(&pos))
-        .min_by_key(|(_, (range, name, kind))| {
-            let function_like = matches!(
-                kind,
-                Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
-            );
-            (!function_like, range.end - range.start, range.start, name)
+    positions: &[usize],
+) -> Vec<Option<usize>> {
+    let order = |i: usize| {
+        let (range, name, kind) = &def_ranges[i];
+        let function_like = matches!(
+            kind,
+            Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
+        );
+        (
+            !function_like,
+            range.end - range.start,
+            range.start,
+            name.as_str(),
+            i,
+        )
+    };
+    let mut by_start: Vec<usize> = (0..def_ranges.len())
+        .filter(|&i| {
+            let (range, _, kind) = &def_ranges[i];
+            *kind != Kind::Declaration && range.start < range.end
         })
-        .map(|(i, _)| i)
+        .collect();
+    by_start.sort_by_key(|&i| def_ranges[i].0.start);
+    let mut by_position: Vec<usize> = (0..positions.len()).collect();
+    by_position.sort_by_key(|&at| positions[at]);
+    let mut open = std::collections::BTreeSet::new();
+    let mut closing = std::collections::BinaryHeap::new();
+    let mut starts = by_start.into_iter().peekable();
+    let mut callers = vec![None; positions.len()];
+    for at in by_position {
+        let pos = positions[at];
+        while let Some(i) = starts.next_if(|&i| def_ranges[i].0.start <= pos) {
+            open.insert(order(i));
+            closing.push(std::cmp::Reverse((def_ranges[i].0.end, i)));
+        }
+        while let Some(&std::cmp::Reverse((end, i))) = closing.peek() {
+            if end > pos {
+                break;
+            }
+            closing.pop();
+            open.remove(&order(i));
+        }
+        callers[at] = open.first().map(|&(.., i)| i);
+    }
+    callers
 }
 
 /// A definition as its graph node records it, the one [`locate_extent`] bounds.
@@ -2118,8 +2330,7 @@ pub struct Recorded<'a> {
 pub fn locate_extent(
     source: &str,
     lang: Lang,
-    ts_language: &tree_sitter::Language,
-    tags_query: &str,
+    tags: &CompiledTags,
     recorded: Recorded,
 ) -> Result<Option<u32>, String> {
     let Recorded {
@@ -2128,7 +2339,7 @@ pub fn locate_extent(
         kind,
         line,
     } = recorded;
-    let symbols = extract(source, lang, ts_language, tags_query)?;
+    let symbols = extract(source, lang, tags)?;
     Ok(symbols
         .defs
         .iter()
@@ -2205,6 +2416,11 @@ mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
+    /// `query` compiled against `language`, for a test that injects a query of its own.
+    fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
+        CompiledTags::compile(language, query).expect("the query compiles")
+    }
+
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
     /// existed already holds, none renamed by reading it from a constant and none swapped for
     /// another, and the kinds spec 116 adds (the caller rule's at criterion 2, the Rust data
@@ -2256,7 +2472,12 @@ mod tests {
     fn extracts_a_rust_definition_and_a_reference() {
         let src = "fn parse(x: u8) -> u8 { x }\nfn caller() { parse(1); }\n";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
         // The definition `parse` is found with its kind and 1-based line.
         assert!(fs
             .defs
@@ -2352,7 +2573,12 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         // parsing the earlier, well-formed `greet` function normally.
         let src = "function greet() { return 1; }\nfunction broken(\n";
         let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
-        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Js,
+            &compiled(&language, tree_sitter_javascript::TAGS_QUERY),
+        )
+        .unwrap();
         assert!(
             fs.partial,
             "a JS source containing an unrecoverable syntax error must set partial: true; got {fs:?}"
@@ -2371,7 +2597,12 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         // file must NEVER carry the degraded marker.
         let src = "function greet() { return 1; }\n";
         let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
-        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Js,
+            &compiled(&language, tree_sitter_javascript::TAGS_QUERY),
+        )
+        .unwrap();
         assert!(
             !fs.partial,
             "a well-formed JS file must never set partial: true; got {fs:?}"
@@ -2394,7 +2625,12 @@ macro_rules! mymac { () => {} }
 fn free() {}
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
         let kind_of_def = |name: &str| fs.defs.iter().find(|d| d.name == name).map(|d| d.kind);
 
         // The arms the upstream query reaches: struct/enum -> Type, method -> Method,
@@ -2448,7 +2684,12 @@ fn outer() {
 setup!();
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
 
         // The `Draw` bound in the `impl` header (line 3) attributes to the impl block.
         let draw = fs
@@ -2562,14 +2803,69 @@ setup!();
         );
     }
 
-    /// The leaf of the caller [`enclosing_def`] picks for `pos` over hand-built
-    /// `(range, leaf, kind)` definition ranges.
-    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
-        let ranges: Vec<_> = ranges
+    /// Hand-built `(range, leaf, kind)` definition ranges as [`enclosing_defs`] reads them.
+    fn def_ranges(
+        ranges: &[(std::ops::Range<usize>, &str, Kind)],
+    ) -> Vec<(std::ops::Range<usize>, String, Kind)> {
+        ranges
             .iter()
             .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
-            .collect();
-        enclosing_def(&ranges, pos).map(|i| ranges[i].1.clone())
+            .collect()
+    }
+
+    /// The leaf of the caller [`enclosing_defs`] picks for a lone reference at `pos` over
+    /// hand-built `(range, leaf, kind)` definition ranges.
+    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
+        let ranges = def_ranges(ranges);
+        enclosing_defs(&ranges, &[pos])[0].map(|i| ranges[i].1.clone())
+    }
+
+    /// THE ATTRIBUTION SWEEP: references in any order, repeated ones among them, each take the
+    /// caller the rule gives that reference alone, while definitions enter the sweep at their
+    /// range's start and leave it at its end - nested, overlapping, identical (the first one
+    /// recorded wins), empty and `Declaration` ranges among them.
+    #[test]
+    fn one_sweep_attributes_every_reference_as_the_rule_attributes_it_alone() {
+        let ranges = def_ranges(&[
+            (0..100, "file_mod", Kind::Module),
+            (10..60, "outer", Kind::Function),
+            (20..30, "inner", Kind::Constant),
+            (25..45, "overlap", Kind::Method),
+            (40..40, "empty", Kind::Function),
+            (50..70, "decl", Kind::Declaration),
+            (55..65, "twin", Kind::Function),
+            (55..65, "twin", Kind::Function),
+            (80..90, "b", Kind::Trait),
+            (80..90, "a", Kind::Trait),
+            (95..99, "late", Kind::Field),
+        ]);
+        let expected: [(usize, Option<usize>); 22] = [
+            (99, Some(0)),
+            (0, Some(0)),
+            (40, Some(3)),
+            (25, Some(3)),
+            (5, Some(0)),
+            (60, Some(6)),
+            (100, None),
+            (44, Some(3)),
+            (10, Some(1)),
+            (59, Some(6)),
+            (55, Some(6)),
+            (64, Some(6)),
+            (65, Some(0)),
+            (80, Some(9)),
+            (25, Some(3)),
+            (89, Some(9)),
+            (90, Some(0)),
+            (96, Some(10)),
+            (9, Some(0)),
+            (30, Some(3)),
+            (20, Some(1)),
+            (45, Some(1)),
+        ];
+        let positions: Vec<usize> = expected.iter().map(|(pos, _)| *pos).collect();
+        let callers: Vec<Option<usize>> = expected.iter().map(|(_, caller)| *caller).collect();
+        assert_eq!(enclosing_defs(&ranges, &positions), callers);
     }
 
     /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language
@@ -2931,7 +3227,7 @@ pub fn bang() {}
         expected: &[(u32, &str, Kind)],
     ) {
         let entry = crate::symbol_index::registered(ext);
-        let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(src, lang, entry.tags().unwrap()).unwrap();
         let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
             .into_iter()
             .filter(|(line, _, _)| lines.contains(line))
@@ -3071,8 +3367,12 @@ fn b() {
         let fs = extract(
             "trait T { fn m(&self); }\n",
             Lang::Rust,
-            &language,
-            &format!("(function_signature_item name: (identifier) @name) @definition.{category}"),
+            &compiled(
+                &language,
+                &format!(
+                    "(function_signature_item name: (identifier) @name) @definition.{category}"
+                ),
+            ),
         )
         .unwrap();
         assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
@@ -3081,7 +3381,12 @@ fn b() {
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap()
+        extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap()
     }
 
     /// Each `(name, is_test, why)` of `expected` names a definition of the Rust source `src` and
@@ -3429,14 +3734,29 @@ fn product() {}
         assert_eq!(groups[1][0].utf8_text(src.as_bytes()).unwrap(), "z");
     }
 
+    /// A tags query capturing what the tags reading does not read fails to compile, naming the
+    /// capture: the upstream C# query's last pattern captures a bare `@module`, the reason the
+    /// registry authors its own C# query.
+    #[test]
+    fn a_capture_the_tags_reading_does_not_read_fails_to_compile() {
+        let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
+        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY)
+            .err()
+            .expect("a bare @module capture fails to compile");
+        assert!(
+            msg.starts_with("symbols: tags config:") && msg.contains("@module"),
+            "the error names the tags-config step and the capture, got: {msg}"
+        );
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         // A malformed tags query must return Err from the config step, never panic, so a bad
         // registry entry degrades loudly instead of crashing the indexer.
-        let bad = extract("fn f(){}", Lang::Rust, &language, "(this is not valid scm");
-        assert!(bad.is_err(), "malformed query should be Err, got {bad:?}");
-        let msg = bad.unwrap_err();
+        let msg = CompiledTags::compile(&language, "(this is not valid scm")
+            .err()
+            .expect("malformed query should be Err");
         assert!(
             msg.starts_with("symbols: tags config:"),
             "error should come from the tags-config step, got: {msg}"
@@ -3446,8 +3766,7 @@ fn product() {}
         let ok = extract(
             "fn f(){}",
             Lang::Rust,
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
         )
         .expect("valid query extracts");
         assert!(ok
@@ -3736,8 +4055,7 @@ class K
         locate_extent(
             source,
             entry.lang,
-            &entry.language,
-            entry.tags_query,
+            entry.tags().unwrap(),
             Recorded {
                 name,
                 path: None,

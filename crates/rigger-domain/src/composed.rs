@@ -4,10 +4,11 @@
 //! the record half is the graph the event log folds. An id both hold is one node of the tree's
 //! kind carrying both halves' attrs, an alias reads as its canonical id, a record edge whose end
 //! neither half holds reaches an `artifact` node, and a decision governing a document realizes
-//! that document's concepts. A node whose file differs in the caller's worktree is withheld and
-//! counted on the honesty label. When the worktree cannot be compared, every code-half node is
-//! withheld and counted. The searches every reader asks ([`subgraph`], [`calls`], [`locate`])
-//! are written once over [`Neighbors`], so they step through both halves alike.
+//! that document's concepts. The view describes the caller's worktree (its differing files
+//! overlaid on the stamp, section 13), and the honesty label says so. When the worktree cannot be
+//! compared, every code-half node is withheld and counted. The searches every reader asks
+//! ([`subgraph`], [`calls`], [`locate`]) are written once over [`Neighbors`], so they step through
+//! both halves alike.
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -16,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::code_facts::Tip;
 use crate::code_graph::{CodeGraph, DOC_ATTR};
-use crate::code_view::{CodeView, Groupings, Tests, ViewFilter, Withheld, WorktreeDiff};
+use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
@@ -30,29 +31,19 @@ use crate::contextgraph::{
 use crate::resolve::{ProofCall, INTENT_KINDS};
 use crate::test_view::{join_tests, TestAttachment};
 
-/// How the caller's worktree compares with the tree a view describes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Compared {
-    /// This many of the worktree's files differ from the tree; none means the answers describe
-    /// the worktree exactly.
-    Differ(usize),
-    /// The worktree cannot be compared with the tree (its stamp commit is not in the worktree's
-    /// object store, or its index cannot be read), so every node of the code half is withheld.
-    Uncomparable,
-}
-
 /// The honesty label (spec 6.1) every answer travels with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Label {
-    /// The commit the answers describe, or the tree id when the tree was read from a directory.
+    /// The commit the answers describe the worktree over (its stamp), or the tree id when the
+    /// tree was read from a directory.
     pub describes: String,
     /// The caller's worktree, as the label names it.
     pub worktree: String,
     pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
-    /// The hits of the answer withheld because their file differs or the worktree cannot be
-    /// compared, counted as nodes: a grounding's are the entities its withheld hits name.
+    /// The hits of the answer withheld because the worktree cannot be compared, counted as nodes:
+    /// a grounding's are the entities its withheld hits name.
     pub withheld: usize,
 }
 
@@ -69,21 +60,18 @@ pub struct WholeRead {
 }
 
 impl Label {
-    /// The label of answers drawn from the view at `tip`, read for `worktree` with `withheld` in
-    /// doubt, behind its tree for the reason `behind` gives when it is.
+    /// The label of answers drawn from the view at `tip`, read for `worktree` as `compared`
+    /// says, behind its tree for the reason `behind` gives when it is: the ONE label builder.
     pub fn describing(
         tip: &Tip,
         worktree: String,
-        withheld: &Withheld,
+        compared: Compared,
         behind: Option<String>,
     ) -> Label {
         Label {
             describes: tip.commit.clone().unwrap_or_else(|| tip.tree.clone()),
             worktree,
-            compared: match withheld {
-                Withheld::Files(files) => Compared::Differ(files.len()),
-                Withheld::All => Compared::Uncomparable,
-            },
+            compared,
             behind,
             withheld: 0,
         }
@@ -102,17 +90,23 @@ impl Label {
     }
 }
 
-/// `describes <commit>`, then how many files differ (or that the worktree cannot be compared),
-/// how many nodes were withheld and why the view is behind, each only when there is one.
+/// `describes <commit>` for a worktree that matches it; `describes <worktree> (<commit> + N
+/// files); groupings describe <commit>` for one whose differing files the view overlays; else
+/// `describes <commit>; <worktree> cannot be compared`. Then how many nodes were withheld and why
+/// the view is behind, each only when there is one.
 impl fmt::Display for Label {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "describes {}", self.describes)?;
-        let w = &self.worktree;
+        let (w, stamp) = (&self.worktree, &self.describes);
         match self.compared {
-            Compared::Differ(0) => {}
-            Compared::Differ(1) => write!(f, "; 1 file in {w} differs")?,
-            Compared::Differ(n) => write!(f, "; {n} files in {w} differ")?,
-            Compared::Uncomparable => write!(f, "; {w} cannot be compared")?,
+            Compared::Overlaid(0) => write!(f, "describes {stamp}")?,
+            Compared::Overlaid(n) => {
+                let files = if n == 1 { "file" } else { "files" };
+                write!(
+                    f,
+                    "describes {w} ({stamp} + {n} {files}); groupings describe {stamp}"
+                )?
+            }
+            Compared::Uncomparable => write!(f, "describes {stamp}; {w} cannot be compared")?,
         }
         if self.withheld > 0 {
             write!(f, "; {} withheld", self.withheld)?;
@@ -129,8 +123,8 @@ impl fmt::Display for Label {
 pub struct Honesty {
     /// The caller's worktree, as the label names it.
     pub worktree: String,
-    /// How the worktree differs from the view's tree, or why it cannot be compared.
-    pub diff: Result<WorktreeDiff, String>,
+    /// What the view describes of the worktree.
+    pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
 }
@@ -625,10 +619,10 @@ pub struct Composed<'r, C = Whole> {
     canonical: BTreeMap<String, String>,
     /// Each canonical id's recorded aliases.
     aliased: BTreeMap<String, Vec<String>>,
-    /// The code-half nodes the caller's worktree may not match.
-    stale: Withheld,
+    /// Whether every code-half node is withheld: the caller's worktree cannot be compared.
+    stale: bool,
     label: Label,
-    /// The ids withheld so far because they are [`Withheld`].
+    /// The ids withheld so far because the worktree cannot be compared.
     withheld: Mutex<BTreeSet<String>>,
     /// The record half's rows read ahead ([`Neighbors::read_ahead`]), by the spelling read.
     ahead: Mutex<FxHashMap<String, Rows>>,
@@ -680,8 +674,8 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
             canonical.insert(alias, id);
         }
         // A worktree that cannot be compared fails closed: no code hit is known fresh.
-        let stale = Withheld::of(honesty.diff);
-        let label = Label::describing(tip, honesty.worktree, &stale, honesty.behind);
+        let stale = honesty.compared.withholds_code();
+        let label = Label::describing(tip, honesty.worktree, honesty.compared, honesty.behind);
         Ok(Composed {
             records,
             code,
@@ -737,33 +731,33 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         )
     }
 
-    /// Whether `node` is withheld because it is [`Withheld`], counting it when it is.
-    /// A node of the code half is withheld when a file its facts came from is ([`fact_file`]; a
-    /// grouping's are the files it summarises), which a worktree that cannot be compared puts
-    /// every file in.
+    /// Whether `node` is withheld because the worktree cannot be compared, counting it when it
+    /// is. A node of the code half is withheld when its facts came from a file ([`fact_file`]; a
+    /// grouping's are the files it summarises).
     fn withholds(&self, node: &Node) -> bool {
-        !self.stale.withholds_nothing() && self.code.holds(&node.id) && self.withholds_code(node)
+        self.stale && self.code.holds(&node.id) && self.withholds_code(node)
     }
 
-    /// Whether `node`, a node of the code half shown or hidden, is withheld because it is
-    /// [`Withheld`], counting it when it is.
+    /// Whether `node`, a node of the code half shown or hidden, is withheld because the worktree
+    /// cannot be compared, counting it when it is.
     fn withholds_code(&self, node: &Node) -> bool {
         self.withholds_code_by(node, |id| self.summarises_withheld(id))
     }
 
-    /// Whether the grouping `id` summarises a file the caller's worktree withholds.
+    /// Whether the grouping `id` summarises a file, all of which a worktree that cannot be
+    /// compared withholds.
     fn summarises_withheld(&self, id: &str) -> bool {
-        (self.code.summarised_files(id).iter()).any(|f| self.stale.withholds_file(f))
+        self.stale && !self.code.summarised_files(id).is_empty()
     }
 
     /// [`Self::withholds_code`], reading whether a grouping summarises a withheld file by
     /// `summarises`.
     fn withholds_code_by(&self, node: &Node, summarises: impl Fn(&str) -> bool) -> bool {
-        let stale = !self.stale.withholds_nothing()
+        let stale = self.stale
             && if [KIND_COMMUNITY, KIND_CONCEPT].contains(&node.kind.as_str()) {
                 summarises(&node.id)
             } else {
-                fact_file(node).is_some_and(|f| self.stale.withholds_file(f))
+                fact_file(node).is_some()
             };
         if stale {
             self.withheld.lock().unwrap().insert(node.id.clone());
@@ -774,7 +768,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     /// The groupings of the code half that summarise a file the caller's worktree withholds:
     /// what withholding the half's whole reads of it beside its graph.
     fn withheld_groupings(&self) -> FxHashSet<String> {
-        if self.stale.withholds_nothing() {
+        if !self.stale {
             return FxHashSet::default();
         }
         let groupings = self.code.groupings();
@@ -845,7 +839,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         };
         // Nothing withheld answers every edge.
         let mut dropped = Vec::new();
-        if !self.stale.withholds_nothing() {
+        if self.stale {
             (edges, dropped) =
                 (edges.into_iter()).partition(|e| answered(&e.from) && answered(&e.to));
         }
@@ -888,10 +882,10 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         Ok(merge(self.code.node(id)?, self.record_node(id)?))
     }
 
-    /// Whether an edge end `id` is answered: nothing is [`Withheld`], or the node it reads as (an
-    /// [`artifact`] when no half holds it) is not withheld.
+    /// Whether an edge end `id` is answered: the worktree can be compared, or the node it reads
+    /// as (an [`artifact`] when no half holds it) is not withheld.
     fn answers_end(&self, id: &str) -> Result<bool, Error> {
-        if self.stale.withholds_nothing() {
+        if !self.stale {
             return Ok(true);
         }
         let node = self.merged(id)?.unwrap_or_else(|| artifact(id));
@@ -1741,10 +1735,10 @@ mod tests {
         (graph, aliases)
     }
 
-    fn honest(diff: Result<WorktreeDiff, String>) -> Honesty {
+    fn honest(compared: Compared) -> Honesty {
         Honesty {
             worktree: "W".into(),
-            diff,
+            compared,
             behind: None,
         }
     }
@@ -1754,7 +1748,7 @@ mod tests {
     }
 
     fn exact() -> Honesty {
-        honest(Ok(WorktreeDiff::default()))
+        honest(Compared::Overlaid(0))
     }
 
     fn ids(nodes: &[Node]) -> Vec<&str> {
@@ -1983,54 +1977,48 @@ mod tests {
     }
 
     #[test]
-    fn the_honesty_label_names_the_stamp_and_counts_differing_files() {
-        let differing = WorktreeDiff {
-            changed: vec!["src/a.rs".into()],
-            untracked: vec!["src/new.rs".into()],
-        };
-        // (stamp commit, diff, behind, label)
+    fn the_honesty_label_says_the_answer_describes_the_worktree() {
+        // (stamp commit, what the view describes of the worktree, behind, label)
         let cases = [
+            (Some("c1"), Compared::Overlaid(0), None, "describes c1"),
+            (None, Compared::Overlaid(0), None, "describes tree0"),
             (
                 Some("c1"),
-                Ok(WorktreeDiff::default()),
+                Compared::Overlaid(2),
                 None,
-                "describes c1",
-            ),
-            (None, Ok(WorktreeDiff::default()), None, "describes tree0"),
-            (
-                Some("c1"),
-                Ok(differing),
-                None,
-                "describes c1; 2 files in W differ",
+                "describes W (c1 + 2 files); groupings describe c1",
             ),
             (
                 Some("c1"),
-                Ok(WorktreeDiff {
-                    changed: vec![".rigger/graph.db".into()],
-                    untracked: vec![".rigger/workflow.yml".into()],
-                }),
+                Compared::Overlaid(1),
                 None,
-                "describes c1; 1 file in W differs",
+                "describes W (c1 + 1 file); groupings describe c1",
             ),
             (
                 Some("c1"),
-                Err("no such commit".to_string()),
+                Compared::Uncomparable,
                 None,
                 "describes c1; W cannot be compared",
             ),
             (
                 Some("c1"),
-                Ok(WorktreeDiff::default()),
+                Compared::Overlaid(0),
                 Some("advance in flight"),
                 "describes c1; advance in flight",
             ),
+            (
+                Some("c1"),
+                Compared::Overlaid(1),
+                Some("advance in flight"),
+                "describes W (c1 + 1 file); groupings describe c1; advance in flight",
+            ),
         ];
         let records = records();
-        for (commit, diff, behind, want) in cases {
+        for (commit, compared, behind, want) in cases {
             let view = view(commit);
             let honesty = Honesty {
                 worktree: "W".into(),
-                diff,
+                compared,
                 behind: behind.map(str::to_string),
             };
             let g = composed(&records, &view, honesty);
@@ -2038,14 +2026,14 @@ mod tests {
         }
     }
 
+    /// An overlaid view describes the worktree, so every hit answers: GIVEN a view that overlays
+    /// one of the worktree's files, WHEN it is read by node, whole, walk and kind, THEN each read
+    /// answers the overlaid file's nodes, nothing is withheld and the label says it describes the
+    /// worktree.
     #[test]
-    fn hits_in_differing_files_are_withheld_and_counted() {
+    fn an_overlaid_view_answers_every_hit_and_withholds_none() {
         let (records, view) = (records(), view(Some("c1")));
-        let diff = WorktreeDiff {
-            changed: vec!["src/b.rs".into()],
-            untracked: Vec::new(),
-        };
-        let g = composed(&records, &view, honest(Ok(diff)));
+        let g = composed(&records, &view, honest(Compared::Overlaid(1)));
         let whole = ContextGraph::whole(&g).unwrap();
         let sub = g.subgraph(&["f1".to_string()], 2).unwrap();
         let answered =
@@ -2065,24 +2053,15 @@ mod tests {
         ];
         for (read, ids) in reads {
             assert!(
-                !ids.iter().any(|id| id.starts_with("src/b.rs")),
-                "{read} withholds src/b.rs: {ids:?}"
+                ids.iter().any(|id| id == "src/b.rs::compute"),
+                "{read} answers src/b.rs::compute: {ids:?}"
             );
         }
-        for edges in [&whole.edges, &sub.edges] {
-            assert!(!edges
-                .iter()
-                .any(|e| e.from.starts_with("src/b.rs") || e.to.starts_with("src/b.rs")));
-        }
-        assert!(
-            ids(&whole.nodes).contains(&"src/a.rs::run"),
-            "an unchanged file still answers"
-        );
         let label = g.stamp_label();
-        assert_eq!(label.withheld, 2, "the file and its entity: {label:?}");
+        assert_eq!(label.withheld, 0, "{label:?}");
         assert_eq!(
             label.to_string(),
-            "describes c1; 1 file in W differs; 2 withheld"
+            "describes W (c1 + 1 file); groupings describe c1"
         );
     }
 
@@ -2120,29 +2099,21 @@ mod tests {
     const COMMUNITY: &str = "community/1/0";
 
     /// A whole read that consumes the graph moves its code half into the answer instead of
-    /// copying it: GIVEN each worktree comparison (exact, a code file, a design doc and the
-    /// workflow definition differing, none possible), WHEN the graph is read whole by consuming
-    /// it and, on a second open, by borrowing it, THEN both answer the same graph and label.
+    /// copying it: GIVEN each worktree comparison (exact, overlaid, none possible), WHEN the
+    /// graph is read whole by consuming it and, on a second open, by borrowing it, THEN both
+    /// answer the same graph and label.
     #[test]
     fn a_consuming_whole_read_answers_the_borrowing_one() {
-        let differing = |path: &str| {
-            Ok(WorktreeDiff {
-                changed: vec![path.into()],
-                untracked: Vec::new(),
-            })
-        };
         // (case, the comparison)
-        let cases: [(&str, Result<WorktreeDiff, String>); 5] = [
-            ("exact", Ok(WorktreeDiff::default())),
-            ("a code file", differing("src/a.rs")),
-            ("a design doc", differing("docs/d.md")),
-            ("the workflow definition", differing(".rigger/workflow.yml")),
-            ("no comparison", Err("unreadable".into())),
+        let cases = [
+            ("exact", Compared::Overlaid(0)),
+            ("overlaid", Compared::Overlaid(1)),
+            ("no comparison", Compared::Uncomparable),
         ];
         let (records, view) = (records(), view_with_workflow());
-        for (case, diff) in cases {
+        for (case, compared) in cases {
             for near in [false, true] {
-                let honesty = || honest(diff.clone());
+                let honesty = || honest(compared);
                 let open = || -> Box<dyn ContextGraph + '_> {
                     let filter = ViewFilter::default();
                     match near {
@@ -2195,23 +2166,16 @@ mod tests {
         rows.edges.push(edge("dec-2", "the-doc", REL_GOVERNS));
         aliases.push(("the-doc".into(), "docs/d.md".into()));
         let records = Indexed::new(rows, aliases);
-        let differing = |path: &str| {
-            Ok(WorktreeDiff {
-                changed: vec![path.into()],
-                untracked: Vec::new(),
-            })
-        };
         // (case, the comparison)
-        let cases: [(&str, Result<WorktreeDiff, String>); 4] = [
-            ("exact", Ok(WorktreeDiff::default())),
-            ("a code file", differing("src/a.rs")),
-            ("a design doc", differing("docs/e.md")),
-            ("no comparison", Err("unreadable".into())),
+        let cases = [
+            ("exact", Compared::Overlaid(0)),
+            ("overlaid", Compared::Overlaid(1)),
+            ("no comparison", Compared::Uncomparable),
         ];
-        for (case, diff) in cases {
+        for (case, compared) in cases {
             for near in [false, true] {
                 let filter = ViewFilter::default();
-                let honesty = || honest(diff.clone());
+                let honesty = || honest(compared);
                 let g: Box<dyn ContextGraph + '_> = match near {
                     true => Box::new(Composed::near(&records, &view, filter, honesty()).unwrap()),
                     false => Box::new(composed(&records, &view, honesty())),
@@ -2240,15 +2204,15 @@ mod tests {
         }
     }
 
-    /// Every code-half node names the file its facts came from by one rule, which both the
-    /// differing-files arm and the cannot-compare arm read: GIVEN one file differing (or the
-    /// worktree not comparable), WHEN each kind of code-half node is resolved and read in the
-    /// whole graph, borrowed and consumed, over the code half resolved whole and near, THEN a
-    /// node is withheld and counted exactly when its file is withheld, a grouping when a member's
-    /// file is, and nothing else is: neither a record naming a differing file (a record is never
+    /// Every code-half node names the file its facts came from by one rule, which the
+    /// cannot-compare arm reads: GIVEN the worktree overlaid or not comparable, WHEN each kind of
+    /// code-half node is resolved and read in the whole graph, borrowed and consumed, over the
+    /// code half resolved whole and near, THEN an overlaid view withholds nothing, and one not
+    /// comparable withholds and counts exactly the nodes whose facts came from a file, a grouping
+    /// by its members' files, and nothing else: neither a record naming a file (a record is never
     /// stale) nor a link end naming no file (no file withholds it).
     #[test]
-    fn a_code_half_node_is_withheld_exactly_when_the_file_its_facts_came_from_is() {
+    fn an_uncomparable_worktree_withholds_exactly_the_nodes_whose_facts_came_from_a_file() {
         let code = [
             "src/a.rs",
             "src/a.rs::run",
@@ -2257,33 +2221,12 @@ mod tests {
             COMMUNITY,
             CONCEPT,
         ];
-        // A record naming a file that differs, and a link end the design doc names no file by.
+        // A record naming a file, and a link end the design doc names no file by.
         let probes = [code.as_slice(), &["src/gone.rs", "glossary"]].concat();
-        let differing = |path: &str| {
-            Ok(WorktreeDiff {
-                changed: vec![path.into()],
-                untracked: Vec::new(),
-            })
-        };
-        // (case, the diff, the probes withheld)
-        let cases: [(&str, Result<WorktreeDiff, String>, &[&str]); 5] = [
-            (
-                "a code file",
-                differing("src/a.rs"),
-                &["src/a.rs", "src/a.rs::run", COMMUNITY],
-            ),
-            (
-                "a design doc",
-                differing("docs/d.md"),
-                &["docs/d.md", CONCEPT],
-            ),
-            (
-                "the workflow definition",
-                differing(".rigger/workflow.yml"),
-                &["stage:implement"],
-            ),
-            ("a recorded file", differing("src/gone.rs"), &[]),
-            ("no comparison", Err("unreadable".into()), &code),
+        // (case, the comparison, the probes withheld)
+        let cases: [(&str, Compared, &[&str]); 2] = [
+            ("overlaid", Compared::Overlaid(1), &[]),
+            ("no comparison", Compared::Uncomparable, &code),
         ];
         let (mut rows, aliases) = record_rows();
         rows.nodes
@@ -2300,9 +2243,9 @@ mod tests {
             to: "glossary".into(),
         });
         view.facts = FactsView::new(view.facts.stamp().clone(), files);
-        for (case, diff, withheld) in cases {
+        for (case, compared, withheld) in cases {
             for near in [false, true] {
-                let honesty = honest(diff.clone());
+                let honesty = honest(compared);
                 let g: Box<dyn ContextGraph + '_> = if near {
                     Box::new(
                         Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap(),
@@ -2350,7 +2293,7 @@ mod tests {
                     edges.sort();
                     edges
                 };
-                let agreeing = composed(&records, &view, honest(Ok(WorktreeDiff::default())));
+                let agreeing = composed(&records, &view, exact());
                 assert_eq!(
                     edges(&[&read.graph, &read.withheld]),
                     edges(&[&Neighbors::whole(&agreeing).unwrap()]),
@@ -2360,19 +2303,14 @@ mod tests {
         }
     }
 
-    /// A walk counts the withheld nodes it reaches and no other: GIVEN `src/b.rs` withheld, WHEN
-    /// the walk starts at each seed to each depth, THEN its label counts what the dash counts over
-    /// the whole read's withheld part, so a withheld node one hop past the last level (`compute`,
-    /// which `f1` is about, at depth 0) is never counted.
+    /// A walk counts the withheld nodes it reaches and no other: GIVEN a worktree that cannot be
+    /// compared, WHEN the walk starts at each seed to each depth, THEN its label counts what the
+    /// dash counts over the whole read's withheld part, so a withheld node one hop past the last
+    /// level (`compute`, which `f1` is about, at depth 0) is never counted.
     #[test]
     fn a_walk_counts_the_withheld_nodes_it_reaches_and_no_other() {
         let (records, view) = (records(), view(Some("c1")));
-        let differing = || {
-            honest(Ok(WorktreeDiff {
-                changed: vec!["src/b.rs".into()],
-                untracked: Vec::new(),
-            }))
-        };
+        let differing = || honest(Compared::Uncomparable);
         let read = Box::new(composed(&records, &view, differing()))
             .into_whole()
             .unwrap();
@@ -2380,11 +2318,11 @@ mod tests {
         let cases: [(&str, i64, usize); 7] = [
             ("f1", 0, 0),
             ("f1", 1, 1),
-            ("docs/d.md", 0, 0),
+            ("docs/d.md", 0, 1),
             ("docs/d.md", 1, 1),
-            ("dec-1", 1, 0),
-            ("dec-1", 2, 1),
-            ("src/a.rs", 2, 0),
+            ("dec-1", 1, 2),
+            ("dec-1", 2, 2),
+            ("src/a.rs", 2, 2),
         ];
         for (seed, depth, want) in cases {
             let g = composed(&records, &view, differing());

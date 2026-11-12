@@ -122,7 +122,8 @@ pub trait Grounder: Send + Sync {
 
     /// [`Self::blast_radius_stamped`] read over `head`, the one open of the code store's view of
     /// the head (or why it could not be opened) a caller also composes the context graph over, so
-    /// the seed, the radius, the stamp and the graph's part of the radius describe one tree. The
+    /// the seed, the radius, the stamp and the graph's part of the radius describe one tree: the
+    /// worktree `head` was compared with, which may be another than the grounder's own. The
     /// DEFAULT (grep / nop) reads the worktree itself, never the store, so it answers
     /// [`Self::blast_radius_stamped`]. A grounder that reads the store's view overrides it to read
     /// `head` instead of opening its own.

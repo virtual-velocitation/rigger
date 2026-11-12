@@ -322,24 +322,36 @@ fn extract_all(
             missing.blob, missing.path
         ));
     }
+    extract_parallel(extract, entries, &|entry| {
+        blobs.get(&entry.blob).map_or(&[][..], Vec::as_slice)
+    })
+}
+
+/// The facts of each of `entries`, extracted from the bytes `bytes_of` hands for it in parallel
+/// across the machine's cores, each with the path and blob its entry names: the one extraction
+/// pass an advance and a worktree overlay both run.
+pub(crate) fn extract_parallel<'b>(
+    extract: &dyn Extract,
+    entries: &[Entry],
+    bytes_of: &(dyn Fn(&Entry) -> &'b [u8] + Sync),
+) -> Result<Vec<FileFacts>, String> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(entries.len());
     let chunk = entries.len().div_ceil(threads);
-    let blobs = &blobs;
     std::thread::scope(|scope| {
         let workers: Vec<_> = entries
             .chunks(chunk)
             .map(|part| {
                 scope.spawn(move || {
                     part.iter()
-                        .map(|entry| {
-                            let bytes = blobs.get(&entry.blob).map_or(&[][..], Vec::as_slice);
-                            FileFacts {
-                                path: entry.path.clone(),
-                                blob: entry.blob.clone(),
-                                ..extract.extract(entry, bytes)
-                            }
+                        .map(|entry| FileFacts {
+                            path: entry.path.clone(),
+                            blob: entry.blob.clone(),
+                            ..extract.extract(entry, bytes_of(entry))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -1487,9 +1499,18 @@ mod tests {
                 return Err("refused".into());
             }
             Ok(WorktreeDiff {
-                changed: vec![tree.to_owned()],
-                untracked: Vec::new(),
+                modified: vec![tree.to_owned()],
+                ..WorktreeDiff::default()
             })
+        }
+
+        fn read_worktree(
+            &self,
+            worktree: &Path,
+            paths: &[&str],
+            sink: &mut dyn FnMut(&str, &[u8]),
+        ) -> Result<(), String> {
+            self.inner.read_worktree(worktree, paths, sink)
         }
 
         fn read_blobs(
@@ -1567,7 +1588,7 @@ mod tests {
                 "{name}: view"
             );
             assert_eq!(
-                diff.map(|d| d.changed),
+                diff.map(|d| d.modified),
                 Ok(vec![trees[answered].clone()]),
                 "{name}: the comparison answered"
             );

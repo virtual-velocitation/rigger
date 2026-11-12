@@ -1188,12 +1188,11 @@ mod tests {
             self.test_files.iter().map(String::as_str).collect()
         }
         fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
-            let file = |c: &ProofCall| c.evidence.rsplit_once(':').map(|(f, _)| f.to_string());
             (self.proofs.iter())
                 .filter(|c| match of {
                     Proofs::All => true,
                     Proofs::Of(id) => c.target == id,
-                    Proofs::In(path) => file(c).as_deref() == Some(path),
+                    Proofs::In(path) => c.file() == Some(path),
                 })
                 .cloned()
                 .collect()
@@ -1316,7 +1315,7 @@ mod tests {
         let records = Indexed::default();
         let honesty = || Honesty {
             worktree: "wt".into(),
-            diff: Ok(Default::default()),
+            compared: crate::code_view::Compared::Overlaid(0),
             behind: None,
         };
         let seeds = [

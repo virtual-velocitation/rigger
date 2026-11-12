@@ -6,10 +6,12 @@ mod advance;
 mod dir_source;
 #[cfg(any(test, feature = "doubles"))]
 pub mod doubles;
+mod overlay;
 mod snapshot;
 
 pub use advance::{
     fingerprint, open_compared, open_current, AtomicPublish, Behind, Mode, Opened, Publish, Store,
 };
 pub use dir_source::{content_id, tree_id, DirTreeSource, DIRECTORY_HEAD};
+pub use overlay::{open_head, Memo, Overlay};
 pub use snapshot::{encode, Snapshot};

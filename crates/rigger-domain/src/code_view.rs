@@ -7,7 +7,7 @@ use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, 
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A file in a view, without its facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,11 +89,13 @@ pub struct Entry {
     pub blob: String,
 }
 
-/// How a worktree differs from a tree.
+/// How a worktree differs from a tree, path by path as git's status names each.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorktreeDiff {
-    /// Paths the tree holds that the worktree modified or deleted.
-    pub changed: Vec<String>,
+    /// Paths the tree holds whose content the worktree changed.
+    pub modified: Vec<String>,
+    /// Paths the tree holds that the worktree deleted.
+    pub deleted: Vec<String>,
     /// Paths the worktree holds that the tree does not.
     pub untracked: Vec<String>,
 }
@@ -101,60 +103,69 @@ pub struct WorktreeDiff {
 impl WorktreeDiff {
     /// The files that differ, less those outside the tree's scope ([`in_scope`]): rigger's own
     /// state holds no fact, so it never counts as a difference.
-    pub fn files_in_scope(self) -> BTreeSet<String> {
-        (self.changed.into_iter())
-            .chain(self.untracked)
-            .filter(|f| in_scope(f))
-            .collect()
+    pub fn files_in_scope(&self) -> BTreeSet<&str> {
+        (self.masked()).chain(self.read_from_worktree()).collect()
+    }
+
+    /// The tree's files in scope whose facts no longer describe the worktree: the modified and
+    /// the deleted.
+    pub fn masked(&self) -> impl Iterator<Item = &str> {
+        Self::scoped(self.modified.iter().chain(&self.deleted))
+    }
+
+    /// The files in scope whose facts are read from the worktree's bytes: the modified and the
+    /// untracked.
+    pub fn read_from_worktree(&self) -> impl Iterator<Item = &str> {
+        Self::scoped(self.modified.iter().chain(&self.untracked))
+    }
+
+    fn scoped<'d>(paths: impl Iterator<Item = &'d String>) -> impl Iterator<Item = &'d str> {
+        paths.map(String::as_str).filter(|f| in_scope(f))
     }
 }
 
-/// The files of a view a reader does not serve because its worktree may not match them: the ONE
-/// withholding rule every reader of a view applies (invariant 2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Withheld {
-    /// The worktree's files that differ from the view's tree.
-    Files(BTreeSet<String>),
-    /// Every file: the worktree cannot be compared with the tree, or the view cannot be read.
-    All,
+/// What the view a head serves describes of the reader's worktree (6.1, 13): the ONE withholding
+/// rule every reader of a view applies (invariant 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compared {
+    /// The view describes the worktree: the tree's facts with this many of the worktree's
+    /// differing files ([`WorktreeDiff::files_in_scope`]) taken over them; none when the worktree
+    /// matches the tree.
+    Overlaid(usize),
+    /// The worktree cannot be compared with the tree (its stamp commit is not in the worktree's
+    /// object store, or its index or a differing file cannot be read), or no view was read: the
+    /// answers describe the tree alone, so every code fact is withheld.
+    Uncomparable,
 }
 
-impl Withheld {
-    /// What `diff` puts in doubt: the files that differ, or everything when the worktree cannot
-    /// be compared.
-    pub fn of(diff: Result<WorktreeDiff, String>) -> Self {
+impl Compared {
+    /// What the view of a tree overlaid with a worktree's differing files describes, given how
+    /// the worktree differs from the tree (`diff`), or why it cannot be compared.
+    pub fn of(diff: Result<&WorktreeDiff, &str>) -> Compared {
         match diff {
-            Ok(diff) => Withheld::Files(diff.files_in_scope()),
-            Err(_) => Withheld::All,
+            Ok(diff) => Compared::Overlaid(diff.files_in_scope().len()),
+            Err(_) => Compared::Uncomparable,
         }
     }
 
-    /// Whether the file at `path` is withheld.
-    pub fn withholds_file(&self, path: &str) -> bool {
-        match self {
-            Withheld::All => true,
-            Withheld::Files(files) => files.contains(path),
-        }
-    }
-
-    /// Whether the worktree agrees with the view on every file: nothing is withheld.
-    pub fn withholds_nothing(&self) -> bool {
-        matches!(self, Withheld::Files(files) if files.is_empty())
-    }
-
-    /// Whether some files, but not all, are withheld because they differ.
-    pub fn has_differing_files(&self) -> bool {
-        matches!(self, Withheld::Files(files) if !files.is_empty())
+    /// Whether a reader withholds every code fact of the view.
+    pub fn withholds_code(self) -> bool {
+        self == Compared::Uncomparable
     }
 }
 
-/// The code view of the head a reader in a worktree reads, and how that worktree differs from it.
+/// The code view of the head a reader in a worktree reads, and what it describes of that
+/// worktree.
 pub struct Head {
+    /// The head's facts with the worktree's differing files overlaid ([`Compared::Overlaid`]),
+    /// or the head's alone when the worktree cannot be compared.
     pub view: Box<dyn CodeView>,
-    /// How the worktree differs from the view's tree, or why it cannot be compared.
-    pub diff: Result<WorktreeDiff, String>,
+    /// What the view describes of the worktree.
+    pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
+    /// The worktree the view is compared with: the one it describes.
+    pub worktree: PathBuf,
 }
 
 /// Opens the code view of the head for a reader (7.3). The composition root implements it. A
@@ -249,6 +260,15 @@ pub trait TreeSource {
     /// How `worktree` differs from `tree`.
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
         -> Result<WorktreeDiff, String>;
+    /// Hands each of `paths` (as [`Self::changed_against_worktree`] names them) to `sink` as
+    /// (path, bytes), read from `worktree` as this source reads a file into a tree: the bytes a
+    /// commit of the worktree's content would hold there. A path it cannot read is an error.
+    fn read_worktree(
+        &self,
+        worktree: &Path,
+        paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String>;
     /// Hands each of `blobs` to `sink` as (blob id, bytes).
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8]))
         -> Result<(), String>;
@@ -570,83 +590,88 @@ mod tests {
         }
     }
 
-    /// Each row: how a worktree differs, the files it withholds and whether it withholds the file
-    /// `src/a.rs`.
+    fn diff(modified: &[&str], deleted: &[&str], untracked: &[&str]) -> WorktreeDiff {
+        let owned = |paths: &[&str]| paths.iter().map(|f| f.to_string()).collect();
+        WorktreeDiff {
+            modified: owned(modified),
+            deleted: owned(deleted),
+            untracked: owned(untracked),
+        }
+    }
+
+    /// Each row: how a worktree differs, the files whose tree facts it masks and the files whose
+    /// facts are read from the worktree.
     #[test]
-    fn a_diff_withholds_its_differing_files_or_all_when_uncomparable() {
-        let differing = |changed: &[&str]| {
-            Ok(WorktreeDiff {
-                changed: changed.iter().map(|f| f.to_string()).collect(),
-                untracked: vec![".rigger/events.db".to_string()],
-            })
-        };
+    fn a_diff_masks_the_modified_and_deleted_and_reads_the_modified_and_untracked() {
         let cases = [
-            ("agreeing", differing(&[]), false, true, false),
+            ("agreeing", diff(&[], &[], &[]), vec![], vec![]),
             (
-                "another file differs",
-                differing(&["src/b.rs"]),
-                false,
-                false,
-                true,
+                "one of each",
+                diff(&["src/m.rs"], &["src/d.rs"], &["src/u.rs"]),
+                vec!["src/m.rs", "src/d.rs"],
+                vec!["src/m.rs", "src/u.rs"],
             ),
             (
-                "this file differs",
-                differing(&["src/a.rs"]),
-                true,
-                false,
-                true,
-            ),
-            (
-                "uncomparable",
-                Err("no commit".to_string()),
-                true,
-                false,
-                false,
+                "rigger's own state is out of scope",
+                diff(&[".rigger/events.db"], &[".gitignore"], &[".rigger/x"]),
+                vec![],
+                vec![],
             ),
         ];
-        for (name, diff, withholds_a, nothing, differing_files) in cases {
-            let withheld = Withheld::of(diff);
-            assert_eq!(withheld.withholds_file("src/a.rs"), withholds_a, "{name}");
-            assert_eq!(withheld.withholds_nothing(), nothing, "{name}");
-            assert_eq!(withheld.has_differing_files(), differing_files, "{name}");
+        for (name, diff, masked, read) in cases {
+            assert_eq!(diff.masked().collect::<Vec<_>>(), masked, "{name}");
+            assert_eq!(
+                diff.read_from_worktree().collect::<Vec<_>>(),
+                read,
+                "{name}"
+            );
+        }
+    }
+
+    /// Each row: what a view describes of a worktree and whether a reader withholds its code.
+    #[test]
+    fn only_an_uncomparable_worktree_withholds_code() {
+        for (compared, withholds) in [
+            (Compared::Overlaid(0), false),
+            (Compared::Overlaid(3), false),
+            (Compared::Uncomparable, true),
+        ] {
+            assert_eq!(compared.withholds_code(), withholds, "{compared:?}");
         }
     }
 
     /// Each row: how a worktree differs and the files that count as differing.
     #[test]
     fn a_diff_counts_only_the_files_the_tree_covers() {
-        let diff = |changed: &[&str], untracked: &[&str]| WorktreeDiff {
-            changed: changed.iter().map(|f| f.to_string()).collect(),
-            untracked: untracked.iter().map(|f| f.to_string()).collect(),
-        };
         let cases = [
-            ("no difference", diff(&[], &[]), vec![]),
+            ("no difference", diff(&[], &[], &[]), vec![]),
             (
-                "changed and untracked together",
-                diff(&["src/b.rs"], &["src/a.rs"]),
-                vec!["src/a.rs", "src/b.rs"],
+                "modified, deleted and untracked together",
+                diff(&["src/b.rs"], &["src/c.rs"], &["src/a.rs"]),
+                vec!["src/a.rs", "src/b.rs", "src/c.rs"],
             ),
             (
-                "a file in both lists counts once",
-                diff(&["src/a.rs"], &["src/a.rs"]),
+                "a file in two lists counts once",
+                diff(&["src/a.rs"], &[], &["src/a.rs"]),
                 vec!["src/a.rs"],
             ),
             (
                 "rigger's own state is out of scope",
                 diff(
                     &[".rigger/events.db"],
+                    &[],
                     &[".rigger/store/code/CURRENT", "README.md"],
                 ),
                 vec!["README.md"],
             ),
             (
                 "the workflow definition is in scope",
-                diff(&[".rigger/workflow.yml"], &[]),
+                diff(&[".rigger/workflow.yml"], &[], &[]),
                 vec![".rigger/workflow.yml"],
             ),
         ];
         for (name, diff, expected) in cases {
-            let files: Vec<String> = diff.files_in_scope().into_iter().collect();
+            let files: Vec<&str> = diff.files_in_scope().into_iter().collect();
             assert_eq!(files, expected, "{name}");
         }
     }

@@ -167,6 +167,13 @@ pub struct ProofCall {
     pub evidence: String,
 }
 
+impl ProofCall {
+    /// The file the call sits in, read off its evidence.
+    pub fn file(&self) -> Option<&str> {
+        self.evidence.rsplit_once(':').map(|(file, _)| file)
+    }
+}
+
 /// One node a design concept or a workflow node names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentNode {
@@ -219,8 +226,7 @@ fn one_here_else_one_anywhere<'c, 'v>(
 /// `file:line` as text, then the caller.
 fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
     fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
-        let file = c.evidence.rsplit_once(':').map_or("", |(file, _)| file);
-        (&c.target, file, &c.evidence, &c.caller)
+        (&c.target, c.file().unwrap_or(""), &c.evidence, &c.caller)
     }
     calls.sort_by(|a, b| key(a).cmp(&key(b)));
     calls
@@ -359,6 +365,13 @@ impl<'v> Resolver<'v> {
     /// Whether `path` is test code by its scope or the test-module closure.
     pub fn is_test_file(&self, path: &str) -> bool {
         self.test_files.contains(path)
+    }
+
+    /// Every test file, in path order ([`Settled::test_files`]).
+    pub fn test_files(&self) -> Vec<&'v str> {
+        let mut files: Vec<&'v str> = self.test_files.iter().copied().collect();
+        files.sort_unstable();
+        files
     }
 
     /// Whether the node `id` is test code: it lies in a test file, whatever fact names it.
@@ -841,6 +854,58 @@ impl<'v> Resolver<'v> {
     }
 }
 
+/// The rows a store settles ([`Settled`]) for `view`, which holds `base`'s facts but for the
+/// files at `differing`, from the rows `base` settled: what settling `view` whole computes,
+/// re-settling only where a difference reaches. Its test files are `view`'s test-module closure.
+/// Its proof calls are `base`'s but for those in a file that differs, flipped test-ness or makes a
+/// test call to a leaf whose product call targets ([`Resolver::proof`]'s candidates) differ,
+/// which are read from `view`. Only a definition in a file that differs or flipped can move a
+/// leaf's targets, so no other proof call can change.
+pub fn resettle(
+    base: &dyn CodeView,
+    view: &dyn CodeView,
+    differing: &BTreeSet<&str>,
+) -> (Vec<String>, Vec<ProofCall>) {
+    let (was, now) = (Resolver::new(base), Resolver::new(view));
+    let flipped = (was.test_files.symmetric_difference(&now.test_files)).copied();
+    let reached: BTreeSet<&str> = differing.iter().copied().chain(flipped).collect();
+    let mut leaves = BTreeSet::new();
+    for path in &reached {
+        for facts in [base.file(path), view.file(path)].into_iter().flatten() {
+            leaves.extend(facts.defs.iter().map(|d| d.leaf.clone()));
+        }
+    }
+    let targets = |r: &Resolver, leaf: &str| -> Vec<String> {
+        let candidates = r.candidates(leaf);
+        let calls = candidates.iter().filter(|c| Pool::Product.calls(c));
+        calls.map(|c| c.id.clone()).collect()
+    };
+    let mut redo: BTreeSet<String> = reached.iter().map(|p| p.to_string()).collect();
+    for leaf in leaves
+        .iter()
+        .filter(|l| targets(&was, l) != targets(&now, l))
+    {
+        for m in view.mentions_named(leaf) {
+            let test = m.test || now.is_test_file(m.file.path);
+            if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
+                redo.insert(m.file.path.to_string());
+            }
+        }
+    }
+    let redone = |c: &ProofCall| c.file().is_some_and(|file| redo.contains(file));
+    let mut calls: Vec<ProofCall> = (was.proof_calls().iter())
+        .filter(|c| !redone(c))
+        .cloned()
+        .collect();
+    for path in redo.iter().filter(|p| now.is_code_file(p)) {
+        if let Some(facts) = view.file(path) {
+            calls.extend(now.file_proofs(&facts));
+        }
+    }
+    let test_files = now.test_files().into_iter().map(str::to_string).collect();
+    (test_files, proof_order(calls))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1203,6 +1268,82 @@ pub(crate) mod tests {
                     "{rule}: {unwanted} in {lines:#?}"
                 );
             }
+        }
+    }
+
+    /// The files of [`fixture`], `change` applied to them.
+    fn changed(change: impl FnOnce(&mut Vec<FileFacts>)) -> FactsView {
+        let view = fixture();
+        let mut files: Vec<FileFacts> = (view.files())
+            .map(|f| view.file(f.path).unwrap().into_owned())
+            .collect();
+        change(&mut files);
+        FactsView::new(stamp(), files)
+    }
+
+    /// The file at `path` among `files`.
+    fn at<'f>(files: &'f mut [FileFacts], path: &str) -> &'f mut FileFacts {
+        files.iter_mut().find(|f| f.path == path).unwrap()
+    }
+
+    /// Re-settling reaches every row a difference moves: GIVEN [`fixture`] and a view that differs
+    /// from it in some files, WHEN the view is re-settled from the fixture's rows, THEN its test
+    /// files and proof calls are what settling the view whole computes, including the rows of a
+    /// file that does not differ.
+    #[test]
+    fn resettling_a_view_answers_what_settling_it_whole_answers() {
+        // (case, the files that differ, the change)
+        let cases: [(&str, &[&str], FactsView); 6] = [
+            ("no file differs", &[], changed(|_| {})),
+            (
+                "a second product candidate unproves an untouched test's call",
+                &["src/c.rs"],
+                changed(|files| {
+                    let c = at(files, "src/c.rs");
+                    c.defs.push(def("compute", "function", 6, None, false));
+                }),
+            ),
+            (
+                "a deleted file's definitions leave every call to them",
+                &["src/b.rs"],
+                changed(|files| files.retain(|f| f.path != "src/b.rs")),
+            ),
+            (
+                "a module declaration flips a file it reaches to test",
+                &["src/a.rs"],
+                changed(|files| at(files, "src/a.rs").modules[0].test = true),
+            ),
+            (
+                "a module declaration flips the files it reaches to product, unproving their calls",
+                &["src/a.rs"],
+                changed(|files| at(files, "src/a.rs").modules[1].test = false),
+            ),
+            (
+                "an added test file proves what it calls",
+                &["tests/new.rs"],
+                changed(|files| {
+                    files.push(code(
+                        "tests/new.rs",
+                        "rust",
+                        Scope::Test,
+                        vec![def("new_works", "function", 1, None, true)],
+                        vec![call("helper", Some(0), 2, true)],
+                    ));
+                }),
+            ),
+        ];
+        let settled = |view: &FactsView| -> (Vec<String>, Vec<ProofCall>) {
+            let whole = Resolver::new(view);
+            let test_files = whole.test_files().into_iter().map(str::to_string).collect();
+            (test_files, whole.proof_calls().to_vec())
+        };
+        let base = fixture();
+        let was = settled(&base);
+        for (case, differing, view) in cases {
+            let want = settled(&view);
+            let differing: BTreeSet<&str> = differing.iter().copied().collect();
+            assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
+            assert_eq!(resettle(&base, &view, &differing), want, "{case}");
         }
     }
 

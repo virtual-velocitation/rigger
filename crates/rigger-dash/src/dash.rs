@@ -8765,7 +8765,7 @@ mod tests {
     /// what the polled read describes and the snapshot's `graph.label`.
     #[test]
     fn the_run_snapshot_states_what_its_graph_read_describes() {
-        use rigger_domain::composed::Compared;
+        use rigger_domain::code_view::Compared;
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
 
@@ -8813,7 +8813,7 @@ mod tests {
         let described = GraphLabel::Read(Label {
             describes: "c1".to_string(),
             worktree: "/w".to_string(),
-            compared: Compared::Differ(1),
+            compared: Compared::Overlaid(1),
             behind: None,
             withheld: 0,
         });
@@ -8821,7 +8821,7 @@ mod tests {
         let cases = [
             (
                 Some(described),
-                serde_json::json!({"read": "describes c1; 1 file in /w differs"}),
+                serde_json::json!({"read": "describes /w (c1 + 1 file); groupings describe c1"}),
             ),
             (
                 Some(unread),
@@ -8842,7 +8842,7 @@ mod tests {
     /// directed-call providers read, and the label and error header lines the response carries.
     #[test]
     fn a_graph_view_states_what_its_reads_describe() {
-        use rigger_domain::composed::Compared;
+        use rigger_domain::code_view::Compared;
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
 
@@ -8906,14 +8906,14 @@ mod tests {
         let described = GraphLabel::Read(Label {
             describes: "c1".to_string(),
             worktree: "/w/\u{fc}".to_string(),
-            compared: Compared::Differ(1),
+            compared: Compared::Uncomparable,
             behind: None,
             withheld: 3,
         });
-        let label = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 3 withheld";
+        let label = "X-Rigger-Graph-Label: describes c1; /w/%C3%BC cannot be compared; 3 withheld";
         // The seed view reaches the one withheld node, `x`, so it states 1 where the overview
         // states the whole read's 3.
-        let seeded = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 1 withheld";
+        let seeded = "X-Rigger-Graph-Label: describes c1; /w/%C3%BC cannot be compared; 1 withheld";
         let unread = GraphLabel::Unread("the code store cannot be opened: 100%".to_string());
         let error = "X-Rigger-Graph-Error: the code store cannot be opened: 100%25";
         let cases: [(&str, Option<GraphLabel>, Vec<&str>); 6] = [

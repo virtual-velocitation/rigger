@@ -297,10 +297,14 @@ fn setup_advances_from_empty() {
             .expect("the store reads")
             .unwrap_or_else(|| panic!("{}: setup advances the store", row.name));
         assert_eq!(stamp.tip.commit, (row.commit)(&root), "{}", row.name);
+        // The tree setup scaffolds into differs from the commit by the files it wrote, so the line
+        // may describe the tree over the commit; either way it names the commit.
         let described = stamp.tip.commit.as_deref().unwrap_or(&stamp.tip.tree);
         assert!(
-            first.contains(&format!("code store: describes {described}")),
-            "{}: setup prints the stamp line; stdout: {first}",
+            first
+                .lines()
+                .any(|l| l.starts_with("code store: describes ") && l.contains(described)),
+            "{}: setup prints the stamp line naming {described}; stdout: {first}",
             row.name
         );
         let rerun = run_rigger_ok(&root, &["setup"]);
@@ -314,8 +318,8 @@ fn setup_advances_from_empty() {
 
 /// Each row runs a verb in a unit worktree whose own branch carries one commit more than the
 /// operator checkout: the store at the operator checkout describes the operator checkout's HEAD,
-/// never the worktree's, and no store is made in the worktree. The reader's stamp line counts the
-/// one file the worktree differs by.
+/// never the worktree's, and no store is made in the worktree. The reader's stamp line describes
+/// the worktree over that head, counting the one file it takes from the worktree.
 #[test]
 fn a_reader_in_a_unit_worktree_advances_from_the_operator_checkout_head() {
     let rows: [(&str, &[&str], bool); 2] = [
@@ -357,7 +361,8 @@ fn a_reader_in_a_unit_worktree_advances_from_the_operator_checkout_head() {
         );
         if prints_the_count {
             let line = format!(
-                "code store: describes {operator_head}; 1 file in {} differs",
+                "code store: describes {} ({operator_head} + 1 file); groupings describe \
+                 {operator_head}",
                 unit.display()
             );
             assert!(
@@ -369,16 +374,18 @@ fn a_reader_in_a_unit_worktree_advances_from_the_operator_checkout_head() {
 }
 
 /// Each row readies a provisioned checkout and runs `rigger validate` there: it prints the line
-/// naming the commit the store describes and, when the checkout differs from it, how many files
-/// differ.
+/// naming the commit the store describes and, when the checkout differs from it, the checkout a
+/// reader there reads and how many of its files that reader takes over the commit.
 #[test]
 fn validate_prints_the_stamp_line() {
-    let rows: [(&str, Ready, &str); 3] = [
-        ("a clean checkout", |_| {}, ""),
+    let overlaid = "{root} ({head} + {n}); groupings describe {head}";
+    let rows: [(&str, Ready, &str, &str); 3] = [
+        ("a clean checkout", |_| {}, "{head}", ""),
         (
             "a modified file",
             |root| write_files(root, &[(SOURCE.0, "pub fn product() { edited() }\n")]),
-            "; 1 file in {root} differs",
+            overlaid,
+            "1 file",
         ),
         (
             "a modified and an untracked file",
@@ -386,18 +393,21 @@ fn validate_prints_the_stamp_line() {
                 write_files(root, &[(SOURCE.0, "pub fn product() { edited() }\n")]);
                 write_files(root, &[("src/new.rs", "pub fn new() {}\n")]);
             },
-            "; 2 files in {root} differ",
+            overlaid,
+            "2 files",
         ),
     ];
-    for (name, ready, differ) in rows {
+    for (name, ready, describes, n) in rows {
         let (_dir, root) = provisioned_repository();
         ready(&root);
         let (out, err, ok) = run_rigger(&root, &["validate"]);
         assert!(ok, "{name}: validate succeeds; stderr: {err}");
         let line = format!(
-            "code store: describes {}{}",
-            head_of(&root),
-            differ.replace("{root}", &root.display().to_string())
+            "code store: describes {}",
+            describes
+                .replace("{root}", &root.display().to_string())
+                .replace("{head}", &head_of(&root))
+                .replace("{n}", n)
         );
         assert!(
             out.lines().any(|l| l == line),

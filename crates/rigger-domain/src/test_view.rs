@@ -123,7 +123,7 @@ pub fn join_tests(graph: &mut Graph, attachment: &TestAttachment, tests: Tests) 
 mod tests {
     use super::*;
     use crate::code_facts::{Def, FileFacts, Mention, MentionKind, Scope, Stamp, Tip};
-    use crate::code_view::{Cluster, FactsView, Groupings, ViewFilter};
+    use crate::code_view::{Cluster, Compared, FactsView, Groupings, ViewFilter};
     use crate::composed::{Composed, Honesty, Indexed};
     use crate::contextgraph::{ContextGraph, REL_IN_COMMUNITY};
     use crate::resolve::Resolver;
@@ -222,7 +222,7 @@ mod tests {
         let records = Indexed::default();
         let honesty = Honesty {
             worktree: "W".into(),
-            diff: Ok(Default::default()),
+            compared: Compared::Overlaid(0),
             behind: None,
         };
         Composed::new(&records, view, ViewFilter { tests }, honesty)
@@ -364,20 +364,17 @@ mod tests {
     }
 
     /// The tests a filter hides are the graph's to report: `exclude` holds them back as
-    /// `hidden_tests`, and `include` and `only` show them, so nothing is hidden. A hidden test
-    /// whose file the caller's worktree changed is withheld and counted as a shown one is.
+    /// `hidden_tests`, and `include` and `only` show them, so nothing is hidden. A view that overlays
+    /// the caller's worktree reports them, and none is reported when the worktree cannot be
+    /// compared.
     #[test]
     fn the_graph_reports_the_tests_it_hides() {
         let view = view();
-        let hidden = |tests: Tests, changed: &[&str]| -> (Vec<String>, usize) {
+        let hidden = |tests: Tests, compared: Compared| -> (Vec<String>, usize) {
             let records = Indexed::default();
-            let diff = crate::code_view::WorktreeDiff {
-                changed: changed.iter().map(|f| f.to_string()).collect(),
-                untracked: Vec::new(),
-            };
             let honesty = Honesty {
                 worktree: "W".into(),
-                diff: Ok(diff),
+                compared,
                 behind: None,
             };
             let graph = Composed::new(&records, &view, ViewFilter { tests }, honesty).unwrap();
@@ -385,16 +382,16 @@ mod tests {
             (ids.collect(), graph.stamp_label().withheld)
         };
         let all = ["t1", "t2", "t3", "t4", "t5"].map(|t| format!("tests/t.rs::{t}"));
-        let cases: [(Tests, &[&str], &[String], usize); 5] = [
-            (Tests::Exclude, &[], &all, 0),
-            (Tests::Exclude, &["src/p.rs"], &all, 0),
-            (Tests::Exclude, &["tests/t.rs"], &[], 5),
-            (Tests::Include, &[], &[], 0),
-            (Tests::Only, &[], &[], 0),
+        let cases: [(Tests, Compared, &[String], usize); 5] = [
+            (Tests::Exclude, Compared::Overlaid(0), &all, 0),
+            (Tests::Exclude, Compared::Overlaid(1), &all, 0),
+            (Tests::Exclude, Compared::Uncomparable, &[], 0),
+            (Tests::Include, Compared::Overlaid(0), &[], 0),
+            (Tests::Only, Compared::Overlaid(0), &[], 0),
         ];
-        for (tests, changed, ids, withheld) in cases {
+        for (tests, compared, ids, withheld) in cases {
             let want = (ids.to_vec(), withheld);
-            assert_eq!(hidden(tests, changed), want, "{tests:?} {changed:?}");
+            assert_eq!(hidden(tests, compared), want, "{tests:?} {compared:?}");
         }
     }
 
@@ -462,7 +459,7 @@ mod tests {
         let records = Indexed::default();
         let honesty = || Honesty {
             worktree: "W".into(),
-            diff: Ok(Default::default()),
+            compared: Compared::Overlaid(0),
             behind: None,
         };
         let hidden = |tests: Tests| {

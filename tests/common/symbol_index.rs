@@ -82,7 +82,8 @@ pub fn registered(ext: &str) -> rigger::grounder::symbols::registry::LanguageEnt
 #[cfg(feature = "symbols")]
 pub fn extracted(ext: &str, src: &str) -> FileSymbols {
     let entry = registered(ext);
-    rigger::grounder::symbols::extract::extract(src, entry.lang, &entry.language, entry.tags_query)
+    let tags = entry.tags().expect("the registered query compiles");
+    rigger::grounder::symbols::extract::extract(src, entry.lang, tags)
         .expect("the registered query extracts the source")
 }
 

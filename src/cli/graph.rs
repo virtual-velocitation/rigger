@@ -581,8 +581,7 @@ fn locate_definition_extent(
     extract::locate_extent(
         source,
         entry.lang,
-        &entry.language,
-        entry.tags_query,
+        entry.tags().map_err(Unbounded::Note)?,
         Recorded {
             name,
             path: id_path,
@@ -676,7 +675,7 @@ fn report_groupings(
     counted: impl Fn(usize) -> String,
 ) -> Res {
     let (resolution, tests) = report_options(verb, args)?;
-    let head = open_head(&cwd())?;
+    let head = open_head(&caller_tree()?)?;
     let view = &*head.view;
     let lines = {
         let computed;

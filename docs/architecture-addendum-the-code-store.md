@@ -169,9 +169,10 @@ Any design that holds test code fully has to keep product views the size they ar
 1. **Stamped.** The code store describes exactly one tree, named by its stamp. Every answer carries
    that stamp.
 2. **Never stale.** An answer either matches the tree it claims to describe or says it does not.
-   - Before the overlay, an answer names the stamp commit, lists how many of the caller's files
-     differ from it, and withholds hits in those files.
-   - With the overlay, it merges those files and describes the caller's worktree.
+   - An answer describes the caller's worktree: the files it differs in from the stamp are read
+     from it (the overlay, section 13), and the label names the stamp and how many files came
+     from the worktree.
+   - When the worktree cannot be compared, every code hit is withheld and counted.
 3. **Pure.** A snapshot is a pure function of (tree, fingerprint), and the fingerprint names
    everything that computes it: the extractors and the grouping algorithm. Advancing from A to B
    gives the same bytes as advancing from empty to B.
@@ -457,7 +458,7 @@ code::open_current(root) -> CodeView
 inside a unit worktree resolves `root` through git's common directory to that main worktree.
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
-honesty check (6.1), and later through the overlay (13).
+overlay (13), which reads the files its branch differs in from its worktree.
 
 All four go through the same function. Writers wait for the lock. A reader takes it only if it
 is free. When another process holds it (an advance is in flight), or the store is read-only, the
@@ -557,6 +558,14 @@ Grouping before and after:
 | write + fsync + swap | ~ 20 ms | ~ 20 ms |
 | **budget (Done-when)** | **<= 3 s** | **<= 8 s** (today: 5 min 23.5 s) |
 
+A grammar's tags query is compiled once per process, at its first extraction, never per file
+(`LanguageEntry::tags`). Each file is parsed once: the tags query runs over the tree the
+structural reads use, and the impl blocks, Rust's tagged references and the test regions start
+from the nodes one walk of that tree gathers (`StructuralNodes`). Every reference's caller is
+found in one sweep over the references in position order, each definition entering at its
+range's start and leaving at its end (`enclosing_defs`), never a scan of every definition per
+reference.
+
 ---
 
 ## 6. The read path
@@ -567,32 +576,30 @@ Grouping before and after:
 open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
-  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
+  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --raw + the
                                                                    untracked list: < 20 ms over a
                                                                    refreshed index)
   diff empty      -> answers describe W exactly; label "describes <commit>"
-  diff non-empty  -> without the overlay: label "describes <commit>; N files in W differ;
-                     K withheld"; N counts only files in scope (`in_scope`, 7.1), so rigger's
-                     own state never differs; every node in a differing file, and every edge
-                     with such an endpoint, is withheld, and K counts the withheld hits
-                     with the overlay (section 13): the differing files are merged in; label
-                     "describes W (<commit> + N files)"
-  diff fails (the stamp commit is not in W's object store, or W's index cannot be copied)
+  diff non-empty  -> the overlay (section 13): each differing file's facts are read from W's
+                     bytes over the stamp's, so answers describe W; label "describes W
+                     (<commit> + N files); groupings describe <commit>"; N counts only files in
+                     scope (`in_scope`, 7.1), so rigger's own state never differs
+  diff fails (the stamp commit is not in W's object store, or W's index cannot be copied), or
+  a differing file cannot be read
                   -> label "describes <commit>; W cannot be compared; K withheld"; it fails
                      closed: every node of the code half, and every edge with such an
                      endpoint, is withheld, and K counts the withheld hits; the
                      record half still answers
 ```
 
-A node is in the file its facts came from, by one rule both arms read: a design or workflow
-node's document (its `doc`; `stage:implement` is in `.rigger/workflow.yml`), any other code-half
-node the file its id names, and a community or concept every file its attributes summarise (its
-members', which give its label and hash, and its attached tests', which give its test count). A
-differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
-doubt. Only code-half nodes are withheld: a record is never stale, so a record naming a differing
-file is answered. An edge end is in the file its id names, as any other code-half node is, so an
-end whose id names no file (a doc link to `glossary`) is in none and no comparison withholds it;
-the edges joining it to a withheld node are withheld with that node.
+When W cannot be compared, a code-half node is withheld when its facts came from a file, by one
+rule: a design or workflow node's document (its `doc`; `stage:implement` is in
+`.rigger/workflow.yml`), any other code-half node the file its id names, and a community or
+concept the files its attributes summarise (its members', which give its label and hash, and its
+attached tests', which give its test count). Only code-half nodes are withheld: a record is never
+stale, so a record naming a file is answered. An edge end is in the file its id names, as any
+other code-half node is, so an end whose id names no file (a doc link to `glossary`) is in none
+and is never withheld; the edges joining it to a withheld node are withheld with that node.
 
 K is the number of hits of this answer that were withheld, counted in the read that answered and
 in one unit, nodes: the nodes it would have answered or reported hidden (`--around`, `--show`,
@@ -647,8 +654,9 @@ and the label travels with every answer:
   the polled run snapshot (`/api/state`, and the static export built from it) carries the same
   label or reason as `graph.label` and shows it over the decision history.
 
-The symbols grounder carries the label too (`Grounder::ground_labelled`, one open of the store for the rows and the label; the CLI prints it on stderr, beside
-the rows). It applies the same withholding rule (`Withheld`, shared with the composed view). A store
+The symbols grounder carries the label too (`Grounder::ground_labelled`, one open of the store
+for the rows and the label; the CLI prints it on stderr, beside the rows). It reads the same
+overlaid view and the same withholding rule (`Compared`, shared with the composed view). A store
 that cannot be opened is read as a worktree that cannot be compared: every file is withheld, the
 blast radius falls back to the text search, and the label names the failure; an unopenable store
 never answers as an empty "no hit".
@@ -658,9 +666,9 @@ whether a code hit is stale does not serve it, and the combined lookup's text ha
 for the code.
 
 `rigger graph --show` has no drift heal and no stale note: it bounds a shown body at the node's
-own line. A differing file's nodes are withheld, and every code-half node is when W cannot be
-compared, so a code node it shows is one the snapshot describes exactly, and the log holds no
-code record a heal could have been reached through.
+own line. A differing file's nodes are read from W (the overlay), and every code-half node is
+withheld when W cannot be compared, so a code node it shows is one W holds exactly, and the log
+holds no code record a heal could have been reached through.
 
 ### 6.2 The resolver
 
@@ -782,7 +790,9 @@ pub trait TreeSource {
     fn head(&self) -> Result<Tip, String>;                         // HEAD commit + tree
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;      // path, blob
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
-        -> Result<WorktreeDiff, String>;                           // changed + untracked paths
+        -> Result<WorktreeDiff, String>;                           // modified, deleted, untracked
+    fn read_worktree(&self, worktree: &Path, paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;  // a commit of W's bytes
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;
 }
 
@@ -802,7 +812,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
@@ -865,7 +875,9 @@ It splits by role:
   (the conductor's grounding, the MCP server, the dash) follows the store as merges advance it.
   `open(filter)` is `open_on(head(), filter)`: a read that also grounds (the conductor's blast
   radius) opens the head once and hands that `Head` to both the grounder and `open_on`, so the
-  seed, the stamp and the radius's graph tier all come from one tree.
+  seed, the stamp and the radius's graph tier all come from one tree. `head()` compares the head
+  with the reader's own worktree, `head_in(W)` with another worktree of the project (a unit's),
+  and the `Head` names the worktree it describes.
   `open_unowed(fold, read, filter)` refuses with REBUILD_OWED first when the record fold owes
   its rebuild.
 
@@ -1101,27 +1113,56 @@ decorator over `CodeView`, and it reads through one more method of an existing i
 `TreeSource::changed_against_worktree`.
 
 ```
-Overlay { base: &dyn CodeView, changed: FactsView, masked: set of paths }
+Overlay { base: Box<dyn CodeView>, changed: FactsView, hidden: set of paths }
 
-  open(base, W):
-    diff    <- source.changed_against_worktree(base.stamp.tip.tree, W)
-    masked  <- diff.modified + diff.deleted
-    changed <- extract(read W/<p>) for p in diff.modified + diff.added + diff.untracked
-               (memoised per (path, content hash) for the life of the process)
-  defs_named(leaf)     = base.defs_named(leaf) not in masked  ++  changed.defs_named(leaf)
-  mentions_named(leaf) = base.mentions_named(leaf) not in masked ++ changed.mentions_named(leaf)
-  file(p)              = changed.file(p) if p changed, None if deleted, else base.file(p)
-  stamp                = base.stamp + "N files from W"
-  groupings            = base.groupings (labelled as describing the stamp)
+  open_head(root, W):                                  (rigger-store/src/code/overlay.rs)
+    view    <- code::open_current(root)
+    diff    <- source.changed_against_worktree(view.stamp.tip.tree, W)
+    masked  <- diff.modified + diff.deleted                     (in scope, 7.1)
+    changed <- extract(W/<p>) for p in diff.modified + diff.untracked   (in scope; the bytes
+               read once through TreeSource::read_worktree, extracted in parallel)
+    hidden  <- masked + the untracked: every differing file reads from `changed`
+    a file that cannot be read -> W cannot be compared (6.1)
+  files, defs_named(leaf), mentions_named(leaf)
+                       = base's rows outside hidden, merged in path order with changed's
+  file(p), modules(p)  = changed's if p is hidden (None when deleted), else base's
+  def_leaves           = base's and changed's, less a leaf only a masked file defined
+  stamp                = base.stamp (the label names W and the N files read from it)
+  groupings            = base.groupings (the label says they describe the stamp)
+  settled              = re-settled over the merged view on first read (below)
 ```
 
+The facts extracted from a worktree file are kept in a process memo (`Memo::process`) by the
+extractor's fingerprint, the file's path and its content id, so a reader that re-reads a file
+for the same bytes does not extract it again. It is the one cache between opens: it is never
+written anywhere, and it holds at most 256 files' facts (`Memo::BOUND`), evicting the least
+recently read beyond that, so a change set larger than that re-extracts the rest at each open;
+at tens of kilobytes of facts a file it stays within a few megabytes.
+
 The resolver runs over the merged view, so tiers, proofs and test-ness describe W exactly.
+A reader takes a view's test files and proof calls as the store settled them at advance
+(`Settled`), not by resolving the whole view, so the overlay re-settles them
+(`resolve::resettle`) on its first read of them. A changed file can move the rows of a file
+that did not change: a module declaration (`#[cfg(test)] mod x;`) flips the test-ness of the
+files it reaches, and a definition gained or lost moves the product targets of every call to
+its leaf, which proves or unproves a test's call to it. Re-settling resolves both the base and
+the merged view, takes the merged view's test files, and redoes the proof calls of each file
+that differs or flipped and of each test file that calls a leaf whose targets moved; every
+other proof call is the base's, since only a definition in a file that differs or flipped can
+move a leaf's targets.
 Groupings still describe the stamp: a new entity shows no community until the next advance, and
 the label says so.
 
-The overlay is about 300 lines plus tests. Its cost is extraction for each changed file (~25 ms,
-in parallel) plus the git diff (< 20 ms over a refreshed index, 6.1). With it, the honesty label
-in 6.1 becomes "describes W", and withholding is no longer used.
+Every reader opens the head through this one open, so one store open and one diff serve each
+answer: `--around`, `--show` and `--lookup`, `rigger ground`, the MCP graph and ground tools, the
+dash's views and its polled state, and the conductor's blast radius. The conductor opens a unit's
+head in the unit's own worktree (`OpenGraph::head_in`), and the grounder reads the worktree the
+head names, so the unit's seed, stamp and radius describe the tree its implementer works in: a
+file an earlier attempt added there grounds the next attempt.
+
+Its cost is extraction for each changed file (in parallel) plus the git diff (< 20 ms over a
+refreshed index, 6.1). The label in 6.1 reads "describes W (<commit> + N files); groupings
+describe <commit>", and withholding remains only for a W that cannot be compared.
 
 ---
 
@@ -1244,15 +1285,28 @@ a reader holding one open (or mapped) never blocks a writer.
 - `product_tiers_ignore_test_candidates`: a `#[cfg(test)]` helper sharing a product leaf
   changes no product tier, frontier or placeholder choice.
 - `migration_keeps_a_decision_governing_a_tree_file`.
-- `the_honesty_label_names_the_stamp_and_counts_differing_files`, and
-  `hits_in_differing_files_are_withheld_and_counted`.
+- `the_honesty_label_says_the_answer_describes_the_worktree`,
+  `an_overlaid_view_answers_every_hit_and_withholds_none`, and
+  `an_uncomparable_worktree_withholds_exactly_the_nodes_whose_facts_came_from_a_file`.
 - `proof_counts_survive_the_tests_exclude_filter`.
 - `groupings_never_cluster_test_entities`.
 - `tests_include_attaches_each_test_to_its_plurality_community`.
 - `migration_refuses_when_a_record_would_be_lost`, and
   `migration_refuses_when_a_record_names_a_grouping`.
 - `derived_types_are_refused_by_the_log`: GenerationIngested and the three grouping types.
-- `overlay_merges_changed_files_and_describes_the_worktree`.
+- `overlay_merges_changed_files_and_describes_the_worktree`, `overlay_masks_deleted_files`,
+  `overlay_adds_untracked_files`, `overlay_memoises_by_content_hash`,
+  `resolution_over_the_overlay_describes_the_worktree` and
+  `groupings_under_the_overlay_are_labelled_with_the_stamp`.
+- `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
+  to its worktree is in the second attempt's recorded seed, read from that worktree.
+- `a_grammars_tags_query_compiles_once_per_process`: every lookup of a grammar and query pair
+  returns the one compilation; `a_capture_the_tags_reading_does_not_read_fails_to_compile`;
+  `one_sweep_attributes_every_reference_as_the_rule_attributes_it_alone`.
+- `the_overlaid_worktree_answers_what_a_commit_of_its_content_answers`: the overlay of a worktree
+  answers what the store advanced to a commit of the worktree's content answers, over the
+  resolver's tree with a changed file that flips another file's test-ness and proofs, under each
+  tests filter, whole and around every node, groupings excepted.
 
 **Cost (wall clock through the installed binary on this repository; Done-when also asserts
 operation counts through a counting view double):**

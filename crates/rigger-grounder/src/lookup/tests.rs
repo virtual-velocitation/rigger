@@ -18,14 +18,15 @@ use crate::contextgraph::{
 };
 #[cfg(feature = "symbols")]
 use crate::contextgraph::{KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE};
-use rigger_domain::composed::{Compared, Label};
+use rigger_domain::code_view::Compared;
+use rigger_domain::composed::Label;
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
 fn held_label() -> Label {
     Label {
         describes: "c1".to_string(),
         worktree: "W".to_string(),
-        compared: Compared::Differ(0),
+        compared: Compared::Overlaid(0),
         behind: None,
         withheld: 0,
     }
@@ -437,15 +438,14 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
 
 /// A tree whose `kept.rs` is unchanged since the graph's tree, `edited.rs` was edited since and
 /// `gone.rs` deleted since, and whose `added.rs` is new since; each defines a `widget_*`
-/// function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`. Beside it
-/// the record half and the code half the graph is read through, and the worktree's diff against
-/// the graph's tree.
+/// function, and `kept.rs`'s `widget_kept` is called by `edited.rs`'s `widget_edited`, renamed
+/// `widget_renamed` in the tree. Beside it the record half, and the code half the graph is read
+/// through: the graph's tree overlaid with the files the tree differs in.
 #[cfg(feature = "symbols")]
 fn diverged() -> (
     tempfile::TempDir,
     rigger_domain::composed::Indexed,
-    rigger_domain::code_view::FactsView,
-    rigger_domain::code_view::WorktreeDiff,
+    rigger_store::code::Overlay,
 ) {
     use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind};
     let dir = tree(&[
@@ -470,7 +470,7 @@ fn diverged() -> (
         ..FileFacts::default()
     };
     // The tree the store holds: `edited.rs` then called `widget_kept` from `widget_edited`, and
-    // `gone.rs` still stood.
+    // `gone.rs` still stood. The worktree's `edited.rs` calls it from `widget_renamed`.
     let calls_kept = Mention {
         enclosing: Some(0),
         name: "widget_kept".to_string(),
@@ -491,49 +491,56 @@ fn diverged() -> (
     let view = rigger_domain::code_view::FactsView::new(
         stamp,
         vec![
-            file("edited.rs", "widget_edited", vec![calls_kept]),
+            file("edited.rs", "widget_edited", vec![calls_kept.clone()]),
             file("gone.rs", "widget_gone", Vec::new()),
             file("kept.rs", "widget_kept", Vec::new()),
         ],
     );
     let records = rigger_domain::composed::Indexed::new(Graph::default(), Vec::new());
     let diff = rigger_domain::code_view::WorktreeDiff {
-        changed: vec!["edited.rs".to_string(), "gone.rs".to_string()],
+        modified: vec!["edited.rs".to_string()],
+        deleted: vec!["gone.rs".to_string()],
         untracked: vec!["added.rs".to_string()],
     };
-    (dir, records, view, diff)
+    let changed = vec![
+        file("added.rs", "widget_added", Vec::new()),
+        file("edited.rs", "widget_renamed", vec![calls_kept]),
+    ];
+    let overlay = rigger_store::code::Overlay::new(Box::new(view), &diff, changed);
+    (dir, records, overlay)
 }
 
-/// The record half `records` composed over the code half `view`, the worktree differing from it
-/// by `diff`.
+/// The record half `records` composed over the code half `view`, which describes the worktree
+/// as `compared` says.
 #[cfg(feature = "symbols")]
 fn composed<'g>(
     records: &'g rigger_domain::composed::Indexed,
-    view: &'g rigger_domain::code_view::FactsView,
-    diff: rigger_domain::code_view::WorktreeDiff,
+    view: &'g dyn rigger_domain::code_view::CodeView,
+    compared: Compared,
 ) -> rigger_domain::composed::Composed<'g> {
     let honesty = rigger_domain::composed::Honesty {
         worktree: "W".to_string(),
-        diff: Ok(diff),
+        compared,
         behind: None,
     };
     rigger_domain::composed::Composed::new(records, view, Default::default(), honesty).unwrap()
 }
 
-/// One withheld case: the term, the entity lines the graph half shows, what else the graph half
+/// One overlaid case: the term, the entity lines the graph half shows, what else the graph half
 /// says, and what the text half says.
 #[cfg(feature = "symbols")]
-type WithheldCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
+type OverlaidCase<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a [&'a str]);
 
-/// A file changed, deleted or added in the caller's tree is answered from the tree by the text
-/// half and withheld by the graph half, which heads its answer with the graph's label counting
-/// what it withheld; an unchanged file's hit is kept.
+/// A file changed, deleted or added in the caller's tree is answered from the tree by both
+/// halves: the graph half, under a label naming the tree and the files taken from it, shows
+/// what the tree defines and nothing it no longer holds, as the text half does; an unchanged
+/// file's hit is kept.
 #[cfg(feature = "symbols")]
 #[test]
-fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
-    let (dir, records, view, diff) = diverged();
+fn a_file_changed_deleted_or_added_is_answered_from_the_tree_by_both_halves() {
+    let (dir, records, view) = diverged();
     let lookup = TreeLookup::new(dir.path());
-    let cases: [WithheldCase; 4] = [
+    let cases: [OverlaidCase; 5] = [
         (
             "widget_kept",
             &["kept.rs:1 kept.rs::widget_kept (function)"],
@@ -547,6 +554,12 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
             &["no line of your tree holds widget_edited"],
         ),
         (
+            "widget_renamed",
+            &["edited.rs:1 edited.rs::widget_renamed (function)"],
+            &[],
+            &["edited.rs:1: fn widget_renamed() { widget_kept() }"],
+        ),
+        (
             "widget_gone",
             &[],
             &["no entity named widget_gone"],
@@ -554,23 +567,20 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
         (
             "widget_added",
+            &["added.rs:1 added.rs::widget_added (function)"],
             &[],
-            &["no entity named widget_added"],
             &["added.rs:1: fn widget_added() {}"],
         ),
     ];
     for (term, shown, graph_says, text_says) in cases {
-        let graph = composed(&records, &view, diff.clone());
+        let graph = composed(&records, &view, Compared::Overlaid(3));
         let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
         let graph_part = section(&reply, "graph");
         let label = graph.stamp_label();
         assert!(
-            label
-                .to_string()
-                .starts_with("describes c1; 3 files in W differ; ")
-                && label.withheld > 0
+            label.to_string() == "describes W (c1 + 3 files); groupings describe c1"
                 && graph_part.starts_with(&format!("{label}\n")),
-            "{term}: the graph half heads with the label counting what it withheld:\n{reply}"
+            "{term}: the graph half heads with the label naming the tree it describes:\n{reply}"
         );
         for line in shown.iter().chain(graph_says) {
             assert!(
@@ -597,8 +607,8 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_multi_term_lookup_groups_each_section_per_term() {
-    let (dir, records, view, diff) = diverged();
-    let graph = composed(&records, &view, diff);
+    let (dir, records, view) = diverged();
+    let graph = composed(&records, &view, Compared::Overlaid(3));
     let reply = TreeLookup::new(dir.path())
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),
@@ -621,12 +631,11 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
     }
 }
 
-/// A tree whose names reach every tier: `src/kept.rs` and `src/gen.rs` the caller holds as the
-/// graph's tree does, `src/edited.rs` and `tests/edited.rs` it changed. `widget` and the first
-/// fifty `item_` names are defined only in a changed file, so a term reaching them reaches only
-/// withheld entities and falls to the next tier; the other three hundred `item_` names exceed what
-/// a prefix gathers. `tests/` holds test entities, one named as a product entity is. The record
-/// half holds one code entity of its own.
+/// A tree whose names reach every tier: `widget` and the first fifty `item_` names are defined
+/// only in `src/edited.rs`, so under a worktree that cannot be compared a term reaching them
+/// reaches only withheld entities and falls to the next tier; the three hundred and fifty `item_`
+/// names exceed what a prefix gathers. `tests/` holds test entities, one named as a product entity
+/// is. The record half holds one code entity of its own, which is never withheld.
 #[cfg(feature = "symbols")]
 fn named_tree() -> (
     rigger_domain::composed::Indexed,
@@ -790,44 +799,36 @@ const NAMED_TERMS: [&str; 22] = [
     "checks_edited",
 ];
 
-/// THE LOOKUP READS NEAR ITS TERMS: under every filter, a worktree that differs and one that
-/// cannot be compared, the graph half read near its terms answers every term, and counts its
-/// test hits, as it did reading the whole graph. The terms reach each tier, a best tier whose
-/// every hit is withheld (which falls to the next), a prefix gathering past withheld names, the
-/// nearest names of a missing term (never a withheld one), an id, a placeholder, a record-half
-/// entity, and test hits, one withheld.
+/// THE LOOKUP READS NEAR ITS TERMS: under every filter, a view that describes the worktree and
+/// one whose worktree cannot be compared, the graph half read near its terms answers every term,
+/// and counts its test hits, as it did reading the whole graph. The terms reach each tier, a best
+/// tier whose every hit is withheld (which falls to the next), the nearest names of a missing
+/// term (never a withheld one), an id, a placeholder, a record-half entity, and test hits.
 #[cfg(feature = "symbols")]
 #[test]
 fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
-    use rigger_domain::code_view::{Tests, ViewFilter, WorktreeDiff};
+    use rigger_domain::code_view::{Compared, Tests, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty};
     let (records, view) = named_tree();
-    let diffs = [
-        Ok(WorktreeDiff {
-            changed: vec!["src/edited.rs".to_string(), "tests/edited.rs".to_string()],
-            untracked: Vec::new(),
-        }),
-        Err("the worktree could not be listed".to_string()),
-    ];
-    let honesty = |diff: &Result<WorktreeDiff, String>| Honesty {
+    let honesty = |compared: Compared| Honesty {
         worktree: "W".to_string(),
-        diff: diff.clone(),
+        compared,
         behind: None,
     };
-    for diff in &diffs {
+    for compared in [Compared::Overlaid(2), Compared::Uncomparable] {
         for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
             let filter = ViewFilter { tests };
-            let whole = Composed::new(&records, &view, filter, honesty(diff)).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty(diff)).unwrap();
+            let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty(compared)).unwrap();
             let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole)).unwrap();
             let got = super::graph::answer(&NAMED_TERMS, &near).unwrap();
-            let at = format!("{tests:?} {:?}", diff.is_ok());
+            let at = format!("{tests:?} {compared:?}");
             for (i, term) in NAMED_TERMS.iter().enumerate() {
                 assert_eq!(got.terms[i], want.terms[i], "{at} {term}");
             }
             assert_eq!(got.test_hits, want.test_hits, "{at}");
-            if diff.is_ok() && tests == Tests::Exclude {
-                pinned(&got);
+            if tests == Tests::Exclude {
+                pinned(&got, compared);
             }
         }
     }
@@ -881,7 +882,7 @@ impl rigger_domain::code_view::CodeView for Counting {
 #[cfg(feature = "symbols")]
 #[test]
 fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
-    use rigger_domain::code_view::{ViewFilter, WorktreeDiff};
+    use rigger_domain::code_view::{Compared, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty};
     let terms = [
         "beta",
@@ -901,10 +902,7 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
         };
         let honesty = Honesty {
             worktree: "W".to_string(),
-            diff: Ok(WorktreeDiff {
-                changed: vec!["src/edited.rs".to_string()],
-                untracked: Vec::new(),
-            }),
+            compared: Compared::Overlaid(1),
             behind: None,
         };
         let near = Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap();
@@ -920,41 +918,61 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
 }
 
 /// The rows [`the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does`] reaches, read
-/// off its answer under the default filter in a worktree that differs.
+/// off its answer under the default filter.
 #[cfg(feature = "symbols")]
-fn pinned(got: &Answered) {
+fn pinned(got: &Answered, compared: Compared) {
     let of = |term: &str| &got.terms[NAMED_TERMS.iter().position(|t| *t == term).unwrap()];
     let tier_and_reached = |term: &str| match of(term) {
         TermGraph::Found { tier, reached, .. } => (*tier, *reached),
         TermGraph::Missing { .. } => ("missing", 0),
     };
+    let hits = |term: &str| got.test_hits[NAMED_TERMS.iter().position(|t| *t == term).unwrap()];
+    let missing = ("missing", 0);
+    // Each row: the term, its tier and reach over the view of the worktree, and over a worktree
+    // that cannot be compared, which withholds every code entity: only the record half's own
+    // entity is found, and a missing term's nearest names are the record half's.
     let rows = [
-        // `widget` is defined only in a changed file: its exact hit is withheld, so the term
-        // falls to the prefix tier.
-        ("widget", ("prefix", 1)),
-        // Fifty withheld names lead the stream; the prefix gathers its 256 past them.
-        ("item", ("prefix", 256)),
-        ("AlphaOne", ("case or separator variant", 1)),
-        ("rendr", ("fuzzy", 1)),
-        ("recorded_fn", ("exact", 1)),
-        ("src/kept.rs::%missing_fn", ("exact", 1)),
+        ("widget", ("exact", 1), missing),
+        // The prefix gathers 256 of the 350 `item_` names.
+        ("item", ("prefix", 256), missing),
+        ("AlphaOne", ("case or separator variant", 1), missing),
+        ("rendr", ("fuzzy", 1), missing),
+        ("recorded_fn", ("exact", 1), ("exact", 1)),
+        ("src/kept.rs::%missing_fn", ("exact", 1), missing),
+        ("widgit", ("fuzzy", 1), missing),
     ];
-    for (term, want) in rows {
-        assert_eq!(tier_and_reached(term), want, "{term}");
+    let overlaid = compared == Compared::Overlaid(2);
+    for (term, over_the_worktree, uncomparable) in rows {
+        let want = if overlaid {
+            over_the_worktree
+        } else {
+            uncomparable
+        };
+        assert_eq!(tier_and_reached(term), want, "{compared:?} {term}");
+    }
+    let (nearest, test_hits, label) = if overlaid {
+        (
+            None,
+            [2, 1, 1],
+            "describes W (c1 + 2 files); groupings describe c1",
+        )
+    } else {
+        (
+            Some(vec!["recorded_fn".to_string()]),
+            [0, 0, 0],
+            "describes c1; W cannot be compared; 363 withheld",
+        )
+    };
+    if let Some(nearest) = nearest {
+        let want = TermGraph::Missing { nearest };
+        assert_eq!(of("rendr"), &want, "never a withheld name");
     }
     assert_eq!(
-        of("widgit"),
-        &TermGraph::Missing {
-            nearest: vec!["widget_extra".to_string()]
-        },
-        "a missing term's nearest names are never withheld ones"
-    );
-    let hits = |term: &str| got.test_hits[NAMED_TERMS.iter().position(|t| *t == term).unwrap()];
-    assert_eq!(
         [hits("beta"), hits("alpha_test"), hits("checks_edited")],
-        [1, 1, 0],
-        "a test hit in a changed file is withheld"
+        test_hits,
+        "{compared:?}: a withheld test hit is not counted"
     );
+    assert_eq!(got.label.to_string(), label);
 }
 
 /// The reason a caller that could not open its graph hands the lookup in its place.

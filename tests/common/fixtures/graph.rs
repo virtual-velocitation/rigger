@@ -143,7 +143,7 @@ macro_rules! context_graph_holds_no_tree {
             rigger::composed::Label {
                 describes: "the double".to_string(),
                 worktree: "the double's worktree".to_string(),
-                compared: rigger::composed::Compared::Differ(0),
+                compared: rigger::code_view::Compared::Overlaid(0),
                 behind: None,
                 withheld: 0,
             }
@@ -232,7 +232,7 @@ pub fn view_graph<'r>(
 ) -> rigger::composed::Composed<'r> {
     let honesty = rigger::composed::Honesty {
         worktree: "the worktree".to_string(),
-        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
     };
     rigger::composed::Composed::new(
@@ -446,6 +446,10 @@ impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
         Ok(matching_head(view))
     }
 
+    fn head_in(&self, worktree: &std::path::Path) -> Result<rigger::code_view::Head, String> {
+        self.head().map(|head| opened_in(head, worktree))
+    }
+
     fn open_on(
         &self,
         head: &rigger::code_view::Head,
@@ -459,8 +463,22 @@ impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
 pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::Head {
     rigger::code_view::Head {
         view: Box::new(view),
-        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
+        worktree: std::path::PathBuf::new(),
+    }
+}
+
+/// `head` as opened for `worktree`: a double's [`OpenGraph::head_in`] over the head it opens.
+///
+/// [`OpenGraph::head_in`]: rigger::contextgraph::OpenGraph::head_in
+pub fn opened_in(
+    head: rigger::code_view::Head,
+    worktree: &std::path::Path,
+) -> rigger::code_view::Head {
+    rigger::code_view::Head {
+        worktree: worktree.to_path_buf(),
+        ..head
     }
 }
 
@@ -472,6 +490,10 @@ impl rigger::contextgraph::OpenGraph for RecordsOnly<'_> {
     /// A view that holds no file, as [`records_graph`] composes over.
     fn head(&self) -> Result<rigger::code_view::Head, String> {
         Ok(matching_head(empty_view()))
+    }
+
+    fn head_in(&self, worktree: &std::path::Path) -> Result<rigger::code_view::Head, String> {
+        self.head().map(|head| opened_in(head, worktree))
     }
 
     fn open_on(
