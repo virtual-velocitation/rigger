@@ -236,12 +236,14 @@
   .kgsrc { color: var(--muted); font-size: 11px; margin-left: 6px; white-space: nowrap; }
   /* Whole-graph EXPLORATION VIZ (spec 42 c5): a library-free, SVG-rendered graph fills the KG panel.
      The clustered OVERVIEW (super-nodes) and the cluster DRILL (member nodes) both draw here; the svg
-     PANS/ZOOMS within its own box (a #kgzoom group transforms) so the page body never scrolls.
-     The panel's toolbar names itself an anchor: the docked rail and card set their top against its
-     bottom edge, so however it wraps neither covers its back link or lens controls. */
-  .kgtoolbar { font-size: 12px; color: var(--muted); margin: 0 0 6px; overflow-wrap: anywhere;
-    anchor-name: --kgtoolbar; }
+     PANS/ZOOMS within its own box (a #kgzoom group transforms) so the page body never scrolls. */
+  .kgtoolbar { font-size: 12px; color: var(--muted); margin: 0 0 6px; overflow-wrap: anywhere; }
   .kgtoolbar b { color: var(--ink); }
+  /* The panel's control rows above its content - the toolbar (back link, lens controls) and, in a
+     neighbourhood, the heading, the directed-call links and the tier checkboxes - share one anchor
+     name, so the last one drawn is the anchor: the docked rail and card set their top against its
+     bottom edge, and however the rows wrap neither covers a panel control. */
+  .kgtoolbar, .kgseed, .kgcalls-offer, .kgtiers { anchor-name: --kgcontrols; }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
   /* The overview LENS selector (spec 53 c4 / spec 54 c3): pick the bucket key - `files`
@@ -347,10 +349,11 @@
      positioned WITHIN .kgbody (never a flex sibling), so it docks to the right over the panel without
      changing #kgpanel's own box - the canvas layout never re-flows when the rail opens or closes.
      Lists the focused subject's governing decisions/findings/concepts as scrollable cards; hidden
-     with no subject focused (mirrors .kgsubjectlens). Its top is the panel toolbar's bottom edge
-     (the box's top with no toolbar drawn), by an explicit anchor() rather than a default anchor,
-     so it stays put when the panel scrolls; the plain top is for a browser without anchors. */
-  .kgrail { position: absolute; top: 0; top: anchor(--kgtoolbar bottom, 0px);
+     with no subject focused (mirrors .kgsubjectlens). Its top is the bottom edge of the panel's
+     last control row (the box's top with none drawn), by an explicit anchor() rather than a
+     default anchor, so it stays put when the panel scrolls; the plain top is for a browser
+     without anchors. */
+  .kgrail { position: absolute; top: 0; top: anchor(--kgcontrols bottom, 0px);
     right: 0; bottom: 0; width: 260px; max-width: 42%;
     overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
@@ -364,8 +367,8 @@
      so populating it never touches the panel's own rendered nodes/edges. Docks TOP-LEFT (the
      memory rail docks right) so a code subject's card and its rail can show together without
      overlapping - the graph layout never re-flows for either. Hidden with no subject carded. Its
-     top sits just below the panel toolbar's bottom edge, anchored the same way as the rail's. */
-  .kgcard { position: absolute; top: 8px; top: calc(anchor(--kgtoolbar bottom, 0px) + 8px);
+     top sits just below the panel's last control row, anchored the same way as the rail's. */
+  .kgcard { position: absolute; top: 8px; top: calc(anchor(--kgcontrols bottom, 0px) + 8px);
     left: 8px; width: 280px; max-width: 46%;
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; z-index: 2; }
