@@ -953,7 +953,8 @@ through and filtered the same way, with no fixture kind of its own.
  concept evidence        product; "N tests hidden"      both                  tests
  lookups (CLI, MCP)      product hits; test hits as     all hits, marked      test hits
                          a separate count
- explorer code view      product; "Show tests" toggle   product + tests       tests
+ explorer code view      product; "Show tests" toggle   product + tests;      tests, each
+                                                        each test marked      marked
  proofs (proven_by,      always computed from test      same                  same
  proof_evidence)         mentions
 ```
@@ -966,7 +967,9 @@ through and filtered the same way, with no fixture kind of its own.
   test mentions whatever the filter is, so excluding tests never zeroes a proof count.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
-    toggle sets it;
+    toggle sets it; each reply that draws nodes names the drawn ones that are test code
+    (`test_nodes`, from their `test` attribute), and the explorer marks each apart from product
+    code;
   - the MCP tools and the CLI take `tests` / `--tests`.
 
 ---

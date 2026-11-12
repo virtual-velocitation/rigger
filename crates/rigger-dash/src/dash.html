@@ -282,6 +282,14 @@
      the fold flagged - never a silently-deduplicated node. Defined after the god ring so a node that is
      both a hub and multi-concept reads as shared (the honesty marker wins the ring). */
   .kgshared circle { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 2; }
+  /* A TEST node (its answer names it in test_nodes, only while tests are drawn): a drawn one is a
+     faded dot with a [test] label tag, a listed one carries a "test" badge, so test code reads apart
+     from product code at a glance. The fade leaves the ring free for the hub/shared/frontier marks. */
+  .kgtest circle { fill-opacity: 0.35; }
+  .kgtesttag {
+    display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 10px;
+    border: 1px dashed var(--dim); color: var(--muted); white-space: nowrap;
+  }
   .kglabel { fill: var(--ink); font-size: 10px; text-anchor: middle; pointer-events: none; }
   /* Adaptive labels (spec 59 c3): a node the declutter has not admitted at the current zoom draws as a
      bare dot - its label is hidden until a deeper zoom reveals it (or the hover <title> names it). */
@@ -1222,6 +1230,19 @@ function tierClass(t) { return "tier tier-" + String(t || "extracted"); }
 // edges of any toggled-off confidence tier (client-side visibility over the server's tier tags), and
 // the c7 EXPLAIN section shows the seed node's provenance (the events/decisions that produced it).
 // An empty neighborhood degrades to a message, never an error.
+// The TEST MARKER of a drawn view: the nodes its answer names as test code (`test_nodes`, sent only
+// while tests are drawn) take a `kgtest` class and a visible tag - " [test]" on a drawn label, a
+// "test" badge on a list row - so each view marks a test node apart from product code.
+function kgTestMarks(body) {
+  const ids = new Set((body && body.test_nodes) || []);
+  const is = n => ids.has(n.id);
+  return {
+    cls: n => (is(n) ? " kgtest" : ""),
+    tag: n => (is(n) ? " [test]" : ""),
+    badge: n => (is(n) ? '<span class="kgtesttag">test</span>' : "")
+  };
+}
+
 function renderGraph(g) {
   // Cache the last-rendered neighborhood so a tier toggle re-filters the DRAWN edges without a
   // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
@@ -1282,11 +1303,12 @@ function renderGraph(g) {
         + '<span class="' + tierClass(t) + '">' + esc(t) + '</span></label>'
       ).join("")
     + '</div>';
+  const marks = kgTestMarks(g);
   const nodeList = nodes.map(n =>
     '<div class="kgnode' + (n.id === g.seed ? " seed" : "") + (onPathNode.has(n.id) ? " onpath" : "")
-    + '" data-seed="' + esc(n.id) + '">'
+    + marks.cls(n) + '" data-seed="' + esc(n.id) + '">'
     + '<span class="tlabel">' + esc(n.label || n.id) + '</span>'
-    + '<span class="kgkind">' + esc(n.kind) + '</span>'
+    + '<span class="kgkind">' + esc(n.kind) + '</span>' + marks.badge(n)
     + (n.god ? '<span class="kggod" title="high-degree hub">god-node &middot; deg ' + esc(n.degree || 0) + '</span>' : '')
     // The rationale-overlay badge (spec 55 c4): empty unless the overlay is ON and this node carries
     // rationale, so a node renders byte-identical with the overlay off.
@@ -2073,12 +2095,13 @@ function renderKgDrill(nb) {
   const toolbar = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key) + '</b> ('
     + nodes.length + " member" + (nodes.length === 1 ? "" : "s") + cap + ")</div>";
   const maxDeg = nodes.reduce((m, n) => Math.max(m, n.degree || 0), 1);
+  const marks = kgTestMarks(nb);
   const svg = kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
     fill: n => kindColor(n.kind),
     // Flag classes mirror the god-node pattern: a hub keeps its `kggodnode` ring, and a multi-concept
     // member (spec 54 c3 `shared`) gains `kgshared` so the concepts drill never hides shared membership.
-    nodeClass: n => "kgmember" + (n.god ? " kggodnode" : "") + (n.shared ? " kgshared" : ""),
+    nodeClass: n => "kgmember" + (n.god ? " kggodnode" : "") + (n.shared ? " kgshared" : "") + marks.cls(n),
     // The hover tooltip explaining a shared member; single-concept members (and every other lens) get
     // no title, so the node stays byte-identical.
     title: n => n.shared ? "shared member: realizes multiple concepts (folded under its primary bucket)" : "",
@@ -2088,8 +2111,8 @@ function renderKgDrill(nb) {
     // does not name it) while the [shared] tag stays a single occurrence in the on-canvas label.
     name: n => n.label || n.id,
     // A shared member's label carries a plain-text [shared] tag so a human reads the multi-concept
-    // membership without hovering; a single-concept member's label is unchanged.
-    label: n => n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id),
+    // membership without hovering, and a test member's a [test] tag; any other label is unchanged.
+    label: n => (n.shared ? (n.label || n.id) + " [shared]" : (n.label || n.id)) + marks.tag(n),
     edgeWidth: () => 1.2
   });
   // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
@@ -2251,6 +2274,7 @@ function renderKgCalls(cg) {
   const shownIds = {};
   shown.forEach(n => { shownIds[n.id] = true; });
   const shownEdges = edges.filter(e => shownIds[e.from] && shownIds[e.to]);
+  const marks = kgTestMarks(cg);
   const capNote = heldBack
     ? '<div class="kgcap">+' + heldBack + ' more held back (a layer exceeded the render budget of '
       + LAYER_FANOUT_BUDGET + ' - re-seed on a node to expand it)</div>'
@@ -2263,13 +2287,13 @@ function renderKgCalls(cg) {
     fill: n => kindColor(n.kind),
     // A frontier node is visually distinct and carries its candidate ids for the click-to-expand; a
     // resolved call node re-seeds the neighborhood (data-seed), the same handle the drill uses.
-    nodeClass: n => n.frontier ? "kgcall frontier" : "kgcall",
+    nodeClass: n => (n.frontier ? "kgcall frontier" : "kgcall") + marks.cls(n),
     nodeAttrs: n => n.frontier
       ? ' data-frontier="1" data-candidates="' + esc((n.frontier || []).join("|")) + '"'
       : ' data-seed="' + esc(n.id) + '"',
-    label: n => n.frontier
+    label: n => (n.frontier
       ? (n.label || n.id) + " (" + (n.frontier || []).length + " candidates)"
-      : (n.label || n.id),
+      : (n.label || n.id)) + marks.tag(n),
     edgeWidth: () => 1.2
   });
   // The UP "referenced but not called" sidecar: files that reference the seed's name - a file-level
@@ -2277,8 +2301,9 @@ function renderKgCalls(cg) {
   // data-seed handle back into the neighborhood. Empty for a down walk.
   const refSection = refd.length
     ? '<div class="kgrefd"><h3>referenced but not called</h3>'
-      + refd.map(n => '<div class="kgnode" data-seed="' + esc(n.id) + '"><span class="tlabel">'
-        + esc(n.label || n.id) + '</span><span class="kgkind">' + esc(n.kind) + '</span></div>').join("")
+      + refd.map(n => '<div class="kgnode' + marks.cls(n) + '" data-seed="' + esc(n.id) + '"><span class="tlabel">'
+        + esc(n.label || n.id) + '</span><span class="kgkind">' + esc(n.kind) + '</span>' + marks.badge(n)
+        + '</div>').join("")
       + '</div>'
     : "";
   // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay

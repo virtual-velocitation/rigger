@@ -1834,6 +1834,37 @@ pub struct CardResponse {
     pub card: Option<Card>,
 }
 
+/// A drawn view's body: the view, and the ids of its drawn nodes (its `nodes` and its
+/// `referenced_not_called` sidecar) that are test code, so the page marks them apart from product
+/// code. Omitted when none is - always so with tests hidden - leaving the body byte-identical.
+#[derive(Serialize)]
+struct MarkedView<'v> {
+    #[serde(flatten)]
+    view: &'v Neighborhood,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    test_nodes: Vec<&'v str>,
+}
+
+/// Serialize `view` as a [`MarkedView`], naming its drawn nodes that are test code by the graph
+/// nodes its answer read (`read`): the code graph marks a test entity's node, and a test file's,
+/// with a `test` attribute.
+fn view_json<'r>(
+    view: &Neighborhood,
+    read: impl IntoIterator<Item = &'r Node>,
+) -> serde_json::Result<String> {
+    let tests: BTreeSet<&str> = (read.into_iter())
+        .filter(|n| n.attrs.contains_key("test"))
+        .map(|n| n.id.as_str())
+        .collect();
+    let drawn = view.nodes.iter().chain(&view.referenced_not_called);
+    let test_nodes: BTreeSet<&str> = drawn
+        .map(|n| n.id.as_str())
+        .filter(|id| tests.contains(id))
+        .collect();
+    let test_nodes = test_nodes.into_iter().collect();
+    serde_json::to_string(&MarkedView { view, test_nodes })
+}
+
 /// The `/api/graph` response body: the seeded [`neighborhood`] as JSON. When BOTH `from` and `to`
 /// are given (the operator selected two nodes), the body also carries the QUERY-PATH between them
 /// (spec 30 c6); with either absent the path stays empty and is omitted. Pure over the pre-fetched
@@ -1870,7 +1901,7 @@ pub fn graph_json(
     // `effective_seeds` is exactly `[requested_seed]` in that case, so this is byte-identical to
     // the old single-node call.
     n.memory = Some(memory_rail_of(graph, effective_seeds));
-    serde_json::to_string(&n)
+    view_json(&n, &graph.nodes)
 }
 
 // ---------------------------------------------------------------------------
@@ -2103,10 +2134,15 @@ where
         &seed,
         depth,
     );
+    // The walks' own nodes and sidecar files are the graph nodes this answer read.
+    let read = [&down, &up].into_iter().flatten().flat_map(|r| {
+        (r.calls.nodes.iter().map(|c| &c.node)).chain(&r.calls.referenced_not_called)
+    });
+    let body = view_json(&view, read);
     let labels = [down, up].into_iter().flatten().filter_map(|r| r.label);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
     // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
-    let response = match serde_json::to_string(&view) {
+    let response = match body {
         Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
         Err(e) => Response::text(500, &format!("dash: calls projection failed: {e}")),
     };
@@ -3427,7 +3463,7 @@ fn route_hiding(
                         .collect()
                 });
                 (
-                    serde_json::to_string(&cluster_detail(graph, &key, &lens)),
+                    view_json(&cluster_detail(graph, &key, &lens), &graph.nodes),
                     Some(hits),
                 )
             } else {
