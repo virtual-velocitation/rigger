@@ -25358,7 +25358,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
     let proj = temp_project();
     let root = proj.path();
 
-    // No store seeded: `cmd_prime` takes its absent-db early-return path (mirroring
+    // No store seeded: `cmd_prime` takes its absent-db path (mirroring
     // cmd_stats's NO_RUNS_MESSAGE guard) - the spec-lint reminder must still appear there,
     // since a project with no run history yet is exactly when the reminder matters most.
     let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
@@ -25380,7 +25380,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
 
     // A seeded-but-empty store takes cmd_prime's OTHER path (the "recent decisions"
     // listing, here empty -> "(none yet)") - the reminder must appear there too, not only
-    // on the absent-db early return, so both of cmd_prime's paths stay in lock-step.
+    // on the absent-db path, so both of cmd_prime's paths stay in lock-step.
     let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
     assert!(
         ok,

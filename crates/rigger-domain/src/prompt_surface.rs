@@ -184,4 +184,25 @@ mod tests {
             assert_eq!(fill(text, slots), *filled, "{case}");
         }
     }
+
+    /// `debug_escaped` is a value's `Debug` form less its outer quotes: each quote, backslash and
+    /// control character escaped, every other character, the first and the last included, kept.
+    #[test]
+    fn debug_escaped_is_the_debug_form_between_its_quotes() {
+        // (the case, the value, its escaped form)
+        let cases = [
+            ("plain text", "plain", "plain"),
+            ("one character", "x", "x"),
+            ("an empty value", "", ""),
+            ("a quote", "a\"b", "a\\\"b"),
+            ("a backslash", "a\\b", "a\\\\b"),
+            ("a newline", "a\nb", "a\\nb"),
+            ("a control character", "\u{1}", "\\u{1}"),
+            ("a quote at each end", "\"x\"", "\\\"x\\\""),
+            ("a letter outside ASCII", "\u{e9}", "\u{e9}"),
+        ];
+        for (case, value, escaped) in cases {
+            assert_eq!(debug_escaped(value), escaped, "{case}");
+        }
+    }
 }

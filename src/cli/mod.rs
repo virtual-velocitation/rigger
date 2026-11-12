@@ -54,6 +54,7 @@ mod guard;
 mod hold;
 mod hygiene;
 mod observe;
+mod prime;
 mod run;
 mod setup;
 mod validate;
@@ -66,6 +67,7 @@ pub(crate) use guard::*;
 pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
+pub(crate) use prime::*;
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -6151,6 +6153,22 @@ mod tests {
         assert!(
             line.contains(BUILD_PROVENANCE),
             "version line must report the build-provenance id; got: {line}"
+        );
+    }
+
+    /// The discipline docs' grep-guard message is its one group, `cli::docs_context`'s
+    /// `GREP_GUARD_MESSAGE` (spec 121, criterion 16): `docs_context` renders it on its one branch.
+    #[test]
+    fn the_docs_context_grep_guard_message_is_its_group() {
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        assert_renders(
+            "the docs context's grep-guard message",
+            &docs_context().grep_guard_message,
+            &rendered_groups(
+                rigger::prompt_surface::prompt_groups(),
+                "cli::docs_context",
+                &["GREP_GUARD_MESSAGE"],
+            ),
         );
     }
 

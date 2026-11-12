@@ -680,6 +680,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
 
     /// The pure decision core, d-spec92-hook-no-target-axis (spec 92's Design amended after
     /// round 5 to retire the guarded-tree apparatus): a `Bash` `grep` invocation is denied
@@ -1476,6 +1477,10 @@ mod tests {
                 "sub/dir",
                 "guard-write: --root expects an absolute directory, got \"sub/dir\"",
             ),
+            (
+                "a\"b\\c",
+                "guard-write: --root expects an absolute directory, got \"a\\\"b\\\\c\"",
+            ),
         ];
         for (root, error) in rows {
             let args: Vec<String> = ["--root", "/a", "--root", root]
@@ -1501,9 +1506,150 @@ mod tests {
         assert!(parse_guard_write_roots(&args).is_err());
     }
 
+    /// An unknown argument is named in the refusal as its `Debug` form prints it, its quotes and
+    /// backslashes escaped.
     #[test]
     fn parse_guard_write_roots_rejects_an_unknown_argument() {
-        let args = vec!["--spawn".to_string(), "x".to_string()];
-        assert!(parse_guard_write_roots(&args).is_err());
+        // (the first argument, the whole error text)
+        let rows = [
+            (
+                "--spawn",
+                "guard-write: unknown argument \"--spawn\": rigger guard-write --root <dir>...",
+            ),
+            (
+                "a\"b\\c",
+                "guard-write: unknown argument \"a\\\"b\\\\c\": rigger guard-write --root <dir>...",
+            ),
+        ];
+        for (arg, error) in rows {
+            let args = vec![arg.to_string(), "x".to_string()];
+            assert_eq!(
+                parse_guard_write_roots(&args).map_err(|e| e.to_string()),
+                Err(error.to_string()),
+                "{arg:?}"
+            );
+        }
+    }
+
+    /// Spec 121, criterion 16: `rigger grep-guard`'s deny reason is its surface's one group on
+    /// each deny branch, and nothing on the allow branch.
+    #[test]
+    fn the_grep_guard_reason_is_its_group_on_each_branch() {
+        let rows: [(&str, &str, serde_json::Value, &[&str]); 3] = [
+            (
+                "the Grep tool",
+                "Grep",
+                serde_json::json!({}),
+                &["GREP_GUARD_MESSAGE"],
+            ),
+            (
+                "a Bash grep",
+                "Bash",
+                serde_json::json!({"command": "grep x src"}),
+                &["GREP_GUARD_MESSAGE"],
+            ),
+            (
+                "a Bash grep ending in the literal comment",
+                "Bash",
+                serde_json::json!({"command": "grep x src # --literal"}),
+                &[],
+            ),
+        ];
+        for (case, tool, input, names) in rows {
+            let render = match grep_guard_decision(tool, &input) {
+                GuardDecision::Deny(reason) => reason,
+                GuardDecision::Allow => String::new(),
+            };
+            assert_renders(
+                case,
+                &render,
+                &rendered_groups(
+                    rigger::prompt_surface::prompt_groups(),
+                    "guard::grep_guard_decision",
+                    names,
+                ),
+            );
+        }
+    }
+
+    /// Spec 121, criterion 16: `rigger guard-write`'s deny reason is its one group with the first
+    /// root in `{root}`, and with an empty `{root}` over no root at all.
+    #[test]
+    fn the_guard_write_deny_reason_is_its_group_on_each_branch() {
+        let group = rendered_groups(
+            rigger::prompt_surface::prompt_groups(),
+            "guard::guard_write_deny_outside_first_root",
+            &["GUARD_WRITE_DENY"],
+        );
+        let rows: [(&str, &[&str], String); 2] = [
+            (
+                "the first of two roots",
+                &["{root}", "/second"],
+                group.clone(),
+            ),
+            ("no root", &[], fill(&group, &[("root", "")])),
+        ];
+        for (case, roots, expected) in rows {
+            let roots: Vec<String> = roots.iter().map(|r| r.to_string()).collect();
+            let render = match guard_write_deny_outside_first_root(&roots) {
+                GuardDecision::Deny(reason) => reason,
+                GuardDecision::Allow => String::new(),
+            };
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// Spec 121, criterion 16: each exit-2 refusal of `rigger guard-write` prints its surface's
+    /// prefix group then its own reason group: each argument refusal over the `{dir}` and
+    /// `{arg}` slot values, and the unreadable payload over `{error}`.
+    #[test]
+    fn the_guard_write_refusals_are_their_groups_on_each_branch() {
+        let refused = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            guard_write_stderr(
+                &parse_guard_write_roots(&args)
+                    .expect_err("the arguments are refused")
+                    .to_string(),
+            )
+        };
+        let rows: [(&str, String, &str); 6] = [
+            (
+                "a dangling --root",
+                refused(&["--root"]),
+                "GUARD_WRITE_ROOT_MISSING",
+            ),
+            (
+                "an empty root",
+                refused(&["--root", ""]),
+                "GUARD_WRITE_ROOT_EMPTY",
+            ),
+            (
+                "a relative root",
+                refused(&["--root", "{dir}"]),
+                "GUARD_WRITE_ROOT_RELATIVE",
+            ),
+            (
+                "an unknown argument",
+                refused(&["{arg}"]),
+                "GUARD_WRITE_UNKNOWN_ARG",
+            ),
+            ("no argument", refused(&[]), "GUARD_WRITE_NO_ROOT"),
+            (
+                "an unreadable payload",
+                guard_write_stderr(&guard_write_payload_unreadable("{error}")),
+                "GUARD_WRITE_PAYLOAD_UNREADABLE",
+            ),
+        ];
+        for (case, render, reason) in rows {
+            assert_renders(
+                case,
+                &render,
+                &rendered_groups(
+                    rigger::prompt_surface::prompt_groups(),
+                    "guard::cmd_guard_write",
+                    &["GUARD_WRITE_STDERR_PREFIX", reason],
+                ),
+            );
+        }
     }
 }

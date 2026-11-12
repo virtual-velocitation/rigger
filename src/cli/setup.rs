@@ -4463,21 +4463,18 @@ mod tests {
             .collect()
     }
 
-    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
-    /// fan-out helpers, the built-in instruction entries, the discipline every review-tier
-    /// prompt carries and the build-cache sentence a review tier whose spawn carries a cache reads.
+    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, every
+    /// prompt-surface registry group `rigger::prompt_surface::all_groups()` returns (labelled
+    /// `REGISTRY <surface>::<name>`, the reviewer discipline and its build-cache sentence on each
+    /// review-tier surface among them), the fan-out helpers and the built-in instruction entries.
     fn every_shipped_agent_text() -> Vec<(String, String)> {
         let mut all = every_shipped_persona();
-        all.extend([
+        all.extend(rigger::prompt_surface::all_groups().into_iter().map(|g| {
             (
-                "REVIEWER_DISCIPLINE".to_string(),
-                rigger_conductor::prompt_surface::REVIEWER_DISCIPLINE.to_string(),
-            ),
-            (
-                "REVIEWER_BUILD_CACHE".to_string(),
-                rigger_conductor::prompt_surface::REVIEWER_BUILD_CACHE.to_string(),
-            ),
-        ]);
+                format!("REGISTRY {}::{}", g.surface, g.name),
+                g.text.to_string(),
+            )
+        }));
         all.extend(
             hooks::HELPER_AGENTS
                 .iter()
@@ -4533,22 +4530,25 @@ mod tests {
     }
 
     /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline with its build-cache sentence, read through the shipped-text helper, spell no
-    /// marker of the MARKERS rule.
+    /// discipline with its build-cache sentence on both review-tier surfaces, read through the
+    /// shipped-text helper, spell no marker of the MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
+        let reviewer = [
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_BUILD_CACHE",
+            "REGISTRY conductor::review_protocol::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::review_protocol::REVIEWER_BUILD_CACHE",
+        ];
         let texts: Vec<(String, String)> = every_shipped_agent_text()
             .into_iter()
-            .filter(|(at, _)| {
-                at.starts_with("BUILTIN ")
-                    || at == "REVIEWER_DISCIPLINE"
-                    || at == "REVIEWER_BUILD_CACHE"
-            })
+            .filter(|(at, _)| at.starts_with("BUILTIN ") || reviewer.contains(&at.as_str()))
             .collect();
         assert_eq!(
             texts.len(),
-            instructions::BUILTIN.len() + 2,
-            "every built-in body, the reviewer discipline and its build-cache sentence are read"
+            instructions::BUILTIN.len() + reviewer.len(),
+            "every built-in body, and the reviewer discipline and its build-cache sentence on \
+             each review-tier surface, are read"
         );
         let hits: Vec<(&str, Vec<&str>)> = texts
             .iter()
@@ -5634,41 +5634,6 @@ mod tests {
             hits.is_empty(),
             "size-limit sentences ship:\n{}",
             hits.join("\n")
-        );
-    }
-
-    /// `rigger prime`'s first line lists the built-ins in force over the named-entry fixture, a
-    /// replaced one marked and a switched-off one left out, and counts only the operator files
-    /// that shadow no built-in: one, then none once the unshadowed file is dropped.
-    #[test]
-    fn the_in_force_line_names_each_built_in_s_state_and_counts_only_unshadowed_files() {
-        use crate::test_support::{shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE};
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()),
-            SHADOWING_LAYER_IN_FORCE_LINE,
-            "the replaced built-in is marked, the switched-off one omitted, one file counted"
-        );
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()[1..]),
-            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
-             see rigger instructions",
-            "a file that shadows a built-in is never counted as an operator file"
-        );
-    }
-
-    /// With every built-in switched off, `rigger prime`'s first line says none is in force.
-    #[test]
-    fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
-        use crate::test_support::op;
-        let off = |name| op(name, Default::default());
-        assert_eq!(
-            instructions_in_force_line(&[
-                off("communication"),
-                off("engineering-principles"),
-                off("working-discipline"),
-            ]),
-            "# Rigger instructions in force: none - see rigger instructions",
-            "no built-in is in force and no operator file remains"
         );
     }
 }
