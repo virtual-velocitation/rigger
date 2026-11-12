@@ -97,17 +97,16 @@ fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     // the interface, an alias to its canonical id, else the query as typed. Its one site read
     // answers the queried node's unresolved leaves.
     let queried = graph.resolve(around)?.unwrap_or(around.to_string());
-    let g = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
+    let around_answer = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
     let unresolved = match graph.locate(&queried)? {
         Located::One(site) => site.unresolved,
         _ => Vec::new(),
     };
     // The label heads the answer (6.1), counting what the reads above withheld.
     println!("{}", graph.stamp_label());
-    let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
-    print_tests_hidden(graph.hidden_provers(&shown)?.len());
+    print_tests_hidden(around_answer.tests_hidden);
     println!("subgraph around {around:?} (depth {depth}):");
-    print_around_subgraph(&g, &queried, &unresolved);
+    print_around_subgraph(&around_answer.graph, &queried, &unresolved);
     Ok(())
 }
 

@@ -190,7 +190,9 @@ pub fn assert_shown_tree_around_is_entity_sites(
     graph: &dyn ContextGraph,
     nodes: &[serde_json::Value],
 ) {
-    let loaded = around(graph, &[SHOWN_TREE_FILE.to_string()], 1).unwrap();
+    let loaded = around(graph, &[SHOWN_TREE_FILE.to_string()], 1)
+        .unwrap()
+        .graph;
     for node in nodes {
         let id = node["id"].as_str().unwrap();
         if node["kind"] == "community" {

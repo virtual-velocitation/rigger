@@ -1104,6 +1104,15 @@ pub trait ContextGraph: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// The distinct test entities the graph's `tests` filter hides whose calls land on a
+    /// placeholder bound to the leaf of a definition of `ids`, in id order: the hidden tests a
+    /// callers walk stepping from those nodes reaches through a placeholder rather than by a
+    /// proof. None when tests are shown, the worktree cannot be compared, or by default (a graph
+    /// that holds no code, a test double).
+    fn hidden_placeholder_callers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
+
     /// The code entities named `name` this graph answers, ordered by id: those of
     /// [`Self::nodes_of_kind`] named `name`, read near the name. A hit it withholds is counted
     /// in its label as every withheld hit is.
@@ -1324,6 +1333,21 @@ pub fn show_tests_hidden(
     Ok(hidden.len())
 }
 
+/// The neighbourhood [`around`] answers.
+#[derive(Debug)]
+pub struct Around {
+    /// The nodes and edges it shows.
+    pub graph: Graph,
+    /// How many test hits it leaves out under a filter that hides tests, each counted once: the
+    /// hidden tests proving a node it shows ([`ContextGraph::hidden_provers`]) and those its
+    /// callers walk reaches through a placeholder from a node it steps from
+    /// ([`ContextGraph::hidden_placeholder_callers`]). The walk never steps from a hidden test,
+    /// so a test reaching a shown node only through another hidden test is not counted. What
+    /// `rigger graph --around` and the `rigger_graph` tool's `around` count under their label;
+    /// none when tests are shown.
+    pub tests_hidden: usize,
+}
+
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
 /// undirected [`ContextGraph::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
 /// the same depth ([`ContextGraph::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
@@ -1331,9 +1355,13 @@ pub fn show_tests_hidden(
 /// lands on a placeholder in its OWN file's namespace - so without the callers walk "who calls
 /// this" had no answer from the neighborhood (gap 104). The callers walk resolves those
 /// placeholders by name and stops at an ambiguous name rather than guessing.
-pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph, Error> {
+pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Around, Error> {
     let mut g = p.subgraph(seed, depth)?;
     let callers = p.calls(seed, Direction::Up, depth, TIER_INFERRED)?;
+    let stepped: Vec<String> = (callers.nodes.iter())
+        .filter(|c| c.layer < depth && c.frontier.is_none())
+        .map(|c| c.node.id.clone())
+        .collect();
     let mut node_ids: std::collections::BTreeSet<String> =
         g.nodes.iter().map(|n| n.id.clone()).collect();
     for c in callers.nodes {
@@ -1352,7 +1380,15 @@ pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph
             g.edges.push(e);
         }
     }
-    Ok(g)
+    let shown: Vec<String> = node_ids.into_iter().collect();
+    let mut hidden = p.hidden_provers(&shown)?;
+    hidden.extend(p.hidden_placeholder_callers(&stepped)?);
+    hidden.sort_unstable();
+    hidden.dedup();
+    Ok(Around {
+        graph: g,
+        tests_hidden: hidden.len(),
+    })
 }
 
 /// The `CodeEntityExtracted` payload (spec 29a): one definition the extraction pass emits. It
@@ -2237,7 +2273,7 @@ mod around_neighborhood {
         let p = CallerProjection {
             requests: Mutex::new(Vec::new()),
         };
-        let g = around(&p, &["s.rs::open".to_string()], 2).unwrap();
+        let g = around(&p, &["s.rs::open".to_string()], 2).unwrap().graph;
         let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["s.rs", "s.rs::open", "c.rs::run"], "got {ids:?}");
         assert!(

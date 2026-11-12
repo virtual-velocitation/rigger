@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
-use crate::code_view::{CodeView, DefRef, Proofs, Settled};
+use crate::code_view::{CodeView, DefRef, MentionRef, Proofs, Settled};
 use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id, split_id};
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
@@ -780,29 +780,87 @@ impl<'v> Resolver<'v> {
         let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
         let mut calls = Vec::new();
         for leaf in leaves.iter().map(String::as_str) {
-            for m in self.view.mentions_named(leaf) {
+            for m in self.test_calls_named(leaf) {
                 let path = m.file.path;
-                let test = self.is_test(m.test, path);
-                if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
-                    continue;
-                }
                 if self.proof(path, leaf).as_deref() == Some(id) {
-                    let caller = match m.enclosing {
-                        Some(_) => self
-                            .view
-                            .file(path)
-                            .map_or_else(|| path.to_string(), |f| caller_of(&f, m.enclosing)),
-                        None => path.to_string(),
-                    };
                     calls.push(ProofCall {
                         target: id.to_string(),
-                        caller,
+                        caller: self.caller_at(path, m.enclosing),
                         evidence: format!("{path}:{}", m.line),
                     });
                 }
             }
         }
         proof_order(calls)
+    }
+
+    /// The test calls to `leaf` in code files, read from the mentions of `leaf` alone.
+    fn test_calls_named<'s>(&'s self, leaf: &'s str) -> impl Iterator<Item = MentionRef<'v>> + 's {
+        self.view.mentions_named(leaf).filter(|m| {
+            m.file.half == Half::Code
+                && m.kind == MentionKind::Call
+                && self.is_test(m.test, m.file.path)
+        })
+    }
+
+    /// [`caller_of`] a call in the file at `path` whose enclosing definition is `enclosing`,
+    /// reading the file only when there is one.
+    fn caller_at(&self, path: &str, enclosing: Option<u32>) -> String {
+        match enclosing {
+            Some(_) => (self.view.file(path))
+                .map_or_else(|| path.to_string(), |f| caller_of(&f, enclosing)),
+            None => path.to_string(),
+        }
+    }
+
+    /// Whether a test call to `leaf` from `file` lands on a placeholder ([`Self::call_edge`]):
+    /// the call rule resolves it in no one definition in `file` and the proof rule credits none.
+    fn lands_on_placeholder(&self, file: &str, leaf: &str) -> bool {
+        leaf_of(&self.call_edge(file, leaf, true).0).is_some()
+    }
+
+    /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
+    /// pairs, unordered: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where
+    /// a call lands depends only on its file and leaf, so each leaf is resolved once.
+    pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
+        let path = facts.path.as_str();
+        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
+        (facts.mentions.iter())
+            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+            .filter(|m| {
+                *(lands.entry(&m.leaf)).or_insert_with(|| self.lands_on_placeholder(path, &m.leaf))
+            })
+            .map(|m| (m.leaf.clone(), caller_of(facts, m.enclosing)))
+            .collect()
+    }
+
+    /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
+    /// test entities a callers walk reaches through a placeholder bound to `leaf` and no proof
+    /// names, read from the mentions of `leaf` alone. Where a call lands depends only on its file
+    /// and leaf, so each file is resolved once.
+    pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
+        let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
+        for m in self.test_calls_named(leaf) {
+            let path = m.file.path;
+            if *(lands.entry(path)).or_insert_with(|| self.lands_on_placeholder(path, leaf)) {
+                enclosing.entry(path).or_default().insert(m.enclosing);
+            }
+        }
+        let mut callers = BTreeSet::new();
+        for (path, enclosing) in enclosing {
+            let facts = enclosing
+                .iter()
+                .any(Option::is_some)
+                .then(|| self.view.file(path));
+            for e in enclosing {
+                callers.insert(match facts.as_ref().and_then(|f| f.as_ref()) {
+                    Some(facts) => caller_of(facts, e),
+                    None => path.to_string(),
+                });
+            }
+        }
+        callers.into_iter().collect()
     }
 
     /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls

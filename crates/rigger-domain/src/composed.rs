@@ -403,6 +403,10 @@ pub trait CodeHalf: Neighbors {
     /// The distinct test entities the filter hides that prove a node of `ids`, in id order,
     /// read from the proofs the half read for them ([`ContextGraph::hidden_provers`]).
     fn hidden_provers(&self, ids: &[String]) -> Vec<String>;
+    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder,
+    /// in order ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk
+    /// reaches through a placeholder bound to `leaf`.
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -471,6 +475,9 @@ pub struct Whole {
     attachments: [TestAttachment; 2],
     /// The proof calls read to attach the tests, kept while the filter hides tests.
     proofs: Vec<ProofCall>,
+    /// The callers of the test calls to each leaf that land on a placeholder, in order, kept
+    /// while the filter hides tests.
+    placeholder_callers: BTreeMap<String, Vec<String>>,
 }
 
 impl Whole {
@@ -484,6 +491,14 @@ impl Whole {
             joined(resolved.graph, groupings, &attachments, filter.tests),
             Vec::new(),
         );
+        let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (leaf, caller) in resolved.placeholder_calls {
+            placeholder_callers.entry(leaf).or_default().push(caller);
+        }
+        for callers in placeholder_callers.values_mut() {
+            callers.sort_unstable();
+            callers.dedup();
+        }
         let proofs = match filter.tests {
             Tests::Exclude => code_graph.into_proof_calls(),
             Tests::Include | Tests::Only => Vec::new(),
@@ -507,6 +522,7 @@ impl Whole {
             groupings: groupings.clone(),
             attachments,
             proofs,
+            placeholder_callers,
         }
     }
 }
@@ -583,6 +599,12 @@ impl CodeHalf for Whole {
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let proofs = self.proofs.iter();
         provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+    }
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        self.placeholder_callers
+            .get(leaf)
+            .cloned()
+            .unwrap_or_default()
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -1146,6 +1168,22 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         }
         Ok(self.code.hidden_provers(ids))
     }
+    fn hidden_placeholder_callers(&self, ids: &[String]) -> Result<Vec<String>, Error> {
+        if self.stale {
+            return Ok(Vec::new());
+        }
+        let mut leaves = BTreeSet::new();
+        for id in ids {
+            leaves.extend(bound_leaf(self, id)?);
+        }
+        let mut hidden = Vec::new();
+        for leaf in &leaves {
+            hidden.extend(self.code.placeholder_callers(leaf));
+        }
+        hidden.sort_unstable();
+        hidden.dedup();
+        Ok(hidden)
+    }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)
     }
@@ -1275,9 +1313,12 @@ fn in_file(id: &str, file: Option<&str>) -> bool {
 /// onto, `Some(false)` for a named data member or declaration, `None` for a node with no name or
 /// no node.
 fn named_call_target(graph: &dyn Neighbors, id: &str) -> Result<Option<bool>, Error> {
-    Ok(graph.node(id)?.and_then(|n| {
-        node_name(&n).map(|_| is_call_target(n.attrs.get("kind").map(String::as_str)))
-    }))
+    Ok(graph.node(id)?.as_ref().and_then(call_target))
+}
+
+/// [`named_call_target`] of the node `n`.
+fn call_target(n: &Node) -> Option<bool> {
+    node_name(n).map(|_| is_call_target(n.attrs.get("kind").map(String::as_str)))
 }
 
 /// One resolved `CALLS` hop of a layered walk: the neighbor reached, the edge it was reached by
@@ -1317,14 +1358,20 @@ fn calls_at(edges: Vec<Edge>, end: impl Fn(&Edge) -> &String) -> Vec<Edge> {
     calls
 }
 
+/// The leaf whose placeholders an UP hop reaches `cur` through ([`callers_of`]): a call-target
+/// definition's leaf; none for any other node.
+fn bound_leaf(graph: &dyn Neighbors, cur: &str) -> Result<Option<String>, Error> {
+    let node = graph.node(cur)?.filter(|n| call_target(n) == Some(true));
+    Ok(node.as_ref().and_then(node_leaf).map(str::to_string))
+}
+
 /// The callers of `cur` for one UP hop: none for a named non-target; else the direct callers
 /// whose edge targets `cur`, and, for a definition, the callers through a placeholder bound to
-/// its leaf, a frontier when the leaf has more than one call-target definition.
+/// its leaf ([`bound_leaf`]), a frontier when the leaf has more than one call-target definition.
 fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
-    let definition = match named_call_target(graph, cur)? {
-        Some(false) => return Ok(Vec::new()),
-        target => target.is_some(),
-    };
+    if named_call_target(graph, cur)? == Some(false) {
+        return Ok(Vec::new());
+    }
     let mut hops: Vec<Hop> = calls_at(graph.incoming(cur)?, |e| &e.from)
         .into_iter()
         .map(|via| Hop {
@@ -1333,8 +1380,7 @@ fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
             frontier: None,
         })
         .collect();
-    let node = if definition { graph.node(cur)? } else { None };
-    if let Some(leaf) = node.as_ref().and_then(node_leaf) {
+    if let Some(leaf) = bound_leaf(graph, cur)?.as_deref() {
         let cands = definitions(graph, leaf, Admitted::CallTargets, None)?;
         let frontier = (cands.len() > 1).then_some(cands);
         let mut via_bare = Vec::new();

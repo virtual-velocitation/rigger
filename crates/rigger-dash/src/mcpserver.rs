@@ -615,7 +615,8 @@ impl<'a> Server<'a> {
     /// `rigger_graph`'s `show` or `around` answer from `graph`: where `show` is defined when it is
     /// asked, else the neighbourhood within `depth` hops of `around`. Each carries `tests_hidden`:
     /// for a show the test hits the `tests` filter hid ([`crate::contextgraph::show_tests_hidden`]),
-    /// for a neighbourhood how many hidden test entities prove the nodes shown.
+    /// for a neighbourhood the hidden test entities calling the nodes shown
+    /// ([`crate::contextgraph::Around::tests_hidden`]).
     fn graph_answer(
         &self,
         graph: &dyn ContextGraph,
@@ -658,13 +659,11 @@ impl<'a> Server<'a> {
                 }),
             });
         }
-        let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
+        let crate::contextgraph::Around {
+            graph: g,
+            tests_hidden,
+        } = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
-        let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
-        let tests_hidden = graph
-            .hidden_provers(&shown)
-            .map_err(|e| e.to_string())?
-            .len();
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({

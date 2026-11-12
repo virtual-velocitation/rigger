@@ -964,6 +964,13 @@ through and filtered the same way, with no fixture kind of its own.
   that community's "tests" group, with its count, and never as a member.
 - **The proof count per product entity stays,** with the same attributes as today. Proofs read
   test mentions whatever the filter is, so excluding tests never zeroes a proof count.
+- **An answer counts the test hits it hides,** each once, on a line under its label naming the
+  filter that shows them:
+  - a show counts the hidden tests its query names and those proving the node it locates;
+  - a neighbourhood counts the hidden tests proving a node it shows and, for a definition its
+    callers walk steps from, the callers of the test calls that land on a placeholder bound to
+    its leaf. A walk never steps from a hidden test, so a test reaching a shown node only through
+    another hidden test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
     toggle sets it;

@@ -227,6 +227,10 @@ pub struct Resolved {
     /// The test code entities a filter that excludes tests leaves out, in id order; none when
     /// tests are shown.
     pub hidden_tests: Vec<Node>,
+    /// The test calls landing on a placeholder ([`Resolver::file_placeholder_calls`]) as
+    /// (leaf, caller) pairs, unordered, while a filter that excludes tests leaves them out; none
+    /// when tests are shown.
+    pub placeholder_calls: Vec<(String, String)>,
 }
 
 /// The attributes a code entity node carries.
@@ -270,6 +274,7 @@ impl<'v> CodeGraph<'v> {
         let tests = self.filter.tests != Tests::Exclude;
         let mut b = Builder::default();
         let mut hidden_tests = Vec::new();
+        let mut placeholder_calls = Vec::new();
         // A view holding its proof calls settled is read, not walked.
         let walk = !self.resolver.proofs_settled();
         let mut proofs = Vec::new();
@@ -281,6 +286,9 @@ impl<'v> CodeGraph<'v> {
                 self.code(&facts, tests, &mut b, Some(&mut hidden_tests));
                 if walk {
                     proofs.extend(self.resolver.file_proofs(&facts));
+                }
+                if !tests {
+                    placeholder_calls.extend(self.resolver.file_placeholder_calls(&facts));
                 }
             }
             self.intent(&facts, &mut b);
@@ -295,6 +303,7 @@ impl<'v> CodeGraph<'v> {
         Resolved {
             graph: b.into_graph(self.filter.tests),
             hidden_tests,
+            placeholder_calls,
         }
     }
 

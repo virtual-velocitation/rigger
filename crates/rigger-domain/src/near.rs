@@ -1059,6 +1059,14 @@ impl CodeHalf for Near<'_> {
             }
         }
     }
+    /// Read from the mentions of `leaf` alone.
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        let state = self.state();
+        match state.tests {
+            Tests::Exclude => state.graph.resolver().placeholder_callers(leaf),
+            Tests::Include | Tests::Only => Vec::new(),
+        }
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
             let mut state = self.state();
@@ -1504,6 +1512,68 @@ mod tests {
                     counting.taken(),
                     Vec::<String>::new(),
                     "whole reads more {at}"
+                );
+            }
+        }
+    }
+
+    /// HIDDEN PLACEHOLDER CALLERS ARE THE TESTS CALLING THROUGH A PLACEHOLDER: under exclude, for
+    /// a definition among the nodes asked about, the distinct test entities whose call lands on a
+    /// placeholder bound to its leaf (`deep_helper` calls `draw`, which two files define, so the
+    /// call proves neither), each counted once and never a prover (`run`'s tests prove it);
+    /// nothing for a node that is no call target; none when tests are shown or the worktree
+    /// cannot be compared. The whole graph and a neighbourhood count alike, before and after the
+    /// neighbourhood is resolved whole.
+    #[test]
+    fn hidden_placeholder_callers_are_the_tests_calling_through_a_placeholder() {
+        let records = Indexed::default();
+        let honesty = |compared| Honesty {
+            worktree: "wt".into(),
+            compared,
+            behind: None,
+        };
+        let (run, draw, other) = ("src/a.rs::run", "src/b.rs::draw", "src/c.rs::draw");
+        let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
+        let cases: &[(Tests, Compared, &[&str], usize)] = &[
+            (Tests::Exclude, compared, &[draw], 1),
+            (Tests::Exclude, compared, &[draw, other], 1),
+            (Tests::Exclude, compared, &[run, draw], 1),
+            (Tests::Exclude, compared, &[run], 0),
+            (
+                Tests::Exclude,
+                compared,
+                &["src/b.rs::Config::draw", "src/a.rs::%draw", "missing"],
+                0,
+            ),
+            (Tests::Include, compared, &[run, draw], 0),
+            (Tests::Only, compared, &[run, draw], 0),
+            (Tests::Exclude, uncomparable, &[run, draw], 0),
+        ];
+        let settles = Settles::of(view());
+        let facts = view();
+        for &(tests, compared, ids, want) in cases {
+            let filter = ViewFilter { tests };
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            for (held, read) in [("facts", &facts as &dyn CodeView), ("settled", &settles)] {
+                let at = format!("{tests:?} {compared:?} {held} {ids:?}");
+                let whole = Composed::new(&records, read, filter, honesty(compared)).unwrap();
+                assert_eq!(
+                    whole.hidden_placeholder_callers(&ids).unwrap().len(),
+                    want,
+                    "whole {at}"
+                );
+                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                near.subgraph(&ids, 1).unwrap();
+                assert_eq!(
+                    near.hidden_placeholder_callers(&ids).unwrap().len(),
+                    want,
+                    "near {at}"
+                );
+                near.whole().unwrap();
+                assert_eq!(
+                    near.hidden_placeholder_callers(&ids).unwrap().len(),
+                    want,
+                    "near whole {at}"
                 );
             }
         }

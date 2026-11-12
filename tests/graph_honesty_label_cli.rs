@@ -284,36 +284,39 @@ fn show_counts_the_hidden_tests_its_query_names() {
     }
 }
 
-/// GIVEN a built project where `p` is defined in two files, so a call to it from another file
-/// lands on that file's placeholder and proves neither, and the test `t` and the test helper `h`
-/// call it from a test file while the test `u` calls `h`, WHEN `rigger graph --around` reads one
-/// `p` under each `--tests` setting, THEN `exclude` counts the two tests the callers walk reaches
-/// through their placeholder at any depth (never stepping from one to reach `u`), and `include`
-/// shows them and counts nothing.
+/// GIVEN a built project where `p` and `w` are each defined in two files, so a call to either
+/// from another file lands on that file's placeholder and proves neither, and the test `t` and
+/// the test helper `h` call `p` from a test file while the test `u` calls `h` and the test `v`
+/// calls `w`, WHEN `rigger graph --around` reads one `p` or one `w` under each `--tests` setting,
+/// THEN `exclude` counts the tests the callers walk reaches through a placeholder from a node it
+/// steps from, at any depth (never stepping from a test to reach `u`, nor counting `v` for the
+/// `w` that `p`'s file shows), and `include` shows them and counts nothing.
 #[test]
 fn around_counts_the_hidden_tests_calling_through_a_placeholder() {
     let dir = temp_project();
     let root = dir.path();
     write_text(root, "src/lib.rs", "pub mod a;\npub mod b;\n");
-    write_text(root, "src/a.rs", "pub fn p() {}\n");
-    write_text(root, "src/b.rs", "pub fn p() {}\n");
+    write_text(root, "src/a.rs", "pub fn p() {}\npub fn w() {}\n");
+    write_text(root, "src/b.rs", "pub fn p() {}\npub fn w() {}\n");
     write_text(
         root,
         "tests/t.rs",
-        "#[test]\nfn t() { p(); }\nfn h() { p(); }\n#[test]\nfn u() { h(); }\n",
+        "#[test]\nfn t() { p(); }\nfn h() { p(); }\n#[test]\nfn u() { h(); }\n#[test]\nfn v() { w(); }\n",
     );
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
+    let one = "1 test hit not shown; the tests filter (include or only) shows them";
     let two = "2 test hits not shown; the tests filter (include or only) shows them";
-    let around = ["graph", "--around", "src/a.rs::p", "--depth"];
-    // (the depth and filter arguments, the line under the label when one counts hidden tests)
-    let cases: [(&[&str], Option<&str>); 3] = [
-        (&["1"], Some(two)),
-        (&["2"], Some(two)),
-        (&["2", "--tests", "include"], None),
+    // (the queried id, the depth and filter arguments, the line under the label when one counts
+    // hidden tests)
+    let cases: [(&str, &[&str], Option<&str>); 4] = [
+        ("src/a.rs::p", &["1"], Some(two)),
+        ("src/a.rs::p", &["2"], Some(two)),
+        ("src/a.rs::p", &["2", "--tests", "include"], None),
+        ("src/a.rs::w", &["1"], Some(one)),
     ];
-    for (extra, line) in cases {
-        let args = [&around[..], extra].concat();
+    for (id, extra, line) in cases {
+        let args = [&["graph", "--around", id, "--depth"][..], extra].concat();
         let (out, err, ok) = run_rigger(root, &args);
         assert!(ok, "{args:?} answers; stderr:\n{err}");
         match line {
