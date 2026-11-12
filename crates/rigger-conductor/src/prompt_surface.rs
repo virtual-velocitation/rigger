@@ -4,8 +4,8 @@
 //! blocks, the grounding sections and their elision notes, the DAG critique and re-plan prompts,
 //! and the canary's review and adjudicator prompts. A renderer in `conductor.rs` or
 //! `canary_store.rs` formats from these through `fill` wherever a const carries a `{slot}`. The
-//! registry types and `fill` are `rigger_domain::prompt_surface`'s. The module is pure consts and
-//! compiles in every lane.
+//! registry types and `fill` are `rigger_domain::prompt_surface`'s. The module holds the consts
+//! and their registry, [`prompt_groups`], both pure, so it compiles in every lane.
 
 /// CONTRACT: how an agent records a decision, the `rigger_emit` call and the `DecisionMade` JSON
 /// shape the conductor reads; every worker prompt carries it.
