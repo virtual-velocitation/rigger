@@ -1,10 +1,10 @@
 //! The graph half: each term resolved against the code graph ([`ContextGraph::locate`] first,
 //! then the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition
-//! site and the sites of its direct callers and callees. The graph is not the caller's tree: the
-//! graph withholds every hit in a file the caller's tree holds differently and counts it in its
-//! label ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers
-//! from bytes the caller no longer holds. What the graph lacks for the tree's new bytes the text
-//! half answers.
+//! site and the sites of its direct callers and callees. The graph describes the caller's tree:
+//! the files it differs in are read from the tree over the store's stamp. When the tree cannot be
+//! compared, the graph withholds every code hit and counts it in its label
+//! ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers from
+//! bytes the caller no longer holds; the text half answers from the tree's bytes.
 
 use crate::contextgraph::ContextGraph;
 use rigger_domain::composed::Label;
@@ -69,7 +69,8 @@ pub(crate) enum TermGraph {
 }
 
 /// The graph half's answer: each term's, and the graph's label as it stands once every term was
-/// answered, so it counts every hit the answers withheld.
+/// answered, so it counts every hit the answers withheld (none unless the caller's tree cannot be
+/// compared).
 #[derive(Debug, PartialEq)]
 pub(crate) struct Answered {
     pub label: Label,

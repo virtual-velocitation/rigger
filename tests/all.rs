@@ -263,4 +263,6 @@ mod watchdog_cli_periphery;
 mod workflow_definition_and_js_constants_periphery;
 mod worktree_create_heal_lock_boundary_periphery;
 mod worktree_liveness_fence_periphery;
+#[cfg(feature = "symbols")]
+mod worktree_overlay_equivalence;
 mod worktree_remove_relocated_scratch_base_guard_periphery;

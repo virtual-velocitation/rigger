@@ -1,5 +1,6 @@
 //! The honesty label (6.1) heads every graph answer the CLI prints: the commit the answer
-//! describes, then how the caller's worktree differs from it and what that withheld.
+//! describes, or the caller's worktree over it when the two differ, and what it withheld when the
+//! worktree cannot be compared.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
@@ -7,26 +8,38 @@ use common::fixtures::{git_commit_all, git_out, write_text};
 
 /// GIVEN a project whose source is committed and built, WHEN `rigger graph --around` reads it
 /// from a clean worktree, from one with an unread file edited, and from one with the read file
-/// edited, THEN the first line is the label naming the head commit, the differing files and the
-/// nodes withheld for them, and the subgraph header follows it.
+/// edited, THEN the first line is the label naming the head commit and, when the worktree differs,
+/// the worktree the answer describes and how many of its files it took over the commit, the
+/// subgraph header follows it, and the answer holds the edited file's code as the worktree has it.
 #[test]
 fn around_prints_the_label_first() {
-    // (case, the file edited after the build, the label after `describes <head>`)
-    let cases: [(&str, Option<&str>, &str); 3] = [
-        ("a clean worktree", None, ""),
+    let overlaid = "describes {w} ({head} + 1 file); groupings describe {head}";
+    // (case, the file edited after the build, the label, the code node the answer holds, the one
+    // it lacks)
+    let cases: [(&str, Option<&str>, &str, &str, &str); 3] = [
+        (
+            "a clean worktree",
+            None,
+            "describes {head}",
+            "src/lib.rs::alpha",
+            "src/lib.rs::gamma",
+        ),
         (
             "an edited file the answer does not reach",
             Some("src/other.rs"),
-            "; 1 file in {w} differs",
+            overlaid,
+            "src/lib.rs::alpha",
+            "src/lib.rs::gamma",
         ),
-        // The file's node and its fn's.
         (
             "the edited file the answer reads",
             Some("src/lib.rs"),
-            "; 1 file in {w} differs; 2 withheld",
+            overlaid,
+            "src/lib.rs::gamma",
+            "src/lib.rs::alpha",
         ),
     ];
-    for (case, edited, tail) in cases {
+    for (case, edited, label, holds, lacks) in cases {
         let dir = temp_project();
         let root = dir.path();
         write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
@@ -38,6 +51,7 @@ fn around_prints_the_label_first() {
         }
         let head = git_out(root, &["rev-parse", "HEAD"]);
         let worktree = root.canonicalize().unwrap().display().to_string();
+        let label = label.replace("{w}", &worktree).replace("{head}", &head);
 
         let (out, err, ok) = run_rigger(root, &["graph", "--around", "src/lib.rs", "--depth", "1"]);
 
@@ -45,11 +59,13 @@ fn around_prints_the_label_first() {
         let lines: Vec<&str> = out.lines().take(2).collect();
         assert_eq!(
             lines,
-            [
-                format!("describes {head}{}", tail.replace("{w}", &worktree)).as_str(),
-                "subgraph around \"src/lib.rs\" (depth 1):",
-            ],
+            [label.as_str(), "subgraph around \"src/lib.rs\" (depth 1):"],
             "{case}: the label heads the answer; stdout:\n{out}"
+        );
+        assert!(out.contains(holds), "{case}: holds {holds}; stdout:\n{out}");
+        assert!(
+            !out.contains(lacks),
+            "{case}: lacks {lacks}; stdout:\n{out}"
         );
     }
 }
@@ -249,7 +265,8 @@ fn ground_takes_the_same_tests_option_and_counts_what_it_hides() {
 
 /// GIVEN a committed, built project with an untracked file at its top level, WHEN `rigger ground`
 /// runs from a subdirectory, THEN its label names the caller's worktree (the git top-level, as
-/// every other read names it) and counts the untracked file outside the cwd among the differing.
+/// every other read names it) and counts the untracked file outside the cwd among the files the
+/// answer takes from it.
 #[test]
 fn ground_names_the_callers_worktree_from_a_subdirectory() {
     let dir = temp_project();
@@ -260,7 +277,7 @@ fn ground_names_the_callers_worktree_from_a_subdirectory() {
     write_text(root, "loose.rs", "pub fn beta() {}\n");
     let head = git_out(root, &["rev-parse", "HEAD"]);
     let worktree = root.canonicalize().unwrap().display().to_string();
-    let label = format!("describes {head}; 1 file in {worktree} differs");
+    let label = format!("describes {worktree} ({head} + 1 file); groupings describe {head}");
 
     let (out, err, ok) = run_rigger(&root.join("src"), &["ground", "alpha"]);
 
@@ -277,10 +294,9 @@ fn ground_names_the_callers_worktree_from_a_subdirectory() {
 
 /// GIVEN a committed, built project whose workflow definition names a stage, WHEN the definition
 /// is edited and `rigger graph --around` reads the stage, THEN the stage, a fact of the differing
-/// file, is withheld and counted like any node of a differing file, never answered from the
-/// snapshot.
+/// file, is answered as the worktree's definition has it, never from the snapshot.
 #[test]
-fn a_workflow_node_of_a_differing_definition_is_withheld() {
+fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
     let dir = temp_project();
     let root = dir.path();
     write_text(root, "src/lib.rs", "pub fn alpha() {}\n");
@@ -302,13 +318,15 @@ fn a_workflow_node_of_a_differing_definition_is_withheld() {
     );
 
     assert!(ok, "the around answers; stderr:\n{err}");
-    // The seed stage, withheld, so the walk reaches nothing beyond it.
-    let label = format!("describes {head}; 1 file in {worktree} differs; 1 withheld");
+    let label = format!("describes {worktree} ({head} + 1 file); groupings describe {head}");
     assert_eq!(out.lines().next(), Some(label.as_str()), "stdout:\n{out}");
+    let answer: Vec<&str> = out.lines().skip(2).collect();
     assert!(
-        !out.lines()
-            .skip(2)
-            .any(|l| l.contains("stage:implement") || l.contains("agent:worker")),
-        "no fact of the differing definition is answered; stdout:\n{out}"
+        answer.iter().any(|l| l.contains("agent:other")),
+        "the worktree's definition is answered; stdout:\n{out}"
+    );
+    assert!(
+        !answer.iter().any(|l| l.contains("agent:worker")),
+        "the snapshot's definition is not; stdout:\n{out}"
     );
 }

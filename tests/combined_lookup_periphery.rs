@@ -91,15 +91,15 @@ fn diverged() -> tempfile::TempDir {
     dir
 }
 
-/// A file changed, deleted or added since the graph was built is answered by the text half from
-/// the tree as it stands and withheld by the graph half, whose label heads it counting the files
-/// that differ (6.1); a file the tree holds as the graph describes it is answered by both.
+/// A file changed, deleted or added since the graph was built is answered by both halves from the
+/// tree as it stands: the graph half describes the worktree, whose label heads it counting the
+/// files it took from the worktree (6.1), and a deleted file's entity is gone from both.
 #[test]
-fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
+fn a_file_changed_deleted_or_added_is_answered_by_both_halves_from_the_worktree() {
     let dir = diverged();
     let head = common::fixtures::git_out(dir.path(), &["rev-parse", "HEAD"]);
     let worktree = dir.path().canonicalize().unwrap().display().to_string();
-    let label = format!("describes {head}; 4 files in {worktree} differ");
+    let label = format!("describes {worktree} ({head} + 4 files); groupings describe {head}");
     let cases: [(&str, &str, &str); 5] = [
         (
             "widget_kept",
@@ -108,12 +108,12 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
         (
             "widget_changed",
-            "no entity named widget_changed",
+            "src/changed.rs:2 src/changed.rs::widget_changed",
             "src/changed.rs:2: pub fn widget_changed() {}",
         ),
         (
             "widget_body",
-            "no entity named widget_body",
+            "src/body.rs:1 src/body.rs::widget_body",
             "src/body.rs:1: pub fn widget_body() { let now = 1; }",
         ),
         (
@@ -123,7 +123,7 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
         ),
         (
             "widget_added",
-            "no entity named widget_added",
+            "src/added.rs:1 src/added.rs::widget_added",
             "src/added.rs:1: pub fn widget_added() {}",
         ),
     ];
@@ -138,12 +138,10 @@ fn a_file_changed_deleted_or_added_is_answered_by_text_and_withheld_by_graph() {
             graph.contains(graph_says),
             "{term}: the graph section says {graph_says:?}:\n{reply}"
         );
-        for differing in ["src/changed.rs", "src/gone.rs", "src/body.rs"] {
-            assert!(
-                !graph.contains(differing),
-                "{term}: the graph section names no hit in {differing}:\n{reply}"
-            );
-        }
+        assert!(
+            !graph.contains("src/gone.rs"),
+            "{term}: the graph section names no hit in the deleted file:\n{reply}"
+        );
         assert!(
             section(&reply, "text").contains(text_says),
             "{term}: the text section says {text_says:?}:\n{reply}"
@@ -168,10 +166,11 @@ fn the_mcp_lookup_and_the_cli_lookup_answer_the_same_body() {
     );
 }
 
-/// A spawn's server, started in the spawn's worktree as its host starts it, answers the text half
-/// from that worktree, and the operator's lookup in the owning checkout from the checkout.
+/// A spawn's server, started in the spawn's worktree as its host starts it, answers the text and
+/// graph halves from that worktree, and the operator's lookup in the owning checkout from the
+/// checkout.
 #[test]
-fn a_spawn_server_answers_the_text_half_from_its_own_worktree() {
+fn a_spawn_server_answers_from_its_own_worktree() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     built(root, &[("src/kept.rs", KEPT)]);
@@ -186,9 +185,17 @@ fn a_spawn_server_answers_the_text_half_from_its_own_worktree() {
         section(&served, "text").contains("src/only_here.rs:1: fn worktree_only() {}"),
         "{served}"
     );
+    assert!(
+        section(&served, "graph").contains("src/only_here.rs:1 src/only_here.rs::worktree_only"),
+        "{served}"
+    );
     let operator = cli_lookup(root, &["worktree_only"]);
     assert!(
         section(&operator, "text").contains("no line of your tree holds worktree_only"),
+        "{operator}"
+    );
+    assert!(
+        section(&operator, "graph").contains("no entity named worktree_only"),
         "{operator}"
     );
 }

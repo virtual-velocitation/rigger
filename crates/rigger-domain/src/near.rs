@@ -1316,7 +1316,7 @@ mod tests {
         let records = Indexed::default();
         let honesty = || Honesty {
             worktree: "wt".into(),
-            diff: Ok(Default::default()),
+            compared: crate::code_view::Compared::Overlaid(0),
             behind: None,
         };
         let seeds = [

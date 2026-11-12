@@ -7,7 +7,7 @@ use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind, Scope, Tip
 use rigger_domain::code_view::{
     Cluster, CodeView, Entry, Extract, Group, Groupings, TreeSource, WorktreeDiff,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -159,7 +159,8 @@ impl Group for CountingGroup {
 }
 
 /// A tree source held in memory: each commit names a tree of (path, text) files, and the heads
-/// asked of it and the blobs it hands out are counted.
+/// asked of it and the blobs it hands out are counted. Its worktree, once set, holds files of its
+/// own, compared with a tree path by path.
 #[derive(Default)]
 pub struct MemSource {
     head: Mutex<Option<Tip>>,
@@ -167,6 +168,10 @@ pub struct MemSource {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
     blobs_read: AtomicUsize,
     heads_asked: AtomicUsize,
+    /// The worktree's files by path; none until set, when no worktree can be compared.
+    worktree: Mutex<Option<BTreeMap<String, Vec<u8>>>>,
+    /// The worktree's paths a read fails on.
+    unreadable: Mutex<BTreeSet<String>>,
 }
 
 impl MemSource {
@@ -198,6 +203,31 @@ impl MemSource {
             *head = Some(tip.clone());
         }
         tip
+    }
+
+    /// Sets its worktree to the files of the commit checked out with `changes` applied: a path
+    /// given text holds it, one given none is deleted.
+    pub fn worktree(&self, changes: &[(&str, Option<&str>)]) {
+        let tree = self.head.lock().unwrap().as_ref().map(|t| t.tree.clone());
+        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        if let Some(entries) = tree.and_then(|t| self.trees.lock().unwrap().get(&t).cloned()) {
+            let blobs = self.blobs.lock().unwrap();
+            for e in entries {
+                files.insert(e.path, blobs[&e.blob].clone());
+            }
+        }
+        for (path, text) in changes {
+            match text {
+                Some(text) => files.insert((*path).to_owned(), text.as_bytes().to_vec()),
+                None => files.remove(*path),
+            };
+        }
+        *self.worktree.lock().unwrap() = Some(files);
+    }
+
+    /// Makes a read of `path` from its worktree fail.
+    pub fn unreadable(&self, path: &str) {
+        self.unreadable.lock().unwrap().insert(path.to_owned());
     }
 
     /// How many blobs it handed out.
@@ -236,17 +266,44 @@ impl TreeSource for MemSource {
             .ok_or_else(|| format!("no tree {tree}"))
     }
 
-    fn changed_against_worktree(&self, _: &str, _: &Path) -> Result<WorktreeDiff, String> {
-        Err("a memory source has no worktree".into())
+    fn changed_against_worktree(&self, tree: &str, _: &Path) -> Result<WorktreeDiff, String> {
+        let worktree = self.worktree.lock().map_err(|e| e.to_string())?;
+        let files = worktree.as_ref().ok_or("a memory source has no worktree")?;
+        let blobs = self.blobs.lock().map_err(|e| e.to_string())?;
+        let mut diff = WorktreeDiff::default();
+        let mut held = BTreeSet::new();
+        for e in self.list(tree)? {
+            match files.get(&e.path) {
+                Some(bytes) if blobs.get(&e.blob) == Some(bytes) => {}
+                Some(_) => diff.modified.push(e.path.clone()),
+                None => diff.deleted.push(e.path.clone()),
+            }
+            held.insert(e.path);
+        }
+        diff.untracked = files
+            .keys()
+            .filter(|p| !held.contains(*p))
+            .cloned()
+            .collect();
+        Ok(diff)
     }
 
     fn read_worktree(
         &self,
         _: &Path,
-        _: &[&str],
-        _: &mut dyn FnMut(&str, &[u8]),
+        paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8]),
     ) -> Result<(), String> {
-        Err("a memory source has no worktree".into())
+        let worktree = self.worktree.lock().map_err(|e| e.to_string())?;
+        let files = worktree.as_ref().ok_or("a memory source has no worktree")?;
+        let unreadable = self.unreadable.lock().map_err(|e| e.to_string())?;
+        for path in paths {
+            match files.get(*path) {
+                Some(bytes) if !unreadable.contains(*path) => sink(path, bytes),
+                _ => return Err(format!("cannot read {path} from the worktree")),
+            }
+        }
+        Ok(())
     }
 
     fn read_blobs(

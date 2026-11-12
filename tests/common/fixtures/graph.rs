@@ -143,7 +143,7 @@ macro_rules! context_graph_holds_no_tree {
             rigger::composed::Label {
                 describes: "the double".to_string(),
                 worktree: "the double's worktree".to_string(),
-                compared: rigger::composed::Compared::Differ(0),
+                compared: rigger::code_view::Compared::Overlaid(0),
                 behind: None,
                 withheld: 0,
             }
@@ -232,7 +232,7 @@ pub fn view_graph<'r>(
 ) -> rigger::composed::Composed<'r> {
     let honesty = rigger::composed::Honesty {
         worktree: "the worktree".to_string(),
-        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
     };
     rigger::composed::Composed::new(
@@ -459,7 +459,7 @@ impl rigger::contextgraph::OpenGraph for ViewedRecords<'_> {
 pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::Head {
     rigger::code_view::Head {
         view: Box::new(view),
-        diff: Ok(rigger::code_view::WorktreeDiff::default()),
+        compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
     }
 }

@@ -322,24 +322,36 @@ fn extract_all(
             missing.blob, missing.path
         ));
     }
+    extract_parallel(extract, entries, &|entry| {
+        blobs.get(&entry.blob).map_or(&[][..], Vec::as_slice)
+    })
+}
+
+/// The facts of each of `entries`, extracted from the bytes `bytes_of` hands for it in parallel
+/// across the machine's cores, each with the path and blob its entry names: the one extraction
+/// pass an advance and a worktree overlay both run.
+pub(crate) fn extract_parallel<'b>(
+    extract: &dyn Extract,
+    entries: &[Entry],
+    bytes_of: &(dyn Fn(&Entry) -> &'b [u8] + Sync),
+) -> Result<Vec<FileFacts>, String> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(entries.len());
     let chunk = entries.len().div_ceil(threads);
-    let blobs = &blobs;
     std::thread::scope(|scope| {
         let workers: Vec<_> = entries
             .chunks(chunk)
             .map(|part| {
                 scope.spawn(move || {
                     part.iter()
-                        .map(|entry| {
-                            let bytes = blobs.get(&entry.blob).map_or(&[][..], Vec::as_slice);
-                            FileFacts {
-                                path: entry.path.clone(),
-                                blob: entry.blob.clone(),
-                                ..extract.extract(entry, bytes)
-                            }
+                        .map(|entry| FileFacts {
+                            path: entry.path.clone(),
+                            blob: entry.blob.clone(),
+                            ..extract.extract(entry, bytes_of(entry))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -1488,8 +1500,7 @@ mod tests {
             }
             Ok(WorktreeDiff {
                 modified: vec![tree.to_owned()],
-                deleted: Vec::new(),
-                untracked: Vec::new(),
+                ..WorktreeDiff::default()
             })
         }
 

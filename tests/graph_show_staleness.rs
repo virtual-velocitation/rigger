@@ -1,9 +1,10 @@
 //! Acceptance test for `rigger graph --show <entity>` FRESHNESS (spec 58, criterion 2: the degrade
 //! path). It drives the COMPILED `rigger` binary against a throwaway project whose code store
 //! describes a committed tree and whose working tree no longer holds the recorded file: a location
-//! the tree no longer holds is never served as current. The differing file's hits are WITHHELD and
-//! the honesty label heading the answer counts the withheld file; the command EXITS SUCCESS (never
-//! an error) and prints no body. The sibling file the working tree still matches keeps answering.
+//! the tree no longer holds is never served as current. The answer describes the worktree, so the
+//! deleted file's entities are gone from it and the honesty label heading the answer counts the
+//! file the answer took from the worktree; the command EXITS SUCCESS (never an error) and prints
+//! no body. The sibling file the working tree still matches keeps answering.
 
 // The extractor that reads the committed source is linked by `symbols` alone.
 #![cfg(feature = "symbols")]
@@ -19,11 +20,12 @@ use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
 use common::fixtures::commit_tree;
 
-/// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface withholds
-/// the file's entity (the label counts it), answers that the entity is not in the graph, prints no
-/// body, and EXITS SUCCESS - never an error. A sibling file the tree still matches is shown.
+/// DRIFT SHAPE (a): the recorded FILE is missing from the working tree. The show surface describes
+/// the worktree (the label counts the deleted file among the files it took from the worktree),
+/// answers that the entity is not in the graph, prints no body, and EXITS SUCCESS - never an
+/// error. A sibling file the tree still matches is shown.
 #[test]
-fn graph_show_withholds_an_entity_whose_recorded_file_is_missing() {
+fn graph_show_answers_an_entity_whose_recorded_file_is_missing_as_gone() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
@@ -47,18 +49,18 @@ fn graph_show_withholds_an_entity_whose_recorded_file_is_missing() {
         ok,
         "a missing recorded file degrades gracefully (exit SUCCESS, never an error); stderr: {err}"
     );
-    // THE LABEL COUNTS THE WITHHELD FILE.
+    // THE LABEL SAYS THE ANSWER DESCRIBES THE WORKTREE, COUNTING THE DELETED FILE.
     let label = out.lines().next().unwrap_or_default();
     assert!(
         label.starts_with("describes ")
-            && label.contains("1 file in ")
-            && label.contains(" differs; 1 withheld"),
-        "the honesty label counts the differing file and the withheld hit; got:\n{out}"
+            && label.contains(" + 1 file); groupings describe ")
+            && !label.contains("withheld"),
+        "the honesty label counts the deleted file the answer took from the worktree; got:\n{out}"
     );
     // NEVER THE STALE LOCATION: the entity is not served as current, at gone.rs:7 or anywhere.
     assert!(
         out.contains("no such entity") && !out.contains("gone.rs:7"),
-        "the deleted file's entity is withheld, never served at its old location; got:\n{out}"
+        "the deleted file's entity is gone, never served at its old location; got:\n{out}"
     );
     // NEVER WRONG TEXT: no line-numbered body is presented as the entity's current source.
     assert_eq!(

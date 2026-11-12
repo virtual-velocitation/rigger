@@ -2349,40 +2349,42 @@ fn ground_via_symbols(files: &[(&str, &str)], query_args: &[&str]) -> String {
 }
 
 /// The honesty label (6.1) travels with every `rigger ground` answer, on stderr beside the rows.
-/// Each row: what the worktree holds beyond the committed tree and the label's text after
-/// `describes <commit>`.
+/// Each row: what the worktree holds beyond the committed tree and the label it travels with.
 #[cfg(feature = "symbols")]
 #[test]
 fn ground_states_what_the_worktree_puts_in_doubt() {
-    for (name, uncommitted, after_commit) in [
-        ("a worktree that agrees", None, ""),
+    for (name, uncommitted, label) in [
+        ("a worktree that agrees", None, "describes {head}"),
         (
             "one uncommitted file",
             Some("extra.rs"),
-            "; 1 file in {w} differs",
+            "describes {w} ({head} + 1 file); groupings describe {head}",
         ),
     ] {
         let dir = temp_project();
         let root = dir.path();
-        let after_commit =
-            after_commit.replace("{w}", &root.canonicalize().unwrap().display().to_string());
         write_grounder_workflow(root, "symbols");
         std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
         common::fixtures::commit_tree(root);
         if let Some(file) = uncommitted {
             std::fs::write(root.join(file), "fn extra() {}\n").unwrap();
         }
+        let label = label
+            .replace("{w}", &root.canonicalize().unwrap().display().to_string())
+            .replace(
+                "{head}",
+                &common::fixtures::git_out(root, &["rev-parse", "HEAD"]),
+            );
         let (out, err, ok) = run_rigger(root, &["ground", "apply_damage"]);
         assert!(ok, "{name}: ground must succeed; stderr: {err}");
         assert!(
             out.starts_with("combat.rs:"),
             "{name}: rows on stdout: {out}"
         );
-        let label = err.lines().last().unwrap_or_default();
-        let after = label.find(';').map_or("", |at| &label[at..]);
-        assert!(
-            label.starts_with("describes ") && after == after_commit,
-            "{name}: the label states what differs; stderr: {err}"
+        assert_eq!(
+            err.lines().last().unwrap_or_default(),
+            label,
+            "{name}: the label states what the answer describes; stderr: {err}"
         );
     }
 }
@@ -17374,8 +17376,8 @@ fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
 /// directory over a graph built and read from a clean worktree, an edited file, an unreadable git
 /// index, a code store that cannot be opened, and no graph built at all, THEN the reply states
 /// what it describes in one graph header: the label of the read that answered (spec 6.1),
-/// naming the worktree by its top-level and counting what the overview withheld, or why no graph
-/// could be read, never an empty graph with no reason.
+/// naming the worktree by its top-level, the files the answer took from it or what the overview
+/// withheld, or why no graph could be read, never an empty graph with no reason.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_dash_graph_reply_states_what_it_describes() {
@@ -17390,13 +17392,13 @@ fn a_dash_graph_reply_states_what_it_describes() {
             "X-Rigger-Graph-Label: describes {head}",
         ),
         (
-            // The file's node, its fn's and the community the two alone make up.
             "an edited file the overview holds",
             true,
             |root| std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap(),
-            "X-Rigger-Graph-Label: describes {head}; 1 file in {w} differs; 3 withheld",
+            "X-Rigger-Graph-Label: describes {w} ({head} + 1 file); groupings describe {head}",
         ),
         (
+            // The file's node, its fn's and the community the two alone make up.
             "an unreadable git index",
             true,
             |root| std::fs::write(root.join(".git").join("index"), "unreadable").unwrap(),
@@ -17462,41 +17464,91 @@ fn a_dash_graph_reply_states_what_it_describes() {
     }
 }
 
-/// GIVEN a committed, built project of two files, one of them edited after the build, WHEN every
-/// surface reads it - `rigger graph --around / --show / --lookup`, `rigger ground`, the MCP graph
-/// and ground tools, and each dash graph view - THEN each label counts as withheld exactly the
-/// nodes of its own answer that the differing file withheld (spec 6.1): a walk the withheld nodes
-/// it reaches, never stepping from one; a fold the withheld nodes it would have held; a grounding
-/// the entities its withheld hits name; never the differing file's whole count.
+/// GIVEN a committed, built project of two files, WHEN every surface reads it - `rigger graph
+/// --around / --show / --lookup`, `rigger ground`, the MCP graph and ground tools, and each dash
+/// graph view - from a worktree with one of the files edited and from one whose index cannot be
+/// read, THEN each label states what its own answer describes (spec 6.1): over the edited
+/// worktree, the worktree over the commit and nothing withheld; over the unreadable index, the
+/// commit and exactly the code nodes its own answer withheld: a walk the withheld nodes it
+/// reaches, never stepping from one; a fold the withheld nodes it would have held; a grounding the
+/// entities its withheld hits name; never the tree's whole count.
 #[cfg(feature = "symbols")]
 #[test]
 fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(
-        root.join("src/lib.rs"),
-        "pub fn alpha() {}\n\npub fn delta() {\n    alpha();\n    alpha();\n}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("src/other.rs"),
-        "pub fn beta() {\n    crate::alpha();\n}\n",
-    )
-    .unwrap();
-    common::fixtures::git_commit_all(root, "source");
-    run_rigger_ok(root, &["graph", "build"]);
-    std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap();
-    let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
-    let worktree = root.canonicalize().unwrap().display().to_string();
-    // A label withholding nothing states no count.
-    let label = |withheld: usize| {
-        let differs = format!("describes {head}; 1 file in {worktree} differs");
-        match withheld {
-            0 => differs,
-            n => format!("{differs}; {n} withheld"),
-        }
-    };
+    // (case, what is done to the built project, the label of each surface by its withheld count)
+    type Spoil = fn(&Path);
+    let edited: Spoil =
+        |root| std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap();
+    let unreadable: Spoil =
+        |root| std::fs::write(root.join(".git").join("index"), "unreadable").unwrap();
+    let overlaid = "describes {w} ({head} + 1 file); groupings describe {head}";
+    let uncomparable = "describes {head}; {w} cannot be compared";
+    // A walk counts the withheld nodes it reaches and never steps from one: around the file, the
+    // file and its two fns; around the other file, the file and beta. A show or a lookup of alpha
+    // counts its two bindings, alpha and the other file's `crate::alpha` reference. A grounding
+    // counts the one entity its withheld hits name. A fold counts the withheld nodes it would
+    // have held: the overview every file, fn, reference and community; the files lens drills to
+    // nothing; a community or a file's member set its fns. A rationale counts nothing.
+    let counts: [(&str, usize); 19] = [
+        ("--around the file", 3),
+        ("--show alpha", 2),
+        ("--lookup alpha", 2),
+        ("ground alpha", 1),
+        ("MCP around the file", 3),
+        ("MCP show alpha", 2),
+        ("MCP lookup alpha", 2),
+        ("MCP ground alpha", 1),
+        ("the dash's overview", 8),
+        ("the dash around the file", 3),
+        ("the dash around the other file", 2),
+        ("the dash's card of alpha", 1),
+        ("the dash's card of beta", 1),
+        ("the dash's rationale of both", 0),
+        ("the dash's files drill", 0),
+        ("the dash's drill of the file's community", 2),
+        ("the dash's drill of the other community", 1),
+        ("the dash's file under the code lens", 2),
+        ("the dash's other file under the code lens", 1),
+    ];
+    for (case, spoil, label, counted) in [
+        ("an edited file", edited, overlaid, false),
+        ("an unreadable index", unreadable, uncomparable, true),
+    ] {
+        let dir = temp_project();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn alpha() {}\n\npub fn delta() {\n    alpha();\n    alpha();\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/other.rs"),
+            "pub fn beta() {\n    crate::alpha();\n}\n",
+        )
+        .unwrap();
+        common::fixtures::git_commit_all(root, "source");
+        run_rigger_ok(root, &["graph", "build"]);
+        spoil(root);
+        let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
+        let worktree = root.canonicalize().unwrap().display().to_string();
+        let label = label.replace("{w}", &worktree).replace("{head}", &head);
+        let expected: Vec<(&str, String)> = (counts.iter())
+            .map(|&(surface, n)| match n {
+                // A label withholding nothing states no count.
+                n if counted && n > 0 => (surface, format!("{label}; {n} withheld")),
+                _ => (surface, label.clone()),
+            })
+            .collect();
+        assert_eq!(surface_labels(root), expected, "{case}");
+    }
+}
+
+/// The label of each surface's answer read from the built project at `root`: `rigger graph
+/// --around / --show / --lookup`, `rigger ground`, the MCP graph and ground tools, and each dash
+/// graph view.
+#[cfg(feature = "symbols")]
+fn surface_labels(root: &Path) -> Vec<(&'static str, String)> {
     let first_label = |text: &str| {
         (text.lines())
             .find(|l| l.starts_with("describes "))
@@ -17605,34 +17657,7 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
         labels.push((surface, stated));
     }
     drop(dash);
-
-    // A walk counts the withheld nodes it reaches and never steps from one: around the file, the
-    // file and its two fns; alpha alone; nothing around the other file or at beta. A grounding
-    // counts the one entity its three withheld hits name. A fold counts the withheld nodes it
-    // would have held: the overview the file, its fns and their community; the files lens drills
-    // to nothing; the file's community and the file's member set hold its two fns.
-    let expected = [
-        ("--around the file", label(3)),
-        ("--show alpha", label(1)),
-        ("--lookup alpha", label(1)),
-        ("ground alpha", label(1)),
-        ("MCP around the file", label(3)),
-        ("MCP show alpha", label(1)),
-        ("MCP lookup alpha", label(1)),
-        ("MCP ground alpha", label(1)),
-        ("the dash's overview", label(4)),
-        ("the dash around the file", label(3)),
-        ("the dash around the other file", label(0)),
-        ("the dash's card of alpha", label(1)),
-        ("the dash's card of beta", label(0)),
-        ("the dash's rationale of both", label(0)),
-        ("the dash's files drill", label(0)),
-        ("the dash's drill of the file's community", label(2)),
-        ("the dash's drill of the other community", label(0)),
-        ("the dash's file under the code lens", label(2)),
-        ("the dash's other file under the code lens", label(0)),
-    ];
-    assert_eq!(labels, expected.to_vec());
+    labels
 }
 
 /// `line` with each `%XX` escape the dash's graph headers carry read back as its byte.
@@ -27662,11 +27687,12 @@ fn graph_show_bounds_a_tsx_definition_under_its_tsx_grammar() {
 /// Spec 119, IDS FOLLOW THE LANGUAGE'S PATH: GIVEN a committed tree whose `src/pair.rs` holds the
 /// method `T::new` at line 4 and whose `src/other.rs` holds a same-named `U::new`, and a working
 /// tree that has deleted `T::new`, WHEN the operator runs `rigger graph --show` on `T::new`'s id,
-/// THEN the changed file's hit is withheld and the label counts it, never serving the deleted
-/// method as current; and `U::new`, in the unchanged file, still shows at its own path.
+/// THEN the answer describes the worktree, so the deleted method is gone and the label counts the
+/// changed file it took from the worktree, never serving the deleted method as current; and
+/// `U::new`, in the unchanged file, still shows at its own path.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_show_withholds_a_deleted_method_beside_a_same_named_one_in_an_unchanged_file() {
+fn graph_show_answers_a_deleted_method_beside_a_same_named_one_in_an_unchanged_file_as_gone() {
     let dir = temp_project();
     let root = dir.path();
     common::cli::seed_rigger_dir(root);
@@ -27688,12 +27714,12 @@ fn graph_show_withholds_a_deleted_method_beside_a_same_named_one_in_an_unchanged
     assert!(ok, "the show of a deleted method exits 0; stderr: {err}");
     let label = deleted.lines().next().unwrap_or_default();
     assert!(
-        label.contains("1 file in ") && label.contains(" differs; 1 withheld"),
-        "the label counts the differing file and the withheld hit; got:\n{deleted}"
+        label.contains(" + 1 file); groupings describe ") && !label.contains("withheld"),
+        "the label counts the changed file the answer took from the worktree; got:\n{deleted}"
     );
     assert!(
         deleted.contains("no such entity") && !deleted.contains("pair.rs:4"),
-        "a deleted T::new is withheld, never served at its old line; got:\n{deleted}"
+        "a deleted T::new is gone, never served at its old line; got:\n{deleted}"
     );
     assert_eq!(
         common::cli::show_lines(root, "src/other.rs::U::new")

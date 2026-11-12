@@ -5,16 +5,17 @@
 //! `grounder_for` / `main::select_grounder`.
 //!
 //! Every read opens the view of the head as it stands then ([`OpenCodeView`]), so a grounder that
-//! lives across merges follows the store as merges advance it, and serves the code files the
-//! caller's worktree agrees with the view on: a file that differs is withheld (the code store's
-//! honesty rule, invariant 2), and every file is when the worktree cannot be compared.
+//! lives across merges follows the store as merges advance it, and serves the caller's worktree:
+//! the view takes the files the worktree differs in from the worktree (the overlay), and every
+//! code file is withheld when the worktree cannot be compared (the code store's honesty rule,
+//! invariant 2).
 
 use crate::facts::DirectoryHead;
 use crate::grounder::symbols::model::{percentile_cutoff, GRAMMAR_TAGS_VERSION};
 use crate::grounder::{BlastRadius, Grep, Grounded, Grounder, RankedRef, Ref, StampedRadius};
 use rigger_domain::code_facts::{Half, MentionKind, Scope, Stamp, Tip};
 use rigger_domain::code_view::{
-    CodeView, DefRef, FactsView, FileRef, Head, MentionRef, OpenCodeView, Tests, Withheld,
+    CodeView, Compared, DefRef, FactsView, FileRef, Head, MentionRef, OpenCodeView, Tests,
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
@@ -78,14 +79,13 @@ impl Symbols {
         let worktree = self.root.clone();
         match head {
             Ok(head) => {
-                let withheld = Withheld::of(head.diff.clone());
                 let tip = &head.view.stamp().tip;
-                let label = Label::describing(tip, worktree, &withheld, head.behind.clone());
+                let label = Label::describing(tip, worktree, head.compared, head.behind.clone());
                 let tree = tip.tree.clone();
-                (read(&Sight::new(&*head.view, withheld)), label, tree)
+                (read(&Sight::new(&*head.view, head.compared)), label, tree)
             }
             Err(reason) => (
-                read(&Sight::new(&unread_view(), Withheld::All)),
+                read(&Sight::new(&unread_view(), Compared::Uncomparable)),
                 Label::unopened(worktree, reason),
                 UNREAD_TREE.to_string(),
             ),
@@ -157,20 +157,22 @@ fn unread_view() -> FactsView {
     )
 }
 
-/// What one read sees: the head's view, less the files its worktree puts in doubt. Only code-half
-/// files are served: the design and workflow halves hold no symbols.
+/// What one read sees: the head's view of the caller's worktree, or none of its code files when
+/// the worktree cannot be compared. Only code-half files are served: the design and workflow
+/// halves hold no symbols.
 struct Sight<'v> {
     view: &'v dyn CodeView,
-    withheld: Withheld,
+    /// What the view describes of the worktree.
+    compared: Compared,
     /// Whether this sight serves the withheld code files instead: what a read counts as withheld.
     inverted: bool,
 }
 
 impl<'v> Sight<'v> {
-    fn new(view: &'v dyn CodeView, withheld: Withheld) -> Self {
+    fn new(view: &'v dyn CodeView, compared: Compared) -> Self {
         Sight {
             view,
-            withheld,
+            compared,
             inverted: false,
         }
     }
@@ -180,24 +182,19 @@ impl<'v> Sight<'v> {
     fn withheld_part(&self) -> Sight<'v> {
         Sight {
             view: self.view,
-            withheld: self.withheld.clone(),
+            compared: self.compared,
             inverted: true,
         }
     }
 
-    /// Whether the file at `path` is withheld from this read.
-    fn withholds(&self, path: &str) -> bool {
-        self.withheld.withholds_file(path)
+    /// Whether every code file is withheld from this read: the worktree cannot be compared, so a
+    /// reference the radius needs may be one the view does not serve.
+    fn withholds_code(&self) -> bool {
+        self.compared.withholds_code()
     }
 
     fn serves(&self, file: &FileRef<'_>) -> bool {
-        file.half == Half::Code && self.withholds(file.path) == self.inverted
-    }
-
-    /// Whether the radius must text-search the names the view resolves: some file is withheld, so
-    /// a reference in it may be one the view does not hold.
-    fn has_withheld_files(&self) -> bool {
-        !self.withheld.withholds_nothing()
+        file.half == Half::Code && self.withholds_code() == self.inverted
     }
 
     /// The served files, in path order.
@@ -722,9 +719,9 @@ impl Grounder for Symbols {
     ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the view
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
     ///   event name, a constant prefix, a name nothing defines yet), outside spec files and the
-    ///   regenerated audit. A defined name and a path are never text-searched, except that a file
-    ///   the worktree holds differently from the view is withheld from the structural view, so a
-    ///   text hit in it is added for every named symbol: a missed reference is the unsafe error.
+    ///   regenerated audit. A defined name and a path are never text-searched, except that a
+    ///   worktree that cannot be compared withholds every code file from the structural view, so a
+    ///   text hit is added for every named symbol: a missed reference is the unsafe error.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
     ///   every file that defines it or holds a call reference to it is in the view, never
     ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
@@ -1093,15 +1090,14 @@ impl Symbols {
         let mut grep_tail: Vec<String> = Vec::new();
         for n in &terms.names {
             let resolved = defined.contains(n.name.as_str());
-            // A resolved name is searched only for the files the worktree withholds from the view.
-            if resolved && !sight.has_withheld_files() {
+            // A resolved name is searched only when the view serves no code file.
+            if resolved && !sight.withholds_code() {
                 continue;
             }
             for r in grep.ground_identifier(&n.text, usize::MAX) {
-                if (resolved && !sight.withholds(&r.file))
-                    || TEXT_SEARCH_SKIPS
-                        .iter()
-                        .any(|skip| r.file.starts_with(skip))
+                if TEXT_SEARCH_SKIPS
+                    .iter()
+                    .any(|skip| r.file.starts_with(skip))
                 {
                     continue;
                 }
@@ -1127,7 +1123,7 @@ mod tests {
     use crate::grounder::Grounder;
     use rigger_domain::code_facts::{Def, FileFacts, Mention, Stamp, Tip};
     use rigger_domain::code_view::{Entry, Extract, Head, Tests, WorktreeDiff};
-    use rigger_domain::composed::Compared;
+    use rigger_store::code::Overlay;
 
     /// The `symbols` grounder is STRUCTURAL, so its radius stamp (unit 3's audit provenance +
     /// the structural-active signal the conductor keys the `BlastRadiusComputed` audit off) is
@@ -2358,21 +2354,55 @@ mod tests {
         }
     }
 
-    /// The head a test double hands out: the same files every read, compared with a worktree that
-    /// differs as `diff` says. No file is on disk.
+    /// The head a test double hands out: the same files every read, overlaid with the worktree
+    /// `worktree` describes, or alone when it is `None`, a worktree that cannot be compared. No
+    /// file is on disk.
     struct Fixed {
         files: Vec<FileFacts>,
-        diff: Result<WorktreeDiff, String>,
+        worktree: Option<Worktree>,
     }
+
+    /// How a worktree differs from the view's tree, and the facts of the files it reads from the
+    /// worktree's bytes.
+    type Worktree = (WorktreeDiff, Vec<FileFacts>);
 
     impl OpenCodeView for Fixed {
         fn head(&self, _worktree: &Path) -> Result<Head, String> {
+            let base = Box::new(FactsView::new(stamp(), self.files.clone()));
+            let (view, compared): (Box<dyn CodeView>, _) = match &self.worktree {
+                Some((diff, changed)) => (
+                    Box::new(Overlay::new(base, diff, changed.clone())),
+                    Compared::Overlaid(diff.files_in_scope().len()),
+                ),
+                None => (base, Compared::Uncomparable),
+            };
             Ok(Head {
-                view: Box::new(FactsView::new(stamp(), self.files.clone())),
-                diff: self.diff.clone(),
+                view,
+                compared,
                 behind: None,
             })
         }
+    }
+
+    /// A worktree that matches the view's tree.
+    fn agreeing_tree() -> Option<Worktree> {
+        differing(Vec::new(), &[], Vec::new())
+    }
+
+    /// A worktree that changed each of `modified` to its facts, deleted `deleted` and adds each
+    /// of `untracked`.
+    fn differing(
+        modified: Vec<FileFacts>,
+        deleted: &[&str],
+        untracked: Vec<FileFacts>,
+    ) -> Option<Worktree> {
+        let paths = |files: &[FileFacts]| files.iter().map(|f| f.path.clone()).collect();
+        let diff = WorktreeDiff {
+            modified: paths(&modified),
+            deleted: deleted.iter().map(|f| f.to_string()).collect(),
+            untracked: paths(&untracked),
+        };
+        Some((diff, modified.into_iter().chain(untracked).collect()))
     }
 
     /// A fully-parsed code file at `path`, in language `lang` and `scope`.
@@ -2426,7 +2456,7 @@ mod tests {
     }
 
     fn agreeing(view: &FactsView) -> Sight<'_> {
-        Sight::new(view, Withheld::of(Ok(WorktreeDiff::default())))
+        Sight::new(view, Compared::Overlaid(0))
     }
 
     /// A one-file `fixture.rs` Rust view of `defs` and `refs`.
@@ -2633,83 +2663,89 @@ mod tests {
         );
     }
 
-    /// The files a worktree holds differently from the view's tree, as the honesty check reports
-    /// them.
-    fn differing(changed: &[&str], untracked: &[&str]) -> Result<WorktreeDiff, String> {
-        let owned = |files: &[&str]| files.iter().map(|f| f.to_string()).collect();
-        Ok(WorktreeDiff {
-            modified: owned(changed),
-            deleted: Vec::new(),
-            untracked: owned(untracked),
-        })
-    }
-
     /// Grounding reads the code store's view, not the disk: the files exist only in the view the
-    /// grounder is handed, and what it serves is that view less the files the caller's worktree
-    /// puts in doubt (a differing file; every file when the worktree cannot be compared). Each row:
-    /// the worktree's difference, `ground`'s hits as `file:line:name`, and the blast radius's
-    /// precise view.
+    /// grounder is handed, and what it serves is that view of the caller's worktree, the
+    /// worktree's facts taken over the files it differs in, and no code file when the worktree
+    /// cannot be compared. Each row: the worktree, `ground`'s hits as `file:line:name`, and the
+    /// blast radius's precise view.
     #[test]
     fn symbol_grounding_reads_the_code_view() {
-        let files = vec![
+        let combat = |line| {
             code_file(
                 "src/combat.rs",
                 "rust",
                 Scope::Product,
-                vec![hand_def("apply_damage", 7)],
+                vec![hand_def("apply_damage", line)],
                 vec![],
-            ),
+            )
+        };
+        let caller = |path: &str, line| {
             code_file(
-                "src/caller.rs",
+                path,
                 "rust",
                 Scope::Product,
                 vec![hand_def("go", 1)],
-                vec![hand_ref("apply_damage", 2)],
-            ),
-        ];
+                vec![hand_ref("apply_damage", line)],
+            )
+        };
+        let files = vec![combat(7), caller("src/caller.rs", 2)];
         let both_files = vec![
             "src/combat.rs:7:apply_damage",
             "src/caller.rs:2:apply_damage",
         ];
+        let out_of_scope = code_file(".rigger/events.db", "", Scope::Product, vec![], vec![]);
         let cases = [
             (
                 "a worktree that agrees with the view",
-                differing(&[], &[]),
+                agreeing_tree(),
                 both_files.clone(),
                 vec!["src/combat.rs", "src/caller.rs"],
             ),
             (
-                "a file outside the tree's scope that differs withholds nothing",
-                differing(&[], &[".rigger/events.db"]),
+                "a file outside the tree's scope that differs changes nothing",
+                differing(Vec::new(), &[], vec![out_of_scope]),
                 both_files,
                 vec!["src/combat.rs", "src/caller.rs"],
             ),
             (
-                "a differing definer is withheld",
-                differing(&["src/combat.rs"], &[]),
-                vec!["src/caller.rs:2:apply_damage"],
-                vec!["src/caller.rs"],
+                "a modified definer is read from the worktree",
+                differing(vec![combat(9)], &[], Vec::new()),
+                vec![
+                    "src/combat.rs:9:apply_damage",
+                    "src/caller.rs:2:apply_damage",
+                ],
+                vec!["src/combat.rs", "src/caller.rs"],
             ),
             (
-                "a differing caller is withheld",
-                differing(&[], &["src/caller.rs"]),
+                "a deleted caller is gone",
+                differing(Vec::new(), &["src/caller.rs"], Vec::new()),
                 vec!["src/combat.rs:7:apply_damage"],
                 vec!["src/combat.rs"],
             ),
             (
+                "an untracked caller is added",
+                differing(Vec::new(), &[], vec![caller("src/added.rs", 3)]),
+                vec![
+                    "src/combat.rs:7:apply_damage",
+                    "src/added.rs:3:apply_damage",
+                    "src/caller.rs:2:apply_damage",
+                ],
+                vec!["src/combat.rs", "src/added.rs", "src/caller.rs"],
+            ),
+            (
                 "a worktree that cannot be compared withholds every file",
-                Err("the commit is not in the worktree".to_string()),
+                None,
                 vec![],
                 vec![],
             ),
         ];
-        for (name, diff, ground, precise) in cases {
-            let worktree = tempfile::tempdir().unwrap();
+        for (name, worktree, ground, precise) in cases {
+            let root = tempfile::tempdir().unwrap();
             let g = Symbols::over(
-                worktree.path().to_str().unwrap(),
+                root.path().to_str().unwrap(),
                 Box::new(Fixed {
                     files: files.clone(),
-                    diff,
+                    worktree,
                 }),
             );
             let hits: Vec<String> = g
@@ -2795,7 +2831,7 @@ mod tests {
             worktree.path().to_str().unwrap(),
             Box::new(Fixed {
                 files,
-                diff: Ok(WorktreeDiff::default()),
+                worktree: agreeing_tree(),
             }),
         );
         let cases: [(Tests, &[&str]); 3] = [
@@ -2847,7 +2883,7 @@ mod tests {
             );
             Ok(Head {
                 view: Box::new(FactsView::new(at, vec![file, test])),
-                diff: Ok(WorktreeDiff::default()),
+                compared: Compared::Overlaid(0),
                 behind: None,
             })
         }
@@ -2935,87 +2971,82 @@ mod tests {
         );
     }
 
-    /// Every answer's label states what was withheld, and counts the hits of that answer the
-    /// differing files withheld: the entities it would have shown or reported hidden, a definition
-    /// and its calls one, in the same read.
-    /// The view holds `alpha` defined and called in `src/a.rs` and the test `alpha_test` in
-    /// `tests/t.rs`; the query is `alpha`. Each row: the worktree's difference, the filter, the
-    /// label's text after `describes <tree>` (the same on the plain and the ranked page) and the
-    /// test hits reported hidden.
+    /// Every answer's label states what it describes of the worktree and counts the hits a
+    /// worktree that cannot be compared withheld: the entities the answer would have shown or
+    /// reported hidden, a definition and its calls one, in the same read. The view holds `alpha`
+    /// defined and called in `src/a.rs` and the test `alpha_test` in `tests/t.rs`; the query is
+    /// `alpha`. Each row: the worktree, the filter, the label (the same on the plain and the
+    /// ranked page) and the test hits reported hidden.
     #[test]
-    fn grounding_labels_count_the_hits_they_withheld() {
-        let files = vec![
-            code_file(
-                "src/a.rs",
-                "rust",
-                Scope::Product,
-                vec![hand_def("alpha", 1)],
-                vec![hand_ref("alpha", 5)],
-            ),
-            code_file(
-                "tests/t.rs",
-                "rust",
-                Scope::Test,
-                vec![hand_def("alpha_test", 1)],
-                vec![],
-            ),
-        ];
-        let a = &["src/a.rs"][..];
-        let t = &["tests/t.rs"][..];
+    fn grounding_labels_describe_the_worktree_and_count_the_hits_they_withheld() {
+        let product = code_file(
+            "src/a.rs",
+            "rust",
+            Scope::Product,
+            vec![hand_def("alpha", 1)],
+            vec![hand_ref("alpha", 5)],
+        );
+        let test = |path: &str, name: &str| {
+            code_file(path, "rust", Scope::Test, vec![hand_def(name, 1)], vec![])
+        };
+        let files = vec![product.clone(), test("tests/t.rs", "alpha_test")];
+        let stamp = stamp().tip.tree;
+        let overlaid = |n: &str| format!("describes W ({stamp} + {n}); groupings describe {stamp}");
+        let uncompared =
+            |k: usize| format!("describes {stamp}; W cannot be compared; {k} withheld");
         let cases = [
-            ("agreeing", differing(&[], &[]), Tests::Exclude, "", 1),
             (
-                "the product file differs",
-                differing(a, &[]),
+                "agreeing",
+                agreeing_tree(),
                 Tests::Exclude,
-                "; 1 file in W differs; 1 withheld",
+                format!("describes {stamp}"),
                 1,
             ),
             (
-                "an untracked differing file holds no hit",
-                differing(a, &["src/b.rs"]),
-                Tests::Include,
-                "; 2 files in W differ; 1 withheld",
-                0,
-            ),
-            (
-                "a differing test file's hit is withheld, not hidden",
-                differing(t, &[]),
+                "a modified product file",
+                differing(vec![product], &[], Vec::new()),
                 Tests::Exclude,
-                "; 1 file in W differs; 1 withheld",
+                overlaid("1 file"),
+                1,
+            ),
+            (
+                "an untracked test file's hit is hidden beside the tree's",
+                differing(Vec::new(), &[], vec![test("tests/u.rs", "alpha_more_test")]),
+                Tests::Exclude,
+                overlaid("1 file"),
+                2,
+            ),
+            (
+                "deleted files' hits are gone",
+                differing(Vec::new(), &["src/a.rs", "tests/t.rs"], Vec::new()),
+                Tests::Exclude,
+                overlaid("2 files"),
+                0,
+            ),
+            ("not comparable", None, Tests::Include, uncompared(2), 0),
+            (
+                "not comparable, a test hit is withheld, not hidden",
+                None,
+                Tests::Exclude,
+                uncompared(2),
                 0,
             ),
             (
-                "a product hit the test view would not show is not counted",
-                differing(a, &[]),
+                "not comparable, the test view counts its withheld test hit",
+                None,
                 Tests::Only,
-                "; 1 file in W differs",
-                0,
-            ),
-            (
-                "the test view counts its withheld test hit",
-                differing(t, &[]),
-                Tests::Only,
-                "; 1 file in W differs; 1 withheld",
-                0,
-            ),
-            (
-                "not comparable",
-                Err("no such commit".to_string()),
-                Tests::Include,
-                "; W cannot be compared; 2 withheld",
+                uncompared(1),
                 0,
             ),
         ];
-        for (name, diff, tests, after_tree, hidden) in cases {
+        for (name, worktree, tests, expected, hidden) in cases {
             let g = Symbols::over(
                 "W",
                 Box::new(Fixed {
                     files: files.clone(),
-                    diff,
+                    worktree,
                 }),
             );
-            let expected = format!("describes {}{after_tree}", stamp().tip.tree);
             let plain = g.ground_labelled("alpha", 8, tests);
             assert_eq!(
                 plain.label.expect("labelled").to_string(),
@@ -3033,14 +3064,16 @@ mod tests {
         }
     }
 
-    /// A file the worktree holds differently from the view is withheld from the structural view,
-    /// so the safe view adds the files the text search finds each named symbol in among them: a
-    /// missed reference is the unsafe error. Each row: the worktree's difference and the safe view
-    /// of `spawn`, defined in the view's `def.rs`; the worktree's `edited.rs` calls it.
+    /// A worktree file's calls join the radius from the facts the overlay reads from its bytes,
+    /// structurally, so a resolved name is never text-searched while the worktree can be
+    /// compared; a worktree that cannot be compared serves no code file, so the safe view falls
+    /// back to the text search: a missed reference is the unsafe error. Each row: the worktree,
+    /// and the precise and safe views of `spawn`, defined in the view's `def.rs`; the disk holds
+    /// `edited.rs`, which calls it.
     #[test]
-    fn a_differing_file_s_text_hits_join_the_safe_view() {
-        let worktree = tempfile::tempdir().unwrap();
-        std::fs::write(worktree.path().join("edited.rs"), "fn go() { spawn(); }\n").unwrap();
+    fn a_worktree_file_s_calls_join_the_radius() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("edited.rs"), "fn go() { spawn(); }\n").unwrap();
         let files = vec![code_file(
             "def.rs",
             "rust",
@@ -3048,34 +3081,52 @@ mod tests {
             vec![hand_def("spawn", 1)],
             vec![],
         )];
+        let calling = |path: &str, name: &str| {
+            code_file(
+                path,
+                "rust",
+                Scope::Product,
+                vec![hand_def("go", 1)],
+                vec![hand_ref(name, 1)],
+            )
+        };
         let cases = [
             (
                 "a worktree that agrees with the view: a resolved name is not text-searched",
-                differing(&[], &[]),
+                agreeing_tree(),
+                vec!["def.rs"],
                 vec!["def.rs"],
             ),
             (
-                "a differing file that names the symbol joins the safe view",
-                differing(&[], &["edited.rs"]),
+                "an untracked file that calls the symbol joins both views",
+                differing(Vec::new(), &[], vec![calling("edited.rs", "spawn")]),
+                vec!["def.rs", "edited.rs"],
                 vec!["def.rs", "edited.rs"],
             ),
             (
-                "a differing file that does not name it stays out",
-                differing(&[], &["other.rs"]),
+                "an untracked file that does not call it stays out",
+                differing(Vec::new(), &[], vec![calling("other.rs", "launch")]),
+                vec!["def.rs"],
                 vec!["def.rs"],
             ),
+            (
+                "a worktree that cannot be compared falls back to the text search",
+                None,
+                vec![],
+                vec!["edited.rs"],
+            ),
         ];
-        for (name, diff, safe) in cases {
+        for (name, worktree, precise, safe) in cases {
             let g = Symbols::over(
-                worktree.path().to_str().unwrap(),
+                root.path().to_str().unwrap(),
                 Box::new(Fixed {
                     files: files.clone(),
-                    diff,
+                    worktree,
                 }),
             );
             let br = g.blast_radius("`spawn`", 8);
-            assert_eq!(br.safe, safe, "{name}");
-            assert_eq!(br.precise, vec!["def.rs"], "{name}: precise");
+            assert_eq!(br.precise, precise, "{name}: precise");
+            assert_eq!(br.safe, safe, "{name}: safe");
         }
     }
 
@@ -3200,7 +3251,7 @@ mod tests {
             "",
             Box::new(Fixed {
                 files,
-                diff: Ok(WorktreeDiff::default()),
+                worktree: agreeing_tree(),
             }),
         );
         let ranked: Vec<(String, u32, usize)> = g

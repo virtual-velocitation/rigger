@@ -1607,8 +1607,8 @@ const LABEL_DRIVER: &str = r#"
 ;(async function(){
   const box = el("kglabel");
   const rows = [
-    ["label=describes%20c1%3B%201%20file%20in%20%2Fw%2F%C3%BC%20differs%3B%203%20withheld",
-     "describes c1; 1 file in /w/ü differs; 3 withheld", false],
+    ["label=describes%20%2Fw%2F%C3%BC%20%28c1%20%2B%201%20file%29%3B%20groupings%20describe%20c1",
+     "describes /w/ü (c1 + 1 file); groupings describe c1", false],
     ["error=no%20graph%20has%20been%20built", "no graph has been built", true],
     ["", "no graph has been built", true],
   ];

@@ -34,8 +34,9 @@ pub(crate) const SNIPPET_CHARS: usize = 200;
 pub(crate) const NOTE_ROOM: usize = 200;
 
 /// What the graph section says after its label, of every answer it gives.
-pub(crate) const GRAPH_FILTERED: &str = "Filtered, not worktree-true: a hit in a file that \
-differs in your tree is withheld; the text section answers from your tree.";
+pub(crate) const GRAPH_FILTERED: &str = "Read as the label says: the graph describes your tree \
+but for its groupings, or withholds every code hit when your tree cannot be compared; the text \
+section answers from your tree.";
 
 /// The reply to `terms`: the graph, text and prose sections, each answered or stating why not.
 pub(crate) fn reply(

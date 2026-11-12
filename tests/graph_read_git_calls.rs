@@ -8,12 +8,13 @@ use common::mcp::McpSession;
 use serde_json::json;
 
 /// GIVEN a committed, built project with one file edited since, WHEN `rigger graph` answers
-/// `--around` the file, `--show` its function and `--lookup` the function's name, and the MCP
-/// graph tool answers `around` and `show` of them, each read traced by git itself (`GIT_TRACE`),
-/// THEN each read's one open runs exactly two git commands: the worktree diff against the head's
-/// tree and the untracked listing. A build with no code store has no snapshot to take the head
-/// from, so it also asks git for the head's branch, the object it names, and that object's commit
-/// and tree in one query.
+/// `--around` the file, `--show` its function and `--lookup` the function's name, from the
+/// checkout and from a linked worktree of it with the same file edited, and the MCP graph tool
+/// answers `around` and `show` of them, each read traced by git itself (`GIT_TRACE`), THEN each
+/// read's one open runs exactly two git commands: the worktree diff against the head's tree and
+/// the untracked listing. A build with no code store has no snapshot to take the head from, so it
+/// also asks git for the head's branch, the object it names, and that object's commit and tree in
+/// one query.
 #[test]
 fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
     let dir = temp_project();
@@ -33,18 +34,26 @@ fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
             "symbolic-ref --short".into(),
         ]);
     }
-    // (read, the arguments)
-    let cases: [(&str, &[&str]); 3] = [
+    let linked = common::git::linked_worktree(root, traces.path().join("linked"));
+    write_text(&linked, "src/other.rs", "pub fn gamma() {}\n");
+    // (read, the worktree it reads from, the arguments)
+    let cases: [(&str, &std::path::Path, &[&str]); 4] = [
         (
             "around",
+            root,
             &["graph", "--around", "src/lib.rs", "--depth", "1"],
         ),
-        ("show", &["graph", "--show", "src/lib.rs::alpha"]),
-        ("lookup", &["graph", "--lookup", "alpha"]),
+        ("show", root, &["graph", "--show", "src/lib.rs::alpha"]),
+        ("lookup", root, &["graph", "--lookup", "alpha"]),
+        (
+            "around from a linked worktree",
+            &linked,
+            &["graph", "--around", "src/lib.rs", "--depth", "1"],
+        ),
     ];
-    for (case, args) in cases {
+    for (case, cwd, args) in cases {
         let trace = traces.path().join(case);
-        let (_, err, ok) = run_rigger_envs(root, args, &[("GIT_TRACE", trace.to_str().unwrap())]);
+        let (_, err, ok) = run_rigger_envs(cwd, args, &[("GIT_TRACE", trace.to_str().unwrap())]);
         assert!(ok, "{case}: the read answers; stderr:\n{err}");
         let traced = std::fs::read_to_string(&trace).unwrap_or_default();
         assert_eq!(
