@@ -305,6 +305,9 @@
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
   .kgtoggle.active { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  /* The tests toggle and its state, one box that never wraps, so the state stays beside the toggle
+     when the header wraps. */
+  .kgtests { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; margin-left: auto; }
   /* Beside the tests toggle: the view on show leaves out the tests the filter hides. */
   .kgteststate { color: var(--muted); white-space: nowrap; }
   .kgteststate[hidden] { display: none; }
@@ -406,8 +409,10 @@
       <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
       <span class="kglabel" id="kglabel" hidden></span>
       <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
-      <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
-      <span class="kgteststate" id="kgtestsstate" hidden></span>
+      <span class="kgtests">
+        <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
+        <span class="kgteststate" id="kgtestsstate" hidden></span>
+      </span>
     </div>
     <!-- The body below the header: the panel and the two panes docked over it, so a docked pane
          never covers the header's controls. -->
