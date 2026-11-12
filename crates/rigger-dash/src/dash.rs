@@ -3520,6 +3520,15 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 // The blocking server loop.
 // ---------------------------------------------------------------------------
 
+/// Say on `out` the address the dash serves at, `bound`. A run's dash shares the run's stderr,
+/// and the run says its own pointer to the dash there while this line is written.
+fn announce_serving(out: &mut dyn Write, bound: SocketAddr) -> io::Result<()> {
+    writeln!(
+        out,
+        "rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)"
+    )
+}
+
 /// Serve the dash on an ALREADY-BOUND `listener` until the process is stopped, re-reading
 /// fresh projection inputs from `provider` on each request (the run advances while the dash
 /// watches) - the singleton-aware entrypoint (spec 50, criterion 1). `cmd_dash` binds the
@@ -3563,8 +3572,7 @@ where
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
     C: Into<CallsRead>,
 {
-    let bound = listener.local_addr()?;
-    eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
+    announce_serving(&mut io::stderr().lock(), listener.local_addr()?)?;
     // Shared so THE STREAM (spec 94 c2) can clone a handle onto its own thread per open
     // connection (`d-u94c2-stream-threading`) without cloning `F` itself, which is not
     // generally `Clone` - see `handle_conn`'s own doc.
@@ -4049,6 +4057,34 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
+
+    /// GIVEN the address a dash serves at, WHEN the dash says it on a stream another process
+    /// shares, THEN the line and its newline reach the stream in one write, which a pipe keeps
+    /// whole, so the run's own line written there meanwhile never lands inside it.
+    #[test]
+    fn the_serving_line_reaches_its_stream_in_one_write() {
+        /// The writes a stream took, each as the bytes it carried.
+        #[derive(Default)]
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut out = Writes::default();
+        announce_serving(&mut out, "127.0.0.1:7421".parse().unwrap()).unwrap();
+        assert_eq!(
+            out.0,
+            vec![
+                b"rigger dash: serving on http://127.0.0.1:7421/ (read-only; Ctrl-C to stop)\n"
+                    .to_vec()
+            ]
+        );
+    }
 
     /// A `GET target` against the router with no run, graph, progress or instances - the
     /// static routes (the page, the console shell and its assets, an unknown path).
