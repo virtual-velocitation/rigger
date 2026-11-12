@@ -42,7 +42,7 @@ use crate::contextgraph::{
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
 /// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
 /// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 1;
+pub const SETTLED_GENERATION: u64 = 2;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -482,9 +482,19 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// The proof rule: the product definition a test call to `leaf` from `file` proves.
+    /// The proof rule: the product definition a test call to `leaf` from `file` proves. A call
+    /// the call rule lands on the one call target of `leaf` in `file` proves that definition when
+    /// it is product and none when it is test, so a test's call edge and its proof name one
+    /// definition; any other call proves the one product call target in `file`, else the one in
+    /// the view.
     pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
+        let mut here = candidates
+            .iter()
+            .filter(|c| c.file == file && Pool::All.calls(c));
+        if let (Some(one), None) = (here.next(), here.next()) {
+            return (!one.test).then(|| one.id.clone());
+        }
         let targets: Vec<&Candidate> = candidates
             .iter()
             .filter(|c| Pool::Product.calls(c))
@@ -1321,7 +1331,7 @@ pub(crate) mod tests {
                 &["src/c.rs"],
                 changed(|files| {
                     let c = at(files, "src/c.rs");
-                    c.defs.push(def("compute", "function", 6, None, false));
+                    c.defs.push(def("run", "function", 6, None, false));
                 }),
             ),
             (
@@ -1529,7 +1539,7 @@ pub(crate) mod tests {
     /// is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (1, "b668e495a0e24465");
+        const PINNED: (u64, &str) = (2, "4cf253b08ef03faa");
         let view = fixture();
         let resolver = Resolver::new(&view);
         let test_files: Vec<&str> = (view.files())
