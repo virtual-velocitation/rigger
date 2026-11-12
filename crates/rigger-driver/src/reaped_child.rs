@@ -1,17 +1,19 @@
-//! The supervised child-process guard (workspace split: moved from the dash, whose auto-started
-//! child it first wrapped, beside the agent host that reaps through it too), and the one timed
-//! line reader over a child's stream, [`line_channel`]. The root `rigger` crate re-exports the
-//! module as `rigger::reaped_child` and the guard under its historical `rigger::dash::ReapedChild`
-//! path.
+//! The supervised child-process guard the auto-started dashboard and the agent host both reap
+//! through, and the one timed line reader over a child's stream, [`line_channel`]. The root
+//! `rigger` crate re-exports the module as `rigger::reaped_child` and the guard under
+//! `rigger::dash::ReapedChild`.
 
 /// A supervised handle over a long-lived `rigger` child PROCESS - the auto-started
 /// dashboard, and any future `rigger` child a run spawns. When this guard is dropped,
-/// the child is KILLED and REAPED, so it can never outlive the run that started it.
+/// the child is KILLED and REAPED, so it does not outlive a run that drops it.
 ///
 /// This is the single reaping mechanism the dash and the other `rigger` children rely
 /// on (spec 19b, unit 3: no orphaned `rigger` processes). `Drop` runs on BOTH a normal
 /// scope exit AND an unwinding panic, so a normally-finishing OR a crashing driver
-/// leaves no orphaned `rigger` process reparented to `init`. Reaping is `kill` followed
+/// leaves no orphaned `rigger` process reparented to `init`. A driver that ends with neither
+/// (an abort, an exit that skips unwinding, an outside signal) runs no `Drop`; a child that
+/// must not outlive it is bound to it by a pipe the guarded handle holds as well, as the
+/// auto-started dash is to its stdin. Reaping is `kill` followed
 /// by `wait` (not `kill` alone): the `wait` collects the exited child, so a
 /// finished-but-unwaited process leaves no defunct zombie either.
 ///
@@ -19,15 +21,6 @@
 /// `prctl`): `libc` is an optional feature-gated dependency, but this guard must compile
 /// on BOTH the default and the `--no-default-features` lane, and `std::process` is the
 /// only child-lifecycle primitive available on both.
-///
-/// The other long-lived child is supervised by the same DISCIPLINE at its own ownership
-/// boundary, not through this handle:
-///   - `rigger serve` is spawned ONLY by the Node shim over an stdio transport, so the
-///     Rust conductor never holds its `Child` to wrap in a Rust guard. Its
-///     kill-on-parent-exit is STRUCTURAL: [`crate::mcpserver::Server::run`] serves only
-///     until the input closes (the shim's stdin), and the OS closes that pipe whenever
-///     the shim dies - a clean exit, a thrown error, or an uncatchable signal alike - so
-///     an orphaned `rigger serve` sees EOF on stdin and exits on its own.
 pub struct ReapedChild {
     child: std::process::Child,
 }

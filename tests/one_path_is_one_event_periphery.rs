@@ -5,7 +5,8 @@
 //! file: a path's one node and its one `CONTAINS`, from the winner's parent alone, since a twin
 //! that loses emits no event to fold a `CONTAINS` from its own parent.
 
-mod common;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{assert_live, attrs_of, definition, definition_in};

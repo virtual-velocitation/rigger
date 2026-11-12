@@ -64,6 +64,7 @@ const RINGS: &[(&str, u8)] = &[
     ("rigger-process", 3),
     ("rigger-gates-shell", 3),
     ("rigger-grounder", 3),
+    ("rigger-store", 3),
     ("rigger-config-files", 3),
     ("rigger-dash", 4),
     ("rigger-console", 4),
@@ -307,11 +308,6 @@ const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
         "crates/rigger-config-files/src/config.rs",
         "unbounded_wall_clock_advisory",
         "lesson-split-domain-config-validate",
-    ),
-    (
-        "crates/rigger-grounder/src/ingest.rs",
-        "key_batch",
-        "lesson-split-domain-ingest-key-batch",
     ),
     (
         "crates/rigger-conductor/src/blast_radius_eval.rs",
@@ -564,8 +560,9 @@ const ADAPTER_VIOLATIONS: &[(&str, &str, &str, &str)] = &[
 /// The composition root: the one place production code constructs adapters.
 const COMPOSITION_ROOT: &[&str] = &["src/main.rs", "src/cli/"];
 
-/// An adapter family: the constructor shape that builds it, and the files that ARE the adapter
-/// (an adapter may use its own constructor internally).
+/// An adapter family: the constructor shape that builds it, matched where it is called or named
+/// as a value for a callee to call, and the files that ARE the adapter (an adapter may use its own
+/// constructor internally).
 struct Adapter {
     family: &'static str,
     constructor: &'static str,
@@ -575,17 +572,17 @@ struct Adapter {
 const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "sqlite opener",
-        constructor: r"\bopen_connection\(",
+        constructor: r"\bopen_connection\b",
         home: &["crates/rigger-store-sqlite/", "crates/rigger-graph-sqlite/"],
     },
     Adapter {
         family: "event store",
-        constructor: r"\bStore::open\(",
+        constructor: r"\bStore::open\b",
         home: &["crates/rigger-store-sqlite/"],
     },
     Adapter {
         family: "graph projection",
-        constructor: r"\bProjector::open\(",
+        constructor: r"\bProjector::open\b",
         home: &["crates/rigger-graph-sqlite/"],
     },
     Adapter {
@@ -745,7 +742,14 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
         "crates/rigger-dash/src/lib.rs",
         "fn serve() {\n    let g = Projector::open(p, q);\n}\n",
     );
+    write_file(
+        root,
+        "crates/rigger-dash/src/pass.rs",
+        "fn passes() {\n    let g = read(p, q, Projector::open);\n    \
+         let s = read(p, Store::open);\n    let c = read(p, open_connection);\n}\n",
+    );
     let constructors = misplaced_constructors(root);
+    let passes = || "crates/rigger-dash/src/pass.rs:passes".to_string();
     assert_eq!(
         constructors,
         vec![
@@ -753,16 +757,24 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
                 "crates/rigger-dash/src/lib.rs:serve".to_string(),
                 "graph projection"
             ),
+            (passes(), "event store"),
+            (passes(), "graph projection"),
+            (passes(), "sqlite opener"),
             ("src/conductor.rs:wave".to_string(), "event store"),
-        ]
+        ],
+        "a constructor called or named as a value for a callee to call is one"
     );
+    let projections: Vec<&str> = (constructors.iter())
+        .filter(|(_, family)| *family == "graph projection")
+        .map(|(site, _)| site.as_str())
+        .collect();
     assert_eq!(
         stream_sites(root),
         StreamSites {
             appends: BTreeSet::new(),
-            opens: site_set(&[constructors[0].0.as_str()]),
+            opens: site_set(&projections),
         },
-        "the appender audit's Projector::open( is Rule 2's graph projection constructor"
+        "the appender audit's Projector::open is Rule 2's graph projection constructor"
     );
 }
 
@@ -780,15 +792,12 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 /// in [`GRAPH_OPENS`]. Spec 124's THE APPENDER AUDIT names the store each one's call reaches.
 const PROJECT_STREAM_APPENDS: &[&str] = &[
     "crates/rigger-conductor/src/conductor.rs:append_and_fold_batch",
-    "crates/rigger-conductor/src/conductor.rs:emit_keyed_batch",
     "crates/rigger-store-sqlite/src/run_store.rs:append_at_head",
     "crates/rigger-store-sqlite/src/run_store.rs:record_rebase",
     "crates/rigger-store-sqlite/src/run_store.rs:start_fresh",
     "crates/rigger-store-sqlite/src/spawn_store.rs:one_position",
     "src/cli/critique.rs:copy_findings",
     "src/cli/graph.rs:cmd_emit",
-    "src/cli/graph.rs:record_batch",
-    "src/cli/graph.rs:run_graph_pass",
     "src/cli/hygiene.rs:close_landed_units",
     "src/cli/mod.rs:cmd_replay",
     "src/cli/mod.rs:migrate_project_identity",
@@ -796,16 +805,13 @@ const PROJECT_STREAM_APPENDS: &[&str] = &[
 ];
 
 /// Every production call to a graph opener the audit names, as `file:item`: a call to an
-/// [`OPEN_CALLS`] name, a method `.graph(` or `Projector::open(`.
+/// [`OPEN_CALLS`] name, a method `.graph(`, or `Projector::open` called or passed as a value.
 const GRAPH_OPENS: &[&str] = &[
     "src/cli/critique.rs:cmd_critique",
     "src/cli/dashboard.rs:cmd_mcp",
-    "src/cli/dashboard.rs:dash_read_calls",
-    "src/cli/dashboard.rs:dash_read_graph",
-    "src/cli/dashboard.rs:dash_read_whole_graph",
+    "src/cli/dashboard.rs:dash_open",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:cmd_graph_build",
-    "src/cli/graph.rs:run_graph_pass",
     "src/cli/hygiene.rs:reset_derived",
     "src/cli/hygiene.rs:reset_menu",
     "src/cli/hygiene.rs:reset_runs",
@@ -816,10 +822,8 @@ const GRAPH_OPENS: &[&str] = &[
     "src/cli/mod.rs:open_graph_for_write",
     "src/cli/mod.rs:open_graph_to_read",
     "src/cli/mod.rs:standing_graph",
-    "src/cli/run.rs:cmd_step",
     "src/cli/run.rs:fold_recorded_result",
     "src/cli/run.rs:run_cli",
-    "src/cli/run.rs:run_workflow",
     "src/cli/setup.rs:rebuild_owed_graph",
 ];
 
@@ -851,8 +855,16 @@ fn list_drift(listed: &[&str], found: &BTreeSet<String>) -> (Vec<String>, Vec<St
 const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emit_event"];
 
 /// The names whose call opens the context graph, in every call form, free, path or method;
-/// `graph` does too as a method `.graph(` only, and `open` as `Projector::open(` only.
+/// `graph` does too as a method `.graph(` only. `Projector::open` opens it wherever it is named
+/// ([`names_projector_open`]).
 const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
+
+/// Whether the token at `at` names the graph projection's opener, `Projector::open`, called or
+/// passed as a value for a callee to call: either way the graph opens at that site.
+fn names_projector_open(toks: &[RawTok], at: usize) -> bool {
+    ref_token(toks.get(at), RawKind::Ident, "open")
+        && qualifier_before(toks, at).as_deref() == Some("Projector")
+}
 
 /// The modules whose `STREAM` is the project stream's constant: `run` defines it and
 /// `conductor` re-exports it.
@@ -909,14 +921,15 @@ fn stream_sites(root: &Path) -> StreamSites {
             .collect();
         let bare_is_project_stream = imports_project_stream(&toks);
         for at in 0..toks.len() {
+            if names_projector_open(&toks, at) {
+                sites.opens.insert(file.site(&rel, toks[at].line - 1));
+            }
             let Some(name) = called_at(&toks, at) else {
                 continue;
             };
             let method = ref_punct(at.checked_sub(1).and_then(|b| toks.get(b)), ".");
             let append = APPEND_CALLS.contains(&name) || name == "append" && method;
-            let open = OPEN_CALLS.contains(&name)
-                || name == "graph" && method
-                || name == "open" && qualifier_before(&toks, at).as_deref() == Some("Projector");
+            let open = OPEN_CALLS.contains(&name) || name == "graph" && method;
             if append
                 && (at + 2..close_of(&toks, at + 1, ")"))
                     .any(|arg| is_project_stream(&toks, arg, bare_is_project_stream))
@@ -1146,6 +1159,13 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
                 "src/lib.rs:reads",
                 "src/lib.rs:writes",
             ],
+        ),
+        (
+            "the graph projection's opener named as a value, for a callee to call",
+            "src/lib.rs",
+            "fn passed() {\n    let g = graph_to_read(p, q, Projector::open)?;\n}\n",
+            &[],
+            &["src/lib.rs:passed"],
         ),
         (
             "near misses of an open token and a declaration",

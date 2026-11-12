@@ -103,7 +103,7 @@
 //! containing a dot - same defect family this unit has been rejected on four rounds running,
 //! caught here before a fifth.
 
-mod common;
+use crate::common;
 use common::cli::run_rigger;
 use common::cli::temp_project;
 

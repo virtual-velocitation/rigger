@@ -1,6 +1,6 @@
 //! Periphery (integration) test for the dash's DIRECTED-CALL LAYERED RENDER (spec 52, criterion c5):
 //! the SERVED-PAGE render wiring for the execution-path / call-sites DAG. Spec 52 c1/c3 built the
-//! store-side `Projection::calls` traversal and c4 the `/api/graph?view=calls&dir=` route; this
+//! store-side `ContextGraph::calls` traversal and c4 the `/api/graph?view=calls&dir=` route; this
 //! criterion OWNS the served page's library-free layered viz that DRAWS the route's body - the
 //! server-`layer`-keyed left-to-right layout (barycenter within a layer), the SVG ARROWHEAD marker
 //! that makes direction legible, the DISTINCT curved BACK-edge arc for a recursion edge, and the
@@ -27,7 +27,7 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the render is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -281,9 +281,9 @@ const fetch = function(url){
   if (s.indexOf("/api/graph") !== -1) {
     __fetched.push(s);
     if (s.indexOf("view=calls") !== -1) {
-      return Promise.resolve({ json: function(){ return Promise.resolve(__callsView(s)); } });
+      return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__callsView(s)); } });
     }
-    return Promise.resolve({ json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };

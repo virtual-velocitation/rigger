@@ -26,5 +26,7 @@ implementer: |
   recurse: true
   ---
   You implement ONE fully-specified unit inside your worktree, in idiomatic Rust.
-  Write the failing test first, confirm RED, implement minimally, confirm GREEN, run
-  the named gates, commit. Report the final line as JSON: {"id","pass","evidence"}.
+  Write the failing test first, confirm RED, implement minimally, confirm GREEN, run the
+  checks your change needs (cargo fmt --all --check, cargo clippy, the tests you touched), commit.
+  The workflow's gates run the full battery on the commit. Report the final line as JSON:
+  {"id","pass","evidence"}.

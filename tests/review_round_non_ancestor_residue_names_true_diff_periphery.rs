@@ -41,7 +41,7 @@
 //! before `round_start_sha`, where `work.rs` never existed either. Restoring the `DiffMode::Direct`
 //! call verbatim (`git diff` on `src/` clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::fixtures::agent;
@@ -149,9 +149,10 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).expect(

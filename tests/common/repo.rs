@@ -1,5 +1,5 @@
-//! Fixtures that read this repository's own checked-in files: sources, docs, manifests (as text,
-//! or with the lock through cargo's resolver) and the committed audit ledgers.
+//! Fixtures that read this repository's own checked-in files: sources, docs and manifests (as
+//! text, or with the lock through cargo's resolver).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -27,12 +27,6 @@ pub fn cargo_tree(args: &[&str]) -> Output {
         .output()
         .unwrap_or_else(|e| panic!("failed to spawn `{cargo_bin} tree {args:?}`: {e}"))
 }
-
-/// The committed simplification audit report, relative to [`repo_root`].
-pub const AUDIT_REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
-
-/// The committed duplication catalog, relative to [`repo_root`].
-pub const DUPLICATION_CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 
 /// The text of the checked-in file at `rel` (relative to [`repo_root`]).
 pub fn repo_text(rel: &str) -> String {
@@ -351,44 +345,6 @@ pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
 }
 
-/// The committed JSON file at `rel`, decoded as the documented `contract` a downstream
-/// consumer relies on - failing loudly, naming both, when it does not decode.
-pub fn committed_json<T: serde::de::DeserializeOwned>(rel: &str, contract: &str) -> T {
-    serde_json::from_str(&repo_text(rel))
-        .unwrap_or_else(|e| panic!("{rel} does not deserialize as the documented {contract}: {e}"))
-}
-
-/// The committed JSON ledger `rel`, decoded as `contract`, holds at least one entry - a
-/// downstream consumer pinning counts against it never silently sees nothing.
-pub fn assert_committed_ledger_is_nonempty<T: serde::de::DeserializeOwned>(
-    rel: &str,
-    contract: &str,
-) {
-    let entries: Vec<T> = committed_json(rel, contract);
-    assert!(
-        !entries.is_empty(),
-        "{rel} deserialized to zero entries - a downstream consumer pinning counts against \
-         this file would silently see nothing"
-    );
-}
-
-/// Decoding the committed JSON file `rel` as `contract` and re-encoding it reproduces the
-/// committed bytes exactly - a downstream consumer decoding and re-encoding it never silently
-/// diverges from the committed artifact.
-pub fn assert_committed_json_round_trips<T>(rel: &str, contract: &str)
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let decoded: T = committed_json(rel, contract);
-    let mut reencoded = serde_json::to_string_pretty(&decoded).expect("the contract re-serializes");
-    reencoded.push('\n');
-    assert_eq!(
-        repo_text(rel),
-        reencoded,
-        "{rel} does not round-trip byte-for-byte through the documented {contract}"
-    );
-}
-
 /// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
 /// names what `rel` must describe instead (`why`) and every phrasing still present.
 pub fn assert_doc_carries_none_of(rel: &str, phrasings: &[&str], why: &str) {
@@ -534,83 +490,4 @@ pub fn missing_rows(text: &str, table: &[(&str, &str)], label: &str) -> Vec<Stri
         .filter(|(_, needle)| !text.contains(needle))
         .map(|(name, needle)| format!("{name}  ({label}: {needle:?})"))
         .collect()
-}
-
-/// Run the REAL `workerLabel(req)` - extracted verbatim from the shipped `workflows/rigger.js`
-/// along with the `PERSONA_VERB`/`ROSTER_VERB` tables and the `bareRoleOf`/`personaOf`/
-/// `firstSentence`/`roleAttempt` helpers it calls - under a real `node` subprocess, for a wave
-/// item `id` titled `title`, stamped with `req.unit` and `req.reviews` when given (omitted
-/// entirely otherwise, as an ordinary build unit's wave item). Returns the rendered label, or
-/// `None` when `node` is not on PATH (missing node is an environment fact, never a test failure).
-pub fn worker_label(
-    id: &str,
-    title: &str,
-    unit: Option<&str>,
-    reviews: Option<&[&str]>,
-) -> Option<String> {
-    let src = repo_text("workflows/rigger.js");
-    let verb_table = super::fixtures::js_declaration(&src, "const PERSONA_VERB = {");
-    let roster_table = super::fixtures::js_declaration(&src, "const ROSTER_VERB = {");
-    let bare_role_of = super::fixtures::js_declaration(&src, "function bareRoleOf(role) {");
-    let persona_of = super::fixtures::js_declaration(&src, "function personaOf(role) {");
-    let first_sentence = super::fixtures::js_declaration(&src, "function firstSentence(s) {");
-    let role_attempt = super::fixtures::js_declaration(&src, "function roleAttempt(id) {");
-    let worker_label = super::fixtures::js_declaration(&src, "function workerLabel(req) {");
-
-    let mut req = serde_json::json!({ "id": id, "title": title });
-    if let Some(unit) = unit {
-        req["unit"] = serde_json::Value::String(unit.to_string());
-    }
-    if let Some(reviews) = reviews {
-        req["reviews"] = serde_json::Value::Array(
-            reviews
-                .iter()
-                .map(|s| serde_json::Value::String(s.to_string()))
-                .collect(),
-        );
-    }
-    let req = req.to_string();
-    let script = format!(
-        "{verb_table}\n{roster_table}\n{bare_role_of}\n{persona_of}\n{first_sentence}\n\
-         {role_attempt}\n{worker_label}\n\
-         process.stdout.write(workerLabel(JSON.parse(process.argv[2])) + '\\n')\n"
-    );
-    let text = run_node(
-        &script,
-        &[&req],
-        &format!("the real workerLabel must run without throwing on {req}"),
-    )?;
-    Some(text.trim_end_matches('\n').to_string())
-}
-
-/// Run `script` under a real `node` subprocess (the `RIGGER_NODE` override, else `node` on PATH)
-/// with `args` after it, asserting it exits 0 (`what` names the run in the failure); returns its
-/// stdout, or `None` when `node` is not on PATH (missing node is an environment fact, never a test
-/// failure).
-pub fn run_node(script: &str, args: &[&str], what: &str) -> Option<String> {
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut f = tempfile::NamedTempFile::new().unwrap();
-    std::io::Write::write_all(&mut f, script.as_bytes()).unwrap();
-
-    match std::process::Command::new(&node)
-        .arg(f.path())
-        .args(args)
-        .output()
-    {
-        Ok(out) => {
-            assert!(
-                out.status.success(),
-                "{what}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-            Some(String::from_utf8_lossy(&out.stdout).into_owned())
-        }
-        Err(e) => {
-            assert!(
-                e.kind() == std::io::ErrorKind::NotFound,
-                "node failed for a reason other than being absent: {e}"
-            );
-            None
-        }
-    }
 }

@@ -1,5 +1,11 @@
 # 101 - A one-shot command folds only the run it serves
 
+**Status: partly superseded.** This spec is built. The code store (docs/architecture-addendum-the-code-store.md) removes
+the machinery it bounds for perception: the per-file latest-generation group lookup,
+`project_scoped_latest_generations`, the index-lag sample and the pending-proof reconcile, because
+the log keeps no entry per file generation and graph.db holds records only. The bound on every
+one-shot read to the run it serves stands.
+
 **Goal:** every `rigger` invocation that serves one run reads that run, not the whole
 history of the project. Measured on the 2026-09-15 store (2,075,706 events, 1.24 GB):
 `rigger status` peaks at 2.7 GB resident, `rigger peers` at 5.3 GB (its sidecar replays from
@@ -385,9 +391,14 @@ a fact, not only when it adds or moves one.
   compaction, and never holds a node: when the last live generation asserting the node retires,
   those edges retire with it (`valid_to` stamped), and the retired node keeps none of the retired
   generation's attributes, the same retraction the code half applies to any superseded generation
-  (an early return on an unsettled kind is not this rule). An attachment folded onto a node the
-  graph does not hold (the compacted log replays one whose node's generation was shed) is recorded
-  retired at fold time, never creates a node and never stays live; a knowledge edge folded onto an
+  (an early return on an unsettled kind is not this rule). Code coupling derives membership, so an
+  `IN_COMMUNITY` edge rides only a file or code-entity node: when the last live code generation
+  asserting a path retires while a record still names it, the path stays held as an artifact and
+  its `IN_COMMUNITY` edge retires all the same, back live only when code asserts the path again;
+  its `REALIZES` edge stays. An attachment folded onto a node the graph does not hold (the
+  compacted log replays one whose node's generation was shed), or an `IN_COMMUNITY` one onto a node
+  only knowledge holds, is recorded retired at fold time, never creates a node and never stays
+  live; a knowledge edge folded onto an
   absent node creates the held node as the whole-log fold leaves it, so the two rebuilds agree node
   for node and edge for edge. The authority is the fold's own arms in
   `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs` (the community arm, the concept arm and

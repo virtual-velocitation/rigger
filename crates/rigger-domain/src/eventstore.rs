@@ -534,12 +534,12 @@ pub enum Error {
         attempted: Revision,
         recorded: Revision,
     },
-    /// Spec 107 - THE STORE REFUSES A DERIVED APPEND. The batch handed to the store holds an
-    /// event of the derived type `type_`, which the tree re-derives and the log keeps only as
-    /// its generation's ledger entry. The whole batch is refused and none of it is written.
+    /// THE STORE REFUSES A DERIVED APPEND. The batch handed to the store holds an event of the
+    /// derived type `type_`, which the code store re-derives from the tree, so the log keeps no
+    /// event of it. The whole batch is refused and none of it is written.
     #[error(
-        "event store: append refused: {type_} is a derived event, which the tree re-derives - \
-         the log keeps the ledger entry of its generation and no event of this batch was written"
+        "event store: append refused: {type_} is a derived event, which the code store \
+         re-derives from the tree - no event of this batch was written"
     )]
     DerivedAppend { type_: String },
     #[error("event store: {0}")]

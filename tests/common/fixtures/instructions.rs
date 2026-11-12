@@ -1,7 +1,7 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings, the grounding method its one-pass section holds, the bounded-audit
-//! bullet its hand-over section holds, the lookup method its fan-out section holds and the review
+//! bullet and the gate-verb sentence its hand-over section holds, the lookup method its fan-out section holds and the review
 //! method its `## When you review` section holds; the
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
@@ -42,6 +42,13 @@ pub const BOUNDED_AUDIT: [&str; 3] = [
      or dispositions every hit, and a search term found inside a longer identifier is not a hit.",
 ];
 
+/// The one sentence of the working-discipline body's hand-over section that tells an author the
+/// gate verb exists: a gate run through `rigger gate <id>` on a commit is recorded, and the driver
+/// reuses its verdict for that commit.
+pub const GATE_VERB_REUSE: &str = "An author who wants a gate's verdict runs `rigger gate <id>` \
+     after committing, and the driver reuses that verdict for the same commit instead of running \
+     the gate again.";
+
 /// The working-discipline body's review section heading.
 pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 
@@ -49,9 +56,12 @@ pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
 pub const FAN_OUT_HEADING: &str = "## Fan out the mechanical work";
 
 /// The two lookup-method sentences the fan-out section's `lookup` bullet ends with, in its order:
-/// the graph before grep, then the `grep-fallback:` record a grep over the project's sources owes.
+/// the combined lookup before grep, then the `grep-fallback:` record a grep over the project's
+/// sources owes.
 pub const LOOKUP_METHOD: [&str; 2] = [
-    "Look things up in the knowledge graph, not by grepping the project's sources.",
+    "Look things up with the combined lookup (`rigger_graph` `lookup`, or `rigger graph --lookup \
+     <term>...`), which answers from the knowledge graph, your working tree and the project's \
+     prose in one call, not by grepping the project's sources.",
     "If the graph cannot answer and you fall back to grep over the project's sources, record it \
      with a progress line `grep-fallback: <what the graph did not answer>` through the progress \
      verb your task or your tool list names - one line before moving on - so the gap is visible \

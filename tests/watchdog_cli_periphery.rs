@@ -28,7 +28,7 @@
 //! reachability from the compiled CLI, which the tests below prove by driving `cmd_watch` end to
 //! end rather than re-asserting the same pure-function outputs a second time.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::process::Stdio;

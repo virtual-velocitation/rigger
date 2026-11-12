@@ -54,7 +54,7 @@
 //! `metrics` and `eventstore::sqlite` are not feature-gated, so every test here runs
 //! identically on both the default and the `--no-default-features` lane.
 
-mod common;
+use crate::common;
 
 use rigger::spawn::SpawnEvent;
 use std::time::Duration;

@@ -1,5 +1,6 @@
 use super::*;
 use rigger::contextgraph::sqlite::CatchUp;
+use rigger_domain::code_view::AdvanceCodeStore;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
 /// provenance, so any agent can identify the exact binary without guessing.
@@ -212,27 +213,29 @@ fn init_project(
 
     // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
     // breadcrumbs, and the per-machine store-connection secret file, when they are not already
-    // ignored or tracked. `.claude/` and `.rigger/shim/` are the machine-local installs;
+    // ignored or tracked. `.claude/` is the machine-local install;
     // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
-    // (spec 39) - left untracked-and-not-ignored they get swept into a unit worktree's commit by
-    // `git add` and then collide with the live dash's rewrites when the conductor merges the unit
-    // ("untracked working tree files would be overwritten"). `.rigger/dash.attempt` (spec 69,
-    // round-8 fix) is a THIRD runtime breadcrumb of the identical shape - `ensure_run_dashboard`
-    // / `start_run_dashboard` rewrite it on every dash-ensure call exactly as they rewrite the
-    // other two - so it collides the same way if left untracked-and-not-ignored, and is ignored
-    // here for the same reason. `.rigger/store.conn` is the store resolver's per-machine secret
-    // file (spec 48 rung 3): it carries the connection string's credentials, so it is git-ignored
-    // BY CONSTRUCTION - a developer's credentials can never ride a committed file. Record WHICH
-    // patterns were appended so the summary reports the real gitignore change and nothing it did
-    // not do.
+    // (spec 39), which `rigger status` and `rigger watch` read - left untracked-and-not-ignored
+    // they get swept into a unit worktree's commit by `git add` and then collide with the live
+    // dash's rewrites when the conductor merges the unit ("untracked working tree files would be
+    // overwritten"). `.rigger/dash.attempt` (spec 69, round-8 fix) is a THIRD runtime breadcrumb of
+    // the identical shape - `start_run_dashboard` rewrites it on every dash start exactly as it
+    // rewrites `dash.url` - so it collides the same way if left untracked-and-not-ignored, and is
+    // ignored here for the same reason. `.rigger/store.conn` is the store resolver's per-machine
+    // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
+    // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
+    // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
+    // that every graph read rewrites, so left untracked it would read as a dirty tree.
+    // Record WHICH patterns were appended so the summary reports the real gitignore change and
+    // nothing it did not do.
     let mut gitignore_added = Vec::new();
     for pattern in [
         ".claude/",
-        ".rigger/shim/",
         ".rigger/dash.url",
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
         ".rigger/store.conn",
+        ".rigger/store",
     ] {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
@@ -331,24 +334,20 @@ fn print_scaffold_pointer() {
     );
 }
 
-/// Print the end-of-setup orientation block: the three ways to drive a run, so an operator
-/// who just provisioned the project discovers them without grepping the docs (spec 19a unit
-/// 2). Names the blessed native `/rigger <spec>` path (chosen from the `/workflows` menu),
-/// the read-only dashboard (`rigger dash`, on `127.0.0.1:<dash::DEFAULT_PORT>` - the port is
-/// single-sourced from the constant so this line and the fixture that asserts it cannot
-/// drift), and `rigger workflow` / `rigger run` as the headless twins that drive the same
-/// loop without an editor. Output text only; the dashboard's runtime behavior is spec 19b's.
+/// Print the end-of-setup orientation block: how to drive a run and follow it, so an operator
+/// who just provisioned the project discovers it without grepping the docs (spec 19a unit 2).
+/// Names `rigger run <spec> --base <ref>` (the one driver), `rigger status` / `rigger watch`
+/// (following it), and the read-only dashboard (`rigger dash`, on
+/// `127.0.0.1:<dash::DEFAULT_PORT>` - the port is single-sourced from the constant so this line
+/// and the fixture that asserts it cannot drift). Output text only; the dashboard's runtime
+/// behavior is spec 19b's.
 fn print_orientation() {
-    println!("to drive a run, three ways:");
+    println!("to drive a run:");
+    println!("  rigger run <spec> --base <ref>  launch it in the background; it spawns each agent");
+    println!("  rigger status / rigger watch    follow it from any terminal");
     println!(
-        "  /rigger <spec>                 the blessed native path (choose it from /workflows)"
-    );
-    println!(
-        "  rigger dash                    a read-only live dashboard at http://127.0.0.1:{}",
+        "  rigger dash                     a read-only live dashboard at http://127.0.0.1:{}",
         dash::DEFAULT_PORT
-    );
-    println!(
-        "  rigger workflow / rigger run   the headless twins (the same loop without an editor)"
     );
 }
 
@@ -385,8 +384,8 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
         return Ok(false); // Already in .gitignore
     }
 
-    // Check if the path is tracked in git (it should not be, as .claude/ and .rigger/shim/
-    // are machine-local and should never be committed). This is just a safety check.
+    // Check if the path is tracked in git (it should not be, as .claude/ is machine-local and
+    // should never be committed). This is just a safety check.
     let is_tracked = subprocess::command("git")
         .args(["ls-files"])
         .current_dir(root)
@@ -547,29 +546,29 @@ pub(crate) fn cmd_init() -> Res {
     Ok(())
 }
 
-/// The git hooks directory for `root`, resolved robustly via `git rev-parse --git-path
-/// hooks` (which honors `core.hooksPath` and a worktree's `.git`-file indirection) and
-/// falling back to `<root>/.git/hooks` when git cannot be consulted. A relative path git
-/// prints is resolved against `root` so the caller gets an absolute-enough path to write to.
-fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
-    let resolved = subprocess::git_in(root)
-        .args(["rev-parse", "--git-path", "hooks"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-    match resolved {
-        Some(p) => {
-            let p = Path::new(&p);
-            if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                root.join(p)
-            }
-        }
-        None => root.join(".git").join("hooks"),
+/// The git hooks directory for `root`, resolved via `git rev-parse --git-path hooks` (which
+/// honors `core.hooksPath` and a worktree's `.git`-file indirection); `None` when discovery finds
+/// no repository enclosing `root`, and an error naming git's refusal inside one. A relative path
+/// git prints is resolved against `root` so the caller gets an absolute-enough path to write to.
+fn git_hooks_dir(root: &Path) -> Result<Option<PathBuf>, String> {
+    if rev_parse(root, Location::CommonDir)?.is_none() {
+        return Ok(None);
     }
+    let args = ["rev-parse", "--git-path", "hooks"];
+    let out = subprocess::git_in(root)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git {} in {}: {e}", args.join(" "), root.display()))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} in {}: {}",
+            args.join(" "),
+            root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    Ok(Some(if p.is_absolute() { p } else { root.join(p) }))
 }
 
 /// Install (or refresh) rigger's docs-checking `pre-commit` hook under `root`,
@@ -582,9 +581,14 @@ fn git_hooks_dir(root: &Path) -> std::path::PathBuf {
 /// run it. Non-destructive by construction: an existing pre-commit hook is preserved - rigger's
 /// block is chained in (inserted after the shebang, before the existing body), never clobbered -
 /// and reading BYTES rather than a UTF-8 string keeps that guarantee even for a non-UTF-8 hook.
-fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+/// `None` when `root` lies in no repository ([`git_hooks_dir`]), which has no hook to install.
+fn install_precommit_hook(
+    root: &Path,
+) -> Result<Option<InstallOutcome>, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
-    let hooks_dir = git_hooks_dir(root);
+    let Some(hooks_dir) = git_hooks_dir(root)? else {
+        return Ok(None);
+    };
     std::fs::create_dir_all(&hooks_dir)?;
     let hook_path = hooks_dir.join("pre-commit");
     let existed = hook_path.exists();
@@ -594,7 +598,7 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
     let existing = std::fs::read(&hook_path).ok();
     let merged = compose_precommit_bytes(existing.as_deref());
     if existing.as_deref() == Some(merged.as_slice()) {
-        return Ok(InstallOutcome::AlreadyCurrent);
+        return Ok(Some(InstallOutcome::AlreadyCurrent));
     }
     std::fs::write(&hook_path, &merged)?;
     // Mark the hook executable so git runs it. A hook without the execute bit is silently
@@ -605,108 +609,199 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
         perms.set_mode(0o755);
         std::fs::set_permissions(&hook_path, perms)?;
     }
-    Ok(if existed {
+    Ok(Some(if existed {
         InstallOutcome::Refreshed
     } else {
         InstallOutcome::Installed
+    }))
+}
+
+/// What an earlier build wrote for the symbols index and its `rigger-reindex` skill, relative to
+/// the project root: the derived index directory and the installed skill. The code store serves
+/// grounding now, so [`remove_retired_symbols_index`] deletes both.
+const RETIRED_SYMBOLS_INDEX: [&str; 2] = [".rigger/symbols", ".claude/skills/rigger-reindex"];
+
+/// Delete the [`RETIRED_SYMBOLS_INDEX`] entries under `root`, returning one line per entry it
+/// removed. A project that never held them gets no line, so a `rigger setup` rerun stays a silent
+/// no-op.
+fn remove_retired_symbols_index(root: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    for rel in RETIRED_SYMBOLS_INDEX {
+        let path = root.join(rel);
+        if path.is_dir() {
+            reap_then_remove_dir(&path, root);
+            if !path.exists() {
+                lines.push(format!(
+                    "removed {rel}/: the symbols index is gone; the code store serves grounding"
+                ));
+            }
+        }
+    }
+    lines
+}
+
+/// The workflow file an earlier `rigger setup` installed for an in-session workflow driver
+/// rigger does not ship, relative to the project root. Setup deletes it, but only when
+/// [`RETIRED_PROVENANCE`] beside it shows rigger installed it ([`remove_retired_driver_files`]).
+const RETIRED_WORKFLOW: &str = ".claude/workflows/rigger.js";
+
+/// The build-provenance sidecar an earlier `rigger setup` wrote beside [`RETIRED_WORKFLOW`],
+/// relative to the project root: its presence is how setup knows rigger installed that workflow.
+const RETIRED_PROVENANCE: &str = ".claude/workflows/.rigger-workflow-provenance";
+
+/// The directory an earlier `rigger setup` provisioned the in-session workflow driver's Node
+/// runtime into, relative to the project root, with its `node_modules`. Setup deletes it whole
+/// ([`remove_retired_driver_files`]).
+const RETIRED_DRIVER_DIR: &str = ".rigger/shim";
+
+/// Delete what an earlier `rigger setup` installed for the in-session workflow driver, returning
+/// one line to print per entry it removed or left, in order. [`RETIRED_WORKFLOW`] and
+/// [`RETIRED_PROVENANCE`] go only together: with no provenance the workflow is not rigger's, so it
+/// is left in place and named as left. The [`RETIRED_DRIVER_DIR`] tree goes whole, and
+/// `.claude/workflows/` goes when the removals leave it empty. A project that never held them gets
+/// no line and nothing is touched, so a `rigger setup` rerun stays a silent no-op. Rooted at `root`
+/// so it is testable against a temp dir.
+fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut removed = Vec::new();
+    let mut left = Vec::new();
+    let workflow = root.join(RETIRED_WORKFLOW);
+    let provenance = root.join(RETIRED_PROVENANCE);
+    if provenance.is_file() {
+        for (rel, path) in [
+            (RETIRED_WORKFLOW, &workflow),
+            (RETIRED_PROVENANCE, &provenance),
+        ] {
+            if path.is_file() {
+                std::fs::remove_file(path)?;
+                removed.push(rel.to_string());
+            }
+        }
+    } else if workflow.is_file() {
+        left.push(format!(
+            "left {RETIRED_WORKFLOW}: rigger did not install it (no {RETIRED_PROVENANCE} beside it)"
+        ));
+    }
+    let dir = root.join(RETIRED_DRIVER_DIR);
+    if dir.is_dir() {
+        reap_then_remove_dir(&dir, &root.join(rigger::config::RIGGER_DIR));
+        if !dir.exists() {
+            removed.push(format!("{RETIRED_DRIVER_DIR}/"));
+        }
+    }
+    let workflows = root.join(".claude").join("workflows");
+    if !removed.is_empty() && std::fs::read_dir(&workflows).is_ok_and(|mut d| d.next().is_none()) {
+        std::fs::remove_dir(&workflows)?;
+        removed.push(".claude/workflows/".to_string());
+    }
+    Ok(removed
+        .iter()
+        .map(|path| {
+            format!(
+                "removed {path}: the in-session workflow driver is gone; `rigger run` drives runs"
+            )
+        })
+        .chain(left)
+        .collect())
+}
+
+/// What setup's report of an installed lookup hook says the hook does: the searches it bounces
+/// and the combined lookup it bounces them toward, then its escape hatch.
+const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
+     pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
+     rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+
+/// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
+/// operator checkout git's common directory names, read from that checkout's HEAD whichever
+/// worktree `start` is in; at `start` itself only where discovery finds no enclosing repository.
+/// Git refusing inside a repository is an error, never a directory store.
+#[cfg(feature = "symbols")]
+pub(crate) fn project_code_store(start: &Path) -> Result<rigger::code_store::CodeStore, String> {
+    Ok(match main_repo_root(start)? {
+        Some(root) => rigger::code_store::CodeStore::in_repository(&root),
+        None => rigger::code_store::CodeStore::in_directory(start),
     })
 }
 
-/// Provision the per-project JS driver under `<root>/.rigger/shim/`: write the three
-/// embedded runtime files (`shim.mjs`, `package.json`, `package-lock.json`) and
-/// install their npm dependencies so `node_modules` is ready and `rigger workflow`
-/// is zero-setup. Rooted at `root` so it is testable against a temp dir.
-///
-/// Provisioning is a silent no-op when the shim is already up to date: the three
-/// runtime files match the embedded copies AND `node_modules` is present (see
-/// [`shim_is_current`]). Skipping then avoids re-touching the files' mtimes and
-/// re-running npm on every `rigger setup` (spec 05, criterion 4: setup is re-runnable
-/// and changes nothing when nothing drifted). Otherwise the files are (re)written from
-/// the embedded copies (so a `rigger` upgrade refreshes the driver to match the binary)
-/// and npm install runs: `npm ci` when the lockfile is present (a reproducible, locked
-/// install), else `npm install`. A missing `npm` is a CLEAR error (naming the directory
-/// it would have installed in), never a silent skip - the user must know the driver is
-/// not ready. Returns whether it actually (re)provisioned.
-fn provision_shim(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let dir = rigger_path(root, SHIM_DIR);
-    if shim_is_current(&dir) {
-        return Ok(false);
+/// The code store the conductor advances after each merge a run on `repo` lands; `repo` is the
+/// operator checkout, since a run refuses a linked worktree. None for a project with no
+/// repository, where no merge lands, and in a build with no extractor.
+#[cfg(feature = "symbols")]
+pub(crate) fn run_code_store(repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    if repo.is_empty() {
+        return None;
     }
-    write_shim_files(root)?;
-    run_npm_install(&dir)?;
-    Ok(true)
+    Some(Box::new(rigger::code_store::CodeStore::in_repository(
+        Path::new(repo),
+    )))
 }
 
-/// Whether the provisioned shim in `dir` is up to date: every embedded runtime file is
-/// present with byte-identical content AND npm's install is COMPLETE. Used by
-/// [`provision_shim`] to make a `rigger setup` rerun a no-op instead of re-writing the
-/// files and re-running npm.
-///
-/// Completeness is gated on `node_modules/.package-lock.json` - the hidden lockfile npm
-/// writes as the FINAL step of a successful `npm ci` / `npm install` - not on the mere
-/// PRESENCE of a `node_modules` directory. A torn/partial install (an interrupted `npm
-/// ci`, which `rm -rf`s `node_modules` then repopulates incrementally) leaves the
-/// directory present-but-incomplete and WITHOUT the marker; gating on the marker makes
-/// setup re-run npm and SELF-HEAL it rather than treating the broken tree as current and
-/// refusing to repair it forever (spec 05, criterion 4: setup is re-runnable).
-fn shim_is_current(dir: &Path) -> bool {
-    dir.join("node_modules")
-        .join(".package-lock.json")
-        .is_file()
-        && SHIM_FILES.iter().all(|(name, contents)| {
-            std::fs::read(dir.join(name))
-                .map(|on_disk| on_disk == contents.as_bytes())
-                .unwrap_or(false)
-        })
+/// Light-lane [`run_code_store`]: no extractor is compiled in, so there is no store to advance.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn run_code_store(_repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
+    None
 }
 
-/// Install the shim's npm dependencies in `dir`. Uses `npm ci` when a
-/// `package-lock.json` is present (a clean, lockfile-exact install) and `npm
-/// install` otherwise. `npm` not being on PATH is a clear, actionable error naming
-/// the directory - the JS driver is unusable without its deps, so this never
-/// silently succeeds.
-fn run_npm_install(dir: &Path) -> Res {
-    let npm = std::env::var("RIGGER_NPM").unwrap_or_else(|_| "npm".to_string());
-    let subcmd = if dir.join("package-lock.json").exists() {
-        "ci"
-    } else {
-        "install"
-    };
-    let status = subprocess::command(&npm)
-        .arg(subcmd)
-        .current_dir(dir)
-        .status()
-        .map_err(|e| {
-            format!(
-                "setup: could not run `{npm} {subcmd}` in {}: {e}. \
-                 Is Node's npm installed and on your PATH? The JS driver needs its \
-                 dependencies before `rigger workflow` can run.",
-                dir.display()
-            )
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "setup: `{npm} {subcmd}` failed in {} ({status}); the JS driver's \
-             dependencies were not installed",
-            dir.display()
-        )
-        .into());
+/// What opening the project's code store from the caller's tree left.
+pub(crate) struct CodeStoreOpened {
+    /// Whether the open moved the stamp in force: an advance, or a first snapshot.
+    pub(crate) moved: bool,
+    /// Why the store still describes another tip than the head, when it does.
+    behind: Option<String>,
+    stamp_line: Box<dyn Fn() -> String>,
+}
+
+impl CodeStoreOpened {
+    /// The stamp line: the store's honesty label ([`rigger::code_store::CodeStore::label`]) for the
+    /// caller's tree,
+    /// compared with the snapshot only when it is asked for.
+    pub(crate) fn line(&self) -> String {
+        (self.stamp_line)()
     }
-    Ok(())
+
+    /// Say on stderr that a writer left the store behind the head, and why; silent when it is not.
+    pub(crate) fn warn_if_behind(&self) {
+        if let Some(behind) = &self.behind {
+            eprintln!("warning: the code store was not advanced to the head ({behind})");
+        }
+    }
+}
+
+/// Opens the code store of the project the cwd lies in as `mode` says, advancing it to the
+/// operator checkout's head; none in a build with no extractor, which keeps no code store.
+#[cfg(feature = "symbols")]
+pub(crate) fn open_project_code_store(
+    mode: rigger_store::code::Mode,
+) -> Result<Option<CodeStoreOpened>, String> {
+    use rigger_domain::code_view::CodeView;
+    let store = project_code_store(&cwd())?;
+    let tree = caller_tree()?;
+    let before = store.in_force()?;
+    let opened = store.open(mode)?;
+    Ok(Some(CodeStoreOpened {
+        moved: before.as_ref() != Some(opened.view.stamp()),
+        behind: opened.behind.as_ref().map(ToString::to_string),
+        stamp_line: Box::new(move || format!("code store: {}", store.label(&opened, &tree))),
+    }))
+}
+
+/// Light-lane [`open_project_code_store`]: no extractor is compiled in, so there is no store.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn open_project_code_store(
+    _mode: rigger_store::code::Mode,
+) -> Result<Option<CodeStoreOpened>, String> {
+    Ok(None)
 }
 
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
-/// (scaffold `.rigger/` + install the Claude Code hook), installs the native
-/// `/rigger` Claude Code workflow at `.claude/workflows/rigger.js`, AND provisions
-/// the JS driver (writes the embedded shim runtime into `.rigger/shim/` and runs `npm
-/// install`). After it runs the user can drive the loop with the native workflow
-/// (`/rigger <spec>`) with zero manual setup; the standalone `rigger workflow` shim
-/// remains as a fallback.
+/// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
+/// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
+/// earlier setup installed for an in-session workflow driver rigger does not ship. After it runs
+/// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
     let root = Path::new(".");
     // Each step is drift-aware and reports whether it changed anything, so setup is
-    // safely re-runnable: it refreshes a drifted workflow and reports it, and a rerun
+    // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
     let scaffold = init_project(root, TEMPLATE_SETS)?;
@@ -715,15 +810,25 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
         .defaults
         .grep_guard;
+    // Advance the code store to the head before the rebuild, so a `graph.db` migrated to the
+    // records-only fold never stands without the snapshot that answers its code.
+    let code_store = open_project_code_store(rigger_store::code::Mode::Write)?;
+    if let Some(opened) = &code_store {
+        opened.warn_if_behind();
+    }
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
     let graph_rebuilt = rebuild_owed_graph()?;
-    let workflow = install_workflow(root)?;
+    let retired = [
+        remove_retired_driver_files(root)?,
+        remove_retired_symbols_index(root),
+    ]
+    .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
-    // loadable front-door DISTINCT from the `/rigger` workflow, with this repo's project
-    // overlay (base branch, specs location, Global constraints) merged into the render.
-    // Drift-aware like the workflow, so a rerun on an up-to-date repo changes nothing.
+    // loadable front-door, with this repo's project overlay (base branch, specs location,
+    // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
+    // repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
@@ -733,7 +838,6 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // an already-installed hook changes nothing, an older build's managed block is replaced
     // in place, and any pre-existing pre-commit hook is chained, never clobbered.
     let hook = install_precommit_hook(root)?;
-    let provisioned = provision_shim(root)?;
     // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
     // SESSION'S HAND) - `.mcp.json` gains a `rigger` entry (`rigger mcp`) exposing
     // rigger_peers/rigger_ground/rigger_graph to THIS session - and, when the workflow
@@ -779,27 +883,27 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         );
     }
 
-    let workflow_changed = workflow != InstallOutcome::AlreadyCurrent;
     let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
         !matches!(
             outcome,
             InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
         )
     });
-    let hook_changed = hook != InstallOutcome::AlreadyCurrent;
+    let hook_changed = hook.is_some_and(|hook| hook != InstallOutcome::AlreadyCurrent);
     let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
+    let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
     if !scaffold.changed()
         && !graph_rebuilt
-        && !workflow_changed
+        && retired.is_empty()
         && !skill_changed
         && !hook_changed
-        && !provisioned
         && !imported
         && !mcp_changed
         && !lookup_hook_changed
         && !status_line_changed
+        && !code_store_moved
     {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
@@ -816,22 +920,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     for line in scaffold_summary_lines(&scaffold) {
         println!("{line}");
     }
-    if provisioned {
-        println!(
-            "provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
-             package-lock.json and ran npm install)"
-        );
-    }
-    match workflow {
-        InstallOutcome::Installed => println!(
-            "installed the /rigger workflow (.claude/workflows/rigger.js) - run it with: /rigger \
-             <spec-path>"
-        ),
-        InstallOutcome::Refreshed => println!(
-            "refreshed the drifted /rigger workflow (.claude/workflows/rigger.js) to match this \
-             rigger build"
-        ),
-        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
+    for line in &retired {
+        println!("{line}");
     }
     for (name, outcome) in &skills.outcomes {
         match outcome {
@@ -846,15 +936,15 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         }
     }
     match hook {
-        InstallOutcome::Installed => println!(
+        Some(InstallOutcome::Installed) => println!(
             "installed the docs pre-commit hook - each commit now checks every rendered docs \
              output this repo tracks against a fresh render, and refuses a drifted or \
              unstaged one"
         ),
-        InstallOutcome::Refreshed => {
+        Some(InstallOutcome::Refreshed) => {
             println!("refreshed the docs pre-commit hook to match this rigger build")
         }
-        InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
+        Some(InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy) | None => {}
     }
     match mcp_registered {
         InstallOutcome::Installed => println!(
@@ -867,16 +957,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
     }
     match lookup_hook {
-        InstallOutcome::Installed => println!(
-            "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
-             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (end \
-             a `grep` command with a `# --literal` comment to proceed anyway)"
-        ),
+        InstallOutcome::Installed => {
+            println!("installed the graph-first lookup hook - {LOOKUP_HOOK_BOUNCES}")
+        }
         InstallOutcome::Refreshed if grep_guard => println!(
-            "installed the graph-first lookup hook into the existing settings.json - a Grep \
-             tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
-             rigger_ground/rigger_graph (end a `grep` command with a `# --literal` comment to \
-             proceed anyway)"
+            "installed the graph-first lookup hook into the existing settings.json - \
+             {LOOKUP_HOOK_BOUNCES}"
         ),
         InstallOutcome::Refreshed => {
             println!("removed the graph-first lookup hook: `defaults.grep_guard` is not declared")
@@ -895,6 +981,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
              this rigger build"
         ),
         InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy => {}
+    }
+    if let Some(opened) = code_store.filter(|opened| opened.moved) {
+        println!("{}", opened.line());
     }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`
@@ -945,9 +1034,7 @@ const REBUILD_BATCH: usize = 10_000;
 /// log's head (spec 124, ONE PROCEDURE, [`catch_up_to_head`]) and says how that ended, unless the
 /// seeding met another writer's write lock; the catch-up reads the log through the store the
 /// projector opens for itself at its first call, a second open of the log the seeding and the
-/// rebuild read, and re-extracts each ledger entry its fold hands a re-extraction - one not yet
-/// folded, whose payload parses and whose generation its identity does not already hold - from the
-/// sources a rebuild reads (below, [`reextract_entry`]). A catch-up stopped at a failure fails
+/// rebuild read. A catch-up stopped at a failure fails
 /// setup with the line naming the position it stopped at.
 ///
 /// A NEW rebuild - one whose pay starts a fresh shadow and folds the log from its start
@@ -962,35 +1049,15 @@ const REBUILD_BATCH: usize = 10_000;
 /// resumable shadow, cause or not, and finishing a tail no cause is owed beside are exempt and run
 /// beside a live run, and a `graph.db` whose pay starts no fresh shadow reads no liveness.
 ///
-/// A ledger entry of perception whose fold asks a batch - one not yet folded, whose payload parses
-/// and whose generation its identity does not already hold - folds with the batch re-extracted for
-/// it (spec 107, `ingest::resolve_entry`) by a re-extraction the rebuild builds for itself from the
-/// factory the write open installs ([`Projector::with_reextraction`]), as each catch-up call builds
-/// its own. In the lane compiled with an extraction the batch is re-extracted from the entry's blob
-/// in the repository's object database, else from the tree's file under THE ONE ROOT of the open's
-/// cell ([`TreeRoot`]), else from no bytes; in the lane compiled without one no source re-extracts
-/// a batch. An entry no source resolves folds nothing and is passed over as resolved to nothing
-/// (spec 124, THE DECIDE STEP). The root is asked of git at the first entry the rebuild's
-/// re-extraction is handed, resolved or not, in either lane. In the lane compiled with an
-/// extraction that first entry also asks whether an object database stands there and, inside a
-/// repository, starts the one batch process ([`entry_blobs`]) the blobs are read through, ended as
-/// the rebuild returns - before the report and the catch-up, each call of which starts its own at
-/// the first entry it is handed - so no two batch processes run at once; a batch process that
-/// cannot start there fails the rebuild, naming its command, rather than fold the entries with no
-/// object database asked. The lane compiled without one asks for no object database and starts no
-/// batch process. A rebuild that meets no entry starts no batch process. The report that follows a
-/// rebuild ([`identities_behind_their_recording`]) reads the tree under the same root, from the
-/// same cell, and is the one to ask git for it when the rebuild handed its re-extraction no entry
-/// and an identity is behind its latest recording: the root is asked for once, by whichever reader
-/// of the cell needs it first - the rebuild's re-extraction, the report or a catch-up call's
-/// re-extraction - and of git by none when none does.
-///
 /// Once an orphaned mark is dropped, and before it reads or writes anything else, it takes the
 /// rebuild lock on `graph.db.lock` ([`Projector::lock_rebuild`]), making that zero-byte file
 /// beside `graph.db` if it is not there, and holds it until the rebuild is paid or found not
 /// owed: while another holds it - a rebuild, whatever phase it is in, or a `rigger reset` - this
 /// setup is refused at once with the one refusal text naming the lock, having opened no graph file
 /// and made none.
+///
+/// On the sqlite backend, once the rebuild is paid or found not owed, setup deletes the derived
+/// events the log still holds, under the same rebuild lock ([`delete_derived_once_rebuilt`]).
 fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     let graph_db = db_path("graph.db");
     Projector::forget_orphaned_mark(&graph_db)?;
@@ -999,7 +1066,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
     migrate_local_identity(Some(&held))?;
-    let project = project_identity();
+    let project = project_identity()?;
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
     // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
@@ -1019,17 +1086,8 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         )
     };
     // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
-    // rebuilds and catches up, with the catch-up's log and re-extraction installed. The rebuild
-    // re-extracts through a re-extraction it builds for itself from that installed factory and
-    // drops as it returns, which, compiled with an extraction, asks git for the object database at
-    // the first entry it is handed, and compiled without one never does. Where the tree is rooted
-    // is asked of git once, from the one cell the open returns, by the first reader to need it: the
-    // first entry the rebuild's re-extraction is handed, resolved or not, or else the report's
-    // first identity behind its latest recording, which reads the tree under the root any entry was
-    // handed under, or else the first entry a catch-up call's re-extraction is handed. A rebuild
-    // that meets no entry and leaves no identity behind asks git for neither.
-    let (graph, root) = open_graph_for_write(held.path(), &project, &selection)?;
-    let tree = || root.get();
+    // rebuilds and catches up, with the catch-up's log installed.
+    let graph = open_graph_for_write(held.path(), &project, &selection)?;
     match &selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
@@ -1038,11 +1096,11 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             let store = open_sqlite_store(sqlite.log_file(&events_db))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
-            pay_owed_rebuild(
+            let log = Namespaced::new(&store, &project);
+            let rebuilt = pay_owed_rebuild(
                 &held,
                 &graph,
-                &Namespaced::new(&store, &project),
-                &tree,
+                &log,
                 SeedingReads {
                     live: &mut |sink| {
                         store
@@ -1076,7 +1134,19 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                         .map_err(graph_error)
                 },
                 &refuse,
-            )
+            )?;
+            for line in delete_derived_once_rebuilt(&store, &run_stream_of(&project), &|| {
+                refuse_if_live(
+                    &loc,
+                    &selection,
+                    &ResetEnv::resolve(&loc)?,
+                    &log,
+                    live_run_delete_refusal,
+                )
+            }) {
+                println!("{line}");
+            }
+            Ok(rebuilt)
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
@@ -1094,7 +1164,6 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
                 &held,
                 &graph,
                 &store,
-                &tree,
                 SeedingReads {
                     live: &mut positions,
                     stamp_of: &mut |_| Ok(None),
@@ -1104,6 +1173,40 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             )
         }
     }
+}
+
+/// The delete `rigger setup` runs once the graph it rebuilt stands in place of the old one: every
+/// derived event `stream` of `store` still holds, deleted through the one body `rigger reset
+/// --derived` runs ([`delete_derived_events`]), answering the lines to print. It reads no liveness
+/// and touches nothing when the stream holds no derived event, so a store with none - a project
+/// with no `events.db` among them - is left as it stands; otherwise it asks `refuse_live` first
+/// and holds the step lock its probe took while it deletes. A live run, or a probe or delete that
+/// fails, deletes nothing and fails nothing: the graph is already paid, so setup carries on with
+/// a line naming why and `rigger reset --derived`, which deletes them once rerun.
+fn delete_derived_once_rebuilt(
+    store: &rigger::eventstore::sqlite::Store,
+    stream: &str,
+    refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
+) -> Vec<String> {
+    let deleted = store
+        .count_derived(stream)
+        .map_err(Into::into)
+        .and_then(|held| match held {
+            0 => Ok(Vec::new()),
+            _ => refuse_live().and_then(|_step_lock| delete_derived_events(store, stream)),
+        });
+    deleted.unwrap_or_else(|e| {
+        vec![format!(
+            "rigger setup: deleted no derived event from the event log - {e}; run `rigger reset \
+             --derived` to delete them"
+        )]
+    })
+}
+
+/// What the live-run refusal of setup's delete of the derived events says, `reasons` being what
+/// the live-writer probe names, joined: the run is live, so the delete waits for it to stop.
+fn live_run_delete_refusal(reasons: &str) -> String {
+    format!("the run is live ({reasons})")
 }
 
 /// The two reads of the log that seed `graph.db`'s `caught_up` cursor ([`Projector::seed_cursor`],
@@ -1140,16 +1243,13 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// tail standing or not, or a standing shadow that is not resumable - ask `refuse_if_live` of `log`
 /// and fail with its refusal while the run is live, before any line is printed or the file
 /// rewritten, else hold the step lock its probe took until the rebuild returns; say so naming each
-/// cause, and pay it by rebuilding from `source`, the log's live selection, each ledger entry of
-/// perception its fold asks a batch for folded with the batch the rebuild's own re-extraction
-/// answers for it ([`Projector::rebuild`]), which also pays a rebuild's own unfinished work with no
+/// cause, and pay it by rebuilding from `source`, the log's live selection ([`Projector::rebuild`]),
+/// which also pays a rebuild's own unfinished work with no
 /// cause to name, since neither the file's records nor the seeding names it: a standing shadow,
 /// resumed when it is resumable and else refolded from the start, or a swapped-in cursor's tail,
 /// finished - the resume and the tail with no liveness asked, so beside a live run too; print how
 /// far along the rebuild is, what its run-closure prune removed from the rebuilt graph
-/// ([`pruned_line`], as `rigger reset --runs` words its own), and, read from `log` and the rebuilt
-/// graph once the rebuild ends, how many identities the next ingest records again
-/// ([`rebuild_report_line`]); then, when the seeding met another writer's write lock
+/// ([`pruned_line`], as `rigger reset --runs` words its own); then, when the seeding met another writer's write lock
 /// ([`contextgraph::sqlite::Seeding::Skipped`]), that the catch-up was not started, the next setup
 /// seeding the file (spec 124, CATCH-UP LINES), and otherwise fold the file forward from its cursor
 /// to the log's head ([`catch_up_to_head`]), saying how that ended; then, rebuilt or not, how many
@@ -1162,11 +1262,10 @@ fn live_run_rebuild_refusal(reasons: &str) -> String {
 /// standing is no cause, and the next setup's removal retries it; only when the catch-up did not
 /// stop at a failure is a failed passed-over read setup's failure, and after it a mark the removal
 /// cannot remove, naming the mark.
-fn pay_owed_rebuild<'t>(
+fn pay_owed_rebuild(
     held: &contextgraph::sqlite::RebuildLock,
     graph: &Projector,
     log: &dyn EventStore,
-    tree: &dyn Fn() -> &'t Path,
     seeding: SeedingReads,
     source: &mut contextgraph::sqlite::RebuildSource,
     refuse_if_live: &LiveRunRefusal,
@@ -1204,10 +1303,12 @@ fn pay_owed_rebuild<'t>(
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
-        println!(
-            "{}",
-            rebuild_report_line(identities_behind_their_recording(log, graph, tree)?)
-        );
+        if rebuilt.log_held {
+            println!(
+                "graph.db's write-ahead log was still held by a reader, so it keeps its size \
+                 until the last connection to graph.db closes"
+            );
+        }
     }
     let caught_up = if seeded == contextgraph::sqlite::Seeding::Skipped {
         println!(
@@ -1287,43 +1388,6 @@ fn catch_up_to_head(
 /// last call read, or would read, its page from, for the reason `why` (spec 124, CATCH-UP LINES).
 fn catch_up_stopped(at: rigger::eventstore::Position, why: &str) -> String {
     format!("graph.db catch-up stopped at position {at}: {why}")
-}
-
-/// How many identities `graph` holds at a generation that is not their latest recording's on
-/// `log` ([`rigger::ingest::perceived_generations`]), none held included, and whose file the tree
-/// holds ([`rigger::ingest::next_ingest_records`]): the ones whose next ingest records an entry
-/// (spec 107). The tree is asked for its root only once an identity differs, so a graph that
-/// holds every latest recording reads no file and asks git nothing.
-fn identities_behind_their_recording<'t>(
-    log: &dyn EventStore,
-    graph: &dyn contextgraph::Projection,
-    tree: &dyn Fn() -> &'t Path,
-) -> Result<usize, Box<dyn std::error::Error>> {
-    let mut behind = 0;
-    for (identity, recorded) in rigger::ingest::perceived_generations(log, conductor::STREAM)? {
-        if graph.current_generation(&identity)? != Some(recorded)
-            && rigger::ingest::next_ingest_records(tree(), &identity)
-        {
-            behind += 1;
-        }
-    }
-    Ok(behind)
-}
-
-/// The line a rebuild reports `behind` on ([`identities_behind_their_recording`]). Where an
-/// extraction is compiled a number above zero carries the note that each counted identity
-/// records an entry at its next ingest; a zero carries none, and neither does the lane that
-/// compiles no extraction, where no ingest records one.
-fn rebuild_report_line(behind: usize) -> String {
-    let note = if cfg!(feature = "symbols") && behind > 0 {
-        " (each records an entry at its next ingest of the file)"
-    } else {
-        ""
-    };
-    format!(
-        "identities the tree holds a file for whose generation in graph.db is not their latest \
-         recording's: {behind}{note}"
-    )
 }
 
 /// The progress line a graph rebuild prints at `at`, if any: one each time a batch carries it into
@@ -1669,7 +1733,7 @@ fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String 
 
 /// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
 /// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
-/// criterion 5) so an operator or agent about to drive `/rigger <spec>` finds `rigger
+/// criterion 5) so an operator or agent about to drive `rigger run <spec>` finds `rigger
 /// validate <spec>` instead of stumbling onto it by accident. `args.first()` is the spec
 /// path; the bare `rigger prime` the installed hook actually runs carries none, and stays
 /// exactly as it was - no lint mention.
@@ -1764,7 +1828,7 @@ to control their order.
 
 Run `rigger instructions` to read exactly what your agents are held to.
 
-These files are part of a run's definition pin: editing one mid-run halts the next step
+These files are part of a run's definition pin: editing one mid-run halts the run
 as a definition drift. Edit them between runs, or continue with `--rebase-definition`.
 ";
 
@@ -2038,12 +2102,15 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You review a diff for architectural defects ONLY. Quote the rule or doc violated.\n\
 Name the SOLID principle for each finding.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 the gates prove what they ran, and your lens covers what no gate sees.\n\
-Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
+Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
     ),
     (
         "sdet.md",
@@ -2053,13 +2120,16 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You review a diff for correctness, error-handling, test coverage, and idiomatic\n\
 defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
 Confirm the unit's first source commit follows a test commit (red before green).\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 reproduce only a specific suspicion (one named test, a reversion probe), in your own\n\
-scratch worktree, never the whole battery.\n",
+scratch worktree, never the whole battery.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
     ),
     (
         "adversary.md",
@@ -2069,12 +2139,15 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You are the adversary (tier 2). You run AFTER the lenses and review THEIR findings\n\
 AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surface\n\
 the substantive issues they all missed, and refute lens overreach. You review the\n\
 reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
 skepticism; cite file:line. Record findings with rigger_emit.\n\
+Mark a finding that records your sign-off (the review complete, no defect raised)\n\
+with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 verify a behavioral claim by running that one claim, never the battery.\n\
 \n\
@@ -2135,6 +2208,7 @@ model: opus\n\
 tools: [Read, Grep, Glob, Bash, Agent]\n\
 isolation: none\n\
 recurse: true\n\
+advisor: false\n\
 ---\n\
 You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
 against the adversary and decide who wins. Be neutral in tone, and weigh every\n\
@@ -2193,7 +2267,6 @@ mod tests {
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
     use crate::test_support::sorted_dir_names;
-    use crate::test_support::tool_available;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
@@ -2202,6 +2275,150 @@ mod tests {
         ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
+
+    rigger::test_cases! {
+        /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
+        /// does not ship - the workflow with its provenance under `.claude/workflows/`, the
+        /// `.rigger/shim` tree, and the directory those files leave empty - naming each, and
+        /// touches nothing else.
+        retired_driver_files_are_all_removed: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".rigger/shim/node_modules/pkg/index.js",
+            ],
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".rigger/shim/",
+                ".claude/workflows/",
+            ],
+            &[],
+            &[],
+        );
+        /// A file of the operator's own beside them keeps `.claude/workflows/` in place.
+        an_operator_file_keeps_the_workflows_dir: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+                ".claude/workflows/mine.js",
+            ],
+            &[
+                ".claude/workflows/rigger.js",
+                ".claude/workflows/.rigger-workflow-provenance",
+            ],
+            &[],
+            &[".claude/workflows/mine.js"],
+        );
+        /// A `rigger.js` with no provenance beside it is not rigger's: it is left in place and
+        /// named as left, while the shim tree still goes.
+        a_workflow_without_provenance_is_left: assert_retired_driver_removal(
+            &[
+                ".claude/workflows/rigger.js",
+                ".rigger/shim/node_modules/pkg/index.js",
+            ],
+            &[".rigger/shim/"],
+            &[
+                "left .claude/workflows/rigger.js: rigger did not install it (no \
+                 .claude/workflows/.rigger-workflow-provenance beside it)",
+            ],
+            &[".claude/workflows/rigger.js"],
+        );
+        /// A project that never held them gets no line, so a rerun stays silent.
+        a_project_without_them_is_untouched: assert_retired_driver_removal(
+            &[".claude/settings.json"],
+            &[],
+            &[],
+            &[".claude/settings.json"],
+        );
+    }
+
+    /// In a temp project holding `present`, [`remove_retired_driver_files`] prints a `removed`
+    /// line for each of `removed`, in order, then each of `left` verbatim; every path in `kept`
+    /// still exists afterwards while none of `removed` does.
+    fn assert_retired_driver_removal(
+        present: &[&str],
+        removed: &[&str],
+        left: &[&str],
+        kept: &[&str],
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for rel in present {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        let got = remove_retired_driver_files(root).unwrap();
+        let want: Vec<String> = removed
+            .iter()
+            .map(|path| {
+                format!(
+                    "removed {path}: the in-session workflow driver is gone; `rigger run` drives runs"
+                )
+            })
+            .chain(left.iter().map(|line| line.to_string()))
+            .collect();
+        assert_eq!(
+            got, want,
+            "the reaper names each entry it removed or left, in order"
+        );
+        for rel in kept {
+            assert!(root.join(rel).exists(), "{rel} is left in place");
+        }
+        for rel in removed {
+            assert!(!root.join(rel).exists(), "{rel} is gone");
+        }
+    }
+
+    rigger::test_cases! {
+        /// Both retired symbols-index entries go, each named in order.
+        the_retired_symbols_index_and_its_skill_are_removed: assert_retired_symbols_removal(
+            &[".rigger/symbols/index.json", ".claude/skills/rigger-reindex/SKILL.md"],
+            &[".rigger/symbols", ".claude/skills/rigger-reindex"],
+        );
+        /// Another skill beside the retired one stays.
+        a_neighbouring_skill_is_kept: assert_retired_symbols_removal(
+            &[".rigger/symbols/index.json", ".claude/skills/using-rigger/SKILL.md"],
+            &[".rigger/symbols"],
+        );
+        /// A project that never held them gets no line.
+        a_project_without_a_symbols_index_is_untouched: assert_retired_symbols_removal(
+            &[".claude/settings.json"],
+            &[],
+        );
+    }
+
+    /// In a temp project holding `present`, [`remove_retired_symbols_index`] names exactly the
+    /// `removed` directories, in order, and leaves every other path in place.
+    fn assert_retired_symbols_removal(present: &[&str], removed: &[&str]) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for rel in present {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "x").unwrap();
+        }
+        let got = remove_retired_symbols_index(root);
+        let want: Vec<String> = removed
+            .iter()
+            .map(|rel| {
+                format!(
+                    "removed {rel}/: the symbols index is gone; the code store serves grounding"
+                )
+            })
+            .collect();
+        assert_eq!(got, want, "the reaper names each directory it removed");
+        for rel in removed {
+            assert!(!root.join(rel).exists(), "{rel} is gone");
+        }
+        for rel in present
+            .iter()
+            .filter(|rel| !removed.iter().any(|r| rel.starts_with(r)))
+        {
+            assert!(root.join(rel).exists(), "{rel} is left in place");
+        }
+    }
 
     /// Spec 101: a graph rebuild reports its progress in tenths of the log positions it covers -
     /// a line each time a batch carries it into a new tenth, never twice for one tenth - with the
@@ -2252,9 +2469,9 @@ mod tests {
 
     /// A new rebuild of `graph.db` - a file made beside a log that holds a position, whose
     /// seeding finds its empty ledger a lost fold, so its pay starts a fresh shadow - holds the
-    /// step lock its live-run probe took until the rebuild returns: a `rigger step` started at
+    /// step lock its live-run probe took until the rebuild returns: a `rigger run` started at
     /// either read of the log the rebuild folds, the shadow's and the tail's, refuses with the
-    /// busy token its courier retries on, and the next step acquires the lock once it returns.
+    /// busy token, and the next one acquires the lock once the rebuild returns.
     #[test]
     fn a_new_rebuild_holds_the_step_lock_its_probe_took_until_the_rebuild_returns() {
         let dir = tempfile::tempdir().unwrap();
@@ -2266,7 +2483,6 @@ mod tests {
             &held,
             &Projector::open(held.path(), "proj").unwrap(),
             &log,
-            &|| dir.path(),
             SeedingReads {
                 live: &mut |sink| sink(&[1]),
                 stamp_of: &mut |_| Ok(None),
@@ -2288,7 +2504,7 @@ mod tests {
         assert_eq!(
             (rebuilt, racing, next),
             (true, vec![Err(true), Err(true)], Ok(())),
-            "a step started at the shadow's read or the tail's refuses with the busy token, and \
+            "a run started at the shadow's read or the tail's refuses with the busy token, and \
              the next one acquires the lock once the rebuild returns"
         );
     }
@@ -2374,7 +2590,8 @@ mod tests {
     fn install_precommit_hook_preserves_a_non_utf8_existing_hook() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // git_hooks_dir falls back to <root>/.git/hooks when git cannot be consulted.
+        // A repository whose hooks directory git resolves to <root>/.git/hooks.
+        git_init_quiet(root);
         let hooks = root.join(".git").join("hooks");
         std::fs::create_dir_all(&hooks).unwrap();
         let hook_path = hooks.join("pre-commit");
@@ -2386,7 +2603,7 @@ mod tests {
         let outcome = install_precommit_hook(root).unwrap();
         assert_eq!(
             outcome,
-            InstallOutcome::Refreshed,
+            Some(InstallOutcome::Refreshed),
             "an existing hook is refreshed, not freshly installed"
         );
         let written = std::fs::read(&hook_path).unwrap();
@@ -2409,7 +2626,7 @@ mod tests {
         let again = install_precommit_hook(root).unwrap();
         assert_eq!(
             again,
-            InstallOutcome::AlreadyCurrent,
+            Some(InstallOutcome::AlreadyCurrent),
             "a rerun over the chained non-UTF-8 hook is a true no-op"
         );
         let rewritten = std::fs::read(&hook_path).unwrap();
@@ -3006,8 +3223,10 @@ mod tests {
                 "---\nid: rust-engineer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
                  Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
                  fully-specified unit inside your worktree, in idiomatic Rust.\nWrite the failing \
-                 test first, confirm RED, implement minimally, confirm GREEN, run\nthe named gates, \
-                 commit. Report the final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n",
+                 test first, confirm RED, implement minimally, confirm GREEN, run the\nchecks your \
+                 change needs (cargo fmt --all --check, cargo clippy, the tests you touched), \
+                 commit.\nThe workflow's gates run the full battery on the commit. Report the \
+                 final line as JSON:\n{\"id\",\"pass\",\"evidence\"}.\n",
             );
         /// With no set matched, the language-neutral `implementer`: the base seed's text with
         /// its language cut.
@@ -3118,73 +3337,6 @@ mod tests {
         assert_ne!(
             normalize_origin_url("https://github.com/Acme/Repo"),
             normalize_origin_url("https://github.com/acme/repo")
-        );
-    }
-
-    /// Criterion 4: provisioning the JS driver is a silent no-op when the shim is
-    /// already current - the runtime files match the embedded copies and npm's install
-    /// is COMPLETE (its `node_modules/.package-lock.json` marker present) - so a `rigger
-    /// setup` rerun does not rewrite the files or re-run npm. Faking a complete
-    /// `node_modules` lets this assert the short-circuit WITHOUT npm: were the
-    /// short-circuit broken, `provision_shim` would run npm and return `true` (or error
-    /// when npm is absent), both of which fail this test.
-    #[test]
-    fn provision_shim_is_a_silent_noop_when_already_current() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-        assert!(!shim_is_current(&shim), "no node_modules yet: not current");
-
-        // A COMPLETE npm install leaves node_modules/.package-lock.json as its final
-        // marker; only then is the shim current.
-        let node_modules = shim.join("node_modules");
-        std::fs::create_dir_all(&node_modules).unwrap();
-        std::fs::write(node_modules.join(".package-lock.json"), "{}").unwrap();
-        assert!(
-            shim_is_current(&shim),
-            "matching runtime files + a COMPLETE node_modules (marker present): current"
-        );
-
-        let provisioned = provision_shim(dir.path())
-            .expect("a fully-provisioned shim must be a clean no-op (no npm needed)");
-        assert!(
-            !provisioned,
-            "provision_shim must report no work when the shim is already current"
-        );
-
-        // A drifted runtime file makes the shim not-current again (an upgrade path).
-        std::fs::write(shim.join("shim.mjs"), "// stale shim from an older build\n").unwrap();
-        assert!(
-            !shim_is_current(&shim),
-            "a drifted runtime file must make the shim not-current"
-        );
-    }
-
-    /// Criterion 4: setup SELF-HEALS a torn/partial shim install. An interrupted `npm
-    /// ci` (which `rm -rf`s `node_modules` then repopulates incrementally) leaves a
-    /// `node_modules` DIRECTORY that lacks npm's completeness marker
-    /// (`node_modules/.package-lock.json`). `shim_is_current` must treat that as NOT
-    /// current so the next `rigger setup` re-runs npm and repairs it, rather than
-    /// short-circuiting on bare directory presence and permanently refusing to fix a
-    /// broken install. Regression-locks adv-u4-shim-torn-install-not-self-healed.
-    #[test]
-    fn shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-
-        // A torn install: node_modules exists (some deps partially unpacked) but the
-        // final .package-lock.json marker a COMPLETE install writes is absent.
-        std::fs::create_dir_all(shim.join("node_modules").join("some-partial-dep")).unwrap();
-        assert!(
-            !shim_is_current(&shim),
-            "a node_modules dir lacking the .package-lock.json completeness marker is a torn \
-             install and must NOT be treated as current"
-        );
-
-        // Adding the marker (as a completed npm install would) makes it current again.
-        std::fs::write(shim.join("node_modules").join(".package-lock.json"), "{}").unwrap();
-        assert!(
-            shim_is_current(&shim),
-            "once the completeness marker is present the shim is current"
         );
     }
 
@@ -3322,8 +3474,8 @@ mod tests {
     }
 
     rigger::test_cases! {
-        /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the always-on dash writes two runtime
-        /// breadcrumbs under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
+        /// Spec 46, criterion 1 (CONSUMER GITIGNORE): the dash has two runtime breadcrumbs
+        /// under `.rigger/` - `.rigger/dash.url` and `.rigger/dash.marker`. Left
         /// untracked-and-not-ignored in a consumer's repo they get swept into a unit worktree's
         /// commit by `git add`, then collide with the live dash's rewrites when the conductor
         /// merges the unit (`git merge` aborts with "untracked working tree files would be
@@ -3346,6 +3498,10 @@ mod tests {
         /// setup adds no duplicate line.
         init_project_gitignores_the_store_conn_secret_file_idempotently:
             assert_init_gitignores_idempotently(&[".rigger/store.conn"]);
+        /// The code store's snapshots are a per-machine projection of the tree, rewritten by
+        /// every graph read, so `rigger init`/`setup` ignores them like the other runtime state.
+        init_project_gitignores_the_code_store_idempotently:
+            assert_init_gitignores_idempotently(&[".rigger/store"]);
     }
 
     /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
@@ -3918,37 +4074,6 @@ mod tests {
         );
     }
 
-    /// `rigger setup` runs npm install against the provisioned shim so `node_modules`
-    /// is ready. When npm is available we run it FOR REAL against a temp dir and
-    /// confirm `node_modules` appears; when npm is unavailable we assert the clear
-    /// error path instead (never a silent skip).
-    #[test]
-    fn setup_runs_npm_install_or_reports_a_clear_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = write_shim_files(dir.path()).unwrap();
-
-        if tool_available("npm", "--version") {
-            // npm is on PATH: provisioning must run it for real and leave node_modules.
-            provision_shim(dir.path()).expect("provision_shim must succeed when npm is available");
-            assert!(
-                shim.join("node_modules").is_dir(),
-                "npm install must populate node_modules in the provisioned shim dir"
-            );
-        } else {
-            // npm is NOT on PATH: the error must be clear and actionable, not a silent
-            // skip. Point RIGGER_NPM at a binary that does not exist to exercise the
-            // missing-npm path deterministically.
-            std::env::set_var("RIGGER_NPM", "definitely-not-a-real-npm-binary-xyz");
-            let err = run_npm_install(&shim).expect_err("a missing npm must be a clear error");
-            std::env::remove_var("RIGGER_NPM");
-            let msg = err.to_string();
-            assert!(
-                msg.contains("npm") && msg.to_lowercase().contains("path"),
-                "the missing-npm error must mention npm and PATH; got: {msg}"
-            );
-        }
-    }
-
     /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) declares
     /// `build: { wrapper: auto }` (spec 65 Design: "`rigger setup` writes the `build:`
     /// section with `wrapper: auto` for new projects") - a fresh project benefits from a
@@ -4062,6 +4187,28 @@ mod tests {
     // bounces a bare source grep.
     // =======================================================================================
 
+    /// The reviewing personas, committed and seeded, and only they, tell their reviewer to mark a
+    /// sign-off finding with `"sign_off": true`, the mark the peers ranking reads.
+    #[test]
+    fn the_reviewing_personas_and_only_they_mark_a_sign_off() {
+        let reviewing = ["architecture-reviewer.md", "sdet.md", "adversary.md"];
+        let shipped = every_shipped_persona();
+        for name in reviewing {
+            assert_eq!(
+                shipped.iter().filter(|(at, _)| at.ends_with(name)).count(),
+                2,
+                "{name} is committed and seeded"
+            );
+        }
+        for (at, text) in shipped {
+            assert_eq!(
+                text.contains(r#"`"sign_off": true`"#),
+                reviewing.iter().any(|name| at.ends_with(name)),
+                "{at}"
+            );
+        }
+    }
+
     /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
     /// every other `rigger setup` install artifact has: absent -> Installed (fresh write),
     /// drifted (an older build's entry, or a hand edit) -> Refreshed, already matching ->
@@ -4102,6 +4249,45 @@ mod tests {
         let v2: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
         assert_eq!(v2["mcpServers"]["rigger"]["command"], "rigger");
+    }
+
+    /// The operator's rigger entry loads with every session (`alwaysLoad`), so its tools are in
+    /// hand without a search: a fresh install writes it, and an entry missing it is refreshed in
+    /// place while every other server and top-level key survives; a rerun then changes nothing.
+    #[test]
+    fn install_operator_mcp_writes_always_load_and_refreshes_an_entry_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mcp_path = root.join(".mcp.json");
+        let read = || -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap()
+        };
+
+        install_operator_mcp(root).unwrap();
+        assert_eq!(read()["mcpServers"]["rigger"][hooks::MCP_ALWAYS_LOAD], true);
+
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"rigger":{"command":"rigger","args":["mcp"]},"other":{"command":"o"}},"top":1}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            [
+                install_operator_mcp(root).unwrap(),
+                install_operator_mcp(root).unwrap()
+            ],
+            [InstallOutcome::Refreshed, InstallOutcome::AlreadyCurrent]
+        );
+        assert_eq!(
+            read(),
+            serde_json::json!({
+                "mcpServers": {
+                    "rigger": {"command": "rigger", "args": ["mcp"], hooks::MCP_ALWAYS_LOAD: true},
+                    "other": {"command": "o"}
+                },
+                "top": 1
+            })
+        );
     }
 
     /// `install_lookup_hook` installs the graph-first lookup hook when the workflow declares
@@ -4274,102 +4460,6 @@ mod tests {
             .unwrap()
             .lines()
             .map(str::to_string)
-            .collect()
-    }
-
-    /// The awk program the author block spells after `open`, up to the `close` that ends it.
-    fn author_awk_program(open: &str, close: &str) -> String {
-        let text = committed_persona("rust-engineer.md");
-        let from = text
-            .find(open)
-            .unwrap_or_else(|| panic!("the block spells {open:?}"))
-            + open.len();
-        let len = text[from..]
-            .find(close)
-            .unwrap_or_else(|| panic!("the awk after {open:?} closes at {close:?}"));
-        text[from..from + len].to_string()
-    }
-
-    /// What awk prints running `program` over `files`; the run must succeed.
-    fn awk_output(program: &str, files: &[std::path::PathBuf]) -> String {
-        let out = std::process::Command::new("awk")
-            .arg(program)
-            .args(files)
-            .output()
-            .expect("awk runs");
-        assert!(
-            out.status.success(),
-            "awk runs the block's program: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap()
-    }
-
-    /// The public functions of the tracked `tests/common` files that reach the checked-in tree,
-    /// by name: each whose body spells the package root `CARGO_MANIFEST_DIR` or a compile-time
-    /// include, then each whose body names one already found, to a fixpoint. The bodies are
-    /// read by the tree's one lexer, so a comment naming a function is no call.
-    fn tree_reaching_helpers() -> std::collections::BTreeSet<String> {
-        use crate::source_audit::{block_span, fn_sig_lines, tokenize, RawKind};
-        const PRIMITIVES: [&str; 3] = ["CARGO_MANIFEST_DIR", "include_str!(", "include_bytes!("];
-        struct Item {
-            name: String,
-            public: bool,
-            spelled: String,
-            names: std::collections::BTreeSet<String>,
-        }
-        let mut items = Vec::new();
-        for file in tracked_files(&["tests/common"]) {
-            if !file.ends_with(".rs") {
-                continue;
-            }
-            let text = read_text(&repo().join(&file));
-            let lines: Vec<&str> = text.lines().collect();
-            for sig in fn_sig_lines(&lines, &[]) {
-                let (start, end) = block_span(&lines, sig);
-                let chars: Vec<char> = lines[start..=end].join("\n").chars().collect();
-                let toks = tokenize(&chars);
-                let Some(at) = toks
-                    .iter()
-                    .position(|t| t.kind == RawKind::Keyword && t.text == "fn")
-                else {
-                    continue;
-                };
-                let Some(name) = toks.get(at + 1).filter(|t| t.kind == RawKind::Ident) else {
-                    continue;
-                };
-                items.push(Item {
-                    name: name.text.clone(),
-                    public: toks[..at].iter().any(|t| t.text == "pub"),
-                    spelled: toks.iter().map(|t| t.text.as_str()).collect(),
-                    names: toks[at + 2..]
-                        .iter()
-                        .filter(|t| t.kind == RawKind::Ident)
-                        .map(|t| t.text.clone())
-                        .collect(),
-                });
-            }
-        }
-        let mut found = std::collections::BTreeSet::new();
-        loop {
-            let more: Vec<String> = items
-                .iter()
-                .filter(|item| !found.contains(&item.name))
-                .filter(|item| {
-                    PRIMITIVES.iter().any(|p| item.spelled.contains(p))
-                        || item.names.iter().any(|n| found.contains(n))
-                })
-                .map(|item| item.name.clone())
-                .collect();
-            if more.is_empty() {
-                break;
-            }
-            found.extend(more);
-        }
-        items
-            .into_iter()
-            .filter(|item| item.public && found.contains(&item.name))
-            .map(|item| item.name)
             .collect()
     }
 
@@ -4856,22 +4946,17 @@ mod tests {
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
     /// block, byte-identical in both and in no other persona: the implement gate set by name, the
-    /// commands the author runs before it reports (clippy on both lanes, the audit gate with a
-    /// clean `git status`, the boundary audit, the content gates, red-before-green and, when the
-    /// production hunks touch `src/` or `crates/`, every root test that reaches the checked-in
-    /// tree - by the package root, a compile-time include, a read of a literal path or a
-    /// `tests/common` helper that resolves against the root or reads the root-relative path its
-    /// caller hands it, each anchor the block's command names - listed by that command and run
-    /// once on the default lane, the lane-no-default gate running them on the final tree), the
-    /// re-run after a later commit or an amend (a comment, doc-comment or Markdown diff re-runs
-    /// fmt, the default-lane clippy line, the audit and the text-reading root tests; any other
-    /// hunk the full list), the whole suite left to the gates, the audit's closing rule, the test
-    /// homes with the tool that searches them, the counted check - the roots a retired spelling is
-    /// counted over with the command that counts it - and the foreground wait for the long runs
-    /// (the test binaries on both lanes and a lane script), polled to its exit line when the host
-    /// backgrounds one. The block owes no record: no sentence walk and its generators, no
-    /// one-home line, no rule-spelling search, no hand-applied mutation and no per-statement
-    /// test-shape record.
+    /// statement that the workflow's gates run the full battery and are the authority (a gate
+    /// failure is the next round's finding), the only commands the author runs before it reports
+    /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
+    /// feature-gated code), the root test filter by module on `all` or by executable name, the
+    /// declaration of a new test file and how a suite reaches the shared helpers, the test homes
+    /// with the tool that searches them, the counted check - the roots a retired spelling is counted over
+    /// with the command that counts it - and the foreground wait for the long runs (the
+    /// touched tests and a lane script), polled to its exit line when the host
+    /// backgrounds one, and this project's anchor for the gate verb, whose verdict the driver
+    /// reuses. The block owes no record: no sentence walk and its generators, no one-home line,
+    /// no rule-spelling search, no hand-applied mutation and no per-statement test-shape record.
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
@@ -4894,38 +4979,24 @@ mod tests {
         );
         let block = rigger::wave::normalize_ws(&blocks[0]);
         for wanted in [
-            "fmt, clippy, build, audit, test, lane-no-default, style, no-os-kill, boundary and \
-             red-before-green",
+            "fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary \
+             and red-before-green",
+            "The workflow's gates run that full battery on your committed result and are the \
+             authority: you do not run the whole suite, the other lanes, the boundary suite, the \
+             content gates or red-before-green by hand, and a gate failure comes back as the \
+             next round's finding.",
+            "these and nothing else",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
-            "`cargo clippy --workspace --all-targets --no-default-features -- -D warnings`",
-            "`sh .rigger/gates/audit.sh`, then `git status --porcelain` empty",
-            "`cargo test --test boundary_audit`",
-            "`sh .rigger/gates/content.sh style`",
-            "`sh .rigger/gates/content.sh no-os-kill`",
-            "`sh .rigger/gates/red-before-green.sh`",
-            "every test binary your change touched, on both lanes",
-            "When your production hunks touch `src/` or `crates/`",
-            "`git ls-files 'tests/*.rs' | awk -F/ 'NF == 2' | xargs awk 'index($0, \
-             \"CARGO_MANIFEST_DIR\") || index($0, \"include_str!(\") || index($0, \
-             \"include_bytes!(\") || index($0, \"read_to_string(\\\"\") || index($0, \
-             \"fs::read(\\\"\") || index($0, \"read_dir(\\\"\") || index($0, \
-             \"File::open(\\\"\") || index($0, \"read_text(Path::new(\\\"\") || index($0, \
-             \"read_audit_record\") || index($0, \"production_sources\") || index($0, \
-             \"collect_rs_files\") || index($0, \"collect_files\") || index($0, \
-             \"for_each_rs_file\")",
-            "which lists them and runs them in one invocation, on the default lane alone, since \
-             the lane-no-default gate runs them on the final tree:",
-            "Once these checks have run, a later commit or an amend re-runs only what its new \
-             diff can change: a diff that touches only comments, doc comments or Markdown \
-             re-runs `cargo fmt --all --check`, the default-lane clippy line, `sh \
-             .rigger/gates/audit.sh` with `git status --porcelain` empty and the root tests that \
-             read a checked-in file as text; any other hunk re-runs the full list.",
-            "The whole workspace suite on both lanes is the test and lane-no-default gates' run, \
-             not yours",
-            "`every_open_cluster_is_dispositioned`",
-            "never by a disposition in `docs/audit/duplication-dispositions.json` that excuses \
-             the twin",
+            "the tests you added or changed, on the default lane: `cargo test --test all \
+             <module>::` for a module of the consolidated `all` executable, `cargo test --test \
+             <file>` for a suite `Cargo.toml` lists as its own `[[test]]` executable",
+            "and the same with `--no-default-features` only when your change touches \
+             feature-gated code",
+            "A new test file is declared in `tests/all.rs` (or, when it must own its process, as a \
+             `[[test]]` entry), and a test enforces it",
+            "A suite that is a module of `all` reaches the shared helpers with \
+             `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`",
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
             "search all three with Read, awk or python3",
@@ -4937,6 +5008,9 @@ mod tests {
             "`sh .rigger/gates/lanes.sh <lane>`",
             "takes minutes here: run it in the foreground with the Bash timeout raised to fit",
             "poll its output in an `until`-loop until its exit line is there, before you report",
+            "When you want a gate's verdict before you report, run `rigger gate <id>` with one of the \
+             gate ids above",
+            "the driver reuses that verdict for the same commit and does not run the gate again",
         ] {
             assert!(
                 block.contains(wanted),
@@ -4945,10 +5019,22 @@ mod tests {
         }
         assert_eq!(
             block.matches("--no-default-features").count(),
-            2,
-            "the no-default lane runs only the clippy line and the touched binaries; the \
-             text-reading root tests run once, on the default lane"
+            1,
+            "the no-default lane runs only the touched tests, and only for feature-gated code"
         );
+        for gate_run in [
+            "cargo test --test boundary_audit",
+            "content.sh style",
+            "content.sh no-os-kill",
+            "red-before-green.sh",
+            "cargo test --tests",
+            "--no-default-features -- -D warnings",
+        ] {
+            assert!(
+                !block.contains(gate_run),
+                "the gates run {gate_run:?}; the hand-over block does not ask the author to"
+            );
+        }
         assert!(
             !block.contains("t='<phrase>'"),
             "the rule search runs a term pair, never one phrase as its one argument"
@@ -4986,8 +5072,8 @@ mod tests {
 
     /// The author roles owe no sentence-walk record, so no persona and no scaffold seed spells a
     /// command only that record ran: the rule-spelling search over a pair of terms, or the
-    /// by-shape generator of the predicates a range adds. The root-test selector and the counted
-    /// check stay, each pinned by its own test.
+    /// by-shape generator of the predicates a range adds. The counted check stays, pinned by its
+    /// own test.
     #[test]
     fn no_persona_or_seed_spells_a_retired_walk_command() {
         let seeds = SCAFFOLD_AGENTS
@@ -5011,134 +5097,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// The author block's root-test selector finds a top-level test by each way it can reach
-    /// the checked-in tree: the package root `CARGO_MANIFEST_DIR`, a compile-time include, a
-    /// read given a literal path (a root test runs from the package root), the audit-record
-    /// reader and the walkers, each given the root-relative path its caller hands it, and every
-    /// public `tests/common` function that resolves against the root, derived from the tracked
-    /// `tests/common` files rather than listed, each found called plainly and by turbofish. A
-    /// read of a temporary file is no tree read, and the selector passes it by.
-    #[test]
-    fn the_author_text_test_selector_finds_every_way_a_root_test_reaches_the_tree() {
-        let helpers = tree_reaching_helpers();
-        for known in ["repo_root", "repo_text", "production_main_rs"] {
-            assert!(
-                helpers.contains(known),
-                "the derivation reads tests/common and finds {known}: {helpers:?}"
-            );
-        }
-        let program = author_awk_program("awk -F/ 'NF == 2' | xargs awk '", "' | sort -u");
-        let mut reaches: Vec<(String, String)> = [
-            (
-                "manifest_dir",
-                "let root = PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"));",
-            ),
-            (
-                "include_str",
-                "const DOC: &str = include_str!(\"../README.md\");",
-            ),
-            (
-                "include_bytes",
-                "const RAW: &[u8] = include_bytes!(\"../Cargo.lock\");",
-            ),
-            (
-                "read_to_string",
-                "let lib = fs::read_to_string(\"src/lib.rs\").unwrap();",
-            ),
-            (
-                "fs_read",
-                "let manifest = std::fs::read(\"Cargo.toml\").unwrap();",
-            ),
-            (
-                "read_dir",
-                "let docs = std::fs::read_dir(\"docs\").unwrap();",
-            ),
-            (
-                "file_open",
-                "let lock = File::open(\"Cargo.lock\").unwrap();",
-            ),
-            (
-                "read_text_literal",
-                "let readme = read_text(Path::new(\"README.md\"));",
-            ),
-            (
-                "audit_record",
-                "let record = read_audit_record(\"docs/audit/core-lane-purity.json\");",
-            ),
-            (
-                "production_sources",
-                "let sources = production_sources(Path::new(\"src\"));",
-            ),
-            (
-                "collect_rs_files",
-                "collect_rs_files(Path::new(\"crates\"), &mut found);",
-            ),
-            (
-                "collect_files",
-                "collect_files(Path::new(\"docs\"), &mut found);",
-            ),
-            (
-                "collect_files_with_extension",
-                "collect_files_with_extension(Path::new(\"docs\"), \"md\", &mut found);",
-            ),
-            (
-                "for_each_rs_file",
-                "for_each_rs_file(Path::new(\"src\"), &mut visit);",
-            ),
-        ]
-        .into_iter()
-        .map(|(label, line)| (label.to_string(), line.to_string()))
-        .collect();
-        for name in &helpers {
-            reaches.push((
-                format!("call_{name}"),
-                format!("let _ = common::{name}(&at);"),
-            ));
-            reaches.push((
-                format!("turbofish_{name}"),
-                format!("let _ = {name}::<Vec<String>>(&at);"),
-            ));
-        }
-        const TEMPORARY: &str = "temporary_read";
-        let dir = tempfile::tempdir().unwrap();
-        let files: Vec<std::path::PathBuf> = reaches
-            .iter()
-            .map(|(label, line)| (label.as_str(), line.as_str()))
-            .chain([(
-                TEMPORARY,
-                "let out = read_text(&dir.path().join(\"out.txt\"));",
-            )])
-            .map(|(label, line)| {
-                let file = dir.path().join(format!("{label}.rs"));
-                std::fs::write(&file, format!("{line}\n")).unwrap();
-                file
-            })
-            .collect();
-        let printed: std::collections::BTreeSet<String> = awk_output(&program, &files)
-            .lines()
-            .map(|path| {
-                std::path::Path::new(path)
-                    .file_stem()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        let missed: Vec<&str> = reaches
-            .iter()
-            .map(|(label, _)| label.as_str())
-            .filter(|label| !printed.contains(*label))
-            .collect();
-        assert!(
-            missed.is_empty(),
-            "the selector names no anchor for these ways to the tree: {missed:?}"
-        );
-        assert!(
-            !printed.contains(TEMPORARY),
-            "a read of a temporary file is no tree read"
-        );
     }
 
     /// The `sdet` lens reads the unit's tests against the Done-when criteria it owns: a behaviour

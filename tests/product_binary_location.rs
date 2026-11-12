@@ -15,7 +15,7 @@
 //! the answer always names the target dir the test is actually running out of. These tests pin
 //! that derivation and pin that every suite goes through the one authority.
 
-mod common;
+use crate::common;
 
 use common::repo::{for_each_rs_file, repo_root};
 use std::path::{Path, PathBuf};

@@ -8,11 +8,15 @@
 pub mod agent;
 pub mod blocker;
 pub mod canary;
+pub mod code_facts;
+pub mod code_graph;
+pub mod code_view;
 /// Deterministic coupling-community detection (spec 53, the CODE lens): the offline pass that
 /// groups code entities and files by how densely they call and reference one another, regardless of
 /// directory, and records the result as `CommunityAssigned` events the always-compiled fold turns
 /// into `IN_COMMUNITY` membership edges. Always compiled and proven in both feature lanes.
 pub mod community;
+pub mod composed;
 pub mod concepts;
 pub mod config;
 pub mod contextgraph;
@@ -23,9 +27,12 @@ pub mod failure;
 /// The gate vocabulary the gate runner and the worktree reclaimer share.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod gate;
+/// The gate request interface: how `rigger gate` asks the run's driver to gate a unit's commit.
+pub mod gate_channel;
 /// The grounding port: the `Grounder` trait and the plain values it returns.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
+pub mod groupings;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod hold_probe;
 /// The ingest fold rules (spec 45): the replay-key vocabulary and the project-scoped suppression
@@ -38,7 +45,11 @@ pub mod ingest;
 /// same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
+/// The combined lookup interface: the `Lookup` trait one call answers graph, text and prose through.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod lookup;
 pub mod metrics;
+mod near;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
@@ -46,6 +57,7 @@ pub mod progress;
 /// texts, each one const whose doc comment opens with its class.
 pub mod prompt_surface;
 pub mod quoting;
+pub mod resolve;
 /// The classes of event (spec 107): the perception and episodic type lists and the ledger entry
 /// of perception. Under `ingest`'s gate, whose derived index it cites.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -59,6 +71,7 @@ pub mod sleep_hold;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spec;
+pub mod test_view;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]

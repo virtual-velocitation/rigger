@@ -15,11 +15,10 @@
 //!     producer half's fault against a real project's shared cache - a real
 //!     `gate::ExecRunner::run` whose guard probe fails returns the `ProbeFault` naming the
 //!     guard and the OS error, runs no gate command and writes nothing into the shared cache
-//!     (spec 121 criterion 19); and the same fault at the operator's surface - a `rigger step`
+//!     (spec 121 criterion 19); and the same fault at the operator's surface - a `rigger run`
 //!     whose deferred gate's guard probe fails exits non-zero printing that fault as the
 //!     conductor's error, with no deferred verdict, nothing charged and the inline verdict
-//!     kept, and the next step after the guard is fixed finishes the run (spec 121
-//!     criterion 19).
+//!     kept, and the next run after the guard is fixed finishes (spec 121 criterion 19).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/cli/mod.rs`; the PRODUCER half's OWN
@@ -27,19 +26,18 @@
 //!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in
 //!     `crates/rigger-gates-shell/src/gate.rs` and `crates/rigger-conductor/src/conductor.rs`;
 //!     the probe fault's literal message - pinned in `crates/rigger-conductor/src/conductor.rs`'s
-//!     `assert_probe_fault_halts_the_step`, which this file's step test prints through; and
+//!     `assert_probe_fault_halts_the_step`, which this file's run test prints through; and
 //!     `rigger validate`'s FOOTPRINT ACCOUNTING category for this cache - spec 77 criterion 5's
 //!     own surface.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::cli::read_run_events;
+use common::cli::run_recording;
 use common::cli::run_rigger;
-use common::cli::run_rigger_envs;
-use common::cli::run_rigger_envs_ok;
 use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
@@ -554,35 +552,23 @@ stages:
 /// The file [`DEFERRED_GATE_WORKFLOW`]'s deferred gate touches in the run's checkout.
 const DEFERRED_GATE_RAN: &str = "late-ran";
 
-/// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE STEP, through the operator's own
-/// surface: given a run whose one unit passed its inline gate and whose shared build cache's
-/// guard is a directory, when the operator runs `rigger step`, then the step exits non-zero
-/// printing exactly the probe fault for this guard path and OS error as the conductor's error,
-/// the deferred gate neither runs nor records a verdict, nothing is charged or misattributed to
-/// the unit and the inline verdict stands; once the guard is fixed, the next step runs the
-/// deferred gate and finishes. The guard path and OS error are derived here, independently of
-/// the probe; the fault's literal message naming both is pinned by the conductor's
-/// `assert_probe_fault_halts_the_step`, so this test pins that the step prints that message
-/// unchanged. The scratch root is the test's own, never the ambient one a gate run may carry.
+/// Spec 121 criterion 19, THE FAILED GUARD PROBE HALTS THE RUN, through the operator's own
+/// surface: given a one-unit run whose shared build cache's guard is a directory, when the
+/// operator runs `rigger run`, then the unit passes its inline gate and lands, and the run exits
+/// non-zero printing exactly the probe fault for this guard path and OS error as the conductor's
+/// error; the deferred gate neither runs nor records a verdict, nothing is charged or
+/// misattributed to the unit and the inline verdicts stand. Once the guard is fixed, the next
+/// run runs the deferred gate and finishes. The guard path and OS error are derived here,
+/// independently of the probe; the fault's literal message naming both is pinned by the
+/// conductor's `assert_probe_fault_halts_the_step`, so this test pins that the run prints that
+/// message unchanged. The scratch root is the test's own, never the ambient one a gate run may
+/// carry.
 #[test]
-fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_next_step_finishes()
-{
+fn a_run_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_next_run_finishes() {
     let project = temp_git_project_with_commit();
     let root = project.path();
     write_workflow_fixture(root, &DEFERRED_GATE_WORKFLOW);
     let scratch = tempfile::tempdir().expect("tempdir for the scratch root");
-    let envs = [("RIGGER_TMPDIR", scratch.path().to_str().unwrap())];
-
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
-    assert!(
-        ok && out.contains(r#""id":"solo/implementer#0""#),
-        "the first step parks the implementer; stdout {out:?} stderr {err:?}"
-    );
-    run_rigger_envs_ok(
-        root,
-        &["result", "solo/implementer#0", "implemented"],
-        &envs,
-    );
     let guard = scratch.path().join(CACHE_GUARD);
     std::fs::create_dir_all(&guard).unwrap();
     let open_error = std::fs::OpenOptions::new()
@@ -597,16 +583,14 @@ fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_n
         error: open_error,
     };
 
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
-    assert!(!ok, "the halted step exits non-zero; stdout {out:?}");
+    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
+    assert!(!ok, "the halted run exits non-zero; stdout {out:?}");
+    let printed = format!("rigger: {}", rigger::conductor::Error(fault.to_string()));
     assert_eq!(
-        err.lines().collect::<Vec<_>>(),
-        vec![format!(
-            "rigger: {}",
-            rigger::conductor::Error(fault.to_string())
-        )],
-        "the step prints the probe fault as the conductor's error, naming the guard and the OS \
-         error, with no halt marker and nothing else"
+        err.lines().rfind(|line| line.starts_with("rigger: ")),
+        Some(printed.as_str()),
+        "the run ends printing the probe fault as the conductor's error, naming the guard and \
+         the OS error; stderr:\n{err}"
     );
     assert!(
         !root.join(DEFERRED_GATE_RAN).exists(),
@@ -615,8 +599,8 @@ fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_n
     let events = read_run_events(root);
     assert_eq!(
         gate_outcomes(&events),
-        vec![("ok".to_string(), true)],
-        "the inline verdict stands and the deferred gate records none"
+        vec![("ok".to_string(), true), ("ok".to_string(), true)],
+        "the inline verdict and its post-merge re-gate stand and the deferred gate records none"
     );
     for (type_, count) in [
         (rigger::conductor::TYPE_DEFERRED_GATE_FAILED, 0),
@@ -628,22 +612,26 @@ fn a_step_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_n
         assert_eq!(
             count_of_type(&events, type_),
             count,
-            "{type_} after the halted step; events: {events:?}"
+            "{type_} after the halted run; events: {events:?}"
         );
     }
 
     std::fs::remove_dir(&guard).unwrap();
-    let (out, err, ok) = run_rigger_envs(root, &["step"], &envs);
+    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
     assert!(
-        ok && out.contains(r#""done":true"#),
-        "with the guard fixed the next step runs the deferred gate and finishes; stdout {out:?} \
+        ok,
+        "with the guard fixed the next run runs the deferred gate and finishes; stdout {out:?} \
          stderr {err:?}"
     );
     assert!(root.join(DEFERRED_GATE_RAN).exists());
     assert_eq!(
         gate_outcomes(&read_run_events(root)),
-        vec![("ok".to_string(), true), ("late".to_string(), true)],
-        "the inline verdict is replayed, never re-recorded, and the deferred gate records once"
+        vec![
+            ("ok".to_string(), true),
+            ("ok".to_string(), true),
+            ("late".to_string(), true)
+        ],
+        "the inline verdicts are replayed, never re-recorded, and the deferred gate records once"
     );
 }
 

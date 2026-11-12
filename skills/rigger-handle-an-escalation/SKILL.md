@@ -9,7 +9,7 @@ description: Act on a unit the loop handed back - `rigger status` (or the dashbo
 
 An escalated unit gave up at the remediation bound (`defaults.max_retries`, 3 by default) - the loop will not retry it on its own; it is waiting on a human decision. Read the recorded lesson for the CONCRETE final failure - via `rigger peers` scoped to the unit's files, or the dashboard - rather than guessing: the escalation lesson carries the actual failing gate or review reason, not a placeholder, and that reason is the bounded remedy you are about to apply.
 
-Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the branch rigger itself created and kept for this unit's committed work across every attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run --fresh <spec>` (or `rigger serve --fresh <spec>` / the native `/rigger <spec>` workflow with `fresh` set) - against the same, otherwise-unchanged spec: the conductor mints a new run boundary, and the loop picks the escalated unit back up with a clean remediation budget.
+Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the branch rigger itself created and kept for this unit's committed work across every attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the conductor mints a new run boundary, and the loop picks the escalated unit back up with a clean remediation budget.
 
 ## Anti-move
 

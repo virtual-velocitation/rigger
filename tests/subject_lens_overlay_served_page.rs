@@ -27,7 +27,7 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the seam is not
 //! feature-gated), so this guards the served page in both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::tool_available;
 use common::served::node_harness_passes;
@@ -276,7 +276,7 @@ let __graphOverview = __OVERVIEW;
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetched.push(String(url));
-    return Promise.resolve({ json: function(){ return Promise.resolve(__view(url)); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -492,7 +492,7 @@ function __view(url){
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetched.push(String(url));
-    return Promise.resolve({ json: function(){ return Promise.resolve(__view(url)); } });
+    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };

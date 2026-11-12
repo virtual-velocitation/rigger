@@ -62,7 +62,7 @@
 //! and that the command refusing to append one does so on every input this criterion's own
 //! Done-when and docstring name.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 
@@ -189,6 +189,7 @@ fn status_and_the_dashboards_build_state_render_the_same_resumed_line_through_a_
     let state = rigger::dash::build_state(
         &events,
         &Graph::default(),
+        None,
         false,
         &[],
         &HashMap::new(),

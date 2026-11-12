@@ -1,42 +1,42 @@
 //! Spec 112, criterion 5 (A SPEC DEFECT STOPS THE RUN AT PLAN-CRITIQUE), at the periphery: the
-//! stop driven through real `rigger step` processes over a project's on-disk store, each spawn
-//! answered the way a courier answers it (`rigger emit --spawn` for the planner's proposal,
-//! `rigger result` for every output).
+//! stop driven through real `rigger run` processes over a project's on-disk store, each spawn
+//! answered by the fake host: the planner records its proposal through `rigger emit --spawn`, and
+//! every other spawn's answer is its session's result.
 //!
 //! The conductor's own tests drive `conductor::run` in one process over an in-memory store. What
-//! they cannot see is what this file pins: that the halt reaches the step's printed `halted`
-//! field through `rigger step`, that it is carried by the log, never by the stopping process (a
-//! fresh step process finds the gate terminal and reports the same halt), that a step process
-//! re-entering a stop a crash interrupted completes it from the persisted log alone, that the
-//! stop reads the current run's slice of a store holding an earlier run, that the spec it names
-//! is the latest run's `RunStarted.spec` exactly as recorded, through the exported
-//! `run::current_run_spec_path` the conductor calls across the crate boundary, that only a
-//! stopping reject whose cause is `spec-ambiguity` stops (through the exported
-//! `spawn::Adjudication::is_spec_ambiguity`), and that the prompt `rigger prompt` serves every
-//! round's adjudicator - the re-plan round whose reject stops included - asks for that cause on
-//! exactly the defect the stop is for.
+//! they cannot see is what this file pins: that the halt reaches the `halted:` line `rigger run`
+//! prints, that it is carried by the log, never by the stopping process (a relaunched run over
+//! the same root finds the gate terminal and reports the same halt), that a run re-entering a
+//! stop a crash interrupted completes it from the persisted log alone, that the stop reads the
+//! current run's slice of a store holding an earlier run, that the spec it names is the latest
+//! run's `RunStarted.spec` exactly as recorded, through the exported `run::current_run_spec_path`
+//! the conductor calls across the crate boundary, that only a stopping reject whose cause is
+//! `spec-ambiguity` stops (through the exported `spawn::Adjudication::is_spec_ambiguity`), and
+//! that the task a run serves every round's adjudicator - the re-plan round whose reject stops
+//! included - asks for that cause on exactly the defect the stop is for.
 //!
-//! Every run here is minted through `run_store::start_fresh` with a spec path and adopted by the
-//! step, never at a CLI mint site: a mint is criterion 2's surface, and an adopted run is never
-//! refused there. A run minted with no criteria is stepped with no `--spec` (the step's criteria
-//! are empty and match), one minted on [`SPEC`]'s criteria with `--spec` [`SPEC`], as the
-//! workflow driver steps a run it began on its spec. The one exception is the relaunch the halt
-//! directs (Design *Relaunch*), where the stopped run meets criterion 2's refusal and criterion
-//! 1's verb: its new run is begun by `rigger step --spec` - with `--fresh`, and with none after an
-//! amendment that leaves the criteria equal - the boundary only the three criteria together
-//! hold.
+//! Every run here is minted through `run_store::start_fresh` with a spec path and adopted by
+//! `rigger run`, never at a CLI mint site: a mint is criterion 2's surface, and an adopted run is
+//! never refused there. A run minted with no criteria is driven by a `rigger run` naming no spec
+//! (its criteria are empty and match), one minted on [`SPEC`]'s criteria by `rigger run` [`SPEC`],
+//! as a driver resumes a run it began on its spec. Each run ends where the fake host fails the
+//! first spawn its arm does not answer ([`critique_arm`]), unless the stop halts it first. The one
+//! exception to adoption is the relaunch the halt directs (Design *Relaunch*), where the stopped
+//! run meets criterion 2's refusal and criterion 1's verb: its new run is begun by `rigger run`
+//! [`SPEC`] - with `--fresh`, and with none after an amendment that leaves the criteria equal - the
+//! boundary only the three criteria together hold.
 
-mod common;
+use crate::common;
 
 use common::cli::Refusal::Unexhausted;
 use common::cli::{
-    plan_the_widget, read_run_events, record_clean_critique, refused_new_run, run_payloads,
-    run_rigger, run_rigger_ok, temp_repoless_project, with_run_store, write_scaffold,
+    emit_unit_proposed, read_run_events, record_clean_critique, refused_new_run, run_on_arms,
+    run_payloads, temp_repoless_project, widget_unit, with_run_store, write_scaffold,
 };
 use common::fixtures::{
-    critique_reject, dag_critique_verdict_paragraph, keyed_index, keyed_payload,
-    spec_defect_halt_text, stop_records, the_stop_records, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-    STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
+    critique_reject, dag_critique_verdict_paragraph, keyed_index, keyed_payload, served_task,
+    spec_defect_halt_text, stop_records, the_stop_records, RECORD_EACH_LAUNCH, STOP_ESCALATED_KEY,
+    STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -51,7 +51,7 @@ const SPEC: &str = "./specs/widget.md";
 const EARLIER_SPEC: &str = "specs/old.md";
 
 /// [`SPEC`]'s text as a run is launched on it: a Design sentence and its one criterion,
-/// [`WIDGET_CRITERION`], which the planner's unit ([`plan_the_widget`]) covers.
+/// [`WIDGET_CRITERION`], which the planner's unit ([`widget_unit`]) covers.
 const ORIGINAL_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
                              ## Done when\n\n- [ ] the widget renderer is implemented\n";
 
@@ -96,7 +96,7 @@ fn critique_project() -> tempfile::TempDir {
     dir
 }
 
-/// Mint one run per spec in `specs`, in order, each on `criteria`: the step adopts the last.
+/// Mint one run per spec in `specs`, in order, each on `criteria`: the next run adopts the last.
 fn launch(root: &Path, specs: &[&str], criteria: &[String]) {
     with_run_store(root, |store| {
         for spec in specs {
@@ -105,82 +105,74 @@ fn launch(root: &Path, specs: &[&str], criteria: &[String]) {
     });
 }
 
-/// One real `rigger step` over `root`, which must exit 0, parsed: on `--spec` [`SPEC`] when the
-/// latest run was begun on criteria, else with no spec.
-fn step(root: &Path, what: &str) -> Value {
+/// The arm answering every spawn of [`critique_project`]'s agents, which share one prompt, each
+/// launch on record ([`RECORD_EACH_LAUNCH`]): the plan's planner and each re-plan up to
+/// `re_plans` propose the widget unit, each round's adversary reviews, round `k`'s adjudicator
+/// answers `verdicts[k]`, and the widget's implementer reports it built. A re-plan past
+/// `re_plans` fails, which ends the run there.
+fn critique_arm(verdicts: &[&str], re_plans: u32) -> String {
+    let planners = std::iter::once("plan/implementer#0".to_string())
+        .chain((1..=re_plans).map(|k| format!("plan/replan#{k}")))
+        .collect::<Vec<_>>()
+        .join("|");
+    let adjudicators: String = verdicts
+        .iter()
+        .enumerate()
+        .map(|(k, verdict)| {
+            format!("      plan-critique/adjudicator#{k}) printf '%s' '{verdict}' ;;\n")
+        })
+        .collect();
+    format!(
+        r#"  *"Do the work."*)
+{RECORD_EACH_LAUNCH}    case "$RIGGER_SPAWN" in
+      {planners})
+{propose}    echo "proposed the DAG" ;;
+      plan-critique/adversary#*) echo "reviewed the DAG" ;;
+{adjudicators}      u-widget/*) echo "built the widget" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+"#,
+        propose = emit_unit_proposed(&widget_unit("worker")),
+    )
+}
+
+/// What one `rigger run` left: its stdout, its stderr, and the fake host's directory, whose
+/// `bin/launches` holds each launch it served.
+struct Ran {
+    out: String,
+    err: String,
+    fake: tempfile::TempDir,
+}
+
+impl Ran {
+    /// The task the run served `spawn`.
+    fn served(&self, spawn: &str) -> String {
+        served_task(&self.fake.path().join("bin/launches"), spawn)
+    }
+}
+
+/// One real `rigger run` over `root` answered by `arms`: on [`SPEC`] when the latest run was begun
+/// on criteria, else naming no spec.
+fn run(root: &Path, arms: &str) -> Ran {
     let on_spec = run_payloads(root, "RunStarted")
         .last()
         .is_some_and(|run| run["criteria"] != json!([]));
-    let args: &[&str] = if on_spec {
-        &["step", "--spec", SPEC]
-    } else {
-        &["step"]
-    };
-    let (out, err, ok) = run_rigger(root, args);
-    assert!(ok, "{what}; stderr: {err}");
-    let line = out.trim();
-    serde_json::from_str(line).unwrap_or_else(|e| panic!("{what}: {e}; line: {line}"))
+    let args: &[&str] = if on_spec { &["run", SPEC] } else { &["run"] };
+    let (out, err, _ok, fake) = run_on_arms(root, args, &root.join("scratch"), arms);
+    Ran { out, err, fake }
 }
 
-/// The spawn ids `step` parked.
-fn wave(step: &Value) -> Vec<String> {
-    step["wave"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|w| w["id"].as_str().unwrap().to_string())
-        .collect()
+/// The `halted:` line a run stopped on [`SPEC`]'s defect prints last.
+fn halted_line() -> String {
+    format!("halted: {}\n", halt())
 }
 
-/// Step once, asserting it parks exactly `spawns` and reports no halt.
-fn parks(root: &Path, spawns: &[&str]) {
-    let s = step(root, &format!("the step parking {spawns:?}"));
-    assert_eq!(
-        (wave(&s), s.get("halted")),
-        (spawns.iter().map(|id| id.to_string()).collect(), None),
-        "the step parks {spawns:?} and does not halt"
-    );
-}
+/// The line `rigger run` prints when every unit is integrated.
+const DONE: &str = "done: every unit integrated\n";
 
-/// Answer critique round `k`'s parked adversary.
-fn review(root: &Path, k: u32) {
-    run_rigger_ok(
-        root,
-        &[
-            "result",
-            &format!("plan-critique/adversary#{k}"),
-            "reviewed the DAG",
-        ],
-    );
-}
-
-/// The run's first step answered: it parks the planner and, in the same producer prelude,
-/// round 0's adversary.
-fn plan_and_review_first(root: &Path) {
-    parks(root, &["plan-critique/adversary#0", "plan/implementer#0"]);
-    plan_the_widget(root, "plan/implementer#0", "worker");
-    review(root, 0);
-}
-
-/// The re-plan at attempt `k` and the review of the round it feeds, each parked alone and
-/// answered.
-fn re_plan_and_review(root: &Path, k: u32) {
-    let re_plan = format!("plan/replan#{k}");
-    parks(root, &[&re_plan]);
-    plan_the_widget(root, &re_plan, "worker");
-    parks(root, &[&format!("plan-critique/adversary#{k}")]);
-    review(root, k);
-}
-
-/// Step to critique round `k`'s adjudicator and answer it with `verdict`, returning the prompt it
-/// was served as a courier fetches it (`rigger prompt`).
-fn adjudicate(root: &Path, k: u32, verdict: &str) -> String {
-    let adjudicator = format!("plan-critique/adjudicator#{k}");
-    parks(root, &[&adjudicator]);
-    let served = run_rigger_ok(root, &["prompt", &adjudicator]);
-    run_rigger_ok(root, &["result", &adjudicator, verdict]);
-    served
-}
+/// The run-state line `rigger run` prints for the gate escalated by its stop.
+const GATE_ESCALATED: &str = "  plan-critique        escalated\n";
 
 /// The ids of every spawn `events` requested, in log order.
 fn requested(events: &[Event]) -> Vec<String> {
@@ -192,74 +184,58 @@ fn requested(events: &[Event]) -> Vec<String> {
 }
 
 /// A project holding [`ORIGINAL_SPEC`] at [`SPEC`] whose latest run, launched on [`SPEC`] after
-/// one on [`EARLIER_SPEC`], both on `criteria`, is driven up to the step after its second critique
-/// round: a `spec-ambiguity` reject, the re-plan it drove, and `second`, the round-1 reject line,
-/// answered but not yet stepped over. Asserts on the way that the first reject re-plans as before.
-/// Returns the project and the prompt each round's adjudicator was served.
-fn answered_second_reject_on(
+/// one on [`EARLIER_SPEC`], both on `criteria`, one `rigger run` drives through two critique
+/// rounds: a `spec-ambiguity` reject, the re-plan it drives, and `second`, the round-1 reject
+/// line, the second re-plan failing should the gate ask for one. Asserts on the way that the
+/// first reject re-plans. Returns the project and what the run left.
+fn driven_through_a_second_reject_on(
     criteria: &[String],
     second: &str,
-) -> (tempfile::TempDir, [String; 2]) {
+) -> (tempfile::TempDir, Ran) {
     let dir = critique_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::write(root.join(SPEC), ORIGINAL_SPEC).unwrap();
     launch(root, &[EARLIER_SPEC, SPEC], criteria);
-    plan_and_review_first(root);
-    let first_round = adjudicate(root, 0, &spec_ambiguity_first());
-    // A first `spec-ambiguity` reject re-plans as before: no stop record, no halt.
-    re_plan_and_review(root, 1);
-    assert_eq!(
-        stop_records(&read_run_events(root)),
-        Vec::new(),
-        "a first spec-ambiguity reject records no stop"
+    let ran = run(root, &critique_arm(&[&spec_ambiguity_first(), second], 1));
+    assert!(
+        requested(&read_run_events(root)).contains(&"plan/replan#1".to_string()),
+        "a first spec-ambiguity reject re-plans; stderr:\n{}",
+        ran.err
     );
-    let re_plan_round = adjudicate(root, 1, second);
-    (dir, [first_round, re_plan_round])
+    (dir, ran)
 }
 
-/// [`answered_second_reject_on`] runs launched with no criteria.
-fn answered_second_reject(second: &str) -> (tempfile::TempDir, [String; 2]) {
-    answered_second_reject_on(&[], second)
+/// [`driven_through_a_second_reject_on`] runs launched with no criteria.
+fn driven_through_a_second_reject(second: &str) -> (tempfile::TempDir, Ran) {
+    driven_through_a_second_reject_on(&[], second)
 }
 
-/// [`answered_second_reject`] up to its stopping step: the second reject is `spec-ambiguity` too,
-/// upholding the `adv-2` and `adv-3` the halt names.
-fn answered_second_spec_ambiguity_reject() -> (tempfile::TempDir, [String; 2]) {
-    answered_second_reject(&critique_reject("spec-ambiguity", &["adv-2", "adv-3"]))
+/// The second reject's `spec-ambiguity` line, upholding the `adv-2` and `adv-3` the halt names.
+fn spec_ambiguity_second() -> String {
+    critique_reject("spec-ambiguity", &["adv-2", "adv-3"])
+}
+
+/// [`driven_through_a_second_reject`] with a second `spec-ambiguity` reject: the run that stops.
+fn stopped_on_a_second_spec_ambiguity_reject() -> (tempfile::TempDir, Ran) {
+    driven_through_a_second_reject(&spec_ambiguity_second())
 }
 
 /// Given a run on [`SPEC`] whose plan-critique gate rejected with `spec-ambiguity`, re-planned,
-/// and rejected with `spec-ambiguity` again, when the operator steps, then the step parks
-/// nothing, halts with the amend route naming the spec as recorded and the second reject's
-/// upheld findings, names the gate escalated, and the log carries the stop's three records - and
-/// no re-plan after the stopping reject.
+/// and rejected with `spec-ambiguity` again, when `rigger run` drives it, then the run launches
+/// nothing more, prints the gate escalated and halts with the amend route naming the spec as
+/// recorded and the second reject's upheld findings, and the log carries the stop's three
+/// records - and no re-plan after the stopping reject.
 #[test]
-fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step() {
-    let (dir, _) = answered_second_spec_ambiguity_reject();
+fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_run() {
+    let (dir, ran) = stopped_on_a_second_spec_ambiguity_reject();
     let root = dir.path();
-    let s = step(root, "the stopping step");
-    assert_eq!(
-        (
-            wave(&s),
-            s["halted"].as_str(),
-            s["escalated"].clone(),
-            s["attention"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|a| (a["kind"].as_str().unwrap(), a["unit"].as_str().unwrap()))
-                .collect::<Vec<_>>(),
-        ),
-        (
-            Vec::new(),
-            Some(halt().as_str()),
-            json!(["plan-critique"]),
-            vec![("spec-defect", "plan-critique")],
-        ),
-        "the step parks nothing, halts with the amend route and names the gate escalated; its \
-         attention is the stop's own kind in place of the gate's escalation, never a halted or \
-         reject-recurrence entry"
+    assert!(
+        ran.out.ends_with(&halted_line()) && ran.out.contains(GATE_ESCALATED),
+        "the run prints the gate escalated and halts with the amend route; stdout:\n{}\n\
+         stderr:\n{}",
+        ran.out,
+        ran.err
     );
     let events = read_run_events(root);
     assert_eq!(
@@ -284,60 +260,58 @@ fn a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step(
     );
     assert_eq!(
         (
-            requested(&events)
-                .into_iter()
-                .filter(|id| id.starts_with("plan/"))
-                .collect::<Vec<_>>(),
+            requested(rigger::run::current_run(&events)),
             rigger::run::current_run_spec_path(&events),
         ),
         (
-            vec![
-                "plan/implementer#0".to_string(),
-                "plan/replan#1".to_string()
-            ],
+            [
+                "plan/implementer#0",
+                "plan-critique/adversary#0",
+                "plan-critique/adjudicator#0",
+                "plan/replan#1",
+                "plan-critique/adversary#1",
+                "plan-critique/adjudicator#1",
+            ]
+            .map(String::from)
+            .to_vec(),
             SPEC.to_string(),
         ),
-        "the stopping reject re-plans nothing, and the spec the halt names is the latest run's \
-         as the exported lookup reads it"
+        "the stopping reject re-plans and launches nothing, and the spec the halt names is the \
+         latest run's as the exported lookup reads it"
     );
 }
 
-/// Given a stopped run, when the operator steps again in a fresh process, then nothing parks,
-/// the halt is reported again (it is carried by the log, never by the stopping process), no
-/// attention entry is stamped, and the stop's records stand once each.
+/// Given a stopped run, when the operator relaunches `rigger run` over the same root, then it
+/// launches nothing, prints the gate escalated and reports the halt again (it is carried by the
+/// log, never by the stopping process), and the stop's records stand once each.
 #[test]
-fn a_later_step_finds_the_stopped_gate_terminal_and_reports_its_halt() {
-    let (dir, _) = answered_second_spec_ambiguity_reject();
+fn a_relaunched_run_finds_the_stopped_gate_terminal_and_reports_its_halt() {
+    let (dir, _) = stopped_on_a_second_spec_ambiguity_reject();
     let root = dir.path();
-    step(root, "the stopping step");
-    let later = step(root, "a later step");
+    let stopped = requested(&read_run_events(root));
+    let later = run(root, "");
+    let events = read_run_events(root);
     assert_eq!(
         (
-            wave(&later),
-            later["halted"].as_str(),
-            later.get("attention"),
-            later["escalated"].clone(),
-            stop_records(&read_run_events(root)),
+            later.out.ends_with(&halted_line()),
+            later.out.contains(GATE_ESCALATED),
+            requested(&events),
+            stop_records(&events),
         ),
-        (
-            Vec::new(),
-            Some(halt().as_str()),
-            None,
-            json!(["plan-critique"]),
-            the_stop_records()
-        ),
-        "the gate is terminal: nothing parks, the halt is reported again, nothing is stamped, \
-         the stop recorded once"
+        (true, true, stopped, the_stop_records()),
+        "the gate is terminal: nothing launches, the halt is reported again, the stop recorded \
+         once; stdout:\n{}\nstderr:\n{}",
+        later.out,
+        later.err
     );
 }
 
 /// Given a stop a crash interrupted - after the stopping reject's `UnitFailed`, or after its
-/// `SpecDefect` - when a fresh step process enters a store holding that log, then it completes
-/// the stop from the log alone: each record once, the halt reported, and no spawn requested.
+/// `SpecDefect` - when a `rigger run` enters a store holding that log, then it completes the stop
+/// from the log alone: each record once, the halt reported, and no spawn requested.
 #[test]
-fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
-    let (dir, _) = answered_second_spec_ambiguity_reject();
-    step(dir.path(), "the stopping step");
+fn a_run_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
+    let (dir, _) = stopped_on_a_second_spec_ambiguity_reject();
     let log = read_run_events(dir.path());
     for crashed_before in [STOP_LESSON_KEY, STOP_ESCALATED_KEY] {
         let at = keyed_index(&log, crashed_before);
@@ -350,148 +324,144 @@ fn a_step_re_entering_a_crashed_stop_completes_it_in_a_fresh_process() {
             }
         });
         let requested_before = requested(&log[..at]);
-        let s = step(resumed.path(), "the re-entering step");
+        let ran = run(resumed.path(), "");
         let events = read_run_events(resumed.path());
         assert_eq!(
             (
-                wave(&s),
-                s["halted"].as_str(),
+                ran.out.ends_with(&halted_line()),
                 stop_records(&events),
                 requested(&events),
             ),
-            (
-                Vec::new(),
-                Some(halt().as_str()),
-                the_stop_records(),
-                requested_before
-            ),
+            (true, the_stop_records(), requested_before),
             "re-entered before {crashed_before}: the stop completes, each record once, without \
-             a spawn"
+             a spawn; stdout:\n{}\nstderr:\n{}",
+            ran.out,
+            ran.err
         );
     }
 }
 
-/// Given a store whose earlier run's gate recorded a `spec-ambiguity` reject at attempt 0 and
+/// Given a store whose earlier run's gate rejected with `spec-ambiguity` at attempt 0 and
 /// re-planned, and a new run whose gate rejected with `decomposition-conflict` at attempt 0,
-/// re-planned, then rejected with `spec-ambiguity` at attempt 1, when the operator steps, then
-/// the new run re-plans again: the earlier run's reject is never read across the run boundary.
+/// re-planned, then rejected with `spec-ambiguity` at attempt 1, when `rigger run` drives each,
+/// then the new run re-plans again: the earlier run's reject is never read across the run
+/// boundary.
 #[test]
 fn an_earlier_runs_spec_ambiguity_reject_is_never_read_across_the_run_boundary() {
     let dir = critique_project();
     let root = dir.path();
     launch(root, &[EARLIER_SPEC], &[]);
-    plan_and_review_first(root);
-    adjudicate(root, 0, &spec_ambiguity_first());
-    parks(root, &["plan/replan#1"]);
+    run(root, &critique_arm(&[&spec_ambiguity_first()], 0));
+    assert!(
+        requested(&read_run_events(root)).contains(&"plan/replan#1".to_string()),
+        "the earlier run's spec-ambiguity reject re-plans"
+    );
 
     launch(root, &[SPEC], &[]);
-    plan_and_review_first(root);
-    // A defect a re-plan can fix.
-    adjudicate(
+    // A defect a re-plan can fix, then a first spec-ambiguity reject.
+    let conflict = critique_reject("decomposition-conflict", &["adv-4"]);
+    let ran = run(
         root,
-        0,
-        &critique_reject("decomposition-conflict", &["adv-4"]),
+        &critique_arm(&[&conflict, &spec_ambiguity_first()], 1),
     );
-    re_plan_and_review(root, 1);
-    adjudicate(root, 1, &spec_ambiguity_first());
-    parks(root, &["plan/replan#2"]);
+    let events = read_run_events(root);
     assert_eq!(
-        stop_records(&read_run_events(root)),
-        Vec::new(),
-        "only one of the new run's rejects is a spec-ambiguity one, so nothing stops"
+        (
+            requested(rigger::run::current_run(&events)).last().cloned(),
+            stop_records(&events),
+            ran.out.contains("halted:"),
+        ),
+        (Some("plan/replan#2".to_string()), Vec::new(), false),
+        "only one of the new run's rejects is a spec-ambiguity one, so it re-plans and nothing \
+         stops; stdout:\n{}\nstderr:\n{}",
+        ran.out,
+        ran.err
     );
 }
 
 /// Given a run whose plan-critique gate rejected with `spec-ambiguity`, re-planned, and then
-/// rejected with `decomposition-conflict` - a defect a re-plan can fix - when the operator steps,
-/// then the gate re-plans again: the step parks the next re-plan, reports no halt, and the log
-/// carries no stop record.
+/// rejected with `decomposition-conflict` - a defect a re-plan can fix - when `rigger run` drives
+/// it, then the gate re-plans again: the run launches the next re-plan, reports no halt, and the
+/// log carries no stop record.
 #[test]
 fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
-    let (dir, _) = answered_second_reject(&critique_reject("decomposition-conflict", &["adv-2"]));
-    let root = dir.path();
-    parks(root, &["plan/replan#2"]);
+    let (dir, ran) =
+        driven_through_a_second_reject(&critique_reject("decomposition-conflict", &["adv-2"]));
+    let events = read_run_events(dir.path());
     assert_eq!(
-        stop_records(&read_run_events(root)),
-        Vec::new(),
-        "only the stopping reject's own spec-ambiguity cause stops, so nothing stops"
+        (
+            requested(rigger::run::current_run(&events)).last().cloned(),
+            stop_records(&events),
+            ran.out.contains("halted:"),
+        ),
+        (Some("plan/replan#2".to_string()), Vec::new(), false),
+        "only the stopping reject's own spec-ambiguity cause stops, so the gate re-plans and \
+         nothing stops; stdout:\n{}\nstderr:\n{}",
+        ran.out,
+        ran.err
     );
 }
 
-/// Given a run whose plan-critique adjudicator is parked at its first round and again at the
-/// re-plan round its first reject drove, when each fetches its prompt as a courier does (`rigger
-/// prompt`), then each prompt carries the DAG critique verdict paragraph of a workflow declaring
-/// no unit size cap, as [`WORKFLOW`] does, exactly once: every round's adjudicator - the re-plan
-/// round's, whose reject is the one that stops, included - is asked for `spec-ambiguity`, spelled
-/// as the stop reads it, only on a defect in a criterion's own text, and for
-/// `decomposition-conflict` on every defect a re-plan can fix and when unsure.
-/// The stop that round's `spec-ambiguity` reject then drives is pinned by
-/// [`a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_step`].
+/// Given a run whose plan-critique adjudicator is launched at its first round and again at the
+/// re-plan round its first reject drove, then the task the run serves each carries the DAG
+/// critique verdict paragraph of a workflow declaring no unit size cap, as [`WORKFLOW`] does,
+/// exactly once: every round's adjudicator - the re-plan round's, whose reject is the one that
+/// stops, included - is asked for `spec-ambiguity`, spelled as the stop reads it, only on a defect
+/// in a criterion's own text, and for `decomposition-conflict` on every defect a re-plan can fix
+/// and when unsure. The stop that round's `spec-ambiguity` reject then drives is pinned by
+/// [`a_spec_ambiguity_reject_after_a_re_plan_that_did_not_clear_it_halts_the_run`].
 #[test]
 fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
-    let (_dir, served) = answered_second_spec_ambiguity_reject();
+    let (_dir, ran) = stopped_on_a_second_spec_ambiguity_reject();
+    let served = [0, 1].map(|k| ran.served(&format!("plan-critique/adjudicator#{k}")));
     let paragraph = dag_critique_verdict_paragraph(0);
     assert_eq!(
         served
             .each_ref()
-            .map(|prompt| prompt.matches(&paragraph).count()),
+            .map(|task| task.matches(&paragraph).count()),
         [1, 1],
-        "the first round's and the re-plan round's prompts each carry the verdict paragraph \
+        "the first round's and the re-plan round's tasks each carry the verdict paragraph \
          once:\n{}",
         served.join("\n---\n")
     );
 }
 
 /// The relaunch the halt directs, over `root` whose stopped run's spec now holds its amended text:
-/// `rigger step --spec` [`SPEC`] plus `flags` is refused as not critiqued to exhaustion, on stderr
-/// alone, naming the spec repo-relative and appending nothing; once `rigger critique` has recorded
-/// a clean critique of the amended text, the same command begins the new run, whose first step
-/// parks the planner and the gate's round-0 adversary with no halt, no escalation and no attention,
-/// the stopped run's records standing once, all before the new run's boundary. `runs` is the spec
-/// and criteria of every run the store then holds.
+/// `rigger run` [`SPEC`] plus `flags` is refused as not critiqued to exhaustion, on stderr alone,
+/// naming the spec repo-relative and appending nothing; once `rigger critique` has recorded a
+/// clean critique of the amended text, the same command begins the new run, which starts its gate
+/// afresh at round 0 - the planner, then round 0's adversary and adjudicator, which approves -
+/// and runs to done through the widget's implementer with no halt, the stopped run's records standing once, all before the new
+/// run's boundary. `runs` is the spec and criteria of every run the store then holds.
 fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
     root: &Path,
     flags: &[&str],
     runs: Vec<(Value, Value)>,
 ) {
-    let args: Vec<&str> = ["step", "--spec", SPEC]
-        .iter()
-        .chain(flags)
-        .copied()
-        .collect();
-    let relaunch = || run_rigger(root, &args);
+    let args: Vec<&str> = ["run", SPEC].iter().chain(flags).copied().collect();
+    let relaunch = |arms: &str| run_on_arms(root, &args, &root.join("scratch"), arms);
 
     let stopped = read_run_events(root).len();
-    let (out, err, ok) = relaunch();
+    let (out, err, ok, _fake) = relaunch("");
     assert_eq!(
         (
             ok,
-            out.as_str(),
-            err.ends_with(&refused_new_run("rigger step", "specs/widget.md", Unexhausted)),
+            out.contains("refusing"),
+            err.ends_with(&refused_new_run("rigger run", "specs/widget.md", Unexhausted)),
             read_run_events(root).len(),
         ),
-        (false, "", true, stopped),
+        (false, false, true, stopped),
         "the relaunch {flags:?} on uncritiqued amended text is refused on stderr alone, naming the \
-         spec repo-relative, and appends nothing; stderr:\n{err}"
+         spec repo-relative, and appends nothing; stdout:\n{out}\nstderr:\n{err}"
     );
 
     record_clean_critique(root, SPEC);
-    let (out, err, ok) = relaunch();
-    assert!(
-        ok,
-        "the clean critique lets the relaunch {flags:?} begin its new run; stderr:\n{err}"
-    );
-    let first: Value = serde_json::from_str(out.trim())
-        .unwrap_or_else(|e| panic!("the relaunch prints its step line: {e}; stdout: {out}"));
+    let (out, err, ok, _fake) = relaunch(&critique_arm(&[r#"{"verdict":"approve"}"#], 0));
     let events = read_run_events(root);
     assert_eq!(
         (
-            wave(&first),
-            [
-                first.get("halted"),
-                first.get("escalated"),
-                first.get("attention")
-            ],
+            requested(rigger::run::current_run(&events)),
+            (ok, out.contains("halted:"), out.contains(DONE)),
             run_payloads(root, "RunStarted")
                 .iter()
                 .map(|run| (run["spec"].clone(), run["criteria"].clone()))
@@ -500,18 +470,23 @@ fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
             stop_records(rigger::run::current_run(&events)),
         ),
         (
-            vec![
-                "plan-critique/adversary#0".to_string(),
-                "plan/implementer#0".to_string()
-            ],
-            [None, None, None],
+            [
+                "plan/implementer#0",
+                "plan-critique/adversary#0",
+                "plan-critique/adjudicator#0",
+                "u-widget/implementer#0",
+            ]
+            .map(String::from)
+            .to_vec(),
+            (true, false, true),
             runs,
             the_stop_records(),
             Vec::new(),
         ),
-        "the new run on the amended spec starts its gate afresh: the planner and round 0's \
-         adversary park, nothing halts, escalates or asks for attention, and the stopped run's \
-         three records stand once, all before the new run's boundary"
+        "the new run on the amended spec starts its gate afresh at round 0 and nothing halts, \
+         the run reaches done, and the stopped run's three records stand once, all before the \
+         new run's boundary; \
+         stdout:\n{out}\nstderr:\n{err}"
     );
 }
 
@@ -520,12 +495,12 @@ fn assert_the_relaunch_begins_a_clean_run_once_critiqued(
 /// critiqued and then begins a new run that starts clean.
 #[test]
 fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_starts_clean() {
-    let (dir, _) = answered_second_spec_ambiguity_reject();
+    let (dir, ran) = stopped_on_a_second_spec_ambiguity_reject();
     let root = dir.path();
-    assert_eq!(
-        step(root, "the stopping step")["halted"].as_str(),
-        Some(halt().as_str()),
-        "the run is stopped on its spec defect"
+    assert!(
+        ran.out.ends_with(&halted_line()),
+        "the run is stopped on its spec defect; stdout:\n{}",
+        ran.out
     );
     std::fs::write(root.join(SPEC), AMENDED_SPEC).unwrap();
     assert_the_relaunch_begins_a_clean_run_once_critiqued(
@@ -546,15 +521,12 @@ fn a_stopped_run_relaunches_once_its_amended_spec_is_critiqued_and_the_new_run_s
 #[test]
 fn a_run_stopped_on_its_specs_criteria_relaunches_with_no_fresh_after_a_design_amendment() {
     let criteria = vec![WIDGET_CRITERION.to_string()];
-    let (dir, _) = answered_second_reject_on(
-        &criteria,
-        &critique_reject("spec-ambiguity", &["adv-2", "adv-3"]),
-    );
+    let (dir, ran) = driven_through_a_second_reject_on(&criteria, &spec_ambiguity_second());
     let root = dir.path();
-    assert_eq!(
-        step(root, "the stopping step")["halted"].as_str(),
-        Some(halt().as_str()),
-        "the run begun on the spec's criteria is stopped on its spec defect"
+    assert!(
+        ran.out.ends_with(&halted_line()),
+        "the run begun on the spec's criteria is stopped on its spec defect; stdout:\n{}",
+        ran.out
     );
     std::fs::write(root.join(SPEC), AMENDED_SPEC).unwrap();
     assert_the_relaunch_begins_a_clean_run_once_critiqued(

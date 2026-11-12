@@ -37,14 +37,14 @@
 //!
 //! Like the unit test, the proof is a hermetic node `vm` harness that extracts the served page's own
 //! `<script>` and executes its real functions - no npm, no browser - and it SKIPs (not fails) when no
-//! `node` runtime is present (the shim-only lane), while `cargo test` on the always-on lanes runs it.
+//! `node` runtime is present, while `cargo test` on the always-on lanes runs it.
 //! `dash` compiles on both the default and `--no-default-features` lane (the viz is not feature-gated),
 //! so this guards the served page in both. Every harness is RED unless the seam it guards is real: with
 //! no live wire the integration harness reddens (`kg-nolabel` never toggles); a declutter that ignores
 //! coincidence or importance reddens the contract harness; and a layered render that leaks `data-nid`
 //! or an auto `<title>` reddens the regression harness.
 
-mod common;
+use crate::common;
 
 use std::process::Command;
 
@@ -111,7 +111,7 @@ __El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
 const window = { addEventListener: function(){} };
 const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
+const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
 const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
 "##;

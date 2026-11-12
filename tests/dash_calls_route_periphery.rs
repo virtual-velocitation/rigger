@@ -1,6 +1,6 @@
 //! Periphery (contract / API / integration) tests for spec 52 criterion 4 - the DIRECTED-CALL
 //! ROUTE `/api/graph?view=calls&dir=down|up|both`. The unit adds a second seeded branch to the dash
-//! that dispatches to the store-side `Projection::calls` traversal through a lazy direct-projection
+//! that dispatches to the store-side `ContextGraph::calls` traversal through a lazy direct-projection
 //! provider, and reuses the `Neighborhood` shape with the additive `dir` / `layer` / `frontier` /
 //! `back` / `referenced_not_called` fields the layered left-to-right renderer draws.
 //!
@@ -26,7 +26,7 @@
 //!    spec-50 `instance` selector, asserted on the CAPTURED provider arguments;
 //!  - the ADDITIVE-FIELD BYTE-IDENTITY: a plain `/api/graph?seed=` neighborhood NEVER gains `dir` /
 //!    `layer` / `frontier` / `back` / `referenced_not_called`, and NEVER runs the directed traversal;
-//!  - and one INTEGRATION over a real `Projector::calls` wired into `serve_on` exactly as the binary's
+//!  - and one INTEGRATION over the real `ContextGraph::calls` of a record half composed with a code view, wired into `serve_on` exactly as the binary's
 //!    calls-provider does, proving the cross-module seam (route -> provider -> store) over the socket.
 //!  - (spec 63 addendum) the SUBJECT VIEW's docked memory rail (`Neighborhood::memory`) never rides
 //!    a calls-view response - the one `Neighborhood` producer left unchecked for that omission.
@@ -35,7 +35,7 @@
 //! here is feature-gated), so these tests run in both. No reference to any external tool or project;
 //! hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -46,10 +46,10 @@ use std::time::{Duration, Instant};
 
 use common::fixtures::calls_edge;
 use common::fixtures::plain;
-use common::fixtures::{apply_call, apply_def};
+use common::fixtures::{facts_view, planted_file, view_graph};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    CallGraph, CallNode, Direction, Edge, Graph, Projection, KIND_CODE_ENTITY, KIND_FILE,
+    CallGraph, CallNode, ContextGraph, Direction, Edge, Graph, KIND_CODE_ENTITY, KIND_FILE,
     REL_CALLS, TIER_AMBIGUOUS, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs, DEFAULT_GRAPH_DEPTH, MAX_GRAPH_DEPTH};
@@ -122,7 +122,9 @@ struct Probe {
 /// recording that it was consulted. Returns the raw response plus those observations.
 fn drive<P>(target: &str, graph: Graph, provider: P) -> Probe
 where
-    P: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph + Send + 'static,
+    P: Fn(Option<&str>, &[String], Direction, i64, &str, rigger::code_view::Tests) -> CallGraph
+        + Send
+        + 'static,
 {
     let calls_log: Arc<Mutex<Vec<CallArgs>>> = Arc::new(Mutex::new(Vec::new()));
     let graph_consulted = Arc::new(AtomicBool::new(false));
@@ -134,13 +136,18 @@ where
     // whole-graph read rides the SEPARATE `graph_provider`), and a `view=calls` request never reads
     // it at all.
     let state_provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
+        Ok((
+            Vec::new(),
+            Graph::default().into(),
+            Vec::new(),
+            HashMap::new(),
+        ))
     };
     // The whole-graph provider: records that it was consulted, so a `view=calls` request can be proven
     // to bypass it (dispatch precedence) and a plain neighborhood request to use it.
     let graph_provider = {
         let consulted = graph_consulted.clone();
-        move |_instance: Option<&str>| -> Graph {
+        move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
             consulted.store(true, Ordering::SeqCst);
             graph.clone()
         }
@@ -153,7 +160,8 @@ where
               seeds: &[String],
               direction: Direction,
               depth: i64,
-              floor: &str|
+              floor: &str,
+              _tests: rigger::code_view::Tests|
               -> CallGraph {
             log.lock().unwrap().push(CallArgs {
                 instance: instance.map(|s| s.to_string()),
@@ -162,7 +170,14 @@ where
                 depth,
                 floor: floor.to_string(),
             });
-            provider(instance, seeds, direction, depth, floor)
+            provider(
+                instance,
+                seeds,
+                direction,
+                depth,
+                floor,
+                rigger::code_view::Tests::Exclude,
+            )
         }
     };
     let instances_provider = Vec::new;
@@ -210,8 +225,10 @@ where
 /// A `view=calls` provider whose walk is `standard_calls` regardless of the request path, so a single
 /// `drive` returns the layered view for whichever direction(s) the route asks.
 fn standard_provider(
-) -> impl Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph + Send + 'static {
-    |_instance, _seeds, direction, _depth, _floor| standard_calls(direction)
+) -> impl Fn(Option<&str>, &[String], Direction, i64, &str, rigger::code_view::Tests) -> CallGraph
+       + Send
+       + 'static {
+    |_instance, _seeds, direction, _depth, _floor, _tests| standard_calls(direction)
 }
 
 /// The parsed JSON body of a raw HTTP response (everything past the header terminator).
@@ -521,7 +538,12 @@ fn the_route_percent_decodes_the_seed_and_threads_the_instance_selector_to_the_p
 #[test]
 fn the_back_recursion_marker_and_the_multi_candidate_frontier_ride_through_to_the_json() {
     // A DOWN walk carrying a recursion (b calls a again) and a multi-candidate cross-file hop.
-    let provider = |_i: Option<&str>, _s: &[String], _d: Direction, _depth: i64, _f: &str| {
+    let provider = |_i: Option<&str>,
+                    _s: &[String],
+                    _d: Direction,
+                    _depth: i64,
+                    _f: &str,
+                    _t: rigger::code_view::Tests| {
         CallGraph {
             nodes: vec![
                 call_node("src/c.rs::a", 0, None),
@@ -613,17 +635,20 @@ fn a_plain_neighborhood_request_gains_no_call_fields_and_never_runs_the_directed
         edges: vec![Edge {
             from: "src/p.rs::n1".to_string(),
             to: "src/p.rs::n2".to_string(),
-            rel: REL_CALLS.to_string(),
+            rel: REL_CALLS.into(),
             valid_from: 1,
             valid_to: None,
             source: 1,
-            tier: TIER_INFERRED.to_string(),
+            tier: TIER_INFERRED.into(),
         }],
     };
     // The calls provider must exist for `serve_on` but must never be called by a plain request.
-    let never = |_i: Option<&str>, _s: &[String], _d: Direction, _depth: i64, _f: &str| {
-        CallGraph::default()
-    };
+    let never = |_i: Option<&str>,
+                 _s: &[String],
+                 _d: Direction,
+                 _depth: i64,
+                 _f: &str,
+                 _t: rigger::code_view::Tests| { CallGraph::default() };
     let probe = drive("/api/graph?seed=src%2Fp.rs%3A%3An1&depth=2", graph, never);
     let body = ok_json(&probe);
 
@@ -711,36 +736,36 @@ fn a_calls_view_response_carries_no_memory_rail_field() {
 // the controlled-provider tests (and the implementer's in-process unit tests) stub out.
 // ===========================================================================
 
+/// The calls provider the binary wires (`dash_read_calls`): per request, the directed walk over an
+/// empty record half composed with the code view of the planted `files`.
+fn calls_provider(
+    files: fn() -> Vec<rigger::code_facts::FileFacts>,
+) -> impl Fn(Option<&str>, &[String], Direction, i64, &str, rigger::code_view::Tests) -> CallGraph
+       + Clone
+       + Send
+       + 'static {
+    move |_instance, seeds, direction, depth, floor, _tests| {
+        let records = Projector::open(":memory:", "callsroute").unwrap();
+        let view = facts_view(files());
+        ContextGraph::calls(&view_graph(&records, &view), seeds, direction, depth, floor)
+            .expect("the real view walks")
+    }
+}
+
 #[test]
 fn the_served_calls_route_walks_the_real_projection_over_the_wire() {
-    // A real graph.db from code ingest alone: b.rs::caller calls callee, DEFINED cross-file in a.rs.
-    let dir = tempfile::tempdir().unwrap();
-    let graph_db = dir.path().join("graph.db").to_string_lossy().into_owned();
-    let identity = "callsroute";
-    {
-        let p = Projector::open(&graph_db, identity).unwrap();
-        apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-        apply_def(&p, 2, "src/b.rs", "caller", 1, true);
-        apply_call(&p, 3, "src/b.rs", "callee", "caller");
-    }
-
-    // The calls provider the binary wires (dash_read_calls): open the projection per request and run
-    // the store-side directed walk, best-effort to an empty CallGraph.
-    let provider = {
-        let db = graph_db.clone();
-        let id = identity.to_string();
-        move |_instance: Option<&str>,
-              seeds: &[String],
-              direction: Direction,
-              depth: i64,
-              floor: &str|
-              -> CallGraph {
-            match Projector::open(&db, &id) {
-                Ok(p) => p.calls(seeds, direction, depth, floor).unwrap_or_default(),
-                Err(_) => CallGraph::default(),
-            }
-        }
-    };
+    // A code view from code ingest alone: b.rs::caller calls callee, DEFINED cross-file in a.rs.
+    let provider = calls_provider(|| {
+        vec![
+            planted_file("src/a.rs", &[("callee", "function")], &[], &[]),
+            planted_file(
+                "src/b.rs",
+                &[("caller", "function")],
+                &[("caller", "callee")],
+                &[],
+            ),
+        ]
+    });
 
     // A DOWN walk from the caller resolves the cross-file callee onto its real definition, over the
     // wire, and the seed sits at layer 0.
@@ -815,31 +840,18 @@ fn served_edges(body: &serde_json::Value) -> Vec<(String, String)> {
 /// walk from that fn reaches `caller`, and the UP walk seeded at the field serves the seed alone.
 #[test]
 fn the_served_calls_route_never_lands_a_call_on_a_field_of_the_called_name() {
-    let dir = tempfile::tempdir().unwrap();
-    let graph_db = dir.path().join("graph.db").to_string_lossy().into_owned();
-    let identity = "callsroute";
-    {
-        let p = Projector::open(&graph_db, identity).unwrap();
-        apply_def(&p, 1, "src/a.rs", "callee", 1, true);
-        apply_def(&p, 2, "src/b.rs", "caller", 1, true);
-        common::fixtures::apply_code_entity(&p, 3, "src/b.rs", "callee", "field", 2, "rust");
-        apply_call(&p, 4, "src/b.rs", "callee", "caller");
-    }
-    let served = |target: &str| {
-        let db = graph_db.clone();
-        let id = identity.to_string();
-        let provider = move |_instance: Option<&str>,
-                             seeds: &[String],
-                             direction: Direction,
-                             depth: i64,
-                             floor: &str|
-              -> CallGraph {
-            Projector::open(&db, &id)
-                .and_then(|p| p.calls(seeds, direction, depth, floor))
-                .expect("the real projection walks")
-        };
-        ok_json(&drive(target, Graph::default(), provider))
-    };
+    let provider = calls_provider(|| {
+        vec![
+            planted_file("src/a.rs", &[("callee", "function")], &[], &[]),
+            planted_file(
+                "src/b.rs",
+                &[("caller", "function"), ("callee", "field")],
+                &[("caller", "callee")],
+                &[],
+            ),
+        ]
+    });
+    let served = |target: &str| ok_json(&drive(target, Graph::default(), provider.clone()));
     let call = (
         "src/b.rs::caller".to_string(),
         "src/a.rs::callee".to_string(),

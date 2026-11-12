@@ -177,7 +177,7 @@ use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
 use common::cli::open_graph;
-use common::fixtures::apply_code_entity;
+use common::fixtures::fold_shown_tree_finding;
 use common::fixtures::registry_entries;
 use common::fixtures::test_spawn_host;
 use common::git::git_init_quiet;
@@ -255,7 +255,7 @@ struct Fence {
 }
 
 /// Create a real `kind` worktree at `<scratch root>/<leaf>` on `branch` through the SAME
-/// `Worktree::create` entry point `rigger step` uses (not a hand-built directory), run the real
+/// `Worktree::create` entry point `rigger run` uses (not a hand-built directory), run the real
 /// fenced courier `gate` in it with the fence `fence` derives from the worktree dir, then tear it
 /// down through the real `Worktree::remove` path (the production teardown entry point - never a
 /// call into the private `reclaim_cache_sibling`). Asserts the courier succeeded and left a real
@@ -405,14 +405,18 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
 fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
     let topo = build_topology();
     let root = topo.live_events.parent().unwrap().parent().unwrap();
-    {
-        let live_graph = open_graph(root);
-        apply_code_entity(&live_graph, 1, "a.rs", "alpha", "function", 1, "rust");
-    }
+    fold_shown_tree_finding(&open_graph(root));
+    // Fixture sanity: an unfenced read of the live graph finds the finding, so the fenced miss
+    // below is the fence's doing.
+    let (out, err, ok) = common::cli::run_rigger(root, &["graph", "--show", "f-shown"]);
+    assert!(
+        ok && out.contains("show f-shown"),
+        "an unfenced read finds the live graph's finding; stderr: {err}; got:\n{out}"
+    );
     let target_dir = topo.target_dir.to_string_lossy().into_owned();
     let gate = Gate {
         id: "fence-graph-read".into(),
-        run: format!("{} graph --show alpha", rigger_bin().display()),
+        run: format!("{} graph --show f-shown", rigger_bin().display()),
         kind: Kind::Core,
         autonomy: Autonomy::Manual,
         history: vec![],
@@ -434,7 +438,7 @@ fn a_fenced_gates_graph_read_resolves_inside_the_fence_never_the_live_graph() {
     assert!(
         result.pass && result.evidence.contains("no such entity") && fence_graph.is_file(),
         "a fenced graph read must answer from a graph inside the fence ({}), never the live \
-         graph that holds `alpha`: {result:?}",
+         graph that holds the finding `f-shown`: {result:?}",
         fence_graph.display()
     );
 }
@@ -845,6 +849,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.stages.insert(
@@ -875,9 +880,10 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let _ = run(&cfg, &deps);
 

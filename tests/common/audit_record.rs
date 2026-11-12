@@ -1,7 +1,7 @@
 //! Shared support for the suites that check a committed `docs/audit/*.json` record against the
 //! real tree (`tests/compiler_pass_stage1_audit.rs`, `tests/core_lane_purity_audit.rs`,
 //! `tests/gitsemver_path_inclusion_accounting_periphery.rs`).
-//! Included by each suite through `#[path]`.
+//! Mounted once by `tests/all.rs`; a suite reaches it with `use crate::audit_record;`.
 
 /// The committed audit record at repo-relative `path`, parsed - never a general-purpose JSON
 /// library substitute, `serde_json::Value` already is that.

@@ -1,6 +1,6 @@
 ---
 name: planning-a-spec
-description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching /rigger on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
+description: Use when writing, splitting, or amending a spec for a rigger loop run - before launching `rigger run` on new work, when a plan-critique gate rejects a decomposition, when a run churns in review and the spec is suspect, or when turning bug reports or design discussions into Done-when criteria.
 ---
 
 # Planning a spec
@@ -63,8 +63,8 @@ demand evidence on.
 **7. Preflight, then launch.** Run the `spec-preflight` skill and, under a workflow with a
 critic, `rigger critique <spec>` before launch. `rigger validate` is mandatory (it catches
 model-alias drift - run `rigger canary --if-model-changed` on a warning); `rigger reset --runs`
-before a large run; anchor `base=` on the ref the work must land on. Launch via the /rigger
-workflow only.
+before a large run; anchor `--base` on the ref the work must land on. Launch with `rigger run <spec> --base <ref>`
+only.
 
 ## Amending mid-run
 

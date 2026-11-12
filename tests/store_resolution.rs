@@ -120,7 +120,7 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::cli::run_stream_identity;

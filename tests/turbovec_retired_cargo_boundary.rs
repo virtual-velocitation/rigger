@@ -29,7 +29,7 @@
 //! so it compiles and runs identically in the default and the `--no-default-features`
 //! lanes, and is a real member of each lane's test battery.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::process::Output;

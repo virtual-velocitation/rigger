@@ -22,6 +22,7 @@
 //! are `pub(crate)` here and `dash.rs` calls them by their new path, so there remains exactly ONE
 //! bucket-fold authority, never two reconciled after the fact.
 
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,7 @@ use crate::contextgraph::{
     REL_IN_COMMUNITY, REL_REALIZES,
 };
 use crate::eventstore::Position;
+use crate::test_view::TESTS_ATTR;
 
 /// The default hop bound for a seeded [`neighborhood`] walk (spec 30 c5) - the same breadth an
 /// agent's own blast-radius grounding walk uses (`subgraph` calls it, and `rigger graph --around`
@@ -239,14 +241,25 @@ pub fn path_leaf(path: &str) -> &str {
 /// `S.field`, a file-level definition's own name), a caller's path, or a placeholder's sigiled
 /// leaf ([`placeholder_id`]).
 pub fn entity_id(file: &str, rest: &str) -> String {
-    format!("{file}::{rest}")
+    joined_id(file, &[rest])
+}
+
+/// `<file>::` then `rest`, in one allocation of the exact size.
+fn joined_id(file: &str, rest: &[&str]) -> String {
+    let len = file.len() + 2 + rest.iter().map(|r| r.len()).sum::<usize>();
+    let mut id = String::with_capacity(len);
+    id.push_str(file);
+    id.push_str("::");
+    rest.iter().for_each(|r| id.push_str(r));
+    id
 }
 
 /// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
 /// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
 /// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
 pub fn placeholder_id(file: &str, leaf: &str) -> String {
-    entity_id(file, &format!("{PLACEHOLDER_SIGIL}{leaf}"))
+    let mut sigil = [0; 4];
+    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), leaf])
 }
 
 /// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
@@ -611,6 +624,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             edges: Vec::new(),
             total: graph.nodes.len(),
             empty_state: buckets.derived_texts().map(|t| t.underived.to_string()),
+            tests_hidden: 0,
         };
     }
 
@@ -619,12 +633,13 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     // identical to it under Files / Concepts), and cross-bucket edges weight the super-edges. `total`
     // reports the whole node count.
     let bucket_label = bucket_label_index(graph, &buckets);
-    let (clusters, edges) = fold_buckets(
+    let (mut clusters, edges) = fold_buckets(
         graph.nodes.iter(),
         &graph.edges,
         |n| whole_graph_lens_key(&buckets, n),
         &bucket_label,
     );
+    count_tests(&mut clusters, graph, &buckets);
     // Spec 63 c1 round 4: a POST-FOLD re-check (mirrors `dash.rs`'s `reproject_derived`'s own
     // `has_derived_bucket` fix pattern at that sibling call site). `buckets.underived()` above only
     // asks whether ANY membership exists anywhere in the graph - it says nothing about whether a
@@ -657,6 +672,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         edges,
         total: graph.nodes.len(),
         empty_state,
+        tests_hidden: 0,
     }
 }
 
@@ -736,6 +752,24 @@ pub fn bucket_label_index<'g>(
     }
 }
 
+/// Sets each of `clusters`' `tests` to the attached test count its bucket super-node carries
+/// (its [`TESTS_ATTR`] attr): a community under [`Lens::Code`], a concept under [`Lens::Concepts`].
+/// Nothing under [`Lens::Files`], which has no super-node.
+pub fn count_tests(clusters: &mut [Cluster], graph: &Graph, buckets: &Buckets) {
+    let Some(super_kind) = buckets.derived_texts().map(|t| t.label_kind) else {
+        return;
+    };
+    let carried: BTreeMap<&str, usize> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == super_kind)
+        .filter_map(|n| Some((n.id.as_str(), n.attrs.get(TESTS_ATTR)?.parse().ok()?)))
+        .collect();
+    for c in clusters {
+        c.tests = carried.get(c.key.as_str()).copied().unwrap_or(0);
+    }
+}
+
 /// The SINGLE bucket-fold authority the whole-graph overview ([`clustered_overview`]) and `dash.rs`'s
 /// subject re-projection (`reproject`) both consume - implemented ONCE over the shared abstraction,
 /// never a second parallel fold. Fold each node `key_of` yields a bucket key for into a [`Cluster`]
@@ -753,43 +787,46 @@ pub fn fold_buckets<'g>(
     key_of: impl Fn(&Node) -> Option<String>,
     bucket_label: &BTreeMap<&str, &str>,
 ) -> (Vec<Cluster>, Vec<ClusterEdge>) {
-    let mut node_cluster: BTreeMap<&str, String> = BTreeMap::new();
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut kind_hist: BTreeMap<String, BTreeMap<&'g str, usize>> = BTreeMap::new();
-    for n in nodes {
-        let Some(key) = key_of(n) else {
-            continue; // excluded from the member fold (a super-node / an unresolvable member)
-        };
-        node_cluster.insert(n.id.as_str(), key.clone());
-        *counts.entry(key.clone()).or_default() += 1;
-        *kind_hist
-            .entry(key)
-            .or_default()
-            .entry(n.kind.as_str())
-            .or_default() += 1;
+    // Each folded node with its bucket key, then each distinct key once in order: a bucket is
+    // named by its key's RANK, so ranks order as the keys do and the fold below allocates nothing
+    // per node or edge.
+    let keyed: Vec<(&'g Node, String)> = nodes
+        .filter_map(|n| key_of(n).map(|key| (n, key))) // `None` excluded: a super-node / an unresolvable member
+        .collect();
+    let mut keys: Vec<&str> = keyed.iter().map(|(_, key)| key.as_str()).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let rank = |key: &str| keys.binary_search(&key).unwrap_or_default();
+    let mut node_cluster: FxHashMap<&str, usize> = FxHashMap::default();
+    let mut counts = vec![0usize; keys.len()];
+    let mut kind_hist: Vec<BTreeMap<&'g str, usize>> = vec![BTreeMap::new(); keys.len()];
+    for (n, key) in &keyed {
+        let at = rank(key);
+        node_cluster.insert(n.id.as_str(), at);
+        counts[at] += 1;
+        *kind_hist[at].entry(n.kind.as_str()).or_default() += 1;
     }
 
     // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the highest-count kind,
     // ties broken by the lexicographically-smallest kind (the histogram iterates in sorted kind
     // order, so replacing only on a STRICTLY-greater count keeps the first/smallest kind on a tie).
-    let clusters: Vec<Cluster> = counts
-        .into_iter()
-        .map(|(key, count)| {
-            let hist = kind_hist.remove(&key).unwrap_or_default();
+    let clusters: Vec<Cluster> = (keys.iter().zip(counts).zip(&kind_hist))
+        .map(|((key, count), hist)| {
             let mut dominant = "";
             let mut best = 0usize;
-            for (kind, c) in &hist {
+            for (kind, c) in hist {
                 if *c > best {
                     best = *c;
                     dominant = kind;
                 }
             }
-            let label = bucket_label.get(key.as_str()).map(|l| l.to_string());
+            let label = bucket_label.get(key).map(|l| l.to_string());
             Cluster {
-                key,
+                key: key.to_string(),
                 count,
                 kind: dominant.to_string(),
                 label,
+                tests: 0,
             }
         })
         .collect();
@@ -797,30 +834,30 @@ pub fn fold_buckets<'g>(
     // Every currently-valid edge whose two endpoints are known FOLDED nodes in DIFFERENT clusters
     // weights a symmetric cluster edge; an endpoint outside the folded set (e.g. a member-set fold's
     // edge to a non-member) has no cluster to weight, and an intra-cluster edge adds none.
-    let mut weights: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut weights: FxHashMap<(usize, usize), usize> = FxHashMap::default();
     for e in edges {
         if e.valid_to.is_some() {
             continue;
         }
-        let (Some(a), Some(b)) = (
+        let (Some(&a), Some(&b)) = (
             node_cluster.get(e.from.as_str()),
             node_cluster.get(e.to.as_str()),
         ) else {
             continue;
         };
-        if a == b {
-            continue;
+        if a != b {
+            *weights.entry((a.min(b), a.max(b))).or_default() += 1;
         }
-        let pair = if a <= b {
-            (a.clone(), b.clone())
-        } else {
-            (b.clone(), a.clone())
-        };
-        *weights.entry(pair).or_default() += 1;
     }
+    let mut weights: Vec<((usize, usize), usize)> = weights.into_iter().collect();
+    weights.sort_unstable();
     let cluster_edges: Vec<ClusterEdge> = weights
         .into_iter()
-        .map(|((from, to), weight)| ClusterEdge { from, to, weight })
+        .map(|((from, to), weight)| ClusterEdge {
+            from: keys[from].to_string(),
+            to: keys[to].to_string(),
+            weight,
+        })
         .collect();
 
     (clusters, cluster_edges)
@@ -917,8 +954,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         .map(|e| NeighborhoodEdge {
             from: e.from.clone(),
             to: e.to.clone(),
-            rel: e.rel.clone(),
-            tier: e.tier.clone(),
+            rel: e.rel.to_string(),
+            tier: e.tier.to_string(),
             // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
             back: false,
         })
@@ -1030,7 +1067,7 @@ pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
 /// breadth-first walk following currently-valid edges in EITHER direction up to `depth` hops, a
 /// reached file also reaching its members and a reached member its file one hop on (spec 119,
 /// THE MEMBER RULE, by [`member_file`]), returning the reachable nodes and the TIER-TAGGED edges
-/// among them. This mirrors [`crate::contextgraph::Projection::subgraph`]'s traversal
+/// among them. This mirrors [`crate::contextgraph::ContextGraph::subgraph`]'s traversal
 /// (both-direction, valid-only, the two member hops, node-and-edge-in-set) applied to the graph
 /// the dash already loaded, so the route stays a pure
 /// read over the projected inputs - the panel never re-queries the store. An unknown seed or an
@@ -1038,6 +1075,61 @@ pub fn member_set<'g>(graph: &'g Graph, subject: &str) -> Vec<&'g Node> {
 /// KG-feature-off / empty-graph case requires.
 pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
     neighborhood_of(graph, std::slice::from_ref(&seed.to_string()), seed, depth)
+}
+
+/// How many nodes of `withheld` - the part a read withheld beside `graph`, the nodes it withheld
+/// and the edges it dropped for an end it withheld - the walk [`neighborhood_of`] takes from
+/// `seeds` within `depth` hops reaches, stepping as the store's walk does: a withheld node is
+/// counted and never stepped from, except that a withheld seed still reaches its members by THE
+/// MEMBER RULE, which reads no edge. The label of a walk's answer counts these.
+pub fn withheld_reached(graph: &Graph, withheld: &Graph, seeds: &[String], depth: i64) -> usize {
+    let held: BTreeSet<&str> = withheld.nodes.iter().map(|n| n.id.as_str()).collect();
+    if held.is_empty() {
+        return 0;
+    }
+    let mut members_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut file_of_member: BTreeMap<&str, &str> = BTreeMap::new();
+    for n in graph.nodes.iter().chain(&withheld.nodes) {
+        if let Some(file) = member_file(n) {
+            members_of.entry(file).or_default().push(n.id.as_str());
+            file_of_member.insert(n.id.as_str(), file);
+        }
+    }
+    // Each node's neighbours either way over the live edges: every answered edge, and a dropped
+    // edge toward its withheld end alone.
+    let mut adjacent: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let answered = graph.edges.iter().map(|e| (e, true));
+    for (e, answered) in answered.chain(withheld.edges.iter().map(|e| (e, false))) {
+        if e.valid_to.is_some() {
+            continue;
+        }
+        for (near, far) in [(&e.from, &e.to), (&e.to, &e.from)] {
+            if answered || held.contains(far.as_str()) {
+                adjacent.entry(near).or_default().push(far);
+            }
+        }
+    }
+    let mut reached: BTreeSet<&str> = seeds.iter().map(String::as_str).collect();
+    let mut frontier: Vec<&str> = reached.iter().copied().collect();
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for near in std::mem::take(&mut frontier) {
+            let members = members_of.get(near).into_iter().flatten().copied();
+            let far: Vec<&str> = match held.contains(near) {
+                true => members.collect(),
+                false => (members.chain(file_of_member.get(near).copied()))
+                    .chain(adjacent.get(near).into_iter().flatten().copied())
+                    .collect(),
+            };
+            for far in far {
+                if reached.insert(far) && !held.contains(far) {
+                    next.push(far);
+                }
+            }
+        }
+        frontier = next;
+    }
+    reached.iter().filter(|id| held.contains(*id)).count()
 }
 
 /// The multi-seed core of [`neighborhood`]: the seeded BFS over `seeds` (each seed is initially
@@ -1111,8 +1203,8 @@ pub fn neighborhood_of(
         .map(|e| NeighborhoodEdge {
             from: e.from.clone(),
             to: e.to.clone(),
-            rel: e.rel.clone(),
-            tier: e.tier.clone(),
+            rel: e.rel.to_string(),
+            tier: e.tier.to_string(),
             // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
             back: false,
         })
@@ -1191,10 +1283,10 @@ pub fn explain(graph: &Graph, node: &str) -> Option<Explanation> {
         .iter()
         .filter(|e| e.valid_to.is_none() && (e.from == node || e.to == node))
         .map(|e| ProvenanceEdge {
-            rel: e.rel.clone(),
+            rel: e.rel.to_string(),
             from: e.from.clone(),
             to: e.to.clone(),
-            tier: e.tier.clone(),
+            tier: e.tier.to_string(),
             source: e.source,
         })
         .collect();
@@ -1721,6 +1813,16 @@ pub struct Cluster {
     /// module / kind - so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The tests attached to this bucket (the code store's test views): how many test entities
+    /// prove the product it holds, whatever tests the view shows. Zero (skipped in JSON) for a
+    /// bucket with none and under [`Lens::Files`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tests: usize,
+}
+
+/// Whether `n` is zero: the serde skip for a count that is absent when none.
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// A weighted, symmetric edge between two DIFFERENT clusters in the overview (spec 42 c2): its
@@ -1760,6 +1862,11 @@ pub struct ClusterOverview {
     /// derived code grain, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
+    /// the opened graph's `hidden_tests()`, since the drawn graph holds none of them. Skipped in
+    /// JSON when none is hidden.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tests_hidden: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -2071,11 +2178,11 @@ mod graph_ops_tests {
             edges: vec![Edge {
                 from: "src/a.rs".to_string(),
                 to: "src/a.rs::widget".to_string(),
-                rel: REL_CONTAINS.to_string(),
+                rel: REL_CONTAINS.into(),
                 valid_from: 1,
                 valid_to: None,
                 source: 1,
-                tier: "extracted".to_string(),
+                tier: "extracted".into(),
             }],
         }
     }

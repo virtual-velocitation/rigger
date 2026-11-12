@@ -31,8 +31,9 @@
 //! `--no-repair-worktree-config`, an undocumented on-disk mutation with no place in what
 //! the Design calls compile-time derivation.
 
-mod common;
+use crate::common;
 
+#[allow(clippy::duplicate_mod)]
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;

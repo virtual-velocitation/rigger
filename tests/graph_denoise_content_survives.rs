@@ -8,7 +8,7 @@
 //! names, "only the agent attribution is absent", so the two criteria never share an authority.
 //!
 //! It runs OUTSIDE the crate, over the library's public surface - `Projector::open` ->
-//! `Projection::apply` -> `Projection::subgraph` - so it pins the projection a real consumer (the
+//! `RecordFold::apply` -> the code view composed beside it -> `ContextGraph::subgraph` - so it pins the projection a real consumer (the
 //! dash inspector, grounding, blast-radius, the rationale overlay) actually reads. Two facets are
 //! load-bearing and could regress if the de-noise ever over-reached:
 //!   * a LESSON and a design-intent `explains` link (spec 29b) fold in the SAME mixed stream as the
@@ -21,14 +21,14 @@
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, REL_ABOUT,
-    REL_DECIDED, REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE,
-    TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, REL_ABOUT, REL_DECIDED,
+    REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED,
+    TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED,
+    TYPE_UNIT_STARTED,
 };
 
-mod common;
-use common::fixtures::apply_json_as;
+use crate::common;
+use common::fixtures::{apply_json_as, PlantedTree};
 
 #[test]
 fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attribution() {
@@ -112,24 +112,14 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     // A design-intent rationale node and its `explains` link to the code it annotates (spec 29b): the
     // "explains edges to ... design" half of criterion 2. The de-noise never touched this arm, so its
     // survival in a mixed fold proves the design-memory overlay stands beside the machinery drop.
-    apply_json_as(
-        &p,
-        7,
-        TYPE_DOC_CONCEPT_EXTRACTED,
-        serde_json::json!({
-            "kind": KIND_RATIONALE,
-            "id": "src/combat.rs#L7",
-            "title": "WHY: clamp to the shared buffer",
-            "doc": "src/combat.rs"
-        }),
-        None,
-    );
-    apply_json_as(
-        &p,
-        8,
-        TYPE_DOC_LINK_EXTRACTED,
-        serde_json::json!({ "from": "src/combat.rs#L7", "rel": REL_EXPLAINS, "to": "src/combat.rs" }),
-        None,
+    // Planted in the code store's view of the tree, where the design half now lives.
+    let mut tree = PlantedTree::default();
+    tree.design_intent(
+        KIND_RATIONALE,
+        "src/combat.rs#L7",
+        "WHY: clamp to the shared buffer",
+        REL_EXPLAINS,
+        "src/combat.rs",
     );
     // The unit integrates - the log carries a `commit` key the de-noised fold no longer models. No
     // upheld finding is marked here, so disposition-expiry invalidates nothing and the content stands.
@@ -158,7 +148,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let g = p.subgraph(&seeds, 2).unwrap();
+    let g = tree.subgraph(&p, &seeds, 2);
 
     let node = |id: &str, kind: &str| g.nodes.iter().any(|n| n.id == id && n.kind == kind);
     let edge = |from: &str, rel: &str, to: &str| {

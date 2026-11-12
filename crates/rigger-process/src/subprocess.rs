@@ -1,13 +1,12 @@
 //! THE PROCESS-SPAWN PORT: the one place production code constructs a [`Command`].
 //!
-//! Every process this crate starts - git, the gate shell, the agent CLI, the Node driver, the
-//! dash child - is built here and handed back for the caller to add its own arguments and run.
-//! One seam means one place owning how a child is launched: the working-directory rule every
-//! caller shares ([`command_in`]), the `git -C <dir>` shape nearly every git call takes, its
-//! repository found from `dir` alone ([`git_in`]), and the process-group detachment a long-lived
-//! child needs ([`detach_process_group`]). Beyond that repository rule it adds no policy of its
-//! own: the caller still picks the arguments, the environment, the stdio and how the child is
-//! waited on, and a child is only ever ended through its own spawning handle.
+//! Every process this crate starts - git, the gate shell, the agent CLI, the dash child - is built
+//! here and handed back for the caller to add its own arguments and run. One seam means one place
+//! owning how a child is launched: the working-directory rule every caller shares ([`command_in`])
+//! and the `git -C <dir>` shape nearly every git call takes, its repository found from `dir` alone
+//! ([`git_in`]). Beyond that repository rule it adds no policy of its own: the caller still picks
+//! the arguments, the environment, the stdio and how the child is waited on, and a child is only
+//! ever ended through its own spawning handle.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -57,28 +56,6 @@ pub fn git_in(dir: impl AsRef<OsStr>) -> Command {
     }
     cmd
 }
-
-/// Place `cmd`'s spawned child in its OWN process group (a new group whose PGID equals the
-/// child's PID, via `process_group(0)`), detached from the parent command's process group.
-/// This is the session-detachment that makes the always-on dash actually survive across steps
-/// (spec 44): WITHOUT it a detached dash inherits `rigger step`'s process group, and when the
-/// workflow courier runs `rigger step` as a foreground command the harness tears down that
-/// command's process group on completion and reaps the dash with it - the spec-39 always-on
-/// dash then dies the instant every step returns. `process_group(0)` makes the child a group
-/// leader in a group the parent's teardown never reaches. Std-only (no `libc`), so it compiles
-/// and holds identically on BOTH the default and `--no-default-features` lanes. Non-Unix builds
-/// keep the group-inheriting behavior (the always-on dash is a Unix-path feature).
-#[cfg(unix)]
-pub fn detach_process_group(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    // `process_group(0)` runs a `setpgid(0, 0)`-equivalent in the child before exec, making it a
-    // group leader whose PGID equals its own PID - a brand-new process group the parent command's
-    // group teardown never reaches.
-    cmd.process_group(0);
-}
-
-#[cfg(not(unix))]
-pub fn detach_process_group(_cmd: &mut Command) {}
 
 #[cfg(test)]
 mod tests {

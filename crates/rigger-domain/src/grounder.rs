@@ -52,14 +52,39 @@ pub struct BlastRadius {
     pub safe: Vec<String>,
 }
 
+/// A unit's prompt seed and blast radius with the provenance stamp of the one read that grounded
+/// both ([`Grounder::blast_radius_stamped`]); an empty stamp marks a grounder with no structural
+/// index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StampedRadius {
+    /// The prompt seed ([`Grounder::seed`]) of the read that grounded `radius`.
+    pub seed: Vec<String>,
+    pub radius: BlastRadius,
+    pub stamp: String,
+}
+
 /// Grounder returns up to k locations relevant to a query.
+/// A grounder's answer: the rows, the honesty label they travel with, and how many test hits the
+/// `tests` filter left out of them, all from one read of the code store so they describe one tree.
+/// The count is none unless the filter excludes tests, and for a grounder that cannot tell test
+/// code from product code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grounded<T> {
+    pub rows: T,
+    pub label: Option<crate::composed::Label>,
+    pub tests_hidden: usize,
+}
+
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
-    /// Re-index the given files after a unit integrates, so the next agent grounds
-    /// on the accepted code (the `symbols` grounder freshens the changed files). The
-    /// default is a no-op - grep re-reads the tree each time and needs no index.
-    fn reindex(&self, _src_dir: &str, _files: &[String]) {}
+    /// The prompt seed of `query`: at most `k` distinct files an agent is grounded on. The
+    /// DEFAULT - the one a grep / nop grounder inherits - is the distinct files of its own
+    /// `ground(query, k)`, in ground order. The `symbols` grounder overrides it to start from the
+    /// code the query names, resolved to the files that define it.
+    fn seed(&self, query: &str, k: usize) -> Vec<String> {
+        distinct_files(self.ground(query, k))
+    }
 
     /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
     /// one a grep / nop grounder inherits - returns this grounder's OWN top-`k` radius
@@ -69,29 +94,88 @@ pub trait Grounder: Send + Sync {
     /// it produces today. Only the `symbols` grounder overrides this to union the structural
     /// cross-reference graph with an uncapped grep.
     fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        let mut files: Vec<String> = Vec::new();
-        for r in self.ground(query, k) {
-            if !files.contains(&r.file) {
-                files.push(r.file);
-            }
-        }
+        let files = distinct_files(self.ground(query, k));
         BlastRadius {
             precise: files.clone(),
             safe: files,
         }
     }
 
-    /// A provenance stamp for the `BlastRadiusComputed` audit event (spec 16 unit 3,
-    /// architecture 5.5.9): the index content-hash + grammar / tag-query version that
-    /// produced this grounder's radii, so a recorded radius reconstructs which index state
-    /// grounded it and staleness is answerable ("why the full panel?"). It is ALSO the
-    /// structural-active signal unit 3's conductor keys the audit off: the DEFAULT (grep /
-    /// nop - no structural cross-reference index) returns an EMPTY stamp, so the
-    /// conductor emits NO audit event and drives NO retention metric on that path, keeping the
-    /// shipped default byte-for-byte unchanged. Only the `symbols` grounder overrides this to a
-    /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
-    fn index_stamp(&self) -> String {
-        String::new()
+    /// [`Self::seed`] and [`Self::blast_radius`] with the provenance stamp of the read that
+    /// grounded them, for the `BlastRadiusComputed` audit event (spec 16 unit 3, architecture
+    /// 5.5.9): the tree id + grammar / tag-query version that produced THIS radius, so a recorded
+    /// radius reconstructs which tree grounded it and staleness is answerable ("why the full
+    /// panel?"). The seed, the radius and the stamp come from one read, never several, so a store
+    /// advanced between two reads cannot record a seed and a radius of different trees, or stamp
+    /// either with a tree it was not grounded on. A non-empty stamp is ALSO the
+    /// structural-active signal the conductor keys the audit off: the DEFAULT (grep / nop - no
+    /// structural cross-reference index) stamps EMPTY, so the conductor emits NO audit event and
+    /// drives NO retention metric on that path. Only the `symbols` grounder overrides this to a
+    /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
+    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+        StampedRadius {
+            seed: self.seed(query, k),
+            radius: self.blast_radius(query, k),
+            stamp: String::new(),
+        }
+    }
+
+    /// [`Self::blast_radius_stamped`] read over `head`, the one open of the code store's view of
+    /// the head (or why it could not be opened) a caller also composes the context graph over, so
+    /// the seed, the radius, the stamp and the graph's part of the radius describe one tree: the
+    /// worktree `head` was compared with, which may be another than the grounder's own. The
+    /// DEFAULT (grep / nop) reads the worktree itself, never the store, so it answers
+    /// [`Self::blast_radius_stamped`]. A grounder that reads the store's view overrides it to read
+    /// `head` instead of opening its own.
+    fn blast_radius_stamped_over(
+        &self,
+        head: Result<&crate::code_view::Head, &str>,
+        query: &str,
+        k: usize,
+    ) -> StampedRadius {
+        let _ = head;
+        self.blast_radius_stamped(query, k)
+    }
+
+    /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the
+    /// rows describe and what the caller's worktree puts in doubt, or why nothing could be read.
+    /// A grounder that answers from the code store's view of the head overrides it to read that
+    /// view ONCE, so the label describes exactly the tree the rows came from. The DEFAULT
+    /// (grep / nop) reads the worktree itself, so it has nothing to state.
+    ///
+    /// `tests` filters the rows by test-ness; a grounder that cannot tell test code from product
+    /// code (the DEFAULT) answers all rows whatever it is.
+    fn ground_labelled(
+        &self,
+        query: &str,
+        k: usize,
+        tests: crate::code_view::Tests,
+    ) -> Grounded<Vec<Ref>> {
+        let _ = tests;
+        Grounded {
+            rows: self.ground(query, k),
+            label: None,
+            tests_hidden: 0,
+        }
+    }
+
+    /// The ranked page `rigger ground` prints with its label: `None` rows when `k > 0` and no
+    /// entity matches strongly ([`Self::has_strong_match`]), else [`Self::ground_ranked`]'s page.
+    /// Overridden, like [`Self::ground_labelled`], to read the view once.
+    fn ground_ranked_labelled(
+        &self,
+        query: &str,
+        k: usize,
+        tests: crate::code_view::Tests,
+    ) -> Grounded<Option<Vec<RankedRef>>> {
+        let _ = tests;
+        let rows =
+            (k == 0 || self.has_strong_match(query, k)).then(|| self.ground_ranked(query, k));
+        Grounded {
+            rows,
+            label: None,
+            tests_hidden: 0,
+        }
     }
 
     /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by
@@ -99,7 +183,7 @@ pub trait Grounder: Send + Sync {
     /// location plus its degree. The DEFAULT (grep / nop, and any grounder with no
     /// entity/reference concept) is simply `ground`'s own top-`k` rows, each wrapped with
     /// degree 0 (unknown) and NO dedup - never a silent behavior change for a non-structural
-    /// grounder (mirroring the [`Self::blast_radius`] / [`Self::index_stamp`] default
+    /// grounder (mirroring the [`Self::blast_radius`] / [`Self::blast_radius_stamped`] default
     /// pattern). Only the `symbols` grounder overrides this with real ranking, entity dedup,
     /// and a real degree.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
@@ -118,4 +202,15 @@ pub trait Grounder: Send + Sync {
     fn has_strong_match(&self, _query: &str, _k: usize) -> bool {
         true
     }
+}
+
+/// The distinct files of `refs`, in their order.
+fn distinct_files(refs: Vec<Ref>) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for r in refs {
+        if !files.contains(&r.file) {
+            files.push(r.file);
+        }
+    }
+    files
 }

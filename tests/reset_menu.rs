@@ -19,7 +19,7 @@
 //!     `main.rs`-private type) and is instead pinned by an in-crate unit test beside
 //!     `derived_menu_line`.
 
-mod common;
+use crate::common;
 
 use common::cli::derived_menu_line_naming;
 use common::cli::derived_menu_lines;
@@ -28,7 +28,7 @@ use common::cli::rigger_db;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_store_project;
-use common::cli::NOTHING_TO_SHED_MENU_LINE;
+use common::cli::NOTHING_TO_DELETE_MENU_LINE;
 use std::path::Path;
 
 // ---------------------------------------------------------------------------------------
@@ -92,7 +92,7 @@ fn bare_reset_on_an_empty_store_exits_zero_and_reports_nothing_prunable() {
     );
     assert_eq!(
         derived_menu_lines(&out),
-        [NOTHING_TO_SHED_MENU_LINE],
+        [NOTHING_TO_DELETE_MENU_LINE],
         "the --derived line must say an empty store holds no derived event to shed"
     );
 }
@@ -119,7 +119,7 @@ fn bare_reset_names_the_derived_events_of_a_store_whose_rows_name_no_file_identi
     assert!(ok, "bare reset must exit 0; stderr: {err}");
     assert_eq!(
         derived_menu_lines(&out),
-        [derived_menu_line_naming(2, 0)],
+        [derived_menu_line_naming(2)],
         "two derived events naming no file identity are still events `--derived` sheds"
     );
 }

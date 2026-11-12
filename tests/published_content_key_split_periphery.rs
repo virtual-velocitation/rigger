@@ -1,6 +1,6 @@
 //! Periphery (contract / API / integration) tests for the PUBLISHED content-key split:
 //! `rigger::ingest::derived_key_spans`, the one parser of the `<prefix>/<file>@<hash>#<i>` form
-//! `rigger::ingest::key_batch` builds.
+//! a derived row of the log carries.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::...`), so a consumer
 //! reads the key authority's own parse instead of re-spelling the format. What the inside-out tests
@@ -20,13 +20,10 @@
 //! Scope. What is proved here is the PUBLISHED SPLIT. The whole-stream seeding rule and its two
 //! sinks are covered by `tests/dedup_seeding_periphery.rs` and are not duplicated.
 //!
-//! Everything but the real-tree walk is compiled unconditionally, so this suite runs in BOTH
-//! feature lanes; the two tests that need a tree to walk are `symbols`-gated exactly as the walk is.
+//! Everything is compiled unconditionally, so this suite runs in BOTH feature lanes.
 
-mod common;
+use crate::common;
 
-#[cfg(feature = "symbols")]
-use common::fixtures::minted_events as minted;
 use common::fixtures::reference_replay_keys;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -242,104 +239,5 @@ fn the_suppression_predicate_groups_by_the_published_spans() {
     assert!(
         !kept.contains("gc/src/alpha.rs@old#0") && !kept.contains("gc/src/alpha.rs@old#1"),
         "a generation the file has moved past must not be kept - the revert case depends on it"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Over keys a real walk mints
-// ---------------------------------------------------------------------------
-
-/// A throwaway project the walk can lower, including a directory whose name carries the content
-/// key's own `@` separator - the shape a version-pinned vendored folder really takes on disk, and
-/// the one a hand-spelled key can never prove the WRITER actually mints.
-#[cfg(feature = "symbols")]
-fn at_sign_source_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-    std::fs::create_dir_all(root.join("src/pkg@1.2.3")).unwrap();
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("src/alpha.rs"),
-        "pub fn alpha_helper() {}\npub fn alpha_caller() { alpha_helper(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("src/pkg@1.2.3/lib.rs"),
-        "pub fn vendored_helper() {}\npub fn vendored_caller() { vendored_helper(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("specs/sample.md"),
-        "# sample\n\nA design note the design half of the index can lower.\n",
-    )
-    .unwrap();
-    dir
-}
-
-/// THE ROUND TRIP the published split exists to survive, over keys the WRITER really mints.
-///
-/// A hand-spelled key can only prove the parser is self-consistent. This drives the shipped walk
-/// over a real tree - including a path carrying the format's own `@` - and requires, for EVERY key
-/// it mints, that the published split recognises it, that the identity ends before the `@`, and
-/// that every key of one file's batch shares one identity and one generation.
-///
-/// The failure it guards is silent in both directions: a parser that stopped recognising minted
-/// keys suppresses nothing and the log resumes growing without bound, and one that collapsed two
-/// files onto a single identity retires a live file's batch forever.
-#[cfg(feature = "symbols")]
-#[test]
-fn the_published_split_recognises_every_key_a_real_walk_mints() {
-    let dir = at_sign_source_project();
-    let minted = minted(dir.path());
-    assert!(
-        !minted.is_empty(),
-        "sanity: the walk must mint content keys for a real tree"
-    );
-
-    let mut generations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-
-    for (key, _) in &minted {
-        let published = derived_key_spans(key);
-        assert!(
-            published.is_some(),
-            "the published split must recognise EVERY key the walk mints; it passed over {key} as \
-             malformed, which silently stops all suppression"
-        );
-
-        let (identity, generation) = split(key).expect("just asserted it parses");
-        assert!(
-            !identity.ends_with('@') && key.as_bytes().get(identity.len()).copied() == Some(b'@'),
-            "the identity of the minted key {key} must end BEFORE the `@`"
-        );
-        assert!(
-            key.starts_with(identity),
-            "every minted key must begin with its own batch identity ({key})"
-        );
-        generations
-            .entry(identity.to_string())
-            .or_default()
-            .insert(generation.to_string());
-    }
-
-    for (identity, seen) in &generations {
-        assert_eq!(
-            seen.len(),
-            1,
-            "one walk records one generation per batch identity; {identity} was cut with {seen:?}, \
-             so two files have collapsed onto one identity and each retires the other's batch"
-        );
-    }
-    assert!(
-        generations.keys().any(|i| i.contains('@')),
-        "sanity: the tree under test must really mint a key whose file span carries the format's \
-         own `@`; got {:?}",
-        generations.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        generations.keys().any(|i| i.starts_with("gc/"))
-            && generations.keys().any(|i| i.starts_with("gd/")),
-        "sanity: both halves of the derived index must have minted keys; got {:?}",
-        generations.keys().collect::<Vec<_>>()
     );
 }

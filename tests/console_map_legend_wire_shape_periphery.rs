@@ -15,7 +15,7 @@
 //! duplication sweep: this file is the SECOND wire-shape suite that needs it, so it moved to the
 //! shared module rather than being pasted again).
 
-mod common;
+use crate::common;
 
 use common::json_object_keys;
 use rigger::console::map;

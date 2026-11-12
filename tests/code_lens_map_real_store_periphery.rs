@@ -5,86 +5,65 @@
 //! degeneration this spec exists to fix."
 //!
 //! "This repository's real store" here means this project's OWN real source tree
-//! (`env!("CARGO_MANIFEST_DIR")/src`), ingested through the SAME production entry points a cold
-//! `rigger graph build` + `rigger graph communities` use
-//! (`grounder::symbols::events::project_batches`, `community::Coupling::from_graph`/`detect`/
-//! `events`) - never a hand-typed fixture graph, and never dependent on a specific operator's own
-//! `.rigger/graph.db` (which a fresh checkout, a CI runner, or this very unit's own isolated
-//! worktree does not carry - there is no prior run history to read here). This reproduces spec
-//! 84's own Goal exactly: communities that form by REAL file co-location, at real repository
-//! scale - the thing a two-node hand fixture cannot exhibit.
+//! (`env!("CARGO_MANIFEST_DIR")/src`), advanced into a code store and composed with an empty
+//! record half the way every reader composes it - never a hand-typed fixture graph, and never
+//! dependent on a specific operator's own store. This reproduces spec 84's own Goal exactly:
+//! communities that form by REAL file co-location, at real repository scale - the thing a
+//! two-node hand fixture cannot exhibit.
 //!
-//! Gated on `symbols` (the tree-sitter extraction pass `project_batches` needs), mirroring
-//! `live_project_ingestion.rs`'s own per-test gate - the light (`--no-default-features`) lane
-//! compiles this file to nothing rather than fail to find the extraction module.
+//! Gated on `symbols` (the extractors the code store reads the tree with) - the light
+//! (`--no-default-features`) lane compiles this file to nothing.
 
-// Every use of these lives behind `#[cfg(feature = "symbols")]` below (the extraction pass this
-// whole file exists to drive against), so the imports themselves are gated too - otherwise the
-// light (`--no-default-features`) lane would compile this file down to nothing BUT these
-// top-level imports and flag every one of them unused.
 #[cfg(feature = "symbols")]
-mod common;
-#[cfg(feature = "symbols")]
-use rigger::community;
+use crate::common;
 #[cfg(feature = "symbols")]
 use rigger::console::map;
 #[cfg(feature = "symbols")]
-use rigger::contextgraph::sqlite::Projector;
-#[cfg(feature = "symbols")]
-use rigger::contextgraph::Graph;
+use rigger::contextgraph::{ContextGraph, Graph};
 
-/// Ingest this repository's own `src/` tree into a fresh in-memory projection, run the real
-/// community-detection pass over its real coupling layer, and return the resulting live graph -
-/// the "real store" this criterion's rendering claim is proven against.
+/// Copy every file under `from` into `to`, keeping relative paths.
+#[cfg(feature = "symbols")]
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            std::fs::create_dir_all(&target).unwrap();
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// This repository's own `src/` tree advanced into a code store, composed with an empty record
+/// half: its code facts with the communities the store grouped them into - the "real store"
+/// this criterion's rendering claim is proven against.
 #[cfg(feature = "symbols")]
 fn real_graph() -> Graph {
-    use rigger::grounder::symbols::events::project_batches;
+    use rigger::code_store::CodeStore;
+    use rigger_store::code::Mode;
 
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-    let batches = project_batches(root);
-    assert!(
-        !batches.is_empty(),
-        "this repository's own src/ tree must yield extraction batches - a barren tree would \
-         silently make this test's 'real store' claim vacuous"
+    let dir = tempfile::tempdir().unwrap();
+    copy_tree(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+        dir.path(),
     );
-
-    let projector = Projector::open(":memory:", "code-lens-map-real-store-test")
-        .expect("open an in-memory projection");
-    // `project_batches` mints raw events via `Event::new` (position 0 - the STORE's own job to
-    // stamp on append, per that constructor's own doc); the projector's idempotency guard keys on
-    // `position` being globally unique (`INSERT OR IGNORE INTO applied (position)`), so folding
-    // straight off `Event::new`'s default would apply only the very first position-0 event and
-    // silently `IGNORE` every other one. Stamp a real, strictly-increasing position onto every
-    // event before folding - exactly what a real store append does - so this in-memory projection
-    // folds its whole real batch, not a near-empty one.
-    let mut next_position: u64 = 1;
-    for (_, events, _) in &batches {
-        let mut stamped = events.clone();
-        for e in &mut stamped {
-            e.position = next_position;
-            next_position += 1;
-        }
-        common::fixtures::folds(&projector, &stamped);
-    }
-
-    let whole = projector.whole().expect("read the whole live projection");
-    let coupling = community::Coupling::from_graph(&whole);
+    let view = CodeStore::in_directory(dir.path())
+        .open(Mode::Write)
+        .expect("the code store advances over this repository's src/ tree")
+        .view;
     assert!(
-        !coupling.is_empty(),
-        "this repository's own coupling layer must be non-empty - the community-detection pass \
-         this criterion's districts read needs real coupling edges to group"
+        !rigger_domain::code_view::CodeView::groupings(&view)
+            .communities
+            .is_empty(),
+        "this repository's own tree must group into communities - the districts this criterion \
+         reads"
     );
-    let assignment = community::detect(&coupling, community::DEFAULT_RESOLUTION);
-    let mut community_events = community::events(&assignment);
-    for e in &mut community_events {
-        e.position = next_position;
-        next_position += 1;
-    }
-    common::fixtures::folds(&projector, &community_events);
-
-    projector
+    let records = rigger::composed::Indexed::new(Graph::default(), Vec::new());
+    common::fixtures::view_graph(&records, &view)
         .whole()
-        .expect("read the community-derived live projection")
+        .expect("read the composed graph")
 }
 
 /// THE MAP LANDS LABELLED (spec 84 criterion 1's own Done-when, verbatim): "opening the code
@@ -219,7 +198,7 @@ fn frame_at_full_extent_completes_under_8ms_of_core_time_against_the_real_store(
 /// kinds (`method`, `module`) are the test author's own educated guess at what a real extractor
 /// emits, never verified against the extractor itself. This repository's own real store is the
 /// one place that guess is actually checked: every kind THIS repository's own extraction pass
-/// (`crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_of` / `events.rs::kind_str`) really assigns to a drawn
+/// (`crates/rigger-grounder/src/grounder/symbols/extract.rs::kind_of` / `kind_str`) really assigns to a drawn
 /// entity must resolve through `kind_colour` without panicking, named or default - proving the
 /// documented four-plus-default palette is exhaustive against the real extractor's real output,
 /// not just the fixture author's guess of what that output would be. (`legend`'s own wire colour

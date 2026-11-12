@@ -7,7 +7,7 @@ C library, `Cargo.toml:150`) behind a five-method port (`EventStore`, `crates/ri
 The engine is the one C dependency in the build, it knows nothing of runs, and it is the
 reason the `store` lane cannot join the pure `core` lane. This project's log holds 2,497,006
 events in 1.44 GB, of which 149 runs' mechanics and 17,424 knowledge events are the only
-content the log is truth for once specs 101 and 107 land. This spec ships sections 5.1-5.4,
+content the log is truth for once specs 101 and the code store land. This spec ships sections 5.1-5.4,
 5.6, 5.8 and 5.9 of docs/architecture-addendum-the-owned-store.md: the log becomes a
 sequence of immutable per-run segment files written by rigger itself, and the SQL log backend
 is deleted.
@@ -15,19 +15,21 @@ is deleted.
 ## Design
 
 THE RECORD, decided: `len u32 | pos u64 | kind u8 | payload | crc32`, little-endian, payload
-the event's JSON exactly as the port receives it today, `kind` 0 = event, 1 = ledger, 2 =
-progress. CRC-32 (IEEE) is table-driven in `src/store/crc.rs`; no crate.
+the event's JSON exactly as the port receives it today, `kind` 0 = event, 2 = progress.
+The magic and version header, the CRC-32 table, the section table, the atomic publish and the
+lock are the code store's `format` module (`rigger-store/src/format.rs`), used here unchanged.
 
 THE SEGMENT, decided: `.rigger/store/segments/<first-position, 15 digits>.seg`. One segment
 is active; it seals when the run that opened it reaches a terminal state or at 64 MB. Sealing
 appends a footer: position range, run id, per-type position list, per-stream live-record
-count, per-file latest ledger generation, record count, digest, and a trailer
+count, record count, digest, and a trailer
 `footer_len u32 | magic`. A segment without a trailer is active or torn. No segment
 spans two runs; a run may span several.
 
 THE MANIFEST, decided: `.rigger/store/MANIFEST`, format-tagged, lists every sealed segment
-(name, range, run, digest), the active segment, the ledger segment and the format version;
-replaced by temp + fsync + rename, only by the mount owner (spec 111) or, before spec 111
+(name, range, run, digest), the active segment and the format version; it sits beside
+`store/code/` and is published by the CURRENT-pointer convention the code store uses, replaced
+by temp + fsync + rename, only by the mount owner (spec 111) or, before spec 111
 lands, by whichever process holds the `OWNER` lock for the operation. A file the manifest
 does not name is garbage.
 
@@ -37,8 +39,7 @@ for one batch only. Positions are contiguous `u64` across segments as today.
 
 READING, decided: `read_stream(from)` maps only the segments whose range intersects;
 `read_stream_typed(type)` walks footers' type lists and scans the active segment;
-`last_position(stream, type)` walks footers backward and stops at the first non-empty list;
-spec 101's latest-generation question is answered from the footers' per-file maps. No read
+`last_position(stream, type)` walks footers backward and stops at the first non-empty list. No read
 path touches a record outside the answer except within the active segment.
 
 REVISION IS COMPUTED, decided: a record's revision is its rank among the live records of its
@@ -83,8 +84,8 @@ Archive (spec 114) - replaces sealed segments through the manifest, never touche
 
 ## Notes (non-criteria)
 
-The store module layout is `src/store/{crc,record,segment,manifest,journal,reader,watch}.rs`
-behind the two existing ports; nothing above the ports changes. Footer type lists are
+The store module layout is a `segments` module (record, segment, manifest, journal, reader,
+watch) in `rigger-store`, beside `format` and `code`, behind the two existing ports; nothing above the ports changes. Footer type lists are
 `(type_name, [pos])` sorted by type; a segment of 90,000 events (this run) has a footer near
 400 KB.
 
@@ -113,9 +114,8 @@ behind the two existing ports; nothing above the ports changes. Footer type list
   produce contiguous positions with no interleaved bytes and the lock is never held across a
   read, pinned by a lock-hold timer in the journal seam. This criterion OWNS the JOURNAL
   lock's discipline.
-- [ ] a test proves READS COST THEIR ANSWER: `read_stream_typed`, `last_position` and the
-  latest-generation query over a store of 200,000 records in ten sealed segments touch only
-  footers plus the matching records, asserted through a counting reader double, and a
+- [ ] a test proves READS COST THEIR ANSWER: `read_stream_typed` and `last_position` over a
+  store of 200,000 records in ten sealed segments touch only footers plus the matching records, asserted through a counting reader double, and a
   stream's revisions stay contiguous across a compaction that removes its records. This
   criterion OWNS the read paths and the computed revision; the port contract itself is spec
   101's.

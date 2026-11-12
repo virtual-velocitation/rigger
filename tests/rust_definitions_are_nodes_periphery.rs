@@ -1,17 +1,14 @@
 //! Periphery (contract and integration) tests for spec 116 criterion 6, RUST DEFINITIONS ARE
 //! NODES: every Rust definition type is a definition of its kind. The crate's own tests pin the
-//! rule on the extracted symbols; these run OUTSIDE the crate and guard the two boundaries the
+//! rule on the extracted symbols; these run OUTSIDE the crate and guard the boundary the
 //! rule crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds from the Rust definitions fixture: each definition is
 //!    a node carrying its kind string and line, a test-attributed member is no node while its
-//!    owner and its siblings are, and each call hangs off the caller the fixture gives it;
-//!  - the persisted symbol index: the variant names `Static`, `Variant` and `Field`, which the
-//!    three kinds a Rust data definition takes are written under and read back from.
+//!    owner and its siblings are, and each call hangs off the caller the fixture gives it.
 
-mod common;
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 rigger::test_cases! {
     /// GIVEN a project whose one Rust file is the Rust definitions fixture,
@@ -98,16 +95,5 @@ rigger::test_cases! {
             ],
             "every code entity of the built graph: one per production definition at its path, none \
              for a test-attributed member, one placeholder per undefined name a reference reaches",
-        );
-    /// The persisted index writes a static, a variant and a field under the variant names
-    /// `Static`, `Variant` and `Field`, and reads each back as the kind it was saved as.
-    the_three_rust_data_kinds_persist_under_their_variant_names_and_reload:
-        symbol_index::assert_kinds_persist_under_their_variant_names(
-            "a.rs",
-            &[
-                (rigger::grounder::symbols::model::Kind::Field, "f", "Field"),
-                (rigger::grounder::symbols::model::Kind::Static, "s", "Static"),
-                (rigger::grounder::symbols::model::Kind::Variant, "v", "Variant"),
-            ],
         );
 }

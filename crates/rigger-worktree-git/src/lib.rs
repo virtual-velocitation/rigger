@@ -5,6 +5,10 @@
 //! under its historical `rigger::worktree` path.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod discover;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod tree_source;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod worktree;
 
 // The modules the moved code names by their historical `crate::` paths.

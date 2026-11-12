@@ -157,7 +157,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-mod common;
+use crate::common;
 use common::fixtures::bare_deps;
 use common::git::git_ok;
 
@@ -1213,7 +1213,7 @@ fn assert_a_crash_inside_the_adoption_window_recovers_it(
     }
 
     // RESUME: a real second `run()` call against the SAME store and repo - exactly what
-    // a fresh `rigger step` process does after the crash.
+    // a relaunched `rigger run` process does after the crash.
     let driver2 = ProposesSlugDriver {
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
@@ -1930,7 +1930,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
 
     // RESUME: a real second `run()` call reuses the identical literal slug for an
     // unrelated criterion/spec - the SAME collision that would have driven the original
-    // (pre-crash) quarantine attempt - exactly what a fresh `rigger step` process
+    // (pre-crash) quarantine attempt - exactly what a relaunched `rigger run` process
     // recomputes after the crash.
     let criterion_y = "the fan independently reports its own duty cycle on every poll";
     let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";

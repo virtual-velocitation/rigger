@@ -30,7 +30,7 @@
 //! built to fail exactly that regression, driven through the public entry rather than
 //! canary.rs's internals.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Condvar, Mutex};

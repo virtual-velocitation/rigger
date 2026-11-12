@@ -568,8 +568,7 @@ impl Driver<'_> {
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
     /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
     /// ([`Driver::silence`]), not total run time and not the bare wall time since the last
-    /// line, mirroring `liveness::sweep`'s own reading for the external stepwise driver, but
-    /// enforced HERE because this host has no external stepper polling a marker file. Silent
+    /// line, enforced HERE because nothing outside this host polls a marker file. Silent
     /// time can pass the bound no sooner than the wall time since the last line does, so a
     /// line costs no read: the records are read only on a wake at that point, and a wake under
     /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
@@ -577,8 +576,7 @@ impl Driver<'_> {
     /// result exists runs THE STOP sequence (close the session's input ([`Pipes::close_input`]),
     /// wait [`Driver::stop_grace`], end the child via [`crate::reap::end_child`] - the handle-bound
     /// production helper, never a computed pid) and, short of THE RESUME FALLBACK below, records
-    /// the EXISTING [`SpawnResult::liveness_fault`] shape, same as `liveness::sweep`'s own fault
-    /// for the stepwise driver, just recorded HERE rather than by an external sweep. An expiry
+    /// the EXISTING [`SpawnResult::liveness_fault`] shape, recorded HERE by this host. An expiry
     /// AFTER a result already landed is not a stop at all - it degrades to the SAME soft-break the
     /// post-result read-error path already takes (round-2 precedent), letting the existing reap
     /// decide the child's fate.
@@ -929,9 +927,9 @@ impl Driver<'_> {
                 (Some("result"), _) if result.is_none() && !errored => {
                     errored = result_errored(&v);
                     if !errored {
-                        // The real result supersedes a liveness fault a courier recorded for
-                        // a launch this one replaced, and lands nothing beside a real result
-                        // already standing.
+                        // The real result supersedes a liveness fault recorded for a launch
+                        // this one replaced, and lands nothing beside a real result already
+                        // standing.
                         let res = spawn_result_from(&v, opts, &resolved_model);
                         spawn_store::record_result_unless_ended(self.run_store, &res)?;
                         self.close(opts, id, progress::ENDED_COMPLETED, "");
@@ -1381,8 +1379,7 @@ impl Driver<'_> {
     /// stays a failure from this driver's own return value, exactly like the "agent stream
     /// ended with no result" ending just above; a caller wanting the no-attempt-charged
     /// semantics reads [`SpawnResult::is_liveness_fault`] off the run store this durably
-    /// wrote, the SAME way `liveness::sweep`'s callers already do for the stepwise driver's
-    /// own fault. A resume that never showed its session never comes here: its arm runs the
+    /// wrote. A resume that never showed its session never comes here: its arm runs the
     /// sequence with no line yet and reads the hold behind it, since no fault stands for a session
     /// that was never there to go silent, so on a run proved unheld it takes the fallback
     /// ([`Driver::session_gone`]), and on any other the same line and ending as here.
@@ -1420,10 +1417,9 @@ impl Driver<'_> {
         message: String,
         assistant_error: Option<&str>,
     ) -> Result<StreamEnd, Error> {
-        // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
-        // shape `liveness::sweep` already records for the stepwise driver's own hung
-        // agent, so every downstream reader (the not-yet-recovered surface, last-write-
-        // wins recovery) treats a wall-clock STOP identically to a marker-staleness fault.
+        // "the existing liveness-fault result is recorded" - the one [`SpawnResult`] shape
+        // every downstream reader (the not-yet-recovered surface, last-write-wins recovery)
+        // reads as a hung agent.
         let fault = SpawnResult::liveness_fault(
             opts.id.clone(),
             message.clone(),
@@ -1781,8 +1777,7 @@ impl AgentDriver for Driver<'_> {
             }
         };
         // This call's terminus: `read_stream` reaped the session (or the launch never started
-        // one), whatever its outcome, and this host records its result directly, never through
-        // the `rigger result` courier that reclaims a stepwise spawn's scratch - so reclaim the
+        // one), whatever its outcome, and this host records its result directly - so reclaim the
         // scratch its spawn MCP server names (`rigger_scratch`, under this host's own scratch
         // root) and its system-prompt file sits in here.
         reclaim_spawn_registered_scratch(&self.scratch_root, &opts.run_id, &opts.id);
@@ -1876,7 +1871,7 @@ fn canary_args(model: &str) -> Vec<String> {
 }
 
 /// Touch `marker` (create it, or bump its mtime if it already exists) so a fresh liveness
-/// read from `rigger step`/the dash sees this spawn as alive - the pure filesystem side
+/// read from `rigger status`/the dash sees this spawn as alive - the pure filesystem side
 /// of `liveness::marker_path`'s contract. `None` (no scratch root, or a degenerate id
 /// `marker_path` itself declines - see its doc) is a silent no-op, mirroring every other
 /// caller's "no marker: leave it alone" convention. Best-effort throughout: a liveness
@@ -2031,10 +2026,8 @@ fn api_retry_line(v: &Value) -> String {
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
 /// [`SpawnResult::liveness_fault`]'s `error` text and this driver's own returned `Err` -
-/// the ONE place that wording is assembled, mirroring [`crate::liveness::stale_result_message`]'s
-/// role for the stepwise driver's own hung-agent fault, but naming THIS host's own
-/// mechanism (stream silence against `max_wall_clock`) rather than a stale marker file,
-/// since this driver enforces it in-process rather than through an external sweep.
+/// the ONE place that wording is assembled, naming the host's own mechanism (stream silence
+/// against `max_wall_clock`).
 fn stop_message(spawn_id: &str, max_wall_clock: u64) -> String {
     format!(
         "spawn {spawn_id:?} stopped: its agent stream stayed silent for {max_wall_clock}s \
@@ -2231,6 +2224,7 @@ pub fn build_args(
         "settings",
     )?;
     args.extend(spawn_config_args(
+        agent,
         rigger_bin,
         &["mcp", "--spawn", &opts.id],
         &settings,

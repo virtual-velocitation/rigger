@@ -41,8 +41,9 @@ const LITERAL_MARKER: &str = "--literal";
 /// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
 /// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
 /// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
-/// every `grep`-invoking `Bash` command is denied inside a rigger project, with no
-/// path/target ever inspected. Pure (no I/O), so the decision is unit-testable against
+/// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, `git grep`
+/// or `rg`, or a `sed` or `awk` pattern search) is denied inside a rigger project, with no path/target ever
+/// inspected. Pure (no I/O), so the decision is unit-testable against
 /// synthesized hook payloads without spawning a real hook process. A [`LITERAL_MARKER`] in a
 /// shell comment of a `Bash` `grep` command is the sole, deliberate escape hatch (Design's
 /// CONSTRAINTS WALK: "a literal-text lookup - `--literal` passes the hook"); a bare
@@ -59,8 +60,9 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
             let words = shell_words(command);
-            let invokes_grep = words.argv.iter().any(|w| word_basename(w) == "grep");
-            if invokes_grep && !words.comments.iter().any(|w| w == LITERAL_MARKER) {
+            if invokes_name_search(&words.argv)
+                && !words.comments.iter().any(|w| w == LITERAL_MARKER)
+            {
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
             } else {
                 GuardDecision::Allow
@@ -164,13 +166,89 @@ fn shell_words(command: &str) -> ShellWords {
 /// regardless of how it was invoked (reject-fix round 5,
 /// adv-u92c4-r4-path-qualified-grep-bypasses-command-check: `/usr/bin/grep`, `./grep` and
 /// `bin/grep` all name the binary a bare `grep` does). Comparing the basename for equality,
-/// never a substring, keeps `zgrep` or `--grep-something` out: the literal command name the
-/// Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep`.
+/// never a substring, keeps `zgrep` or `--grep-something` out: only the literal command names
+/// [`invokes_name_search`] lists match.
 fn word_basename(word: &str) -> &str {
     match word.rsplit_once('/') {
         Some((_, base)) => base,
         None => word,
     }
+}
+
+/// Whether one command line's [`shell_words`] argv searches for a name: a `grep` (a `git grep`
+/// among them, its `grep` word matching wherever it falls in the argv), an `rg`, a `sed` whose
+/// script selects lines by a pattern address, or an `awk` whose program matches a pattern. A
+/// `sed` that reads a line range or edits, and an `awk` that prints fields or ranges over line
+/// numbers, look for nothing and pass, as does a script read from a file, which the command line
+/// does not show.
+fn invokes_name_search(argv: &[String]) -> bool {
+    argv.iter().enumerate().any(|(i, word)| {
+        let after = &argv[i + 1..];
+        match word_basename(word) {
+            "grep" | "rg" => true,
+            "sed" => inline_scripts(after, &["-l"])
+                .iter()
+                .any(|s| sed_selects_by_pattern(s)),
+            "awk" | "gawk" | "mawk" | "nawk" => inline_scripts(after, &["-F", "-v"])
+                .iter()
+                .any(|p| awk_matches_a_pattern(p)),
+            _ => false,
+        }
+    })
+}
+
+/// The inline scripts a `sed` or `awk` runs, read from the words after its name: every `-e` or
+/// `--expression=` value, else the first word that is neither an option nor the value of one of
+/// `valued` (the options that take a separate value). Empty when the script comes from a file
+/// (`-f`, `--file`).
+fn inline_scripts<'a>(after: &'a [String], valued: &[&str]) -> Vec<&'a str> {
+    let mut scripts = Vec::new();
+    let mut words = after.iter().map(String::as_str);
+    while let Some(word) = words.next() {
+        match word {
+            "-f" | "--file" => return Vec::new(),
+            _ if word.starts_with("--file=") => return Vec::new(),
+            "-e" | "--expression" => scripts.extend(words.next()),
+            _ if word.starts_with("--expression=") => {
+                scripts.push(&word["--expression=".len()..]);
+            }
+            _ if valued.contains(&word) => {
+                words.next();
+            }
+            _ if word.starts_with('-') => {}
+            _ => {
+                if scripts.is_empty() {
+                    scripts.push(word);
+                }
+                break;
+            }
+        }
+    }
+    scripts
+}
+
+/// Whether a `sed` script selects lines by a pattern: one of its `;`- or newline-separated
+/// commands is addressed by a `/re/` or `\cREc` pattern, alone or as the second address of a
+/// line range (`10,/re/`). A line range (`1,40p`), a substitution (`s/a/b/`) and a last-line
+/// address (`$p`) select by no pattern.
+fn sed_selects_by_pattern(script: &str) -> bool {
+    script.split([';', '\n']).any(|command| {
+        let line_address = |c: char| c.is_ascii_digit() || c == '$';
+        let rest = command.trim_start().trim_start_matches(line_address);
+        let rest = rest.strip_prefix(',').unwrap_or(rest);
+        rest.starts_with('/') || rest.starts_with('\\')
+    })
+}
+
+/// Whether an `awk` program matches a pattern: its pattern (the text before the first action
+/// brace) holds a `/re/`, or the program uses the `~` match operator, `match(` or `index(`. A
+/// program that prints fields or ranges over line numbers matches none.
+fn awk_matches_a_pattern(program: &str) -> bool {
+    let pattern = program.split('{').next().unwrap_or("");
+    pattern.contains('/')
+        || program.contains('~')
+        || program.contains("match(")
+        || program.contains("index(")
 }
 
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
@@ -586,7 +664,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
         )?)
     })?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
-    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record_stop_failure(
         &prog_store,
         &run_id,
@@ -895,6 +973,96 @@ mod tests {
                 "a # that opens no comment, or a comment ended by its newline, must not hide \
                  the grep: {command:?}"
             );
+        }
+    }
+
+    /// A `sed` or `awk` whose script selects lines by a pattern is a name search exactly like a
+    /// grep, so it is denied unless it carries the `# --literal` comment; one that reads a line
+    /// range, edits, or prints fields searches for nothing and passes.
+    #[test]
+    fn grep_guard_decision_treats_a_sed_or_awk_pattern_search_as_a_grep() {
+        let deny = GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string());
+        let rows = [
+            ("sed -n '/fn spawn_config_args/p' src/a.rs", &deny),
+            ("sed -n '/start/,/end/p' src/a.rs", &deny),
+            ("sed -n '10,/end/p' src/a.rs", &deny),
+            ("sed -n -e '/needle/=' src/a.rs", &deny),
+            ("sed -n --expression='/needle/p' src/a.rs", &deny),
+            (r"sed -n '\%needle%p' src/a.rs", &deny),
+            ("cat src/a.rs | /bin/sed -n '/needle/p'", &deny),
+            ("awk '/needle/' src/a.rs", &deny),
+            ("awk -F: '/needle/ {print $1}' src/a.rs", &deny),
+            ("awk '$0 ~ \"needle\"' src/a.rs", &deny),
+            ("gawk 'match($0, /needle/)' src/a.rs", &deny),
+            ("sed -n '1,40p' src/a.rs", &GuardDecision::Allow),
+            ("sed -n 12p src/a.rs", &GuardDecision::Allow),
+            ("sed -i 's/old/new/' src/a.rs", &GuardDecision::Allow),
+            ("awk '{print $1}' src/a.rs", &GuardDecision::Allow),
+            ("awk 'NR>=10 && NR<=20' src/a.rs", &GuardDecision::Allow),
+            ("awk -f prog.awk src/a.rs", &GuardDecision::Allow),
+            (
+                "sed -n '/needle/p' src/a.rs # --literal",
+                &GuardDecision::Allow,
+            ),
+            ("awk '/needle/' src/a.rs # --literal", &GuardDecision::Allow),
+        ];
+        for (command, expected) in rows {
+            assert_eq!(
+                &grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                expected,
+                "{command:?}"
+            );
+        }
+    }
+
+    /// An `rg` and a `git grep` are name searches exactly like a grep, whatever their path or
+    /// options, so each is denied with the message that names the graph call unless it carries
+    /// the `# --literal` comment; a git command that is not `grep` passes.
+    #[test]
+    fn grep_guard_decision_treats_rg_and_git_grep_as_a_grep() {
+        let deny = GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string());
+        let rows = [
+            ("rg spawn_config_args src/", &deny),
+            ("rg -n 'fn spawn_config_args' .", &deny),
+            ("/usr/bin/rg needle", &deny),
+            ("cat src/a.rs | rg needle", &deny),
+            ("git grep -n spawn_config_args", &deny),
+            ("git -C ../other grep needle -- src", &deny),
+            ("rg needle src/ # --literal", &GuardDecision::Allow),
+            ("git grep -n needle # --literal", &GuardDecision::Allow),
+            ("git log --oneline -3", &GuardDecision::Allow),
+        ];
+        for (command, expected) in rows {
+            assert_eq!(
+                &grep_guard_decision("Bash", &serde_json::json!({ "command": command })),
+                expected,
+                "{command:?}"
+            );
+        }
+    }
+
+    /// The denial answers the question the search was asking before it names the escape: the
+    /// combined lookup first, then who calls a name is `rigger_graph` around it and where a name
+    /// is defined is `rigger_graph` show it, all ahead of the `# --literal` comment.
+    #[test]
+    fn grep_guard_message_names_the_graph_call_before_the_literal_escape() {
+        let escape = GREP_GUARD_MESSAGE
+            .find("# --literal")
+            .expect("the message names the escape");
+        let mut previous = 0;
+        for call in [
+            "rigger_graph `lookup` <term>...",
+            "rigger_graph `around` <name>",
+            "rigger_graph `show` <name>",
+        ] {
+            let at = GREP_GUARD_MESSAGE
+                .find(call)
+                .unwrap_or_else(|| panic!("the message names {call:?}: {GREP_GUARD_MESSAGE}"));
+            assert!(
+                previous <= at && at < escape,
+                "{call:?} comes in order, before the escape: {GREP_GUARD_MESSAGE}"
+            );
+            previous = at;
         }
     }
 

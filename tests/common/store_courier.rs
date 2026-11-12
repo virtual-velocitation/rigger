@@ -1,6 +1,6 @@
 //! Shared support for the store-resolution suites that drive a BARE courier
-//! (`tests/store_resolution_cli.rs`, `tests/store_secrets.rs`). Included by each suite through
-//! `#[path]`, next to its own `mod common;`.
+//! (`tests/store_resolution_cli.rs`, `tests/store_secrets.rs`).
+//! Mounted once by `tests/all.rs`; a suite reaches it with `use crate::store_courier;`.
 
 use std::path::Path;
 use std::process::Output;

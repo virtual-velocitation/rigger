@@ -110,11 +110,17 @@ pub fn start_failure(
 /// container running - and re-raise a panic `body` raised, so a failed assertion still fails the
 /// test. When no container runtime is reachable `body` never runs and the test passes as skipped.
 pub fn with_kurrentdb(body: impl FnOnce(&str)) {
+    with_kurrentdb_container(|conn, _| body(conn));
+}
+
+/// [`with_kurrentdb`] with `body` also handed the id of the server's container.
+pub fn with_kurrentdb_container(body: impl FnOnce(&str, &str)) {
     let rt = container_runtime();
     let Some((container, conn)) = start_kurrentdb(&rt) else {
         return; // no container runtime: gracefully skipped
     };
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&conn)));
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&conn, container.id())));
     let _ = rt.block_on(container.rm());
     if let Err(e) = result {
         std::panic::resume_unwind(e);
@@ -130,6 +136,31 @@ pub fn container_runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("a runtime to drive the container")
+}
+
+/// The labels on container `id` and the host ports it publishes, read through the runtime the
+/// environment names. It inspects that one container, so another container's state - rootless
+/// podman reports one mid-stop as `stopping`, a state bollard cannot deserialize - never reaches
+/// the read, which a listing of every container on the host would.
+pub fn container_labels_and_host_ports(
+    id: &str,
+) -> Result<(HashMap<String, String>, Vec<u16>), BollardError> {
+    use testcontainers::bollard::Docker;
+    let inspected = container_runtime().block_on(async {
+        Docker::connect_with_defaults()?
+            .inspect_container(id, None)
+            .await
+    })?;
+    let labels = inspected.config.and_then(|c| c.labels).unwrap_or_default();
+    let ports = inspected
+        .network_settings
+        .and_then(|n| n.ports)
+        .into_iter()
+        .flatten()
+        .flat_map(|(_, bindings)| bindings.into_iter().flatten())
+        .filter_map(|b| b.host_port?.parse().ok())
+        .collect();
+    Ok((labels, ports))
 }
 
 /// Boot a single-node, insecure, in-memory KurrentDB and return it with a connection string

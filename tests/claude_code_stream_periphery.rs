@@ -4555,8 +4555,7 @@ fn a_release_behind_the_hosts_held_read_relaunches_the_session_naming_the_hold()
         hold_sink: Some(&run),
         ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
     };
-    let held =
-        rigger::held::HeldDriver::new(&host, &run, rigger::held::Results::Recorded, None, &|| {});
+    let held = rigger::held::HeldDriver::new(&host, &run, &|| {});
 
     let outcome = held.spawn(
         &AgentDef::default(),

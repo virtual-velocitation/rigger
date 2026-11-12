@@ -1,7 +1,7 @@
 //! The source-hygiene check of a retired cargo feature, shared by the suites that retire one
-//! (`tests/kurrentdb_always_available.rs`, `tests/turbovec_retired.rs`). Included by path
-//! (`#[path = "common/retired_feature.rs"] mod retired_feature;`) next to `mod common;`,
-//! whose `repo` walker it drives.
+//! (`tests/kurrentdb_always_available.rs`, `tests/turbovec_retired.rs`).
+//! Mounted once by `tests/all.rs`; a suite reaches it with `use crate::retired_feature;`.
+//! It drives `common::repo`'s walker.
 
 use std::path::PathBuf;
 

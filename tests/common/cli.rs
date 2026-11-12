@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rigger::config::RIGGER_DIR;
 use rigger::contextgraph::sqlite::Projector;
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::{Edge, Error as GraphError, Graph, Node};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
@@ -129,17 +131,26 @@ pub fn propose_unit_via_rigger_emit(root: &Path, spawn: &str, body: &serde_json:
     );
 }
 
-/// Answer the parked planner spawn `spawn` as a courier does: its proposal of the one
-/// [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), handed to `agent`, then its result.
-pub fn plan_the_widget(root: &Path, spawn: &str, agent: &str) {
-    let unit = serde_json::json!({
+/// The planner's proposal of the one [`WIDGET_UNIT`](super::fixtures::WIDGET_UNIT), covering
+/// [`WIDGET_CRITERION`](super::fixtures::WIDGET_CRITERION), handed to `agent`.
+pub fn widget_unit(agent: &str) -> serde_json::Value {
+    serde_json::json!({
         "id": super::fixtures::WIDGET_UNIT,
         "agent": agent,
         "criterion": super::fixtures::WIDGET_CRITERION,
         "needs": [],
-    });
-    propose_unit_via_rigger_emit(root, spawn, &unit);
-    run_rigger_ok(root, &["result", spawn, "proposed the DAG"]);
+    })
+}
+
+/// The shell an arm of [`install_fake_claude`] runs to record `unit` as the running spawn's
+/// `UnitProposed`, as a planner's bound record tool records it: the built binary's `rigger emit
+/// --spawn "$RIGGER_SPAWN"`, its output kept out of the session's answer, and a refused record
+/// failing the launch.
+pub fn emit_unit_proposed(unit: &serde_json::Value) -> String {
+    format!(
+        "    '{bin}' emit --spawn \"$RIGGER_SPAWN\" UnitProposed '{unit}' >&2 || exit 1\n",
+        bin = super::rigger_bin().display()
+    )
 }
 
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
@@ -306,12 +317,41 @@ pub fn assert_prime_names_the_shadowing_layer_states(cwd: &Path, envs: &[(&str, 
 }
 
 /// Run `rigger graph --around <seed> --depth <depth>` in `cwd` ([`run_rigger`]) and return
-/// (stdout, stderr, success).
+/// (stdout past the honesty label, stderr, success).
 pub fn run_around(cwd: &Path, seed: &str, depth: i64) -> (String, String, bool) {
-    run_rigger(
+    let (out, err, ok) = run_rigger(
         cwd,
         &["graph", "--around", seed, "--depth", &depth.to_string()],
-    )
+    );
+    (if ok { past_label(&out) } else { out }, err, ok)
+}
+
+/// `rigger <args>` at `root`, a graph read asserted to succeed, as its answer past the honesty
+/// label that heads it.
+pub fn graph_ok(root: &Path, args: &[&str]) -> String {
+    past_label(&run_rigger_ok(root, args))
+}
+
+/// A graph answer's stdout past the honesty label block that heads it (6.1): the label, which
+/// `around_prints_the_label_first` pins, and the hidden-test line placed under it when the tests
+/// filter hid tests proving the answer, which `around_and_show_count_the_hidden_tests_proving_what_they_show`
+/// pins.
+pub fn past_label(out: &str) -> String {
+    let (label, answer) = out.split_once('\n').unwrap_or((out, ""));
+    assert!(
+        label.starts_with("describes "),
+        "a graph answer opens with its honesty label; stdout:\n{out}"
+    );
+    let (first, rest) = answer.split_once('\n').unwrap_or((answer, ""));
+    let counted = first
+        .split_once(' ')
+        .and_then(|(n, _)| n.parse().ok())
+        .and_then(rigger::code_view::tests_hidden_line);
+    if counted.as_deref() == Some(first) {
+        rest.to_string()
+    } else {
+        answer.to_string()
+    }
 }
 
 /// Every printed `node <id> <kind>` line of a `rigger graph --around` transcript, parsed into its
@@ -432,6 +472,10 @@ pub fn path_without(tool: &str) -> String {
 /// back to a caller that reaps the child itself.
 pub struct OwnedChild(Option<Child>);
 
+/// Why an [`OwnedChild`] always holds its handle: only [`OwnedChild::into_child`] gives it up,
+/// and that consumes the owner.
+const HELD: &str = "an owned child is held until it is handed back";
+
 impl OwnedChild {
     /// Own `child`.
     pub fn new(child: Child) -> Self {
@@ -440,16 +484,17 @@ impl OwnedChild {
 
     /// The owned handle.
     pub fn child(&mut self) -> &mut Child {
-        self.0
-            .as_mut()
-            .expect("an owned child is held until it is handed back")
+        self.0.as_mut().expect(HELD)
+    }
+
+    /// The owned child's OS process id.
+    pub fn id(&self) -> u32 {
+        self.0.as_ref().map(Child::id).expect(HELD)
     }
 
     /// The handle, handed back: its caller reaps the child.
     pub fn into_child(mut self) -> Child {
-        self.0
-            .take()
-            .expect("an owned child is held until it is handed back")
+        self.0.take().expect(HELD)
     }
 }
 
@@ -911,7 +956,7 @@ pub fn user_version(db: &Path) -> i64 {
 
 /// Whether an open of the `graph.db` at `db` for `project` owes a rebuild.
 pub fn rebuild_owed(db: &Path, project: &str) -> bool {
-    use rigger::contextgraph::Projection;
+    use rigger::contextgraph::RecordFold;
     Projector::open(db.to_str().unwrap(), project)
         .unwrap()
         .rebuild_owed()
@@ -1289,12 +1334,12 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
             rusqlite::params![
                 e.from,
                 e.to,
-                e.rel,
+                e.rel.as_str(),
                 e.valid_from,
                 e.valid_to,
                 e.source,
                 project,
-                e.tier
+                e.tier.as_str()
             ],
         )
         .unwrap();
@@ -1302,25 +1347,32 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
     planted
 }
 
-/// An alias the CLI's alias tests define of
-/// [`UNRESOLVED_FILE`](super::fixtures::UNRESOLVED_FILE) (spec 117).
-pub const UNRESOLVED_ALIAS: &str = "src/aka.rs";
+/// The file the one decision a [`governed_project`] holds governs.
+pub const GOVERNED_FILE: &str = "src/reader.rs";
 
-/// A [`temp_project`] whose own graph holds the rows
-/// [`seed_unresolved_references`](super::fixtures::seed_unresolved_references) stages (spec 117,
-/// UNRESOLVED REFERENCES ARE A READ).
-pub fn unresolved_project() -> tempfile::TempDir {
+/// An alias the CLI's failing-read tests define of [`GOVERNED_FILE`].
+pub const GOVERNED_ALIAS: &str = "src/aka.rs";
+
+/// A [`temp_project`] whose own graph holds one decision governing [`GOVERNED_FILE`].
+pub fn governed_project() -> tempfile::TempDir {
     let dir = temp_project();
     seed_rigger_dir(dir.path());
-    super::fixtures::seed_unresolved_references(&open_graph(dir.path()));
+    super::fixtures::apply_decision(
+        &open_graph(dir.path()),
+        1,
+        "d-reader",
+        "governs the reader",
+        &[GOVERNED_FILE],
+        "",
+    );
     dir
 }
 
-/// The error `rigger graph --around <seed> --depth 1` fails with over an [`unresolved_project`]
+/// The error `rigger graph --around <seed> --depth 1` fails with over a [`governed_project`]
 /// once `sql` ran on its graph, the command printing nothing on stdout and its stderr that error
 /// alone, behind the opening of a graph error's [`refusal_line`] ([`super::fixtures::graph_error`]).
-pub fn around_unresolved_fails_after(sql: &str, seed: &str) -> String {
-    let dir = unresolved_project();
+pub fn around_fails_after(sql: &str, seed: &str) -> String {
+    let dir = governed_project();
     rigger_db(dir.path(), "graph.db")
         .execute_batch(sql)
         .unwrap();
@@ -1348,9 +1400,9 @@ pub fn ambiguous_show(query: &str, cands: &[(&str, &str)]) -> String {
     out
 }
 
-/// Every line `rigger graph --show <query>` prints over `root`, in order.
+/// Every line `rigger graph --show <query>` prints over `root` past the honesty label, in order.
 pub fn show_lines(root: &Path, query: &str) -> Vec<String> {
-    run_rigger_ok(root, &["graph", "--show", query])
+    past_label(&run_rigger_ok(root, &["graph", "--show", query]))
         .lines()
         .map(str::to_string)
         .collect()
@@ -1364,7 +1416,7 @@ pub fn show_head(root: &Path, query: &str) -> Vec<String> {
     lines
 }
 
-/// `rigger graph --show <file>::<path>`'s stdout over `root` seeded as a project whose working
+/// `rigger graph --show <file>::<path>`'s stdout past the honesty label over `root` seeded as a project whose working
 /// tree holds `source` at `file` and whose graph records the definition at the id path `path`
 /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), named by the text after the path's last `::`, of
 /// kind `kind` at `line` in `lang`.
@@ -1379,6 +1431,14 @@ pub fn show_recorded(
 ) -> String {
     seed_rigger_dir(root);
     super::fixtures::write_text(root, file, source);
+    super::fixtures::commit_tree(root);
+    show_planted(root, file, path, kind, line, lang)
+}
+
+/// `rigger graph --show <file>::<path>`'s stdout past the honesty label once the graph records
+/// the definition at the id path `path` of `file`, named by the text after the path's last `::`,
+/// of kind `kind` at `line` in `lang`.
+fn show_planted(root: &Path, file: &str, path: &str, kind: &str, line: u64, lang: &str) -> String {
     let name = super::last_path_segment(path);
     super::fixtures::apply_json(
         &open_graph(root),
@@ -1386,37 +1446,24 @@ pub fn show_recorded(
         rigger::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
         super::fixtures::path_entity_json(file, name, path, kind, line, lang),
     );
-    run_rigger_ok(
+    past_label(&run_rigger_ok(
         root,
         &[
             "graph",
             "--show",
             &rigger::contextgraph::query::entity_id(file, path),
         ],
-    )
+    ))
 }
 
 /// The fold state of the graph at `graph_db` that decides how FUTURE events fold (spec 101, "the
-/// identity"): every recorded test reference and where it resolved (pending ones included), the restorable attrs a retired node keeps, each
-/// identity's current generation, the node and edge assertions of live generations (edges by their
-/// columns, never their row ids), and the detached attachments a returning node revives. Everything
-/// else in the file is history a compacted log no longer replays.
+/// identity"): the node assertions each record holds. Everything else in the file is history a
+/// compacted log no longer replays.
 pub fn fold_state(graph_db: &Path) -> Vec<String> {
     let conn = rusqlite::Connection::open(graph_db).unwrap();
     [
-        "SELECT project, name, file, evidence, source, target FROM proofs
-          ORDER BY project, name, file, source, evidence",
-        "SELECT project, id, attrs FROM retired_nodes WHERE attrs IS NOT NULL ORDER BY project, id",
-        "SELECT project, identity, generation FROM generations ORDER BY project, identity",
-        "SELECT project, identity, generation, node_id, kind, attrs FROM live_node_assertions
-          ORDER BY project, identity, node_id",
-        "SELECT a.project, a.identity, a.generation, e.from_id, e.to_id, e.rel, e.tier,
-                e.valid_from, e.valid_to, e.source
-           FROM live_edge_assertions a JOIN edges e ON e.id = a.edge_id
-          ORDER BY 1, 2, 3, 4, 5, 6, 7",
-        "SELECT d.project, d.node_id, e.to_id, e.rel, e.tier, e.valid_from, e.source
-           FROM detached_attachments d JOIN edges e ON e.id = d.edge_id
-          ORDER BY 1, 2, 3, 4",
+        "SELECT project, identity, generation, node_id, kind, attrs FROM node_assertions
+       ORDER BY project, identity, node_id",
     ]
     .into_iter()
     .flat_map(|sql| {
@@ -1602,21 +1649,19 @@ pub fn rebuilt_for_a_lost_fold() -> Vec<String> {
 }
 
 /// The [`rebuild_lines`] of a `rigger setup` that rebuilt a `graph.db` missing an event the log
-/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts events passed over, by cause:
-/// `rejected` rejected payloads, `failed` fold failures and `unresolved` entries resolved to nothing
-/// ([`passed_over_line`]).
-pub fn rebuilt_passing_over(rejected: usize, failed: usize, unresolved: usize) -> Vec<String> {
+/// holds ([`rebuilt_for_a_lost_fold`]) and that then counts `rejected` rejected payloads passed
+/// over ([`passed_over_line`]).
+pub fn rebuilt_passing_over(rejected: usize) -> Vec<String> {
     let mut lines = rebuilt_for_a_lost_fold();
-    lines.push(passed_over_line(rejected, failed, unresolved));
+    lines.push(passed_over_line(rejected));
     lines
 }
 
 /// The line `rigger setup` prints once its graph step ends while `graph.db` counts events passed
-/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, `failed` fold failures
-/// and `unresolved` entries resolved to nothing, counted by cause and in total
-/// ([`super::fixtures::passed_over_counts`]).
-pub fn passed_over_line(rejected: usize, failed: usize, unresolved: usize) -> String {
-    let (n, by_cause) = super::fixtures::passed_over_counts(rejected, failed, unresolved);
+/// over, by cause (spec 124, CATCH-UP LINES): `rejected` rejected payloads, counted by cause and in
+/// total ([`super::fixtures::passed_over_counts`]).
+pub fn passed_over_line(rejected: usize) -> String {
+    let (n, by_cause) = super::fixtures::passed_over_counts(rejected);
     format!(
         "passed over {n} event(s) the fold could not fold {by_cause}, recorded as folded - {}",
         super::fixtures::RETRIED_BY_A_LATER_RULE
@@ -1679,21 +1724,101 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
     })
 }
 
-/// The graph `rigger graph build` folds over a fresh [`temp_project`] holding each of `files`, a
-/// `(root-relative path, source text)` pair; the project lives as long as the returned directory.
-pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, Projector) {
+/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
+/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
+/// code store to.
+#[cfg(feature = "symbols")]
+pub struct BuiltGraph {
+    pub records: Projector,
+    pub view: rigger_store::code::Snapshot,
+}
+
+#[cfg(feature = "symbols")]
+impl BuiltGraph {
+    /// The project at `root` as its last `graph build` left it: the code store is read, never
+    /// advanced, so a build that left it behind the head fails here.
+    pub fn of(root: &Path) -> Self {
+        let opened = rigger::code_store::CodeStore::in_repository(root)
+            .open(rigger_store::code::Mode::Read)
+            .expect("the code store opens");
+        assert!(
+            opened.behind.is_none(),
+            "graph build advanced the code store to the head: {:?}",
+            opened.behind.map(|b| b.to_string())
+        );
+        Self {
+            records: open_graph(root),
+            view: opened.view,
+        }
+    }
+
+    /// Every node and edge the composed graph serves ([`Self::composed`]).
+    pub fn whole(&self) -> Result<Graph, GraphError> {
+        rigger::contextgraph::Neighbors::whole(&self.composed())
+    }
+
+    /// The record half composed with the code store's view.
+    pub fn composed(&self) -> rigger::composed::Composed<'_> {
+        super::fixtures::view_graph(&self.records, &self.view)
+    }
+}
+
+#[cfg(feature = "symbols")]
+impl rigger::contextgraph::Neighbors for BuiltGraph {
+    fn node(&self, id: &str) -> Result<Option<Node>, GraphError> {
+        self.composed().node(id)
+    }
+    fn out(&self, id: &str) -> Result<Vec<Edge>, GraphError> {
+        self.composed().out(id)
+    }
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, GraphError> {
+        self.composed().incoming(id)
+    }
+    fn members(&self, file: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().members(file)
+    }
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().leaf_nodes(leaf)
+    }
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, GraphError> {
+        self.composed().of_kind(kind)
+    }
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, GraphError> {
+        self.composed().unresolved(node)
+    }
+    fn aliases(&self) -> Result<Vec<(String, String)>, GraphError> {
+        self.composed().aliases()
+    }
+    fn whole(&self) -> Result<Graph, GraphError> {
+        rigger::contextgraph::Neighbors::whole(&self.composed())
+    }
+}
+
+/// The graph `rigger graph build` leaves a fresh [`temp_project`] holding each of `files`, a
+/// `(root-relative path, source text)` pair ([`BuiltGraph`]); the project lives as long as the
+/// returned directory.
+#[cfg(feature = "symbols")]
+pub fn built_graph(files: &[(&str, &str)]) -> (tempfile::TempDir, BuiltGraph) {
     let dir = temp_project();
     let graph = rebuilt_graph(dir.path(), files);
     (dir, graph)
 }
 
-/// The graph `rigger graph build` folds over the project at `root` once each of `files`, a
-/// `(root-relative path, source text)` pair, is written there: a first build, or a rebuild over
-/// the files' next generation.
-pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
+/// The graph `rigger graph build` leaves the project at `root` once each of `files`, a
+/// `(root-relative path, source text)` pair, is written and committed there ([`BuiltGraph`]): a
+/// first build, or a rebuild over the files' next generation.
+#[cfg(feature = "symbols")]
+pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> BuiltGraph {
     super::fixtures::write_files(root, files);
-    run_rigger_ok(root, &["graph", "build"]);
-    open_graph(root)
+    build_head(root);
+    BuiltGraph::of(root)
+}
+
+/// `rigger graph build` over the project at `root` once its worktree is committed, so the code
+/// store's head holds the source the build reads.
+pub fn build_head(root: &Path) -> String {
+    super::fixtures::commit_tree(root);
+    run_rigger_ok(root, &["graph", "build"])
 }
 
 /// GIVEN a project whose one file `path`, in the language `lang`, holds `source`, WHEN the
@@ -1706,6 +1831,7 @@ pub fn rebuilt_graph(root: &Path, files: &[(&str, &str)]) -> Projector {
 /// code entity is the nameless node a call folds from, named in `calls`.
 ///
 /// [`placeholder_id`]: rigger::contextgraph::query::placeholder_id
+#[cfg(feature = "symbols")]
 pub fn assert_built_graph_holds(
     (path, lang, source): (&str, &str, &str),
     definitions: &[(&str, &str, &str, u64)],
@@ -1784,32 +1910,24 @@ pub fn refused_derived_reset(
     (ok, out, err, log_and_graph_files(root) == *found)
 }
 
-/// The two lines `rigger reset --derived` prints, each ended, for a migration that converted
-/// `converted` latest batches into ledger entries and shed `shed` derived events, `unkeyed` of
-/// them naming no file identity.
-pub fn migrated_lines(converted: usize, shed: usize, unkeyed: usize) -> String {
-    format!(
-        "reset --derived: converted {converted} latest batch(es) into ledger entries and shed \
-         {shed} derived event(s) from the event log\n\
-         reset --derived: {unkeyed} of the derived event(s) shed named no file identity (no \
-         replay key, or one that does not parse)\n"
-    )
+/// The line `rigger reset --derived` prints, ended, for a delete of `deleted` derived events.
+pub fn deleted_line(deleted: usize) -> String {
+    format!("reset --derived: deleted {deleted} derived event(s) from the event log\n")
 }
 
 /// The line `rigger reset --derived` prints, ended, over a store holding no derived event.
-pub const NOTHING_TO_SHED_LINE: &str = "reset --derived: no derived event to shed\n";
+pub const NOTHING_TO_DELETE_LINE: &str = "reset --derived: no derived event to delete\n";
 
-/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events
-/// of `identities` file identities.
-pub fn derived_menu_line_naming(events: usize, identities: usize) -> String {
+/// The `--derived` line bare `rigger reset` prints over a store holding `events` derived events.
+pub fn derived_menu_line_naming(events: usize) -> String {
     format!(
-        "--derived: {events} derived events of {identities} file identities to shed from the \
-         event log; rerun `rigger reset --derived` to migrate them"
+        "--derived: {events} derived event(s) to delete from the event log; rerun `rigger reset \
+         --derived` to delete them"
     )
 }
 
 /// The `--derived` line bare `rigger reset` prints over a store holding no derived event.
-pub const NOTHING_TO_SHED_MENU_LINE: &str = "--derived: no derived event to shed";
+pub const NOTHING_TO_DELETE_MENU_LINE: &str = "--derived: no derived event to delete";
 
 /// The `--derived` lines of what bare `rigger reset` printed, in order.
 pub fn derived_menu_lines(stdout: &str) -> Vec<&str> {
@@ -1885,11 +2003,10 @@ pub fn rebuild_in_progress_line() -> String {
 /// store, where the migration does not run: one [`refusal_line`], ended.
 pub fn server_backed_derived_refusal() -> String {
     refusal_line(
-        "reset --derived: the migration rewrites and deletes rows of the event log and vacuums the \
-         file, which is a mechanic of the embedded .rigger/events.db store; this project is \
-         configured for the server-backed store, where the migration does not run. Re-run it \
-         against a project on the sqlite backend. Refusing rather than reporting a migration that \
-         did not happen.",
+        "reset --derived: the delete removes rows of the event log and vacuums the file, which is \
+         a mechanic of the embedded .rigger/events.db store; this project is configured for the \
+         server-backed store, where the delete does not run. Re-run it against a project on the \
+         sqlite backend. Refusing rather than reporting a delete that did not happen.",
     ) + "\n"
 }
 
@@ -1939,7 +2056,6 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
     };
     pairs.extend(
         rest.split("   ")
-            .take_while(|part| !part.starts_with('('))
             .map(|part| part.split_once(' ').expect("an entry")),
     );
     pairs.extend(
@@ -1953,68 +2069,20 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's two
-/// print transforms (spec 119, SHOW IS ONE RENDERER): `line` the live line the body came from,
-/// and each string value's newlines spaces - the pairs [`printed_site_entries`] reads back.
-pub fn site_entries_as_printed(
-    site: &rigger::contextgraph::EntitySite,
-    live_line: u32,
-) -> Vec<(String, String)> {
+/// The [`site_fields`](rigger::contextgraph::site_fields) entries of `site` after the CLI's
+/// print transform (spec 119, SHOW IS ONE RENDERER), each string value's newlines spaces - the
+/// pairs [`printed_site_entries`] reads back.
+pub fn site_entries_as_printed(site: &rigger::contextgraph::EntitySite) -> Vec<(String, String)> {
     rigger::contextgraph::site_fields(site)
         .into_iter()
         .map(|(key, value)| {
             let text = match value {
-                _ if key == "line" => live_line.to_string(),
                 serde_json::Value::String(text) => text.replace('\n', " "),
                 number => number.to_string(),
             };
             (key.to_string(), text)
         })
         .collect()
-}
-
-/// The line `rigger graph build` prints for a build that counted `events` batch events, with
-/// `lost`, its fold-loss clause: empty when the build lost no fold.
-pub fn graph_build_line(events: usize, lost: &str) -> String {
-    format!("graph build: ingested {events} code-ingest event(s) into .rigger/graph.db{lost}\n")
-}
-
-/// How many batch events `entries` stand for: the sum of the event counts their replay keys
-/// carry.
-#[cfg(feature = "symbols")]
-pub fn batch_events(entries: &[super::fixtures::EntryRecord]) -> usize {
-    entries
-        .iter()
-        .map(|(_, _, key)| super::fixtures::entry_key_parts(key).2)
-        .sum()
-}
-
-/// What the log of the project at `root` records as ledger entries, beside what a run records
-/// for the tree as it stands under the blob `git hash-object` gives each file.
-#[cfg(feature = "symbols")]
-pub type RecordedAndWalked = [Vec<super::fixtures::EntryRecord>; 2];
-
-#[cfg(feature = "symbols")]
-pub fn recorded_and_walked(root: &Path) -> RecordedAndWalked {
-    use super::fixtures::{entry_records, walked_git_entry_records};
-    [
-        entry_records(&read_run_events(root)),
-        walked_git_entry_records(root),
-    ]
-}
-
-/// The entity count a `rigger graph build` reports (`... ingested <n> ...`).
-pub fn ingested_count(stdout: &str) -> usize {
-    stdout
-        .split_once("ingested ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("graph build must report its ingested count; got:\n{stdout}"))
-}
-
-/// Write a heartbeat marker at `marker` whose mtime is an hour old - a stale liveness mark.
-pub fn plant_stale_marker(marker: &Path) {
-    plant_marker(marker, 3600);
 }
 
 /// Write a heartbeat marker at `marker` last touched `secs_ago` seconds ago, so a liveness
@@ -2031,9 +2099,9 @@ pub fn plant_marker(marker: &Path, secs_ago: u64) {
         .unwrap();
 }
 
-/// The `SpawnResult` body `rigger step`'s sweep records on `spawn_id` once its liveness marker
-/// went stale - the step's liveness fault, built by the product's own constructor: a diagnosis
-/// of a silent worker, not the spawn's end.
+/// The `SpawnResult` body the host records on `spawn_id` once its liveness marker went stale -
+/// its liveness fault, built by the product's own constructor: a diagnosis of a silent worker,
+/// not the spawn's end.
 pub fn liveness_fault_body(spawn_id: &str) -> String {
     serde_json::to_string(&rigger::spawn::SpawnResult::liveness_fault(
         spawn_id, "hung", "infra",
@@ -2048,7 +2116,7 @@ pub fn real_result_body(spawn_id: &str) -> String {
 }
 
 /// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
-/// in for a `rigger step` holding it for its whole duration. The lock lasts until the returned
+/// in for a `rigger run` holding it for its whole duration. The lock lasts until the returned
 /// file is dropped.
 pub fn hold_step_lock(root: &Path) -> std::fs::File {
     use fs2::FileExt;
@@ -2172,14 +2240,6 @@ pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
     write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
 }
 
-/// One real `rigger step` over `root`, which must exit 0 (`what` names the step in the failure);
-/// returns its trimmed stdout - the step's one JSON line.
-pub fn step_line(root: &Path, what: &str) -> String {
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "{what}; stderr: {err}");
-    out.trim().to_string()
-}
-
 /// `rigger validate` over `root` once `rigger init` has scaffolded it and `seed` has planted what
 /// the test examines; asserts both exit 0 (an advisory never fails validate) and returns
 /// validate's (stdout, stderr).
@@ -2249,10 +2309,9 @@ pub fn write_spec_project(
 /// recognizes: one the binary's grounder registry rejects.
 const REJECTED_GROUNDER: &str = "no-such-grounder";
 
-/// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a run entry
-/// (`rigger step`, `rigger run` on either driver, `rigger serve`) that gets past its run start -
-/// its run minted or adopted - then stops selecting the grounder, before it drives an agent or
-/// serves stdin, so a run start that should have refused fails its test instead of hanging it.
+/// `workflow`, whose grounder is `nop`, with a grounder the binary rejects instead: a `rigger run`
+/// that gets past its run start - its run minted or adopted - then
+/// stops selecting the grounder, before it drives an agent, so a run start that should have refused fails its test instead of hanging it.
 pub fn stopping_at_the_grounder(workflow: &str) -> String {
     let stopping = workflow.replace("grounder: nop", &format!("grounder: {REJECTED_GROUNDER}"));
     assert_ne!(
@@ -2379,9 +2438,8 @@ stages:
 /// The escalating twin of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]: the same shape, but its one gate
 /// always fails and `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the
 /// FIRST failed attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a
-/// single implementer result whose gate goes red - never a park, and never a crash, which is
-/// infrastructure and charges no attempt - is enough to drive the unit terminal without ever
-/// integrating.
+/// single implementer attempt whose gate goes red - never a crash, which is infrastructure and
+/// charges no attempt - is enough to drive the unit terminal without ever integrating.
 pub const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
@@ -2398,28 +2456,31 @@ stages:
 "#,
 };
 
-/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine
-/// terminal escalation through the REAL two-process replay lifecycle (park, then an
-/// out-of-process result its gate fails), and assert the fixpoint before returning - every
-/// `resume-unit` test builds on this SAME real, git-backed escalated unit.
+/// Spec 88, criterion 3 (ESCALATION RESUMES) shared setup: drive `solo` to a genuine terminal
+/// escalation through `rigger run` on the default scratch root - its implementer writes a change
+/// in the unit worktree and the red gate fails it - and assert the escalated end state from the
+/// run's output and its log before returning. Every `resume-unit` test builds on this SAME real,
+/// git-backed escalated unit.
 pub fn escalate_solo_unit(root: &Path) {
     write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
-    let (out, err, ok) = run_rigger(root, &["step"]);
-    assert!(ok, "the first step must succeed; stderr: {err}");
-    assert!(
-        out.contains(r#""id":"solo/implementer#0""#) && out.contains(r#""done":false"#),
-        "step 1 parks the implementer; got: {out:?}"
-    );
-    let (_o, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
-    assert!(ok, "recording the result must succeed; stderr: {err}");
-    let (out, err, ok) = run_rigger(root, &["step"]);
+    let arm = "  *\"Do the unit.\"*)\n    echo \"pub fn work() {}\" >> work.rs\n    ;;\n";
+    let (out, err, ok, _fake) =
+        run_on_arms(root, &["run"], &super::default_scratch_root(root), arm);
     assert!(
         ok,
-        "an escalation-fixpoint step still exits 0; stderr: {err}"
+        "a run that ends in an escalation still exits 0; stderr: {err}"
+    );
+    let solo = out.lines().find(|l| l.trim_start().starts_with("solo "));
+    assert!(
+        solo.is_some_and(|l| l.contains("escalated"))
+            && out.contains("incomplete: not every unit integrated"),
+        "the red gate must exhaust remediation into an escalated end state; got: {out:?}"
     );
     assert!(
-        out.contains(r#""done":true"#) && out.contains(r#""escalated":["solo"]"#),
-        "the red gate must exhaust remediation into an escalated fixpoint; got: {out:?}"
+        read_run_events(root)
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
+        "the escalation is on the log"
     );
 }
 
@@ -2462,43 +2523,12 @@ pub fn reported_reclaimed_bytes(report: &str, marker: &str) -> Option<u64> {
     rest[..end].trim().parse().ok()
 }
 
-/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), `graph
-/// --show` cannot derive a located entity's body extent (no extraction grammar is linked), so it
-/// must degrade to the site header plus an explicit extent-unavailable note and NO line-numbered
-/// body - never a hand-rolled lexer that would mis-read the grammars the graph ingests.
-pub fn assert_light_lane_extent_note(out: &str) {
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
-    );
-    assert!(
-        !out.contains(" | ") && body_line_count(out) == 0,
-        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
-    );
-}
-
-/// The line `rigger validate` warns of graph index lag on, naming `files` in sample order.
-pub fn index_lag_advisory(files: &[&str]) -> String {
-    format!(
-        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
-         ({}). Run `rigger graph build` to refresh it.",
-        files.len(),
-        files.join(", ")
-    )
-}
-
-/// Every graph index-lag advisory line among `stderr`, what `rigger validate` wrote there, in
-/// order.
-pub fn index_lag_lines(stderr: &str) -> Vec<&str> {
-    lines_where(stderr, |line| line.contains("fallen behind"))
-}
-
 /// The line `rigger validate` warns of log bloat on, over a store still holding `events` derived
-/// events of `identities` file identities.
-pub fn bloat_advisory_naming(events: usize, identities: usize) -> String {
+/// events.
+pub fn bloat_advisory_naming(events: usize) -> String {
     format!(
-        "warning: the event log still holds {events} derived events of {identities} file \
-         identities; run `rigger reset --derived` to migrate them into the ledger."
+        "warning: the event log still holds {events} derived event(s); run `rigger reset \
+         --derived` to delete them."
     )
 }
 
@@ -2512,4 +2542,110 @@ pub fn bloat_lines(stderr: &str) -> Vec<&str> {
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
     text.lines().filter(|line| keep(line)).collect()
+}
+
+/// Install a fake `claude` on a fresh directory: the checked-in stream-json stand-in
+/// `claude-code-arms-agent.sh`, answering each spawn from the shell `case` `arms` over its system
+/// prompt (the content of the file its `--system-prompt-file` names; each arm is
+/// `*MARKER*) ... ;;`, and what it prints is the session's `result`), failing loudly on any
+/// prompt no arm names. Only the arms are written here ([`super::fixtures::write_claude_arms`]),
+/// beside the stand-in's symlink in the directory's `bin`. Returns the directory (keep it alive for the run) and a `PATH` value that
+/// resolves the stand-in first.
+pub fn install_fake_claude(arms: &str) -> (tempfile::TempDir, String) {
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env =
+        super::repo::stub_path(fakebin.path(), "claude", Some("claude-code-arms-agent.sh"));
+    super::fixtures::write_claude_arms(&fakebin.path().join("bin"), arms);
+    (fakebin, path_env)
+}
+
+/// An arm of [`install_fake_claude`] for the `Do the unit.` workers: the launch records, in the
+/// directory of the fake, its argv, its working directory, its first user message, the
+/// `KURRENTDB_CONN` it was started with (`unset` when none) and the agent streams its scratch root
+/// holds while it runs, then writes the change a merging stage lands.
+pub const RECORDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    printf '%s\0' "$@" > "$here/argv"
+    pwd -P > "$here/cwd"
+    printf '%s\n' "$first" > "$here/first-message"
+    printf '%s' "${KURRENTDB_CONN-unset}" > "$here/conn"
+    ls "$RIGGER_TMPDIR"/agent-stream/* > "$here/streams" || true
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with [`RECORDING_WORKER_ARM`]'s fake
+/// `claude` first on PATH: [`run_on_arms`]'s four values, the directory holding what the arm
+/// recorded last.
+pub fn run_recording(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms(cwd, args, scratch, RECORDING_WORKER_ARM)
+}
+
+/// `rigger <args>` in `cwd` under the scratch root `scratch`, with a fake `claude` answering from
+/// `arms` ([`install_fake_claude`]) first on PATH: its stdout, stderr and success, then the
+/// directory holding the fake, which keeps it alive.
+pub fn run_on_arms(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let (out, err, ok) = run_rigger_envs(cwd, args, &fake_claude_env(&path_env, scratch));
+    (out, err, ok, fakebin)
+}
+
+/// The environment a run of [`install_fake_claude`]'s fake takes: `path_env` and the scratch root
+/// `scratch`.
+pub fn fake_claude_env<'a>(path_env: &'a str, scratch: &'a Path) -> [(&'a str, &'a str); 2] {
+    [
+        ("PATH", path_env),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ]
+}
+
+/// How many 25 ms polls [`run_on_arms_beside`] gives a run: two minutes.
+pub const POLLS_BESIDE_A_RUN: u32 = 4800;
+
+/// [`run_on_arms`] with `beside` called over the fake's directory at each poll of the running
+/// `rigger`, so a test acts on a live run from no thread of its own: a run still waiting past
+/// [`POLLS_BESIDE_A_RUN`] is ended through its handle and panics here, never hanging the suite.
+pub fn run_on_arms_beside(
+    cwd: &Path,
+    args: &[&str],
+    scratch: &Path,
+    arms: &str,
+    beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    run_on_arms_beside_with(cwd, args, &[], scratch, arms, beside)
+}
+
+/// [`run_on_arms_beside`] with the extra environment `envs` set after the fake's own.
+pub fn run_on_arms_beside_with(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    scratch: &Path,
+    arms: &str,
+    mut beside: impl FnMut(&Path),
+) -> (String, String, bool, tempfile::TempDir) {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let mut all = fake_claude_env(&path_env, scratch).to_vec();
+    all.extend_from_slice(envs);
+    let (out, err, ok) = run_rigger_within(cwd, args, &all, POLLS_BESIDE_A_RUN, |_| {
+        beside(fakebin.path())
+    })
+    .expect("the run ends once its holds are released");
+    (out, err, ok, fakebin)
+}
+
+/// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.
+pub fn plant_stale_stream(scratch: &Path) -> std::path::PathBuf {
+    let stale = scratch.join("agent-stream/old-run/old-spawn.0.jsonl");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "stale").unwrap();
+    stale
 }

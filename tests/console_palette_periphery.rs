@@ -10,7 +10,7 @@
 //! feature-gated), so these tests run in both. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
-mod common;
+use crate::common;
 
 use common::served::assert_console_body_carries;
 use common::served::{assert_served_console_page_carries, served_console_body};

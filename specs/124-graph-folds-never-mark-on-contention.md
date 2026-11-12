@@ -1,5 +1,10 @@
 # 124 - Graph folds never mark on contention
 
+**Status: partly superseded.** This spec is built. The catch-up cursor and the one in-order
+procedure stand for record events. The code store (docs/architecture-addendum-the-code-store.md) removes the ledger entry, so
+the re-extraction of a foreign ledger entry at any age, the entry's own transaction and its retry
+under the ceiling go.
+
 **Goal:** every appended event is folded into `graph.db` at its append, or caught up by the next
 call through the one in-order catch-up procedure, or passed over with its cause, from the `applied`
 ledger and a catch-up cursor, never by an owed mark and a whole-log rebuild; and the whole-log rebuild is kept for a fold-rule
@@ -342,7 +347,8 @@ contract test, `tests/boundary_audit.rs`, beside its Rule 2 (`misplaced_construc
   `conductor::STREAM` or `run::STREAM` (`crates/rigger-domain/src/run.rs:32`, re-exported at
   `conductor.rs:63`), or a bare `STREAM` in a file whose `use` of a
   `STREAM_MODULES` member (`run` and `conductor`, `tests/boundary_audit.rs`) names `STREAM`;
-- OPEN: `Projector::open(`, `open_graph_for_write(`, `open_graph(` and `.graph()`
+- OPEN: `Projector::open(`, or `Projector::open` named as a value for a callee to call (counted
+  at the item that names it), `open_graph_for_write(`, `open_graph(` and `.graph()`
   (`StoreLocation::graph`, `src/cli/mod.rs:1403`).
 The hits are compared as a set of `file:item` entries against this block's allow-list and nothing
 else, so a new site fails the test until it is listed, and a listed site that vanished fails it too.

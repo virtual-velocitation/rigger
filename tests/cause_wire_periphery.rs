@@ -40,7 +40,7 @@
 //! `blocker.rs`'s own tests already assume by hand-typing the JSON `cause` field directly - this
 //! file does that same seeding through a real store and the real binary instead.
 
-mod common;
+use crate::common;
 
 use common::cli::run_rigger;
 use common::cli::seed_run_events;

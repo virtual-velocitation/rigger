@@ -27,7 +27,7 @@
 //! `control_false_positives` survive the real wire round trip over four independently-
 //! varying items, not just a fixture typed to match it.
 
-mod common;
+use crate::common;
 
 use common::fixtures::cfg_for;
 use common::fixtures::lens_only_panel;

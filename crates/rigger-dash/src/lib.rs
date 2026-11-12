@@ -15,8 +15,6 @@ pub mod prompt_surface;
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_conductor::conductor;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_config_files::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_console::console;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -28,13 +26,11 @@ use rigger_domain::test_cases;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{blocker, ledger, metrics, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_driver::{driver, liveness, sidecar};
+use rigger_driver::{driver, sidecar};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_grounder::grounder;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_process::reap;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_store_sqlite::run_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::{progress_store, registry};
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -80,6 +76,9 @@ mod fold_fixtures;
 mod scratch_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use scratch_fixtures::temp_root;
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/graph.rs"]
@@ -94,13 +93,21 @@ mod page_fixtures;
 mod prompt_surface_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/shown.rs"]
+mod shown_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
+// The planted tree fixtures the shown tree is built from, named through `super::`.
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+use graph_fixtures::{planted_file, PlantedTree};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::event_fixtures::*;
     pub use crate::fold_fixtures::*;
     pub use crate::graph_fixtures::*;
     pub use crate::page_fixtures::*;
+    pub use crate::shown_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

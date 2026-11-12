@@ -27,14 +27,13 @@
 //! NOT feature-gated: it parses text files and touches no grounder symbol, so it runs
 //! identically in both feature lanes and is a real member of each lane's test battery.
 
-mod common;
+use crate::common;
 
 use common::repo::repo_text;
 use common::repo::table_declares_key;
 use common::repo::table_lines;
 
-#[path = "common/retired_feature.rs"]
-mod retired_feature;
+use crate::retired_feature;
 use retired_feature::assert_no_src_line_gates_on;
 
 /// DEP DIET (spec 57, criterion 2, part one): the `turbovec` cargo feature is retired.

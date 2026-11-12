@@ -6,7 +6,8 @@
 //! boundaries the rule crosses: the list every crate reads the order from, and the graph
 //! `rigger graph build` folds from what the extractor emits for a real source file.
 
-mod common;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 /// `CODE_KIND_PRECEDENCE` is the order the spec states, kind string by kind string: sixteen
 /// kinds, a type first and `other` last, each spelled as the log and a folded graph carry it.
@@ -74,7 +75,7 @@ pub fn Kept() {}
 /// `function`), `Maker` and `Kept` the type at the type's line whichever side the fn sits on.
 #[cfg(feature = "symbols")]
 fn every_path_is_its_precedence_winner(
-    graph: &rigger::contextgraph::sqlite::Projector,
+    graph: &(impl rigger::contextgraph::Neighbors + ?Sized),
     above: u64,
     why: &str,
 ) {

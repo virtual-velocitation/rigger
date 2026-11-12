@@ -15,7 +15,7 @@
 //! (`tests/spawn_scratch_reap_authorized_root_periphery.rs` and its sibling) already run for
 //! the production reaper's SIGKILL escalation stage.
 
-mod common;
+use crate::common;
 
 use common::fixtures::cleanup;
 use common::wait_until;

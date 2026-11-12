@@ -32,7 +32,7 @@
 //! `mod tests` fixtures, per this role's boundary) for that reason alone - not because the
 //! scenario itself is this file's real subject.
 
-mod common;
+use crate::common;
 use common::git::git_ok;
 
 use common::fixtures::test_spawn_host;
@@ -109,6 +109,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     let panel = ReviewPanel {
@@ -141,9 +142,10 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let rs = run(&cfg, &deps).unwrap();
     for u in ["unit-a", "unit-b"] {

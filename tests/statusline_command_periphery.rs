@@ -13,7 +13,7 @@
 //! half - that the real compiled `rigger status --line` and `rigger setup` wire it through a
 //! real `argv` -> `main()` dispatch and a real on-disk store/settings file.
 
-mod common;
+use crate::common;
 
 use common::cli::read_run_events;
 use common::cli::run_rigger;

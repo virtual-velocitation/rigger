@@ -25,7 +25,7 @@
 //! would stay green even if the two real mechanisms diverged. Neither do this file's other
 //! CLI tests, which never seed a real run, so `current_run_id` always resolves empty there.
 
-mod common;
+use crate::common;
 use common::cli::courier_project;
 use common::cli::recorded_progress;
 use common::cli::seed_a_run;

@@ -25,7 +25,7 @@
 //! the real on-disk loader for a multi-rule, multi-path block, for the back-compat case (an
 //! omitted key - every workflow.yml committed before this criterion existed - must resolve to
 //! an empty list, not an error), and for the REAL, currently-committed project
-//! `.rigger/workflow.yml` itself, pinning its own `docs/audit/*` rule.
+//! `.rigger/workflow.yml` itself, which registers no rule.
 //!
 //! GAP 2,
 //! `a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regenerates_for_real`.
@@ -284,7 +284,7 @@
 //! lesson, failure, escalation or infra mark is recorded, the unit's gate verdict is kept, and a
 //! resume regenerates and lands the unit with no attempt charged.
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::cli::write_workflow;
@@ -466,22 +466,14 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     );
 
     // (c) the REAL, currently-committed project workflow.yml - not a synthetic fixture. It
-    // must load through the exact same `config::load` path `main.rs` uses in production, and
-    // its own registered rule (this diff's own worked example) must be exactly what the
-    // committed file states: `docs/audit/*.json` (fully-generated artifacts only, spec 89
-    // op-89-regenerate-rule-narrowed-to-json-artifacts) regenerated via simplification_audit.
+    // must load through the exact same `config::load` path `main.rs` uses in production, and it
+    // registers no regenerable artifact, so every conflict goes to the implementer.
     let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let real_cfg = config_store::load(project_root.to_str().unwrap())
         .expect("the project's own .rigger/workflow.yml must load through the real loader");
     assert!(
-        real_cfg
-            .workflow
-            .regenerate
-            .iter()
-            .any(|r| r.paths == vec!["docs/audit/*.json".to_string()]
-                && r.run.contains("simplification_audit")),
-        "the real committed workflow.yml must register docs/audit/*.json as regenerable via \
-         the simplification_audit regeneration command; got: {:?}",
+        real_cfg.workflow.regenerate.is_empty(),
+        "the real committed workflow.yml registers no regenerable artifact; got: {:?}",
         real_cfg.workflow.regenerate
     );
 }

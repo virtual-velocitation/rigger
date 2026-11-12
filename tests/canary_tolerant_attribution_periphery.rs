@@ -21,7 +21,7 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
-mod common;
+use crate::common;
 
 use common::fixtures::cfg_for;
 use common::fixtures::lens_only_panel;

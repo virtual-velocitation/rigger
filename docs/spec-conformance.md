@@ -63,7 +63,6 @@ against the code. Phases are in dependency order; each lands CI-green.
 - [x] mid-run injection: surface peer decisions at the next tool boundary (§5.3)
 
 ## Phase 6 - CLI + composition
-- [x] `rigger run --driver <cli|workflow>` flag (§10)
 - [x] `rigger run --eventstore <sqlite|kurrentdb>` flag, KurrentDB wired (§10)
 - [x] namespace decorator wired (default to project identity) (§5.1.1, R9)
 - [x] living-DAG / `spawnUnit`: a `produces` stage extends the run DAG (§3.2, §8)

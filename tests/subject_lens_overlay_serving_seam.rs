@@ -147,8 +147,16 @@ fn the_router_serves_the_c4_client_seam_as_read_only_html() {
 fn the_export_page_carries_the_c4_seam_and_degrades_its_live_only_affordance() {
     let graph = empty_graph();
     let ages: HashMap<String, u64> = HashMap::new();
-    let html = dash::render_export(&[], &graph, &[], &ages, 3, "rigger-run", "origin/main")
-        .expect("render_export serializes a valid snapshot");
+    let html = dash::render_export(
+        &[],
+        dash::LabelledGraph::from(&graph),
+        &[],
+        &ages,
+        3,
+        "rigger-run",
+        "origin/main",
+    )
+    .expect("render_export serializes a valid snapshot");
 
     // The c4 seam ships in the EXPORTED artifact, not only the live page.
     assert_carries_c4_seam(&html, "exported snapshot");

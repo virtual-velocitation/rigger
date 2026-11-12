@@ -1,5 +1,5 @@
-//! THE LOCK FILE: the one guard every rigger advisory lock is held through - `rigger step`'s
-//! serialization lock and the graph rebuild lock alike.
+//! THE LOCK FILE: the one guard every rigger advisory lock is held through - the step lock
+//! `rigger run` holds for its whole life and the graph rebuild lock alike.
 //!
 //! A lock is the OS advisory lock on a lock file, taken without waiting, and released when its
 //! [`HeldLock`] drops - explicitly, never by closing its descriptor alone - or when its process

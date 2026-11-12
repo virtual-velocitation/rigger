@@ -2,10 +2,11 @@
 
 **Goal:** the graph is the hive's memory: it holds the project's whole understanding and each
 persona is served the slice it needs from it. Today it lives in an embedded SQL database
-(`.rigger/graph.db`, 73 MB, 61,950 nodes, 91,694 edges, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, 8,307
+(`.rigger/graph.db`, `crates/rigger-graph-sqlite/src/contextgraph/sqlite.rs`, 8,307
 lines) behind a six-method port (`Projection`, `crates/rigger-domain/src/contextgraph.rs:531`). Every process
 that asks the graph a question opens the engine; nothing holds the graph resident for the
-process that folds it thousands of times per run. This spec ships section 5.5, 5.7's snapshot
+process that folds it thousands of times per run. Once the code store lands, graph.db holds records only: 19,369 live nodes today, of which
+12,426 are code entities that move to the code store. This spec ships section 5.5, 5.7's snapshot
 operation and 5.8 of docs/architecture-addendum-the-owned-store.md: the graph is a
 memory-resident structure in the owner and a memory-mapped, queryable file for every other
 process, and the last SQL dependency leaves the build.
@@ -16,8 +17,8 @@ THE BASE SNAPSHOT, decided: `.rigger/store/graph/base.gsnap`, format-tagged, com
 sparse row: header with section offsets; node table sorted by id (id offset, kind, payload
 offset, first-out, first-in); out-edge and in-edge arrays; edge table (relation, dst, src,
 `valid_from`, `valid_to`, tier, source position); alias table sorted by alias; the applied
-position set; the pending-proof table; string pool. A
-reader answers `subgraph`, `resolve`, `locate` and `calls` by binary search in the sorted
+position set; string pool. The base holds the record graph only: no code node or edge is
+resident. A reader answers `subgraph`, `resolve`, `locate` and `calls` by binary search in the sorted
 tables and walks of the adjacency arrays, mapping the file read-only and never copying a
 section into a heap structure.
 
@@ -33,9 +34,9 @@ reads are the same code path as the mapped file. `apply_batch` writes the delta 
 mutating memory; a crash between the two costs nothing because the delta is the record.
 
 REBUILD, decided: `rigger graph rebuild` and the once-per-mount background verify construct
-the graph from the ledger segment (spec 107's `GenerationIngested` entries resolved through
-`git cat-file blob` and the extractors), the knowledge records and the pass records, into a
-shadow CSR; the verify compares it with the loaded projection section by section; on mismatch
+the record graph from the record journal alone into a shadow CSR, and advance a shadow code
+snapshot from empty to the stamp's commit; the verify compares the CSR with the loaded
+projection section by section and the snapshot with the stored one; on mismatch
 the rebuild is published as the new base, a `LessonLearned` names the differing section, and
 `rigger status` drops the PROVISIONAL label it carried until the verify finished.
 
@@ -55,7 +56,7 @@ records in deltas like any other.
 ## Notes (non-criteria)
 
 Section layout and endianness are pinned in `src/store/graph/format.rs` with a golden
-fixture; a 62k-node, 92k-edge graph maps to about 70 MB. The mapped reader is generic over a
+fixture; its size goals are the record graph's. The mapped reader is generic over a
 byte source so the resident graph and the file share one query implementation.
 
 ## Global constraints
@@ -76,7 +77,7 @@ byte source so the resident graph and the file share one query implementation.
   folds onto the base to the same answers the owner's resident graph gives, and the owner's
   base rewrite at the threshold removes exactly the folded deltas. This criterion OWNS the
   delta format, its threshold and the rewrite.
-- [ ] a test proves CLIENTS MAP, NEVER LOAD: `rigger peers` against a 70 MB base answers a
+- [ ] a test proves CLIENTS MAP, NEVER LOAD: `rigger peers` against a base of 20,000 nodes answers a
   neighborhood touching under 4 MB of pages and under 16 MB of heap, asserted by a counting
   allocator and page residency. This criterion OWNS the client read path.
 - [ ] a test proves REBUILD WINS: a base with one edge altered is detected by the verify, the

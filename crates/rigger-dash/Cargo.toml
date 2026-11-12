@@ -24,9 +24,11 @@ store = [
     "rigger-graph-sqlite/store",
     "rigger-process/store",
     "rigger-driver/store",
+    "rigger-worktree-git/store",
     "rigger-grounder/store",
     "rigger-conductor/store",
     "rigger-console/store",
+    "rigger-store/store",
 ]
 core = [
     "rigger-domain/core",
@@ -34,10 +36,11 @@ core = [
     "rigger-graph-sqlite/core",
     "rigger-process/core",
     "rigger-driver/core",
+    "rigger-worktree-git/core",
     "rigger-grounder/core",
     "rigger-conductor/core",
     "rigger-console/core",
-    "rigger-config-files/core",
+    "rigger-store/core",
 ]
 
 [dependencies]
@@ -49,14 +52,14 @@ rigger-driver = { path = "../rigger-driver", default-features = false }
 rigger-grounder = { path = "../rigger-grounder", default-features = false }
 rigger-conductor = { path = "../rigger-conductor", default-features = false }
 rigger-console = { path = "../rigger-console", default-features = false }
+# The code store the composed view opens, and the git tree source it reads the tree through.
+rigger-store = { path = "../rigger-store", default-features = false }
+rigger-worktree-git = { path = "../rigger-worktree-git", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
-# The MCP server's tests build agent definitions from the loaded config. `core` above forwards to
-# it, so this crate's core-lane tests build it in the same lane as every other dependency.
-rigger-config-files = { path = "../rigger-config-files", default-features = false }
 serial_test = "3"
 
 [lints]

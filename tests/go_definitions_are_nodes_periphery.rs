@@ -1,17 +1,14 @@
 //! Periphery (contract and integration) tests for spec 116 criterion 7, GO DEFINITIONS ARE
 //! NODES: every Go definition type is a definition of its kind. The crate's own tests pin the
-//! rule on the extracted symbols; these run OUTSIDE the crate and guard the two boundaries the
+//! rule on the extracted symbols; these run OUTSIDE the crate and guard the boundary the
 //! rule crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds from the Go definitions fixture: each definition is a
 //!    node carrying its kind string and line, a function-local `var` and an alias named `_` are
-//!    no node, and each reference hangs off the caller the fixture gives it;
-//!  - the persisted symbol index: the variant name `Variable`, which the kind a package-level
-//!    `var` takes is written under and read back from.
+//!    no node, and each reference hangs off the caller the fixture gives it.
 
-mod common;
-#[path = "common/symbol_index.rs"]
-mod symbol_index;
+#[cfg(feature = "symbols")]
+use crate::common;
 
 rigger::test_cases! {
     /// GIVEN a project whose one Go file is the Go definitions fixture,
@@ -103,12 +100,5 @@ rigger::test_cases! {
             ],
             "every definition of the built graph at its path, none for a function-local var or \
              the alias named _, one placeholder per undefined name a reference reaches",
-        );
-    /// The persisted index writes a variable under the variant name `Variable`, and reads it back
-    /// as the kind it was saved as.
-    the_variable_kind_persists_under_its_variant_name_and_reloads:
-        symbol_index::assert_kinds_persist_under_their_variant_names(
-            "a.go",
-            &[(rigger::grounder::symbols::model::Kind::Variable, "v", "Variable")],
         );
 }

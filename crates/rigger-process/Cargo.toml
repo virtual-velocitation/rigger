@@ -42,6 +42,11 @@ tokio = { version = "1", features = ["rt", "time"] }
 # resolves for rustix, tempfile and zbus: `PowerCreateRequest` takes its `REASON_CONTEXT` from
 # Threading and its context version from SystemServices. The macOS adapter declares no crate: it
 # reaches IOKit and CoreFoundation through `extern` declarations.
+# The gate socket's path rule (Unix domain sockets, so Unix alone): the SHA-256 of the canonical
+# repo root names the socket, from the `ring` the lock already resolves for the conductor.
+[target.'cfg(unix)'.dependencies]
+ring = "0.17"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading"] }
 

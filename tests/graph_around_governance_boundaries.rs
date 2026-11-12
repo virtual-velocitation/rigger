@@ -24,12 +24,12 @@
 //!   Dating a node off ANY edge touching it as either endpoint (rather than only its own
 //!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
+use crate::common::fixtures::RecordsRead;
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::Projection;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
-mod common;
+use crate::common;
 
 use common::cli::edge_lines;
 use common::cli::graph_node_ids;
@@ -37,20 +37,16 @@ use common::cli::run_around;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_store_project;
-use common::fixtures::apply_code_entity;
 
+#[cfg(feature = "symbols")]
 #[test]
 fn around_omits_the_governing_section_entirely_when_the_file_has_no_decisions_or_findings() {
     let dir = temp_store_project();
     let root = dir.path();
     let file = "lonely.rs";
 
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
-    }
+    std::fs::write(root.join(file), "fn solo() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
 
     let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
@@ -75,13 +71,6 @@ fn around_shows_exactly_ten_with_no_trailing_count_at_the_cap_boundary() {
     let dir = temp_store_project();
     let root = dir.path();
     let file = "exactly_ten.rs";
-
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
-    }
 
     // Exactly AROUND_GOVERNANCE_CAP (10) governing items - the boundary itself, distinct from
     // the 13-item over-the-cap case `graph_around_code_first.rs` already covers.
@@ -120,12 +109,10 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
     let root = dir.path();
     let file = "governed.rs";
 
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "guarded", "function", 1, "rust");
-    }
+    // The file's own definition, from the committed tree, gives the edge block the structural
+    // edges a GOVERNS or ABOUT line would interleave with.
+    std::fs::write(root.join(file), "fn guarded() {}\n").unwrap();
+    common::fixtures::commit_tree(root);
 
     let payload =
         format!(r#"{{"id":"d1","summary":"a decision about governed.rs","governs":["{file}"]}}"#);
@@ -161,6 +148,12 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
     let (out, err, ok) = run_around(root, file, 2);
     assert!(ok, "graph --around must succeed; stderr: {err}");
 
+    #[cfg(feature = "symbols")]
+    assert!(
+        edge_lines(&out).iter().any(|(from, _, _)| from == file),
+        "fixture sanity: the file's structural edges print, so the filter below works among \
+         them; got:\n{out}"
+    );
     for (from, rel, to) in edge_lines(&out) {
         assert_ne!(
             rel, "GOVERNS",
@@ -192,13 +185,6 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
     let dir = temp_store_project();
     let root = dir.path();
     let file = "supersede_recency.rs";
-
-    {
-        let id = run_stream_identity(root);
-        let p =
-            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
-        apply_code_entity(&p, 100_001, file, "solo", "function", 1, "rust");
-    }
 
     // d1: the OLDEST decision, governing `file` - about to be superseded.
     let payload = format!(
@@ -265,7 +251,7 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
         out.contains("+2") && out.contains("more"),
         "exactly two governing items (d1 and l1) must be capped out; got:\n{out}"
     );
-    // `rigger peers` keeps only the newest records under its byte budget, so the tail names
+    // `rigger peers` keeps only its best-ranked records under its byte budget, so the tail names
     // reaching a capped-out record by id through the graph, never peers as the full history.
     assert!(
         out.contains("`rigger graph --show <id>`") && !out.contains("for the full history"),

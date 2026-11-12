@@ -1,22 +1,25 @@
-//! Exposes the conductor's workflow bridge over MCP (JSON-RPC 2.0 on stdio) so a
-//! Claude Code workflow shim can drive it: rigger_next picks up the next queued
-//! agent spawn, rigger_result reports its outcome, rigger_emit records a decision
-//! live to the event store, and rigger_peers lists peers' decisions. A plain
-//! newline-delimited stdio loop - no async runtime needed.
+//! Serves rigger's tools over MCP (JSON-RPC 2.0 on stdio) on two surfaces: the
+//! operator's read-only lookup surface (`rigger mcp`: peers, ground, graph) and a
+//! launched agent's own spawn-bound surface (`rigger mcp --spawn <id>`: emit, peers,
+//! ground, graph, progress, scratch). A plain newline-delimited stdio loop - no async
+//! runtime needed.
 
 use std::io::{BufRead, Write};
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use crate::contextgraph::query::whole_graph_degree;
-use crate::contextgraph::{entity_site, site_fields, wired, EntitySite, Fold, Located, Projection};
-use crate::driver::workflow::Driver;
+use crate::contextgraph::{
+    answer_unowed, answered_or_why, entity_site, site_fields, wired, ContextGraph, EntitySite,
+    Fold, Located, OpenGraph, RecordFold,
+};
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
 use crate::prompt_surface;
-use crate::sidecar::Sidecar;
+use crate::sidecar::{Peer, PeerDecision, PeerFinding, PeerLesson, RankedPeer, Sidecar};
+use rigger_domain::code_view::{Tests, ViewFilter};
+use rigger_domain::lookup::Lookup;
 
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
 /// failures are internal (`-32603`); a bad argument (e.g. an unknown spawn id)
@@ -55,70 +58,58 @@ impl From<&str> for ToolError {
     }
 }
 
-/// The MCP bridge over the workflow driver, event store, side-car, and (optionally)
-/// the context-graph projector.
+/// The MCP server over the event store, side-car, and (optionally) the context-graph
+/// projector, the grounder, and the progress store.
 pub struct Server<'a> {
-    driver: &'a Driver<'a>,
     store: &'a dyn EventStore,
     stream: String,
     /// The live context-graph projector. When set, an emitted event is folded into
     /// the graph the moment it is appended - so a ReviewFinding (or DecisionMade) an
     /// agent emits via rigger_emit becomes retrievable through `graph_context` by the
-    /// agents that ground afterwards (the adversary / adjudicator). Without this, the
-    /// workflow-driver path would write findings only to the log and the side-car, and
-    /// the graph - the system's cross-agent memory - would never see them.
-    graph: Option<&'a dyn Projection>,
-    /// The operator's own read-only grounder port (spec 92, criterion 4's fix round). Wiring
-    /// one via [`with_grounder`] (or recording a resolution failure through its `Err`
-    /// arm) is what MARKS this `Server` as the operator's lookup
-    /// surface (`rigger mcp`, registered into `.mcp.json`): [`tool_list`]/[`call_tool`] then
-    /// advertise and serve exactly `rigger_peers`/`rigger_ground`/`rigger_graph` instead of the
-    /// workflow-driver bridge's `rigger_next`/`rigger_result`/`rigger_emit`/`rigger_peers`/
-    /// `rigger_activity` - ONE dispatch and read loop answering two tool surfaces over the SAME
-    /// ports (`graph` doubles as the `around`/`show` source too), rather than a second parallel
-    /// MCP loop reaching for the concrete grounder/`Projector` across the crate boundary (the
-    /// DI-extension fix for the reject this closes). Both `None` on a workflow-bridge server.
+    /// agents that ground afterwards (the adversary / adjudicator). Without this, an
+    /// emit would write findings only to the log and the side-car, and the graph - the
+    /// system's cross-agent memory - would never see them.
+    graph: Option<&'a dyn RecordFold>,
+    /// Opens the context graph `rigger_graph` reads, once per call, wired via
+    /// [`with_context`](Server::with_context). `None` when none is wired: `rigger_graph` then
+    /// answers [`NO_GRAPH_WIRED`].
+    context: Option<&'a dyn OpenGraph>,
+    /// The read-only grounder port `rigger_ground` answers through (spec 92, criterion 4's fix
+    /// round), wired via [`with_grounder`] (or a resolution failure recorded through its `Err`
+    /// arm) - the SAME port `rigger ground` resolves, so one dispatch and read loop answers
+    /// both tool surfaces rather than a second parallel MCP loop reaching for the concrete
+    /// grounder across the crate boundary. Both `None` when no grounder is wired:
+    /// `rigger_ground` then reports that as its own tool-call error.
     grounder: Option<&'a dyn Grounder>,
     /// Set instead of [`grounder`](Server::grounder) when the caller's own grounder resolution
     /// FAILED (e.g. `--no-default-features` with no `defaults.grounder` pinned, spec 57's
     /// never-silently-degrade grounder-selection contract) - via
-    /// [`with_grounder`]'s `Err` arm. Still marks the LOOKUP surface (peers/graph must keep
-    /// answering; a grounder misconfiguration is not a reason to refuse the whole server), but
+    /// [`with_grounder`]'s `Err` arm. Peers and graph keep answering (a grounder
+    /// misconfiguration is not a reason to refuse the whole server), but
     /// `rigger_ground` reports this reason as an honest tool-call error instead of silently
     /// returning empty results, exactly as the pre-fix lazy resolution did (a
     /// process-wide startup failure here would be a regression: it would take `rigger_peers`
     /// and `rigger_graph` down over a `rigger_ground`-only misconfiguration).
     grounder_unavailable: Option<String>,
-    /// The SEPARATE progress store (spec 14, unit 2). When set, `rigger_activity` reads this
-    /// run's `AgentProgress` from it to present the live per-agent view. `None` on a server
-    /// started without one - `rigger_activity` then reports the frontier with no activity
-    /// detail (the frontier alone is still useful).
+    /// The combined lookup `rigger_graph`'s `lookup` answers through, over the caller's own
+    /// working tree, wired via [`with_lookup`](Server::with_lookup). `None` when none is wired:
+    /// `lookup` then reports that as its own tool-call error.
+    lookup: Option<&'a dyn Lookup>,
+    /// The SEPARATE progress store (spec 14) `rigger_progress` records the bound spawn's
+    /// activity lines to. `None` on a server started without one - `rigger_progress` then
+    /// reports that as its own tool-call error.
     progress: Option<&'a dyn EventStore>,
-    /// The scratch root whose `agent-live/` holds the liveness markers, so `rigger_activity`
-    /// stats each in-flight spawn's marker IN RUST and PRESENTS the age (retiring the JS
-    /// driver's `stat` probe). Empty when unknown - the view then omits liveness ages.
+    /// The scratch root `rigger_scratch` resolves the bound spawn's container under. Empty
+    /// when unknown - `rigger_scratch` then reports that as its own tool-call error.
     scratch_root: String,
-    /// The deterministic id of the spawn currently being SERVED - set when `rigger_next`
-    /// hands a spawn to the shim, cleared when `rigger_result` reports it. The shim serves
-    /// agents SERIALLY (one `rigger_next` -> run the agent -> `rigger_result` at a time, its
-    /// single `runWorkflow` loop), so between those two calls EVERY `rigger_emit` is that
-    /// spawn's. `rigger_emit` therefore stamps the emit with this id
-    /// ([`META_SPAWN`](crate::conductor::META_SPAWN)), giving the workflow driver the same
-    /// per-spawn correlation the verdict-channel-mismatch backstop (spec 18, unit 3) keys on.
-    /// Without it a concurrent sibling adjudicator's approve, sharing the reviewer role token
-    /// on the ONE stream, would be misattributed by a bare position window.
-    current_spawn: Mutex<Option<String>>,
     /// The id this `Server` is BOUND to (spec 104, `rigger mcp --spawn <id>`), set once at
     /// construction via [`with_spawn`](Server::with_spawn) - the launched agent's own MCP
     /// server, `--strict-mcp-config` naming this exact invocation, so every record it writes
     /// is attributed BY CONSTRUCTION, never a runtime guess. `Some` marks this `Server` as
-    /// the THIRD tool surface (see [`Surface`]): [`tool_list`](Server::tool_list) and
+    /// the spawn-bound surface (see [`Surface`]): [`tool_list`](Server::tool_list) and
     /// [`call_tool`](Server::call_tool) both read it through [`surface`](Server::surface), so
-    /// the two can never disagree on which tools this instance serves. Unlike
-    /// [`current_spawn`](Server::current_spawn) (set/cleared per `rigger_next`/`rigger_result`
-    /// on the SHARED workflow bridge), this is fixed for the server's whole lifetime - one
-    /// spawn, one child process, one MCP server (Design's CONSTRAINTS WALK: "Concurrent
-    /// spawns - one child, one reader, one MCP server process each; no shared file").
+    /// the two can never disagree on which tools this instance serves. It is fixed for the
+    /// server's whole lifetime - one spawn, one child process, one MCP server, no shared file.
     spawn: Option<String>,
 }
 
@@ -127,52 +118,52 @@ pub struct Server<'a> {
 /// [`call_tool`](Server::call_tool) can never drift on which tools an instance serves.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Surface {
-    /// The default: the workflow-driver bridge the loop's shim polls
-    /// (`rigger_next`/`rigger_result`/`rigger_emit`/`rigger_peers`/`rigger_activity`).
-    Workflow,
-    /// A grounder wired (spec 92, criterion 4): the operator's read-only lookup surface
-    /// (`rigger_peers`/`rigger_ground`/`rigger_graph`), reached by `rigger mcp` with no
-    /// `--spawn`.
+    /// The default, no spawn bound (spec 92, criterion 4): the operator's read-only lookup
+    /// surface (`rigger_peers`/`rigger_ground`/`rigger_graph`), reached by `rigger mcp` with
+    /// no `--spawn`.
     Lookup,
     /// A spawn bound (spec 104, criterion 3): the launched agent's own MCP server
     /// (`rigger_emit`/`rigger_peers`/`rigger_ground`/`rigger_graph`/`rigger_progress`/
-    /// `rigger_scratch`), reached by `rigger mcp --spawn <id>`. Takes priority over `Lookup`
-    /// when both a grounder and a spawn are wired - a spawn-bound server always serves the
-    /// write-scoped six, never the narrower three.
+    /// `rigger_scratch`), reached by `rigger mcp --spawn <id>` - always the write-scoped six,
+    /// never the narrower three.
     SpawnBound,
 }
 
 impl<'a> Server<'a> {
-    pub fn new(driver: &'a Driver<'a>, store: &'a dyn EventStore, stream: &str) -> Self {
+    pub fn new(store: &'a dyn EventStore, stream: &str) -> Self {
         Server {
-            driver,
             store,
             stream: stream.to_string(),
             graph: None,
+            context: None,
             grounder: None,
             grounder_unavailable: None,
+            lookup: None,
             progress: None,
             scratch_root: String::new(),
-            current_spawn: Mutex::new(None),
             spawn: None,
         }
     }
 
-    /// Wire the progress store + scratch root so `rigger_activity` can present the live
-    /// per-agent view (spec 14): the current run's progress joined with the frontier and the
-    /// liveness-marker ages rigger reads here. Absent, the tool still answers - just without
-    /// activity or liveness detail.
+    /// Wire the progress store + scratch root the spawn-bound `rigger_progress` writes to and
+    /// `rigger_scratch` resolves under (spec 14, spec 104).
     pub fn with_progress(mut self, progress: &'a dyn EventStore, scratch_root: &str) -> Self {
         self.progress = Some(progress);
         self.scratch_root = scratch_root.to_string();
         self
     }
 
-    /// Wire the live context-graph projector so emitted events fold into the graph as
-    /// they are appended (the workflow-driver path's bridge from rigger_emit to the
-    /// graph, mirroring the conductor's own `emit_with_actor`).
-    pub fn with_graph(mut self, graph: &'a dyn Projection) -> Self {
+    /// Wire the record graph so emitted events fold into it as they are appended (rigger_emit's
+    /// bridge to the graph, mirroring the conductor's own `emit_with_actor`), and so the tools
+    /// that depend on the fold can tell whether it owes its rebuild.
+    pub fn with_graph(mut self, graph: &'a dyn RecordFold) -> Self {
         self.graph = Some(graph);
+        self
+    }
+
+    /// Wire the opener of the context graph `rigger_graph` reads.
+    pub fn with_context(mut self, context: &'a dyn OpenGraph) -> Self {
+        self.context = Some(context);
         self
     }
 
@@ -184,15 +175,19 @@ impl<'a> Server<'a> {
     /// erred) passes the resolution failure's message instead (see
     /// [`grounder_unavailable`](Server::grounder_unavailable)'s doc comment), so
     /// `rigger_peers`/`rigger_graph` still answer normally and only `rigger_ground` reports the
-    /// reason as its own tool-call error. Either way, wiring this is what turns this `Server`
-    /// into the operator's LOOKUP surface: see [`grounder`](Server::grounder)'s doc comment for
-    /// what that switches in [`tool_list`](Server::tool_list) and
-    /// [`call_tool`](Server::call_tool).
+    /// reason as its own tool-call error.
     pub fn with_grounder(mut self, grounder: Result<&'a dyn Grounder, String>) -> Self {
         match grounder {
             Ok(g) => self.grounder = Some(g),
             Err(reason) => self.grounder_unavailable = Some(reason),
         }
+        self
+    }
+
+    /// Wire the combined lookup `rigger_graph`'s `lookup` answers through: the one engine the
+    /// CLI's `rigger graph --lookup` answers through too, rooted at the caller's working tree.
+    pub fn with_lookup(mut self, lookup: &'a dyn Lookup) -> Self {
+        self.lookup = Some(lookup);
         self
     }
 
@@ -207,7 +202,7 @@ impl<'a> Server<'a> {
         self
     }
 
-    /// Serve MCP over the given streams until the input closes (the shim's stdin).
+    /// Serve MCP over the given streams until the input closes (the client's stdin).
     pub fn run(&self, input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
         for line in input.lines() {
             let line = line?;
@@ -292,19 +287,6 @@ impl<'a> Server<'a> {
         }
     }
 
-    /// The two tool surfaces one `Server` answers (spec 92, criterion 4's fix round): the
-    /// workflow-driver bridge the loop's shim polls, or the operator's read-only lookup surface
-    /// `rigger mcp` serves - see [`grounder`](Server::grounder)'s doc comment for what marks a
-    /// `Server` instance as the latter. [`with_grounder`](Server::with_grounder) marks it with
-    /// either an `Ok` grounder or an `Err` resolution failure - a grounder
-    /// resolution failure still gets the lookup surface (peers/graph keep answering), it just
-    /// makes `rigger_ground` itself report that failure. Kept as one small helper so
-    /// [`tool_list`](Server::tool_list) and [`call_tool`](Server::call_tool) can never disagree
-    /// on which surface an instance is.
-    fn is_lookup_surface(&self) -> bool {
-        self.grounder.is_some() || self.grounder_unavailable.is_some()
-    }
-
     /// The ONE authority for which [`Surface`] this instance answers as - see
     /// [`spawn`](Server::spawn)'s and [`Surface`]'s doc comments for the ordering. Both
     /// [`tool_list`] and [`call_tool`] read it, so the advertised list can never drift from
@@ -312,10 +294,8 @@ impl<'a> Server<'a> {
     fn surface(&self) -> Surface {
         if self.spawn.is_some() {
             Surface::SpawnBound
-        } else if self.is_lookup_surface() {
-            Surface::Lookup
         } else {
-            Surface::Workflow
+            Surface::Lookup
         }
     }
 
@@ -323,12 +303,8 @@ impl<'a> Server<'a> {
         let surface = self.surface();
         let result = match (surface, name) {
             (_, "rigger_peers") => self.tool_peers(args),
-            (Surface::Lookup | Surface::SpawnBound, "rigger_ground") => self.tool_ground(args),
-            (Surface::Lookup | Surface::SpawnBound, "rigger_graph") => self.tool_graph(args),
-            (Surface::Workflow, "rigger_next") => self.tool_next(),
-            (Surface::Workflow, "rigger_result") => self.tool_result(args),
-            (Surface::Workflow, "rigger_emit") => self.tool_emit(args),
-            (Surface::Workflow, "rigger_activity") => self.tool_activity(),
+            (_, "rigger_ground") => self.tool_ground(args),
+            (_, "rigger_graph") => self.tool_graph(args),
             (Surface::SpawnBound, "rigger_emit") => self.tool_emit_bound(args),
             (Surface::SpawnBound, "rigger_progress") => self.tool_progress(args),
             (Surface::SpawnBound, "rigger_scratch") => self.tool_scratch(),
@@ -341,6 +317,14 @@ impl<'a> Server<'a> {
         // frame: an oversized result drops its structured copy and cuts its text, an oversized
         // error cuts its message, each with a marked tail.
         match result {
+            // A reply that is text, the combined lookup's, is the content's text alone: it has no
+            // structured form to carry.
+            Ok(Value::String(text)) => within_frame(&text, |text| {
+                ok(
+                    id.clone(),
+                    json!({"content": [{"type": "text", "text": text}]}),
+                )
+            }),
             Ok(structured) => {
                 let text = structured.to_string();
                 let whole = ok(
@@ -366,82 +350,6 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn tool_next(&self) -> Result<Value, ToolError> {
-        match self.driver.next() {
-            Some(req) => {
-                // Track the spawn now being served so its live `rigger_emit` calls are
-                // stamped with its id (serial serving: this spawn owns every emit until its
-                // `rigger_result`). Set BEFORE returning the request, since the shim runs the
-                // agent - and the agent emits - only after receiving it.
-                *self.current_spawn.lock().unwrap() = Some(req.id.clone());
-                serde_json::to_value(req).map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
-            }
-            // An empty id means "no spawn right now". `done` disambiguates the two
-            // cases the shim cannot otherwise tell apart: `done:true` means the
-            // conductor has finished and the shim should exit; `done:false` means the
-            // conductor is still running (grounding, between waves, or with a queued spawn a
-            // hold keeps back) and the shim must poll again rather than exit. Without `done`,
-            // an early empty `next` looks identical to a finished run and the shim exits
-            // before the first spawn is even enqueued.
-            None => Ok(json!({"id": "", "done": self.driver.is_finished()})),
-        }
-    }
-
-    fn tool_result(&self, args: &Value) -> Result<Value, ToolError> {
-        let id = args.get("id").and_then(Value::as_str).unwrap_or_default();
-        let output = args
-            .get("output")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let error = args
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        // AUTHORITATIVE MODEL IDENTITY (spec 61 c10 round 2): the shim's runWorkflow
-        // reports the resolved model id it observed from the Agent SDK's own
-        // structured terminal metadata as `meta.resolved_model` - the SAME wire key
-        // the stepwise `rigger result --meta '{"resolved_model": ..}'` convention uses
-        // ([`spawn::META_RESOLVED_MODEL`]). Read it here and pass it straight through
-        // to the driver so it lands on `AgentResult::resolved_model` instead of being
-        // silently dropped; empty when the shim reported none (never guessed).
-        let resolved_model = args
-            .get("meta")
-            .and_then(|m| m.get(crate::spawn::META_RESOLVED_MODEL))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        // An unknown / stale id means no spawn is waiting on this result. Report
-        // it as invalid-params rather than swallowing it: silent success here
-        // would leave the real spawn blocked forever (the shim thinks it
-        // delivered a result it never did).
-        if self.driver.result(id, output, error, resolved_model) {
-            // The served spawn is done; no later emit belongs to it (the next `rigger_next`
-            // names the next spawn). Clear only when THIS spawn is the one being served, so a
-            // stale/unknown-id result never unstamps the live spawn's emits.
-            let mut current = self.current_spawn.lock().unwrap();
-            if current.as_deref() == Some(id) {
-                *current = None;
-            }
-            Ok(json!({}))
-        } else {
-            Err(ToolError::new(
-                INVALID_PARAMS,
-                format!("unknown spawn id {id:?}"),
-            ))
-        }
-    }
-
-    fn tool_emit(&self, args: &Value) -> Result<Value, ToolError> {
-        // Stamp the emit with the id of the spawn currently being served, so a GATING
-        // adjudicator's approve-shaped verdict recorded via `rigger_emit` is attributable to
-        // THAT spawn EXACTLY (the per-spawn correlation the verdict-channel-mismatch backstop
-        // keys on). Authoritative: the server sets META_SPAWN, never the agent's args.
-        let args = self.stamp_current_spawn(args);
-        self.emit(&args)
-    }
-
     /// Emit `args` through the one emit core into this server's store and graph, answering the
     /// position the store issued and whether the event folded, with the reason it did not - an
     /// event whose fold failed on a current graph is re-derived by no rebuild, so the agent must
@@ -456,38 +364,15 @@ impl<'a> Server<'a> {
         })
     }
 
-    /// Return `args` with its `meta.spawn` set to the id of the spawn currently being served
-    /// ([`current_spawn`](Server::current_spawn)), so an emit landing between a spawn's
-    /// `rigger_next` and its `rigger_result` carries that spawn's
-    /// [`META_SPAWN`](crate::conductor::META_SPAWN) stamp. When no spawn is being served the
-    /// args are returned untouched (a stray emit stays unstamped). The server writes the
-    /// stamp authoritatively, overriding any `meta.spawn` the agent supplied.
-    fn stamp_current_spawn(&self, args: &Value) -> Value {
-        let spawn = match self.current_spawn.lock().unwrap().clone() {
-            Some(s) => s,
-            None => return args.clone(),
-        };
-        let mut args = args.clone();
-        let obj = match args.as_object_mut() {
-            Some(o) => o,
-            None => return args,
-        };
-        Self::stamp_spawn_meta(obj, &spawn);
-        args
-    }
-
     /// `rigger_emit` on the SPAWN-BOUND surface (spec 104, criterion 3): stamps `meta.spawn`
     /// with the id this server is BOUND to ([`with_spawn`](Server::with_spawn)) - ATTRIBUTION
-    /// BY CONSTRUCTION, unlike [`stamp_current_spawn`]'s workflow-bridge surface, which is a
-    /// runtime guess (set/cleared per `rigger_next`/`rigger_result`, unstamped between
-    /// spawns). A write NAMING a DIFFERENT spawn is REFUSED outright, never silently
-    /// corrected: the generic `meta` pass-through this tool's schema already carries (shared
-    /// with the workflow bridge's `rigger_emit`) is the one vector through which a
-    /// spawn-bound session could otherwise misattribute a decision to a sibling spawn it
-    /// shares no memory with. Naming the server's OWN bound spawn is not "another spawn" -
-    /// it is accepted exactly like an unstamped emit. The stamp itself goes through
-    /// [`stamp_spawn_meta`](Server::stamp_spawn_meta), shared with `stamp_current_spawn`, so a
-    /// present-but-non-object `meta` (e.g. a stray `meta: null`) can never silently bypass it.
+    /// BY CONSTRUCTION. A write NAMING a DIFFERENT spawn is REFUSED outright, never silently
+    /// corrected: the generic `meta` pass-through this tool's schema carries is the one
+    /// vector through which a spawn-bound session could otherwise misattribute a decision to
+    /// a sibling spawn it shares no memory with. Naming the server's OWN bound spawn is not
+    /// "another spawn" - it is accepted exactly like an unstamped emit. The stamp itself goes
+    /// through [`stamp_spawn_meta`](Server::stamp_spawn_meta), so a present-but-non-object
+    /// `meta` (e.g. a stray `meta: null`) can never silently bypass it.
     fn tool_emit_bound(&self, args: &Value) -> Result<Value, ToolError> {
         let bound = self.bound_spawn();
         if let Some(named) = args
@@ -513,11 +398,7 @@ impl<'a> Server<'a> {
         self.emit(&stamped)
     }
 
-    /// Insert `meta.spawn = spawn` into an args object's `meta` field - the ONE stamping site
-    /// both [`tool_emit_bound`](Server::tool_emit_bound) and
-    /// [`stamp_current_spawn`](Server::stamp_current_spawn) call, so the two attribution paths
-    /// can never drift apart (spec 104 review round 1 upheld their duplicate, byte-identical
-    /// inline copies as a DRY defect carrying the same latent bug). A `meta` that is present
+    /// Insert `meta.spawn = spawn` into an args object's `meta` field. A `meta` that is present
     /// but NOT an object (e.g. a stray `meta: null`, `[]`, or `"x"` a caller sends) is forced
     /// to a fresh empty object first: `obj.entry("meta").or_insert_with(...)` alone is not
     /// enough, because it only runs its closure on a VACANT entry, so an occupied non-object
@@ -556,18 +437,15 @@ impl<'a> Server<'a> {
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
     }
 
-    /// The current run's id, resolved fresh from the run stream - the SAME read
-    /// [`tool_activity`](Server::tool_activity) takes for its own `run_id`, shared here for
-    /// the two spawn-bound tools ([`tool_progress`], [`tool_scratch`]) that need it to
-    /// resolve a per-run record/path, never a second parallel resolution.
+    /// The current run's id, resolved fresh from the run stream, for the two spawn-bound tools
+    /// ([`tool_progress`], [`tool_scratch`]) that need it to resolve a per-run record/path.
     fn current_run_id(&self) -> Result<String, ToolError> {
         Ok(self.read_current_run()?.1)
     }
 
     /// `rigger_progress` (spec 104's spawn MCP server, addendum §4.3): record one live
     /// activity line for the BOUND spawn to the SAME progress store + record shape
-    /// `rigger progress <id> "<activity>"` and [`tool_activity`]'s `with_progress` wiring
-    /// already use ([`crate::progress_store::record`]) - never a second parallel writer. No
+    /// `rigger progress <id> "<activity>"` already uses ([`crate::progress_store::record`]) - never a second parallel writer. No
     /// spawn-naming argument exists on this tool's schema at all: attribution is by
     /// construction, with nothing to refuse.
     fn tool_progress(&self, args: &Value) -> Result<Value, ToolError> {
@@ -591,8 +469,8 @@ impl<'a> Server<'a> {
     /// `rigger_scratch` (spec 104's spawn MCP server, addendum §4.3): the BOUND spawn's own
     /// rigger-assigned scratch container - the exact path
     /// [`crate::driver::replay::spawn_scratch_path`] resolves and the per-spawn reclaim reaps
-    /// at its terminus, over the SAME `scratch_root` [`with_progress`](Server::with_progress)
-    /// already wires for [`tool_activity`]'s liveness ages. No argument at all: the
+    /// at its terminus, over the `scratch_root` [`with_progress`](Server::with_progress)
+    /// wires. No argument at all: the
     /// spawn-bound server can name no OTHER spawn's scratch, by construction.
     fn tool_scratch(&self) -> Result<Value, ToolError> {
         if self.scratch_root.is_empty() {
@@ -613,8 +491,9 @@ impl<'a> Server<'a> {
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
     /// blast-radius (§5.3). When the caller passes a `files` array (the agent's
     /// blast-radius), only decisions whose `governs`, lessons whose `about`, and findings
-    /// whose `about` intersect it come back; absent or empty, every one does - each section the
-    /// newest under its budget (see [`peers_json`]). The findings are how concurrent review
+    /// whose `about` intersect it come back; absent or empty, every one does - ranked for the
+    /// spawn this server is bound to (none on the other surfaces) and kept under one budget
+    /// (see [`peers_json`]). The findings are how concurrent review
     /// lenses see each other's findings LIVE, before any of them grounds again - the same
     /// side-car channel that surfaces peer decisions and lessons.
     fn tool_peers(&self, args: &Value) -> Result<Value, ToolError> {
@@ -629,23 +508,23 @@ impl<'a> Server<'a> {
             .unwrap_or_default();
         let peers = Sidecar::read(self.store, &self.stream)
             .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
-        Ok(peers_json(&peers, &files))
+        Ok(peers_json(&peers, &files, self.spawn.as_deref()))
     }
 
     /// `rigger_ground` (spec 92, criterion 4's fix round): the operator's own MEMORY-adjacent
     /// intent lookup, over the SAME [`Grounder`] port [`with_grounder`](Server::with_grounder)
     /// wires - the exact trait `rigger ground` resolves through `select_grounder`, so ground's
     /// ranking (spec 92 criterion 3's territory) is inherited automatically, never
-    /// re-implemented here. Only reachable on the lookup surface (a grounder wired OR its
-    /// resolution failure recorded); [`call_tool`] never dispatches here otherwise. Argument
-    /// validation runs BEFORE the grounder-unavailable check, so a genuinely missing `query`
-    /// is always reported as that - never masked by an unrelated resolution failure.
+    /// re-implemented here. Argument validation runs BEFORE the grounder-unavailable check, so
+    /// a genuinely missing `query` is always reported as that - never masked by an unrelated
+    /// resolution failure.
     fn tool_ground(&self, args: &Value) -> Result<Value, ToolError> {
         let query = args
             .get("query")
             .and_then(Value::as_str)
             .ok_or("rigger_ground: missing query")?;
         let k = args.get("k").and_then(Value::as_u64).unwrap_or(8) as usize;
+        let tests = tests_arg("rigger_ground", args.get("tests"))?;
         self.refuse_if_rebuild_owed("rigger_ground")?;
         if let Some(reason) = &self.grounder_unavailable {
             // Honest, lazy failure (spec 57's never-silently-degrade contract) - exactly what
@@ -655,16 +534,21 @@ impl<'a> Server<'a> {
             // this is the ONLY channel that reports it.
             return Err(format!("rigger_ground: {reason}").into());
         }
-        let grounder = self.grounder.expect(
-            "tool_ground is dispatched only on the lookup surface, which always carries \
-             either a grounder or a recorded resolution failure",
-        );
-        let results: Vec<Value> = grounder
-            .ground(query, k)
+        let grounder = self
+            .grounder
+            .ok_or("rigger_ground: no grounder is wired on this server")?;
+        // The rows and their honesty label (6.1) come from one read of the code store.
+        let grounded = grounder.ground_labelled(query, k, tests);
+        let results: Vec<Value> = grounded
+            .rows
             .into_iter()
             .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
             .collect();
-        Ok(json!({"results": results}))
+        Ok(json!({
+            "results": results,
+            "label": grounded.label.map(|l| l.to_string()),
+            "tests_hidden": grounded.tests_hidden,
+        }))
     }
 
     /// Refuse `tool`, whose answer depends on the fold, while the wired graph owes its rebuild
@@ -681,43 +565,104 @@ impl<'a> Server<'a> {
         Ok(())
     }
 
-    /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
-    /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
-    /// for the workflow bridge's event fold - `around` serves [`crate::contextgraph::around`] (the
-    /// trait's [`Projection::subgraph`] plus the seed's callers), `show` the trait's
-    /// [`Projection::locate`] added alongside this fix, so no second graph-reading implementation
-    /// is needed for either selector. Both render a node through [`site_object`] (spec 119, SHOW
+    /// `rigger_graph` (spec 92, criterion 4's fix round): the combined `lookup`, and the
+    /// STRUCTURE (`around`) and resolution (`show`) lookups. `lookup` answers through the wired
+    /// [`Lookup`], which states in its own graph section why the graph did not answer (none wired,
+    /// a rebuild owed), so it is never refused while its text and prose halves can answer, and it
+    /// answers as text. `around` and `show` read the graph [`with_context`](Server::with_context)
+    /// opens, under the call's `tests` filter - `around` serves [`crate::contextgraph::around`]
+    /// (the graph's subgraph plus the seed's callers), `show` its `locate` - and each answers its
+    /// honesty `label` (6.1) as a field. Both render a node through [`site_object`] (spec 119, SHOW
     /// IS ONE RENDERER): `show` the located site whole, `around` every node of the loaded `Graph`
     /// by [`entity_site`] at its edge count there, less the [`AROUND_OMITTED`] `summary` entry.
-    /// Only reachable on the lookup surface;
-    /// [`call_tool`] never dispatches here otherwise.
     fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
+        let terms = lookup_terms(args.get("lookup"));
         let show = args.get("show").and_then(Value::as_str).unwrap_or("");
         let around = args.get("around").and_then(Value::as_str).unwrap_or("");
         let depth = args.get("depth").and_then(Value::as_i64).unwrap_or(2);
-        if show.is_empty() && around.is_empty() {
-            return Err("rigger_graph: pass `show` <entity> or `around` <file|entity>".into());
+        if terms.is_empty() && show.is_empty() && around.is_empty() {
+            return Err(GRAPH_ARGUMENTS_MISSING.into());
         }
-        let graph = self
-            .graph
-            .ok_or("rigger_graph: no context graph is wired on this server")?;
+        let filter = ViewFilter {
+            tests: tests_arg("rigger_graph", args.get("tests"))?,
+        };
+        if !terms.is_empty() {
+            let lookup = self
+                .lookup
+                .ok_or("rigger_graph: no lookup is wired on this server")?;
+            let answer = |graph: Result<&dyn ContextGraph, String>| {
+                lookup
+                    .lookup(&terms, graph)
+                    .map(Value::String)
+                    .map_err(|e| format!("rigger_graph: {e}").into())
+            };
+            return match (self.graph, self.context) {
+                (Some(fold), Some(context)) => answer_unowed(fold, context, filter, |graph| {
+                    answer(graph.map_err(|e| e.0))
+                }),
+                _ => answer(Err(NO_GRAPH_WIRED.to_string())),
+            };
+        }
+        let context = self
+            .context
+            .ok_or(format!("rigger_graph: {NO_GRAPH_WIRED}"))?;
         self.refuse_if_rebuild_owed("rigger_graph")?;
+        answered_or_why(context, filter, |graph| {
+            self.graph_answer(graph.map_err(|e| e.to_string())?, show, around, depth)
+        })
+    }
+
+    /// `rigger_graph`'s `show` or `around` answer from `graph`: where `show` is defined when it is
+    /// asked, else the neighbourhood within `depth` hops of `around`. A located node and a
+    /// neighbourhood carry `tests_hidden`, how many test entities the `tests` filter hides prove
+    /// the nodes shown.
+    fn graph_answer(
+        &self,
+        graph: &dyn ContextGraph,
+        show: &str,
+        around: &str,
+        depth: i64,
+    ) -> Result<Value, ToolError> {
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
+            let label = graph.stamp_label().to_string();
             return Ok(match located {
-                Located::None => json!({"status": "none"}),
+                // A record the graph no longer holds (pruned by `rigger reset --runs`, which
+                // deletes no event) is read from the run store's log, as `rigger peers` reads it.
+                Located::None => match Sidecar::read(self.store, &self.stream)
+                    .map_err(|e| e.to_string())?
+                    .site_of(show)
+                {
+                    Some(site) => json!({
+                        "label": label,
+                        "status": "one",
+                        "site": site_object(&site, &[]),
+                        "note": crate::sidecar::LOGGED_SITE_NOTE,
+                    }),
+                    None => json!({"label": label, "status": "none"}),
+                },
                 Located::Many(cands) => json!({
+                    "label": label,
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
-                Located::One(site) => json!({"status": "one", "site": site_object(&site, &[])}),
+                Located::One(site) => {
+                    let shown = std::slice::from_ref(&site.id);
+                    let tests_hidden = graph.hidden_provers(shown).map_err(|e| e.to_string())?;
+                    json!({"label": label, "status": "one", "site": site_object(&site, &[]),
+                           "tests_hidden": tests_hidden})
+                }
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
+        let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+        let tests_hidden = graph.hidden_provers(&shown).map_err(|e| e.to_string())?;
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
+            "label": graph.stamp_label().to_string(),
+            "tests_hidden": tests_hidden,
             "nodes": g
                 .nodes
                 .iter()
@@ -732,75 +677,90 @@ impl<'a> Server<'a> {
         }))
     }
 
-    /// `rigger_activity` (spec 14, unit 2): present the live per-agent view of the current
-    /// run - for every in-flight agent, what it is doing, its heartbeat age, and its last
-    /// store milestone - so the shim gets up-to-the-second agent state over MCP with NO
-    /// filesystem access of its own. Rigger CONSOLIDATES the run stream, this run's progress,
-    /// and the marker ages it stats HERE in Rust, and returns the same shape `rigger status
-    /// --json` prints. Read-only; the progress store and markers are optional (a server
-    /// started without them still returns the frontier).
-    fn tool_activity(&self) -> Result<Value, ToolError> {
-        let (run_events, run_id) = self.read_current_run()?;
-        let run_events = run_events.as_slice();
-
-        let prog_events: Vec<Event> = match self.progress {
-            Some(store) => crate::progress::read_run(store, &run_id).unwrap_or_default(),
-            None => Vec::new(),
-        };
-
-        let now = SystemTime::now();
-        // Each marker is read under the root its request recorded (spec 101), so a server
-        // started with no scratch root of its own still reads a stamped spawn's age.
-        let frontier = crate::spawn::step_result(run_events)
-            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
-            .wave;
-        let liveness_ages: std::collections::HashMap<String, u64> = crate::liveness::marker_ages(
-            run_events,
-            &self.scratch_root,
-            &run_id,
-            &frontier,
-            now,
-            &[],
-        )
-        .into_iter()
-        .collect();
-
-        let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
-            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
-        serde_json::to_value(view).map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
-    }
-
     /// The tools THIS instance advertises: the spawn-bound surface (spec 104, `--spawn <id>`)
-    /// gets exactly the six named tools; the operator's lookup surface (spec 92, a grounder
-    /// wired, no spawn) gets `rigger_peers`/`rigger_ground`/`rigger_graph`; the
-    /// workflow-driver bridge (the default) gets its usual five. One method, driven by
+    /// gets exactly the six named tools; the operator's lookup surface (spec 92, no spawn)
+    /// gets `rigger_peers`/`rigger_ground`/`rigger_graph`. One method, driven by
     /// [`surface`](Server::surface), so the advertised list can never drift from what
     /// [`call_tool`](Server::call_tool) actually dispatches. Every tool and argument description
     /// is a [`prompt_surface`] const (spec 121), the one home of its text.
     fn tool_list(&self) -> Value {
         match self.surface() {
             Surface::SpawnBound => json!([
-                {"name": "rigger_emit", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT, "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT_META, "additionalProperties": {"type": "string"}}, "valid_from": {"description": prompt_surface::RIGGER_EMIT_VALID_FROM, "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": prompt_surface::RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
-                {"name": "rigger_ground", "description": prompt_surface::RIGGER_GROUND, "inputSchema": {"type": "object", "properties": {"k": {"type": "integer", "description": prompt_surface::RIGGER_GROUND_K}, "query": {"type": "string", "description": prompt_surface::RIGGER_GROUND_QUERY}}, "required": ["query"]}},
-                {"name": "rigger_graph", "description": prompt_surface::RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": prompt_surface::RIGGER_GRAPH_DEPTH}}}},
+                {"name": "rigger_emit", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT, "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT_META, "additionalProperties": {"type": "string"}}, "valid_from": {"description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT_VALID_FROM, "type": ["integer", "string"]}}, "required": ["type", "data"]}},
+                {"name": "rigger_peers", "description": prompt_surface::SPAWN_BOUND_RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                ground_tool(),
+                graph_tool(),
                 {"name": "rigger_progress", "description": prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS, "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS_ACTIVITY}}, "required": ["activity"]}},
                 {"name": "rigger_scratch", "description": prompt_surface::SPAWN_BOUND_RIGGER_SCRATCH, "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
-                {"name": "rigger_peers", "description": prompt_surface::RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
-                {"name": "rigger_ground", "description": prompt_surface::RIGGER_GROUND, "inputSchema": {"type": "object", "properties": {"k": {"type": "integer", "description": prompt_surface::RIGGER_GROUND_K}, "query": {"type": "string", "description": prompt_surface::RIGGER_GROUND_QUERY}}, "required": ["query"]}},
-                {"name": "rigger_graph", "description": prompt_surface::RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": prompt_surface::RIGGER_GRAPH_DEPTH}}}},
-            ]),
-            Surface::Workflow => json!([
-                {"name": "rigger_next", "description": prompt_surface::WORKFLOW_RIGGER_NEXT, "inputSchema": {"type": "object", "properties": {}}},
-                {"name": "rigger_result", "description": prompt_surface::WORKFLOW_RIGGER_RESULT, "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
-                {"name": "rigger_emit", "description": prompt_surface::WORKFLOW_RIGGER_EMIT, "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": prompt_surface::WORKFLOW_RIGGER_EMIT_META, "additionalProperties": {"type": "string"}}, "valid_from": {"description": prompt_surface::RIGGER_EMIT_VALID_FROM, "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": prompt_surface::WORKFLOW_RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": prompt_surface::WORKFLOW_RIGGER_PEERS_FILES}}}},
-                {"name": "rigger_activity", "description": prompt_surface::WORKFLOW_RIGGER_ACTIVITY, "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "rigger_peers", "description": prompt_surface::LOOKUP_RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                ground_tool(),
+                graph_tool(),
             ]),
         }
     }
+}
+
+/// What `rigger_graph` answers when it is passed none of its three forms.
+const GRAPH_ARGUMENTS_MISSING: &str =
+    "rigger_graph: pass `lookup` <term>..., `show` <entity> or `around` <file|entity>";
+
+/// Why a server with no context graph wired answers no graph lookup.
+const NO_GRAPH_WIRED: &str = "no context graph is wired on this server";
+
+/// The `rigger_ground` entry of a tool list, the same on every surface.
+fn ground_tool() -> Value {
+    json!({"name": "rigger_ground", "description": prompt_surface::RIGGER_GROUND, "inputSchema": {"type": "object", "properties": {
+        "query": {"type": "string", "description": prompt_surface::RIGGER_GROUND_QUERY},
+        "k": {"type": "integer", "description": prompt_surface::RIGGER_GROUND_K},
+        "tests": tests_property(prompt_surface::RIGGER_GROUND_TESTS),
+    }, "required": ["query"]}})
+}
+
+/// The `tests` property both lookup tools take, the same on every surface, described by the
+/// taking tool's own `description`.
+fn tests_property(description: &str) -> Value {
+    json!({"type": "string", "enum": ["exclude", "include", "only"], "description": description})
+}
+
+/// The `rigger_graph` entry of a tool list, the same on every surface.
+fn graph_tool() -> Value {
+    json!({"name": "rigger_graph", "description": prompt_surface::RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {
+        "lookup": {"type": "array", "items": {"type": "string"}, "description": prompt_surface::RIGGER_GRAPH_LOOKUP},
+        "show": {"type": "string"},
+        "around": {"type": "string"},
+        "depth": {"type": "integer", "description": prompt_surface::RIGGER_GRAPH_DEPTH},
+        "tests": tests_property(prompt_surface::RIGGER_GRAPH_TESTS),
+    }}})
+}
+
+/// The `tests` setting `tool`'s `tests` argument names: `exclude` when it is absent, else the one
+/// [`Tests`] parser's reading, a refusal naming `tool`.
+fn tests_arg(tool: &str, arg: Option<&Value>) -> Result<Tests, String> {
+    match arg {
+        None => Ok(Tests::Exclude),
+        Some(v) => {
+            let spelled = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+            spelled.parse().map_err(|e| format!("{tool}: {e}"))
+        }
+    }
+}
+
+/// The terms of a `lookup` argument: an array of strings, or one string, each term trimmed and
+/// the empty ones left out.
+fn lookup_terms(arg: Option<&Value>) -> Vec<String> {
+    let terms: Vec<&str> = match arg {
+        Some(Value::String(term)) => vec![term.as_str()],
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    terms
+        .into_iter()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The shared core of `rigger_emit` (the MCP tool) and `rigger emit` (the CLI):
@@ -846,7 +806,7 @@ pub struct Emitted {
 /// The fold is unreachable without the store's position ([`crate::eventstore::Appended::one`]):
 /// the graph's applied ledger is keyed BY position, so folding at a position the store never
 /// issued would mark that location applied forever and swallow the genuine event recorded there.
-pub fn emit_event<'g, G: std::ops::Deref<Target = dyn Projection + 'g>>(
+pub fn emit_event<'g, G: std::ops::Deref<Target = dyn RecordFold + 'g>>(
     store: &dyn EventStore,
     stream: &str,
     graph: impl FnOnce() -> Result<G, crate::contextgraph::Error>,
@@ -912,64 +872,81 @@ fn append_emit(store: &dyn EventStore, stream: &str, args: &Value) -> Result<Eve
     Ok(event.appended_at(stream, position))
 }
 
-/// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI):
-/// the peers' decisions, lessons, AND review findings, scoped to `files` (empty = all),
-/// EXACTLY as the MCP tool returns them - `{"decisions": [...], "lessons": [...],
-/// "findings": [...]}`, each in log order. Both paths call this so the CLI and the MCP
-/// surface stay identical. Each section keeps its NEWEST records under the matching capped
-/// prompt section's verbatim count and byte budget, through the conductor's one
-/// [`within_budget`](crate::conductor::within_budget) rule, so no file's history can grow a
-/// reply past a bound. When a section leaves records out, a `left_out` object counts them per
-/// section and carries the one-line `note` naming how to narrow the call or read a left-out
-/// record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)).
-pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
-    use crate::conductor::{
-        DECISIONS_BUDGET_BYTES, DECISIONS_VERBATIM_N, FINDINGS_BUDGET_BYTES, FINDINGS_VERBATIM_N,
-        LESSONS_BUDGET_BYTES, LESSONS_VERBATIM_N,
-    };
-    let (decisions, decisions_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerDecision>(files)
-            .iter()
-            .map(
-                |d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}),
-            ),
-        DECISIONS_VERBATIM_N,
-        DECISIONS_BUDGET_BYTES,
+/// The one size budget of a `rigger_peers` reply, in bytes of its serialized JSON (the text the
+/// host reads, which counts at most this many characters): under the host's tool-result limit of
+/// about 50K characters with room for the frame, so the reply is delivered inline.
+pub const PEERS_REPLY_BUDGET_BYTES: usize = 40_000;
+
+/// The longest a peer line's summary runs, in bytes, before it is clipped with `...`: the line
+/// names the record, and `rigger graph --show <id>` reads the whole of it.
+pub const PEER_SUMMARY_BYTES: usize = 480;
+
+/// The shared core of `rigger_peers` (the MCP tool) and `rigger peers` (the CLI): the peers'
+/// decisions, lessons AND review findings scoped to `files` (empty = all), ranked for the spawn
+/// `caller` ([`Sidecar::ranked`]: ceremony last, the caller's own unit first, then the active
+/// run's, then those naming more of `files`, then the newest), EXACTLY as the MCP tool returns
+/// them - `{"records": [...]}`, one [`peer_line`] each, best first. Both paths call this so the
+/// CLI and the MCP surface stay identical. The records kept are the best-ranked prefix under ONE
+/// budget for the whole reply, [`PEERS_REPLY_BUDGET_BYTES`], taken through the conductor's one
+/// [`within_budget`](crate::conductor::within_budget) rule. When records are left out, a
+/// `left_out` object counts them per kind and carries the one-line `note` naming how to narrow
+/// the call or read a left-out record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)),
+/// and the budget holds with that object in the reply.
+pub fn peers_json(peers: &Sidecar, files: &[String], caller: Option<&str>) -> Value {
+    let ranked = peers.ranked(files, caller);
+    let totals = kind_counts(&ranked);
+    // The reply's size with no record kept and every record counted out: the most the envelope
+    // and the `left_out` object can take, since a count never has more digits than its total.
+    let reserve = peers_reply(Vec::new(), totals).to_string().len();
+    let kept = crate::conductor::within_budget(
+        ranked.iter(),
+        usize::MAX,
+        PEERS_REPLY_BUDGET_BYTES.saturating_sub(reserve),
+        |p| Value::from(peer_line(p)).to_string().len() + ",".len(),
     );
-    let (lessons, lessons_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerLesson>(files)
-            .iter()
-            .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about})),
-        LESSONS_VERBATIM_N,
-        LESSONS_BUDGET_BYTES,
-    );
-    let (findings, findings_out) = newest_within(
-        peers
-            .peers_for::<crate::sidecar::PeerFinding>(files)
-            .iter()
-            .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about})),
-        FINDINGS_VERBATIM_N,
-        FINDINGS_BUDGET_BYTES,
-    );
-    let mut reply = json!({"decisions": decisions, "lessons": lessons, "findings": findings});
-    let counts: Vec<String> = [
-        (decisions_out, "decision"),
-        (lessons_out, "lesson"),
-        (findings_out, "finding"),
-    ]
-    .iter()
-    .filter(|(n, _)| *n > 0)
-    .map(|(n, noun)| format!("{n} older {noun}(s)"))
-    .collect();
+    let kept_counts = kind_counts(kept.iter().copied());
+    let out = totals.map(|(noun, total)| (noun, total - count_of(&kept_counts, noun)));
+    peers_reply(kept.into_iter().map(peer_line).collect(), out)
+}
+
+/// The kinds a peers reply counts, in the order its `left_out` note names them.
+const PEER_KINDS: [&str; 3] = [PeerDecision::NOUN, PeerLesson::NOUN, PeerFinding::NOUN];
+
+/// How many of `peers` are of each of [`PEER_KINDS`].
+fn kind_counts<'p>(peers: impl IntoIterator<Item = &'p RankedPeer>) -> [(&'static str, usize); 3] {
+    let mut counts = PEER_KINDS.map(|noun| (noun, 0));
+    for p in peers {
+        if let Some((_, n)) = counts.iter_mut().find(|(noun, _)| *noun == p.noun) {
+            *n += 1;
+        }
+    }
+    counts
+}
+
+fn count_of(counts: &[(&str, usize); 3], noun: &str) -> usize {
+    counts
+        .iter()
+        .find(|(n, _)| *n == noun)
+        .map_or(0, |(_, c)| *c)
+}
+
+/// A peers reply holding `records`, with a `left_out` object when any of the `out` counts is
+/// above zero.
+fn peers_reply(records: Vec<String>, out: [(&str, usize); 3]) -> Value {
+    let mut reply = json!({ "records": records });
+    let counts: Vec<String> = out
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(noun, n)| format!("{n} more {noun}(s)"))
+        .collect();
     if !counts.is_empty() {
         reply["left_out"] = json!({
-            "decisions": decisions_out,
-            "lessons": lessons_out,
-            "findings": findings_out,
+            "decisions": count_of(&out, PeerDecision::NOUN),
+            "lessons": count_of(&out, PeerLesson::NOUN),
+            "findings": count_of(&out, PeerFinding::NOUN),
             "note": format!(
-                "(+{} left out to keep this reply under budget - narrow with fewer files, or {})",
+                "(+{} ranked below these left out to keep this reply under budget - narrow with \
+                 fewer files, or {})",
                 counts.join(", "),
                 crate::conductor::RECORD_RECOVERY
             ),
@@ -978,22 +955,30 @@ pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
     reply
 }
 
-/// One `peers_json` section under its budget: `records` arrive in log order (oldest first), so
-/// the newest are walked first through the shared
-/// [`within_budget`](crate::conductor::within_budget) rule, each sized by its JSON rendering;
-/// the kept records return in log order beside how many were left out.
-fn newest_within(
-    records: impl DoubleEndedIterator<Item = Value> + ExactSizeIterator,
-    verbatim_n: usize,
-    budget_bytes: usize,
-) -> (Vec<Value>, usize) {
-    let total = records.len();
-    let mut kept = crate::conductor::within_budget(records.rev(), verbatim_n, budget_bytes, |r| {
-        r.to_string().len()
-    });
-    kept.reverse();
-    let left_out = total - kept.len();
-    (kept, left_out)
+/// One peer record on ONE line: `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`,
+/// the provenance column absent for a lesson (no run owns one), the summary's whitespace runs
+/// collapsed to single spaces and clipped at [`PEER_SUMMARY_BYTES`] with `...`. The id is the
+/// one `rigger graph --show <id>` resolves to the whole record.
+pub fn peer_line(p: &RankedPeer) -> String {
+    let mut line = format!("{} {} | ", p.noun, p.id);
+    if let Some(live) = p.live {
+        line.push_str(if live { "LIVE | " } else { "HISTORICAL | " });
+    }
+    if !p.by.is_empty() {
+        line.push_str(&format!("by {} | ", p.by));
+    }
+    let summary = crate::conductor::normalize_ws(&p.summary);
+    if summary.len() <= PEER_SUMMARY_BYTES {
+        line.push_str(&summary);
+    } else {
+        let mut cut = PEER_SUMMARY_BYTES - "...".len();
+        while !summary.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        line.push_str(&summary[..cut]);
+        line.push_str("...");
+    }
+    line
 }
 
 /// Parse a `valid_from` argument into a [`SystemTime`]: a JSON integer of unix
@@ -1137,11 +1122,8 @@ fn within_frame(text: &str, frame: impl Fn(&str) -> String) -> String {
     }
 }
 
-/// The JSON-RPC 2.0 success envelope. Private: both tool surfaces `Server` answers (the
-/// workflow-driver bridge and the operator's lookup surface, spec 92 criterion 4's fix round)
-/// are served through this ONE `Server`/`handle`/`call_tool` now, so no code outside this file
-/// needs the envelope any more - retiring the operator MCP surface's second parallel read loop
-/// retired its last external caller too.
+/// The JSON-RPC 2.0 success envelope. Private: both tool surfaces `Server` answers are served
+/// through this ONE `Server`/`handle`/`call_tool`, so no code outside this file needs it.
 fn ok(id: Value, result: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
@@ -1178,8 +1160,7 @@ mod tests {
     use crate::eventstore::{Direction, Filter};
     use crate::prompt_surface::prompt_groups;
     use crate::prompt_surface_fixtures::{assert_renders, registry_test, rendered_groups};
-    use crate::spawn::SpawnEvent;
-    use crate::test_support::{stemmed_texts, test_spawn_host};
+    use crate::test_support::stemmed_texts;
     use std::io::Cursor;
 
     /// Send one JSON-RPC request line to `server` and parse its one reply.
@@ -1200,9 +1181,39 @@ mod tests {
         .to_string()
     }
 
+    /// A sign-off mark a reviewer sets through `rigger_emit` reaches the log with its finding, so
+    /// `rigger_peers` ranks the marked finding below an older unmarked one.
+    #[test]
+    fn a_sign_off_emitted_through_the_tool_ranks_last_in_peers() {
+        let store = Store::open(":memory:").unwrap();
+        let server = Server::new(&store, "run").with_spawn("u/reviewer#0");
+        for data in [
+            json!({"id": "f-code", "by": "lens", "summary": "a defect", "about": ["a.rs"]}),
+            json!({"id": "f-done", "by": "lens", "summary": "approve", "about": ["a.rs"],
+                   "sign_off": true}),
+        ] {
+            let emitted = call(
+                &server,
+                &tools_call(
+                    "rigger_emit",
+                    json!({"type": "ReviewFinding", "data": data}),
+                ),
+            );
+            assert!(emitted.get("error").is_none(), "{emitted}");
+        }
+        let peers = call(&server, &tools_call("rigger_peers", json!({})));
+        assert_eq!(
+            peers["result"]["structuredContent"]["records"],
+            json!([
+                "finding f-code | LIVE | by lens | a defect",
+                "finding f-done | LIVE | by lens | approve",
+            ])
+        );
+    }
+
     /// THE MCP TOOLS READ FROM THE BOUNDARY (spec 101): over a log holding 200,000 ledger
     /// entries and two superseded runs before the boundary, every tool that reads the run -
-    /// `rigger_peers`, `rigger_activity` and the spawn-bound `rigger_scratch` - costs exactly one
+    /// `rigger_peers` and the spawn-bound `rigger_scratch` - costs exactly one
     /// read of the run's own events plus the typed carry-over per call, asserted through the
     /// counting store double, and still answers from the whole carry-over.
     #[test]
@@ -1212,30 +1223,25 @@ mod tests {
         let inner = Store::open(":memory:").unwrap();
         let fixture = seed_one_shot_fixture(&inner, "run", &[]);
         let store = ReadCountingStore::new(&inner);
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run");
 
         let peers = call(&server, &tools_call("rigger_peers", json!({})));
-        let ids = |section: &str| -> Vec<String> {
-            peers["result"]["structuredContent"][section]
-                .as_array()
-                .unwrap_or_else(|| panic!("a {section} array: {peers}"))
-                .iter()
-                .map(|v| v["id"].as_str().unwrap().to_string())
-                .collect()
-        };
-        assert_eq!(ids("decisions"), ["d-a", "d-c"]);
-        assert_eq!(ids("lessons"), ["l-a"]);
-        assert_eq!(ids("findings"), ["f-b", "f-c"]);
+        // The current run's records and the lesson newest first, then the superseded runs'.
+        assert_eq!(
+            peers["result"]["structuredContent"]["records"],
+            json!([
+                "finding f-c | LIVE | by lens | found c",
+                "decision d-c | LIVE | chose d-c",
+                "lesson l-a | learned a",
+                "finding f-b | HISTORICAL | by lens | found b",
+                "decision d-a | HISTORICAL | chose d-a",
+            ])
+        );
         assert_eq!(store.reads(), fixture.reads("run", 1));
-
-        let activity = call(&server, &tools_call("rigger_activity", json!({})));
-        assert_eq!(activity["result"]["structuredContent"], json!([]));
-        assert_eq!(store.reads(), fixture.reads("run", 2));
 
         let scratch = tempfile::tempdir().unwrap();
         let progress = Store::open(":memory:").unwrap();
-        let bound = Server::new(&driver, &store, "run")
+        let bound = Server::new(&store, "run")
             .with_progress(&progress, scratch.path().to_str().unwrap())
             .with_spawn("u/implementer#0");
         let resp = call(&bound, &tools_call("rigger_scratch", json!({})));
@@ -1243,8 +1249,8 @@ mod tests {
             resp.get("result").is_some(),
             "rigger_scratch answers: {resp}"
         );
-        assert_eq!(store.reads(), fixture.reads("run", 3));
-        assert_eq!(store.materialized(), 3 * fixture.cost());
+        assert_eq!(store.reads(), fixture.reads("run", 2));
+        assert_eq!(store.materialized(), 2 * fixture.cost());
     }
 
     /// The `rigger_peers` call scoped to `a.rs`.
@@ -1272,7 +1278,7 @@ mod tests {
             .collect()
     }
 
-    /// A fresh workflow-bridge server (bound to `spawn` when given) answers `input` with a
+    /// A fresh server (bound to `spawn` when given) answers `input` with a
     /// JSON-RPC error of `code`, echoing `id` when one is given; the reply is returned.
     fn assert_error_reply(
         spawn: Option<&str>,
@@ -1282,8 +1288,7 @@ mod tests {
         why: &str,
     ) -> Value {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run");
         let server = match spawn {
             Some(spawn) => server.with_spawn(spawn),
             None => server,
@@ -1296,12 +1301,11 @@ mod tests {
         resp
     }
 
-    /// The `DecisionMade` event a fresh workflow-bridge server stores for the `rigger_emit`
+    /// The `DecisionMade` event a fresh spawn-bound server stores for the `rigger_emit`
     /// request `input`.
     fn emitted_decision(input: &str) -> Event {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run").with_spawn("u/implementer#0");
         call(&server, input);
         store
             .read_all(0, Direction::Forward, &Filter::default())
@@ -1318,8 +1322,7 @@ mod tests {
         use crate::conductor::META_SPAWN;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run").with_spawn("u104-spawn-mcp/implementer#0");
+        let server = Server::new(&store, "run").with_spawn("u104-spawn-mcp/implementer#0");
         let resp = call(&server, input);
         assert!(
             resp.get("result").is_some(),
@@ -1340,8 +1343,7 @@ mod tests {
     #[test]
     fn emit_tool_appends_to_the_store() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run").with_spawn("u/implementer#0");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
         let mut output = Vec::new();
@@ -1354,282 +1356,6 @@ mod tests {
         let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
         assert_eq!(resp["id"], 1);
         assert!(resp.get("result").is_some());
-    }
-
-    #[test]
-    fn emit_is_stamped_with_the_serially_served_spawn_id() {
-        // Reject-fix (spec 18, unit 3): the workflow live path correlates a gating adjudicator's
-        // approve to THAT spawn by stamping its live `rigger_emit` with the served spawn's id
-        // ([`META_SPAWN`]), the per-spawn signal the verdict-channel-mismatch backstop keys on.
-        // The shim serves agents SERIALLY - `rigger_next` hands out one spawn, its agent runs
-        // and emits, then `rigger_result` reports it - so every emit between those two calls is
-        // that spawn's. This drives the server's own tools in that exact order and proves:
-        //  - an emit while a spawn is being served carries META_SPAWN = the served spawn id;
-        //  - after `rigger_result`, no spawn is being served, so a stray emit is UNSTAMPED
-        //    (never misattributed to the just-finished spawn);
-        //  - the NEXT served spawn stamps its own emits with its own id.
-        use crate::conductor::{AgentDriver, SpawnOpts, META_SPAWN};
-        use crate::config::AgentDef;
-        use std::time::{Duration, Instant};
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
-
-        let adj_id = "u/adjudicator#0";
-        let sibling_id = "v/adjudicator#0";
-        // Read the LAST DecisionMade whose data `id` matches, and return its META_SPAWN stamp.
-        let stamp_of = |data_id: &str| -> Option<String> {
-            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
-            events
-                .iter()
-                .rev()
-                .find(|e| {
-                    e.type_ == "DecisionMade"
-                        && serde_json::from_slice::<Value>(&e.data)
-                            .ok()
-                            .and_then(|v| v["id"].as_str().map(str::to_string))
-                            .as_deref()
-                            == Some(data_id)
-                })
-                .and_then(|e| e.meta.get(META_SPAWN).cloned())
-        };
-
-        // The conductor side parks a gating spawn under its DETERMINISTIC opts.id and blocks
-        // on its result - exactly as `run_reviewer` calls `driver.spawn`.
-        fn serve(driver: &Driver, id: &str) {
-            let emit = |_: &str, _: Value| Ok(());
-            let _ = driver.spawn(
-                &AgentDef {
-                    id: "judge".into(),
-                    ..Default::default()
-                },
-                "adjudicate",
-                &SpawnOpts {
-                    id: id.to_string(),
-                    ..SpawnOpts::new(test_spawn_host())
-                },
-                &emit,
-            );
-        }
-
-        std::thread::scope(|s| {
-            s.spawn(|| serve(&driver, adj_id));
-
-            // The shim pulls the spawn via rigger_next (retry until the background thread has
-            // queued it), which marks it the spawn now being served.
-            let pull = |want: &str| {
-                let deadline = Instant::now() + Duration::from_secs(2);
-                loop {
-                    let next = server.tool_next().unwrap();
-                    if next["id"] == want {
-                        return;
-                    }
-                    assert!(Instant::now() < deadline, "spawn {want:?} was never queued");
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            };
-            pull(adj_id);
-
-            // An approve emitted WHILE `adj_id` is being served carries its stamp.
-            server
-                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"a1","verdict":"approve"}}))
-                .unwrap();
-            assert_eq!(
-                stamp_of("a1").as_deref(),
-                Some(adj_id),
-                "an emit while a spawn is served is stamped with THAT spawn's id"
-            );
-
-            // Report the result: the served spawn is done, so no emit belongs to it now.
-            server
-                .tool_result(&json!({"id": adj_id, "output": "done"}))
-                .unwrap();
-            server
-                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"stray"}}))
-                .unwrap();
-            assert_eq!(
-                stamp_of("stray"),
-                None,
-                "an emit with no spawn being served is left UNSTAMPED, never misattributed"
-            );
-
-            // The NEXT served spawn stamps its own emits with its own id.
-            s.spawn(|| serve(&driver, sibling_id));
-            pull(sibling_id);
-            server
-                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"a2","verdict":"approve"}}))
-                .unwrap();
-            assert_eq!(
-                stamp_of("a2").as_deref(),
-                Some(sibling_id),
-                "the next served spawn stamps its emits with ITS id, not the previous spawn's"
-            );
-            server
-                .tool_result(&json!({"id": sibling_id, "output": "done"}))
-                .unwrap();
-        });
-    }
-
-    /// Reject-fix (spec 104 review round 1): `stamp_current_spawn` shares
-    /// `tool_emit_bound`'s latent gap - `obj.entry("meta").or_insert_with(...)` only runs its
-    /// closure on a VACANT entry, so a caller-supplied non-object `meta` (e.g. a stray
-    /// `meta: null`) occupies the key and the stamping `if let` used to skip it silently,
-    /// landing the event with NO `META_SPAWN` at all while `rigger_emit` still reported
-    /// success. Drives `tool_emit` (the workflow-bridge surface `rigger_emit` uses while a
-    /// spawn is being served) with each non-object shape and proves the stamp still lands.
-    #[test]
-    fn stray_emit_with_non_object_meta_while_served_is_still_stamped() {
-        use crate::conductor::META_SPAWN;
-
-        for meta in [Value::Null, json!([]), json!("x")] {
-            let store = Store::open(":memory:").unwrap();
-            let driver = Driver::new();
-            let server = Server::new(&driver, &store, "run");
-
-            // A spawn currently being served: the exact state `rigger_next` leaves the
-            // server in, set directly here since the next/result machinery that produces
-            // it is proven separately by `emit_is_stamped_with_the_serially_served_spawn_id`.
-            *server.current_spawn.lock().unwrap() = Some("adj/implementer#0".to_string());
-
-            server
-                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"d1"},"meta":meta.clone()}))
-                .unwrap();
-
-            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
-            let recorded = events
-                .iter()
-                .find(|e| e.type_ == "DecisionMade")
-                .expect("the emit must still land in the store");
-            assert_eq!(
-                recorded.meta.get(META_SPAWN).map(String::as_str),
-                Some("adj/implementer#0"),
-                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
-                 silently dropped and left unattributed"
-            );
-        }
-    }
-
-    /// Reject-fix (spec 61 c10 round 2): the prior round's `meta.resolved_model` never
-    /// reached a real driver because `tool_result` dropped `args.meta` entirely and
-    /// `workflow::Driver::result` hardcoded `resolved_model: String::new()`. This drives
-    /// the REAL `mcpserver.rs::tool_result` (not a mock server, unlike shim.test.mjs's
-    /// coverage) exactly as a `rigger serve` / `rigger run --driver workflow` spawn does:
-    /// the conductor side calls `AgentDriver::spawn` and blocks on its `AgentResult`; the
-    /// shim side pulls the request via `rigger_next` and reports it via `rigger_result`
-    /// with `meta.resolved_model` set, precisely the shape `runWorkflow` in shim.mjs
-    /// sends. Proves the id lands on the `AgentResult` the conductor actually receives -
-    /// the production sink this criterion owns end to end, not a test double's mock.
-    #[test]
-    fn tool_result_meta_resolved_model_reaches_the_real_agent_result() {
-        use crate::conductor::{AgentDriver, AgentResult, SpawnOpts};
-        use crate::config::AgentDef;
-        use std::time::{Duration, Instant};
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
-
-        let spawn_id = "u/implementer#0";
-        let outcome: Mutex<Option<Result<AgentResult, crate::conductor::Error>>> = Mutex::new(None);
-
-        std::thread::scope(|s| {
-            // The conductor side: exactly what `run_single_stage` does - call
-            // `AgentDriver::spawn` and block until the shim reports a result.
-            s.spawn(|| {
-                let emit = |_: &str, _: Value| Ok(());
-                let r = driver.spawn(
-                    &AgentDef {
-                        id: "impl".into(),
-                        ..Default::default()
-                    },
-                    "implement it",
-                    &SpawnOpts {
-                        id: spawn_id.to_string(),
-                        ..SpawnOpts::new(test_spawn_host())
-                    },
-                    &emit,
-                );
-                *outcome.lock().unwrap() = Some(r);
-            });
-
-            // The shim side: rigger_next (retry until queued) then rigger_result with
-            // meta.resolved_model, exactly the shape shim.mjs's runWorkflow builds when
-            // `resolvedModelFromUsage` observed exactly one authoritative model id.
-            let deadline = Instant::now() + Duration::from_secs(2);
-            loop {
-                let next = server.tool_next().unwrap();
-                if next["id"] == spawn_id {
-                    break;
-                }
-                assert!(Instant::now() < deadline, "spawn was never queued");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            server
-                .tool_result(&json!({
-                    "id": spawn_id,
-                    "output": "done",
-                    "meta": {"resolved_model": "claude-opus-4-8-20260101"}
-                }))
-                .unwrap();
-        });
-
-        let result = outcome
-            .into_inner()
-            .unwrap()
-            .expect("the conductor's spawn() must have returned")
-            .expect("a successful rigger_result must not error the spawn");
-        assert_eq!(
-            result.resolved_model, "claude-opus-4-8-20260101",
-            "meta.resolved_model from the real tool_result call must reach the \
-             AgentResult the conductor receives from AgentDriver::spawn, not be dropped"
-        );
-    }
-
-    #[test]
-    fn activity_tool_presents_the_live_per_agent_view() {
-        // spec 14, criterion 3 (MCP half): `rigger_activity` returns the consolidated view
-        // over MCP, so the shim gets each in-flight agent's activity + milestone with no
-        // filesystem access of its own.
-        let store = Store::open(":memory:").unwrap();
-        let progress = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-
-        // A run: a unit started, its implementer parked (in-flight, no result yet).
-        let run_id = crate::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
-        store
-            .append(
-                "run",
-                ExpectedRevision::Any,
-                &[Event::new("UnitStarted", b"{\"id\":\"u\"}".to_vec())],
-            )
-            .unwrap();
-        let req = crate::spawn::test_request("u", "u", "implementer", 0, "do it");
-        store
-            .append("run", ExpectedRevision::Any, &[req.to_event().unwrap()])
-            .unwrap();
-
-        // Its latest activity, in the SEPARATE progress store, scoped to the run.
-        crate::progress_store::record(&progress, &run_id, &req.id, "grep #12: conductor.rs")
-            .unwrap();
-
-        // No scratch root in a unit test, so liveness ages are simply omitted from the view.
-        let server = Server::new(&driver, &store, "run").with_progress(&progress, "");
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_activity","arguments":{}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
-        let view = &resp["result"]["structuredContent"];
-        assert_eq!(
-            view.as_array().map(|a| a.len()),
-            Some(1),
-            "one in-flight agent"
-        );
-        assert_eq!(view[0]["id"], req.id);
-        assert_eq!(view[0]["stage"], "u");
-        assert_eq!(view[0]["latest_activity"], "grep #12: conductor.rs");
-        assert_eq!(view[0]["last_milestone"], "UnitStarted");
     }
 
     /// The shared `emit_event` core (which the CLI `rigger emit` calls directly)
@@ -1652,8 +1378,7 @@ mod tests {
 
         // The MCP path: drive the same args through the server's rigger_emit tool.
         let mcp_store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &mcp_store, "run");
+        let server = Server::new(&mcp_store, "run").with_spawn("u/implementer#0");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
         server.run(Cursor::new(input), &mut Vec::new()).unwrap();
 
@@ -1752,8 +1477,7 @@ mod tests {
     #[test]
     fn the_emit_tool_refuses_a_payload_the_graph_fold_cannot_apply() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run").with_spawn("u/implementer#0");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"LessonLearned","data":{"id":"l1","about":"src/main.rs"}}}}"#;
         let resp = call(&server, input);
         assert!(
@@ -1904,8 +1628,7 @@ mod tests {
     fn the_emit_tool_refuses_an_id_another_authors_live_record_holds() {
         let store = Store::open(":memory:").unwrap();
         emit_record(&store, "DecisionMade", "d-x", Some("u1/implementer#0")).unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run").with_spawn("u2/implementer#0");
+        let server = Server::new(&store, "run").with_spawn("u2/implementer#0");
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d-x","summary":"s"}}}}"#;
         let resp = call(&server, input);
         assert!(
@@ -1919,7 +1642,8 @@ mod tests {
     /// appended, and folds into the wired graph as a node reachable from the file it is about.
     #[test]
     fn emit_event_appends_and_folds_a_well_shaped_lesson() {
-        use crate::contextgraph::{sqlite::Projector, Projection};
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::RecordsRead;
 
         let store = Store::open(":memory:").unwrap();
         let graph = Projector::open(":memory:", "test").unwrap();
@@ -1972,15 +1696,15 @@ mod tests {
                 json!({"id": id, "summary": "y", "about": [about]}),
             );
         }
-        let driver = Driver::new();
         // The CLI path: render through the shared core, scoped to a.rs.
         let core = peers_json(
             &Sidecar::read(&store, "run").unwrap(),
             &["a.rs".to_string()],
+            None,
         );
 
         // The MCP path: the same scope through the rigger_peers tool.
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run");
         let resp = call(&server, PEERS_OF_A_RS);
         let tool = &resp["result"]["structuredContent"];
 
@@ -1988,31 +1712,31 @@ mod tests {
             &core, tool,
             "the shared peers_json core and the MCP tool must return the same value"
         );
-        assert_eq!(core["decisions"].as_array().unwrap().len(), 1);
-        assert_eq!(core["decisions"][0]["id"], "da");
-        // The lessons section is present and blast-radius scoped exactly like decisions.
+        // The a.rs lesson rides the same core and the same scoping as the a.rs decision, newest
+        // first, so `rigger peers a.rs` returns the lessons a capped prompt elided.
         assert_eq!(
-            core["lessons"].as_array().unwrap().len(),
-            1,
-            "`rigger peers a.rs` must return the a.rs lesson (the recovery the elision note names)"
+            core,
+            json!({"records": ["lesson la | y", "decision da | LIVE | x"]})
         );
-        assert_eq!(core["lessons"][0]["id"], "la");
     }
 
     #[test]
     fn emit_tool_folds_a_review_finding_into_the_wired_graph() {
-        // The workflow-driver path's bridge from rigger_emit to the graph: when a
-        // graph is wired, a ReviewFinding an agent emits folds into a KIND_FINDING node
+        // rigger_emit's bridge to the graph: when a graph is wired, a ReviewFinding an agent emits folds into a KIND_FINDING node
         // the moment it lands, so an agent that grounds afterwards retrieves it via
         // graph_context (not via the conductor hand-threading prompts). De-noise (spec 43):
         // only the finding's CONTENT is projected (the node and its ABOUT edge to the code) -
         // the reviewer's provenance is NOT projected as a KIND_AGENT node or a REL_RAISED edge.
-        use crate::contextgraph::{self, sqlite::Projector, Projection};
+        use crate::contextgraph::{self, sqlite::Projector};
+        use crate::test_support::RecordsRead;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let graph = Projector::open(":memory:", "test").unwrap();
-        let server = Server::new(&driver, &store, "run").with_graph(&graph);
+        let context = crate::test_support::RecordsOnly(&graph);
+        let server = Server::new(&store, "run")
+            .with_graph(&graph)
+            .with_context(&context)
+            .with_spawn("u/reviewer#0");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"ReviewFinding","data":{"id":"f1","summary":"skips the buffer authority","about":["combat.rs"]},"meta":{"actor":"tech-lens"}}}}"#;
         let mut output = Vec::new();
@@ -2081,28 +1805,23 @@ mod tests {
 
     /// Seed the two `type_` events `seeded` (one about a.rs, one about b.rs) on the run
     /// stream, check the side-car reads both as `P` peers, and call `rigger_peers` scoped to
-    /// a.rs: its `section` must hold exactly one entry, which is returned.
-    fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(
-        type_: &str,
-        seeded: [Value; 2],
-        section: &str,
-    ) -> Value {
+    /// a.rs: its `records` must hold exactly one line, which is returned.
+    fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(type_: &str, seeded: [Value; 2]) -> Value {
         let store = Store::open(":memory:").unwrap();
         for data in seeded {
             append_run(&store, type_, data);
         }
-        let driver = Driver::new();
         assert_eq!(Sidecar::read(&store, "run").unwrap().peers::<P>().len(), 2);
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run");
 
         let resp = call(&server, PEERS_OF_A_RS);
-        let arr = resp["result"]["structuredContent"][section]
+        let arr = resp["result"]["structuredContent"]["records"]
             .as_array()
-            .unwrap_or_else(|| panic!("a {section} array: {resp}"));
+            .unwrap_or_else(|| panic!("a records array: {resp}"));
         assert_eq!(
             arr.len(),
             1,
-            "files=[a.rs] returns only the a.rs {section} entry: {resp}"
+            "files=[a.rs] returns only the a.rs record: {resp}"
         );
         arr[0].clone()
     }
@@ -2115,86 +1834,194 @@ mod tests {
                     json!({"id": "da", "summary": "x", "governs": ["a.rs"]}),
                     json!({"id": "db", "summary": "x", "governs": ["b.rs"]}),
                 ],
-                "decisions",
-            )["id"],
-            "da"
+            ),
+            "decision da | LIVE | x"
         );
         // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
         // concurrent reviewer scoped to its files sees a finding about one of them.
-        peers_tool_surfaces_findings_scoped_to_the_files_arg: {
-            let finding = sole_peer_of_a_rs::<crate::sidecar::PeerFinding>(
+        peers_tool_surfaces_findings_scoped_to_the_files_arg: assert_eq!(
+            sole_peer_of_a_rs::<crate::sidecar::PeerFinding>(
                 crate::contextgraph::TYPE_REVIEW_FINDING,
                 [
                     json!({"id": "fa", "by": "lensA", "summary": "x", "about": ["a.rs"]}),
                     json!({"id": "fb", "by": "lensA", "summary": "x", "about": ["b.rs"]}),
                 ],
-                "findings",
-            );
-            assert_eq!(finding["id"], "fa");
-            assert_eq!(finding["by"], "lensA");
-        };
+            ),
+            "finding fa | LIVE | by lensA | x"
+        );
     }
 
+    /// A summary of `n` copies of a piece that a JSON rendering escapes (quotes, a backslash),
+    /// spreads over more than one byte (two- and three-byte characters) and breaks across lines.
+    fn awkward_summary(n: usize) -> String {
+        "a \"quoted\" \\ path, caf\u{e9} \u{2713}\n\tnext line. ".repeat(n)
+    }
+
+    /// Seed `n` decisions, `n` findings and `n / 2` lessons about a.rs, each summary many times a
+    /// line's cap, and return the totals: decisions, lessons, findings.
+    fn seed_oversized(store: &Store, n: usize) -> [usize; 3] {
+        for i in 0..n {
+            let summary = awkward_summary(60);
+            append_run(
+                store,
+                crate::contextgraph::TYPE_DECISION_MADE,
+                json!({"id": format!("d-{i}"), "summary": summary, "governs": ["a.rs"]}),
+            );
+            append_run(
+                store,
+                crate::contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": format!("f-{i}"), "by": "lens", "summary": summary, "about": ["a.rs"]}),
+            );
+            if i % 2 == 0 {
+                append_run(
+                    store,
+                    crate::contextgraph::TYPE_LESSON_LEARNED,
+                    json!({"id": format!("l-{i}"), "summary": summary, "about": ["a.rs"]}),
+                );
+            }
+        }
+        [n, n.div_ceil(2), n]
+    }
+
+    /// Over a file holding many times the budget of records whose summaries escape, span bytes
+    /// and break lines, the `rigger_peers` reply - its text and its structured copy, each as the
+    /// host reads it - stays under the one [`PEERS_REPLY_BUDGET_BYTES`] on every surface, keeps
+    /// every record on one line, and counts every record it left out by kind, so kept plus left
+    /// out is every record.
     #[test]
-    fn next_reports_done_only_after_the_conductor_finishes() {
-        // rigger_next must distinguish "nothing queued yet" (done:false, keep
-        // polling) from "the run is over" (done:true, exit). Before finish() an
-        // empty next is done:false; after finish() it is done:true. This is what
-        // stops the shim exiting before the first spawn is even enqueued.
+    fn the_peers_reply_stays_under_one_budget_over_an_oversized_file() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let totals = seed_oversized(&store, 300);
+        for server in [
+            Server::new(&store, "run"),
+            Server::new(&store, "run").with_spawn("u1/implementer#0"),
+        ] {
+            let resp = call(&server, PEERS_OF_A_RS);
+            let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+            let structured = &resp["result"]["structuredContent"];
+            assert!(
+                text.len() <= PEERS_REPLY_BUDGET_BYTES,
+                "the reply text is {} bytes",
+                text.len()
+            );
+            assert_eq!(&serde_json::from_str::<Value>(text).unwrap(), structured);
+            let records = structured["records"].as_array().unwrap();
+            assert!(
+                records.len() > 20,
+                "the budget is spent on records, not on padding: kept {}",
+                records.len()
+            );
+            for (i, (noun, out)) in [
+                ("decision", "decisions"),
+                ("lesson", "lessons"),
+                ("finding", "findings"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let kept = records
+                    .iter()
+                    .filter(|r| r.as_str().unwrap().starts_with(&format!("{noun} ")))
+                    .count();
+                assert_eq!(
+                    kept + structured["left_out"][out].as_u64().unwrap() as usize,
+                    totals[i],
+                    "every {noun} is kept or counted out"
+                );
+            }
+            assert!(
+                records.iter().all(|r| !r.as_str().unwrap().contains('\n')),
+                "every record is one line"
+            );
+            assert!(structured["left_out"]["note"]
+                .as_str()
+                .unwrap()
+                .contains(crate::conductor::RECORD_RECOVERY));
+        }
+    }
 
-        let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_next","arguments":{}}}"#;
-
-        // Before finish: empty id, done:false.
-        let mut out = Vec::new();
-        server.run(Cursor::new(call), &mut out).unwrap();
-        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-        let sc = &resp["result"]["structuredContent"];
-        assert_eq!(sc["id"], "", "no spawn queued yet");
-        assert_eq!(sc["done"], false, "a running conductor is not done: {resp}");
-
-        // After finish: empty id, done:true.
-        driver.finish();
-        let mut out = Vec::new();
-        server.run(Cursor::new(call), &mut out).unwrap();
-        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-        let sc = &resp["result"]["structuredContent"];
-        assert_eq!(sc["id"], "", "still no spawn");
+    /// The bound spawn ranks the tool's reply: a server bound to a spawn of unit u1 puts u1's
+    /// older ruling before u2's newer one, and an unbound server puts the newer first.
+    #[test]
+    fn the_peers_tool_ranks_for_the_spawn_it_is_bound_to() {
+        let store = Store::open(":memory:").unwrap();
+        for (id, spawn) in [
+            ("d-own", "u1/implementer#0"),
+            ("d-other", "u2/implementer#0"),
+        ] {
+            let event = Event::new(
+                crate::contextgraph::TYPE_DECISION_MADE,
+                serde_json::to_vec(&json!({"id": id, "summary": "s", "governs": ["a.rs"]}))
+                    .unwrap(),
+            )
+            .with_meta(crate::spawn::META_SPAWN, spawn);
+            store
+                .append("run", ExpectedRevision::Any, &[event])
+                .unwrap();
+        }
+        let records = |server: Server| {
+            call(&server, PEERS_OF_A_RS)["result"]["structuredContent"]["records"].clone()
+        };
         assert_eq!(
-            sc["done"], true,
-            "a finished conductor reports done so the shim exits: {resp}"
+            [
+                records(Server::new(&store, "run").with_spawn("u1/implementer#1")),
+                records(Server::new(&store, "run")),
+            ],
+            [
+                json!(["decision d-own | LIVE | s", "decision d-other | LIVE | s"]),
+                json!(["decision d-other | LIVE | s", "decision d-own | LIVE | s"]),
+            ]
+        );
+    }
+
+    /// The record a [`peer_line`] test renders: `noun` `id` by `by`, `live`, saying `summary`.
+    fn peer(noun: &'static str, by: &str, summary: &str, live: Option<bool>) -> RankedPeer {
+        RankedPeer {
+            noun,
+            id: format!("{}1", &noun[..1]),
+            by: by.to_string(),
+            summary: summary.to_string(),
+            live,
+        }
+    }
+
+    crate::test_cases! {
+        /// A live decision: its provenance, and its summary's whitespace runs collapsed.
+        peer_line_collapses_a_summary_onto_one_line: assert_eq!(
+            peer_line(&peer("decision", "", "chose\n  X\tnow ", Some(true))),
+            "decision d1 | LIVE | chose X now"
+        );
+        /// A historical finding names its reviewer after its provenance.
+        peer_line_names_a_findings_reviewer: assert_eq!(
+            peer_line(&peer("finding", "lens:sdet", "found y", Some(false))),
+            "finding f1 | HISTORICAL | by lens:sdet | found y"
+        );
+        /// A lesson belongs to no run, so its line carries no provenance.
+        peer_line_gives_a_lesson_no_provenance: assert_eq!(
+            peer_line(&peer("lesson", "", "learned z", None)),
+            "lesson l1 | learned z"
+        );
+        /// A summary past the cap is clipped on a character boundary and marked.
+        peer_line_clips_a_long_summary_on_a_character_boundary: assert_eq!(
+            peer_line(&peer("lesson", "", &"\u{e9}".repeat(PEER_SUMMARY_BYTES), None)),
+            format!("lesson l1 | {}...", "\u{e9}".repeat((PEER_SUMMARY_BYTES - 3) / 2))
         );
     }
 
     #[test]
     fn initialize_advertises_tools() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run");
 
         let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n\
                      {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}";
         let mut output = Vec::new();
         server.run(Cursor::new(input), &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
-        assert!(text.contains("rigger_next") && text.contains("rigger_emit"));
+        assert!(text.contains("rigger_peers") && text.contains("rigger_ground"));
     }
 
     crate::test_cases! {
-        // No spawn is pending, so id "999" is unknown. The shim must get an
-        // error, not a silent success that would block the conductor forever.
-        rigger_result_for_an_unknown_id_is_an_error: {
-            let resp = assert_error_reply(
-                None,
-                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_result","arguments":{"id":"999","output":"done"}}}"#,
-                Some(json!(1)),
-                -32602,
-                "an unknown spawn id must be an invalid-params error",
-            );
-            assert!(resp.get("result").is_none(), "no success result: {resp}");
-        };
         // Unparseable input must not be silently dropped (which hangs the client):
         // it gets a -32700 parse error with a null id.
         malformed_json_gets_a_parse_error: assert_error_reply(
@@ -2259,44 +2086,20 @@ mod tests {
 
     // =======================================================================================
     // Spec 92, criterion 4's fix round (adj-u92c4-parallel-mcp-loop-instead-of-di-extension):
-    // `with_grounder` marks a `Server` as the operator's lookup surface, ONE dispatch and read
+    // a `Server` with no spawn bound is the operator's lookup surface, ONE dispatch and read
     // loop answering both tool surfaces - proven here at the unit level; `tests/cli.rs`'s
     // `mcp_*` tests prove the same thing end to end through the real `rigger mcp` binary.
     // =======================================================================================
 
-    /// Without a grounder wired, `tool_list` is UNCHANGED from before this fix round: the
-    /// workflow-driver bridge's usual five tools, in the same order - the regression backstop
-    /// proving the DI extension never altered `rigger serve`'s own surface.
-    #[test]
-    fn tool_list_without_a_grounder_is_the_unchanged_workflow_surface() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
-
-        let names = tool_names(&server);
-        assert_eq!(
-            names,
-            vec![
-                "rigger_next",
-                "rigger_result",
-                "rigger_emit",
-                "rigger_peers",
-                "rigger_activity"
-            ]
-        );
-    }
-
     /// Wiring a grounder switches `tool_list` to exactly the operator's three lookups, in the
-    /// order `rigger mcp` has always advertised them - never the workflow-lifecycle tools,
-    /// which do not apply outside a run.
+    /// order `rigger mcp` advertises them - never the spawn-bound surface's write tools.
     #[test]
     fn tool_list_with_a_grounder_is_exactly_the_operator_lookup_surface() {
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run").with_grounder(Ok(&grounder));
+        let server = Server::new(&store, "run").with_grounder(Ok(&grounder));
 
         let names = tool_names(&server);
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
@@ -2309,12 +2112,11 @@ mod tests {
 
     /// Each surface `tool_list` serves, in registry order: its registry surface, its prefix
     /// under THE NAMING RULE and the tools it advertises.
-    fn tool_surfaces() -> [(&'static str, &'static str, Value); 3] {
+    fn tool_surfaces() -> [(&'static str, &'static str, Value); 2] {
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = || Server::new(&driver, &store, "run");
+        let server = || Server::new(&store, "run");
         [
             (
                 "mcpserver::tool_list::SpawnBound",
@@ -2325,11 +2127,6 @@ mod tests {
                 "mcpserver::tool_list::Lookup",
                 "LOOKUP",
                 server().with_grounder(Ok(&Nop)).tool_list(),
-            ),
-            (
-                "mcpserver::tool_list::Workflow",
-                "WORKFLOW",
-                server().tool_list(),
             ),
         ]
     }
@@ -2430,18 +2227,139 @@ mod tests {
         }
     }
 
-    /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
-    /// REJECTS a workflow-lifecycle tool name as unknown - it is not merely unadvertised, it
-    /// is genuinely undispatchable on this surface, so an operator session can never emit onto
-    /// the run's event stream through the MCP tool that exists to emit for LOOP agents.
+    /// Every surface that lists `rigger_graph` gives one worked example of each question it
+    /// answers: who calls a name is `around` that name, and where a name is defined is `show` it.
     #[test]
-    fn lookup_surface_serves_ground_and_rejects_workflow_tools() {
+    fn the_graph_tool_gives_a_worked_example_of_each_question_on_every_surface() {
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run").with_grounder(Ok(&grounder));
+        let lookup = Server::new(&store, "run").with_grounder(Ok(&grounder));
+        let spawn_bound = Server::new(&store, "run")
+            .with_grounder(Ok(&grounder))
+            .with_spawn("u/implementer#0");
+        for (surface, server) in [("lookup", lookup), ("spawn-bound", spawn_bound)] {
+            let tools = server.tool_list();
+            let graph = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "rigger_graph")
+                .unwrap_or_else(|| panic!("{surface} lists rigger_graph"));
+            let text = graph["description"].as_str().unwrap();
+            for example in [
+                "who calls <name>: pass `around` <name>",
+                "where is <name> defined: pass `show` <name>",
+            ] {
+                assert!(text.contains(example), "{surface}: {example:?} in {text:?}");
+            }
+            assert_eq!(
+                text,
+                prompt_surface::RIGGER_GRAPH,
+                "{surface} lists the one description"
+            );
+            let at = |form: &str| text.find(form).unwrap();
+            assert!(
+                at("`lookup`") < at("`show`") && at("`lookup`") < at("`around`"),
+                "{surface}: the description leads with the combined lookup"
+            );
+            assert_eq!(
+                graph["inputSchema"]["properties"]["lookup"]["description"],
+                prompt_surface::RIGGER_GRAPH_LOOKUP,
+                "{surface}: `lookup` is an argument"
+            );
+        }
+    }
+
+    /// The combined lookup answers as text, and a graph that owes its rebuild, or none wired,
+    /// leaves its text and prose halves answering, its graph section stating why: never the
+    /// refusal `show` and `around` give.
+    #[test]
+    fn the_combined_lookup_answers_text_and_prose_when_the_graph_cannot() {
+        use crate::contextgraph::{Error as GraphError, REBUILD_OWED};
+        use rigger_grounder::lookup::TreeLookup;
+
+        struct Owing;
+        impl RecordFold for Owing {
+            fn apply(
+                &self,
+                _: &Event,
+                _access: crate::contextgraph::FoldAccess,
+            ) -> Result<(), GraphError> {
+                Err(GraphError(REBUILD_OWED.to_string()))
+            }
+            fn rebuild_owed(&self) -> Result<bool, GraphError> {
+                Ok(true)
+            }
+        }
+
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(tree.path().join("a.rs"), "fn gizmo() {}\n").unwrap();
+        std::fs::create_dir(tree.path().join("docs")).unwrap();
+        std::fs::write(tree.path().join("docs/a.md"), "# Gizmo\nthe gizmo\n").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let lookup = TreeLookup::new(tree.path());
+        let graph = Owing;
+        let empty = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&empty);
+        let cases: [(Option<&dyn RecordFold>, &str); 2] =
+            [(Some(&graph), REBUILD_OWED), (None, NO_GRAPH_WIRED)];
+        for (graph, reason) in cases {
+            let mut server = Server::new(&store, "run").with_lookup(&lookup);
+            if let Some(graph) = graph {
+                server = server.with_graph(graph).with_context(&context);
+            }
+            let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"lookup":["gizmo"]}}}"#;
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let reply: Value =
+                serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            let text = reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{reply}"));
+            for part in [
+                format!("## graph\nnot answered: {reason}\n"),
+                "a.rs:1: fn gizmo() {}".to_string(),
+                "- prose:doc docs/a.md:1".to_string(),
+            ] {
+                assert!(
+                    text.contains(&part),
+                    "{reason}: the reply holds {part:?}:\n{text}"
+                );
+            }
+            assert!(
+                reply["result"].get("structuredContent").is_none(),
+                "the lookup answers as text alone"
+            );
+        }
+    }
+
+    /// The terms `rigger_graph`'s `lookup` argument holds: an array of strings or one string, each
+    /// trimmed, the empty ones and anything not a string left out.
+    fn lookup_terms_are(arg: Option<Value>, expected: &[&str]) {
+        assert_eq!(lookup_terms(arg.as_ref()), expected, "{arg:?}");
+    }
+
+    crate::test_cases! {
+        an_array_of_terms_is_each_term: lookup_terms_are(Some(json!(["a", "b"])), &["a", "b"]);
+        one_string_is_one_term: lookup_terms_are(Some(json!(" gizmo ")), &["gizmo"]);
+        empty_and_non_string_items_are_left_out: lookup_terms_are(Some(json!(["", " ", 3, "a"])), &["a"]);
+        a_non_string_argument_is_no_term: lookup_terms_are(Some(json!(3)), &[]);
+        no_argument_is_no_term: lookup_terms_are(None, &[]);
+    }
+
+    /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
+    /// REJECTS the spawn-bound `rigger_emit` as unknown - it is not merely unadvertised, it
+    /// is genuinely undispatchable on this surface, so an operator session can never emit onto
+    /// the run's event stream through the MCP tool that exists to emit for LOOP agents.
+    #[test]
+    fn lookup_surface_serves_ground_and_rejects_the_emit_tool() {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let grounder = Nop;
+        let server = Server::new(&store, "run").with_grounder(Ok(&grounder));
 
         let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
         let mut out = Vec::new();
@@ -2463,32 +2381,112 @@ mod tests {
         );
     }
 
-    crate::test_cases! {
-        /// The SYMMETRIC direction of `lookup_surface_serves_ground_and_rejects_workflow_tools`
-        /// (closes sdet-u92c4r2-workflow-surface-reject-of-ground-graph-untested): a `Server` built
-        /// the workflow-driver way - no grounder, no graph wired, exactly what `rigger serve`/the
-        /// loop's shim gets - must reject `rigger_ground`/`rigger_graph` as UNKNOWN TOOLS through
-        /// `call_tool`'s own `(lookup, name)` gate, never reach `tool_ground`/`tool_graph`
-        /// themselves. This matters beyond an unadvertised name: `tool_ground` `.expect()`s a
-        /// grounder that is genuinely absent on this surface, so a future match-arm refactor that
-        /// let either tool through would panic the whole server mid-run instead of answering
-        /// `-32602` - this test is the one that would go red for that regression.
-        workflow_surface_rejects_ground_and_graph_as_unknown_tools: for name in ["rigger_ground", "rigger_graph"] {
-            assert_error_reply(
-                None,
-                &tools_call(name, json!({})),
-                None,
-                -32602,
-                &format!(
-                    "{name} must be UNDISPATCHABLE (not merely unadvertised) on the workflow \
-                     surface"
-                ),
-            );
-        };
+    /// `rigger_ground` takes the same `tests` argument `rigger_graph` does, through the one parser,
+    /// and hands it to the grounder; a spelling that is none of the three is refused before any
+    /// read. Each row: the argument, and the filter the grounder was asked under or the refusal.
+    #[test]
+    fn mcp_ground_tool_accepts_tests() {
+        use crate::grounder::{Grounded, Grounder, Ref};
+        use std::sync::Mutex;
+
+        struct Spy(Mutex<Vec<Tests>>);
+        impl Grounder for Spy {
+            fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
+                Vec::new()
+            }
+            fn ground_labelled(&self, _query: &str, _k: usize, tests: Tests) -> Grounded<Vec<Ref>> {
+                self.0.lock().unwrap().push(tests);
+                Grounded {
+                    rows: Vec::new(),
+                    label: None,
+                    tests_hidden: 2,
+                }
+            }
+        }
+
+        let ground = ground_tool();
+        assert_eq!(
+            ground["inputSchema"]["properties"]["tests"]["enum"],
+            json!(["exclude", "include", "only"])
+        );
+        let store = Store::open(":memory:").unwrap();
+        let cases = [
+            (None, Ok(Tests::Exclude)),
+            (Some(json!("include")), Ok(Tests::Include)),
+            (Some(json!("only")), Ok(Tests::Only)),
+            (
+                Some(json!("all")),
+                Err("rigger_ground: `tests` is one of exclude, include or only, not \"all\""),
+            ),
+        ];
+        for (tests, expected) in cases {
+            let spy = Spy(Mutex::new(Vec::new()));
+            let server = Server::new(&store, "run").with_grounder(Ok(&spy));
+            let mut args = json!({"query": "anything"});
+            if let Some(tests) = &tests {
+                args["tests"] = tests.clone();
+            }
+            let reply = call(&server, &tools_call("rigger_ground", args));
+            let seen = spy.0.lock().unwrap().clone();
+            match expected {
+                Ok(want) => {
+                    assert_eq!(seen, [want], "{tests:?}: {reply}");
+                    assert_eq!(
+                        reply["result"]["structuredContent"]["tests_hidden"], 2,
+                        "the hidden test hits ride as a separate count: {reply}"
+                    );
+                }
+                Err(message) => {
+                    assert!(seen.is_empty(), "{tests:?} must be refused before a read");
+                    assert_eq!(reply["error"]["message"], message, "{tests:?}");
+                }
+            }
+        }
+    }
+
+    /// `rigger_ground` returns the grounder's honesty label (6.1) as a field when it has one and
+    /// `null` when it does not (a grounder that reads the worktree itself).
+    #[test]
+    fn ground_returns_the_grounders_label_as_a_field() {
+        use crate::composed::Label;
+        use crate::grounder::{Grounded, Grounder, Nop, Ref};
+
+        struct Labelled;
+        impl Grounder for Labelled {
+            fn ground(&self, _query: &str, _k: usize) -> Vec<Ref> {
+                Vec::new()
+            }
+            fn ground_labelled(&self, query: &str, k: usize, _tests: Tests) -> Grounded<Vec<Ref>> {
+                Grounded {
+                    rows: self.ground(query, k),
+                    label: Some(Label::unopened("W".to_string(), "locked")),
+                    tests_hidden: 0,
+                }
+            }
+        }
+        let store = Store::open(":memory:").unwrap();
+        let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
+        let labelled = Labelled;
+        let nop = Nop;
+        for (name, grounder, want) in [
+            (
+                "a labelled grounder",
+                &labelled as &dyn Grounder,
+                json!("describes nothing; W cannot be compared; the code store cannot be opened: locked"),
+            ),
+            ("a grounder with no label", &nop as &dyn Grounder, Value::Null),
+        ] {
+            let server = Server::new(&store, "run").with_grounder(Ok(grounder));
+            let mut out = Vec::new();
+            server.run(Cursor::new(ground_input), &mut out).unwrap();
+            let resp: Value =
+                serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert_eq!(resp["result"]["structuredContent"]["label"], want, "{name}");
+        }
     }
 
     /// Reject-fix regression: `with_grounder(Err(..))` (the graceful-degrade path a caller
-    /// takes when its OWN grounder resolution failed) still marks the lookup surface - the tool
+    /// takes when its OWN grounder resolution failed) still serves the lookup surface - the tool
     /// list is unchanged, `rigger_peers` keeps answering - and `rigger_ground` alone reports the
     /// recorded reason as its own tool-call error, lazily, never a silently-empty results array.
     /// Before this fix, `cmd_mcp` propagated a resolution failure with `?`, which would have
@@ -2507,8 +2505,7 @@ mod tests {
                 &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
             )
             .unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_grounder(Err("grounder \"turbovec\" was retired".to_string()));
 
         // Still the lookup surface - the exact same three tools, tool-list-wise.
@@ -2527,7 +2524,7 @@ mod tests {
         server.run(Cursor::new(peers_input), &mut out).unwrap();
         let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
         assert_eq!(
-            resp["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+            resp["result"]["structuredContent"]["records"][0], "decision d1 | LIVE | x",
             "rigger_peers must keep answering even though the grounder failed to resolve; \
              got:\n{resp}"
         );
@@ -2567,31 +2564,29 @@ mod tests {
         );
     }
 
-    /// `rigger_graph`'s `show` selector on the lookup surface: seeds one real code-entity
-    /// definition into a `Projector` (the same `CodeEntityExtracted` fold a real extraction
-    /// pass produces) and drives it through `Server::call_tool`, proving the trait's new
-    /// [`Projection::locate`] reaches a real caller holding only `&dyn Projection` - the DI
-    /// extension this fix round adds, reusing the SAME `graph` port `with_graph` already wires
-    /// for the event fold, rather than a second implementation reaching for the concrete
+    /// `rigger_graph`'s `show` selector on the lookup surface: plants one code-entity
+    /// definition in the code view beside a `Projector` and drives it through
+    /// `Server::call_tool`, proving [`ContextGraph::locate`] reaches a real caller holding only the
+    /// context the server was given, rather than a second implementation reaching for the concrete
     /// `sqlite::Projector` from outside the crate.
     #[test]
     fn lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        let payload =
-            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
-        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
-        e.position = 1;
-        crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        tree.define("src/widget.rs", "frobnicate", "function", 7);
 
-        let server = Server::new(&driver, &store, "run")
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
+        let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"frobnicate"}}}"#;
@@ -2603,73 +2598,230 @@ mod tests {
         assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
         assert_eq!(structured["site"]["file"], "src/widget.rs");
         assert_eq!(structured["site"]["line"], 7);
-        assert_eq!(structured["site"]["kind"], "fn");
+        assert_eq!(structured["site"]["kind"], "function");
     }
 
-    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`: the
-    /// structured content the show-renderer tests read (spec 119, SHOW IS ONE RENDERER).
-    fn shown_graph_answer(
+    /// The `rigger_graph` answer to `arguments` of a lookup surface wired to `graph`, reading it
+    /// through `context`: the structured content the show-renderer tests read (spec 119, SHOW IS
+    /// ONE RENDERER).
+    fn shown_graph_answer_over(
         graph: &crate::contextgraph::sqlite::Projector,
+        context: &dyn crate::contextgraph::OpenGraph,
         arguments: Value,
     ) -> Value {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = crate::grounder::Nop;
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_graph(graph)
+            .with_context(context)
             .with_grounder(Ok(&grounder));
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
     }
 
-    /// The site object the `rigger_graph` `show` of `id` answers over `graph`
-    /// ([`shown_graph_answer`]).
-    fn shown_site(graph: &crate::contextgraph::sqlite::Projector, id: &str) -> Value {
-        shown_graph_answer(graph, json!({"show": id}))["site"].clone()
+    /// Each row: a `rigger_graph` `show` or `around` call over the shown tree, whose
+    /// `blank_is_blank` test, hidden under the default filter, proves `blank`, and the
+    /// `tests_hidden` its reply carries: how many hidden tests prove the nodes it shows, and none
+    /// when it shows no node.
+    #[test]
+    fn rigger_graph_around_and_show_count_the_hidden_tests_proving_what_they_show() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::{shown_tree_planted_view, ViewedRecords};
+
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let context = ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        for (arguments, hidden) in [
+            (json!({"show": "src/limits.rs::blank"}), json!(1)),
+            (
+                json!({"around": "src/limits.rs::blank", "depth": 1}),
+                json!(1),
+            ),
+            (json!({"show": "src/limits.rs::LIMIT"}), json!(0)),
+            (json!({"show": "nothing"}), Value::Null),
+        ] {
+            let answer = shown_graph_answer_over(&graph, &context, arguments.clone());
+            assert_eq!(
+                answer["tests_hidden"],
+                json!(hidden),
+                "{arguments}: {answer}"
+            );
+        }
     }
 
-    /// The `rigger_graph` `around` answer of `seed` at depth 1 over `graph`
-    /// ([`shown_graph_answer`]).
-    fn around_answer(graph: &crate::contextgraph::sqlite::Projector, seed: &str) -> Value {
-        shown_graph_answer(graph, json!({"around": seed, "depth": 1}))
+    /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens
+    /// under, or the refusal that names the three spellings.
+    #[test]
+    fn mcp_graph_tool_accepts_tests() {
+        use crate::contextgraph::sqlite::Projector;
+        use rigger_domain::code_view::ViewFilter;
+        use std::sync::Mutex;
+
+        struct Spy<'a> {
+            inner: crate::test_support::RecordsOnly<'a>,
+            seen: Mutex<Vec<Tests>>,
+        }
+        impl crate::contextgraph::OpenGraph for Spy<'_> {
+            fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
+                self.inner.head()
+            }
+            fn head_in(
+                &self,
+                worktree: &std::path::Path,
+            ) -> Result<rigger_domain::code_view::Head, String> {
+                self.inner.head_in(worktree)
+            }
+            fn open_on(
+                &self,
+                head: &rigger_domain::code_view::Head,
+                filter: ViewFilter,
+            ) -> Result<Box<dyn crate::contextgraph::ContextGraph + '_>, crate::contextgraph::Error>
+            {
+                self.seen.lock().unwrap().push(filter.tests);
+                self.inner.open_on(head, filter)
+            }
+        }
+
+        let schema = graph_tool();
+        assert_eq!(
+            schema["inputSchema"]["properties"]["tests"]["enum"],
+            json!(["exclude", "include", "only"])
+        );
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let grounder = crate::grounder::Nop;
+        let cases = [
+            (None, Ok(Tests::Exclude)),
+            (Some(json!("exclude")), Ok(Tests::Exclude)),
+            (Some(json!("include")), Ok(Tests::Include)),
+            (Some(json!("only")), Ok(Tests::Only)),
+            (
+                Some(json!("some")),
+                Err("rigger_graph: `tests` is one of exclude, include or only, not \"some\""),
+            ),
+            (
+                Some(json!(3)),
+                Err("rigger_graph: `tests` is one of exclude, include or only, not \"3\""),
+            ),
+        ];
+        for (tests, expected) in cases {
+            let context = Spy {
+                inner: crate::test_support::RecordsOnly(&graph),
+                seen: Mutex::new(Vec::new()),
+            };
+            let server = Server::new(&store, "run")
+                .with_graph(&graph)
+                .with_context(&context)
+                .with_grounder(Ok(&grounder));
+            let mut args = json!({"show": "nope"});
+            if let Some(tests) = &tests {
+                args["tests"] = tests.clone();
+            }
+            let reply = call(&server, &tools_call("rigger_graph", args));
+            let seen = context.seen.lock().unwrap().clone();
+            match expected {
+                Ok(want) => assert_eq!(seen, [want], "{tests:?}: {reply}"),
+                Err(message) => {
+                    assert!(seen.is_empty(), "{tests:?} must be refused before a read");
+                    assert_eq!(reply["error"]["message"], message, "{tests:?}");
+                }
+            }
+        }
+    }
+
+    /// The MCP `show` of an id the graph no longer holds falls back to the run store's log, as the
+    /// CLI's does: the record's site as a graph node's, with the note naming where it was read
+    /// from; an id the log does not hold either still answers none.
+    #[test]
+    fn rigger_graph_show_reads_a_record_the_graph_no_longer_holds_from_the_log() {
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let decision = json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs", "b.rs"]});
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::contextgraph::TYPE_DECISION_MADE,
+                    serde_json::to_vec(&decision).unwrap(),
+                )],
+            )
+            .unwrap();
+        let grounder = crate::grounder::Nop;
+        let context = crate::test_support::RecordsOnly(&graph);
+        let server = Server::new(&store, "run")
+            .with_graph(&graph)
+            .with_context(&context)
+            .with_grounder(Ok(&grounder));
+        let show = |id: &str| {
+            call(&server, &tools_call("rigger_graph", json!({"show": id})))["result"]
+                ["structuredContent"]
+                .clone()
+        };
+        let label = crate::contextgraph::ContextGraph::stamp_label(
+            &crate::test_support::records_graph(&graph),
+        )
+        .to_string();
+        assert_eq!(
+            [show("d-old"), show("nope")],
+            [
+                json!({
+                    "status": "one",
+                    "site": {"id": "d-old", "kind": "decision", "degree": 2, "summary": "chose X"},
+                    "note": "read from the event log: the graph no longer holds this record",
+                    "label": label,
+                }),
+                json!({"status": "none", "label": label}),
+            ]
+        );
     }
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `show` gives each node by exact id as its `id` and
-    /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, a `doc` holding a
-    /// newline verbatim, an empty `lang` and the `proven_by` attr giving no key, an empty `kind`
-    /// attr giving the graph kind, and the finding its `by`, `unit` and `summary` with no `file`
-    /// and no `line` - each object equal, without order, to `site_fields` of the located site.
+    /// the `site_fields` entries as keys - `line` and `degree` JSON numbers, the `doc` of a
+    /// document node, and the finding its `by`, `unit` and `summary` with no `file` and no `line` -
+    /// each object equal, without order, to `site_fields` of the located site. The cases no
+    /// extractor produces (see the fixture) are not exercised.
     #[test]
     fn rigger_graph_show_gives_each_node_its_id_and_its_site_fields_as_keys() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::test_support::{seed_shown_nodes, SHOWN_IDS};
+        use crate::test_support::{
+            assert_shown_tree_function_carries_proven_by, assert_shown_tree_sites_are_site_fields,
+            fold_shown_tree_finding, shown_tree_planted_view, SHOWN_TREE_IDS,
+        };
 
         let graph = Projector::open(":memory:", "test").unwrap();
-        seed_shown_nodes(&graph);
-        let sites = SHOWN_IDS.map(|id| shown_site(&graph, id));
+        fold_shown_tree_finding(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        let sites = SHOWN_TREE_IDS.map(|id| {
+            shown_graph_answer_over(&graph, &context, json!({"show": id}))["site"].clone()
+        });
         assert_eq!(
             sites,
             [
-                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 3,
+                json!({"id": "src/limits.rs::LIMIT", "file": "src/limits.rs", "line": 2,
                        "kind": "constant", "degree": 1, "name": "LIMIT", "lang": "rust"}),
-                json!({"id": "src/limits.rs::width", "file": "src/limits.rs", "line": 5,
-                       "kind": "field", "degree": 1, "name": "width"}),
-                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 7,
-                       "kind": "code-entity", "degree": 1, "name": "blank", "lang": "rust"}),
-                json!({"id": "Makefile::all", "file": "Makefile", "line": 1,
-                       "kind": "function", "degree": 1, "name": "all", "lang": "make"}),
+                json!({"id": "src/limits.rs::Bounds", "file": "src/limits.rs", "line": 4,
+                       "kind": "type", "degree": 1, "name": "Bounds", "lang": "rust"}),
+                json!({"id": "src/limits.rs::blank", "file": "src/limits.rs", "line": 6,
+                       "kind": "function", "degree": 1, "name": "blank", "lang": "rust"}),
                 json!({"id": "f-shown", "kind": "finding", "degree": 2, "by": "lens:sdet",
                        "unit": "u7", "summary": "the width overflows"}),
                 json!({"id": "docs/decisions/one-renderer.md",
                        "file": "docs/decisions/one-renderer.md", "line": 0,
                        "kind": "arch-decision", "degree": 0, "title": "One renderer",
-                       "doc": "the decision log\nits second line"}),
+                       "doc": "docs/decisions/one-renderer.md"}),
                 json!({"id": "docs/x.md#sec", "file": "docs/x.md", "line": 0,
                        "kind": "design-doc", "degree": 0, "title": "Sec", "doc": "docs/x.md"}),
             ],
             "each node's site object"
         );
-        crate::test_support::assert_the_shown_const_carries_proven_by(&graph);
-        crate::test_support::assert_shows_are_site_fields(&graph, &sites);
+        let composed = crate::test_support::view_graph(&graph, &context.view);
+        assert_shown_tree_function_carries_proven_by(&composed);
+        assert_shown_tree_sites_are_site_fields(&composed, &sites);
     }
 
     /// Spec 119, SHOW IS ONE RENDERER: the MCP `around` renders every node of the `Graph` it
@@ -2681,13 +2833,26 @@ mod tests {
     #[test]
     fn rigger_graph_around_renders_each_loaded_node_with_its_degree_in_the_merged_graph() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::test_support::{seed_shown_nodes, SHOWN_FILE};
+        use crate::test_support::{
+            assert_shown_tree_around_is_entity_sites, fold_shown_tree_finding,
+            shown_tree_around_nodes, shown_tree_planted_view, SHOWN_TREE_FILE,
+        };
 
         let graph = Projector::open(":memory:", "test").unwrap();
-        seed_shown_nodes(&graph);
-        let answer = around_answer(&graph, SHOWN_FILE);
-        let shown = |id: &str| shown_site(&graph, id);
-        let nodes = crate::test_support::around_nodes(&answer);
+        fold_shown_tree_finding(&graph);
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        let answer = shown_graph_answer_over(
+            &graph,
+            &context,
+            json!({"around": SHOWN_TREE_FILE, "depth": 1}),
+        );
+        let shown = |id: &str| {
+            shown_graph_answer_over(&graph, &context, json!({"show": id}))["site"].clone()
+        };
+        let nodes = shown_tree_around_nodes(&answer);
         assert_eq!(
             nodes,
             [
@@ -2695,35 +2860,16 @@ mod tests {
                        "unit": "u7"}),
                 json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
                        "kind": "file", "degree": 4, "lang": "rust"}),
+                shown("src/limits.rs::Bounds"),
                 shown("src/limits.rs::LIMIT"),
                 shown("src/limits.rs::blank"),
-                shown("src/limits.rs::width"),
             ],
             "every loaded node at its degree in the merged graph, each definition as show gives it"
         );
-        crate::test_support::assert_around_is_entity_sites(&graph, &nodes);
-        crate::test_support::assert_finding_shows_past_the_depth_bound(&shown("f-shown"));
-    }
-
-    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: the MCP `show` of a file node carries its
-    /// unresolved leaves as one `unresolved` key, joined by `LIST_SEP`, beside its `partial`; a
-    /// file listing none carries no `unresolved` key; and the MCP `around` of the file carries
-    /// spec 119's `entity_site` fields alone, none of its three nodes an `unresolved` key.
-    #[test]
-    fn rigger_graph_show_carries_a_files_unresolved_leaves_and_around_carries_none() {
-        use crate::test_support::{
-            assert_around_lists_no_unresolved, assert_show_lists_unresolved_leaves, fold_events,
-            seed_unresolved_references, RESOLVING_FILE, UNRESOLVED_FILE,
-        };
-
-        let graph = fold_events([]);
-        seed_unresolved_references(&graph);
-        let (reader, definer) = (
-            shown_site(&graph, UNRESOLVED_FILE),
-            shown_site(&graph, RESOLVING_FILE),
+        assert_shown_tree_around_is_entity_sites(
+            &crate::test_support::view_graph(&graph, &context.view),
+            &nodes,
         );
-        assert_show_lists_unresolved_leaves(&reader, &definer);
-        assert_around_lists_no_unresolved(&around_answer(&graph, UNRESOLVED_FILE));
     }
 
     /// Spec 101: a wired graph that owes its rebuild is refused by every tool whose answer depends
@@ -2736,7 +2882,7 @@ mod tests {
         use crate::grounder::Nop;
 
         struct Owing;
-        impl Projection for Owing {
+        impl RecordFold for Owing {
             fn apply(
                 &self,
                 _: &Event,
@@ -2744,19 +2890,19 @@ mod tests {
             ) -> Result<(), GraphError> {
                 Err(GraphError(REBUILD_OWED.to_string()))
             }
-            crate::projection_is_never_read!();
             fn rebuild_owed(&self) -> Result<bool, GraphError> {
                 Ok(true)
             }
-            crate::projection_folds_no_entry!();
         }
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
         let graph = Owing;
-        let server = Server::new(&driver, &store, "run")
+        let empty = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&empty);
+        let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder))
             .with_spawn("u/implementer#0");
         let call = |name: &str, args: &str| {
@@ -2812,24 +2958,23 @@ mod tests {
     #[test]
     fn lookup_surface_rigger_graph_show_lists_ambiguous_candidates() {
         use crate::contextgraph::sqlite::Projector;
-        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
-            let payload = format!(
-                r#"{{"file":"{file}","name":"shared","kind":"fn","line":1,"lang":"rust"}}"#
-            );
-            let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
-            e.position = pos;
-            crate::test_support::folds(&graph, std::slice::from_ref(&e));
+        let mut tree = crate::test_support::PlantedTree::default();
+        for file in ["src/a.rs", "src/b.rs"] {
+            tree.define(file, "shared", "function", 1);
         }
 
-        let server = Server::new(&driver, &store, "run")
+        let context = crate::test_support::ViewedRecords {
+            records: &graph,
+            view: tree.view(),
+        };
+        let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"shared"}}}"#;
@@ -2860,25 +3005,23 @@ mod tests {
 
     // =======================================================================================
     // Spec 104, criterion 3 (THE SPAWN MCP SERVER): `with_spawn` binds a `Server` to one
-    // spawn (`rigger mcp --spawn <id>`), adding a THIRD surface distinct from both the
-    // workflow-driver bridge and the operator's lookup surface - proven here at the unit
+    // spawn (`rigger mcp --spawn <id>`), a surface distinct from the operator's lookup
+    // surface - proven here at the unit
     // level; `tests/cli.rs`'s `mcp_spawn_*` tests prove the same thing end to end through the
     // real `rigger mcp --spawn` binary.
     // =======================================================================================
 
     /// The spawn-bound surface advertises EXACTLY the six tools the design names, in the
-    /// order it names them - never the workflow bridge's `rigger_next`/`rigger_result`/
-    /// `rigger_activity` (there is no result tool: the session's own final message is the
-    /// result) and never the lookup surface's narrower three.
+    /// order it names them - no result tool (the session's own final message is the result)
+    /// and never the lookup surface's narrower three.
     #[test]
     fn spawn_bound_tool_list_is_exactly_the_six_named_tools() {
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let progress = Store::open(":memory:").unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_grounder(Ok(&grounder))
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
@@ -2912,8 +3055,7 @@ mod tests {
     /// The spawn-bound surface lists the tool `name` as exactly `expected`, once found by name.
     fn assert_spawn_bound_entry(name: &str, expected: Value) {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let tools = Server::new(&driver, &store, "run")
+        let tools = Server::new(&store, "run")
             .with_spawn("u/implementer#0")
             .tool_list();
         let entry = tools.as_array().unwrap().iter().find(|t| t["name"] == name);
@@ -2931,21 +3073,6 @@ mod tests {
         /// argument.
         the_scratch_tool_names_no_toolchain:
             assert_spawn_bound_entry("rigger_scratch", crate::test_support::scratch_tool_entry());
-    }
-
-    crate::test_cases! {
-        /// No result tool: `rigger_next` and `rigger_result` are UNDISPATCHABLE on the
-        /// spawn-bound surface (not merely unadvertised) - a launched agent's session ends with
-        /// its own final message, never a self-reported result over this MCP surface.
-        spawn_bound_surface_has_no_result_tool: for name in ["rigger_next", "rigger_result", "rigger_activity"] {
-            assert_error_reply(
-                Some("u/implementer#0"),
-                &tools_call(name, json!({})),
-                None,
-                -32602,
-                &format!("{name} must be UNDISPATCHABLE on the spawn-bound surface"),
-            );
-        };
     }
 
     crate::test_cases! {
@@ -2985,8 +3112,7 @@ mod tests {
     #[test]
     fn spawn_bound_emit_refuses_a_write_naming_another_spawn() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run").with_spawn("u/implementer#0");
+        let server = Server::new(&store, "run").with_spawn("u/implementer#0");
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"spawn":"v/implementer#0"}}}}"#;
         let mut out = Vec::new();
@@ -3022,9 +3148,8 @@ mod tests {
         use crate::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
@@ -3065,9 +3190,8 @@ mod tests {
     #[test]
     fn spawn_bound_progress_refuses_a_missing_or_empty_activity() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u/implementer#0");
 
@@ -3091,9 +3215,8 @@ mod tests {
     #[test]
     fn spawn_bound_scratch_answers_with_the_bound_spawns_own_path() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let progress = Store::open(":memory:").unwrap();
-        let server = Server::new(&driver, &store, "run")
+        let server = Server::new(&store, "run")
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
@@ -3124,12 +3247,13 @@ mod tests {
         use crate::grounder::Nop;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
-        let server = Server::new(&driver, &store, "run")
+        let context = crate::test_support::RecordsOnly(&graph);
+        let server = Server::new(&store, "run")
             .with_grounder(Ok(&grounder))
             .with_graph(&graph)
+            .with_context(&context)
             .with_spawn("u/implementer#0");
 
         for (name, args) in [
@@ -3170,7 +3294,6 @@ mod tests {
         use crate::contextgraph::sqlite::Projector;
 
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
         let grounder = crate::grounder::Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
         let payload = json!({
@@ -3184,8 +3307,10 @@ mod tests {
         );
         e.position = 1;
         crate::test_support::folds(&graph, std::slice::from_ref(&e));
-        let server = Server::new(&driver, &store, "run")
+        let context = crate::test_support::RecordsOnly(&graph);
+        let server = Server::new(&store, "run")
             .with_graph(&graph)
+            .with_context(&context)
             .with_grounder(Ok(&grounder));
 
         let frame = raw_frame(
@@ -3215,8 +3340,7 @@ mod tests {
     #[test]
     fn an_oversized_tool_error_is_cut_under_the_frame_limit_with_a_marked_tail() {
         let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let server = Server::new(&driver, &store, "run");
+        let server = Server::new(&store, "run").with_spawn("u/implementer#0");
 
         let request = tools_call(
             "rigger_emit",

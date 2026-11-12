@@ -657,7 +657,8 @@ mod tests {
     /// each search with its hit count and each site fixed, never every hit listed or
     /// dispositioned, a search term found inside a longer identifier no hit; and a probe that
     /// edits the tree - the sharpest case of a turn's end being the session's end - run to
-    /// completion and restored before the turn ends. No sentence-walk record, witness, rule
+    /// completion and restored before the turn ends; and the gate verb named, whose verdict on a
+    /// commit the driver reuses. No sentence-walk record, witness, rule
     /// search, one-home line or lens re-derivation is owed, and no hand mutation rule or
     /// per-literal shape search is carried. Read by its words, so a rewrap never moves a verdict.
     #[test]
@@ -670,10 +671,12 @@ mod tests {
         );
         let words = body.split_whitespace().collect::<Vec<_>>().join(" ");
         for phrase in [
-            "run each check yourself, in your worktree, before you report; the checks owe no \
-             record.",
+            "run the checks your change needs yourself, in your worktree, before you report; the \
+             checks owe no record.",
             "The gates confirm, never discover.",
-            "Every gate the stage names is green on your committed tree before you report.",
+            "The stage's gates run the full battery on your committed tree and are the \
+             authority: you run only the checks your change needs",
+            "a gate failure comes back as the next round's finding",
             "regenerated and committed in the same commit that changed its inputs",
             "`git status --porcelain` is empty at head",
             "Tests are table-driven, and a test-side shape you add exists once.",
@@ -717,6 +720,7 @@ mod tests {
         ]
         .into_iter()
         .chain(crate::test_support::BOUNDED_AUDIT)
+        .chain([crate::test_support::GATE_VERB_REUSE])
         {
             assert!(
                 words.contains(phrase),
@@ -754,8 +758,8 @@ mod tests {
             !words.contains("(the project's graph, or your persona's fallback)"),
             "the caller read must name the graph's depth"
         );
-        // Tests are table-driven and the duplication gate is the instrument for twins, so the
-        // hand-over owes no per-literal shape search and no per-statement shape record.
+        // Tests are table-driven and a twin is a review note, so the hand-over owes no
+        // per-literal shape search and no per-statement shape record.
         assert!(
             !words.contains("One search per literal")
                 && !words.contains("The record is owed for every test-side shape"),

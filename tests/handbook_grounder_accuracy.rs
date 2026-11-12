@@ -35,7 +35,7 @@
 //! text readers, `fenced_code_lines` and `normalize_ws`.
 //! It is deliberately NOT feature-gated: it runs identically in both lanes.
 
-mod common;
+use crate::common;
 
 use common::fixtures::{
     agent_with_prompt, cfg_for, markdown_section as section, read_text as read, repeated_kind_steps,

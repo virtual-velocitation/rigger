@@ -23,7 +23,7 @@
 //! on-disk-reopen precedent. It names no feature-gated symbol, so it compiles and runs identically
 //! on the default and `--no-default-features` lanes.
 
-mod common;
+use crate::common;
 
 use rigger::contextgraph::sqlite::Projector;
 

@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use rigger_domain::quoting::single_quoted;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-use crate::sqlite::open_connection;
+use crate::sqlite::{open_connection, truncate_log};
 
 use super::{
     from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
@@ -193,135 +193,41 @@ impl Store {
         Ok(renamed as usize)
     }
 
-    /// THE READ-ONLY COUNT of the derived index `stream` holds (spec 107): how many derived
-    /// events `rigger reset --derived` sheds from it, how many of those name no file identity,
-    /// and the set of `<prefix>/<file>` identities holding one. It is the same read the
-    /// migration acts on ([`read_derived`]), so what it answers never drifts from what
-    /// [`Store::shed_derived`] deletes; it writes nothing.
-    ///
-    /// `stream` is one stream's whole name, matched exactly by the one read this count is
-    /// ([`read_derived`]): a stream whose name only starts with it is never counted.
-    pub fn count_derived(&self, stream: &str) -> Result<DerivedCount, Error> {
+    /// How many rows of the derived types ([`crate::retention::DERIVED_TYPES`]) `stream` holds:
+    /// the rows [`Store::delete_derived`] deletes, read through the same predicate
+    /// ([`derived_rows`]), so the count never drifts from the delete. `stream` is one stream's
+    /// whole name, matched exactly: a stream whose name only starts with it is never counted. It
+    /// writes nothing.
+    pub fn count_derived(&self, stream: &str) -> Result<usize, Error> {
         let guard = self.conn.lock().unwrap();
-        let read = read_derived(&guard, stream, &std::collections::HashSet::new())?;
-        Ok(DerivedCount {
-            shed: read.shed,
-            unkeyed: read.unkeyed,
-            identities: read.identities.into_keys().collect(),
-        })
+        guard
+            .query_row(
+                &format!("SELECT COUNT(*) FROM events WHERE {}", derived_rows()),
+                params![stream],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
+            .map_err(be)
     }
 
-    /// THE MIGRATION'S ONE TRANSACTION (spec 107): convert the derived index `stream` holds into
-    /// the ledger, in place, and leave no derived event behind.
-    ///
-    /// For every `<prefix>/<file>` identity whose latest recording - a derived row or a ledger
-    /// entry, each naming its identity in its replay key - is a derived row, the lowest-position
-    /// row the live selection keeps for it ([`plan_derived_prune`]: the first row of its latest
-    /// batch when that batch was recorded whole) above its latest ledger entry is rewritten IN
-    /// PLACE into the identity's ledger entry, so the identity's latest recording keeps its
-    /// generation; a kept row below that entry is deleted with the rest. Its position, stream, id, revision and recorded-time stay, so every column
-    /// a uniqueness rule covers is kept; its type, payload and metadata become the entry's, built
-    /// by the entry's one constructor for that generation, the blob and flag `entry_of` answers
-    /// for the identity, and the count of distinct replay keys of that generation among the
-    /// identity's derived rows. An identity whose latest recording is already an entry has no
-    /// row rewritten.
-    ///
-    /// Every identity holding a derived row then has its EARLIEST SURVIVING RECORDING - its
-    /// earliest ledger entry when one precedes the rewritten row, else the rewritten row -
-    /// dated at the identity's earliest recorded valid-time, and every remaining row of a
-    /// derived type in the stream is deleted, keyed or not. A row with no replay key, or one
-    /// whose key does not parse, names no identity: it is deleted and counted as unkeyed.
-    ///
-    /// `stream` is one stream's whole name. The read of its rows ([`read_derived`]) and the
-    /// DELETE match it exactly, so a stream whose name only starts with it has no row rewritten,
-    /// re-dated or deleted; the live selection ([`plan_derived_prune`]) matches its stream
-    /// argument as a PREFIX, so its plan may also name positions of such a stream, which the
-    /// exact read never meets.
-    ///
-    /// The selection is read INSIDE the write transaction, opened immediate, so no append lands
-    /// between what was decided and what is written, and a failure rolls the whole of it back.
-    /// The types are the derived list itself ([`crate::ingest::DERIVED_INDEX_TYPES`]) and the
-    /// selection the derived index's own policy ([`crate::ingest::derived_index_identity`]),
-    /// neither injected: this is the one writer that sheds a derived event. Deleting from a
-    /// stream leaves holes in its revisions, which [`Store::append`] tolerates (see the comment
-    /// there); a stream whose tail was derived rows ends at a lower revision.
-    pub fn shed_derived(
-        &self,
-        stream: &str,
-        entry_of: &dyn Fn(&str) -> (String, bool),
-    ) -> Result<ShedDerived, Error> {
+    /// Delete every row of the derived types `stream` holds ([`derived_rows`]), in one immediate
+    /// transaction, and answer how many: the code store re-derives each of them from the tree, so
+    /// no fold reads one and nothing derived is kept. A failure rolls the whole of it back. Every
+    /// other row keeps its position, stream, revision and bytes; deleting from a stream leaves
+    /// holes in its revisions, which [`Store::append`] tolerates (see the comment there).
+    pub fn delete_derived(&self, stream: &str) -> Result<usize, Error> {
         let mut guard = self.conn.lock().unwrap();
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
-        let plan = plan_derived_prune(&tx, stream, &crate::ingest::derived_index_identity(), &[])?;
-        let shed_by_the_plan = plan.deletes.iter().copied().collect();
-        let read = read_derived(&tx, stream, &shed_by_the_plan)?;
-        let mut converted = 0;
-        {
-            let mut rewrite = tx
-                .prepare("UPDATE events SET type = ?2, data = ?3, meta = ?4 WHERE position = ?1")
-                .map_err(be)?;
-            let mut redate = tx
-                .prepare("UPDATE events SET valid_from = ?2 WHERE position = ?1")
-                .map_err(be)?;
-            for (identity, recorded) in &read.identities {
-                let entry = read.entries.get(identity);
-                let mut surviving = entry.map(|entry| entry.first);
-                if let (true, Some((position, generation))) =
-                    (recorded.latest_is_derived, &recorded.kept)
-                {
-                    let (prefix, file) =
-                        crate::retention::GenerationIngested::identity_parts(identity)
-                            .expect("an identity cut from a replay key holds its prefix and file");
-                    let (blob, excluded) = entry_of(identity);
-                    let event = crate::retention::GenerationIngested {
-                        prefix: prefix.to_string(),
-                        file: file.to_string(),
-                        generation: generation.clone(),
-                        blob,
-                        excluded,
-                    }
-                    .event(
-                        recorded
-                            .keys
-                            .iter()
-                            .filter(|(of, _)| of == generation)
-                            .count(),
-                    );
-                    rewrite
-                        .execute(params![
-                            position,
-                            event.type_,
-                            event.data,
-                            meta_json(&event.meta)
-                        ])
-                        .map_err(be)?;
-                    surviving = surviving.into_iter().chain([*position]).min();
-                    converted += 1;
-                }
-                let earliest = entry
-                    .map(|entry| entry.earliest)
-                    .into_iter()
-                    .chain([recorded.earliest])
-                    .min();
-                redate.execute(params![surviving, earliest]).map_err(be)?;
-            }
-            tx.execute(
-                &format!(
-                    "DELETE FROM events WHERE stream = ?1 AND type IN ({})",
-                    type_list(&derived_types())
-                ),
+        let deleted = tx
+            .execute(
+                &format!("DELETE FROM events WHERE {}", derived_rows()),
                 params![stream],
             )
             .map_err(be)?;
-        }
         tx.commit().map_err(be)?;
-        Ok(ShedDerived {
-            converted,
-            shed: read.shed,
-            unkeyed: read.unkeyed,
-        })
+        Ok(deleted)
     }
 
     /// The bytes this store's log occupies on disk: the main file plus its write-ahead log, which
@@ -572,145 +478,13 @@ fn stream_head(conn: &Connection, stream: &str) -> Result<Option<Position>, Erro
     .map_err(be)
 }
 
-/// What [`Store::count_derived`] answers of one stream's derived index (spec 107).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DerivedCount {
-    /// How many derived events the stream holds: every one of them is shed by the migration,
-    /// the rows it rewrites into ledger entries included.
-    pub shed: usize,
-    /// How many of them name no file identity: a row with no replay key, or one whose key does
-    /// not parse.
-    pub unkeyed: usize,
-    /// The `<prefix>/<file>` identities holding a derived event, so a file holding a `gc` and a
-    /// `gd` batch is two.
-    pub identities: std::collections::BTreeSet<String>,
-}
-
-/// What one [`Store::shed_derived`] call did (spec 107).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ShedDerived {
-    /// How many identities had their latest derived batch rewritten into a ledger entry: fewer
-    /// than the identities holding a derived event when one's latest recording was already an
-    /// entry.
-    pub converted: usize,
-    /// How many derived events were shed, the rewritten rows counted among them.
-    pub shed: usize,
-    /// How many of them named no file identity.
-    pub unkeyed: usize,
-}
-
-/// What one stream's keyed derived rows record of one identity, read in position order.
-struct DerivedRecordings {
-    /// The earliest valid-time any of the rows carries.
-    earliest: i64,
-    /// Whether the identity's latest recording is a derived row, and not a ledger entry.
-    latest_is_derived: bool,
-    /// The position and generation of the lowest row the live selection keeps above the
-    /// identity's latest ledger entry, the row the migration rewrites.
-    kept: Option<(i64, String)>,
-    /// The distinct `(generation, replay key)` pairs the rows carry.
-    keys: std::collections::BTreeSet<(String, String)>,
-}
-
-/// What one stream's ledger entries record of one identity, read in position order.
-struct EntryRecordings {
-    /// The position of the identity's earliest entry.
-    first: i64,
-    /// The earliest valid-time any of the entries carries.
-    earliest: i64,
-}
-
-/// One stream's perception as [`read_derived`] reads it: the derived rows counted, and what the
-/// keyed ones and the ledger entries record of each identity.
-#[derive(Default)]
-struct DerivedRead {
-    shed: usize,
-    unkeyed: usize,
-    identities: BTreeMap<String, DerivedRecordings>,
-    entries: BTreeMap<String, EntryRecordings>,
-}
-
-/// The derived list as the owned names a maintenance statement renders.
-fn derived_types() -> Vec<String> {
-    crate::ingest::DERIVED_INDEX_TYPES
-        .map(String::from)
-        .to_vec()
-}
-
-/// THE ONE READ the migration and its read-only count share (spec 107): every row of perception
-/// `stream` holds - the derived list and the ledger entry, by type, the stream matched by its
-/// whole name - in position order. Each derived row is counted; one with no replay key, or whose
-/// key the one key parser ([`crate::ingest::derived_key_parts`]) does not cut, names no identity
-/// and is counted as unkeyed. A keyed derived row and a ledger entry name their identity alike,
-/// in their replay key, so an identity's latest recording is whichever of the two the read met
-/// last. `shed_by_the_plan` holds the positions the live selection sheds: the first derived row
-/// of an identity outside it and above the identity's latest ledger entry is the row the
-/// migration rewrites, so the rewritten entry is the identity's latest recording, of the
-/// generation that was latest before.
-fn read_derived(
-    conn: &Connection,
-    stream: &str,
-    shed_by_the_plan: &std::collections::HashSet<i64>,
-) -> Result<DerivedRead, Error> {
-    let sql = format!(
-        "SELECT position, type, {key}, valid_from FROM events
-          WHERE stream = ?1 AND type IN ({perception})
-          ORDER BY position",
-        key = key_expr(crate::ingest::META_REPLAY_KEY),
-        perception = type_list(&crate::retention::PERCEPTION_TYPES.map(String::from)),
-    );
-    let mut stmt = conn.prepare(&sql).map_err(be)?;
-    let mut rows = stmt.query(params![stream]).map_err(be)?;
-    let mut read = DerivedRead::default();
-    while let Some(row) = rows.next().map_err(be)? {
-        let position: i64 = row.get(0).map_err(be)?;
-        let type_: String = row.get(1).map_err(be)?;
-        let key: Option<String> = row.get(2).map_err(be)?;
-        let valid_from: i64 = row.get(3).map_err(be)?;
-        let named = key.as_deref().and_then(crate::ingest::derived_key_parts);
-        if crate::retention::is_ledger_entry(&type_) {
-            if let Some((identity, _)) = named {
-                let entry = read
-                    .entries
-                    .entry(identity.to_string())
-                    .or_insert(EntryRecordings {
-                        first: position,
-                        earliest: valid_from,
-                    });
-                entry.earliest = entry.earliest.min(valid_from);
-                if let Some(recorded) = read.identities.get_mut(identity) {
-                    recorded.latest_is_derived = false;
-                    recorded.kept = None;
-                }
-            }
-            continue;
-        }
-        read.shed += 1;
-        let Some((identity, generation)) = named else {
-            read.unkeyed += 1;
-            continue;
-        };
-        let recorded = read
-            .identities
-            .entry(identity.to_string())
-            .or_insert(DerivedRecordings {
-                earliest: valid_from,
-                latest_is_derived: true,
-                kept: None,
-                keys: std::collections::BTreeSet::new(),
-            });
-        recorded.earliest = recorded.earliest.min(valid_from);
-        recorded.latest_is_derived = true;
-        recorded
-            .keys
-            .insert((generation.to_string(), key.clone().unwrap_or_default()));
-        if !shed_by_the_plan.contains(&position) {
-            recorded
-                .kept
-                .get_or_insert((position, generation.to_string()));
-        }
-    }
-    Ok(read)
+/// THE ONE PREDICATE over the derived rows of one stream, its whole name bound as `?1`: every
+/// type of [`crate::retention::DERIVED_TYPES`], the stream matched exactly.
+fn derived_rows() -> String {
+    format!(
+        "stream = ?1 AND type IN ({})",
+        type_list(&crate::retention::DERIVED_TYPES.map(String::from))
+    )
 }
 
 /// What the live selection sets aside and re-dates, decided by [`plan_derived_prune`].
@@ -990,38 +764,17 @@ fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
     // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
     // later checkpoint: the reported reclamation must match what the operator sees on disk.
     //
-    // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
-    // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
-    // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
-    // total bytes on disk can even go UP. Discarding that column is what would turn the
-    // caller's before-and-after into a claim, so it is read. Retried a bounded number of
-    // times because a blocked checkpoint is transient (the deletes are already committed and
-    // the vacuum is done, so this is only about WHEN the frames land), and when it is still
-    // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
-    // own `ls` contradicts.
-    for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
-        let busy: i64 = conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
-            .map_err(be)?;
-        if busy == 0 {
-            return Ok(Compaction::Landed);
-        }
-        if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
-            std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
-        }
-    }
-    Ok(Compaction::Pending)
+    // The truncating checkpoint RETURNS ITS OUTCOME: it declines while a reader still holds a
+    // snapshot of the write-ahead log, in which case the frames stay in the `-wal` file and the
+    // file on disk did NOT shrink - total bytes on disk can even go UP. So the outcome is read,
+    // and when it is still blocked the reclamation is reported as UNKNOWN rather than as a
+    // number the operator's own `ls` contradicts.
+    Ok(if truncate_log(conn).map_err(be)? {
+        Compaction::Landed
+    } else {
+        Compaction::Pending
+    })
 }
-
-/// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
-/// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
-///
-/// Bounded and short on purpose: the caller's transaction has already committed and the vacuum has
-/// already run by the time this matters, so the only thing at stake is whether the freed frames
-/// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
-/// reader out indefinitely would trade a correct, honestly-reported result for a hang.
-const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
-const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What one [`Store::reclaim_space`] call did to the log's file: the bytes the log lost on disk,
 /// whether it was rewritten to lose them at all, whether there was a before-size to measure them
@@ -1192,17 +945,16 @@ impl EventStore for Store {
         super::refuse_derived(events)?;
         let mut guard = self.conn.lock().unwrap();
         // BEGIN IMMEDIATE, not the default BEGIN DEFERRED: acquire the write lock up
-        // front so a second connection (a separate process - the death courier racing
-        // the worker's self-report) QUEUES on `busy_timeout` instead of starting a read
-        // snapshot it must later upgrade. A deferred read->write upgrade under WAL with a
-        // concurrent writer cannot be resolved by the busy handler (SQLITE_BUSY_SNAPSHOT)
-        // and surfaces as a hard `database is locked` backend error; taking the write lock
-        // immediately makes concurrent appenders serialize cleanly, so a stale expectation
-        // surfaces as the port's `Error::Conflict` (which callers retry) and never as a
-        // spurious lock error. This is what the module header promises ("concurrent
-        // appenders queue instead of deadlocking on the SQLITE_BUSY class") and what the
-        // optimistic-concurrency contract needs to hold across connections, not just
-        // within one in-process `Store`.
+        // front so a second connection (a separate process - the host's liveness-fault
+        // record racing the worker's self-report) QUEUES on `busy_timeout` instead of
+        // starting a read snapshot it must later upgrade. A deferred read->write upgrade
+        // under WAL with a concurrent writer cannot be resolved by the busy handler
+        // (SQLITE_BUSY_SNAPSHOT) and surfaces as a hard `database is locked` backend error; taking
+        // the write lock immediately makes concurrent appenders serialize cleanly, so a stale
+        // expectation surfaces as the port's `Error::Conflict` (which callers retry) and never as a
+        // spurious lock error. This is what the module header promises ("concurrent appenders queue
+        // instead of deadlocking on the SQLITE_BUSY class") and what the optimistic-concurrency
+        // contract needs to hold across connections, not just within one in-process `Store`.
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(be)?;
@@ -1213,9 +965,9 @@ impl EventStore for Store {
         // Position order and "the highest revision value" agree on every stream that has
         // only ever been written through this function: a write only ever lands at
         // `last_revision + 1`, so each new row is simultaneously the newest by position
-        // AND the highest by revision, and deleting an arbitrary subset of rows (what the
-        // migration, `Store::shed_derived`, does, leaving holes in the
-        // revision sequence) cannot change that relative order among whatever survives.
+        // AND the highest by revision, and deleting an arbitrary subset of rows (what
+        // `Store::delete_derived` does, leaving holes in the revision sequence) cannot
+        // change that relative order among whatever survives.
         // A count-derived cursor would reissue a revision the stream still holds and
         // collide on the `UNIQUE(stream, revision)` index; the position-order seek is
         // exactly as gap-tolerant (it is a seek on the same `idx_events_stream` index,
@@ -1912,8 +1664,9 @@ mod tests {
     #[test]
     fn concurrent_cross_connection_appends_serialize_without_spurious_lock_errors() {
         // Two SEPARATE connections (two `Store` handles on one on-disk db - the
-        // two-process shape of the death courier racing a worker's self-report) append
-        // to the SAME stream at once, with NO shared in-process mutex to serialize them.
+        // two-process shape of a host's liveness-fault record racing a worker's
+        // self-report) append to the SAME stream at once, with NO shared in-process mutex to
+        // serialize them.
         // Under the default BEGIN DEFERRED a read->write upgrade with a concurrent writer
         // under WAL cannot be resolved by `busy_timeout` (SQLITE_BUSY_SNAPSHOT) and
         // surfaces as a hard `database is locked` backend error the optimistic layer
@@ -2158,7 +1911,12 @@ mod tests {
 
     /// An event of `type_` carrying the derived-index replay key `key`.
     fn keyed(type_: &str, key: &str) -> Event {
-        Event::new(type_, b"{}".to_vec()).with_meta(crate::ingest::META_REPLAY_KEY, key)
+        Event::new(type_, b"{}".to_vec()).with_meta(rigger_domain::ingest::META_REPLAY_KEY, key)
+    }
+
+    /// A derived event of `type_` under the replay key `key`, valid from `secs`.
+    fn derived_at(type_: &str, key: &str, secs: u64) -> Event {
+        keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
     }
 
     /// A store at `path` holding each `(stream, events)` batch, appended in order.
@@ -2184,10 +1942,9 @@ mod tests {
     /// THE PRE-LEDGER ROW INSERTER writes the rows a store recorded before it refused a derived
     /// append: each lands at the tail of its stream, at the stream's next revision and the log's
     /// next position, and reads back through the store as the event given - its id, type,
-    /// payload, metadata and valid-time. A derived row inserted above a ledger entry of its
-    /// identity is its group's newest member, so the group lookup and the domain reader answer
-    /// it as they did before the refusal, and the store appends after the rows at the revision
-    /// they left the stream on.
+    /// payload, metadata and valid-time. A derived row inserted above a kept member of its group
+    /// is the group's newest member, and the store appends after the rows at the revision they
+    /// left the stream on.
     #[test]
     fn pre_ledger_rows_land_at_the_streams_tail_and_read_back_as_the_events_given() {
         use crate::contextgraph::{TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_EDGE_INFERRED as EI};
@@ -2198,7 +1955,12 @@ mod tests {
             &[
                 ("run", vec![Event::new("RunStarted", b"{}".to_vec())]),
                 ("other", vec![Event::new("RunStarted", b"{}".to_vec())]),
-                ("run", vec![entry_event("gc/a.rs", "h1", 1, "held", false)]),
+                (
+                    "run",
+                    vec![
+                        Event::new("DecisionMade", b"{}".to_vec()).with_meta(META_GROUP, "gc/a.rs")
+                    ],
+                ),
             ],
         );
         let derived = derived_at(CE, "gc/a.rs@h2#0", 40).with_meta(META_GROUP, "gc/a.rs");
@@ -2246,11 +2008,7 @@ mod tests {
                 type_: CE.to_string(),
                 meta: derived.meta.clone(),
             }),
-            "a derived row above an entry is its group's newest member, as before"
-        );
-        assert_eq!(
-            crate::ingest::latest_generation(&s, "run", "gc/a.rs").unwrap(),
-            Some("h2".to_string())
+            "a derived row above a kept member of its group is the group's newest member"
         );
         let next = s
             .append(
@@ -2279,7 +2037,7 @@ mod tests {
         // store spells differently from the way the test wrote it.
         let sql = format!(
             "SELECT COUNT(*) FROM events WHERE {} = ?1",
-            key_expr(crate::ingest::META_REPLAY_KEY)
+            key_expr(rigger_domain::ingest::META_REPLAY_KEY)
         );
         Connection::open(path)
             .unwrap()
@@ -2529,15 +2287,7 @@ mod tests {
         let path = dir.path().join("events.db");
         let path_str = path.to_str().unwrap();
         let s = seeded_with_duplicated_key(path_str, 4);
-        let shed = s.shed_derived("run", &|_| (String::new(), false)).unwrap();
-        assert_eq!(
-            shed,
-            ShedDerived {
-                converted: 1,
-                shed: 4,
-                unkeyed: 0,
-            }
-        );
+        assert_eq!(s.delete_derived("run").unwrap(), 4);
         plant_free_pages(&path, 400);
         let free_before = pragma_i64(&path, "freelist_count");
         let before = s.bytes_on_disk();
@@ -2618,7 +2368,7 @@ mod tests {
         assert!(pragma_i64(&path, "page_count") < pages_before);
     }
 
-    // --- Spec 107, criterion 16: THE MIGRATION'S ONE TRANSACTION AND ITS READ-ONLY COUNT ---
+    // --- THE DELETE OF THE DERIVED ROWS AND ITS COUNT ---
 
     /// One row of the events table, every column.
     type Row = (i64, String, String, String, Vec<u8>, String, i64, i64, i64);
@@ -2648,343 +2398,113 @@ mod tests {
             .unwrap()
     }
 
-    /// A derived event of `type_` under the replay key `key`, valid from `secs`.
-    fn derived_at(type_: &str, key: &str, secs: u64) -> Event {
-        keyed(type_, key).with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-    }
-
-    /// The ledger entry of `identity` at `generation`, built by the shared fixtures' one entry
-    /// builder for a batch of `n` events extracted from `blob` under the flag `excluded`.
-    fn entry_event(
-        identity: &str,
-        generation: &str,
-        n: usize,
-        blob: &str,
-        excluded: bool,
-    ) -> Event {
-        let (prefix, file) =
-            crate::retention::GenerationIngested::identity_parts(identity).unwrap();
-        crate::test_support::entry_of_a_batch(prefix, file, generation, n, blob, excluded)
-    }
-
-    /// `row` as the migration leaves the row it rewrites into `entry`: its type, payload and
-    /// metadata the entry's, every other column but the valid-time, which is `secs`, its own.
-    fn rewritten(row: &Row, entry: &Event, secs: u64) -> Row {
-        (
-            row.0,
-            row.1.clone(),
-            entry.type_.clone(),
-            row.3.clone(),
-            entry.data.clone(),
-            meta_json(&entry.meta),
-            Duration::from_secs(secs).as_nanos() as i64,
-            row.7,
-            row.8,
-        )
-    }
-
-    /// `row` with its valid-time moved to `secs` and nothing else changed.
-    fn redated(row: &Row, secs: u64) -> Row {
-        let mut row = row.clone();
-        row.6 = Duration::from_secs(secs).as_nanos() as i64;
-        row
-    }
-
-    /// The blob and flag the migration's caller answers for `identity` in these tests: a blob
-    /// that names the identity, and the flag set for `gd/b.md` alone.
-    fn named_entry(identity: &str) -> (String, bool) {
-        (format!("blob-of-{identity}"), identity == "gd/b.md")
-    }
-
-    /// A store at `path` whose stream `p-run` holds, in position order: a run event (1); three
-    /// generations of `gc/a.rs` (2 to 6); a latest generation of `gd/b.md` recorded twice (7 to
-    /// 10); `gc/c.rs` with a ledger entry above its derived row (11, 12); `gc/d.rs` with a
-    /// ledger entry below its derived rows (13 to 15); an unkeyed derived event (16) and one
-    /// whose key does not parse (17); a generation of `gd/e.md` whose second recording repeats
-    /// only its first key, an alias definition between the two (18 to 21); and a decision (22).
-    /// The streams `p-run-x`, whose name starts with that stream's, and `q-run` hold one derived
-    /// row each (23, 24).
-    fn store_to_migrate(path: &std::path::Path) -> Store {
-        use crate::contextgraph::{
-            TYPE_CODE_ENTITY_EXTRACTED as CE, TYPE_DOC_CONCEPT_EXTRACTED as DC,
-            TYPE_DOC_LINK_EXTRACTED as DL, TYPE_EDGE_INFERRED as EI,
-        };
-        let at = |event: Event, secs: u64| {
-            event.with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-        };
+    /// A store at `path` whose stream `p-run` holds a run event, one row of each derived type
+    /// ([`crate::retention::DERIVED_TYPES`]), keyed and not, an alias definition and a decision;
+    /// the streams `p-run-x`, whose name starts with that stream's, and `q-run` hold one derived
+    /// row each.
+    fn store_holding_every_derived_type(path: &std::path::Path) -> Store {
+        let derived = crate::retention::DERIVED_TYPES
+            .iter()
+            .enumerate()
+            .map(|(i, type_)| match i % 2 {
+                0 => keyed(type_, &format!("gc/a.rs@h1#{i}")),
+                _ => Event::new(*type_, b"{}".to_vec()),
+            });
         pre_ledger_store_with(
             path.to_str().unwrap(),
             &[
                 (
                     "p-run",
-                    vec![
-                        at(Event::new("RunStarted", b"{}".to_vec()), 1),
-                        derived_at(CE, "gc/a.rs@h1#0", 50),
-                        derived_at(CE, "gc/a.rs@h2#0", 20),
-                        derived_at(EI, "gc/a.rs@h2#1", 21),
-                        derived_at(CE, "gc/a.rs@h3#0", 60),
-                        derived_at(EI, "gc/a.rs@h3#1", 61),
-                        derived_at(DC, "gd/b.md@h1#0", 30),
-                        derived_at(DL, "gd/b.md@h1#1", 31),
-                        derived_at(DC, "gd/b.md@h1#0", 40),
-                        derived_at(DL, "gd/b.md@h1#1", 41),
-                        derived_at(CE, "gc/c.rs@h1#0", 70),
-                        at(entry_event("gc/c.rs", "h2", 1, "held", false), 80),
-                        at(entry_event("gc/d.rs", "h1", 1, "held", false), 90),
-                        derived_at(CE, "gc/d.rs@h9#0", 10),
-                        derived_at(CE, "gc/d.rs@h2#0", 85),
-                        at(Event::new(CE, b"{}".to_vec()), 5),
-                        derived_at(CE, "not a key", 6),
-                        derived_at(DC, "gd/e.md@h1#0", 100),
-                        derived_at(DL, "gd/e.md@h1#1", 101),
-                        at(
+                    std::iter::once(Event::new("RunStarted", b"{}".to_vec()))
+                        .chain(derived)
+                        .chain([
                             Event::new(
                                 crate::contextgraph::TYPE_ALIAS_DEFINED,
                                 br#"{"alias":"x","canonical":"y"}"#.to_vec(),
                             ),
-                            105,
-                        ),
-                        derived_at(DC, "gd/e.md@h1#0", 110),
-                        at(Event::new("DecisionMade", b"{}".to_vec()), 120),
-                    ],
+                            Event::new("DecisionMade", b"{}".to_vec()),
+                        ])
+                        .collect(),
                 ),
-                ("p-run-x", vec![derived_at(CE, "gc/a.rs@h0#0", 2)]),
-                ("q-run", vec![derived_at(CE, "gc/a.rs@h0#0", 3)]),
+                (
+                    "p-run-x",
+                    vec![Event::new(
+                        crate::retention::DERIVED_TYPES[0],
+                        b"{}".to_vec(),
+                    )],
+                ),
+                (
+                    "q-run",
+                    vec![Event::new(
+                        crate::retention::DERIVED_TYPES[7],
+                        b"{}".to_vec(),
+                    )],
+                ),
             ],
         )
     }
 
-    /// The count of `store_to_migrate`'s stream: every derived row of it, the two that name no
-    /// identity, and the five identities holding one.
-    fn counted_before() -> DerivedCount {
-        DerivedCount {
-            shed: 17,
-            unkeyed: 2,
-            identities: ["gc/a.rs", "gc/c.rs", "gc/d.rs", "gd/b.md", "gd/e.md"]
-                .map(String::from)
-                .into(),
-        }
-    }
-
-    /// The read-only count answers every derived row of the one stream it is handed, the rows
-    /// naming no identity among them, and the identities holding one - never a row of a stream
-    /// whose name only starts with that stream's, never a ledger entry - and changes nothing.
+    /// Deleting the derived events and reclaiming the space they held leaves the log's
+    /// write-ahead log empty while another connection holds the file open: the delete frees
+    /// pages, so the reclamation rewrites the file and ends with the truncating checkpoint.
     #[test]
-    fn count_derived_counts_one_streams_derived_rows_its_unkeyed_rows_and_its_identities() {
+    fn a_derived_delete_and_its_reclamation_leave_the_write_ahead_log_empty() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let s = store_to_migrate(&path);
-        let before = rows_of(&path);
-
-        assert_eq!(
-            (
-                s.count_derived("p-run").unwrap(),
-                s.count_derived("p-run-x").unwrap(),
-                s.count_derived("p-").unwrap(),
-                rows_of(&path) == before,
-            ),
-            (
-                counted_before(),
-                DerivedCount {
-                    shed: 1,
-                    unkeyed: 0,
-                    identities: ["gc/a.rs".to_string()].into(),
-                },
-                DerivedCount::default(),
-                true,
-            )
-        );
-    }
-
-    /// THE MIGRATION'S ONE TRANSACTION: each identity whose latest recording is derived has the
-    /// lowest row the selection keeps rewritten in place into its entry - every column a
-    /// uniqueness rule covers and its recorded-time kept - every identity's earliest surviving
-    /// recording takes the identity's earliest recorded valid-time, and every other derived row
-    /// of the stream is deleted, keyed or not. Nothing else in the file changes.
-    #[test]
-    fn shed_derived_rewrites_each_latest_derived_batch_into_its_entry_and_deletes_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
-        let s = store_to_migrate(&path);
-        let before = rows_of(&path);
-        // `before` is in position order from 1, so the row at position `p` is `before[p - 1]`.
-        let at = |position: usize| &before[position - 1];
-
-        let shed = s.shed_derived("p-run", &named_entry).unwrap();
-
-        assert_eq!(
-            (shed, rows_of(&path)),
-            (
-                ShedDerived {
-                    converted: 4,
-                    shed: 17,
-                    unkeyed: 2,
-                },
-                vec![
-                    at(1).clone(),
-                    // Three generations: the entry stands at the first row of the latest batch,
-                    // counts that generation's two keys and is dated at the earliest recording,
-                    // a row of a superseded generation.
-                    rewritten(
-                        at(5),
-                        &entry_event("gc/a.rs", "h3", 2, "blob-of-gc/a.rs", false),
-                        20
-                    ),
-                    // Recorded twice: the entry stands at the first row of the second recording.
-                    rewritten(
-                        at(9),
-                        &entry_event("gd/b.md", "h1", 2, "blob-of-gd/b.md", true),
-                        30
-                    ),
-                    // An entry above derived rows: nothing is rewritten, the entry is re-dated.
-                    redated(at(12), 70),
-                    // An entry below derived rows: it is the earliest surviving recording, so
-                    // it takes the earliest valid-time and the rewritten row keeps its own.
-                    redated(at(13), 10),
-                    rewritten(
-                        at(15),
-                        &entry_event("gc/d.rs", "h2", 1, "blob-of-gc/d.rs", false),
-                        85
-                    ),
-                    // A generation whose kept rows span two recordings: the entry stands at the
-                    // lowest kept row, the second row of the first recording.
-                    rewritten(
-                        at(19),
-                        &entry_event("gd/e.md", "h1", 2, "blob-of-gd/e.md", false),
-                        100
-                    ),
-                    at(20).clone(),
-                    at(22).clone(),
-                    at(23).clone(),
-                    at(24).clone(),
-                ]
-            )
-        );
-    }
-
-    /// The ledger entry of `gc/a.rs` at `generation`, its blob `held`, valid from `secs`.
-    fn entry_valid_at(generation: &str, secs: u64) -> Event {
-        entry_event("gc/a.rs", generation, 1, "held", false)
-            .with_valid_from(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-    }
-
-    /// A store whose stream `p-run` holds the rows of `events`, inserted in order, migrated: what
-    /// the migration answered and the rows it left, beside the rows as they stood before it.
-    fn migrated(events: Vec<Event>) -> (ShedDerived, Vec<Row>, Vec<Row>) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.db");
+        let derived = crate::retention::DERIVED_TYPES[0];
+        let events: Vec<Event> = (0..3_000)
+            .map(|i| match i % 3 {
+                0 => Event::new("DecisionMade", vec![b'r'; 200]),
+                _ => keyed(derived, &format!("gc/a{i}.rs@h1")),
+            })
+            .collect();
         let s = pre_ledger_store_with(path.to_str().unwrap(), &[("p-run", events)]);
-        let before = rows_of(&path);
-        let shed = s.shed_derived("p-run", &named_entry).unwrap();
-        (shed, rows_of(&path), before)
-    }
+        let held_open = crate::sqlite::open_connection(path.to_str().unwrap()).unwrap();
 
-    /// THE REWRITTEN ROW STANDS ABOVE THE IDENTITY'S LATEST LEDGER ENTRY, so its latest recording
-    /// is the generation it was before the migration. An identity recorded as a derived row, a
-    /// ledger entry and the same derived row again has the later row rewritten, the entry below
-    /// it keeping the earliest valid-time, its own. One recorded as a derived batch of two keys, a
-    /// ledger entry of another generation and ONE key of that batch again keeps a row of the
-    /// batch below the entry: that row is deleted and the re-recorded row rewritten, the entry
-    /// below it re-dated to the batch's earliest valid-time.
-    #[test]
-    fn shed_derived_rewrites_the_lowest_kept_row_above_the_identitys_latest_ledger_entry() {
-        let ce = crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
-        let (row_shed, row_after, row) = migrated(vec![
-            derived_at(ce, "gc/a.rs@h1#0", 30),
-            entry_valid_at("h1", 20),
-            derived_at(ce, "gc/a.rs@h1#0", 40),
-        ]);
-        let (batch_shed, batch_after, batch) = migrated(vec![
-            derived_at(ce, "gc/a.rs@h1#0", 30),
-            derived_at(ce, "gc/a.rs@h1#1", 31),
-            entry_valid_at("h2", 40),
-            derived_at(ce, "gc/a.rs@h1#0", 50),
-        ]);
-        let converted = |shed| ShedDerived {
-            converted: 1,
-            shed,
-            unkeyed: 0,
-        };
-        let entry_of_h1 = |keys| entry_event("gc/a.rs", "h1", keys, "blob-of-gc/a.rs", false);
-
+        let deleted = s.delete_derived("p-run").unwrap();
+        let reclaimed = s.reclaim_space(s.bytes_on_disk());
+        let wal = std::fs::metadata(format!("{}-wal", path.display())).map_or(0, |m| m.len());
         assert_eq!(
-            [(row_shed, row_after), (batch_shed, batch_after)],
-            [
-                (
-                    converted(2),
-                    vec![row[1].clone(), rewritten(&row[2], &entry_of_h1(1), 40)]
-                ),
-                (
-                    converted(3),
-                    vec![
-                        redated(&batch[2], 30),
-                        rewritten(&batch[3], &entry_of_h1(2), 50)
-                    ]
-                ),
-            ]
+            (deleted, reclaimed.compaction_ran, wal),
+            (2_000, true, 0),
+            "the delete freed pages, so the reclamation ran and emptied the log"
         );
+        drop(held_open);
     }
 
-    /// A store whose stream `p-run` holds one identity recorded, in position order, as a ledger
-    /// entry valid from `first`, a derived row valid from 40 and a second ledger entry valid from
-    /// `second`, migrated: what the migration answered and the rows it left, beside the two entry
-    /// rows as they stood before it.
-    fn migrated_between_two_entries(first: u64, second: u64) -> (ShedDerived, Vec<Row>, [Row; 2]) {
-        let (shed, after, before) = migrated(vec![
-            entry_valid_at("h1", first),
-            derived_at(
-                crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
-                "gc/a.rs@h1#0",
-                40,
-            ),
-            entry_valid_at("h1", second),
-        ]);
-        (shed, after, [before[0].clone(), before[2].clone()])
-    }
-
-    /// Of two ledger entries of one identity with a derived row between them, the earliest
-    /// surviving recording is the FIRST entry in position order and the date it takes is the
-    /// EARLIEST any recording held, whichever entry held it: an earlier first entry keeps its
-    /// own date, a later one is re-dated to the second entry's, and the second entry is left as
-    /// it stands. The derived row is shed and nothing is converted.
+    /// The count and the delete reach every derived type of the one stream they are handed, and
+    /// never a row of a stream whose name only starts with it, another stream, or a non-derived
+    /// row: the count changes nothing, the delete removes exactly what it counted and answers
+    /// that, and a second delete removes nothing.
     #[test]
-    fn shed_derived_dates_the_first_of_two_entries_at_the_earliest_valid_time_either_holds() {
-        for (first_valid, second_valid) in [(30, 50), (50, 30)] {
-            let (shed, after, [first, second]) =
-                migrated_between_two_entries(first_valid, second_valid);
-
-            assert_eq!(
-                (shed, after),
-                (
-                    ShedDerived {
-                        converted: 0,
-                        shed: 1,
-                        unkeyed: 0,
-                    },
-                    vec![redated(&first, 30), second]
-                ),
-                "entries valid from {first_valid} then {second_valid}"
-            );
-        }
-    }
-
-    /// A migrated stream holds no derived row: the count answers nothing, and a second migration
-    /// sheds nothing, converts nothing and leaves every row as it stands.
-    #[test]
-    fn a_migrated_stream_counts_no_derived_row_and_a_second_migration_changes_nothing() {
+    fn delete_derived_deletes_every_derived_type_of_one_stream_and_nothing_else() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.db");
-        let s = store_to_migrate(&path);
-        s.shed_derived("p-run", &named_entry).unwrap();
-        let migrated = rows_of(&path);
+        let s = store_holding_every_derived_type(&path);
+        let before = rows_of(&path);
+        let counted = (
+            s.count_derived("p-run").unwrap(),
+            s.count_derived("p-run-x").unwrap(),
+            s.count_derived("p-").unwrap(),
+            rows_of(&path) == before,
+        );
+        let kept: Vec<Row> = before
+            .iter()
+            .filter(|row| {
+                row.1 != "p-run" || !crate::retention::DERIVED_TYPES.contains(&row.2.as_str())
+            })
+            .cloned()
+            .collect();
 
         assert_eq!(
             (
+                counted,
+                s.delete_derived("p-run").unwrap(),
+                rows_of(&path),
                 s.count_derived("p-run").unwrap(),
-                s.shed_derived("p-run", &named_entry).unwrap(),
-                rows_of(&path) == migrated,
+                s.delete_derived("p-run").unwrap(),
             ),
-            (DerivedCount::default(), ShedDerived::default(), true)
+            ((8, 1, 0, true), 8, kept, 0, 0)
         );
     }
 }

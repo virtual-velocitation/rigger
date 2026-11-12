@@ -1,7 +1,7 @@
 //! The process half of [`crate::spawn`] (spec 93, criterion 1: THE CORE LANE IS PURE):
 //! persisting a spawn request/result to a LIVE run's event store. [`crate::spawn`] keeps
 //! the model (`SpawnRequest`/`SpawnResult`/`WaveItem`/`Step`) and the pure fold
-//! (`step_result`, `recorded`, `result_of`, `prompt_for`, ...) - everything a page or a
+//! (`step_result`, `recorded`, `result_of`, ...) - everything a page or a
 //! test can compute from an already-read `&[Event]` slice with no store at all. This
 //! module is the OTHER half: the handful of functions that actually append to a
 //! `&dyn EventStore`, split into its own file (never a function-by-function `#[cfg]`
@@ -25,17 +25,16 @@ use crate::spawn::{SpawnRequest, SpawnResult};
 /// metadata (a caller outside a run - e.g. the pure-fold tests). This is the single park
 /// authority.
 ///
-/// Beside the run id it stamps `marker_root`, the scratch root the parking step stamps the
+/// Beside the run id it stamps `marker_root`, the scratch root the park stamps the
 /// spawn's liveness marker under ([`crate::spawn::META_MARKER_ROOT`], spec 101), so every
 /// marker reader finds the marker where the log says it lives rather than where its own
 /// environment resolves. An empty `marker_root` (no scratch root - a repo-less or offline
 /// re-drive) stamps none.
 ///
-/// This is exactly what a step does when it reaches an UNRECORDED spawn at the frontier: the
-/// request becomes a durable fact, so the next step process (and the thin driver draining the
-/// wave) sees the identical call, and the budget breaker counts spawns from the log rather
-/// than an in-memory counter. A serialization failure is surfaced as a backend error rather
-/// than panicking.
+/// This is exactly what a driver does when it reaches an UNRECORDED spawn at the frontier: the
+/// request becomes a durable fact, so a later pass over the log sees the identical call, and
+/// the budget breaker counts spawns from the log rather than an in-memory counter. A
+/// serialization failure is surfaced as a backend error rather than panicking.
 pub fn park_in_run(
     store: &dyn EventStore,
     req: &SpawnRequest,
@@ -77,9 +76,8 @@ fn what(type_: &str, subject: &str) -> String {
 
 /// Persist a recorded spawn result to the run's event log as a
 /// [`crate::spawn::TYPE_SPAWN_RESULT`] event, returning its global position. This is
-/// exactly what `rigger result <id>` does once a courier has run the parked agent: the
-/// outcome becomes a durable fact, so the next step process replays it instead of
-/// re-running the agent.
+/// exactly what `rigger result <id>` does once the parked agent has run: the outcome becomes
+/// a durable fact, so a later pass replays it instead of re-running the agent.
 pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Position, Error> {
     let ev = res
         .to_event()
@@ -88,18 +86,17 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
 }
 
 /// Record `res` to the run's event log ONLY when the spawn has no result yet, as a
-/// single atomic compare-and-append that never clobbers a result already recorded - the
-/// write half of `rigger result --if-absent`. Returns `Some(position)` when it recorded,
-/// `None` when a result already existed (the idempotent no-op).
+/// single atomic compare-and-append that never clobbers a result already recorded. Returns
+/// `Some(position)` when it recorded, `None` when a result already existed (the idempotent
+/// no-op).
 ///
-/// The thin driver's death courier calls this to record a died-worker failure IFF the
-/// worker did not already self-report. It supersedes the two-process `rigger reported
-/// <id> || rigger result <id> --error` guard, which reads in one process and writes in
-/// another and so leaves a TOCTOU window: a self-report (or a reviewer's already-emitted
-/// approve) landing between the read and the write is clobbered by the courier's
-/// `--error` - since [`record_result`]/[`crate::spawn::result_of`] are last-write-wins -
-/// force-failing an approved unit on the next replay. Collapsing the check and the write
-/// into one atomic operation closes that window.
+/// The headless host records a stalled session's liveness fault through this, so the fault
+/// lands IFF the worker did not already self-report. A check in one read and a write in
+/// another leaves a TOCTOU window: a self-report (or a reviewer's already-emitted approve)
+/// landing between the read and the write is clobbered by the later write - since
+/// [`record_result`]/[`crate::spawn::result_of`] are last-write-wins - discarding an
+/// approved unit's result on the next replay. Collapsing the check and the write into one
+/// atomic operation closes that window.
 ///
 /// Atomicity rests on the store's optimistic concurrency (the port's only cross-backend
 /// primitive): read the current run ([`crate::run::read::read_run`], spec 101 - never the
@@ -124,7 +121,7 @@ pub fn record_result_if_absent(
 /// `Some(position)` when it recorded, `None` when a real result already stood.
 ///
 /// A relaunched session's real result calls this, so it supersedes the liveness fault the
-/// stall or crash courier recorded for the session it replaced, while the same result again,
+/// host recorded for the session it replaced, while the same result again,
 /// or one a racing writer landed first, lands nothing. Every liveness-fault write keeps
 /// [`record_result_if_absent`], which a fault already standing also stops. The atomicity is
 /// that function's: the same compare-and-append, deciding over the real results alone.
@@ -193,7 +190,7 @@ mod tests {
         assert!(!is_recorded(&events, "u/implementer#1"));
     }
 
-    /// A park records the scratch root its step stamps the spawn's marker under beside the run
+    /// A park records the scratch root it stamps the spawn's marker under beside the run
     /// id, and the root reads back by spawn id; an empty root records none (spec 101).
     #[test]
     fn parking_records_the_marker_root_beside_the_run_id_and_an_empty_one_records_none() {
@@ -235,8 +232,8 @@ mod tests {
 
     #[test]
     fn record_result_if_absent_records_only_when_no_result_exists() {
-        // The write half of `rigger result --if-absent`: with no result yet it records,
-        // returning the new position, and `result_of` reads it back.
+        // The absent-only write: with no result yet it records, returning the new position,
+        // and `result_of` reads it back.
         let store = Store::open(":memory:").unwrap();
         let pos =
             record_result_if_absent(&store, &SpawnResult::ok("u/implementer#0", "done")).unwrap();
@@ -249,11 +246,10 @@ mod tests {
 
     #[test]
     fn record_result_if_absent_is_a_noop_that_never_clobbers_an_existing_result() {
-        // The anti-clobber invariant the death courier relies on: once a worker has
-        // self-reported, a later `--if-absent` (the courier's died-worker `--error`)
-        // records NOTHING and leaves the self-report standing - the same guarantee the
-        // two-process `rigger reported <id> || rigger result <id> --error` guard gave,
-        // now in ONE atomic step so no self-report can land in the check-then-record gap.
+        // The anti-clobber invariant an absent-only writer relies on: once a worker has
+        // self-reported, a later absent-only write (here a died-worker failure) records
+        // NOTHING and leaves the self-report standing, in ONE atomic step so no self-report
+        // can land in the check-then-record gap.
         let store = Store::open(":memory:").unwrap();
         record_result(&store, &SpawnResult::ok("u/implementer#0", "self-reported")).unwrap();
 
@@ -262,15 +258,15 @@ mod tests {
             "died without reporting",
             [
                 "an already-recorded result must not be re-recorded (return None)",
-                "the `--if-absent` no-op must append no second result event",
+                "the absent-only no-op must append no second result event",
                 "the self-reported success must stand un-clobbered",
             ],
         );
     }
 
-    /// Fires the death courier's `--if-absent --error` (`courier_error`) for
-    /// `u/implementer#0` over a `store` where that spawn's own `self-reported` success has
-    /// landed, and asserts the courier is a no-op: it records nothing (`why[0]`), the stream
+    /// Fires an absent-only died-worker failure (`courier_error`) for `u/implementer#0` over
+    /// a `store` where that spawn's own `self-reported` success has landed, and asserts the
+    /// write is a no-op: it records nothing (`why[0]`), the stream
     /// carries exactly one result (`why[1]`), and the self-report stands (`why[2]`).
     fn assert_the_courier_error_never_clobbers_the_self_report(
         store: &dyn EventStore,
@@ -445,10 +441,10 @@ mod tests {
     #[test]
     fn record_result_if_absent_honors_a_self_report_that_won_the_race() {
         // The TOCTOU window the atomic CAS closes: the worker's own self-report lands in
-        // the gap between the courier's read (which saw nothing) and its append. The
-        // pinned append CONFLICTS; on retry the re-check now SEES the self-report and
-        // returns None, so the courier's died-worker `--error` never clobbers the
-        // success. Dropping either the retry arm or the in-loop re-check fails this.
+        // the gap between the absent-only writer's read (which saw nothing) and its append.
+        // The pinned append CONFLICTS; on retry the re-check now SEES the self-report and
+        // returns None, so the died-worker failure never clobbers the success. Dropping
+        // either the retry arm or the in-loop re-check fails this.
         let inner = Store::open(":memory:").unwrap();
         // The racing writer is the worker itself, self-reporting SUCCESS for OUR id.
         let racing = SpawnResult::ok("u/implementer#0", "self-reported")
@@ -456,7 +452,7 @@ mod tests {
             .unwrap();
         let store = RaceOnFirstAppend::new(inner, racing);
 
-        // The death courier, believing the worker died, fires `--if-absent --error`.
+        // The absent-only writer, believing the worker died, records a failure.
         assert_the_courier_error_never_clobbers_the_self_report(
             &store,
             "died",
@@ -470,20 +466,20 @@ mod tests {
 
     #[test]
     fn record_result_if_absent_is_atomic_across_two_connections() {
-        // The criterion on the REAL topology: the death courier runs in a SEPARATE
+        // The criterion on the REAL topology: the absent-only writer runs in a SEPARATE
         // PROCESS from the worker, so two sqlite connections (two `Store` handles on one
         // on-disk db, NO shared in-process mutex) genuinely overlap. This is the case an
         // in-process single-`Store` test cannot reach - one `Mutex<Connection>` serializes
         // its appends so they never contend - which is exactly why the sequential tests
         // above give false confidence. Here the worker self-reports SUCCESS via the plain
-        // path while the courier fires `--if-absent --error`, round-synchronized so they
+        // path while the courier thread records an absent-only failure, round-synchronized so they
         // collide on the same id every round.
         //
         // Invariants (records atomically: no lost, no orphan, no hard-fail):
-        //   - the courier's `--if-absent` never hard-fails (no cross-connection lock error);
+        //   - the courier's absent-only write never hard-fails (no cross-connection lock error);
         //   - the worker's self-report is never dropped;
         //   - every id ends with the worker's SUCCESS, never force-failed by the courier -
-        //     because whenever the courier's `--error` could land, the worker's later
+        //     because whenever the courier's failure could land, the worker's later
         //     success supersedes it, and whenever the success landed first the courier
         //     re-checks and no-ops.
         let dir = tempfile::tempdir().unwrap();
@@ -532,7 +528,7 @@ mod tests {
         let courier_errs = courier.join().unwrap();
         assert_eq!(
             courier_errs, 0,
-            "the courier's --if-absent must never hard-fail on a cross-connection race"
+            "the courier's absent-only record must never hard-fail on a cross-connection race"
         );
         assert_eq!(
             worker_errs, 0,
@@ -720,7 +716,7 @@ mod tests {
     fn step_wave_reads_back_through_park_and_record_result_end_to_end() {
         // Integration smoke test: `park_in_run`/`record_result` (this module) compose correctly
         // with `crate::spawn::step_result` (the pure fold) through a real store - the
-        // seam the thin driver actually drives every step.
+        // seam every replay pass reads.
         let store = Store::open(":memory:").unwrap();
         let old = crate::spawn::test_request("plan", "plan", ROLE_IMPLEMENTER, 0, "plan it");
         park_in_run(&store, &old, "", "").unwrap();

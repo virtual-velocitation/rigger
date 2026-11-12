@@ -6,6 +6,7 @@
 //! `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
 //! the parser-free model stays in the light lane.
 
+use crate::grounder::symbols::extract::CompiledTags;
 use crate::grounder::symbols::model::Lang;
 use std::sync::OnceLock;
 
@@ -54,9 +55,9 @@ const RUST_TAGS: &str = r#"
 "#;
 
 /// The C# `tags` query. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose last
-/// pattern captures a bare `@module`, which `tree-sitter-tags` rejects (it accepts only
-/// `@definition.*` / `@reference.*` / `@name` / `@doc` / `@local.*`), so the shipped query fails
-/// to compile. That pattern is also redundant: the line above it already tags the same
+/// pattern captures a bare `@module`, which the extractor's tags reading refuses (it reads only
+/// `@definition.*` / `@reference.*` / `@name` / `@doc`), so the shipped query fails to compile.
+/// That pattern is also redundant: the line above it already tags the same
 /// `namespace_declaration` as `@definition.module`. This is the shipped query without that one
 /// invalid, redundant line - authored here per the spec's "author or verify each grammar's tag
 /// query" mandate - its namespace pattern taking any name node where the shipped one takes an
@@ -264,12 +265,29 @@ const PYTHON_TAGS: &str = r#"
 "#;
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
-/// extractor runs over a file in that language. The three the extractor needs, resolved
-/// together so a file maps to exactly one grammar+query pair.
+/// extractor runs over a file in that language, resolved together so a file maps to exactly one
+/// grammar+query pair, with that pair's one compilation ([`LanguageEntry::tags`]).
 pub struct LanguageEntry {
     pub lang: Lang,
     pub language: tree_sitter::Language,
     pub tags_query: &'static str,
+    compiled: &'static Compiled,
+}
+
+/// The process's one compilation of a grammar+query pair, made at its first use.
+type Compiled = OnceLock<Result<CompiledTags, String>>;
+
+impl LanguageEntry {
+    /// The entry's `tags` query compiled against its grammar: compiled at the first call in the
+    /// process, and that compilation every later call for the same grammar+query pair returns, so
+    /// the extractor matches each file against an already compiled query and an entry looked up for
+    /// its `lang` alone compiles nothing. An `Err` is a query that does not compile.
+    pub fn tags(&self) -> Result<&'static CompiledTags, String> {
+        self.compiled
+            .get_or_init(|| CompiledTags::compile(&self.language, self.tags_query))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
 }
 
 /// Resolve the grammar for a bare extension (no leading dot), or `None` when the extension is
@@ -296,12 +314,32 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     static JS_TAGS: OnceLock<String> = OnceLock::new();
     static TS_TAGS: OnceLock<String> = OnceLock::new();
     static TSX_TAGS: OnceLock<String> = OnceLock::new();
-    let (lang, language, tags_query): (Lang, tree_sitter::Language, &'static str) = match ext {
-        "rs" => (Lang::Rust, tree_sitter_rust::LANGUAGE.into(), RUST_TAGS),
+    // Each grammar+query pair's one compilation, keyed by the pair, never by `Lang`: `.ts` and
+    // `.tsx` share a `Lang` but neither grammar nor query.
+    static RUST: Compiled = OnceLock::new();
+    static CSHARP: Compiled = OnceLock::new();
+    static TS: Compiled = OnceLock::new();
+    static TSX: Compiled = OnceLock::new();
+    static JS: Compiled = OnceLock::new();
+    static GO: Compiled = OnceLock::new();
+    static PYTHON: Compiled = OnceLock::new();
+    let (lang, language, tags_query, compiled): (
+        Lang,
+        tree_sitter::Language,
+        &'static str,
+        &'static Compiled,
+    ) = match ext {
+        "rs" => (
+            Lang::Rust,
+            tree_sitter_rust::LANGUAGE.into(),
+            RUST_TAGS,
+            &RUST,
+        ),
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
             CSHARP_TAGS,
+            &CSHARP,
         ),
         "ts" => (
             Lang::Ts,
@@ -320,6 +358,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &TS,
         ),
         "tsx" => (
             Lang::Ts,
@@ -338,6 +377,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
             Lang::Js,
@@ -353,16 +393,19 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &JS,
         ),
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            &GO,
         ),
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
             PYTHON_TAGS,
+            &PYTHON,
         ),
         _ => return None,
     };
@@ -370,6 +413,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         lang,
         language,
         tags_query,
+        compiled,
     })
 }
 
@@ -899,6 +943,24 @@ pub(crate) mod tests {
         assert!(for_extension("txt").is_none());
     }
 
+    /// A grammar's tags query compiles once per process: every entry resolving to a grammar and
+    /// query pair returns the one compilation, a forced language's included, while two pairs
+    /// sharing a `Lang` (`.ts` and `.tsx`) each hold their own.
+    #[test]
+    fn a_grammars_tags_query_compiles_once_per_process() {
+        let compiled = |entry: LanguageEntry| -> *const CompiledTags {
+            entry.tags().expect("the registered query compiles")
+        };
+        let by_extension = |ext| compiled(for_extension(ext).unwrap());
+        assert_eq!(by_extension("rs"), by_extension("rs"));
+        assert_eq!(by_extension("js"), by_extension("jsx"));
+        assert_ne!(by_extension("ts"), by_extension("tsx"));
+        assert_eq!(
+            compiled(for_path("notes.txt", Some(Lang::Rust)).unwrap()),
+            by_extension("rs")
+        );
+    }
+
     #[test]
     fn language_override_wins_over_extension() {
         // A `.txt` with an explicit override still resolves (the `--language` override).
@@ -941,7 +1003,7 @@ pub(crate) mod tests {
         let entry = for_path("Panel.tsx", Some(Lang::Ts)).unwrap();
         assert_eq!(entry.lang, Lang::Ts);
         let src = "function Panel() { return <div>{title}</div>; }\n";
-        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(src, entry.lang, entry.tags().unwrap()).unwrap();
         assert!(
             fs.defs.iter().any(|d| d.name == "Panel"),
             "override --language ts on a .tsx file should keep the JSX-aware grammar, got {:?}",
@@ -967,7 +1029,9 @@ pub(crate) mod tests {
         ];
         for (ext, src, expected) in cases {
             let entry = crate::symbol_index::registered(ext);
-            let fs = extract(src, entry.lang, &entry.language, entry.tags_query)
+            let fs = entry
+                .tags()
+                .and_then(|tags| extract(src, entry.lang, tags))
                 .unwrap_or_else(|e| panic!("extraction failed for .{ext}: {e}"));
             assert!(
                 fs.defs.iter().any(|d| d.name == *expected),
@@ -982,11 +1046,10 @@ pub(crate) mod tests {
         // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the upstream
         // tree-sitter-javascript tags.scm tags a `const`/`let` ONLY when its value is an
         // arrow/function expression, or an ES `export X = <literal>` assignment-form export -
-        // a syntax this project's plain CommonJS-style `workflows/rigger.js` never uses. A
-        // plain top-level constant therefore never became a graph entity at all - exactly
-        // the gap docs/audit/2026-09-graph-vs-grep.md questions 5 and 8 measured against that
-        // file's own `OUTER_WALL_CLOCK_SEC` (a ternary) and `FRESH` (a boolean coercion)
-        // constants. Both must now extract as `Kind::Constant` definitions.
+        // a syntax plain CommonJS-style scripts never use. A plain top-level constant
+        // therefore never became a graph entity at all - such as a ternary-valued
+        // `OUTER_WALL_CLOCK_SEC` or a boolean-coercion `FRESH`. Both must now extract as
+        // `Kind::Constant` definitions.
         let src = "const OUTER_WALL_CLOCK_SEC = Number(x) > 0 ? Number(x) : 900\nconst FRESH = !!a.fresh\n";
         let fs = crate::symbol_index::extracted("js", src);
         assert!(
@@ -1058,59 +1121,12 @@ pub(crate) mod tests {
         );
     }
 
-    /// A persisted index stamped `ts-tags-v2`, the generation before the caller rule changed
-    /// what `SymRef.enclosing` holds, is not current and loads as absent, as is one stamped
-    /// `ts-tags-v3`, the generation before a definition carried its parent (spec 119, CONTAINS IS
-    /// STRUCTURE), and one stamped `ts-tags-v4`, the generation before a reference carried its
-    /// `ref_kind` (spec 117); one stamped `ts-tags-v5` is current and loads.
-    #[test]
-    fn a_persisted_ts_tags_v2_index_is_not_current() {
-        use crate::grounder::symbols::model::SymbolIndex;
-        use crate::grounder::symbols::store;
-        let persisted = |grammar: &str| -> (bool, bool) {
-            let dir = tempfile::tempdir().unwrap();
-            let root = dir.path().to_str().unwrap();
-            crate::symbol_index::persist_stamped(root, grammar, r#"{"files":{}}"#);
-            let index: SymbolIndex =
-                serde_json::from_slice(&std::fs::read(store::index_path(root)).unwrap()).unwrap();
-            (index.is_current(), store::load(root).is_some())
-        };
-        for (grammar, current) in [
-            ("ts-tags-v2", false),
-            ("ts-tags-v3", false),
-            ("ts-tags-v4", false),
-            ("ts-tags-v5", true),
-        ] {
-            let reading = if current {
-                "is current and loads"
-            } else {
-                "is not current and loads as absent"
-            };
-            assert_eq!(
-                persisted(grammar),
-                (current, current),
-                "a {grammar} index {reading}"
-            );
-        }
-    }
-
-    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
-    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
-    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and an index
-    /// persisted before the change loads as absent. The fixtures set every part a persisted index
-    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves the digest.
-    #[test]
-    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
-        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        use crate::grounder::symbols::store;
-        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
-        const GOLDEN: [(&str, &str); 8] = [
-            (
-                "rs",
-                "\
+    /// The golden fixtures: an (extension, source) for each registered grammar and query and a
+    /// malformed Rust file. The extraction golden and the facts golden both digest them.
+    pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
+        (
+            "rs",
+            "\
 use crate::store::Ledger;
 pub const QUOTA_CAP: u32 = 3;
 pub struct Kestrel { size: u32 }
@@ -1132,59 +1148,59 @@ mod tests {
     fn t() { super::helper(1); }
 }
 ",
-            ),
-            ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
-            (
-                "cs",
-                "\
+        ),
+        ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
+        (
+            "cs",
+            "\
 class Box {
     const int Cap = 3;
     int Width() { return Calc(Cap); }
     static int Calc(int n) { return n; }
 }
 ",
-            ),
-            (
-                "ts",
-                "\
+        ),
+        (
+            "ts",
+            "\
 const LIMIT = 3;
 class Box {
     width(): number { return calc(LIMIT); }
 }
 function calc(n: number): number { return n; }
 ",
-            ),
-            (
-                "tsx",
-                "\
+        ),
+        (
+            "tsx",
+            "\
 const LABEL = \"x\";
 function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
 ",
-            ),
-            (
-                "js",
-                "\
+        ),
+        (
+            "js",
+            "\
 const LIMIT = 3;
 class Box {
     width() { return calc(LIMIT); }
 }
 function calc(n) { return n; }
 ",
-            ),
-            (
-                "go",
-                "\
+        ),
+        (
+            "go",
+            "\
 package p
 const Limit = 3
 type T struct{}
 func (T) Width() int { return calc(Limit) }
 func calc(n int) int { return n }
 ",
-            ),
-            (
-                "py",
-                "\
+        ),
+        (
+            "py",
+            "\
 LIMIT = 3
 class Box:
     def width(self):
@@ -1192,9 +1208,22 @@ class Box:
 def calc(n):
     return n
 ",
-            ),
-        ];
-        let extracted: Vec<(&str, FileSymbols)> = GOLDEN
+        ),
+    ];
+
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
+    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
+    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
+    /// extraction records fails here until the tag is bumped and the pair re-pinned, and a snapshot
+    /// of the code store written before the change is not trusted. The fixtures set every part a
+    /// snapshot stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind included, so a change to any of them moves the digest.
+    #[test]
+    fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
+        let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
             .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
             .collect();
@@ -1246,7 +1275,8 @@ def calc(n):
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }
-        let digest = store::content_hash(&serde_json::to_string(&extracted).unwrap());
+        let digest =
+            crate::grounder::symbols::content_hash(&serde_json::to_string(&extracted).unwrap());
         assert_eq!(
             (GRAMMAR_TAGS_VERSION, digest.as_str()),
             PINNED,

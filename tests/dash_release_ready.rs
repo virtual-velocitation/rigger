@@ -26,7 +26,7 @@
 //! `dash_decisions_progressive_disclosure.rs`), fed the SAME JSON this file's socket test above
 //! proves crosses the wire, and asserts the resulting DOM node's content - not its source text.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -59,7 +59,12 @@ fn positioned(pairs: &[(&str, &str)]) -> Vec<Event> {
 /// the parsed JSON body - the exact path the operator's browser hits.
 fn served_state(events: Vec<Event>) -> Value {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((events.clone(), Graph::default(), Vec::new(), HashMap::new()))
+        Ok((
+            events.clone(),
+            Graph::default().into(),
+            Vec::new(),
+            HashMap::new(),
+        ))
     };
     // A free loopback port this harness OWNS from `bind` through `serve_on`: the listener is handed
     // to the server, never dropped and re-bound. Releasing it first would leave the port free for
@@ -70,11 +75,15 @@ fn served_state(events: Vec<Event>) -> Value {
     let addr = listener.local_addr().unwrap();
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
-    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let graph_provider =
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
     let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
+        |_: Option<&str>,
+         _: &[String],
+         _: rigger::contextgraph::Direction,
+         _: i64,
+         _: &str,
+         _tests: rigger::code_view::Tests| { rigger::contextgraph::CallGraph::default() };
     let instances_provider = Vec::new;
     // A detached server thread: `serve_on` loops until the process ends; we drive one request.
     // `run_branch`/`base` are the same values `cmd_dash` threads from `resolve_run_base`.

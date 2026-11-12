@@ -25,7 +25,7 @@
 use rigger::config::{StoreConfig, Workflow};
 use rigger::config_store::read_store_config;
 
-mod common;
+use crate::common;
 
 use common::workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
 

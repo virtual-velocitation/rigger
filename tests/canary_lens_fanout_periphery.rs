@@ -30,7 +30,7 @@
 //! module and unreachable from here regardless). Neither `canary` nor `parallel` is feature-
 //! gated, so this test is compiled unconditionally and runs in both feature lanes.
 
-mod common;
+use crate::common;
 
 use std::collections::HashSet;
 use std::sync::Mutex;

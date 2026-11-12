@@ -37,7 +37,7 @@
 //! commit instead of naming the sha the round actually judged. Restoring the field verbatim
 //! (`git diff` on `src/` clean) returns it to green.
 
-mod common;
+use crate::common;
 use common::fixtures::test_spawn_host;
 
 use common::fixtures::{
@@ -76,9 +76,10 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     let result = run(&cfg, &deps);
     assert!(

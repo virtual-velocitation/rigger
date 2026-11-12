@@ -17,7 +17,7 @@
 //! prove the library-level behavior; this file proves it end to end through the compiled
 //! binary, at both entry points the finding named.
 
-mod common;
+use crate::common;
 use common::cli::run_rigger;
 use common::cli::temp_project;
 

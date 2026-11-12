@@ -42,7 +42,7 @@
 //! assertion is load-bearing; restoring the fix verbatim (`git diff` on `src/` clean) returns it
 //! to green.
 
-mod common;
+use crate::common;
 
 use common::fixtures::review_panel;
 use common::fixtures::test_spawn_host;
@@ -140,9 +140,10 @@ fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
 
     let rs = run(&cfg, &deps).expect(

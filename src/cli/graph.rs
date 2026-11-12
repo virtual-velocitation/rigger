@@ -1,27 +1,45 @@
 use super::*;
+use rigger_domain::code_view::{tests_hidden_line, Tests, ViewFilter};
+
+/// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
+/// every reader shares, else the refusal that names the three.
+fn tests_option(verb: &str, raw: Option<&String>) -> Result<Tests, String> {
+    raw.ok_or_else(|| format!("{verb}: --tests expects exclude, include or only"))?
+        .parse()
+        .map_err(|e| format!("{verb}: --tests: {e}"))
+}
 
 pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // `rigger graph build` is a distinct verb (populate) from the default `--around` inspector
-    // read: fold the project's source into the graph from a cold checkout, no run required.
+    // read: advance the project's code store to the head, no run required.
     if args.first().map(String::as_str) == Some("build") {
         return cmd_graph_build(&args[1..]);
     }
-    // `rigger graph communities` is the OFFLINE detection pass (spec 53): derive the code lens's
-    // coupling communities over the already-folded structure layer and record them as events.
+    // `rigger graph communities` and `rigger graph concepts` report the code store's groupings.
     if args.first().map(String::as_str) == Some("communities") {
         return cmd_graph_communities(&args[1..]);
     }
-    // `rigger graph concepts` is the OFFLINE intent-derivation pass (spec 54): derive the concepts
-    // lens's grouping over the already-folded intent layer and record them as events.
     if args.first().map(String::as_str) == Some("concepts") {
         return cmd_graph_concepts(&args[1..]);
     }
     let mut around = String::new();
     let mut show = String::new();
+    let mut lookup = Vec::new();
     let mut depth: i64 = 2;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--tests" => {
+                i += 1;
+                tests = tests_option("graph", args.get(i))?;
+            }
+            "--lookup" => {
+                while args.get(i + 1).is_some_and(|a| !a.starts_with("--")) {
+                    i += 1;
+                    lookup.push(args[i].clone());
+                }
+            }
             "--around" => {
                 i += 1;
                 around = args.get(i).cloned().unwrap_or_default();
@@ -42,23 +60,63 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
     // body, beside `--around`'s structural neighborhood. Dispatched before the `--around` guard so
     // a `--show` query needs no `--around`.
     if !show.is_empty() {
-        return cmd_graph_show(&show);
+        return cmd_graph_show(&show, tests);
+    }
+    if !lookup.is_empty() {
+        return cmd_graph_lookup(&lookup, tests);
     }
     if around.is_empty() {
-        return Err("graph: --around <id> or --show <entity> is required".into());
+        return Err(
+            "graph: --lookup <term>..., --around <id> or --show <entity> is required".into(),
+        );
     }
-    let gp = owning_graph_to_read()?;
+    let records = owning_graph_to_read()?;
+    let read = ReadGraph::new(&records, caller_tree()?);
+    contextgraph::answered(&read, ViewFilter { tests }, |graph| {
+        exit_once_printed(print_around(graph, &around, depth))
+    })
+}
+
+/// End a one-shot read command once `printed` is out and flushed: the reader it opened is freed by
+/// the process exit rather than dropped piece by piece first, which cost a read a tenth of its
+/// time. A failed answer returns its error as before; a reader that closed the pipe early still
+/// exits 0, as `println!`'s broken-pipe report does.
+fn exit_once_printed(printed: Res) -> Res {
+    printed?;
+    match std::io::Write::flush(&mut std::io::stdout()) {
+        Ok(()) => std::process::exit(0),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `rigger graph --around`'s answer from `graph`: the label, then the subgraph within `depth`
+/// hops of `around`.
+fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     // The queried id (spec 117, UNRESOLVED REFERENCES ARE A READ): the query resolved once through
-    // the port, an alias to its canonical id, else the query as typed. Its one site read answers
-    // the queried node's unresolved leaves.
-    let queried = Projection::resolve(&gp, &around)?.unwrap_or(around.clone());
-    let g = contextgraph::around(&gp, std::slice::from_ref(&queried), depth)?;
-    let unresolved = match gp.locate(&queried)? {
+    // the interface, an alias to its canonical id, else the query as typed. Its one site read
+    // answers the queried node's unresolved leaves.
+    let queried = graph.resolve(around)?.unwrap_or(around.to_string());
+    let g = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
+    let unresolved = match graph.locate(&queried)? {
         Located::One(site) => site.unresolved,
         _ => Vec::new(),
     };
+    // The label heads the answer (6.1), counting what the reads above withheld.
+    println!("{}", graph.stamp_label());
+    let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+    print_tests_hidden(graph, &shown)?;
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &queried, &unresolved);
+    Ok(())
+}
+
+/// The line under an answer's label saying how many test entities the tests filter hides prove
+/// the nodes `shown`, when any do.
+fn print_tests_hidden(graph: &dyn ContextGraph, shown: &[String]) -> Res {
+    if let Some(line) = tests_hidden_line(graph.hidden_provers(shown)?) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -193,9 +251,9 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 ///   prints no site, no body and no note), and
 ///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
 ///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
-///   boundary), clamped to a max window. A missing file, a recorded line past end-of-file, a drifted
-///   location the current tree no longer matches, a nameless node, or a build without the
-///   extraction grammar degrades to the site plus an explicit note, never an error (the recorded
+///   boundary), clamped to a max window. A missing file, a line past end-of-file, no definition of
+///   the node's name and kind at its line, a nameless node, or a build without the extraction
+///   grammar degrades to the site plus an explicit note, never an error (the recorded
 ///   graph facts are still shown; only the body is unavailable, and the surface says so).
 /// - MANY matches (an ambiguous bare name, path or flat `<file>::<name>`): LISTS the sorted
 ///   candidates, each with its file, and prints NO body - the graph's honesty rule is never to
@@ -203,14 +261,73 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
-fn cmd_graph_show(entity: &str) -> Res {
-    let gp = owning_graph_to_read()?;
-    match gp.locate(entity)? {
-        Located::None => {
-            println!(
-                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
-            );
+/// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
+/// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
+/// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
+/// with no store yet holds no such record.
+fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std::error::Error>> {
+    let Some((loc, selection)) = store_if_any()? else {
+        return Ok(None);
+    };
+    over_the_run_store_at(&loc, &selection, |store| {
+        Ok(Sidecar::read(store, conductor::STREAM)?.site_of(id))
+    })
+}
+
+/// `rigger graph --lookup <term>...`: the combined lookup, the same reply `rigger_graph`'s
+/// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
+fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
+    use rigger::lookup::Lookup as _;
+    let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
+    match owning_graph_to_read() {
+        Ok(records) => {
+            let read = ReadGraph::new(&records, caller_tree()?);
+            contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
+                exit_once_printed(
+                    lookup
+                        .lookup(terms, graph.map_err(|e| e.0))
+                        .map(|reply| print!("{reply}"))
+                        .map_err(Into::into),
+                )
+            })
         }
+        Err(e) => {
+            let reply = lookup.lookup(
+                terms,
+                Err(format!("the context graph could not be opened: {e}")),
+            )?;
+            print!("{reply}");
+            Ok(())
+        }
+    }
+}
+
+fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
+    let records = owning_graph_to_read()?;
+    let read = ReadGraph::new(&records, caller_tree()?);
+    contextgraph::answered(&read, ViewFilter { tests }, |graph| {
+        exit_once_printed(print_show(graph, entity))
+    })
+}
+
+/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined.
+fn print_show(graph: &dyn ContextGraph, entity: &str) -> Res {
+    let located = graph.locate(entity)?;
+    // The label heads the answer (6.1), counting what the locate withheld.
+    println!("{}", graph.stamp_label());
+    if let Located::One(site) = &located {
+        print_tests_hidden(graph, std::slice::from_ref(&site.id))?;
+    }
+    match located {
+        Located::None => match logged_site(entity)? {
+            Some(site) => {
+                print_entity_site(&site);
+                println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
+            }
+            None => println!(
+                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
+            ),
+        },
         Located::Many(cands) => {
             println!(
                 "show {entity:?}: {} candidates - the name is ambiguous, re-run --show on one id:",
@@ -229,24 +346,20 @@ fn cmd_graph_show(entity: &str) -> Res {
 /// INTEGRATION, for the header; spec 119, SHOW IS ONE RENDERER): `show <id>`, the site/kind/degree
 /// header, one `  <entry> <value>` line per remaining [`contextgraph::site_fields`] entry, then the
 /// line-numbered body bounded through the shared multi-grammar symbols authority - or an explicit
-/// note (a drifted location this tree cannot resolve even by name and kind at its id path, a
-/// nameless node, or a
-/// build without the extraction grammar) in place of the body, so the surface is never silently
-/// wrong (a graceful degrade, never an error). A node naming no file has no line: its header reads
+/// note (no definition of the node's name and kind at its line, a nameless node, or a build
+/// without the extraction grammar) in place of the body, so the surface is never silently wrong
+/// (a graceful degrade, never an error). A node naming no file has no line: its header reads
 /// `  kind K degree D` with no `site:` part, and it prints no body and no note, [`definition_body`]
-/// never called. When [`definition_body`] HEALS a drifted recorded line to the entity's live one,
-/// the header prints the LIVE site with the recorded one noted alongside it (`"recorded line N, now
-/// M"`) rather than silently swapping one location for the other with no trace of the drift.
+/// never called.
 ///
 /// The body is bounded by the node's `name` attr and its kind (spec 119, ONE EXTENT), never a cut
 /// of the id, since a file id holds a `.` and an impl header id a `::`, and by its id path, the
 /// rest half of the id's one cut ([`contextgraph::query::split_id`]; spec 119, IDS FOLLOW THE
-/// LANGUAGE'S PATH), so a drifted `T::new` heals onto its own body, never `U::new`'s; an id with
-/// no `::` gives none, bounded by name, kind and line alone. A node with no `name` at a
-/// non-zero line gets the "no production definition named" note with its id in place of the name,
-/// here, ahead
-/// of the feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line
-/// 0 keeps [`definition_body`]'s `source unavailable`.
+/// LANGUAGE'S PATH), so `T::new` bounds its own body, never `U::new`'s; an id with no `::` gives
+/// none, bounded by name, kind and line alone. A node with no `name` at a non-zero line gets the
+/// "no production definition named" note with its id in place of the name, here, ahead of the
+/// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
+/// keeps [`definition_body`]'s `source unavailable`.
 fn print_entity_site(site: &contextgraph::EntitySite) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
@@ -275,12 +388,11 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
     };
     match body {
         ShowBody::Lines {
-            start,
             lines,
             omitted,
             extent_end,
         } => {
-            print_site_header(site, file, start);
+            print_site_header(site, file);
             print_site_entries(site);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
@@ -294,7 +406,7 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
             }
         }
         ShowBody::Note(reason) => {
-            print_site_header(site, file, site.line);
+            print_site_header(site, file);
             print_site_entries(site);
             println!("  ({reason})");
         }
@@ -305,12 +417,11 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
 /// printed as one note in place of the body ([`Unbounded::note`]).
 enum Unbounded {
     /// No production definition (one outside test code) of the label's name and kind, at its id
-    /// path when it has one, sits at its recorded line or anywhere else in the file, nor a lone
-    /// production one of the name at that path at that line: a deleted definition, or a nameless
-    /// node no definition can be sought for.
+    /// path when it has one, sits at its line, or the node is nameless and no definition can be
+    /// sought for it.
     Missing,
-    /// Any other reason, already worded: an ambiguous drift, no registered grammar, or a build
-    /// without the extraction grammar.
+    /// Any other reason, already worded: a source the grammar cannot tag, or a build without the
+    /// extraction grammar.
     Note(String),
 }
 
@@ -320,8 +431,7 @@ impl Unbounded {
     fn note(self, label: &str, path: Option<&str>, kind: &str, file: &str, line: u32) -> String {
         match self {
             Unbounded::Missing => format!(
-                "no production definition {} of kind {kind} at line {line} or elsewhere in {file} \
-                 in the current working tree; the recorded location may be stale",
+                "no production definition {} of kind {kind} at line {line} of {file}",
                 sought(label, path)
             ),
             Unbounded::Note(why) => why,
@@ -330,7 +440,7 @@ impl Unbounded {
 }
 
 /// How a show note names the definition it sought (spec 119, IDS FOLLOW THE LANGUAGE'S PATH):
-/// `named "<label>"`, then ` at path "<path>"` when the id carried a path, the one every tier of
+/// `named "<label>"`, then ` at path "<path>"` when the id carried a path, the one
 /// [`extract::locate_extent`](rigger::grounder::symbols::extract::locate_extent) filtered by.
 fn sought(label: &str, path: Option<&str>) -> String {
     match path {
@@ -339,26 +449,13 @@ fn sought(label: &str, path: Option<&str>) -> String {
     }
 }
 
-/// The site/kind/degree header line of a node naming `file` (spec 92 criterion 1): `live_line` is
-/// where the body actually came from (or, for a [`ShowBody::Note`], simply the recorded line -
-/// nothing was located). When it agrees with the entity's RECORDED line (`site.line`) - the
-/// overwhelmingly common case, and every case before spec 92 - the header is exactly the spec-58
-/// shape. When a drifted recorded line healed by name and kind at its id path to a different live
-/// one, the
-/// header shows the LIVE line as the site (it is what the body below is FROM) and notes the
-/// recorded line beside it, so the drift is visible rather than silently resolved.
-fn print_site_header(site: &contextgraph::EntitySite, file: &str, live_line: u32) {
-    if live_line != site.line {
-        println!(
-            "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
-            file, live_line, site.kind, site.degree, site.line, live_line
-        );
-    } else {
-        println!(
-            "  site: {}:{}   kind {}   degree {}",
-            file, site.line, site.kind, site.degree
-        );
-    }
+/// The site/kind/degree header line of a node naming `file` (spec 92 criterion 1), at the line
+/// the node holds.
+fn print_site_header(site: &contextgraph::EntitySite, file: &str) {
+    println!(
+        "  site: {}:{}   kind {}   degree {}",
+        file, site.line, site.kind, site.degree
+    );
 }
 
 /// One `  <entry> <value>` line per [`contextgraph::site_fields`] entry the header does not print
@@ -379,23 +476,17 @@ fn print_site_entries(site: &contextgraph::EntitySite) {
 /// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
 /// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins -
-    /// the entity's RECORDED line when it still holds the definition, or the LIVE line a drift
-    /// healed to by name and kind at its id path (spec 92; spec 119) - so the caller always knows
-    /// which line the printed
-    /// body is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`]
-    /// clamp (`0` when the whole extent fit), and `extent_end` is the extent's true last line, so
-    /// the caller can print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window from the node's line. `omitted` is how many lines were
+    /// dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and
+    /// `extent_end` is the extent's true last line, so the caller can print an honest clamp note
+    /// when `omitted > 0`.
     Lines {
-        start: u32,
         lines: Vec<(u32, String)>,
         omitted: u32,
         extent_end: u32,
     },
-    /// No body could be shown; the string is the human reason (a drifted working-tree location this
-    /// tree cannot resolve even by name and kind at its id path, a nameless node, or a build
-    /// compiled without the
-    /// extraction grammar).
+    /// No body could be shown; the string is the human reason (no definition of the node's name
+    /// and kind at its line, a nameless node, or a build compiled without the extraction grammar).
     /// Printed in place of the body so the show surface degrades honestly, never guessing or
     /// silently truncating.
     Note(String),
@@ -413,27 +504,15 @@ enum ShowBody {
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]` (the RESOLVED `start` - see below), clamped by
-/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
-/// as whole.
-///
-/// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
-/// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
-/// locating `name` of `kind`, at `id_path` when one is given, by a search of the SAME file,
-/// healing to the live line when that definition is UNAMBIGUOUS among its production
-/// definitions, those outside test code. [`ShowBody::Lines::start`] then carries that LIVE line
-/// rather than the recorded one, so the caller's header can show the drift instead of hiding it.
+/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
+/// omitted-line count so a bounded body is never read as whole.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
-/// that never named a real source line, or one that has drifted past the file itself, each refused
-/// before any search), the file cannot be read (a drifted or unknown location), the current tree
-/// holds no production definition (one outside test code) of that name and kind at `id_path`,
-/// when one is given, ANYWHERE in the file nor a lone production one of the name at that path at
-/// the recorded line (deleted, not merely moved), the name and kind at that path are ambiguous in
-/// the file (production definitions at more than one live line, never guessed), or this build has no extraction grammar (the light,
-/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound
-/// or from an ambiguous candidate.
+/// body cannot be shown honestly: the `start` line is `0` or past end-of-file, the file cannot be
+/// read, the tree holds no production definition (one outside test code) of that name and kind
+/// at `id_path`, when one is given, at `start`, or this build has no extraction grammar (the
+/// light, `--no-default-features` lane). It never GUESSES a body from a structural
+/// next-definition bound.
 fn definition_body(
     file: &str,
     start: u32,
@@ -441,15 +520,17 @@ fn definition_body(
     id_path: Option<&str>,
     kind: &str,
 ) -> ShowBody {
-    // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
-    // reference-only graph entity with no definition site of its own to search from, so a hard,
-    // un-healed refusal.)
+    // A line of 0 never named a real source line: degrade before any read. (Also covers a
+    // reference-only graph entity with no definition site of its own.)
     if start == 0 {
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    let root = git_repo();
+    let root = match git_repo() {
+        Ok(root) => root,
+        Err(why) => return ShowBody::Note(format!("source unavailable at {file}:{start}: {why}")),
+    };
     let path = if root.is_empty() {
         std::path::PathBuf::from(file)
     } else {
@@ -463,54 +544,42 @@ fn definition_body(
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted past the file itself, which
-        // no within-file search is asked to reach - a hard refusal.
+        // The line is past end-of-file.
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // Resolve WHERE the body starts (the recorded line, or - spec 92 - a healed live line) and its
-    // extent's end, through the ONE multi-grammar authority. A miss (deleted, ambiguous, or a
-    // light-lane build with no grammar) is an explicit note, never a guessed body.
-    let (live_start, extent_end) =
-        match locate_definition_extent(file, &text, start, name, id_path, kind) {
-            Ok((s, e)) => (s, e.min(total)),
-            Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
-        };
+    // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
+    // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
+    let extent_end = match locate_definition_extent(file, &text, start, name, id_path, kind) {
+        Ok(end) => end.min(total),
+        Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
+    };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
-    // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
-    // healed drift is bounded exactly like an unmoved definition would be.
-    let window_cap = live_start
-        .saturating_add(SHOW_MAX_BODY_LINES)
-        .saturating_sub(1);
-    let printed_end = extent_end.max(live_start).min(window_cap);
+    // caller can announce the omitted lines.
+    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
+    let printed_end = extent_end.max(start).min(window_cap);
     let omitted = extent_end.saturating_sub(printed_end);
-    let lines = (live_start..=printed_end)
+    let lines = (start..=printed_end)
         .map(|n| (n, all[(n - 1) as usize].to_string()))
         .collect();
     ShowBody::Lines {
-        start: live_start,
         lines,
         omitted,
         extent_end,
     }
 }
 
-/// The 1-based, inclusive `(start, end)` line range of the definition named `name` of kind `kind`
-/// recorded at `start`, at the id path `id_path` when one is given (spec 58; spec 92 criterion 1,
-/// FRESH ON EVERY INTEGRATION; spec 119, ONE EXTENT and IDS FOLLOW THE LANGUAGE'S PATH). It resolves the file's grammar by its path through the symbols registry, so a `.tsx`
-/// file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent authority,
-/// whose three tiers decide the bound: the recorded name, kind and line, else the recorded name
-/// and line, else a drifted line by name and kind, healed only when one line holds them; each tier
-/// reads production definitions only, those outside test code, and only those at `id_path` when
-/// it is given.
+/// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
+/// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
+/// LANGUAGE'S PATH). It resolves the file's grammar by its path through the symbols registry, so
+/// a `.tsx` file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent
+/// authority, which reads production definitions only, those outside test code.
 ///
-/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no production
-/// definition of that name and kind at `id_path`, when one is given, exists anywhere in the file
-/// nor a lone production one of the name at that path at the recorded line (deleted, not moved),
-/// and a worded one when no grammar is registered for the file's extension, the grammar cannot
-/// tag the source, or production definitions of the name and kind at that path sit at more than
-/// one live line and none at the recorded one, the note naming the path it sought ([`sought`]).
+/// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
+/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A file no
+/// grammar is registered for holds no definition: the code view extracts by the same registry
+/// lookup, so it holds no entity there, and the miss is no production definition.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
     file: &str,
@@ -519,19 +588,14 @@ fn locate_definition_extent(
     name: &str,
     id_path: Option<&str>,
     kind: &str,
-) -> Result<(u32, u32), Unbounded> {
-    use rigger::grounder::symbols::extract::{self, Extent, Recorded};
+) -> Result<u32, Unbounded> {
+    use rigger::grounder::symbols::extract::{self, Recorded};
     use rigger::grounder::symbols::registry;
-    let Some(entry) = registry::for_path(file, None) else {
-        return Err(Unbounded::Note(format!(
-            "no code-extraction grammar is registered for {file}; the body extent is unavailable"
-        )));
-    };
-    match extract::locate_extent(
+    let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
+    extract::locate_extent(
         source,
         entry.lang,
-        &entry.language,
-        entry.tags_query,
+        entry.tags().map_err(Unbounded::Note)?,
         Recorded {
             name,
             path: id_path,
@@ -540,20 +604,11 @@ fn locate_definition_extent(
         },
     )
     .map_err(Unbounded::Note)?
-    {
-        Extent::Bounded { start, end } => Ok((start, end)),
-        Extent::Missing => Err(Unbounded::Missing),
-        Extent::Ambiguous(n) => Err(Unbounded::Note(format!(
-            "production definitions {} of kind {kind} sit at {n} lines in {file} and none at the \
-             recorded line {start}; the recorded location may be stale (cannot resolve which one \
-             moved)",
-            sought(name, id_path)
-        ))),
-    }
+    .ok_or(Unbounded::Missing)
 }
 
 /// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
-/// so no extent - recorded or healed - can be derived. It returns an explicit reason the caller
+/// so no extent can be derived. It returns an explicit reason the caller
 /// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
 /// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
 /// grammars the graph ingests.
@@ -565,255 +620,124 @@ fn locate_definition_extent(
     _name: &str,
     _id_path: Option<&str>,
     _kind: &str,
-) -> Result<(u32, u32), Unbounded> {
+) -> Result<u32, Unbounded> {
     Err(Unbounded::Note(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
             .to_string(),
     ))
 }
 
-/// `rigger graph build` - fold the project's source into `.rigger/graph.db` from a COLD checkout
-/// (spec 45): no run, no `RunStarted`, and the build records no event beyond one ledger entry
-/// per batch it records, so the graph exists on any repo the tool has merely cloned - not only
-/// ones a run has driven. It reuses the SAME walk-and-content-key ingest authority ([`rigger::ingest::ingest_project_batched`])
-/// the live run uses; only this standalone entry is new, so a build and a run can never fork the
-/// generation a batch is recorded under.
-///
-/// Store lifecycle mirrors the RUN DRIVER, not the couriers: it CREATES the store under the cwd's
-/// `.rigger/` when absent (a cold checkout legitimately has none yet - this command's whole point
-/// is to populate it) rather than the courier walk-up that refuses a missing store. On an EXISTING
-/// store it refreshes incrementally, and what it records is PERCEPTION AS A LEDGER ENTRY (spec
-/// 107): one `GenerationIngested` for a batch, never a derived event. One walk hands this command
-/// each batch identity (`gc`/`gd` per file, `gw` for the workflow definition) exactly once, and
-/// each batch is weighed by the one function both ingest sinks ask
-/// ([`rigger::ingest::entry_of_batch`]) against its identity's LATEST recorded generation -
-/// answered by the store's group lookup, never by reading the log - and against the generation
-/// `graph.db` holds. So an unchanged file's batch is current on both sides and records nothing,
-/// while a file whose bytes extract to any other generation records one entry: a changed file, a
-/// never-recorded one, one REVERTED to content it held at an earlier generation - its key names a
-/// generation the log still carries, and it records precisely because that generation is no
-/// longer the file's latest - and one a rebuild of `graph.db` left behind, which the log holds
-/// and the graph does not. What an entry records is the extraction of the bytes this command
-/// READS, hashed by git, never the batch the walk handed: the code half lowers from the
-/// PERSISTED symbols index when the project has one, so a lowering that lags the file records
-/// the generation of the file's bytes. A file the walk hands over NO batch for - one the walk no
-/// longer sees, or one whose extraction the walk lowered to nothing - reaches no decision here
-/// and retires nothing, whereas a path the tree has DELETED that the persisted index still lists
-/// IS handed over and does reach one. An entry whose append lands but whose fold does not leaves
-/// the log right and the graph behind, and this command's line names the first fold it lost.
-/// The light lane compiles no extraction pass, so `graph build` there records nothing, degrades
-/// to an empty graph (it still creates the store) and exits 0, never an error.
+/// `rigger graph build` - advance the project's code store to the head, from a cold checkout or
+/// a live one. It creates the store under the cwd's `.rigger/` when absent, as a run does, rather
+/// than the courier walk-up that refuses a missing store, and records nothing in the log: the
+/// code half is the snapshot the advance writes, never an event. The light lane compiles no
+/// extractor and keeps no code store, so there `graph build` creates the store, says so and exits
+/// 0.
 fn cmd_graph_build(_args: &[String]) -> Res {
-    // Bootstrap the store like `run`/`step` do (create-or-open under the cwd's `.rigger/`), NOT the
-    // courier `require_store_dir` walk-up that refuses when none exists.
     std::fs::create_dir_all(RIGGER_DIR)?;
     let selection = store_selection(None, None)?;
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(
+    resolve_store(&selection, &db_path("events.db"))?;
+    open_graph(
         &db_path("graph.db"),
-        &project_identity(),
+        &project_identity()?,
         &selection,
         "graph build",
     )?;
-
-    // The tree to fold: the git top-level, so a build launched from a subdirectory still ingests
-    // the WHOLE project (the same root a run's `deps.repo` carries), falling back to the cwd
-    // outside any git context.
-    let root = {
-        let top = git_repo();
-        if top.is_empty() {
-            ".".to_string()
-        } else {
-            top
+    match open_project_code_store(rigger_store::code::Mode::Write)? {
+        Some(opened) => {
+            println!("graph build: {}", opened.line());
+            opened.warn_if_behind();
         }
-    };
-
-    let (counted, fold) = ingest_tree(&store, &graph, &root)?;
-    println!(
-        "graph build: ingested {counted} code-ingest event(s) into {}{}",
-        db_path("graph.db"),
-        fold_loss_clause(&fold)
-    );
+        None => println!("graph build: this build keeps no code store"),
+    }
     Ok(())
 }
 
-/// The walk of the tree at `root` into `store` and `graph`, answering the N of the build's line
-/// and the first fold it lost. Every batch's blob is hashed through the one binding of the hash
-/// function to `root` ([`hash_blob_in`]), so the build detects the root's repository once.
-///
-/// A re-build refreshes incrementally (spec 45) without reading the log (spec 101): the walk hands
-/// this each batch identity exactly once, and each batch is recorded by [`record_batch`], which
-/// asks the store one group lookup for it. A batch that records nothing counts nothing.
-///
-/// N counts the batch events of each entry SINK OUTCOMES counts (spec 107): an entry the graph
-/// folded, and one whose fold was lost - refused by a graph that owes its rebuild, or failed.
-/// An entry that folded as a re-recording, the graph already holding its generation, moved no
-/// fact and is not counted. The fold answered is the FIRST one this build could not make, naming
-/// its cause: a lost fold writes no mark (spec 124), so every entry after it still folds, its
-/// position the only one missing from the graph's `applied` ledger.
-///
-/// The walk runs under the one walk policy both ingest sinks share
-/// ([`rigger::ingest::sink_walked_batches`]): a batch whose lookup the store cannot answer, or whose
-/// append the store refuses, records nothing, the walk goes on, and the first such error is the
-/// build's - an unanswered lookup is not an answer in either direction, and a refused append is not
-/// a skipped batch. The error is answered as its maker said it: a batch's own failure in its own
-/// text, a store's refusal as the store's.
-fn ingest_tree(
-    store: &dyn EventStore,
-    graph: &dyn Projection,
-    root: &str,
-) -> Result<(usize, contextgraph::Fold), Box<dyn std::error::Error>> {
-    let mut counted = 0usize;
-    let mut first_lost = contextgraph::Fold::Folded;
-    let hash_blob = hash_blob_in(root);
-    rigger::ingest::sink_walked_batches(
-        |sink| {
-            rigger::ingest::ingest_project_batched(root, sink);
-        },
-        |keyed, excluded| {
-            let Some((events, fold)) =
-                record_batch(store, graph, root, &hash_blob, keyed, excluded)?
-            else {
-                return Ok::<(), Box<dyn std::error::Error>>(());
-            };
-            counted += events;
-            if first_lost == contextgraph::Fold::Folded {
-                first_lost = fold;
-            }
-            Ok(())
-        },
-    )?;
-    Ok((counted, first_lost))
-}
-
-/// WHAT `rigger graph build` RECORDS FOR ONE BATCH (spec 107): the batch `keyed`, as the walk
-/// handed it with its flag `excluded`, recorded as one ledger entry of perception and no derived
-/// event. It answers how many batch events the entry adds to the build line's N and what became
-/// of its fold, or nothing when the batch records nothing.
-///
-/// What is recorded is decided by [`rigger::ingest::entry_of_batch`], the one function both
-/// ingest sinks call. This sink hands it what differs from the run's: the log side read from the
-/// store for each batch ([`rigger::ingest::latest_generation`]), with no memo, and `hash`, the one
-/// hash function bound to git under `root` ([`hash_blob_in`]). The entry is built by its one
-/// constructor and carries no run id, there being no run, and it is appended and folded with its
-/// extraction through the ledger form of the folding store, in ONE store append, the entry and its
-/// extraction committing in the transaction
-/// [`Projection::apply_generation`](rigger::contextgraph::Projection::apply_generation) states. A
-/// batch whose key names no identity, and a failed read of either side, of the bytes or of the
-/// hash, fails with that failure's text and records nothing, as a refused append does. A lost
-/// fold is answered, never said here: the build's line names it.
-///
-/// An entry counts its batch's events unless the ledger form reports it a re-recording.
-#[cfg(feature = "symbols")]
-fn record_batch(
-    store: &dyn EventStore,
-    graph: &dyn Projection,
-    root: &str,
-    hash: &rigger::ingest::HashBlob,
-    keyed: &[(String, &Event)],
-    excluded: bool,
-) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
-    let recorded = rigger::ingest::entry_of_batch(
-        Path::new(root),
-        keyed,
-        excluded,
-        |identity| rigger::ingest::latest_generation(store, conductor::STREAM, identity),
-        graph,
-        hash,
-    )?;
-    let Some(recorded) = recorded else {
-        return Ok(None);
-    };
-    let events = recorded.batch.len();
-    let done = rigger::ingest::folding_into(store, Some(graph), &stderr_line)
-        .append_entry_and_fold(
-            conductor::STREAM,
-            &recorded.entry.event(events),
-            recorded.batch,
-        )?;
-    let counted = if done.outcome == Some(contextgraph::EntryFold::ReRecording) {
-        0
-    } else {
-        events
-    };
-    Ok(Some((counted, done.fold)))
-}
-
-/// The light lane compiles no extraction pass: its walk hands the build's sink no batch, so
-/// there is nothing to record.
-#[cfg(not(feature = "symbols"))]
-fn record_batch(
-    _store: &dyn EventStore,
-    _graph: &dyn Projection,
-    _root: &str,
-    _hash: &(dyn Fn(&[u8]) -> Result<String, rigger::worktree::Error> + Sync),
-    _keyed: &[(String, &Event)],
-    _excluded: bool,
-) -> Result<Option<(usize, contextgraph::Fold)>, Box<dyn std::error::Error>> {
-    Ok(None)
-}
-
-/// `rigger graph communities [--resolution <r>]` - the OFFLINE, DETERMINISTIC community-detection
-/// pass (spec 53, the CODE lens). It reads the project's already-folded coupling layer (the live
-/// `CALLS` / `REFERENCES` / `CONTAINS` edges among code-entity / file nodes, but a module
-/// declaration's `CONTAINS` onto its file, spec 117), runs modularity-based detection over it at
-/// the given `--resolution` grain (default [`community::DEFAULT_RESOLUTION`]), and RECORDS the result as `CommunityAssigned` events - so the derived grouping is event-sourced
-/// (the `IN_COMMUNITY` membership edges are a rebuildable fold of the log), never computed at request
-/// time. Re-running at a resolution with a NON-empty result supersedes only that grain's prior
-/// assignments (the fold's `fresh` boundary), so distinct grains coexist and the lens reads one live
-/// set per grain.
-///
-/// Store lifecycle mirrors `graph build` (the composition root, not the courier walk-up): it
-/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
-/// appends-and-folds the pass's events in ONE batch. Detection is always-compiled and reads only
-/// folded edges, so this runs identically in both feature lanes; a graph with no coupling edges
-/// detects nothing and records nothing (exit 0, never an error). Because an empty result records NO
-/// events, an empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior assignment - the last
-/// NON-empty pass at that resolution stays live (see `community::events`, decision
-/// d-u53c2-empty-rerun-keep-last-good). A real subsystem removal is a SHRINK - a smaller NON-empty
-/// result - which DOES supersede via the `fresh` boundary and drops the emptied community's node.
+/// `rigger graph communities [--resolution <r>]` - a read-only report of the code store's
+/// communities: the coupling layer of the production view, detected at advance at the default
+/// grain and computed here on demand at any other. It records nothing: groupings have one writer,
+/// the advance that stores them in the snapshot.
 fn cmd_graph_communities(args: &[String]) -> Res {
-    run_graph_pass(
+    report_groupings(
         "communities",
         args,
-        community::DEFAULT_RESOLUTION,
-        |whole, resolution| {
-            // Detect communities over the live projection's coupling layer. The `fresh` head
-            // supersedes this grain's prior memberships; the rest re-add, so a re-run REPLACES this
-            // resolution's assignment set.
-            let coupling = community::Coupling::from_graph(whole);
-            let assignment = community::detect(&coupling, resolution);
-            let events = community::events(&assignment);
-            let summary = format!(
-            "detected {} communit{} over {} coupled node(s) at resolution {} ({} membership event(s) recorded into {})",
-            assignment.num_communities,
-            if assignment.num_communities == 1 { "y" } else { "ies" },
-            coupling.len(),
-            resolution,
-            events.len(),
-            db_path("graph.db")
-        );
-            (events, summary)
-        },
+        |g| &g.communities,
+        |n| format!("{n} communit{}", if n == 1 { "y" } else { "ies" }),
     )
 }
 
-/// One offline, deterministic `rigger graph <verb> [--resolution <r>]` pass: parse the
-/// positive, finite resolution (defaulting to `default`), bootstrap the store like `graph build`/
-/// `run` do (create-or-open under the cwd's `.rigger/`), and read the WHOLE live projection - the
-/// same direct, project-scoped, sorted read the dash's `/api/graph` provider consults. `derive`
-/// turns it into the pass's events plus its summary line; the events are appended in ONE store
-/// append and folded through the shared batched append-and-fold authority, at the transaction
-/// cadence [`Projection::apply_batch`](rigger::contextgraph::Projection::apply_batch) states,
-/// then the summary is printed.
-fn run_graph_pass(
+/// `rigger graph concepts [--resolution <r>]` - a read-only report of the code store's concepts:
+/// the tree's intent layer, derived at advance at the default grain and computed here on demand
+/// at any other. It records nothing.
+fn cmd_graph_concepts(args: &[String]) -> Res {
+    report_groupings(
+        "concepts",
+        args,
+        |g| &g.concepts,
+        |n| format!("{n} concept{}", if n == 1 { "" } else { "s" }),
+    )
+}
+
+/// One `rigger graph <verb> [--resolution <r>] [--tests <t>]` report: parse the positive, finite
+/// resolution (defaulting to the stored grain), open the code store as a reader, and print the
+/// clusters `pick` selects - a summary line, then each cluster's id, member count, label and
+/// attached test count, and under `include` or `only` the tests attached to it.
+fn report_groupings(
     verb: &str,
     args: &[String],
-    default: f64,
-    derive: impl FnOnce(&contextgraph::Graph, f64) -> (Vec<Event>, String),
+    pick: impl Fn(&rigger_domain::code_view::Groupings) -> &Vec<rigger_domain::code_view::Cluster>,
+    counted: impl Fn(usize) -> String,
 ) -> Res {
-    let mut resolution = default;
+    let (resolution, tests) = report_options(verb, args)?;
+    let head = open_head(&caller_tree()?)?;
+    let view = &*head.view;
+    let lines = {
+        let computed;
+        let groupings = if resolution == community::DEFAULT_RESOLUTION {
+            view.groupings()
+        } else {
+            computed = rigger_domain::groupings::group_at(view, resolution);
+            &computed
+        };
+        let clusters = pick(groupings);
+        let members: usize = clusters.iter().map(|c| c.members.len()).sum();
+        let resolver = rigger_domain::resolve::Resolver::new(view);
+        let attached =
+            rigger_domain::test_view::TestAttachment::new(resolver.proof_calls(), clusters);
+        let mut lines = vec![format!(
+            "graph {verb}: {} over {members} node(s) at resolution {resolution}",
+            counted(clusters.len())
+        )];
+        for c in clusters {
+            let n = attached.count(&c.id);
+            // `only` reports the tests alone, grouped by the cluster they prove.
+            if tests == Tests::Only && n == 0 {
+                continue;
+            }
+            let noun = if n == 1 { "test" } else { "tests" };
+            let tail = if n > 0 {
+                format!("\t{n} {noun}")
+            } else {
+                String::new()
+            };
+            lines.push(format!("{}\t{}\t{}{tail}", c.id, c.members.len(), c.label));
+            if tests != Tests::Exclude {
+                lines.extend(attached.tests_of(&c.id).map(|t| format!("  test {t}")));
+            }
+        }
+        lines
+    };
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// What `args` ask `rigger graph <verb>` for: the `--resolution` grain, a positive, finite number
+/// ([`community::DEFAULT_RESOLUTION`] when none is given), and the `--tests` setting.
+fn report_options(verb: &str, args: &[String]) -> Result<(f64, Tests), Box<dyn std::error::Error>> {
+    let mut resolution = community::DEFAULT_RESOLUTION;
+    let mut tests = Tests::default();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -830,80 +754,21 @@ fn run_graph_pass(
                     .into());
                 }
             }
+            "--tests" => {
+                i += 1;
+                tests = tests_option(&format!("graph {verb}"), args.get(i))?;
+            }
             other => {
                 return Err(format!("graph {verb}: unknown argument {other:?}").into());
             }
         }
         i += 1;
     }
-
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let selection = store_selection(None, None)?;
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(
-        &db_path("graph.db"),
-        &project_identity(),
-        &selection,
-        &format!("graph {verb}"),
-    )?;
-
-    let (events, summary) = derive(&graph.whole()?, resolution);
-    let done = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line).append_and_fold(
-        conductor::STREAM,
-        ExpectedRevision::Any,
-        &events,
-    )?;
-    println!("graph {verb}: {summary}{}", fold_loss_clause(&done.fold));
-    Ok(())
-}
-
-/// `rigger graph concepts [--resolution <r>]` - the OFFLINE, DETERMINISTIC intent-derivation pass
-/// (spec 54, the CONCEPTS lens). It reads the project's already-folded INTENT layer (the live
-/// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` / `references` edges among design docs,
-/// handbook rules, specs, rationale, and the code they attach to), runs the SAME deterministic
-/// community detection the code lens ships over it at the given `--resolution` grain (default
-/// [`concepts::DEFAULT_RESOLUTION`]), and RECORDS the result as `ConceptDerived` / `ConceptRealized`
-/// events - so the derived grouping is event-sourced (the `REALIZES` membership edges are a
-/// rebuildable fold of the log), never computed at request time. Re-running at a resolution with a
-/// NON-empty result supersedes only that grain's prior grouping (the fold's `fresh` boundary), so
-/// distinct grains coexist and the lens reads one live set per grain.
-///
-/// Store lifecycle mirrors `graph communities` (the composition root, not the courier walk-up): it
-/// CREATES the store under the cwd's `.rigger/` when absent, then reads the WHOLE projection and
-/// appends-and-folds the pass's events in ONE batch. The derivation is always-compiled and reads only
-/// folded edges, so this runs identically in both feature lanes; a graph with no intent edges derives
-/// nothing and records nothing (exit 0, never an error). Because an empty result records NO events, an
-/// empty re-run is KEEP-LAST-GOOD: it does NOT clear a grain's prior grouping - the last NON-empty
-/// pass at that resolution stays live (see `concepts::events`).
-fn cmd_graph_concepts(args: &[String]) -> Res {
-    run_graph_pass(
-        "concepts",
-        args,
-        concepts::DEFAULT_RESOLUTION,
-        |whole, resolution| {
-            // Derive concepts over the live projection's intent layer. The `fresh` head supersedes
-            // this grain's prior grouping; the rest re-add, so a re-run REPLACES this resolution's
-            // concept set.
-            let layer = concepts::intent_layer(whole);
-            let derivation = concepts::derive(whole, &layer, resolution);
-            let events = concepts::events(&derivation);
-            let summary = format!(
-            "derived {} concept{} over {} intent-linked node(s) at resolution {} ({} event(s) recorded into {})",
-            derivation.num_concepts,
-            if derivation.num_concepts == 1 { "" } else { "s" },
-            layer.len(),
-            resolution,
-            events.len(),
-            db_path("graph.db")
-        );
-            (events, summary)
-        },
-    )
+    Ok((resolution, tests))
 }
 
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
-/// same one the `run`/`serve` paths build from `defaults.grounder` via
+/// same one the `run` path builds from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
 /// entities, one per line as `file:line: <text> (degree N)`. This is the CLI surface a
 /// native-workflow agent (which has Bash, not the MCP grounding tool) uses to ground.
@@ -921,139 +786,72 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
         .ok_or("ground: expected a query: rigger ground \"<query>\" [<k>]")?;
-    let k: usize = match args.get(1) {
+    // `--tests <exclude|include|only>` may stand anywhere after the query; the rest is `[<k>]`.
+    let mut tests = Tests::default();
+    let mut rest = Vec::new();
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        if a == "--tests" {
+            tests = tests_option("ground", it.next())?;
+        } else {
+            rest.push(a);
+        }
+    }
+    let k: usize = match rest.first() {
         Some(s) => s
             .parse()
             .map_err(|_| format!("ground: <k> must be a non-negative integer, got {s:?}"))?,
         None => 8,
     };
-    if args.len() > 2 {
+    if rest.len() > 1 {
         return Err(format!(
             "ground: expected at most a query and k, got {} arguments",
-            args.len()
+            rest.len() + 1
         )
         .into());
     }
-    // Honor the project's configured `defaults.grounder` when a config is present;
-    // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
-    // (the empty name -> symbols, the scaffold default), so an agent can ground before
-    // a workflow is authored rather than hitting a config error.
-    let name = config_store::load(".")
-        .map(|cfg| cfg.workflow.defaults.grounder)
-        .unwrap_or_default();
-    let grounder = select_grounder(&name)?;
-    if k > 0 && !grounder.has_strong_match(query, k) {
-        println!("no entity matches strongly for {query:?}");
-        return Ok(());
-    }
-    for r in grounder.ground_ranked(query, k) {
-        println!(
-            "{}:{}: {} (degree {})",
-            r.loc.file, r.loc.line, r.loc.text, r.degree
-        );
-    }
-    Ok(())
-}
-
-/// `rigger reindex <file>...` - incrementally re-index the named files in the
-/// project's persisted grounding index. It resolves the grounder from
-/// `defaults.grounder` via [`select_reindex_grounder`] (rooted at `.`) - which, after
-/// turbovec's retirement, resolves IDENTICALLY to [`select_grounder`]: the `symbols`
-/// grounder's `open` only LOADS the persisted index (it does not freshen the whole
-/// tree), so the named files are re-parsed exactly ONCE here rather than once by a
-/// load-time freshen and again by the reindex. It then calls [`Grounder::reindex`] on
-/// the changed files, so the `symbols` grounder drops each file's old symbols, re-parses
-/// its current content, and persists the delta to `.rigger/symbols/` - a later `rigger
-/// ground` (and the review tier the workflow runs after a unit lands) then reflects the
-/// just-integrated code WITHOUT re-indexing the whole repo. For the grep / nop
-/// grounders `reindex` is a no-op (they re-read the tree each call), so this command is
-/// harmless there. Files are repo-relative, matching how the grounder records and
-/// grounds them. At least one file is required.
-pub(crate) fn cmd_reindex(args: &[String]) -> Res {
-    if args.is_empty() {
-        return Err("reindex: expected at least one file: rigger reindex <file>...".into());
-    }
-    // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
-    // is present, else the unset default (symbols). The grounder is rooted at `.`,
-    // so the persisted index it loads/updates is this project's `.rigger/symbols/`.
-    let name = config_store::load(".")
-        .map(|cfg| cfg.workflow.defaults.grounder)
-        .unwrap_or_default();
-    // Use the reindex-specific constructor: it loads the persisted index WITHOUT a
-    // whole-tree freshen, so `reindex` re-parses ONLY the named files - never those
-    // files twice (once by a load-time freshen, once by the reindex below).
-    let grounder = select_reindex_grounder(&name)?;
-    grounder.reindex(".", args);
-    println!(
-        "reindexed {} file(s) in the grounding index: {}",
-        args.len(),
-        args.join(", ")
-    );
-    Ok(())
-}
-
-/// `rigger symbols-index [<dir>]` - the criterion-3 fresh-process determinism harness for the
-/// `symbols` structural index (spec 15, unit 3). It builds the whole-project symbol index over
-/// `<dir>` (default `.`) via [`rigger::grounder::symbols::build_index`] and persists it with
-/// [`rigger::grounder::symbols::store::save`], then prints the persisted path and file count.
-///
-/// It is DELIBERATELY independent of [`select_grounder`] / `defaults.grounder`: it drives unit
-/// 3's own build+persist path directly, so a determinism test can re-index the SAME tree in two
-/// SEPARATE `rigger` processes and diff the persisted `index.json` byte-for-byte - the
-/// cross-process check the in-process lib test structurally cannot make, since one process
-/// shares a single hash seed. Keeping this off the grounder-selection wiring also keeps the
-/// spec-15 unit DAG acyclic (this harness needs only unit 3's code, never unit 4's selection).
-///
-/// Feature-gated on `symbols`: a build without it has no structural index, so the command
-/// errors loudly rather than pretending to build one (the same no-silent-degrade rule the
-/// grounder selection follows).
-pub(crate) fn cmd_symbols_index(args: &[String]) -> Res {
-    #[cfg(feature = "symbols")]
-    {
-        if args.len() > 1 {
-            return Err(format!(
-                "symbols-index: expected at most a directory, got {} arguments",
-                args.len()
-            )
-            .into());
+    let grounder = configured_grounder()?;
+    // The rows and their honesty label (6.1) come from one read of the code store.
+    let grounded = grounder.ground_ranked_labelled(query, k, tests);
+    match grounded.rows {
+        None => println!("no entity matches strongly for {query:?}"),
+        Some(rows) => {
+            for r in rows {
+                println!(
+                    "{}:{}: {} (degree {})",
+                    r.loc.file, r.loc.line, r.loc.text, r.degree
+                );
+            }
         }
-        let dir = args.first().map(String::as_str).unwrap_or(".");
-        let idx = rigger::grounder::symbols::build_index(dir, None);
-        rigger::grounder::symbols::store::save(&idx, dir)?;
-        println!(
-            "symbols index: {} file(s) -> {}",
-            idx.files().len(),
-            rigger::grounder::symbols::store::index_path(dir).display()
-        );
-        Ok(())
     }
-    #[cfg(not(feature = "symbols"))]
-    {
-        let _ = args;
-        Err(
-            "symbols-index requires the `symbols` feature; rebuild with the default features"
-                .into(),
-        )
+    // The label travels with every answer; stderr keeps the rows themselves clean.
+    if let Some(label) = grounded.label {
+        eprintln!("{label}");
     }
+    // The test hits the filter left out, counted apart from the rows above.
+    if let Some(line) = tests_hidden_line(grounded.tests_hidden) {
+        eprintln!("{line}");
+    }
+    Ok(())
 }
 
 /// `rigger emit <type> '<json-object>'` - append an event `{type: <type>, data:
 /// <parsed json>}` to the project's event store AND fold it into the context graph,
 /// EXACTLY as the MCP `rigger_emit` tool does (both call [`mcpserver::emit_event`]).
-/// The store and graph are opened the way `serve` opens them - the namespaced
+/// The store and graph are opened the way `rigger run` opens them - the namespaced
 /// per-project event store and the `graph.db` projector on the `conductor::STREAM`.
 /// A bad / non-object JSON payload, one whose shape the context-graph fold cannot apply, or a
 /// record whose id another author's kept record holds (both checked by the shared core before
 /// the append), is a clear error to stderr with a non-zero exit.
 pub(crate) fn cmd_emit(args: &[String]) -> Res {
     // Optional `--spawn <id>`: stamp the emit with the EMITTING spawn's id
-    // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. A native courier's `rigger emit`
-    // is otherwise unattributable once the conductor replays it (the conductor never touched
+    // ([`META_SPAWN`](conductor::META_SPAWN)) at RECORD time. An agent's `rigger emit` is
+    // otherwise unattributable once the conductor reads it back (the conductor never touched
     // it), so the verdict-channel-mismatch backstop (spec 18, unit 3) could not tell a GATING
-    // adjudicator's OWN approve from a concurrent sibling's by position alone. The workflow
-    // threads the worker's own spawn id here, exactly as the cli emit callback and the workflow
-    // MCP server stamp their emits, so the recording the ReplayDriver later folds already
-    // names its emitting spawn and is correlated by identity, never a shared-stream position.
+    // adjudicator's OWN approve from a concurrent sibling's by position alone. A caller threads
+    // the worker's own spawn id here, exactly as the cli emit callback and the spawn MCP server
+    // stamp their emits, so the recording the conductor later reads already names its emitting
+    // spawn and is correlated by identity, never a shared-stream position.
     // Without the flag, the spawn id the host exported to its worker
     // ([`SPAWN_ENV`](rigger::driver::SPAWN_ENV)) stamps the emit, so an agent session's emit is
     // attributed even when it never passes the flag; the operator's own shell exports none.
@@ -1106,7 +904,7 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     over_the_run_store_at(&loc, &selection, |store| {
         // Same args shape the MCP tool receives, so the append - the shared core both surfaces
         // call - behaves identically here and over MCP. A non-empty spawn id (the flag's, else the
-        // exported one) rides in `meta.spawn`, the same key the MCP server's `stamp_current_spawn`
+        // exported one) rides in `meta.spawn`, the same key the spawn-bound MCP server
         // writes.
         let mut tool_args = serde_json::json!({ "type": typ, "data": data });
         if let Some(spawn) = spawn.filter(|s| !s.is_empty()) {
@@ -1135,498 +933,4 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
         );
         Ok(())
     })
-}
-
-/// The grounder for `rigger reindex`. After turbovec's retirement it resolves IDENTICALLY to
-/// [`select_grounder`]: the only case that ever differed was turbovec (whose freshening `new`
-/// had to be swapped for `new_for_reindex` to avoid a double-embed). The surviving grounders
-/// have no such distinction - `Symbols::open` only LOADS the persisted index (it does not
-/// freshen the whole tree), and grep / nop have no index at all - so there is one selection
-/// authority, not two to keep in sync by hand.
-fn select_reindex_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    select_grounder(name)
-}
-
-#[cfg(test)]
-mod tests {
-    /// The walk these tests drive is the `symbols` extraction pass, which the light lane compiles
-    /// out.
-    #[cfg(feature = "symbols")]
-    mod walk {
-        use super::super::*;
-        use crate::test_support::{
-            entry_records, fixture_entry_events, generation_ingested, git_hash_object,
-            handed_by_the_walk, held_generations, one_lookup_each, owe_a_rebuild,
-            planted_extraction_tree, rebuild_from_the_tree, seed_pre_ledger_rows_without_a_group,
-            source_with, walked_generations, walked_identities, write_file, EntryRecord,
-            FailAppendMetaContaining, GroupLookupOnly, MinimalProjection, PreLedgerStore,
-            ReadCountingStore, MOVED, SOURCE, SOURCE_BODY, SOURCE_PATH, WALKED,
-        };
-        use rigger::contextgraph::Fold;
-
-        /// What the run stream of `store` holds: its ledger entries, in log order, and how many
-        /// events it holds in all. The two agree only when the stream holds no other event, and
-        /// so no derived event.
-        fn recorded(store: &dyn EventStore) -> (Vec<EntryRecord>, usize) {
-            let events = store
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .unwrap();
-            (entry_records(&events), events.len())
-        }
-
-        /// A stream holding `entries` and nothing else, as [`recorded`] answers it.
-        fn only(entries: Vec<EntryRecord>) -> (Vec<EntryRecord>, usize) {
-            let held = entries.len();
-            (entries, held)
-        }
-
-        /// The entry of `<prefix>/<path>` at `generation` standing for `events` batch events, its
-        /// blob the id `git hash-object` gives the bytes the tree at `root` holds at the path.
-        fn entry_from_the_tree(
-            root: &Path,
-            prefix: &str,
-            path: &str,
-            generation: &str,
-            excluded: bool,
-            events: usize,
-        ) -> EntryRecord {
-            let blob = git_hash_object(root, path, false);
-            let entry = generation_ingested(prefix, path, generation, &blob, excluded);
-            entry_records(&[entry.event(events)]).remove(0)
-        }
-
-        /// The entry a build records for each batch a walk of the extraction tree at `root`
-        /// hands it, in walk order, its blob the id `git hash-object` gives the file's bytes.
-        fn walked_entries(root: &Path) -> Vec<EntryRecord> {
-            entry_records(&fixture_entry_events(|path| {
-                git_hash_object(root, path, false)
-            }))
-        }
-
-        /// The entry a build records for the source file's code batch from the bytes the tree at
-        /// `root` holds now, its generation the one the shipped walk keys those bytes under.
-        fn source_entry_now(root: &Path) -> EntryRecord {
-            let handed = handed_by_the_walk(root.to_str().unwrap(), SOURCE);
-            entry_from_the_tree(
-                root,
-                "gc",
-                SOURCE_PATH,
-                &handed.generation(),
-                handed.excluded,
-                handed.keyed.len(),
-            )
-        }
-
-        /// Why [`LosesEveryFold`] loses its first ledger fold, and why it loses each later one.
-        const FIRST_LOSS: &str = "the first fold failed";
-        const LATER_LOSS: &str = "refused after the first";
-
-        /// A graph double that reads as the minimal projection does - it owes no rebuild and holds
-        /// no generation - unless `unread` names why an identity's generation cannot be read,
-        /// and that loses every ledger fold: the first for [`FIRST_LOSS`] and each later one for
-        /// [`LATER_LOSS`], as a graph a failed fold left owing refuses what follows. It counts
-        /// the folds it was asked.
-        #[derive(Default)]
-        struct LosesEveryFold {
-            unread: Option<&'static str>,
-            folds: std::sync::atomic::AtomicUsize,
-        }
-
-        impl Projection for LosesEveryFold {
-            fn apply(
-                &self,
-                _e: &Event,
-                _access: contextgraph::FoldAccess,
-            ) -> Result<(), contextgraph::Error> {
-                Ok(())
-            }
-            crate::projection_is_never_read!();
-            fn rebuild_owed(&self) -> Result<bool, contextgraph::Error> {
-                MinimalProjection.rebuild_owed()
-            }
-            fn current_generation(
-                &self,
-                identity: &str,
-            ) -> Result<Option<String>, contextgraph::Error> {
-                match self.unread {
-                    Some(why) => Err(contextgraph::Error(why.to_string())),
-                    None => MinimalProjection.current_generation(identity),
-                }
-            }
-            fn apply_generation(
-                &self,
-                _entry: &Event,
-                _batch: contextgraph::EntryBatch<'_>,
-            ) -> Result<contextgraph::EntryFold, contextgraph::Error> {
-                let asked = self.folds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Err(contextgraph::Error(
-                    [FIRST_LOSS, LATER_LOSS][asked.min(1)].to_string(),
-                ))
-            }
-        }
-
-        /// THE BUILD ANSWERS THE FIRST FOLD IT LOST (SINK OUTCOMES rows 15 then 14).
-        ///
-        /// GIVEN the extraction tree, an empty store and a graph whose first ledger fold fails
-        /// and whose every later one is refused for another reason,
-        /// WHEN the build's sink walks the tree,
-        /// THEN it records one entry per batch, asks the graph one fold per entry, counts every
-        /// batch event, and answers the first loss as the fold it lost, never a later one.
-        #[test]
-        fn a_build_that_loses_every_fold_answers_the_first_fold_it_lost() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
-            let graph = LosesEveryFold::default();
-
-            let built = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(
-                built,
-                (
-                    18,
-                    Fold::NotFolded(crate::test_support::graph_error(FIRST_LOSS))
-                )
-            );
-            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
-            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 6);
-        }
-
-        /// Spec 107, criterion 12: perception is a ledger entry at `rigger graph build`'s sink.
-        ///
-        /// GIVEN the extraction tree, an empty store and an empty graph,
-        /// WHEN the build's sink walks the tree,
-        /// THEN the store holds one ledger entry per batch the walk hands and no other event -
-        /// each entry's generation its batch's, its blob the id git gives the file's bytes, its
-        /// flag the walk's - the sink having asked the store one group lookup per identity, the
-        /// graph holds each identity's generation, and the build counts every batch event;
-        /// AND WHEN it walks the unchanged tree again, THEN it asks each lookup once more,
-        /// records nothing and counts nothing.
-        #[test]
-        fn a_build_records_each_batch_as_one_ledger_entry_and_an_unchanged_tree_records_nothing() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let inner = Store::open(":memory:").unwrap();
-            let counted = ReadCountingStore::new(&inner);
-            let graph = Projector::open(":memory:", "test").unwrap();
-            let identities = walked_identities();
-            let lookups = one_lookup_each(conductor::STREAM, &identities);
-
-            let built = ingest_tree(&counted, &graph, root).unwrap();
-
-            assert_eq!(built, (18, Fold::Folded));
-            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
-            assert_eq!(counted.reads(), lookups);
-            assert_eq!(held_generations(&graph, &identities), walked_generations());
-
-            let again = ingest_tree(&counted, &graph, root).unwrap();
-
-            assert_eq!(again, (0, Fold::Folded));
-            assert_eq!(recorded(&inner), only(walked_entries(tree.path())));
-            assert_eq!(counted.reads(), [lookups.clone(), lookups].concat());
-        }
-
-        /// GIVEN a store and a graph a build recorded the extraction tree into,
-        /// WHEN the source file's code changes and the build's sink walks the tree,
-        /// THEN it records exactly one more event, the ledger entry of the file's code batch at
-        /// the generation and under the blob of the bytes the tree holds now, counts that
-        /// batch's four events, and the graph holds the new generation.
-        #[test]
-        fn a_changed_file_records_one_entry_with_the_generation_and_blob_of_the_bytes_read() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
-            let graph = Projector::open(":memory:", "test").unwrap();
-            assert_eq!(
-                ingest_tree(&store, &graph, root).unwrap(),
-                (18, Fold::Folded),
-                "premise: the first build records and folds the whole tree"
-            );
-            let walked_once = walked_entries(tree.path());
-            write_file(
-                &tree.path().join(SOURCE_PATH),
-                source_with(MOVED).as_bytes(),
-            );
-            let moved = source_entry_now(tree.path());
-            assert_ne!(
-                (&moved.0.generation, &moved.0.blob),
-                (&walked_once[1].0.generation, &walked_once[1].0.blob),
-                "premise: the moved body has its own generation and its own blob"
-            );
-
-            let built = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(built, (4, Fold::Folded));
-            assert_eq!(
-                recorded(&store),
-                only([walked_once, vec![moved.clone()]].concat())
-            );
-            assert_eq!(
-                graph.current_generation(SOURCE).unwrap(),
-                Some(moved.0.generation)
-            );
-        }
-
-        /// SINK OUTCOMES rows 9 then 13.
-        ///
-        /// GIVEN a store recorded before the ledger and before the group stamp, so the group
-        /// lookup answers no generation for any identity while the graph holds each one's,
-        /// WHEN the build's sink walks the tree,
-        /// THEN it records one entry per identity after the pre-ledger rows, each folding as a
-        /// re-recording that leaves the graph's generation where it stood, and counts none of
-        /// them.
-        #[test]
-        fn an_identity_whose_pre_ledger_rows_carry_no_group_records_an_entry_the_build_does_not_count(
-        ) {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let log = tempfile::tempdir().unwrap();
-            let db = log.path().join("events.db");
-            let store = Store::open(db.to_str().unwrap()).unwrap();
-            let graph = Projector::open(":memory:", "test").unwrap();
-            let pre_ledger = PreLedgerStore {
-                db: &db,
-                inner: &store,
-            };
-            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
-            let identities = walked_identities();
-            assert_eq!(
-                (recorded(&store), held_generations(&graph, &identities)),
-                ((Vec::new(), 18), walked_generations()),
-                "premise: eighteen derived rows, no entry, and the graph holds each generation"
-            );
-
-            let built = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(built, (0, Fold::Folded));
-            assert_eq!(recorded(&store), (walked_entries(tree.path()), 18 + 6));
-            assert_eq!(held_generations(&graph, &identities), walked_generations());
-        }
-
-        /// The graph build line's N counts each SINK OUTCOMES row that counts, and no other.
-        ///
-        /// GIVEN the pre-ledger store of row 13's fixture and a source file whose code has since
-        /// changed,
-        /// WHEN the build's sink walks the tree,
-        /// THEN it records one entry per identity and counts the four events of the changed
-        /// batch alone: the one entry the graph folded is counted, the five re-recordings are
-        /// not.
-        #[test]
-        fn a_build_counts_the_batch_the_graph_folds_and_not_the_re_recordings_beside_it() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let log = tempfile::tempdir().unwrap();
-            let db = log.path().join("events.db");
-            let store = Store::open(db.to_str().unwrap()).unwrap();
-            let graph = Projector::open(":memory:", "test").unwrap();
-            let pre_ledger = PreLedgerStore {
-                db: &db,
-                inner: &store,
-            };
-            seed_pre_ledger_rows_without_a_group(tree.path(), &pre_ledger, &graph);
-            write_file(
-                &tree.path().join(SOURCE_PATH),
-                source_with(MOVED).as_bytes(),
-            );
-            let mut entries = walked_entries(tree.path());
-            entries[1] = source_entry_now(tree.path());
-
-            let built = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(built, (4, Fold::Folded));
-            assert_eq!(recorded(&store), (entries, 18 + 6));
-        }
-
-        /// SINK OUTCOMES row 14, then row 4.
-        ///
-        /// GIVEN the extraction tree, an empty store and a graph that owes its rebuild,
-        /// WHEN the build's sink walks the tree,
-        /// THEN it records one entry per batch, counts every batch event, and answers the
-        /// refusal as the fold it lost, which the build line's fold-loss clause names; the graph
-        /// takes no generation;
-        /// AND WHEN it walks the unchanged tree again, THEN the log side alone answers: it
-        /// records nothing, counts nothing and loses no fold.
-        #[test]
-        fn an_entry_a_graph_that_owes_its_rebuild_refuses_is_recorded_counted_and_named_as_lost() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let store = Store::open(":memory:").unwrap();
-            let graph_dir = tempfile::tempdir().unwrap();
-            let graph_db = graph_dir.path().join("graph.db");
-            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
-            owe_a_rebuild(&graph, &graph_db);
-            let identities = walked_identities();
-
-            let (counted, fold) = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(
-                (counted, fold_loss_clause(&fold)),
-                (
-                    18,
-                    crate::test_support::not_folded_suffix(&crate::test_support::graph_error(
-                        contextgraph::REBUILD_OWED
-                    ))
-                )
-            );
-            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
-            assert_eq!(
-                held_generations(&graph, &identities),
-                vec![None; identities.len()]
-            );
-
-            let again = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(again, (0, Fold::Folded));
-            assert_eq!(recorded(&store), only(walked_entries(tree.path())));
-        }
-
-        /// THE NEXT BUILD RESTORES AN IDENTITY A REBUILD LEFT BEHIND.
-        ///
-        /// GIVEN a store and a `graph.db` a build recorded the extraction tree into, and a
-        /// rebuild of `graph.db`, made while the source file held another body, that could
-        /// resolve no source for the file's code entry and so left its identity behind,
-        /// WHEN the file is back at its recorded body and the build's sink walks the tree,
-        /// THEN it records the file's code entry again, though the log's latest generation of
-        /// the identity is the batch's, counts its four events, and the graph holds the
-        /// identity's generation again; no other identity records anything.
-        #[test]
-        fn an_identity_a_rebuild_left_behind_is_recorded_again_and_restored_by_the_next_build() {
-            let tree = planted_extraction_tree(write_file);
-            let root = tree.path().to_str().unwrap();
-            let file = tree.path().join(SOURCE_PATH);
-            let store = Store::open(":memory:").unwrap();
-            let graph_dir = tempfile::tempdir().unwrap();
-            let graph_db = graph_dir.path().join("graph.db");
-            let graph = Projector::open(graph_db.to_str().unwrap(), "test").unwrap();
-            assert_eq!(
-                ingest_tree(&store, &graph, root).unwrap(),
-                (18, Fold::Folded),
-                "premise: the first build records and folds the whole tree"
-            );
-            let walked_once = walked_entries(tree.path());
-            let identities = walked_identities();
-
-            write_file(&file, source_with(MOVED).as_bytes());
-            let log = store
-                .read_stream(conductor::STREAM, 0, Direction::Forward)
-                .unwrap();
-            rebuild_from_the_tree(&graph_db, &log, tree.path());
-            assert_eq!(
-                held_generations(&graph, &identities),
-                WALKED
-                    .iter()
-                    .map(|batch| {
-                        ((batch.prefix, batch.path) != ("gc", SOURCE_PATH))
-                            .then_some(batch.generation.to_string())
-                    })
-                    .collect::<Vec<_>>(),
-                "premise: the rebuild left the source file's code identity behind, and no other"
-            );
-            write_file(&file, SOURCE_BODY.as_bytes());
-
-            let built = ingest_tree(&store, &graph, root).unwrap();
-
-            assert_eq!(built, (4, Fold::Folded));
-            assert_eq!(
-                recorded(&store),
-                only([walked_once.clone(), vec![walked_once[1].clone()]].concat())
-            );
-            assert_eq!(held_generations(&graph, &identities), walked_generations());
-        }
-
-        /// Spec 101: a `graph build` whose store cannot answer a batch's recorded generation FAILS,
-        /// naming the read that failed, rather than skipping the batch and reporting success - an
-        /// unanswered lookup is never read as "already recorded", the fail-unsafe direction. The
-        /// failure is the sink's own text: it names the store's error once, where the store
-        /// failed, and carries no store prefix of its own.
-        #[test]
-        fn a_build_whose_recorded_generation_is_unreadable_fails_naming_that_read() {
-            let tree = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(tree.path().join("src")).unwrap();
-            std::fs::write(
-                tree.path().join("src/lib.rs"),
-                "pub fn answer() -> u32 { 42 }\n",
-            )
-            .unwrap();
-            let store = GroupLookupOnly::new(Err("group index unreadable".into()));
-            let failure =
-                ingest_tree(&store, &MinimalProjection, tree.path().to_str().unwrap()).unwrap_err();
-            assert_eq!(
-                failure.to_string(),
-                "the log's latest generation of gc/src/lib.rs could not be read: \
-                 event store: group index unreadable"
-            );
-            assert_eq!(
-                store.asked(),
-                [(conductor::STREAM.to_string(), "gc/src/lib.rs".to_string())],
-                "the build asked the lookup for the one batch the walk emitted, and appended nothing"
-            );
-        }
-
-        /// A FAILURE NO STORE MADE IS NOT SAID AS A STORE'S (SINK OUTCOMES row 2).
-        ///
-        /// GIVEN the extraction tree, an empty store and a graph whose generation cannot be read,
-        /// WHEN the build's sink walks the tree,
-        /// THEN the build fails with the first batch's failure, which names the graph's read
-        /// and the graph's error and no event store, and it records nothing.
-        #[test]
-        fn a_build_whose_graph_cannot_be_read_fails_naming_the_graph_and_no_store() {
-            let tree = planted_extraction_tree(write_file);
-            let store = Store::open(":memory:").unwrap();
-            let graph = LosesEveryFold {
-                unread: Some("the generation could not be read"),
-                ..LosesEveryFold::default()
-            };
-
-            let failure = ingest_tree(&store, &graph, tree.path().to_str().unwrap()).unwrap_err();
-
-            assert_eq!(
-                failure.to_string(),
-                format!(
-                    "graph.db's current generation of gc/src/checks.rs could not be read: {}",
-                    crate::test_support::graph_error("the generation could not be read")
-                )
-            );
-            assert_eq!(recorded(&store), only(Vec::new()));
-            assert_eq!(graph.folds.load(std::sync::atomic::Ordering::SeqCst), 0);
-        }
-
-        /// Spec 101 (ONE ANSWER FOR A FAILED APPEND): a `graph build` whose store refuses one batch's
-        /// append FAILS with that error - the answer the run's sink gives for the same failure - rather
-        /// than reporting success over a batch it never recorded, and still records every other batch.
-        #[test]
-        fn a_build_whose_append_fails_fails_with_that_error_and_records_every_other_batch() {
-            let tree = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(tree.path().join("src")).unwrap();
-            std::fs::write(tree.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
-            std::fs::write(tree.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
-            let root = tree.path().to_str().unwrap();
-            let other = handed_by_the_walk(root, "gc/src/b.rs");
-
-            let inner = Store::open(":memory:").unwrap();
-            let store = FailAppendMetaContaining {
-                inner: &inner,
-                needle: "gc/src/a.rs",
-            };
-            let graph = Projector::open(":memory:", "test").unwrap();
-            assert_eq!(
-                ingest_tree(&store, &graph, root).unwrap_err().to_string(),
-                "event store: simulated store failure appending an event whose metadata contains \
-                 \"gc/src/a.rs\"",
-                "the append's failure is the build's, said as the store's"
-            );
-            assert_eq!(
-                recorded(&inner),
-                only(vec![entry_from_the_tree(
-                    tree.path(),
-                    "gc",
-                    "src/b.rs",
-                    &other.generation(),
-                    false,
-                    other.keyed.len()
-                )]),
-                "the refused batch records nothing and the other records its entry"
-            );
-        }
-    }
 }

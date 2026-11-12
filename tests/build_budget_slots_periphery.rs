@@ -304,6 +304,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.gates.insert(
@@ -316,6 +317,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     // Two INDEPENDENT stages (`needs` empty on both): `ready_stages` puts both in
@@ -359,9 +361,10 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     run(&cfg, &deps).expect("the run must complete: two real agents and two real gate builds");
 

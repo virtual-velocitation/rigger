@@ -32,7 +32,7 @@
 //! (criterion 3) and the store-layer append guard (criterion 4) are owned by sibling units and are
 //! deliberately not exercised here.
 
-mod common;
+use crate::common;
 
 use common::fixtures::count_of_type;
 use common::fixtures::reference_replay_keys;
@@ -77,6 +77,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
             kind: "core".into(),
             inputs: Vec::new(),
             requires: Vec::new(),
+            post_merge: true,
         },
     );
     cfg.workflow.stages.insert(
@@ -99,9 +100,10 @@ fn campaign(store: &Store, criterion: &str) -> Status {
         graph: None,
         criteria: vec![criterion.to_string()],
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     };
     run(&cfg, &deps).unwrap().units[UNIT].status
 }
@@ -112,7 +114,7 @@ fn campaign(store: &Store, criterion: &str) -> Status {
 fn keys_of(events: &[Event], type_: &str) -> Vec<String> {
     events
         .iter()
-        .filter(|e| e.type_ == type_)
+        .filter(|e| e.type_ == type_ && !rigger::conductor::is_settle_record(e))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect()
 }

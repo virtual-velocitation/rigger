@@ -6,7 +6,7 @@
 //! work.
 //!
 //! Three read-models fold run state from the one stream - the [`crate::ledger`]
-//! (durable run state), the [`crate::spawn`] frontier (the stepwise wave), and the
+//! (durable run state), the [`crate::spawn`] frontier (the pending wave), and the
 //! [`crate::metrics`] (`rigger stats`) - and all three scope through [`current_run`].
 //! The run vocabulary (the `RunStarted` event type, the `RunHeld` and `RunReleased` hold
 //! events, and the `run_id` metadata key every conductor-emitted event carries) lives here so
@@ -73,8 +73,8 @@ pub const META_DEFINITION_PRIOR: &str = "definition_prior";
 
 /// The metadata key carrying the resolved run-branch base a run anchored on (spec 38,
 /// criterion 3), stamped on the run's [`TYPE_RUN_STARTED`] event at mint. Persisting the base
-/// here - stamped ONCE, when the run starts, from the same resolution `rigger run/step/workflow`
-/// anchors the run branch with - is what lets a later `rigger status`/`rigger dash` name the
+/// here - stamped ONCE, when the run starts, from the same resolution `rigger run` anchors the
+/// run branch with - is what lets a later `rigger status`/`rigger dash` name the
 /// run's ACTUAL base in its ready-to-release handoff. Those surfaces run without the run's
 /// `--base` flag on their argv and so cannot re-resolve it; reading this one persisted value
 /// ([`current_run_base`]) keeps status, the dash, and the end-of-run summary on ONE base. It is

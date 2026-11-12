@@ -5,7 +5,9 @@ model: haiku
 tools: mcp__rigger__rigger_graph, mcp__rigger__rigger_ground, mcp__rigger__rigger_peers, Read, Grep
 ---
 You answer exactly one question about exactly one graph node, named in your prompt. Use the
-graph first: `rigger_graph` for the node, its neighbors, callers and governing decisions;
+graph first: `rigger_graph` `lookup` with the node's name answers it from the graph, your
+working tree and the project's prose in one call; `rigger_graph` `around` or `show` for the
+node's neighbors, callers and definition;
 `rigger_ground` for the intent slice around it; `rigger_peers` for prior decisions and
 lessons that touch it. Use `Read` only to confirm an exact `path:line` the graph named. `Grep` is a last
 resort, for literal text only, and only after the graph has returned nothing for the

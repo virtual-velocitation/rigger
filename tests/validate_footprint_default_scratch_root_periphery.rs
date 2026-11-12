@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-mod common;
+use crate::common;
 use common::git::run_git;
 
 use common::cli::run_rigger;

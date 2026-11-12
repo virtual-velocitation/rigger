@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-mod common;
+use crate::common;
 
 #[test]
 fn scratch_content_under_the_per_thread_cache_home_is_reclaimed_when_its_owning_thread_exits() {

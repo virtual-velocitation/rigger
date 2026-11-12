@@ -56,7 +56,7 @@ fn holds(pid: u32, base: &Path) -> bool {
 
 /// The files process `pid` holds open, one per open file descriptor, each named as its
 /// `/proc/<pid>/fd` link names it: the process adapters' reader of a process's open files, which
-/// `holds` and the host test fixtures consume. Nothing when that directory cannot be read - the
+/// `holds` and [`own_open_files`] consume. Nothing when that directory cannot be read - the
 /// process is gone, or belongs to another user - and a descriptor whose link cannot be read names
 /// nothing.
 pub fn open_files(pid: u32) -> impl Iterator<Item = PathBuf> {
@@ -65,6 +65,17 @@ pub fn open_files(pid: u32) -> impl Iterator<Item = PathBuf> {
         .flatten()
         .flatten()
         .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+}
+
+/// The files process `pid` itself opened and holds ([`open_files`]): none while it is a fork of
+/// this process that has not exec'd ([`is_unexeced_fork_of`]), since every descriptor it holds
+/// then is this process's own, copied by the fork. The reader for a caller that has just spawned
+/// `pid` and asks what the child opened, which the host test fixtures consume.
+pub fn own_open_files(pid: u32) -> impl Iterator<Item = PathBuf> {
+    (!is_unexeced_fork_of(pid, std::process::id()))
+        .then(|| open_files(pid))
+        .into_iter()
+        .flatten()
 }
 
 /// The `/proc` directory of process `pid`.
@@ -142,6 +153,11 @@ mod tests {
         );
         assert!(is_unexeced_fork_of(pid, std::process::id()));
         assert!(!processes_holding(dir.path()).contains(&pid));
+        assert_eq!(
+            crate::test_support::files_open_by(pid, &base.join("f")),
+            0,
+            "the host fixture counts no open by a fork whose descriptors are this process's own"
+        );
         go_tx.write_all(b"g").unwrap();
         assert!(spawner.join().unwrap().success());
     }
@@ -157,11 +173,13 @@ mod tests {
         );
         let pid = child.id();
         let held = open_files(pid).filter(|named| *named == file).count();
+        let counted = crate::test_support::files_open_by(pid, &file);
         release(child);
         assert_eq!(
-            (held, open_files(pid).count()),
-            (2, 0),
-            "each descriptor on the file names it, and a process that is gone holds nothing"
+            (held, counted, open_files(pid).count()),
+            (2, 2, 0),
+            "each descriptor on the file names it, the host fixture counts each, and a process \
+             that is gone holds nothing"
         );
     }
 

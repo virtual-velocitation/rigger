@@ -24,7 +24,7 @@
 //! independently, never against `LegendEntry`'s own field (which would only prove `serde`
 //! didn't mangle a string - already implied by the existing key-set test).
 
-mod common;
+use crate::common;
 
 use common::fixtures::ONE_COMMUNITY;
 use rigger::console::map;
@@ -56,11 +56,11 @@ fn six_kind_graph() -> Graph {
             .map(|kind| Edge {
                 from: format!("src/fixture.rs::{kind}"),
                 to: ONE_COMMUNITY.to_string(),
-                rel: REL_IN_COMMUNITY.to_string(),
+                rel: REL_IN_COMMUNITY.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: Position::default(),
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             })
             .collect(),
     }

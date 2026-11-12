@@ -17,7 +17,7 @@
 //! pipe, `rigger validate` advises when the checkout carries none of these hooks, and it fails
 //! naming an operator's helper copy that does not parse.
 
-mod common;
+use crate::common;
 use common::cli::{failure_line, nameless_copy_refusal, run_rigger, setup_ok, temp_project};
 use common::fixtures::{
     git_commit_all, git_out, implementer_opts, temp_git_project_with_commit, write_helper_copy,
@@ -177,13 +177,17 @@ fn assert_settings_are_the_installed_ones(argv: &[String], dir: &Path) {
 /// `argv`'s `--mcp-config` is the one `rigger` server the MCP installer builds for this spawn,
 /// and `--strict-mcp-config` keeps any other configuration out.
 fn assert_mcp_config_is_the_installed_server(argv: &[String]) {
-    let installed =
-        hooks::install_mcp_server(b"", "rigger", RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID])
-            .unwrap();
+    let installed = hooks::spawn_mcp_config(RIGGER_BIN, &["mcp", "--spawn", SPAWN_ID]).unwrap();
     assert_eq!(
         flag_json(argv, "--mcp-config"),
         serde_json::from_slice::<Value>(&installed).unwrap(),
         "the spawn's MCP config is the installer-built spawn-bound server"
+    );
+    assert_eq!(
+        flag_json(argv, "--mcp-config")["mcpServers"]["rigger"]["alwaysLoad"],
+        Value::Bool(true),
+        "the spawn loads rigger's tools into its prompt up front, never behind the host's tool \
+         search"
     );
     assert!(
         argv.iter().any(|a| a == "--strict-mcp-config"),
@@ -353,7 +357,7 @@ const HOOKS_ADVISORY: &str = "does not carry rigger's session hooks";
 fn validate_advises_when_the_checkout_has_no_hooks_installed() {
     let proj = temp_project();
     let root = proj.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    setup_ok(root, &[]);
 
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "validate succeeds on a set-up project; stderr:\n{err}");
@@ -381,7 +385,7 @@ fn validate_advises_when_the_checkout_has_no_hooks_installed() {
 fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
     let proj = temp_project();
     let root = proj.path();
-    setup_ok(root, &[("RIGGER_NPM", "true")]);
+    setup_ok(root, &[]);
     let rows = [
         (
             "a copy with no name",

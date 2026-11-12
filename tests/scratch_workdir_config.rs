@@ -22,7 +22,7 @@
 
 use rigger::config_store::read_scratch_workdir;
 
-mod common;
+use crate::common;
 
 use common::workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
 

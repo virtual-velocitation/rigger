@@ -1,85 +1,52 @@
 //! Rigger's grounding adapters, ring 3 of the workspace: the grounders behind the `Grounder`
-//! port (the structural `symbols` index, grep and nop), the one scoped project walk they share,
-//! the code, design-intent and workflow-definition emit passes and the project-source ingest
-//! walk that keys them into the context graph. They know the filesystem, tree-sitter and the
-//! domain; the root `rigger` crate re-exports them under their historical `rigger::grounder` and
-//! `rigger::ingest` paths.
+//! interface (the structural `symbols` index, grep and nop), the one scoped project walk they
+//! share, the extraction of a file's bytes into the facts the code store holds, and the combined
+//! lookup. They know the filesystem, tree-sitter and the domain; the root `rigger` crate
+//! re-exports them under their historical `rigger::grounder` and `rigger::ingest` paths.
 
+/// Extraction to facts: a file's path and bytes read into the facts the code store holds, over the
+/// symbol, design and workflow extractors.
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
+pub mod facts;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
-/// Project-source ingest into the context graph (spec 45): the ONE walk-and-content-key
-/// authority both the live run and the standalone `rigger graph build` entry share, so the
-/// generation a batch is recorded under can never drift between the two ingest entries.
+/// The folding store: an event store whose every append also folds the appended events into the
+/// records half of the graph.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
+/// The combined lookup: one call answering a list of terms from the code graph, a live text scan
+/// of the caller's working tree and the tree's ranked prose, in one bounded reply.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod lookup;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 use rigger_config_files::config_store;
-#[cfg(any(feature = "store", not(feature = "core")))]
+#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 use rigger_domain::config;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::eventstore;
-#[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
-use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod contextgraph {
     pub use rigger_domain::contextgraph::*;
-    /// The SQLite projector the fold tests project the emitted events through.
-    #[cfg(all(test, feature = "symbols"))]
-    pub use rigger_graph_sqlite::contextgraph::sqlite;
 }
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-use rigger_domain::retention;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_domain::test_cases;
 
-/// The fold fixtures the inline fold tests share with the root crate's tests, compiled here from
-/// the same file. It names the crate as `rigger::...`, which `extern crate self as rigger` makes
+/// The shared fixtures name the crate as `rigger::...`, which `extern crate self as rigger` makes
 /// resolve to this crate.
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 extern crate self as rigger;
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[allow(dead_code, unused_imports)]
-#[path = "../../../tests/common/fixtures/fold.rs"]
-mod test_support;
-// The scratch fixture the fold fixtures name through `super::`, compiled here from the same
-// file as the root crate's tests.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[path = "../../../tests/common/fixtures/scratch.rs"]
-mod scratch_fixtures;
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-use scratch_fixtures::temp_root;
-
-/// The event fixtures the fold tests stamp a batch's log positions with, compiled here from the
-/// same file as the root crate's tests.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[allow(dead_code, unused_imports)]
-#[path = "../../../tests/common/fixtures/events.rs"]
-mod event_fixtures;
 
 /// The graph fixtures the sink-check tests take the read half of their projection double from,
 /// compiled here from the same file as the root crate's tests.
+// The composed view the shared graph fixtures read a record half through.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+use rigger_domain::{code_facts, code_view, composed};
 #[cfg(all(
     test,
     feature = "symbols",
@@ -162,16 +129,6 @@ mod js_ts_definition_sources;
 #[path = "../../../tests/common/fixtures/python_definition_sources.rs"]
 mod python_definition_sources;
 
-/// THE EXTENT SOURCES the extent tests locate in, compiled here from the file the shared fixtures
-/// live in. They name no crate; only the default lane's tests extract them.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[path = "../../../tests/common/fixtures/extent_sources.rs"]
-mod extent_sources;
-
 /// The symbol index fixtures the extractor's and the registry's tests share with the root crate's
 /// tests (the stamped `index.json` writer, a source read through the registry, the definition
 /// and reference projections), compiled here from the same file. It names the crate as
@@ -183,31 +140,3 @@ mod extent_sources;
 ))]
 #[path = "../../../tests/common/symbol_index.rs"]
 mod symbol_index;
-
-/// THE READ FAULT fixture the tree's read-rule tests share with the root crate's tests, compiled
-/// here from the same file. It names no crate, so both lanes compile it.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-#[path = "../../../tests/common/fixtures/read_fault.rs"]
-mod read_fault_fixtures;
-
-/// THE EXTRACTION TREE the bytes-form tests extract, compiled here from the same file as the root
-/// crate's tests. It names no workspace crate and needs `tempfile` from this crate's
-/// dev-dependencies; only the default lane's tests plant it.
-#[cfg(all(
-    test,
-    feature = "symbols",
-    any(feature = "store", not(feature = "core"))
-))]
-#[allow(dead_code)]
-#[path = "../../../tests/common/fixtures/extraction_tree.rs"]
-mod extraction_tree;
-
-/// The host fixtures the tree's read-rule tests write their files through, compiled here from the
-/// same file as the root crate's tests. It names the reaper and the open-files reader as
-/// `rigger::reap` and `rigger::holders`, which the import below makes resolve in this crate.
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-#[allow(dead_code, unused_imports)]
-#[path = "../../../tests/common/fixtures/host.rs"]
-mod host_fixtures;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_process::{holders, reap};

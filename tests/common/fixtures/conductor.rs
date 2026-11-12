@@ -11,11 +11,15 @@ use rigger::ledger::{RunState, TYPE_UNIT_STATUS};
 use super::{agent, gate_def, gate_def_inputs, test_spawn_host};
 
 /// The one paragraph the lookup pointer every grounding slice carries renders, between its
-/// leading and trailing newline: the knowledge graph's three verbs, each with its one-line job.
-pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through three verbs: \
-     `rigger graph --around <file|entity>` (structure: callers, callees, neighbors), `rigger \
+/// leading and trailing newline: the knowledge graph's four verbs, the combined lookup first, each
+/// with its one-line job, then one worked example each of "who calls" and "where is it defined".
+pub const LOOKUP_POINTER: &str = "The knowledge graph answers lookups through four verbs: \
+     `rigger graph --lookup <term>...` (each term at once from the graph, a live scan of your \
+     working tree and the project's ranked prose), `rigger graph --around <file|entity>` \
+     (structure: callers, callees, neighbors), `rigger \
      graph --show <entity>` (text: definition site and body), `rigger peers <file>...` (memory: \
-     decisions, findings, lessons).";
+     decisions, findings, lessons). Who calls <name>: `rigger graph --around <name>`. Where is \
+     <name> defined: `rigger graph --show <name>`.";
 
 /// A no-op emit sink for an `AgentDriver::spawn` whose emits the test does not observe.
 pub fn no_emit(_: &str, _: serde_json::Value) -> Result<(), Error> {
@@ -398,13 +402,23 @@ impl AgentDriver for FifoAtLandingDriver {
 /// `.rigger/tmp` into the source tree. A run over a repo already resolves its scratch root from
 /// the repo and runs unchanged.
 pub fn run_isolated(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
+    isolated(cfg, deps, rigger::conductor::run)
+}
+
+/// `run` over `cfg` and `deps` with a repo-less run's scratch root pinned as [`run_isolated`]
+/// pins it, for a test driving the run through another entry point.
+pub fn isolated(
+    cfg: &Config,
+    deps: &Deps,
+    run: impl FnOnce(&Config, &Deps) -> Result<RunState, Error>,
+) -> Result<RunState, Error> {
     if !deps.repo.is_empty() {
-        return rigger::conductor::run(cfg, deps);
+        return run(cfg, deps);
     }
     let scratch = tempfile::tempdir().unwrap();
     let mut cfg = cfg.clone();
     cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
-    rigger::conductor::run(&cfg, deps)
+    run(&cfg, deps)
 }
 
 /// The conductor's ports for one run over `repo`: no grounder, no graph and no criteria.
@@ -423,9 +437,10 @@ pub fn bare_deps<'a>(
         graph: None,
         criteria: Vec::new(),
         log: &|_| {},
-        hash_blob: &|_| Ok(String::new()),
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host: test_spawn_host(),
+        code_store: None,
+        context: None,
     }
 }
 

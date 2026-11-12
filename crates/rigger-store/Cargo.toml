@@ -1,0 +1,41 @@
+[package]
+name = "rigger-store"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rigger's owned store: the shared file format (header, crc, sections, atomic publish, write lock) and the code store of immutable, stamped snapshots of the tree's facts."
+
+[lib]
+name = "rigger_store"
+path = "src/lib.rs"
+
+[dependencies]
+rigger-domain = { path = "../rigger-domain", default-features = false }
+# The crc32 of every store file (`format`), hardware-folded where the CPU can.
+crc32fast = "1.5"
+
+# Target-gated as in the root manifest: the `wasm32` core lane never builds them. The one scoped
+# walk (`walk`, store-lane only) honours a project's committed `.gitignore` through `ignore`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ignore = "0.4"
+
+# The store maps a published file read-only on the OSes that map files (`published`); every
+# other target reads it.
+[target.'cfg(any(unix, windows))'.dependencies]
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
+
+[features]
+# Mirrors the root crate's lane features (see the root manifest): the code store, gated
+# `any(feature = "store", not(feature = "core"))`, names domain items only the `store` lane
+# compiles; the format compiles in every lane.
+default = ["store"]
+store = ["rigger-domain/store"]
+core = ["rigger-domain/core"]
+# Test doubles of the code store's interfaces, for the tests of crates that implement a tree source.
+doubles = []

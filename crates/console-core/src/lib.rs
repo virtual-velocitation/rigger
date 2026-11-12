@@ -1092,11 +1092,11 @@ mod dispatch_tests {
         let membership = |id: &str| Edge {
             from: id.to_string(),
             to: "community/1/0".to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let g = Graph {
             nodes: vec![
@@ -1109,11 +1109,11 @@ mod dispatch_tests {
                 Edge {
                     from: "src/worktree.rs::spawn_worktree".to_string(),
                     to: "src/worktree.rs::remove_worktree".to_string(),
-                    rel: REL_CALLS.to_string(),
+                    rel: REL_CALLS.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: Position::default(),
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 },
             ],
         };
@@ -1277,20 +1277,20 @@ mod dispatch_tests {
                 Edge {
                     from: "src/worktree.rs::spawn_worktree".to_string(),
                     to: "community/1/0".to_string(),
-                    rel: REL_IN_COMMUNITY.to_string(),
+                    rel: REL_IN_COMMUNITY.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: Position::default(),
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 },
                 Edge {
                     from: "f1".to_string(),
                     to: "src/worktree.rs::spawn_worktree".to_string(),
-                    rel: REL_ABOUT.to_string(),
+                    rel: REL_ABOUT.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: Position::default(),
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 },
             ],
         };
@@ -1458,11 +1458,11 @@ mod dispatch_tests {
             edges: vec![Edge {
                 from: "src/worktree.rs::spawn_worktree".to_string(),
                 to: "community/1/0".to_string(),
-                rel: REL_IN_COMMUNITY.to_string(),
+                rel: REL_IN_COMMUNITY.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: Position::default(),
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         };
         let payload = serde_json::to_vec(&g).unwrap();
@@ -1516,11 +1516,11 @@ mod dispatch_tests {
                 edges: vec![Edge {
                     from: format!("src/worktree.rs::{fn_name}"),
                     to: "community/1/0".to_string(),
-                    rel: REL_IN_COMMUNITY.to_string(),
+                    rel: REL_IN_COMMUNITY.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: Position::default(),
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 }],
             };
             serde_json::to_vec(&g).unwrap()
@@ -1583,11 +1583,11 @@ mod dispatch_tests {
                 edges.push(Edge {
                     from: id,
                     to: format!("community/1/{d}"),
-                    rel: REL_IN_COMMUNITY.to_string(),
+                    rel: REL_IN_COMMUNITY.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: Position::default(),
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 });
             }
         }

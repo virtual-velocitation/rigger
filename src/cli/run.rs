@@ -7,7 +7,7 @@ use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
-/// Record that THIS run's own step path just attempted a dash ensure (spec 69, round-8 fix; see
+/// Record that THIS run just attempted a dash start (spec 69, round-8 fix; see
 /// [`DASH_ATTEMPT_FILE`]'s doc for the full rationale). Best-effort like every other dash
 /// breadcrumb write in this module - a failed write only risks a later false suppression of an
 /// anomaly this run's own dash-liveness probe should catch anyway via the timestamp fallback,
@@ -21,23 +21,11 @@ fn record_dash_attempt(run_id: &str) {
 }
 
 /// Environment opt-out for every run entry's always-on dashboard: when
-/// [`DASH_DISABLE_ENV`] is set (to any value) `rigger step`, `rigger run` and `rigger serve` do
+/// [`DASH_DISABLE_ENV`] is set (to any value) `rigger run` does
 /// NOT auto-start a run dashboard. Production leaves it unset (the dash is always-on, no opt-in
 /// flag - spec 19b); a headless CI or the crate's own integration tests set it so a short-lived
 /// run never spawns a real dashboard process.
 const DASH_DISABLE_ENV: &str = "RIGGER_NO_DASH";
-
-/// Env override for the PORT the step-path always-on dashboard binds. Absent (the production
-/// default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search, so the singleton's
-/// stable fixed-address contract (spec 50, criterion 4) is unchanged. It exists for the case the
-/// fixed address otherwise makes untestable and unusable: a machine where a rigger dash already
-/// holds the default (the self-hosting dev box always does) or a non-rigger process owns 7420 -
-/// there the ensure path needs the same port seam the manual `rigger dash --port` already has.
-/// The crate's own step-path dash integration tests set it to an ephemeral loopback port so they
-/// exercise the ensure path WITHOUT fighting a real machine dash on the fixed default, exactly as
-/// the direct-`rigger dash` singleton test injects `free_loopback_port`. A malformed value falls
-/// back to the default (a bad knob never breaks a run's observability).
-const DASH_PORT_ENV: &str = "RIGGER_DASH_PORT";
 
 /// How often a held [`RunRegistration`] refreshes its heartbeat: a THIRD of the registry's idle
 /// window ([`rigger::registry::DEFAULT_IDLE_MS`]), so a live in-process run is re-stamped at least
@@ -52,9 +40,9 @@ fn registry_heartbeat_interval() -> std::time::Duration {
 /// [`register_run_instance`]; while this guard is held a background thread REFRESHES the heartbeat
 /// every [`registry_heartbeat_interval`], and dropping it (the run scope ends, on success OR error)
 /// signals that thread to stop and joins it. The periodic refresh is what keeps a run driven WHOLLY
-/// in-process (`rigger run`/`serve` - a single `conductor::run` call that can drive for hours, or a
-/// `rigger step` whose one gate runs longer than the idle window) from aging out of discovery
-/// MID-RUN: a one-shot register alone would let a reader prune the live entry after the window.
+/// in-process (`rigger run` - a single `conductor::run` call that can drive for hours) from
+/// aging out of discovery MID-RUN: a one-shot register alone would let a reader prune the live
+/// entry after the window.
 struct RunRegistration {
     /// Dropping this disconnects the channel, so the heartbeat thread's `recv_timeout` returns at
     /// once (never waiting out a full interval) and the join below completes promptly.
@@ -85,12 +73,12 @@ impl Drop for RunRegistration {
 }
 
 /// Register THIS invocation's instance in the machine-global discovery registry (spec 50, criterion
-/// 2): the project root, the credential-free store identity, and a fresh heartbeat, keyed so a
-/// re-registration refreshes one entry in place. This is the SINGLE registration writer - every run
-/// entry point (`rigger step`, and the in-process `rigger run`/`serve`/`workflow` drivers) requests
-/// through it, so the machine-global registry sees every invocation that starts or advances a run,
-/// not just the stepwise loop path. Every one of them DRIVES the run while it lives, so the entry
-/// and each heartbeat re-stamp are written as [`rigger::registry::Writer::Driver`]: the
+/// 2): the project `identity`, its root, the credential-free store identity, and a fresh heartbeat, keyed so a
+/// re-registration refreshes one entry in place. This is the SINGLE registration writer - the
+/// run entry point (the in-process `rigger run` driver) requests through it, so the
+/// machine-global registry sees every invocation that starts or advances a run. That invocation
+/// DRIVES the run while it lives, so the entry and each heartbeat re-stamp are written as
+/// [`rigger::registry::Writer::Driver`]: the
 /// driver-liveness stamp, which a courier's discovery refresh ([`refresh_registry_entry`]) never
 /// is.
 ///
@@ -100,7 +88,11 @@ impl Drop for RunRegistration {
 /// registry is discovery metadata whose loss is harmless (live instances repopulate it), so a
 /// homeless environment or a write error degrades to an inert guard and NEVER fails the run.
 #[must_use = "hold the RunRegistration for the life of the run so its heartbeat stays fresh"]
-fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistration {
+fn register_run_instance(
+    repo: &str,
+    identity: &str,
+    selection: &StoreSelection,
+) -> RunRegistration {
     let Some(dir) = rigger::registry::default_dir() else {
         return RunRegistration::inert(); // homeless environment: degrade to no registration
     };
@@ -110,7 +102,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
         PathBuf::from(repo)
     };
     let inst = rigger::registry::Instance {
-        project: project_identity(),
+        project: identity.to_string(),
         root: root.to_string_lossy().into_owned(),
         store: registry_store_identity(selection, &root),
         heartbeat_ms: rigger::registry::now_ms(),
@@ -146,7 +138,7 @@ fn register_run_instance(repo: &str, selection: &StoreSelection) -> RunRegistrat
 /// conductor drives: adopt-or-mint the run for `criteria` with `definition` pinned, and act on
 /// the outcome. A fresh or unchanged run continues silently; `--rebase-definition` on a drifted
 /// run records the supersession and continues with a notice; a drifted run WITHOUT the flag
-/// returns a loud error, so `rigger step`/`run` HALTS naming the drift instead of driving a
+/// returns a loud error, so `rigger run` HALTS naming the drift instead of driving a
 /// campaign whose replay semantics silently changed. The conductor's own (unpinned)
 /// `ensure_started` then simply ADOPTS the run this ensured.
 ///
@@ -202,10 +194,10 @@ fn enforce_definition_pin(
     }
 }
 
-/// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any terminal sweep or scratch write
+/// EXACTLY ONE ROOT (spec 89, criterion 4): refuses BEFORE any scratch reclaim or scratch write
 /// when the store the invoking `command` is about to open, the repository `git` resolved for the
 /// same `cwd`, and the scratch root it is about to use disagree on their owning root - a
-/// three-way check, not two. `rigger step` (which sweeps the scratch root), `rigger critique`
+/// three-way check, not two. `rigger critique`
 /// (which writes a critique's transcript and liveness marker into it and removes them, spec 112)
 /// and `rigger run` (whose teardown reclaims it) call it; `command` names the invoking command in
 /// the refusal, as [`resolve_main_worktree_or_refuse`] takes it.
@@ -214,8 +206,8 @@ fn enforce_definition_pin(
 /// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
 /// exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a scratch
 /// root (u87c3, 2026-09-11): the fixture's own store held none of the real run's events,
-/// `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove every
-/// live worktree of the run actually using that scratch root.
+/// `git` resolved the REAL enclosing repository, so a reclaim keyed on the fixture's events
+/// would remove every live worktree of the run actually using that scratch root.
 ///
 /// LEG TWO (`scratch_root` vs `repo`, round 2 adjudication
 /// `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`): leg one alone
@@ -223,7 +215,7 @@ fn enforce_definition_pin(
 /// `RIGGER_TMPDIR` (read unconditionally by `worktree::scratch_root_from_env`, ahead of any
 /// repo-derived default) can point `scratch_root` anywhere; run from the real repository root
 /// (so leg one passes) with `RIGGER_TMPDIR` aimed at some OTHER real project's own scratch
-/// tree, this step's sweep would act on THAT project's real worktrees using this run's
+/// tree, this command would act on THAT project's real worktrees using this run's
 /// events - the same hazard leg one guards against, reached from the opposite direction.
 /// Resolved with the SAME "which repository does this path belong to" primitive leg one
 /// already trusts (`git_repo_at`, not raw path containment): a scratch root with NO
@@ -235,7 +227,7 @@ fn enforce_definition_pin(
 /// resolves to a DIFFERENT repository than the one leg one just verified trips the refusal.
 ///
 /// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
-/// repo-gated branch in `cmd_step`.
+/// repo-gated branch in `run_cli`.
 pub(crate) fn refuse_unless_one_root(
     cwd: &Path,
     repo: &str,
@@ -263,7 +255,7 @@ pub(crate) fn refuse_unless_one_root(
         ));
     }
     if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
-        let scratch_repo = git_repo_at(Path::new(scratch));
+        let scratch_repo = git_repo_at(Path::new(scratch))?;
         if !scratch_repo.is_empty() {
             let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
                 .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
@@ -288,12 +280,12 @@ pub(crate) fn refuse_unless_one_root(
     Ok(())
 }
 
-/// The project scratch root a run entry (`rigger step`, `rigger run`, `rigger serve`) and
-/// `rigger critique` work under: `None` in a project with no git repository, where nothing keys a scratch root and
-/// no liveness marker or transcript is written; else the root `scratch_root_from_env` resolves
-/// for the repository and `defaults.workdir`. The one home of that rule, so the roots a step
-/// sweeps, a hosted run writes under, a served run hands its MCP server and a critique writes
-/// under, and that [`refuse_unless_one_root`] checks, can never disagree.
+/// The project scratch root `rigger run` and `rigger critique` work under: `None` in a project
+/// with no git repository, where nothing keys a scratch root and no liveness marker or
+/// transcript is written; else the root `scratch_root_from_env` resolves for the repository and
+/// `defaults.workdir`. The one home of that rule, so the roots a hosted run writes under and
+/// reclaims, a critique writes under, and [`refuse_unless_one_root`] checks, can never
+/// disagree.
 pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<String> {
     (!repo.is_empty())
         .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
@@ -314,8 +306,8 @@ pub(crate) fn running_executable() -> String {
 }
 
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
-/// integration-gate stall (spec 18, unit 2). This is the single load seam every run entry
-/// (`cmd_step`, `run_cli`, `run_workflow`) shares, so the run-start refusal cannot be present
+/// integration-gate stall (spec 18, unit 2). This is the single load seam the run entry
+/// (`run_cli`) and `rigger gate` share, so the run-start refusal cannot be present
 /// at one entry and silently missing at another.
 ///
 /// The integration gate reads a gating agent's RESULT channel for a `{"verdict":...}` line and
@@ -323,24 +315,41 @@ pub(crate) fn running_executable() -> String {
 /// adjudicator on any tier, or a plan-critique adjudicator) that records its verdict ONLY via
 /// `rigger_emit` is therefore a guaranteed stall - the gate finds no verdict, folds it as a
 /// non-approval, and the unit remediates until it escalates. Rather than begin that doomed run,
-/// `rigger run`/`workflow`/`step` refuse up front with the SAME deterministic fix message
+/// `rigger run` refuses up front with the SAME deterministic fix message
 /// `rigger validate` gives. The check itself has ONE authority - `config::lint_gating_verdict_lines`
 /// (spec 18, unit 1) - reused here, never re-derived; this seam only wires it onto the run path.
-fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
+pub(crate) fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
     let cfg = config_store::load(dir)?;
     config::lint_gating_verdict_lines(&cfg)?;
     Ok(cfg)
 }
 
+/// The refusal a run started outside a rigger project gives: `cwd` holds no workflow file, so
+/// there is nothing to drive.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{command}: not a rigger project - {cwd} has no {RIGGER_DIR}/{WORKFLOW_FILE}; run \
+     `rigger setup` in the project root first, or run from the directory that holds it"
+)]
+struct NotAProject {
+    command: &'static str,
+    cwd: String,
+}
+
+/// Refuse, creating nothing, unless `cwd` holds a rigger project's workflow file.
+fn refuse_outside_a_project(cwd: &Path, command: &'static str) -> Res {
+    if cwd.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file() {
+        return Ok(());
+    }
+    Err(Box::new(NotAProject {
+        command,
+        cwd: cwd.display().to_string(),
+    }))
+}
+
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
-    let sleep = sleep_hold();
-    // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
-    // MCP-server path. `cli` (the default) is the standalone path, hosting its agents itself.
-    match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow", &*sleep),
-        DriverKind::Cli => run_cli(&parsed, &*sleep),
-    }
+    run_cli(&parsed, &*sleep_hold())
 }
 
 /// `rigger resume-unit <unit> [--attempts N]` (default `N`: 1) - spec 88, criterion 3
@@ -349,7 +358,7 @@ pub(crate) fn cmd_run(args: &[String]) -> Res {
 /// [`ledger::TYPE_UNIT_RESUMED`] (`{unit, attempts_granted, by: "operator"}`) to the
 /// CURRENT run's stream; the ledger folds it back to a mid-remediation `Failed` unit
 /// with a widened per-unit bound ([`ledger::Unit::resume_bound`]), so the next `rigger
-/// step` re-parks the implementer on the unit's SAME durable branch (resume-continuity
+/// run` re-parks the implementer on the unit's SAME durable branch (resume-continuity
 /// already treats `Failed` this way - no second resume path is introduced) and
 /// `rigger status` names the grant until it is spent or superseded by a fresh resume.
 ///
@@ -438,653 +447,22 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
 
         println!(
             "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
-             next `rigger step` re-parks its implementer on {branch:?}"
+             next `rigger run` re-parks its implementer on {branch:?}"
         );
         Ok(())
     })
 }
 
-pub(crate) fn cmd_step(args: &[String]) -> Res {
-    let args = parse_step_args(args)?;
-    // DISCOVERABILITY (spec 66, criterion 5, round 3): `rigger step` is the PRIMARY,
-    // most-used pre-launch surface - on the native `/rigger <spec>` path `cmd_step` IS the
-    // driver (see this fn's own doc comment above), so it must name the spec lint too, not
-    // only the one-shot `run_cli`/`cmd_workflow` entries. Printed FIRST, before any config
-    // load or base check, so the reminder survives every downstream refusal or failure path -
-    // mirroring `run_cli`'s and `cmd_workflow`'s placement. Routed to STDERR, never stdout:
-    // `cmd_step` prints exactly ONE line of `{wave,done}` JSON on stdout that a driver parses
-    // (see this fn's doc comment and `acquire_step_lock`'s), and a stdout `println!` here
-    // (mirroring the other two callers verbatim) would corrupt that single-line contract.
-    // Gated on `spec_lint_reminder_should_print` (spec 66, c5 REMINDER DEDUP disposition): a
-    // `rigger step` genuinely nested under a parent that already printed (its real direct
-    // parent pid names it in `SPEC_LINT_REMINDER_PID_ENV`) stays silent; anything else prints.
-    if let Some(spec) = &args.spec {
-        if spec_lint_reminder_should_print() {
-            eprintln!("{}", spec_lint_next_step(spec));
-        }
-    }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
-    // FIRST, before any config load, store touch or worktree mutation - a linked worktree
-    // gets a clear refusal naming both trees instead of wasting a config/criteria load only
-    // to fail deep inside branch setup with git's own opaque error.
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger step")?;
-    // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
-    // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
-    // the run's config-load seam, before any unit is parked.
-    let cfg = load_run_config(".")?;
-    let (criteria, text) = load_criteria(args.spec.as_deref())?;
-    std::fs::create_dir_all(RIGGER_DIR)?;
-
-    // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
-    // `refuse_unless_one_root` immediately below can name it: the value is pure (only `repo` and
-    // `cfg.workflow.defaults.workdir`, both already resolved above), so hoisting the computation
-    // changes no answer it was ever going to give, only how early that answer is available. Kept
-    // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
-    // HALT's own reclaim both still need it (spec 34, criterion 3).
-    let scratch_root = project_scratch_root(&repo, &cfg);
-
-    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
-    // mutation - not merely before the terminal sweep - when the store this step is about to
-    // open, the repository `git` resolved for this cwd, and the scratch root this step is
-    // about to sweep disagree on their root (three-way as of round 2's own adjudication; see
-    // `refuse_unless_one_root`'s doc comment for the added leg). "Any GIT/worktree mutation",
-    // precisely: the `std::fs::create_dir_all(RIGGER_DIR)` two lines above this comment still
-    // precedes this refusal, but it only ever creates an empty local `.rigger/` under THIS
-    // process's own cwd - never the enclosing repository the hazard below is about - so it is
-    // not the mutation this ordering guards against. Round 1 placed this call
-    // just before the sweep, AFTER the run-branch anchor block below (`ensure_run_branch`
-    // creates and checks out `RUN_BRANCH` in whatever `repo` resolved to - a real mutation of
-    // that repository); a nested git-less fixture whose `repo` resolves to an ENCLOSING real
-    // repository would have that repository's branch switched to `rigger-run` before this
-    // refusal ever fired (u87c3-adjacent regression, confirmed live via `tests/
-    // step_root_resolution_periphery.rs`'s
-    // `step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_enclosing_repos_
-    // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
-    // step that is going to refuse never mutates any repository first - see
-    // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
-    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref(), "rigger step")?;
-
-    // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
-    // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
-    // worktrees off HEAD, then integrates units and appends events (see just below); two
-    // steps at once would race that shared checkout/HEAD and interleave their integrations,
-    // corrupting the run. The overlap arises when a driver re-couriers a step while the
-    // first's minutes-long gate still runs. Held for the whole step and released when this
-    // process exits (even on crash/kill), so a dead step never wedges the run. The guard
-    // binds a name so it is not dropped early.
-    let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
-
-    // Anchor + check out the run branch before the conductor branches any unit worktree
-    // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
-    // failure here aborts the step (with a clear, actionable error) rather than driving
-    // the conductor on the wrong branch - isolation is a precondition, not best-effort.
-    // The run branch's tip commit sha AT THIS STEP'S ANCHOR (spec 91): resolved right after
-    // `ensure_run_branch` below, BEFORE the conductor ever branches a unit worktree off it or
-    // advances it - so a mint further down (a `--fresh` boundary, or a new campaign inside
-    // `enforce_definition_pin`) persists the tip the run genuinely started at, never a value
-    // some later step's own re-anchor could shift. `""` on the repo-less path: the checkin
-    // stage never runs without a real repo to diff against anyway.
-    let mut base_tip = String::new();
-    if !repo.is_empty() {
-        // Refuse an obviously-wrong base BEFORE the run branch is anchored (spec 18, criterion
-        // 7). Gating on the PLANNED anchor (a side-effect-free peek) - not on the created branch
-        // - means a refused first step leaves NO wrong-base run branch behind, so the corrected
-        // `--base` retry re-runs this check and re-anchors fresh instead of reusing (and thus
-        // self-disarming on) the wrong-base branch.
-        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &args.base);
-        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base (an
-        // unresolvable base AND no HEAD to fall back to) loudly rather than minting a run branch
-        // that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger step", &args.base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger step", &args.base, planned, &criteria)?;
-        let setup = Worktree::ensure_run_branch(&repo, RUN_BRANCH, &args.base).map_err(|e| {
-            format!(
-                "rigger step: could not prepare the run branch {RUN_BRANCH:?} (base {:?}): {e}. \
-                 The step did not run; resolve the git state (e.g. commit or stash a dirty tree) and retry.",
-                args.base
-            )
-        })?;
-        warn_on_run_branch_divergence("rigger step", setup, &args.base, args.base_explicit);
-        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-    }
-
-    // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
-    // before opening the run backend (spec 09, Gap 20). A no-op unless `.rigger/project.id`
-    // was minted with an id distinct from the basename and the legacy namespace still holds
-    // the history; refuses loudly if both namespaces are populated.
-    migrate_local_identity(None)?;
-
-    let selection = store_selection(None, None)?;
-    // Register this instance in the machine-global discovery registry (spec 50, criterion 2):
-    // every step "advances a run". Held (`_registration`) for the whole step so its heartbeat
-    // thread keeps the entry fresh even if THIS step's in-process gate runs longer than the idle
-    // window; dropped when the step returns. Best-effort and warn-only - it never blocks the step.
-    let _registration = register_run_instance(&repo, &selection);
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    // Every event this step appends outside the conductor - a `--fresh` or first-step mint, a
-    // definition re-pin, a recorded liveness fault, a parked spawn - goes through `folding`, so
-    // the graph's applied ledger holds every position the step wrote (the conductor folds its own
-    // through the same store). Opened before any append, so a graph that owes its rebuild refuses
-    // the step before it writes anything the graph would miss.
-    let graph = open_graph(
-        &db_path("graph.db"),
-        &project_identity(),
-        &selection,
-        "step",
-    )?;
-    let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
-
-    // The host values every spawn this step parks or runs carries, resolved once, ahead of the
-    // definition pin, which folds the helper copies it read.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
-    // The definition hash this step pins / re-checks (spec 13, unit 1): the digest of the
-    // on-disk workflow.yml + agent-prompt set + the operator's helper copies. Computed once and
-    // used for both the `--fresh` pinned boundary and the drift check below.
-    let definition = definition_hash(".", &spawn_host.helpers)?;
-
-    // A NEW RUN NEEDS A CLEAN CRITIQUE (spec 112): decided before this step appends anything, so
-    // a refused step mints no run and prints no JSON line. A `--fresh` step decides it ahead of
-    // its mint and a plain step behind the hold read, since a held step begins no run for it to
-    // guard.
-    let refuse_a_new_run = || {
-        RunStartCritique {
-            command: "rigger step",
-            backend: backend.as_ref(),
-            identity: &project_identity(),
-            workflow: &cfg.workflow,
-            root: &review::spec_root(&cwd, &repo),
-            text: &text,
-        }
-        .refuse_unless_clean(args.spec.as_deref(), &criteria, args.fresh)
-    };
-
-    // `--fresh`: begin a NEW run BEFORE this step (and before the liveness sweep reads the
-    // current run), so the conductor's own `ensure_started` adopts this just-minted
-    // boundary instead of the latest (possibly wedged) run. A one-shot the DRIVER passes
-    // on the first step of an explicit restart; plain steps after it adopt the boundary it
-    // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
-    // driver parses. See `runscope_store::start_fresh`.
-    if args.fresh {
-        refuse_a_new_run()?;
-        // Persist the resolved run-branch base, and the launching spec path (spec 82,
-        // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
-        // this step anchored the run branch on, so `rigger status`/dash name the same base
-        // and derive the per-run-unique PR head name in the ready-to-release handoff.
-        let run = runscope_store::start_fresh(
-            &folding,
-            &criteria,
-            &definition,
-            &args.base,
-            &base_tip,
-            args.spec.as_deref().unwrap_or(""),
-        )?;
-        eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
-    }
-
-    // A HELD RUN LAUNCHES NOTHING (spec 105): the hold is read behind `--fresh`, whose mint
-    // released the hold it ended, and on a plain step ahead of the critique refusal, so a held
-    // plain step prints the hold whatever the critique. It is read ahead of the scratch sweep, the
-    // definition pin and the liveness sweep, so a held step leaves all three to the release. A
-    // read that fails ends the step, since a run not proved unheld launches nothing.
-    if let Some(hold) = runscope::read::read_current_hold(&store, conductor::STREAM)? {
-        println!("{}", serde_json::to_string(&spawn::step_of_hold(&hold))?);
-        return Ok(());
-    }
-    if !args.fresh {
-        refuse_a_new_run()?;
-    }
-
-    // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
-    // 2 fix): config, never the event log, so it stays populated even at this project's very
-    // first step, before a single event has ever been recorded. Both step-start worktree
-    // sweeps below narrow their own "spare a dirty candidate" exception to a unit THIS run's
-    // definition actually declares - see `sweep_terminal`'s and `reclaim_orphan_scratch`'s own
-    // doc comments - so a genuinely dead, unrelated branch that happens to also be dirty is
-    // still reclaimed exactly as before this criterion. (`scratch_root` itself is NOT
-    // recomputed here - u89c4 round 2 already hoisted that single binding above, before
-    // `refuse_unless_one_root`; see its doc comment there. Both step-start sweeps below use
-    // that one binding.)
-    let declared_units: std::collections::HashSet<String> = cfg
-        .workflow
-        .stages
-        .keys()
-        .map(|slug| conductor::unit_branch(slug))
-        .collect();
-
-    // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every unheld step
-    // starts by sweeping the scratch root's terminal worktrees (integrated units, review
-    // scaffolding), so leaks from crashed or superseded step processes are reclaimed by the
-    // loop itself instead of accumulating until a human notices a full disk. Placed here (after
-    // the store opens and any `--fresh` boundary is settled, but still BEFORE the
-    // definition-pin HALT below) so it keeps running at step start on every unheld step, including
-    // one that goes on to halt on drift - exactly as before this criterion. The merged-only git
-    // ancestry rule alone is not sufficient: a PARKED unit whose attempt produced an EMPTY diff
-    // has a branch tip that IS an ancestor of the run branch (trivially - it never advanced past
-    // it) while the unit is still live in review, so `sweep_terminal` is handed the CURRENT
-    // run's live branches (the same `current_run_units` fold `reclaim_orphan_scratch` below
-    // reads - one liveness authority, not a parallel notion) and spares any of them outright,
-    // even one that would otherwise pass the ancestry test.
-    //
-    // `live_branches_for_sweep` fails CLOSED on an unreadable stream (`None`): liveness can only
-    // be UNDER- not OVER-determined, so a `store.read_stream` error skips the sweep call
-    // OUTRIGHT below, never runs it with a live set silently degraded to empty (which would
-    // revert to the pre-c4 ancestry-only rule this criterion exists to close). Its own doc
-    // comment carries the full rationale and is where its unit test lives; the `sweep_terminal`
-    // call itself stays INLINE here (not pulled into that helper) because
-    // `worktree_sweep_completes_before_any_add_within_one_step` (spec 51, criterion 5) pins its
-    // presence and lock->sweep->add ordering directly in `cmd_step`'s own source text.
-    //
-    // Spec 83, criterion 1: THE FENCE. `sweep_terminal` additionally consults the unit's
-    // LATEST requested spawn (`worktree::spawn_fence`) before removing an already-merged,
-    // ledger-terminal branch - a second, INDEPENDENT read of the same stream, scoped the same
-    // way `current_run_units` scopes its own fold, so a straggler spawn for a unit
-    // `current_run_units` already read as terminal still fences off its worktree. An
-    // unreadable second read degrades to an EMPTY events slice, under which `spawn_fence`
-    // reads every candidate as `NoSpawn` - the pre-spec-83 rule alone, never a NEW way to
-    // block a reclaim - so the degrade costs nothing beyond forgoing this step's extra
-    // protection, exactly like `live_branches_for_sweep`'s own read one line above.
-    if let Some(root) = &scratch_root {
-        if let Some(live_branches) =
-            live_branches_for_sweep(runscope::read::read_run(&store, conductor::STREAM))
-        {
-            let fence_events = runscope::read::read_current_run(&store, conductor::STREAM)
-                .map(|(run, _)| run)
-                .unwrap_or_default();
-            match rigger::worktree::sweep_terminal(
-                &repo,
-                root,
-                RUN_BRANCH,
-                &live_branches,
-                &declared_units,
-                &fence_events,
-            ) {
-                Ok(0) => {}
-                Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
-                Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
-            }
-        }
-    }
-
-    // Definition pinning (spec 13, unit 1): pin this run's definition (a fresh run) or enforce
-    // it (a live run). A drifted live-run definition WITHOUT `--rebase-definition` HALTS here,
-    // loudly and before any worktree work, so a mid-campaign prompt edit can never silently
-    // change replay semantics; `--rebase-definition` records the supersession and continues.
-    if let Err(e) = enforce_definition_pin(
-        &folding,
-        &criteria,
-        &definition,
-        args.rebase_definition,
-        &args.base,
-        &base_tip,
-        args.spec.as_deref().unwrap_or(""),
-    ) {
-        // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
-        // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
-        // run leaves no shared build cache or agent scratch behind - the same run-teardown a
-        // clean fixpoint gets. Gated on the SAME `terminal_and_no_live_worker` predicate the
-        // terminal-fixpoint teardown below uses (ONE authority, so the two sites can never
-        // diverge): the run must be at a terminal state with NO live worker - an empty pending
-        // frontier, no hung-but-possibly-alive spawn, AND no still-pending manual-review pause. A
-        // still-in-flight worker, OR a hung spawn whose liveness fault counts as "answered" yet
-        // leaves a worker the operator may still resume with `--rebase-definition`, OR a unit
-        // paused awaiting a human (its persisted `ManualReview` from an EARLIER step folds into the
-        // inbox this predicate reads from the full stream), is STILL ADVANCING - so its scratch is
-        // never pulled out from under it (the never-delete-live-owned rail). An unreadable/malformed
-        // stream reads as NOT safe, so uncertainty never reclaims. Best-effort; the halt is
-        // surfaced regardless.
-        if let Some(root) = &scratch_root {
-            if let Ok(events) = runscope::read::read_run(&store, conductor::STREAM) {
-                let settled = spawn::step_result(runscope::current_run(&events));
-                if settled.is_ok_and(|step| {
-                    rigger::liveness::terminal_and_no_live_worker(&events, &step).unwrap_or(false)
-                }) {
-                    reclaim_run_scratch(root);
-                }
-            }
-        }
-        return Err(e);
-    }
-
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
-    // The store state BEFORE this step's own liveness sweep runs (spec 69, criterion 5):
-    // used below to scope the sweep's marker reads to THIS run (a slug-colliding re-run
-    // never reads a prior run's leftover mtime) and, since `run_id` never changes within a
-    // step, reused verbatim for the hung-attention cursor path too (see `pre_hung_ids`
-    // below). Read ONCE here, before the sweep mutates the log.
-    // The run id is empty before the first RunStarted (the first step, where nothing is
-    // in-flight to sweep and nothing has ever been surfaced anyway).
-    let (pre, run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    // The hung-attention CROSSING BOUNDARY (spec 69, criterion 5; review u69c5 round 3,
-    // cause genuine-defect): the spawn ids already surfaced on the `attention` wire as of
-    // the end of the PREVIOUS `rigger step` invocation, read from the persisted cursor
-    // (see `liveness::hung_cursor_path`'s own doc comment for why a fresh read taken at
-    // THIS process's own start - the prior approach - can never see a fault an out-of-band
-    // driver call recorded strictly between two step invocations: that write already
-    // predates every read this process could take). `conductor::compute_attention`'s own
-    // doc comment covers why this specific signal cannot be computed from inside
-    // `conductor::run` at all, in-process or otherwise. Absent scratch (the repo-less
-    // unit-test path only - guarded the same way every other scratch-dependent read in this
-    // function already is) has nowhere to persist a cursor, so this reads as empty - see the
-    // `newly_hung` computation below (review u69c5 round 5, cause genuine-defect) for why an
-    // always-empty read here is made SAFE (never a false "newly hung" every step) rather than
-    // read at face value the way it is in the scratch-present path.
-    let pre_hung_ids: std::collections::BTreeSet<String> = scratch_root
-        .as_deref()
-        .map(|root| rigger::liveness::read_hung_cursor(root, &run_id))
-        .unwrap_or_default();
-
-    // Liveness sweep (spec 10, unit 3): BEFORE the conductor replays the frontier, classify
-    // any IN-FLIGHT spawn whose per-spawn heartbeat marker went stale beyond its
-    // `max_wall_clock` as an infrastructure fault (a HUNG agent) and record it on the
-    // spawn's id. The conductor then re-parks that fault (charging no remediation attempt -
-    // the unit's code is not at fault), and it surfaces as a halt below. Best-effort and
-    // scoped to the current run; a sweep failure never blocks the step.
-    if let Some(root) = &scratch_root {
-        match cfg.workflow.failure_taxonomy() {
-            Ok(taxonomy) => {
-                match rigger::liveness::sweep(
-                    &folding,
-                    &pre,
-                    root,
-                    &run_id,
-                    &taxonomy,
-                    std::time::SystemTime::now(),
-                ) {
-                    Ok(stale) => {
-                        // Reclaim EACH freshly-recorded hung spawn's registered scratch the
-                        // moment the sweep answers it (spec 77, criterion 2) - `sweep` just
-                        // recorded its liveness fault DIRECTLY via
-                        // `spawn_store::record_result_if_absent`, never through `cmd_result`, so
-                        // that courier's own reclaim never runs for it; this call site is the
-                        // liveness-fault call site of the one-authority shape
-                        // [`reclaim_spawn_registered_scratch`]'s doc comment describes (without
-                        // it, a hung spawn's scratch build directory leaks until its unit
-                        // reaches a terminal state).
-                        for s in &stale {
-                            reclaim_spawn_registered_scratch(root, &run_id, &s.id);
-                        }
-                        if !stale.is_empty() {
-                            eprintln!(
-                                "rigger step: liveness swept {} hung spawn(s) (classified infra, no attempt charged): {}",
-                                stale.len(),
-                                stale.iter().map(|s| s.id.clone()).collect::<Vec<_>>().join(", ")
-                            );
-                        }
-                    }
-                    Err(e) => eprintln!("rigger step: liveness sweep skipped: {e}"),
-                }
-            }
-            Err(e) => eprintln!("rigger step: liveness sweep skipped (taxonomy: {e})"),
-        }
-    }
-
-    // Orphan-sweep backstop (spec 34, criterion 2): reclaim any scratch under the root that no
-    // LIVE unit of the CURRENT run owns - a prior run's stranded worktree/build cache, or a
-    // `cargo-target-<slug>` an agent wrote outside its assigned path (the unbounded per-agent
-    // leak). Keyed on liveness ownership (the SAME `worktree_belongs_to_live` predicate the
-    // `rigger validate` residue report reads), so it can never remove a worktree an in-flight
-    // reviewer is reading or a cache a live unit is building, and it deliberately spares the
-    // shared `agent-scratch`/`agent-live`/bare-`cargo-target` areas a running spawn may still
-    // be writing into. This runs AFTER `enforce_definition_pin` above so a `--fresh` restart's
-    // just-superseded prior-run scratch reads as non-live and is reclaimed; it re-runs
-    // idempotently each step (an already-clean root sweeps nothing). Broader than the git-only
-    // `sweep_terminal` above, which reclaims only integrated worktrees. Best-effort - a sweep
-    // failure only warns and never blocks the step.
-    if let Some(root) = &scratch_root {
-        match runscope::read::read_run(&store, conductor::STREAM) {
-            Ok(events) => {
-                let run_units = current_run_units(&events);
-                let removed = reclaim_orphan_scratch(&repo, root, &run_units, &declared_units);
-                if removed > 0 {
-                    eprintln!(
-                        "rigger step: reclaimed {removed} orphaned scratch entr{} under {root}",
-                        if removed == 1 { "y" } else { "ies" }
-                    );
-                }
-            }
-            Err(e) => eprintln!("rigger step: orphan sweep skipped: {e}"),
-        }
-    }
-
-    // Always-on dash on the native step path, retargeted at the machine SINGLETON (spec 39,
-    // criterion 1; spec 50, criterion 4): ENSURE the one machine-level dash at the fixed default
-    // address is up, so the loop the driver advances through many short-lived `rigger step`
-    // invocations is never invisible. The first step of a run starts it at `dash::DEFAULT_PORT`
-    // (never a drifting port); every later step finds it serving and starts none (never a second
-    // dash). Started DETACHED so it survives across the run's many step processes, and best-effort
-    // so a start failure only warns - the run proceeds headless. Suppressed entirely by the
-    // opt-out (`RIGGER_NO_DASH` OR `dash: off`): a headless/CI run then binds no port at all. The
-    // config opt-out is read off the already-loaded `cfg`, not re-loaded. Placed just before the
-    // conductor advances the frontier so the dash is serving while this step's gates and spawns
-    // are in flight.
-    ensure_run_dashboard(cfg.workflow.dash_enabled(), &store);
-
-    // Every spawn this step parks records the scratch root its marker is stamped under (spec
-    // 101), so where a worker's marker lives is read from the log, never from a reader's own
-    // environment.
-    let driver = ReplayDriver::new(&folding, scratch_root.as_deref().unwrap_or(""));
-    let root = repo.clone();
-    let hash_blob = hash_blob_in(&root);
-    let deps = Deps {
-        store: &store,
-        driver: &driver,
-        gates: &ExecRunner,
-        repo,
-        grounder: Some(grounder.as_ref()),
-        graph: Some(&graph),
-        criteria,
-        log: &stderr_line,
-        hash_blob: &hash_blob,
-        check_emit: &rigger::contextgraph::check_emit,
-        spawn_host,
-    };
-    let rs = conductor::run(&cfg, &deps)?;
-
-    let (events, wave_run_id) = runscope::read::read_current_run(&store, conductor::STREAM)?;
-    // The printed wave is the FULL pending frontier (every parked spawn without a
-    // result), so a killed or re-run step process orphans nothing and a relaunched
-    // driver resumes the in-flight wave (see spawn::step_result). Scoped to the CURRENT
-    // run's slice (spec 06, unit 1): a prior run's unanswered spawns sit before this
-    // run's RunStarted, so they never reappear in this run's wave (Gap 11).
-    // The conductor pass's own live state - its halt (the budget breaker's, else a
-    // plan-critique spec-defect stop's), its escalated units, its attention entries - is
-    // stamped on by the same seam (`spawn::step_of_pass`).
-    let mut step = spawn::step_of_pass(&events, rs).map_err(|e| e.to_string())?;
-    // Stamp EVERY wave item with the RESOLVED absolute path of its liveness marker (spec 10,
-    // unit 3, BLOCKER-1; spec 101): the thin driver frames both the worker's heartbeat `touch`
-    // and a bounded spawn's staleness watchdog around THIS path, never re-deriving a scratch
-    // root of its own. Resolved by the ONE marker-location rule every reader applies
-    // (`liveness::MarkerRoots`): under the scratch root the spawn's request recorded when this
-    // or an earlier step parked it (`RIGGER_TMPDIR` > `defaults.workdir` > the cache-home
-    // default, as that step resolved it), else under this step's own - so the worker-write path
-    // is byte-identical to every reader's path, whatever environment the reader or a later step
-    // runs under. Bounded or not, every spawn carries a marker: the marker is how the live-writer
-    // guard sees a worker, and the sweep never times out an unbounded one however stale its
-    // marker gets.
-    if let Some(root) = &scratch_root {
-        let roots = rigger::liveness::MarkerRoots::of(&events, root).map_err(|e| e.to_string())?;
-        for item in step.wave.iter_mut() {
-            // A degenerate id (never a real spawn id rigger itself mints) yields no marker path
-            // at all rather than a fabricated placeholder - the item simply carries no marker.
-            item.marker_path = roots
-                .marker_path(&wave_run_id, &item.id)
-                .map(|p| p.to_string_lossy().into_owned());
-        }
-    }
-    // Hung agents (spec 10, unit 3): any spawn whose LATEST result is a liveness fault is a
-    // hung, unrecovered agent whose worker may STILL be alive and writing under the shared
-    // scratch. Surfaced as a loud halt so the driver stops on a named reason instead of reading
-    // a stalled wave as a clean fixpoint. A halt the conductor already put on the channel takes
-    // precedence for the surfaced REASON - the budget breaker's (the harder global rail), else a
-    // plan-critique spec-defect stop's - so the hung reason is only stamped when neither is set.
-    // (The teardown's never-delete-live guard reads the same hung set through
-    // `terminal_and_no_live_worker` below, so a hung-but-alive worker is spared under any halt -
-    // not just when its reason is the one surfaced here.)
-    let hung = rigger::liveness::hung_spawns(&events).map_err(|e| e.to_string())?;
-    if step.halted.is_none() && !hung.is_empty() {
-        // Recovery: record a real result on the named spawn (last-write-wins supersedes the
-        // fault), then re-drive.
-        step.halted = Some(rigger::liveness::halt_reason(&hung));
-    }
-    // The hung-liveness half of `attention`'s `halted` signal (spec 69, criterion 5; review
-    // u69c5 round 3, cause genuine-defect): computed HERE, not inside `conductor::run`, because
-    // its crossing boundary is `pre_hung_ids` (the boundary computed above - the PERSISTED
-    // cursor whenever scratch is available, see `liveness::hung_cursor_path`'s own doc comment
-    // for why - never a fresh read taken at this process's own start) - see
-    // `conductor::compute_attention`'s own doc comment for why that boundary cannot live
-    // inside `run()` itself either way. A spawn hung in `hung` that
-    // was NOT already hung as of `pre_hung_ids` is a genuine NEW crossing this step; one
-    // already hung as of `pre_hung_ids` is a still-true restamp and does not fire again.
-    // `merge_hung_attention` (pulled out for unit-testability - see its own doc comment) owns
-    // the precedence-and-ordering mechanics.
-    //
-    // Gated on `scratch_root.is_some()` (review u69c5 round 5, cause genuine-defect, findings
-    // sdet-u69c5r4-repoless-cursor-restamps-every-step /
-    // adv-u69c5r4-confirm-sdet-repoless-restamp-empirically-proven): absent scratch,
-    // `pre_hung_ids` above has nowhere to persist a cursor and always reads empty, while
-    // `hung` (unlike `pre_hung_ids`) is derived purely from the event log and is NOT itself
-    // gated on `scratch_root` - so comparing the two directly would read every step as a fresh
-    // crossing and restamp `attention` forever instead of once, the opposite failure direction
-    // from the crash-window gap the persisted cursor exists to close. `step.halted` just above
-    // is UNCHANGED by this gate - it stays sourced from the full, ungated `hung` set, so a
-    // hung spawn still halts loudly on every step regardless of scratch (this only scopes the
-    // separate crossing-tracked `attention` entry). Without a persisted cursor there is no
-    // boundary available at all to tell a genuine new crossing from a still-true restamp in
-    // this path (every repo-less-reachable fault is recorded by a wholly separate `rigger
-    // result --error` process call, which by construction always predates this step's own
-    // reads - there is no in-process moment that precedes it the way the scratch-present
-    // sweep's pre-sweep read does), so gating BOTH halves of the comparison to the SAME
-    // scratch-presence keeps them consistent in every path: `attention` simply carries no
-    // hung-liveness entry when repo-less, rather than guessing wrong in either direction.
-    let newly_hung = scratch_root.is_some() && hung.iter().any(|h| !pre_hung_ids.contains(&h.id));
-    step.attention = merge_hung_attention(step.attention, newly_hung, || {
-        rigger::liveness::halt_reason(&hung)
-    });
-    // `step` is now fully finalized - nothing below this point mutates it further.
-    //
-    // DELIVER the step BEFORE persisting the hung-attention cursor (spec 69, criterion 5;
-    // review u69c5 round 5, cause genuine-defect, finding
-    // adv-u69c5r4-cursor-write-outruns-its-own-delivery): the `println!` below is `attention`'s
-    // SOLE delivery channel - it is never appended to the event log (see `Step`'s own
-    // `attention` field: `skip_serializing_if = "Vec::is_empty"`, live-wire-only by design) -
-    // so persisting the cursor first would let a process death strictly between the two calls
-    // (SIGKILL, OOM, a broken pipe to the driver) durably mark a crossing "already surfaced"
-    // even though no observer ever actually saw it: the next invocation's `pre_hung_ids` would
-    // already contain the id, so `newly_hung` reads false forever after - silently swallowing a
-    // genuine crossing, the exact failure mode this whole mechanism exists to close. Printing
-    // FIRST means a crash in that window instead costs one harmless extra restamp next step
-    // (the cursor never got updated, so the unchanged crossing is detected again) - the same
-    // "fail toward one extra harmless re-notification, never toward silently swallowing a
-    // genuine new crossing" direction `write_hung_cursor`'s own doc comment already commits to.
-    println!("{}", serde_json::to_string(&step)?);
-    // Persist the hung-attention cursor (spec 69, criterion 5; review u69c5 round 3, cause
-    // genuine-defect): overwrite it with THIS step's own full `hung` set - the exact set
-    // `pre_hung_ids` above just diffed against - so the NEXT `rigger step` invocation (this
-    // process's own next step, OR the very next one after an out-of-band driver fault) reads
-    // an up-to-date boundary rather than the one this process itself started with. Best-effort;
-    // a write failure only risks one extra re-stamp later, never fails this step (see
-    // `liveness::write_hung_cursor`'s own doc comment). Runs AFTER the print above, never
-    // before it (see that comment for why).
-    if let Some(root) = &scratch_root {
-        let current_hung_ids: std::collections::BTreeSet<String> =
-            hung.iter().map(|h| h.id.clone()).collect();
-        if let Err(e) = rigger::liveness::write_hung_cursor(root, &run_id, &current_hung_ids) {
-            eprintln!("rigger step: could not persist the hung-attention cursor: {e}");
-        }
-    }
-    // RUN TEARDOWN at a terminal run state (spec 34, criterion 3): reclaim the run's run-level
-    // shared scratch - `agent-scratch` (probe repos + verification builds a worker parks under
-    // <scratch-root>/agent-scratch per the driver's scratch policy), `agent-live` (per-spawn
-    // liveness markers, spec 10 unit 3), and the SHARED build cache (`cargo-target`/`target`
-    // directly under the root, the driver's `CARGO_TARGET_DIR` - the unbounded multi-GB leak
-    // spec 34 names). These exist only to serve in-flight spawns, so once the run is terminal
-    // with no spawn live they are pure residue; leaving them is how a wedged/halted run leaks
-    // gigabytes of build debris (Gap 14). The orphan-sweep backstop (criterion 2) deliberately
-    // SPARES these shared areas while the run steps (a live spawn may still be building into
-    // them), so their reclamation is exactly this run-level teardown - fired for EVERY terminal
-    // state, not just a clean fixpoint: a wedge/escalation and a budget halt reclaim too.
-    //
-    // Gated on the SINGLE `terminal_and_no_live_worker` predicate (the never-delete-live-owned
-    // rail): the step is `done` (its pass parked nothing), the pending frontier is empty, no
-    // liveness-fault spawn may still be alive, AND no manual-review pause is still pending. The
-    // SAME predicate gates the definition-drift teardown above, so EVERY still-advancing
-    // condition is inherited by both sites and none can drift between them. It generalizes the former clean-fixpoint-only guard (`step.done &&
-    // halted.is_none()`) to also fire on a budget halt / escalation while still sparing a liveness
-    // halt or a manual-review pause. Best-effort - never fails the step. `?` here can never
-    // actually err: all three sub-reads (`step_result` and `hung_spawns`, both read through
-    // `liveness::unended_spawns`, and `ledger::project`) already succeeded above on this same
-    // `events` (the last inside `conductor::run`, which produced `rs`), so the predicate is pure
-    // recomputation over an in-memory slice.
-    //
-    // The unended-spawns core (the frontier and the hung) is NECESSARY but not SUFFICIENT for run
-    // terminality: a manual-review PAUSE (`autonomy: manual` on a gated stage, §4.3) emits
-    // `ManualReview` and returns its unit pending WITHOUT ever parking an implementer spawn, so it
-    // leaves an EMPTY frontier and no hung spawn - the core reads terminal - yet the run is
-    // manual-review-pending, i.e. NOT converged and STILL ADVANCING (a human will approve+integrate
-    // it on a later step). That is exactly a run this rail must SPARE. The manual-review exclusion
-    // is FOLDED INTO the shared predicate (it projects the `manual_review` inbox from the scoped
-    // events), so both this terminal site and the drift early-return above spare a paused run
-    // without any per-caller guard to keep in sync. (A budget halt / escalation IS terminal per
-    // criterion 3 and leaves the inbox empty, so those still reclaim - only a non-terminal
-    // manual-review pause is excluded.)
-    if rigger::liveness::terminal_and_no_live_worker(&events, &step)? {
-        if let Some(root) = &scratch_root {
-            reclaim_run_scratch(root);
-        }
-    }
-    Ok(())
-}
-
-/// Merge the hung-liveness half of signal 2 (`halted`) into `attention` (spec 69, criterion
-/// 5; review u69c5 round 3, cause genuine-defect) and restore the canonical kind order -
-/// pulled out of [`cmd_step`] (not reachable through the crate API - `main.rs` is a binary)
-/// purely so the PRECEDENCE-AND-ORDERING mechanics are independently unit-testable, separate
-/// from the CROSSING decision (`newly_hung`, computed at the call site from `pre_hung_ids` -
-/// see `conductor::compute_attention`'s own doc comment for why that decision cannot live
-/// inside `conductor::run` itself).
-///
-/// `attention` already carries whatever `compute_attention` built (escalated / spec-defect /
-/// budget-halted / reject-recurrence / budget-final-tenth / stalled-frontier, in THAT
-/// canonical order). Pushes ONE run-scoped `halted` entry - built lazily via `reason` only
-/// when actually needed, since `liveness::halt_reason` walks the whole hung set - when
-/// `newly_hung` is true AND no `halted` entry is already present (a budget halt this same
-/// call takes precedence, mirroring the precedence the `halted` wire field gives a conductor
-/// halt - the budget breaker's, else a plan-critique spec-defect stop's - over the hung
-/// fallback, just above this function's call site; a spec-defect stop carries no `halted`
-/// attention entry, its entry being the gate's own `spec-defect` one). A STABLE sort by
-/// [`ledger::attention_kind_rank`] afterward only ever needs to relocate the ONE entry just
-/// appended - `compute_attention`'s own entries are already in canonical order, and a stable
-/// sort never disturbs their relative order (e.g. two `stalled-frontier` units stay lexical) -
-/// so the merged array is byte-identical to what `compute_attention` alone would have produced
-/// had it been able to see this crossing.
-fn merge_hung_attention(
-    mut attention: Vec<ledger::AttentionEntry>,
-    newly_hung: bool,
-    reason: impl FnOnce() -> String,
-) -> Vec<ledger::AttentionEntry> {
-    if newly_hung && attention.iter().all(|e| e.kind != ledger::ATTENTION_HALTED) {
-        attention.push(ledger::AttentionEntry::run_scoped(
-            ledger::ATTENTION_HALTED,
-            reason(),
-        ));
-        attention.sort_by_key(|e| ledger::attention_kind_rank(e.kind));
-    }
-    attention
-}
-
-/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3), at
-/// `rigger step`'s terminal sites and once `rigger run`'s conductor loop returns done:
+/// Reclaim the run's run-level shared scratch at a terminal run state (spec 34, criterion 3),
+/// once `rigger run`'s conductor loop returns done:
 /// `agent-scratch` (probe repos + verify builds a worker parks there), `agent-live` (per-spawn
 /// liveness markers), `agent-stream` (a headless host's raw transcripts), and the SHARED build
 /// cache - `cargo-target` and `target` directly under the scratch root, the driver's
-/// `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are the
-/// run-level areas the orphan-sweep backstop deliberately spares while the run is stepping (a
-/// live spawn may still be building into them); once the run is terminal and no spawn is live
-/// they are pure residue, so this teardown - and only this teardown - reclaims them. The two
-/// build-cache names mirror exactly what `rigger validate`'s residue report flags as a shared
-/// cache (`scan_residue`), so validate-reports and step-reclaims stay in lockstep.
+/// `CARGO_TARGET_DIR`, the unbounded multi-GB leak. These are run-level areas a live spawn
+/// may still be building into while the run drives; once the run is terminal and no spawn is
+/// live they are pure residue, so this teardown - and only this teardown - reclaims them. The
+/// two build-cache names mirror exactly what `rigger validate`'s residue report flags as a
+/// shared cache (`scan_residue`), so validate-reports and run-reclaims stay in lockstep.
 ///
 /// The three agent areas are reclaimed entry by entry ([`remove_agent_area_entries`]), each area
 /// then removed once empty: a critique run's entries (`critique-<hash>`) share those areas and
@@ -1095,13 +473,13 @@ fn merge_hung_attention(
 /// dir removed under the resolved scratch `root` (`RIGGER_TMPDIR` > `defaults.workdir` > repo
 /// default), never a hardcoded `.rigger/tmp`, so a relocated scratch root stays safe and only
 /// rigger's own scratch is ever reaped. Every half is best-effort - a missing area is a graceful
-/// no-op (platform-tolerant, idempotent), never an error that fails the step. Per-unit worktrees
+/// no-op (platform-tolerant, idempotent), never an error that fails the run. Per-unit worktrees
 /// and their `cargo-target-<slug>` caches are NOT this function's concern - those are reclaimed
-/// when their unit goes terminal (`Worktree::remove` / `sweep_terminal` / the orphan-sweep),
-/// never while a later stage of the same unit still needs them.
+/// by `Worktree::remove` at the end of their unit's stage, never while a later stage of the same
+/// unit still needs them.
 ///
 /// The bare `cargo-target`/`target` removals are the first code to delete those names directly
-/// under the root (the orphan-sweep and `rigger validate` only ever touch the per-unit
+/// under the root (`Worktree::remove` and `rigger validate` only ever touch the per-unit
 /// `cargo-target-<slug>` siblings), so this is safe ONLY because `root` is the RESOLVED rigger
 /// scratch root (`RIGGER_TMPDIR` > `defaults.workdir` > the repo default `.rigger/tmp`), a
 /// directory rigger owns end to end - never the repo root. An operator who misconfigures the
@@ -1132,6 +510,33 @@ fn reclaim_run_scratch(root: &str) {
     }
     let _ = reclaim_shared_build_cache(&base.join(rigger::worktree::SHARED_BUILD_CACHE_NAME), base);
     reap_then_remove_dir(&base.join("target"), base);
+}
+
+/// The one teardown every ending of a `rigger run` passes through: dropped as `run_cli` returns,
+/// done, halted, escalated or failed, it reclaims the run-level scratch ([`reclaim_run_scratch`])
+/// unless the run ended with a unit awaiting a human, whose review resumes it. No spawn of the run
+/// is live by then: the run reaps every earlier launch at its start and the driver reaps each
+/// launch it makes before the conductor returns. A log that cannot be read reclaims nothing, and a
+/// project with no scratch root has none to reclaim.
+struct RunTeardown<'a> {
+    scratch: Option<&'a str>,
+    store: &'a dyn EventStore,
+}
+
+impl Drop for RunTeardown<'_> {
+    fn drop(&mut self) {
+        if let Some(root) = self.scratch.filter(|_| awaits_no_human(self.store)) {
+            reclaim_run_scratch(root);
+        }
+    }
+}
+
+/// Whether the current run's log reads, and no unit of it awaits a human's review.
+fn awaits_no_human(store: &dyn EventStore) -> bool {
+    runscope::read::read_current_run(store, conductor::STREAM)
+        .ok()
+        .and_then(|(events, _)| ledger::project(&events).ok())
+        .is_some_and(|rs| rs.manual_review.is_empty())
 }
 
 /// The agent areas under a scratch root, each holding one entry per run: the scratch a worker
@@ -1165,238 +570,12 @@ pub(crate) fn remove_agent_area_entries(scratch_root: &Path, takes: impl Fn(&str
     }
 }
 
-/// `rigger reported <id>` - exit 0 iff spawn `<id>` already has a recorded result in this
-/// project's run stream, and non-zero (a clear error) when it does not.
-///
-/// A read-only "has this spawn reported yet?" query - it never writes. It was originally
-/// the READ half of the driver's two-process check-then-record death-report guard
-/// (decision `thin-driver-death-guard`): the courier ran `rigger reported <id> || rigger
-/// result <id> --error <why>` so the `--error` landed ONLY when no result existed yet,
-/// because recording UNCONDITIONALLY would clobber a self-report ([`spawn::result_of`] is
-/// last-write-wins) and force-fail a genuinely successful/approved unit on the next replay.
-/// That read-then-write pair left a TOCTOU window (a self-report landing between the check
-/// and the record was still clobbered), so the death courier now records atomically via a
-/// single `rigger result <id> --if-absent --error <why>` instead (spec 05; the write path
-/// is [`spawn_store::record_result_if_absent`]). This command is retained as a standalone check -
-/// e.g. an operator asking whether a spawn is answered - not as the courier's guard.
-///
-/// Composition mirrors [`cmd_result`]: the store is RESOLVED by walking up to the owning
-/// root and scoped by that root's identity (via [`require_store_dir`]), the SAME per-project
-/// namespaced sqlite run stream the write half lands in - so the guard and the self-report
-/// can never disagree about which store/stream is authoritative (a cwd-relative or cwd-git-
-/// worktree read could see "not reported" off-root and clobber a real self-report). The
-/// stream is read forward from revision 0 and projected through [`spawn::result_of`] - the
-/// exact boundary and projection the replay driver uses to decide answer-vs-park, so this
-/// check agrees with the conductor by construction. The namespace-scoped read and its
-/// absent/unreported edges live in the testable [`result_of_at`] seam.
-pub(crate) fn cmd_reported(args: &[String]) -> Res {
-    let id = match args {
-        [id] => id.as_str(),
-        _ => return Err("reported: expected exactly one spawn id: rigger reported <id>".into()),
-    };
-    // Resolve the store the SAME way `cmd_result` does - walk UP to the owning root and
-    // bind identity to THAT root - so the death-report guard reads the exact namespaced
-    // stream a self-report landed in. Reading a cwd-relative store (or the cwd's git-
-    // worktree identity) could see "not reported" off-root and clobber a real self-report
-    // with an `--error` (arch-reported-result-store-asym). When no store exists up-tree,
-    // nothing could have been reported: treat it as unreported (the guard proceeds), the
-    // same outcome as `result_of_at`'s absent-db edge, without fabricating a store.
-    let reported = match require_store_dir() {
-        Ok((loc, sel)) => result_of_at(&loc.file("events.db"), &loc.identity(), id, &sel)?,
-        Err(_) => None,
-    };
-    match reported {
-        // Already answered: print a one-line summary (for the courier's log) and exit 0, so
-        // the guard's `|| rigger result <id> --error` is SKIPPED and the existing result -
-        // the worker's own report - stands untouched.
-        Some(res) => {
-            println!(
-                "{} {}",
-                res.id,
-                if res.is_error() { "failed" } else { "ok" }
-            );
-            Ok(())
-        }
-        // No result yet: exit non-zero (a clear error) so a caller can tell the spawn is still
-        // unanswered.
-        None => Err(format!("reported: spawn {id:?} has no recorded result yet").into()),
-    }
-}
-
-/// `rigger prompt <spawn-id>` - print the parked spawn's full prompt (persona + task)
-/// on stdout. The thin driver's waves are SLIM manifests (spawn-by-reference): a
-/// review-round prompt can run to hundreds of kilobytes, which cannot survive a
-/// model-relayed structured output verbatim, so the worker fetches its own prompt
-/// straight from the log.
-///
-/// A store-opening COURIER, invoked BY THE WORKER from inside its unit worktree, so it
-/// resolves the store the SAME way `cmd_reported`/`cmd_result` do - walk UP to the owning
-/// root and scope by that root's identity (via [`require_store_dir`] /
-/// [`StoreLocation::identity`]) - reading the `proj-<repo>-run` stream the conductor parked
-/// the spawn in. A cwd-relative `Store::open(&db_path("events.db"))` would instead FABRICATE
-/// a fresh empty `.rigger/events.db` inside the worktree (which carries the tracked
-/// `.rigger/` but never the gitignored store) and then report "no spawn request recorded"
-/// for every id, stranding the worker that ran it - the exact store-opening defect spec 05
-/// closes, and the reason this sibling of `cmd_reported` must not stay a parallel un-hardened
-/// store-opener.
-pub(crate) fn cmd_prompt(args: &[String]) -> Res {
-    let id = match args {
-        [id] => id.as_str(),
-        _ => return Err("prompt: expected exactly one spawn id: rigger prompt <id>".into()),
-    };
-    let (events, _) = over_the_run_store(|_, _, store| {
-        Ok(runscope::read::read_current_run(store, conductor::STREAM)?)
-    })?;
-    println!("{}", prompt_reply(&events, id)?);
-    Ok(())
-}
-
-/// What `rigger prompt <id>` answers from the run's `events`: the spawn's full prompt
-/// ([`spawn::prompt_for`]), or a refusal - for an id no request is recorded under, and for a spawn
-/// that already ended ([`ended_refusal`]), so a worker a resumed driver re-spawns for a replayed
-/// wave stops before doing any work.
-fn prompt_reply(events: &[Event], id: &str) -> Result<String, String> {
-    if let Some(refusal) = ended_refusal(events, id).map_err(|e| e.to_string())? {
-        return Err(format!("prompt: {refusal}"));
-    }
-    spawn::prompt_for(events, id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("prompt: no spawn request recorded for {id:?}"))
-}
-
-/// `rigger scratch <spawn-id>` - print spawn `<id>`'s own rigger-assigned scratch
-/// container: the exact [`spawn_scratch_path`] the per-spawn reclaim (`cmd_result`'s
-/// [`reclaim_spawn_scratch`]) already reaps at the spawn's terminus (spec 34, criterion 1).
-///
-/// This is the fix spec 77's AGENT SCRATCH IS SPAWN-OWNED design bullet names: the driver
-/// cannot pass env to a workflow-driven agent (`agent()` takes only phase/model/schema/
-/// label), so a worker's own manual scratch and `CARGO_TARGET_DIR` used to be directed by
-/// PROSE at an unbucketed `agent-scratch/` literal and the shared build cache - producing
-/// top-level ad-hoc dirs no run/spawn owns. `rigger scratch <spawn>` lets a worker fetch
-/// its own container at runtime instead, exactly the pattern [`cmd_prompt`] already
-/// established (a worker fetches its own slim data from the log by spawn id).
-///
-/// Resolves `scratch_root`/`run_id` through the IDENTICAL precedence
-/// [`reclaim_spawn_scratch`] uses (the config's `workflow.defaults.workdir`, then the live
-/// run's `RunStarted` via [`runscope::current_run_id`]), so the printed path is
-/// byte-identical to the one path authority the reaper targets - never a second,
-/// independently-derived scratch path that could drift from it.
-///
-/// A store-opening COURIER, invoked BY THE WORKER (mirrors [`cmd_prompt`]/[`cmd_reported`]):
-/// resolves the store by walking UP to the owning root and scoping by that root's identity,
-/// so a worker running this from inside its own unit worktree still reads the real run's
-/// `RunStarted` rather than fabricating a fresh, run-less store.
-pub(crate) fn cmd_scratch(args: &[String]) -> Res {
-    let id = match args {
-        [id] => id.as_str(),
-        _ => return Err("scratch: expected exactly one spawn id: rigger scratch <id>".into()),
-    };
-    over_the_run_store(|loc, _, store| {
-        let (_, run_id) = runscope::read::read_current_run(store, conductor::STREAM)?;
-        let repo = loc
-            .dir
-            .parent()
-            .and_then(|p| p.to_str())
-            .ok_or("scratch: could not resolve the project root")?;
-        // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
-        // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
-        // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
-        // `Config::validate` just to learn this one string field, and previously left this
-        // function diverging from the reaper it must stay byte-identical to (see this
-        // function's own doc comment) whenever `Config::validate` failed for an unrelated
-        // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
-        let (workdir, _max_retries) = scratch_defaults(loc);
-        let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
-        match spawn_scratch_path(&scratch_root, &run_id, id) {
-            Some(path) => {
-                println!("{}", path.display());
-                Ok(())
-            }
-            None => Err(format!("scratch: {id:?} does not name a usable scratch path").into()),
-        }
-    })
-}
-
-/// The parsed flags of a `rigger step` invocation.
-struct StepArgs {
-    /// The spec whose Done-when criteria drive the deterministic decomposition, or
-    /// None for an unconstrained step (exactly as `rigger run` uses `--spec`).
-    spec: Option<String>,
-    /// The ref the run branch is anchored to (`--base`, default [`DEFAULT_BASE_REF`]).
-    base: String,
-    /// Whether `--base` was passed explicitly (vs. the default). Used to warn only when
-    /// an operator's EXPLICIT base is ignored because the run branch already exists -
-    /// the steady-state default reuse is silent, an explicit-but-ignored base is not.
-    base_explicit: bool,
-    /// `--fresh`: begin a NEW run for the spec's criteria before this step, even when the
-    /// latest run matches (which the conductor's `ensure_started` would adopt). A ONE-SHOT
-    /// the DRIVER passes on the first step of an explicit restart - the evented recovery
-    /// from a run wedged in a terminal state whose spec is unchanged; see
-    /// [`rigger::run_store::start_fresh`]. Plain steps after it adopt the boundary it began.
-    fresh: bool,
-    /// `--rebase-definition` (spec 13, unit 1): on a live-run step whose on-disk definition
-    /// drifted from the hash pinned at start, record the supersession and continue on the new
-    /// definition instead of HALTING loudly. The operator's explicit mid-campaign-edit escape.
-    rebase_definition: bool,
-}
-
-/// Parse `rigger step`'s flags: an optional `--spec <path>` (the spec whose Done-when
-/// criteria drive the deterministic decomposition, exactly as `rigger run` uses it) and
-/// an optional `--base <ref>` (the run-branch base, default [`DEFAULT_BASE_REF`]). Each
-/// flag requires its value, and an unknown flag or a bare positional is a clear error,
-/// so a typo never silently runs an unconstrained step.
-fn parse_step_args(args: &[String]) -> Result<StepArgs, Box<dyn std::error::Error>> {
-    let mut spec = None;
-    let mut base = None;
-    let mut fresh = false;
-    let mut rebase_definition = false;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--fresh" => fresh = true,
-            "--rebase-definition" => rebase_definition = true,
-            "--spec" => {
-                i += 1;
-                spec = match args.get(i) {
-                    Some(p) => Some(p.clone()),
-                    None => return Err("step: --spec expects a path".into()),
-                };
-            }
-            "--base" => {
-                i += 1;
-                base = match args.get(i) {
-                    Some(r) => Some(r.clone()),
-                    None => return Err("step: --base expects a ref".into()),
-                };
-            }
-            flag if flag.starts_with("--") => {
-                return Err(format!("step: unknown flag {flag:?}").into());
-            }
-            positional => {
-                return Err(format!(
-                    "step: unexpected positional argument {positional:?}; pass the spec via --spec <path>"
-                )
-                .into());
-            }
-        }
-        i += 1;
-    }
-    Ok(StepArgs {
-        spec,
-        base_explicit: base.is_some(),
-        base: base.unwrap_or_else(|| DEFAULT_BASE_REF.to_string()),
-        fresh,
-        rebase_definition,
-    })
-}
-
 /// Warn on stderr when the run branch was anchored somewhere OTHER than the base the
 /// operator asked for, so a divergence is never silent (the old behavior silently
 /// no-op'd an unresolvable base and silently ignored `--base` on every run after the
-/// first). `cmd` names the invoking command (e.g. `"rigger step"`, `"rigger run"`) so the
-/// advisory reads true for whichever run entry anchored. Any primary output (the step's
-/// `{wave,done}` JSON) still goes to stdout untouched; these are stderr advisories, not
-/// errors - isolation is intact in every case, only the anchor differs.
+/// first). `cmd` names the invoking command (e.g. `"rigger run"`) so the advisory reads true
+/// for whichever command anchored. Any primary output still goes to stdout untouched; these are
+/// stderr advisories, not errors - isolation is intact in every case, only the anchor differs.
 ///
 /// A [`RunBranchSetup::CreatedFromHead`] here is a HEAD fallback with a VALID HEAD: the
 /// configured base did not resolve, but the current HEAD is a real commit, so the run branch
@@ -1433,8 +612,8 @@ fn warn_on_run_branch_divergence(
 /// Anchor the run branch off `base` before a run entry drives the conductor, so every
 /// unit worktree branches off [`RUN_BRANCH`] and integration merges never land on the
 /// operator's own branch (spec 18, criterion 6 threads `--base` here). Creates and checks
-/// out [`RUN_BRANCH`] off `base` (or off HEAD when `base` does not resolve - the same
-/// fallback `cmd_step` uses), reusing an existing run branch untouched. `cmd` labels the
+/// out [`RUN_BRANCH`] off `base` (or off HEAD when `base` does not resolve), reusing an
+/// existing run branch untouched. `cmd` labels the
 /// command in the error and the divergence advisory. A failure aborts the run with an
 /// actionable error rather than driving the conductor on the wrong branch - isolation is a
 /// precondition, not best-effort. Callers guard this on a real repo (a repo-less invocation
@@ -1555,14 +734,13 @@ impl SleepHold for RecordingSleepHold {
     }
 }
 
-/// Append `line` and a newline to the file at `path`, creating the file when absent.
+/// Append `line` and a newline to the file at `path` in one write, creating the file when absent.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?
-        .write_all(format!("{line}\n").as_bytes())
+        .open(path)?;
+    rigger::whole_line::write_line(&mut file, format_args!("{line}"))
 }
 
 /// The keep-awake fake whose every acquire answers unavailable with its reason: what
@@ -1601,7 +779,7 @@ fn pause_a_hold_poll() {
 /// A supervisor start's reconciliation (spec 105, RESUME BY SESSION): every launch the progress
 /// `store` holds open, of any run ([`progress::open_launches`]), is closed
 /// [`progress::ENDED_INTERRUPTED`] with no class on its own run's stream, so the close enters no
-/// fault count. The start holds the step lock, so no step or run of its own is driving them; a live
+/// fault count. The start holds the step lock, so no other `rigger run` is driving them; a live
 /// `rigger critique`'s launch is closed too, and that false close stands until its own close lands.
 /// Each launch is reaped before its close, so a crash between the two re-reaps at the next start:
 /// what is still rooted under its `dir`, when the project has a `scratch` root and the record names
@@ -1650,19 +828,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger prime` hook, which the installed hook always invokes with zero args - see
     // `spec_lint_next_step`'s doc comment). Printed FIRST, before any config load or base
     // check, so the reminder survives every downstream refusal or failure path, not only a
-    // successful run. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP): a genuinely
-    // nested `rigger run` stays silent, ambient env pollution from an unrelated tree still
-    // prints.
+    // successful run.
     if let Some(spec) = &parsed.spec {
-        if spec_lint_reminder_should_print() {
-            println!("{}", spec_lint_next_step(spec));
-        }
+        println!("{}", spec_lint_next_step(spec));
     }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
-    // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
-    // doc comment.
+    // THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST - see `resolve_main_worktree_or_refuse`'s doc comment.
     let cwd = cwd();
     let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
+    refuse_outside_a_project(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -1674,7 +848,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     std::fs::create_dir_all(RIGGER_DIR)?;
     // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
     // this run returns, before any store is opened, any launch closed or any run branch anchored,
-    // so a second `rigger run` or a `rigger step` beside this one refuses with the busy refusal
+    // so a second `rigger run` beside this one refuses with the busy refusal
     // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
     let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
@@ -1685,7 +859,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         migrate_local_identity(None)?;
     }
     let progress_backend = open_progress_backend()?;
-    let progress = Namespaced::new(&progress_backend, &project_identity());
+    let identity = project_identity()?;
+    let progress = Namespaced::new(&progress_backend, &identity);
     // No launch the progress store holds open has a live driver now that this run holds the
     // step lock: each is reaped and closed before the base gates, so a start they refuse has
     // already reconciled. The reconciliation reads the progress store alone, so the run store
@@ -1697,9 +872,8 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     )?;
     // Anchor + check out the run branch off `--base` (spec 18, criterion 6) BEFORE the
     // conductor branches any unit worktree off HEAD, so machine-generated units never
-    // branch/merge onto the operator's own branch. `--base` threads here exactly as it does
-    // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
-    // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
+    // branch/merge onto the operator's own branch. The effective base is the `--base` flag,
+    // then the `RIGGER_BASE` env override, then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
@@ -1730,39 +904,54 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
     // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
-    // run. Registered here, off the same resolved `selection` `rigger step` uses, so a native
-    // `rigger run` is as discoverable as the stepwise loop path.
-    let _registration = register_run_instance(&repo, &selection);
+    // run. Registered here, off the same resolved `selection` the run store opens on, so
+    // discovery names the store this run drives.
+    let _registration = register_run_instance(&repo, &identity, &selection);
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
     let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
+    let store = Namespaced::new(backend.as_ref(), &identity);
+    let graph = open_graph(&db_path("graph.db"), &identity, &selection, "run")?;
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
+    // Every way this run ends from here - done, a halt, an escalation, a refusal or an error -
+    // passes through this one teardown, dropped after the driver, the dash and the gate socket.
+    let _teardown = RunTeardown {
+        scratch: scratch.as_deref(),
+        store: &store,
+    };
+    // RUN-START SWEEPS: leftovers of earlier runs are reclaimed under the step lock, before the
+    // conductor adds any unit worktree. The terminal sweep runs ahead of the definition pin, so a
+    // run that halts on drift still reclaims its integrated worktrees.
+    let sweep_root = scratch.as_deref().filter(|_| !repo.is_empty());
+    if let Some(root) = sweep_root {
+        sweep_terminal_at_start(&repo, root, &cfg.workflow, &store);
+    }
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
-    // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
-    // human-facing channel and the `--fresh` notice belongs there, unchanged.
+    // unchanged spec.
     fresh_run_if_requested(
         parsed,
         &folding,
         &criteria,
-        false,
         &base_tip,
         &spawn_host.helpers,
         &RunStartCritique {
             command,
             backend: backend.as_ref(),
-            identity: &project_identity(),
+            identity: &identity,
             workflow: &cfg.workflow,
             root: &review::spec_root(&cwd, &repo),
             text: &text,
         },
     )?;
+    // The orphan sweep runs behind `--fresh`'s mint, so a superseded run's scratch reads as dead.
+    if let Some(root) = sweep_root {
+        reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
+    }
     let driver = claude_code::Driver {
         bin: String::new(),
         rigger_bin: running_executable(),
@@ -1776,16 +965,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     };
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
-    let held = HeldDriver::new(
-        &driver,
-        &folding,
-        rigger::held::Results::Recorded,
-        None,
-        &pause_a_hold_poll,
-    );
+    let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
-    let hash_blob = hash_blob_in(&root);
+    // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at.
+    let code_store = run_code_store(&repo);
+    // The grounding reads compare with the operator checkout the run lands its merges on, named
+    // as every reader names its worktree; a unit's read compares with the unit's own worktree.
+    let read_graph = ReadGraph::new(&graph, tree_of(Path::new(&repo))?);
     let deps = Deps {
         store: &store,
         driver: &held,
@@ -1795,9 +982,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         graph: Some(&graph),
         criteria,
         log: &stderr_line,
-        hash_blob: &hash_blob,
         check_emit: &rigger::contextgraph::check_emit,
         spawn_host,
+        code_store: code_store.as_deref(),
+        context: Some(&read_graph),
     };
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
@@ -1813,13 +1001,35 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             stderr_line(&format!("rigger run: the hold probe: {e}"));
         }
     };
+    // SIGNED VERDICTS: this driver process's verdict key lives only in its memory, and the
+    // project's gate request socket ([`rigger::gate_socket::socket_path`]) carries each
+    // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
+    // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only. A
+    // project with no repository has no unit worktree a request could come from, so it binds none.
+    let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
+    let socket = (!root.is_empty())
+        .then(|| {
+            rigger::gate_socket::socket_path(Path::new(&root))
+                .and_then(|path| rigger::gate_socket::GateSocket::bind(&path))
+                .inspect_err(|e| {
+                    stderr_line(&format!(
+                        "rigger run: gate requests are not served ({e}); `rigger gate <id>` runs \
+                         for information only and records nothing"
+                    ))
+                })
+                .ok()
+        })
+        .flatten();
+    let channel = socket
+        .as_ref()
+        .map(|s| s as &dyn rigger::gate_channel::GateChannel);
     let rs = beating(
         &store,
         &progress,
         rigger::progress::SUPERVISOR_BEAT_INTERVAL,
         || {
             ticking(HOLD_POLL_INTERVAL, control_holds, || {
-                conductor::run(&cfg, &deps)
+                conductor::run_serving(&cfg, &deps, verdict_key, channel)
             })
         },
     )?;
@@ -1833,12 +1043,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                 "rigger run: the done run's hold was not released: {e}"
             ));
         }
-    }
-    // The conductor returned, so no spawn of this run is live: a done run's scratch is residue. A
-    // run that stopped short of done keeps it for the resume, and a project with no scratch root
-    // has none to reclaim.
-    if let Some(root) = scratch.as_deref().filter(|_| rs.done()) {
-        reclaim_run_scratch(root);
     }
     // The release-target base the ready-to-release handoff names (spec 38, criterion 3): read
     // the base PERSISTED on this run's RunStarted, so the end-of-run summary, `rigger status`,
@@ -1876,8 +1080,85 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     Ok(())
 }
 
-/// Begin (or adopt) and definition-PIN the run both `run` drivers drive (spec 13, unit 1).
-/// First, before anything is appended, a command that would begin a new run on a spec whose
+/// The unit branches `workflow` declares: config, never the event log, so it is populated even
+/// before a project's first run records an event. Both run-start sweeps spare a dirty candidate
+/// only when it is one of these.
+fn declared_unit_branches(workflow: &config::Workflow) -> std::collections::HashSet<String> {
+    workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect()
+}
+
+/// Remove the terminal worktrees under `root` (integrated units, review scaffolding) that an
+/// earlier run left, sparing every unit still live in the current run and any branch whose latest
+/// spawn is still in flight ([`rigger::worktree::sweep_terminal`]). An unreadable stream skips
+/// the sweep ([`live_branches_for_sweep`]), since liveness may be under- but never over-determined.
+/// Best-effort: a failure warns and never blocks the run.
+fn sweep_terminal_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    let Some(live_branches) =
+        live_branches_for_sweep(runscope::read::read_run(store, conductor::STREAM))
+    else {
+        return;
+    };
+    let fence_events = runscope::read::read_current_run(store, conductor::STREAM)
+        .map(|(run, _)| run)
+        .unwrap_or_default();
+    match rigger::worktree::sweep_terminal(
+        repo,
+        root,
+        RUN_BRANCH,
+        &live_branches,
+        &declared_unit_branches(workflow),
+        &fence_events,
+    ) {
+        Ok(0) => {}
+        Ok(n) => stderr_line(&format!(
+            "rigger run: swept {n} terminal worktree(s) from {root}"
+        )),
+        Err(e) => stderr_line(&format!("rigger run: scratch sweep skipped: {e}")),
+    }
+}
+
+/// Reclaim the scratch under `root` no live unit of the current run owns: an earlier run's
+/// stranded worktree or build cache, or a cache an agent wrote outside its assigned path
+/// ([`reclaim_orphan_scratch`]). The shared areas a running spawn may write into are spared.
+/// Best-effort: a failure warns and never blocks the run.
+fn reclaim_orphans_at_start(
+    repo: &str,
+    root: &str,
+    workflow: &config::Workflow,
+    store: &dyn EventStore,
+) {
+    match runscope::read::read_run(store, conductor::STREAM) {
+        Ok(events) => {
+            let removed = reclaim_orphan_scratch(
+                repo,
+                root,
+                &current_run_units(&events),
+                &declared_unit_branches(workflow),
+            );
+            if removed > 0 {
+                stderr_line(&format!(
+                    "rigger run: reclaimed {removed} orphaned scratch entr{} under {root}",
+                    if removed == 1 { "y" } else { "ies" }
+                ));
+            }
+        }
+        Err(e) => stderr_line(&format!("rigger run: orphan sweep skipped: {e}")),
+    }
+}
+
+/// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
+/// First, a run that is not `--fresh` reads its hold and names a standing one on stderr
+/// ([`held_line`], this driver's own beat being the latest), failing on a hold it cannot read.
+/// Then, before anything is appended, a command that would begin a new run on a spec whose
 /// critique is not clean is refused (spec 112, [`RunStartCritique::refuse_unless_clean`]; the
 /// caller hands `critique`, naming its own command).
 /// When `--fresh` is set it appends a new pinned `RunStarted` for `criteria` so the run starts
@@ -1885,16 +1166,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
 /// printing the new run id. It then enforces the definition pin ([`enforce_definition_pin`]):
 /// a drifted live-run definition HALTS loudly unless `--rebase-definition` records the
 /// supersession and continues. A fresh or unchanged run continues silently.
-///
-/// `fresh_notice_to_stderr` names which stream the `--fresh` notice is safe to land on for
-/// THIS caller (spec 66, criterion 5 escalation remedy round 2: adj-u66c5-escalation-remedy-
-/// verdict-reject-adjacent-fresh-leak upheld adv-u66c5-escalation-remedy-fresh-println-still-
-/// leaks-stdout - this notice was a bare, unconditional `println!` that corrupted
-/// `run_workflow`'s stdout, the live MCP JSON-RPC transport, even after that same round taught
-/// the DISCOVERABILITY reminder three lines above it to respect that invariant). `run_cli`
-/// passes `false`: stdout is the normal human-facing channel there and must keep printing.
-/// `run_workflow` passes `true`, mirroring the reminder's own `eprintln!` three lines above its
-/// call site - ONE shared implementation, not a second parallel copy per caller.
 ///
 /// `base_tip` is the run branch's tip commit sha the caller anchored at (spec 91), resolved via
 /// [`worktree::branch_tip`] right after its own `anchor_run_branch` call - BEFORE the conductor
@@ -1908,11 +1179,23 @@ fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
-    fresh_notice_to_stderr: bool,
     base_tip: &str,
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
+    // held run names its hold before anything refuses it and a hold it cannot read fails the run
+    // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
+    if !parsed.fresh {
+        if let Some(hold) = runscope::read::read_current_hold(store, conductor::STREAM)? {
+            let now = std::time::SystemTime::now();
+            stderr_line(&format!(
+                "{}: {}",
+                critique.command,
+                held_line(&hold, Some(now), now)
+            ));
+        }
+    }
     critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
     let definition = definition_hash(".", helpers)?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
@@ -1933,13 +1216,7 @@ fn fresh_run_if_requested(
             base_tip,
             parsed.spec.as_deref().unwrap_or(""),
         )?;
-        let notice =
-            format!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
-        if fresh_notice_to_stderr {
-            eprintln!("{notice}");
-        } else {
-            println!("{notice}");
-        }
+        println!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
     }
     enforce_definition_pin(
         store,
@@ -1977,8 +1254,7 @@ struct RunStartCritique<'a> {
 
 impl RunStartCritique<'_> {
     /// Refuse a command that would begin a new run on `spec` unless the critique of its text is
-    /// clean - the one decision every CLI run start makes before it appends anything. A held plain
-    /// `rigger step` never asks it, since a held step begins no run (spec 105). A command
+    /// clean - the one decision every CLI run start makes before it appends anything. A command
     /// with no spec, and one that adopts the latest run ([`runscope::adopted_run`] over the run
     /// stream's [`runscope::MINT_DECISION_TYPES`] events, `criteria` and `fresh`, as a command
     /// naming its spec), proceeds. Under a workflow naming no
@@ -2100,335 +1376,18 @@ fn new_run_refusal(command: &str, spec: &str, refusal: NewRunRefusal) -> String 
     refused
 }
 
-/// The in-Claude-Code MCP-server path (`rigger serve` / `rigger run --driver
-/// workflow`): the conductor orchestrates on a background thread, behind the
-/// [`HeldDriver`] that launches nothing while the run is held and ends its wait
-/// when the session closes, and this thread serves the MCP bridge over stdio. The
-/// store is selected by flag and wrapped in the per-project namespace decorator
-/// before it is injected into BOTH the conductor and the side-car (§5.1.1, R9).
-///
-/// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
-/// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
-/// literal `"rigger serve"` here, so [`resolve_main_worktree_or_refuse`]'s refusal names
-/// the command the operator actually typed instead of always naming `rigger serve` even
-/// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
-/// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
-///
-/// The machine stays awake through `sleep` from the moment the conductor starts until the MCP
-/// session ends, past a run already done while its session stays open ([`keep_awake`]).
-fn run_workflow(parsed: &RunArgs, command: &str, sleep: &dyn SleepHold) -> Res {
-    // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
-    // workflow path is a REAL pre-launch surface holding the spec path - the one the
-    // /rigger workflow itself runs through, and the omission this unit was rejected for
-    // twice (adj-u66c5r6-reject-run-workflow-gap, adj-u66c5-rebuild-verdict-reject-dead-
-    // consumer). Printed FIRST, before any config load or base check, so the reminder
-    // survives every downstream refusal path; on stderr so the shim-captured stdout
-    // protocol stream stays clean. Gated on `spec_lint_reminder_should_print` (REMINDER
-    // DEDUP): the shim's validated pass-through suppresses a genuinely nested surface,
-    // ambient pollution from an unrelated tree still prints.
-    if let Some(spec) = &parsed.spec {
-        if spec_lint_reminder_should_print() {
-            eprintln!("{}", spec_lint_next_step(spec));
-        }
-    }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4, round 2): resolved and
-    // refused-or-not FIRST, before any config load, store touch or worktree mutation -
-    // mirroring `run_cli`'s and `cmd_step`'s own placement. `run_workflow` is `run_cli`'s
-    // sibling `DriverKind` dispatched from the same `cmd_run` (and is `rigger serve`'s sole
-    // implementation, via `cmd_serve` below) - round 1 of this criterion guarded `run_cli`
-    // and the Node-shim-launching `cmd_workflow` but missed THIS entry point, which every
-    // one of its repo-reading call sites called bare `git_repo()` with no refusal wired in
-    // at all: a `rigger serve` (the shape the shim's driver actually spawns on the
-    // automated `/rigger` path) invoked from a linked worktree drove straight into
-    // `anchor_run_branch` and failed with git's own opaque "already used by worktree"
-    // error, never this refusal. `repo` is resolved ONCE here and reused for the rest of
-    // this function (the branch anchor, instance registration, scratch root and the
-    // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
-    // resolution authority for the whole call, never several that could in principle
-    // disagree with each other or with this guard.
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
-    // Refuse before starting if a gating persona would stall the integration gate (spec 18,
-    // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
-    let cfg = load_run_config(".")?;
-    let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    // Anchor + check out the run branch off `--base` (spec 18, criterion 6) before the
-    // conductor branches any unit worktree off HEAD, mirroring `rigger step`. `rigger
-    // workflow` threads its `--base` here through the shim via the inherited `RIGGER_BASE`
-    // env (the shim spawns this `rigger serve` with the inherited environment); an explicit
-    // `--base` on `rigger serve` / `rigger run --driver workflow` takes precedence. Guarded
-    // on a real repo, so the repo-less path is untouched.
-    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
-    // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
-    // tip the run genuinely started at. `""` on the repo-less path.
-    let mut base_tip = String::new();
-    if !repo.is_empty() {
-        let (base, base_explicit) = resolve_run_base(
-            parsed.base.as_deref(),
-            std::env::var("RIGGER_BASE").ok().as_deref(),
-        );
-        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
-        // the side-effect-free planned anchor so no wrong-base run branch is ever created and
-        // the corrected `--base` retry re-anchors fresh.
-        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
-        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
-        // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
-        // branch that branches from nowhere.
-        refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
-        refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
-        anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
-        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-    }
-    // The host values every spawn of this run carries, resolved once, after the run-branch
-    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
-    // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
-    if selection.is_sqlite() {
-        migrate_local_identity(None)?;
-    }
-    // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
-    // `rigger run`, the served conductor drives the whole run in-process (on the background thread
-    // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
-    // MCP session; it is dropped when `run_workflow` returns. Reuses the `repo` this function
-    // resolved once above - see that resolution's own comment for why a second `git_repo()`
-    // re-read is never taken here any more. Best-effort - it never blocks.
-    let _registration = register_run_instance(&repo, &selection);
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity());
-    // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
-    // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
-    // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
-    // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    let graph = open_graph(&db_path("graph.db"), &project_identity(), &selection, "run")?;
-    fresh_run_if_requested(
-        parsed,
-        &rigger::ingest::folding_into(&store, Some(&graph), &stderr_line),
-        &criteria,
-        true,
-        &base_tip,
-        &spawn_host.helpers,
-        &RunStartCritique {
-            command,
-            backend: backend.as_ref(),
-            identity: &project_identity(),
-            workflow: &cfg.workflow,
-            root: &review::spec_root(&cwd, &repo),
-            text: &text,
-        },
-    )?;
-    // On this surface the launch is the handout, so the driver reads the hold the decorator reads.
-    let hold_stands = || {
-        runscope::read::hold_stands(&store, conductor::STREAM)
-            .map_err(rigger::conductor::Error::from)
-    };
-    let driver = rigger::driver::workflow::Driver::new().with_hold_read(&hold_stands);
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
-
-    // Spec 14: the SEPARATE progress store + scratch root, so the MCP `rigger_activity` tool
-    // presents the live per-agent view (this run's progress joined with the frontier and the
-    // liveness-marker ages rigger reads in Rust) to the shim over its existing connection -
-    // the shim never touches the filesystem. Progress is always the local sqlite sibling of
-    // the run store, regardless of the run store's backend.
-    let prog_backend = open_progress_backend()?;
-    let prog_store = Namespaced::new(&prog_backend, &project_identity());
-    // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
-    // than a second `git_repo()` re-read.
-    let scratch_root = project_scratch_root(&repo, &cfg).unwrap_or_default();
-
-    // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
-    // whole MCP session, so an active harness is never invisible. Held here (not inside the
-    // scope) so it is reaped when `run_workflow` returns - after the session ends - by unit
-    // 3's guard.
-    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
-
-    let hash_blob = hash_blob_in(&repo);
-    let awake = keep_awake(sleep, command);
-    // The conductor orchestrates in the background; this thread serves the MCP
-    // bridge over stdio. The shim drains spawns via rigger_next/result; closing
-    // stdin ends the session.
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            // Signal the run is over as this thread ends, so an empty rigger_next reports
-            // done:true and the shim exits cleanly. Set on success, error and panic alike: a
-            // conductor that fails still ends the run, and the shim must not poll forever.
-            let _finishing = driver.finishing();
-            let held = HeldDriver::new(
-                &driver,
-                &store,
-                rigger::held::Results::HandedBack,
-                Some(&driver.session_closed),
-                &pause_a_hold_poll,
-            );
-            let deps = Deps {
-                store: &store,
-                driver: &held,
-                gates: &ExecRunner,
-                // Reuses the `repo` this function resolved once at entry via
-                // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
-                repo: repo.clone(),
-                grounder: Some(grounder.as_ref()),
-                graph: Some(&graph),
-                criteria,
-                log: &stderr_line,
-                hash_blob: &hash_blob,
-                check_emit: &rigger::contextgraph::check_emit,
-                spawn_host,
-            };
-            // The halt reason goes to stderr, never stdout: stdout is the MCP transport.
-            match conductor::run(&cfg, &deps) {
-                Ok(rs) => {
-                    if let Some(line) = halted_line(&rs) {
-                        eprintln!("{line}");
-                    }
-                }
-                Err(e) => eprintln!("rigger: conductor: {e}"),
-            }
-        });
-        // Wire the graph into the MCP server too, so a ReviewFinding (or DecisionMade)
-        // an agent emits via rigger_emit folds into the graph as it lands - the
-        // adversary / adjudicator, which ground afterwards, then retrieve it through
-        // `graph_context` (the cross-agent memory the review tiers communicate
-        // through), not via the conductor hand-threading prompts.
-        let server = rigger::mcpserver::Server::new(&driver, &store, conductor::STREAM)
-            .with_graph(&graph)
-            .with_progress(&prog_store, &scratch_root);
-        let _ = server.run(std::io::stdin().lock(), std::io::stdout().lock());
-        // The session is over, so the hold ends here; a gate or merge still running ends unheld.
-        drop(awake);
-        // Nothing serves a spawn past the close, so each one parks and the scope joins the
-        // conductor.
-        driver.close_session();
-    });
-    Ok(())
-}
-
-pub(crate) fn cmd_serve(args: &[String]) -> Res {
-    // `rigger serve` is the equivalent of `rigger run --driver workflow`, so it
-    // shares the same flag surface (the event store and its connection string) and
-    // the same composition path - it just forces the workflow driver.
-    let mut parsed = parse_run_args(args)?;
-    parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed, "rigger serve", &*sleep_hold())
-}
-
-/// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
-/// `--base <ref>` (the run-branch base, spec 18 criterion 6). A second positional, an
-/// unknown flag, and a valueless `--base` are clear errors, so a typo never silently
-/// changes what runs or which base a run anchors on.
-fn parse_workflow_args(
-    args: &[String],
-) -> Result<(Option<String>, Option<String>), Box<dyn std::error::Error>> {
-    let mut spec = None;
-    let mut base = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--base" => {
-                i += 1;
-                base = match args.get(i) {
-                    Some(r) => Some(r.clone()),
-                    None => return Err("workflow: --base expects a ref".into()),
-                };
-            }
-            other => spec_positional(other, &mut spec, "workflow")?,
-        }
-        i += 1;
-    }
-    Ok((spec, base))
-}
-
-/// `rigger workflow [spec] [--base <ref>]` is the turn-key one-command activation of the
-/// workflow driver: it execs the Node shim (`shim/shim.mjs`), which spawns `rigger serve`
-/// (this same binary, via `RIGGER_BIN`), connects an MCP client to it, and drives the agent
-/// loop via the Claude Agent SDK. The user runs ONE command instead of hand-wiring `rigger
-/// serve` into an MCP host. `--base` (spec 18, criterion 6) threads to the served run's
-/// branch anchor through the inherited `RIGGER_BASE` environment.
-pub(crate) fn cmd_workflow(args: &[String]) -> Res {
-    // `rigger workflow [spec] [--base <ref>]`: an optional spec path and the run-branch base
-    // (spec 18, criterion 6). A second positional or a valueless --base is a clear error.
-    let (spec, base) = parse_workflow_args(args)?;
-    // DISCOVERABILITY (spec 66, criterion 5): `rigger workflow <spec>` is a REAL pre-launch
-    // surface that genuinely holds the spec path in production (unlike the SessionStart-only
-    // `rigger prime` hook - see `spec_lint_next_step`'s doc comment). Printed before locating
-    // or launching the JS driver, so the reminder survives an un-provisioned shim or any
-    // other launch failure below. Gated on `spec_lint_reminder_should_print` (REMINDER DEDUP):
-    // a genuinely nested `rigger workflow` stays silent, ambient env pollution still prints.
-    if let Some(spec) = &spec {
-        if spec_lint_reminder_should_print() {
-            println!("{}", spec_lint_next_step(spec));
-        }
-    }
-    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
-    // BEFORE locating or launching the Node shim - a linked worktree is refused up front
-    // instead of (at best) failing to find a per-project shim only ever provisioned in the
-    // main checkout, or (at worst) driving a stray one. See
-    // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
-    // the existing behavior every prior caller of `locate_shim` already relied on.
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
-    let shim_root = if repo.is_empty() {
-        PathBuf::from(".")
-    } else {
-        PathBuf::from(&repo)
-    };
-    let shim = locate_shim(&shim_root)?;
-    // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
-    // and the served conductor are always the same build (no PATH ambiguity).
-    let rigger_bin = running_executable();
-
-    let node = std::env::var("RIGGER_NODE").unwrap_or_else(|_| "node".to_string());
-    let mut cmd = subprocess::command(&node);
-    cmd.arg(&shim);
-    if let Some(spec) = &spec {
-        cmd.arg(spec);
-    }
-    cmd.env("RIGGER_BIN", &rigger_bin);
-    // REMINDER DEDUP, the nesting-surface half of the pid-scoped contract: this process is
-    // the shim's real direct OS parent, so stamp ITS OWN pid (never a value inherited from
-    // further up) - the shim (an INTERMEDIARY, spec 66 c5) validates it against its own real
-    // parent id before it may re-stamp and pass it on to `rigger serve`. Set unconditionally
-    // (not only when the print above actually fired) so an already-suppressed `rigger
-    // workflow` still hands a genuine, verifiable link to its own child rather than a stale
-    // or absent one.
-    cmd.env(SPEC_LINT_REMINDER_PID_ENV, std::process::id().to_string());
-    // Thread --base to the served `rigger serve` the shim spawns: the shim inherits this
-    // process's environment (the same channel it uses for RIGGER_BIN), so RIGGER_BASE reaches
-    // `run_workflow`'s run-branch anchor, where `resolve_run_base` reads it. Set only when the
-    // operator passed --base, so the no-flag default (origin/main) is unchanged.
-    if let Some(base) = &base {
-        cmd.env("RIGGER_BASE", base);
-    }
-
-    let status = cmd.status().map_err(|e| {
-        format!(
-            "workflow: failed to launch the Node driver ({node} {shim}): {e}. \
-             Is Node installed and on your PATH? Run `rigger setup` if the JS driver's \
-             dependencies are not yet installed."
-        )
-    })?;
-    if !status.success() {
-        return Err(format!("workflow: the Node driver exited unsuccessfully ({status})").into());
-    }
-    Ok(())
-}
-
 /// Extract the spec's acceptance criteria, enforcing the loop-ready gate (§8): a
 /// spec with no enumerable Done-when criteria blocks until a human adds them; no
 /// spec path means an unconstrained run (empty criteria).
 ///
-/// The ONE in-run spec-lint call site (spec 66, criterion 4 - ONE LINT AUTHORITY): every
-/// real live-run entry (`rigger run` via `run_cli`, `rigger step` via `cmd_step` - the ONE
-/// command the documented primary native `/rigger <spec>` workflow ever invokes - and
-/// `rigger serve`/`rigger workflow` via `run_workflow`) calls this SAME function to load a
-/// spec's criteria, so wiring the lint here reaches all three without a bespoke call site
-/// per entry. Prints via `spec_lint_warning_lines` - the identical formatter `cmd_validate`
-/// (the pre-launch, standalone `rigger validate <spec>`) uses, itself built on
-/// `spec::spec_lint_advisories` (criterion 3's untouched classification) - so an operator
-/// who launches straight into a run without a separate `rigger validate` pass still sees
-/// the same advisories. Advisory only, exactly like the pre-launch surface: never refuses
-/// the run.
+/// The ONE in-run spec-lint call site (spec 66, criterion 4 - ONE LINT AUTHORITY): the live-run
+/// entry (`rigger run` via `run_cli`) and `rigger critique` call this SAME function to load a
+/// spec's criteria, so wiring the lint here reaches both without a bespoke call site per entry.
+/// Prints via `spec_lint_warning_lines` - the identical formatter `cmd_validate` (the pre-launch,
+/// standalone `rigger validate <spec>`) uses, itself built on `spec::spec_lint_advisories`
+/// (criterion 3's untouched classification) - so an operator who launches straight into a run
+/// without a separate `rigger validate` pass still sees the same advisories. Advisory only, exactly
+/// like the pre-launch surface: never refuses the run.
 ///
 /// It hands back the criteria beside the exact text its one read read (an empty text, with no
 /// read, when there is no spec path), so a caller that also hashes or prompts on the spec - the
@@ -2472,29 +1431,25 @@ pub(crate) fn load_criteria(
 /// than failing the whole page.
 /// Auto-start a read-only `rigger dash` for the run a driver is about to drive, so an active
 /// harness is never invisible (spec 19b, unit 1: always-on, no opt-in flag). The dash binds
-/// [`dash::DEFAULT_PORT`] or the next free loopback port (so two concurrent harnesses each
+/// [`dash::DEFAULT_PORT`] or the next free loopback port itself (so two concurrent harnesses each
 /// get their OWN); its URL is printed at run start and recorded in `.rigger/`[`DASH_URL_FILE`]
 /// so `rigger status` can surface it.
 ///
-/// Returns the [`dash::ReapedChild`] guard the DRIVER holds for the whole run: dropping it
-/// (on a normal finish OR an unwinding panic) reaps the dash. That guard is unit 3's reaping
+/// Returns the [`RunDash`] guard the DRIVER holds for the whole run: dropping it (on a normal
+/// finish OR an unwinding panic) reaps the dash and removes its marker. That guard is unit 3's reaping
 /// mechanism, reused here as the single reaper - THIS unit owns only start + discoverability,
 /// never stopping. Best-effort: if the dash cannot be started the run still proceeds (the
 /// dash is observability, not the deliverable), so a port-starved or spawn-refused
 /// environment degrades to a headless run rather than aborting one.
 ///
 /// `store` is read once here to stamp [`DASH_ATTEMPT_FILE`] with the current run's id via
-/// [`record_dash_attempt`] (spec 69, round-8 fix), mirroring [`ensure_run_dashboard`]'s own
-/// stamp on the step path - by the time this runs, `fresh_run_if_requested` has already
-/// ensured/minted the run, so the id is always available for a real run.
+/// [`record_dash_attempt`] (spec 69, round-8 fix) - by the time this runs,
+/// `fresh_run_if_requested` has already ensured/minted the run, so the id is always available
+/// for a real run.
 ///
-/// OPT-OUT: the same one opt-out as the step path's [`ensure_run_dashboard`] ([`dash_opted_out`]
-/// over `config_dash_enabled`, the workflow's resolved [`config::Workflow::dash_enabled`]) starts
-/// no dash and stamps no attempt.
-fn start_run_dashboard(
-    config_dash_enabled: bool,
-    store: &dyn EventStore,
-) -> Option<dash::ReapedChild> {
+/// OPT-OUT: the one opt-out ([`dash_opted_out`] over `config_dash_enabled`, the workflow's
+/// resolved [`config::Workflow::dash_enabled`]) starts no dash and stamps no attempt.
+fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Option<RunDash> {
     if dash_opted_out(config_dash_enabled) {
         return None;
     }
@@ -2503,9 +1458,9 @@ fn start_run_dashboard(
     }
     match spawn_run_dashboard() {
         Ok((guard, url)) => {
-            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
-            // transport, which the run-start pointer must never corrupt.
-            eprintln!("rigger dash: serving this run at {url}");
+            // Stderr: stdout is the run's own report, which the run-start pointer stays out of.
+            // One write, since the dash just started says its own line on the same stream.
+            rigger::whole_line::on_stderr(|err| rigger::dash::announce_run_serving(err, &url));
             Some(guard)
         }
         Err(e) => {
@@ -2517,395 +1472,81 @@ fn start_run_dashboard(
     }
 }
 
-/// Pick a free port, spawn `rigger dash --port <n>` as a child of the current executable,
-/// and record its URL in `.rigger/`[`DASH_URL_FILE`] for `rigger status`. The child's stdout
-/// is silenced (in the MCP `rigger serve` driver the parent's stdout is the protocol
-/// transport, which the dash child must never write to) and its stdin is closed; the dash
-/// logs only to its own stderr. Returns the guard plus the URL for the run-start pointer.
-fn spawn_run_dashboard() -> Result<(dash::ReapedChild, String), Box<dyn std::error::Error>> {
-    let port = dash::free_port_from(dash::DEFAULT_PORT)?;
+/// How long the run waits for its dash to report the address it bound before it continues
+/// headless: a dash that fails to start ends its stdout and is noticed at once, so the bound only
+/// ever holds a run whose dash hangs before binding.
+const DASH_REPORT_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Spawn `rigger dash --port-from <DEFAULT_PORT>` as a child of the current executable, read the
+/// URL it reports once it has bound the first free port, and record that URL in
+/// `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
+/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The dash chooses its
+/// own port by binding it, so two runs starting together never record one address. The child's
+/// stdout is piped to this read alone, never the run's own report; the dash logs to its own
+/// stderr. Its stdin is a pipe whose write end the guard's child handle holds for the whole run,
+/// and the dash runs with `--exit-on-stdin-close`, so however the run ends, the closed pipe ends
+/// the dash with it. A dash that reports no address within [`DASH_REPORT_BOUND`] is reaped and
+/// nothing is recorded. Returns the guard plus the URL for the run-start pointer.
+fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
-    let child = subprocess::command(exe)
-        .arg("dash")
-        .arg("--port")
-        .arg(port.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .spawn()?;
+    let mut child = dash::ReapedChild::new(
+        subprocess::command(exe)
+            .arg("dash")
+            .arg("--port-from")
+            .arg(dash::DEFAULT_PORT.to_string())
+            .arg("--exit-on-stdin-close")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut reported = None;
+    child.read_lines_until(std::time::Instant::now() + DASH_REPORT_BOUND, |line| {
+        reported = dash::url_port(line);
+        if reported.is_some() {
+            std::ops::ControlFlow::Break(())
+        } else {
+            std::ops::ControlFlow::Continue(())
+        }
+    });
+    let port = reported.ok_or("the dashboard reported no address it serves at")?;
     let url = format!("http://127.0.0.1:{port}/");
     // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
     // `.rigger/` already exists (the driver created it before reaching here).
     let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok((dash::ReapedChild::new(child), url))
-}
-
-/// The outcome of the step path's idempotent dash-start attempt (spec 39, criterion 1).
-#[derive(Debug, PartialEq, Eq)]
-enum DashStart {
-    /// No dash was serving this project, so this step STARTED one on the given port.
-    Started(u16),
-    /// A dash was already serving on the given port, so this step started NONE (the
-    /// idempotent no-op that makes the second and every later `step` of a run a no-op).
-    AlreadyServing(u16),
-    /// The best-effort start failed; the run proceeds headless (a start failure never
-    /// fails the step - the dash is observability, not the deliverable). Carries the
-    /// failure's diagnosis text (spec 62 round 2 fix,
-    /// adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the prior unit variant
-    /// silently discarded [`spawn_run_dashboard_detached`]'s `io::Error`, so an operator whose
-    /// step-path auto-start hit a genuinely held port (e.g. a job-control-stopped predecessor -
-    /// spec 62's own motivating Goal scenario) saw only [`ensure_run_dashboard`]'s generic
-    /// headless-degrade line, never the pid, process state, or resume-or-kill remedy the
-    /// HELD-PORT DIAGNOSIS (criterion 3) exists to surface - reachable, before this fix, ONLY
-    /// through the manual `rigger dash` CLI arm ([`cmd_dash`]), never the step path that is
-    /// spec 62's actual Goal. This is the `io::Error`'s `Display` text verbatim.
-    Failed(String),
-}
-
-/// The recorded-serving predicate the step path's idempotent-start decision
-/// ([`ensure_run_dashboard_at`], via [`dash::dash_start_needed`]) verifies a marker's port
-/// against: the ONE probe `rigger status` ([`dash::dash_status`]) and `rigger watch` also
-/// consume, [`dash::dash_answer_on`], read by [`answer_reads_serving`]. A REAL network probe of
-/// the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled
-/// dash must never masquerade as still serving just because its pid happens to be alive
-/// (possibly reused by an unrelated process).
-fn dash_marker_serving(m: dash::DashMarker) -> bool {
-    answer_reads_serving(&dash::dash_answer_on(m.port))
-}
-
-/// The step's reading of one probe answer: only a port the probe PROVED serves no dash
-/// ([`dash::DashAnswer::NotServing`]) is free for a new one. A dash that holds its port but does
-/// not answer within the probe window is busy, and a probe that failed on this side proved
-/// nothing at all, so neither starts a second dash that could only fail to bind the held port.
-fn answer_reads_serving(answer: &dash::DashAnswer) -> bool {
-    *answer != dash::DashAnswer::NotServing
-}
-
-/// Idempotently ensure a run dashboard serves the project whose marker lives at
-/// `marker_path` (spec 39, criterion 1: idempotent start on step). Reads the per-project
-/// [`dash::DashMarker`]; if it names a still-serving dash (per `still_serving`), returns
-/// [`DashStart::AlreadyServing`] WITHOUT spawning a second one - the marker/pid short-circuit
-/// that makes the second and every later `step` of a run a no-op, never a port fight.
-/// Otherwise calls `start` to spawn one, records its marker, and returns [`DashStart::Started`].
-///
-/// `still_serving` and `start` are INJECTED so the start-once behavior is provable without a
-/// real dashboard process; the production caller ([`ensure_run_dashboard`]) passes
-/// [`dash_marker_serving`] (a real port probe, not a bare pid check - see its own doc) and
-/// [`spawn_run_dashboard_detached`].
-fn ensure_run_dashboard_at(
-    marker_path: &Path,
-    still_serving: impl Fn(dash::DashMarker) -> bool,
-    start: impl FnOnce() -> std::io::Result<dash::DashMarker>,
-) -> DashStart {
-    let existing = dash::DashMarker::read(marker_path);
-    if !dash::dash_start_needed(existing, &still_serving) {
-        // `dash_start_needed` only returns false when `existing` is a still-serving marker,
-        // so this port is that live dash's port; the `unwrap_or` is unreachable-but-safe.
-        return DashStart::AlreadyServing(existing.map(|m| m.port).unwrap_or_default());
-    }
-    match start() {
-        Ok(marker) => {
-            // Record the marker so the NEXT step of this run discovers this dash and does not
-            // start a second. Best-effort: a failed write only risks a later duplicate start,
-            // never a broken step.
-            let _ = marker.write(marker_path);
-            DashStart::Started(marker.port)
-        }
-        // The diagnosis lives entirely in `e`'s `Display` text (spec 62 round 2 fix): the real
-        // production `start` ([`spawn_run_dashboard_detached`]) already folds the HELD-PORT
-        // DIAGNOSIS in when a genuine port conflict is what failed the bind, so carrying `e`
-        // forward here - rather than discarding it as the prior `Err(_) => DashStart::Failed`
-        // (no payload) did - is what lets that diagnosis reach the operator at all.
-        Err(e) => DashStart::Failed(e.to_string()),
-    }
-}
-
-/// Raw launch of `rigger dash --port <n> --reap-on-idle` as a session-detached child (spec 44).
-/// NO [`dash::ReapedChild`] guard is held, and NO claim is made about whether it bound. Split
-/// out of [`spawn_run_dashboard_detached`] so the process-group detachment is provable on its
-/// own: under `cargo test`, [`std::env::current_exe`] names the TEST harness binary, which never
-/// recognizes `dash` as a subcommand and exits immediately without binding anything, so a test
-/// that must observe a REAL detachment (not an injected stand-in) can only assert on the spawn
-/// itself, never on a confirmed bind - see `spawn_run_dashboard_detached_session_detaches_the_dash`,
-/// which calls this directly.
-///
-/// ALL THREE of the child's standard streams are closed (`stdin`/`stdout`/`stderr` ->
-/// [`Stdio::null`]). This matters precisely BECAUSE it is detached and outlives the `step`:
-/// an inherited stderr (or stdout) would keep the step process's pipe write-end open after
-/// the step exits, so any parent capturing the step's output (the thin driver, or a plain
-/// `rigger step 2>&1 | ...`) would BLOCK on EOF until the long-lived dash died. A guard-bound
-/// dash can inherit stderr safely because it is reaped when the driver exits; a detached one
-/// must hold no inherited descriptor. The dash's own startup errors are therefore silent -
-/// acceptable for a best-effort, self-contained observability process whose logs nothing reads.
-fn spawn_dash_child_process(port: u16) -> std::io::Result<(std::process::Child, u32)> {
-    let exe = std::env::current_exe()?;
-    let mut cmd = subprocess::command(exe);
-    cmd.arg("dash")
-        .arg("--port")
-        .arg(port.to_string())
-        // Self-reap on run-idle (spec 39, criterion 3): a DETACHED dash holds no `ReapedChild`,
-        // so it must watch the run's own liveness and exit once the run completes or its heartbeat
-        // goes stale - the backstop the process-bound guard provides on the `rigger run` paths.
-        .arg("--reap-on-idle")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // Session-detach BEFORE spawning: put the dash in its own process group so the teardown of
-    // the foreground `rigger step` command's process group does not reap it (spec 44). Without
-    // this the "detached" child still shares step's group and dies the instant the step returns.
-    subprocess::detach_process_group(&mut cmd);
-    let child = cmd.spawn()?;
-    let pid = child.id();
-    Ok((child, pid))
-}
-
-/// How long [`spawn_run_dashboard_detached`] polls [`dash::dash_serving_on`] for a confirmed
-/// bind before giving up (spec 62, criterion 1: marker follows bind). Generous enough to absorb
-/// a real machine's config-load-then-bind startup cost while keeping a genuinely stuck start's
-/// headless-degrade responsive rather than hanging the step that ensures it.
-const DASH_BIND_CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The re-poll cadence inside [`DASH_BIND_CONFIRM_WINDOW`] - the same cadence the project's
-/// other real-dash-readiness polls already use (see `bind_singleton_short_circuits_on_an_
-/// already_serving_rigger_dash` in `dash.rs`).
-const DASH_BIND_CONFIRM_POLL: std::time::Duration = std::time::Duration::from_millis(20);
-
-/// Wait for the just-spawned `child` to confirm a bind on `port` (spec 62, criterion 1: marker
-/// follows bind, confirmed ACROSS the process boundary - not merely ordered within the parent's
-/// own call). Polls [`dash::dash_serving_on`] - the SAME probe the still-serving short-circuit
-/// already wraps - so "bound" means exactly what every other caller already means by it.
-///
-/// Returns `true` the instant the probe answers. Returns `false` the instant `child` exits
-/// before that: `cmd.spawn()` succeeding proves only that the OS launched a process, never that
-/// it bound, so an early exit (e.g. a held port losing the `AddrInUse` race) is a failed start,
-/// never awaited out the rest of `window`. Also returns `false` once `window` elapses with
-/// neither. `window` and `poll` are parameters rather than always reading the module constants
-/// so a test can bound this deterministically fast against a REAL held port, without waiting
-/// out the production window.
-fn wait_for_dash_bind(
-    port: u16,
-    child: &mut std::process::Child,
-    window: std::time::Duration,
-    poll: std::time::Duration,
-) -> bool {
-    let deadline = std::time::Instant::now() + window;
-    loop {
-        if dash::dash_serving_on(port) {
-            return true;
-        }
-        match child.try_wait() {
-            Ok(Some(_status)) => return false, // exited before confirming - a failed start
-            Ok(None) => {}                     // still running; keep polling
-            Err(_) => return false,            // liveness undeterminable - treat as failed
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(poll);
-    }
-}
-
-/// Wait for `child`'s bind on `port` to confirm via [`wait_for_dash_bind`], and on failure
-/// compose the HELD-PORT DIAGNOSIS `Err` message - the two ALWAYS travel together (spec 62
-/// round 4 fix, adj-u62c3r3-verdict-reject-child-self-attribution). Split out of
-/// [`spawn_run_dashboard_detached`] so the composed wait-then-diagnose behavior is directly
-/// testable against a REAL deadline timeout without needing a real `rigger dash` binary:
-/// `spawned_pid` and `child` are independent parameters (production always passes
-/// `child.id()` for both, since `spawn_dash_child_process` returns them as a pair, but nothing
-/// here requires that - a test can bind the target port itself to stand in for "the child has
-/// bound it", pass its OWN pid as `spawned_pid`, and use an unrelated real process only to
-/// satisfy `child`'s `try_wait` liveness check).
-///
-/// The critical fix this round makes: when [`wait_for_dash_bind`] gives up, the discovered
-/// holder of `port` (via [`dash::held_port_holder`]) is checked against `spawned_pid` BEFORE
-/// choosing the "already in use" framing. A match means the "holder" `/proc` just found is not
-/// a competing process at all - it is THIS exact spawn attempt, merely slower than `window`
-/// allows (e.g. a slow machine caught right between binding the socket and
-/// [`dash::dash_serving_on`] first answering true). Telling an operator that pid is "already in
-/// use" by itself is self-referential and actively misleading: it reads as a competing external
-/// holder blocking the port when the named process is the very one about to start serving
-/// correctly (round 3's defect, empirically reproduced against a real bound child in the
-/// deadline sub-case - the only sub-case where this can happen, since the early-exit sub-case
-/// means `child` already exited and cannot itself be the discovered holder going forward). A
-/// held port genuinely occupied by SOME OTHER process still gets the full pid/state diagnosis
-/// unchanged; nothing independently confirmed still falls back to the "could not be confirmed"
-/// wording unchanged from round 3 - only the self-attributed case is new.
-fn wait_for_dash_bind_or_diagnose(
-    port: u16,
-    child: &mut std::process::Child,
-    spawned_pid: u32,
-    window: std::time::Duration,
-    poll: std::time::Duration,
-) -> Result<(), String> {
-    if wait_for_dash_bind(port, child, window, poll) {
-        return Ok(());
-    }
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let diagnosis = match dash::held_port_holder(addr) {
-        // The discovered holder IS this exact spawn attempt (matched by pid) - never frame this
-        // as a competing occupant; see the doc above for why this sub-case is reachable and why
-        // it must read differently from a genuine conflict.
-        Some((holder_pid, _)) if holder_pid == spawned_pid => format!(
-            "this dash's own spawn (pid {spawned_pid}) has not yet confirmed serving {addr} \
-             within the startup window, even though something is now bound there - almost \
-             certainly this exact spawn attempt, merely slower than the window allows (e.g. a \
-             slow machine), not a competing process; re-checking shortly should find it already \
-             up"
-        ),
-        Some((_, msg)) => msg,
-        None => format!(
-            "address {addr} could not be confirmed bound by any other process - the failure \
-             may be unrelated to a held port (e.g. a permission or configuration problem, or \
-             a slow machine)"
-        ),
+    let marker = dash::DashMarker {
+        port,
+        pid: child.id(),
     };
-    Err(format!(
-        "dash on port {port} (pid {spawned_pid}) did not confirm a bind within the startup \
-         window: {diagnosis}"
+    let marker_path = PathBuf::from(db_path(DASH_MARKER_FILE));
+    let _ = marker.write(&marker_path);
+    Ok((
+        RunDash {
+            child: Some(child),
+            marker,
+            marker_path,
+        },
+        url,
     ))
 }
 
-/// Spawn `rigger dash --port <n>` as a DETACHED child - NO [`dash::ReapedChild`] guard is
-/// held - returning its port + pid as a [`dash::DashMarker`] the caller records. Detached is
-/// deliberate: the step path that starts it returns per frontier, so a guard-bound child would
-/// be reaped on that return and the very next step would find no live dash and start another.
-/// Not reaping here is what lets the dash keep serving across the run's many `step`
-/// invocations (spec 39). Also records the dash-url breadcrumb `rigger status` reads.
-///
-/// `Ok` is returned ONLY once [`wait_for_dash_bind`] confirms SOMETHING is genuinely serving
-/// `port` (spec 62, criterion 1: marker follows bind). `cmd.spawn()` succeeding proves only that
-/// the child process launched, never that it bound - a job-control-stopped predecessor can hold
-/// the port with a socket that accepts the TCP handshake but never calls `accept()`, or the
-/// child can lose an `AddrInUse` race outright and exit. Either way, the caller
-/// ([`ensure_run_dashboard_at`], via its injected `start` seam) must never learn of a dash that
-/// never actually came up, so a bind that is not confirmed within [`DASH_BIND_CONFIRM_WINDOW`],
-/// or a child that exits before confirming, returns `Err` here - closing the race at its source
-/// rather than asking `ensure_run_dashboard_at`'s already-correct `Err` arm (which already
-/// writes no marker) to somehow notice on its own.
-///
-/// That `Err` NAMES what blocked the bind WHEN a held port is what genuinely blocked it (spec
-/// 62, criterion 3 - HELD-PORT DIAGNOSIS; round 2 fix,
-/// adv-u62c3-diagnosis-unreachable-from-step-path-auto-start; round 3 fix,
-/// adj-u62c3r2-verdict-reject-non-addrinuse-mislabel): it folds in
-/// [`dash::held_port_holder`]'s report on `port` - the SAME pid/process-
-/// state/resume-or-kill diagnosis [`cmd_dash`]'s own `AddrInUse` arm already surfaces for the
-/// manual `rigger dash` CLI invocation, but computed from a GATED seam rather than
-/// [`dash::describe_held_port`] itself. The difference matters here specifically: `cmd_dash`
-/// only ever reaches `describe_held_port` AFTER `bind_singleton` has already confirmed a
-/// genuine `AddrInUse` from ITS OWN bind attempt, so a `/proc` scan that fails to attribute a
-/// holder there still means "held, holder undiscoverable". THIS caller has no such upstream
-/// confirmation to lean on: the bind attempt runs in the detached CHILD, whose `io::Error`
-/// never reaches the parent (`stdout`/`stderr`/`stdin` stay `Stdio::null()`, spec 44 -
-/// unchanged), so all `wait_for_dash_bind` giving up proves is that SOMETHING blocked the bind
-/// within the startup window - equally true of a genuine held port, a permission error, a slow
-/// machine, or an unrelated config problem (measured indistinguishable by exit timing alone).
-/// Folding `describe_held_port`'s unconditional "already in use" wording in on that weaker
-/// signal was round 2's defect, reproduced live by the adjudicator with `RIGGER_DASH_PORT=1` (a
-/// real `PermissionDenied`, not `AddrInUse`) still getting told a phantom pid held the port.
-/// `held_port_holder` supplies the missing confirmation itself, from the SAME
-/// live `/proc` discovery keyed only on the address (not on which process asks), and resolves
-/// `None` rather than a false claim when nothing can be confirmed holding `port` - in which case
-/// the `Err` below falls back to a message that names the timeout without asserting a holder.
-///
-/// Round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution) closes a NARROWER gap round 3
-/// left open: an independently-confirmed holder is not automatically a COMPETING one. On
-/// `wait_for_dash_bind`'s deadline sub-case (the window elapses while `child` is still alive,
-/// never the early-exit sub-case), `child` can itself already have bound `port` - it just has
-/// not yet reached the point where [`dash::dash_serving_on`] answers true (a slow machine caught
-/// in that narrow window). `/proc` then genuinely confirms a holder, but that holder IS `pid` -
-/// this exact spawn attempt, not some other process. The actual wait-then-diagnose logic now
-/// lives in [`wait_for_dash_bind_or_diagnose`], which compares the discovered holder's pid
-/// against the known `pid` before choosing the "already in use" framing; see its own doc for the
-/// full self-attribution gate.
-///
-/// The recorded marker's pid is the port's OWN reported serving pid
-/// ([`dash::dash_serving_pid_on`]), never assumed to be this call's locally-spawned `child`
-/// (spec 62 round 2: adv-u62c1-marker-pid-not-the-serving-pid-on-singleton-race). `wait_for_dash_
-/// bind` confirming `true` proves only that SOMETHING now answers `port` as a rigger dash - never
-/// that it is THIS `child`: the machine singleton binds one FIXED address (spec 50, criterion 4),
-/// so a concurrent run racing to start the same singleton can win it out from under this call -
-/// `child`'s own `bind_singleton` then hits `AddrInUse`, recognizes the winner via
-/// [`dash::DASH_HEADER`], and exits cleanly WITHOUT ever binding anything, while the port keeps
-/// answering via the winner the whole time. Asking the port itself who is really serving (rather
-/// than inferring it from `child`'s own liveness/exit timing, which cannot resolve this
-/// deterministically - `child` does real filesystem/config work before it ever reaches its own
-/// bind attempt, so "child has not yet exited" never proves "child is the one bound") is what
-/// makes the returned marker correct regardless of which side of any such race this call landed
-/// on.
-///
-/// A [`dash::dash_serving_pid_on`] `None` here means the port's real serving pid cannot be
-/// attributed - either the confirmed server vanished in the instant since `wait_for_dash_bind`,
-/// or (the steady-state case) it is a genuine dash that predates [`dash::DASH_HEADER_PID`], e.g.
-/// a pre-round-2 or foreign build. This has been through two rejected shapes before this one.
-/// Round 2 fell back to `child`'s own locally-spawned pid (`unwrap_or(pid)`, spec 62 round 2 fix
-/// point, adj-u62c1r2-verdict-reject-version-skew-fallback) - wrong, because in a lost singleton
-/// race `child` never bound anything at all, so asserting its pid reproduced the exact defect
-/// this whole fix exists to prevent, and the steady-state case above means this is no narrow
-/// timing race but a COMMON trigger. Round 3 then refused to record anything at all in this case
-/// (adj-u62c1r3-verdict-reject-idempotency-regression) - also wrong: the port genuinely IS
-/// serving (confirmed by `wait_for_dash_bind` above), so writing no marker left
-/// `ensure_run_dashboard_at` nothing to short-circuit on, and every LATER `step` repeated this
-/// entire spawn/wait/attribute cycle forever, never reaching spec 39 criterion 1's no-op
-/// invariant. This fix records the documented [`dash::UNATTRIBUTED_PID`] sentinel instead of
-/// either extreme: never a value this call cannot prove, but never nothing either - the marker's
-/// PORT (which `dash_start_needed`/[`dash_marker_serving`] actually probe; neither ever reads
-/// this pid) is enough for the next step to recognize this dash as already serving, and it
-/// leaves a marker for spec 62's sibling self-heal (u62c2) to eventually correct if the real pid
-/// ever becomes attributable - where recording nothing left it nothing to correct.
-fn spawn_run_dashboard_detached() -> std::io::Result<dash::DashMarker> {
-    // The machine singleton binds the FIXED default address (spec 50, criterion 4) - no free-port
-    // search, so the address never drifts. If a dash is already serving it, the spawned `rigger
-    // dash` recognizes the singleton and exits 0 without binding a second (criterion 1's
-    // `bind_singleton`), so this is safe even when a concurrent run races to start one.
-    //
-    // The default is overridable via [`DASH_PORT_ENV`] for exactly the case the fixed address
-    // otherwise makes untestable and unusable: a machine where a rigger dash already holds the
-    // default (the self-hosting dev box always does), or where a non-rigger process owns 7420.
-    // Unset (the production default) resolves to [`dash::DEFAULT_PORT`] with NO free-port search,
-    // so the singleton's stable-address contract is unchanged; the ensure path just gains the same
-    // port seam the manual `rigger dash --port` already has, which lets the step-path dash tests
-    // inject an ephemeral port and never fight a real machine dash.
-    let port = dash_ensure_port();
-    let (mut child, pid) = spawn_dash_child_process(port)?;
-    // The wait-then-diagnose composition (including the round 4 self-attribution gate - see
-    // `wait_for_dash_bind_or_diagnose`'s own doc) lives in one function precisely so the two
-    // parts can never be called out of step with each other again.
-    wait_for_dash_bind_or_diagnose(
-        port,
-        &mut child,
-        pid,
-        DASH_BIND_CONFIRM_WINDOW,
-        DASH_BIND_CONFIRM_POLL,
-    )
-    .map_err(std::io::Error::other)?;
-    // Detach: `child` is dropped here. A std `Child`'s Drop neither waits nor kills, so the dash
-    // process keeps running after this step returns. (Contrast `dash::ReapedChild`, whose Drop
-    // reaps - deliberately NOT used on the step path.) Dropping BEFORE the pid-attribution probe
-    // below is deliberate too: if `child` itself is the one serving, dropping it here changes
-    // nothing (Drop neither waits nor kills), and if it already lost the race and exited, there
-    // is nothing left to hold onto anyway.
-    //
-    // A `None` here means the port cannot be attributed to a real serving pid - either the
-    // confirmed server vanished in the instant since `wait_for_dash_bind`, or (the steady-state
-    // case) it is a genuine dash that predates `DASH_HEADER_PID`. Neither case may fall back to
-    // `pid`: `pid` is THIS call's own locally-spawned child, and in a lost singleton race that
-    // child never bound anything at all, so asserting its pid would repeat the exact defect this
-    // probe exists to prevent. But the port IS confirmed serving (`wait_for_dash_bind` above), so
-    // refusing to record ANYTHING is not safe either (spec 62 round 3's own regression,
-    // adj-u62c1r3-verdict-reject-idempotency-regression): it would leave the NEXT step with no
-    // marker to short-circuit on, repeating this entire spawn/probe cycle forever. Record the
-    // documented sentinel instead - never a guessed real pid, but a real marker
-    // `dash_start_needed` (which never reads this field, only the port) can recognize as
-    // already serving.
-    let serving_pid = match dash::dash_serving_pid_on(port) {
-        Some(pid) => pid,
-        None => dash::UNATTRIBUTED_PID,
-    };
-    let url = format!("http://127.0.0.1:{port}/");
-    let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
-    Ok(dash::DashMarker {
-        port,
-        pid: serving_pid,
-    })
+/// The dash `rigger run` started, held for the whole run: dropping it reaps the dash child
+/// ([`dash::ReapedChild`]) and then removes the [`DASH_MARKER_FILE`] it recorded, unless the
+/// file by then names another dash, so a marker on disk names a dash a run still holds or one
+/// whose run never reached its teardown. A run that never reaches its teardown still takes its
+/// dash with it: the child handle holds the dash's stdin pipe, which closes when the run ends.
+struct RunDash {
+    child: Option<dash::ReapedChild>,
+    marker: dash::DashMarker,
+    marker_path: PathBuf,
+}
+
+impl Drop for RunDash {
+    fn drop(&mut self) {
+        drop(self.child.take());
+        if dash::DashMarker::read(&self.marker_path) == Some(self.marker) {
+            let _ = std::fs::remove_file(&self.marker_path);
+        }
+    }
 }
 
 /// Whether the always-on dash auto-ensure is SUPPRESSED for this run (spec 50, criterion 4) -
@@ -2928,136 +1569,36 @@ fn dash_opted_out(config_dash_enabled: bool) -> bool {
     )
 }
 
-/// The port the step-path always-on dashboard binds: [`DASH_PORT_ENV`] when set to a valid
-/// `u16`, else [`dash::DEFAULT_PORT`]. The real caller resolves the raw value from the process
-/// environment; the resolution itself is [`dash_ensure_port_from`], pure over that resolved input
-/// so both the override and the fixed-default fallback are provable without mutating the process
-/// environment (the same "pure over resolved inputs" discipline as [`dash_ensure_suppressed`]).
-fn dash_ensure_port() -> u16 {
-    dash_ensure_port_from(std::env::var(DASH_PORT_ENV).ok().as_deref())
-}
-
-/// Resolve the step-path ensure port from an already-read [`DASH_PORT_ENV`] value: a valid `u16`
-/// overrides, anything else (absent, empty, or malformed) falls back to [`dash::DEFAULT_PORT`] -
-/// so production (env unset) gets the fixed default with no free-port search, and a bad knob never
-/// breaks a run's observability.
-fn dash_ensure_port_from(raw: Option<&str>) -> u16 {
-    raw.and_then(|v| v.trim().parse().ok())
-        .unwrap_or(dash::DEFAULT_PORT)
-}
-
-/// Ensure the machine-level SINGLETON dashboard is up for the step drive path (spec 39,
-/// criterion 1; spec 50, criterion 4), unless opted out. The always-on promise retargeted at the
-/// singleton: the first `step` of a run starts the one dash at the FIXED [`dash::DEFAULT_PORT`]
-/// (never a drifting port); every later step finds it serving and starts none (never a second
-/// dash). `config_dash_enabled` is the workflow's resolved [`config::Workflow::dash_enabled`],
-/// passed in from the already-loaded config so this never re-reads it.
-///
-/// OPT-OUT (criterion 4): the ensure is skipped entirely when EITHER the [`DASH_DISABLE_ENV`]
-/// environment disable OR the config `dash: off` is set (resolved through
-/// [`dash_ensure_suppressed`]) - a headless or CI run then binds NO port at all and proceeds
-/// normally. Best-effort and headless-degrading otherwise: a failed start only warns. The started
-/// dash is DETACHED so it survives across the run's many short-lived `step` processes.
-///
-/// `store` is read once here to stamp [`DASH_ATTEMPT_FILE`] with the current run's id via
-/// [`record_dash_attempt`] (spec 69, round-8 fix) - by the time this runs, `enforce_definition_pin`
-/// has already ensured/minted the run for this step, so the id is always available for a real
-/// run. Skipped entirely on the opt-out path above: an opted-out step attempts no dash at all, so
-/// there is nothing this run to vouch for.
-fn ensure_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) {
-    if dash_opted_out(config_dash_enabled) {
-        return;
-    }
-    if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
-        record_dash_attempt(&run_id);
-    }
-    let marker_path = std::path::PathBuf::from(db_path(DASH_MARKER_FILE));
-    match ensure_run_dashboard_at(
-        &marker_path,
-        dash_marker_serving,
-        spawn_run_dashboard_detached,
-    ) {
-        DashStart::Started(port) => {
-            // Stderr, not stdout: in the workflow driver (`rigger serve`) stdout is the MCP
-            // transport; in the step driver stdout carries only the `{wave,done}` JSON.
-            eprintln!("rigger dash: serving this run at http://127.0.0.1:{port}/");
-        }
-        // A dash is already serving the singleton address - the idempotent no-op, nothing to
-        // announce (this run started it earlier, a prior run left it up, or another project did).
-        DashStart::AlreadyServing(_) => {}
-        // The diagnosis (spec 62, criterion 3 - HELD-PORT DIAGNOSIS, round 2 fix,
-        // adv-u62c3-diagnosis-unreachable-from-step-path-auto-start) travels alongside the
-        // generic headless-degrade line rather than replacing it: the generic line is the
-        // stable, always-present sentence every start failure gets; `msg` is whatever detail
-        // `spawn_run_dashboard_detached` could establish - a job-control-stopped predecessor's
-        // pid/state/remedy for a genuine port conflict (the step-path scenario this fix closes),
-        // or the bare timeout wording when nothing more specific could be determined.
-        DashStart::Failed(msg) => {
-            eprintln!(
-                "rigger: could not auto-start the dashboard; the run continues headless: {msg}"
-            );
-        }
-    }
-}
-
 /// A parsed `rigger result` invocation (see [`cmd_result`]): the spawn `id`, the
 /// optional outcome `text` (`None` means "read it from stdin"), whether `--error`
-/// marks it a failure, whether `--if-absent` makes the record conditional, whether
-/// `--supersede` replaces the result of a spawn that already ended, and the optional
-/// `--meta` courier bookkeeping.
+/// marks it a failure, and whether `--supersede` replaces the result of a spawn that
+/// already ended.
 struct ResultArgs {
     id: String,
     text: Option<String>,
     is_error: bool,
-    if_absent: bool,
     supersede: bool,
-    meta: Option<serde_json::Value>,
 }
 
-/// Parse `rigger result <id> [<output>] [--error] [--if-absent] [--supersede] [--meta '<json>']`.
+/// Parse `rigger result <id> [<output>] [--error] [--supersede]`.
 ///
 /// `<id>` is the required deterministic spawn id (`{unit}/{role}#{attempt}`). The
 /// outcome payload is an OPTIONAL second positional; when omitted, [`cmd_result`]
-/// reads it from stdin (spec 04: "record a spawn's outcome (stdin or arg)"). `--error`
-/// is a bare flag that turns the payload into the failure message rather than the
-/// agent's output. `--if-absent` is a bare flag that makes the record CONDITIONAL: the
-/// outcome is written only when the spawn has no result yet, atomically and without
-/// clobbering an existing one (the thin driver's death courier uses it - spec 05).
-/// `--supersede` is a bare flag: the explicit operator repair that replaces the result of
-/// a spawn that already ended, which a plain record refuses ([`result_refusal`]).
-/// `--meta` takes a JSON OBJECT (mirroring `rigger emit`'s payload contract) carrying
-/// courier bookkeeping (e.g. the resolved model id, spec 05). Unknown flags, a
-/// missing/empty id, a third positional, and a non-object/invalid `--meta` are all
-/// rejected with a clear message.
+/// reads it from stdin. `--error` is a bare flag that turns the payload into the failure
+/// message rather than the agent's output. `--supersede` is a bare flag: the explicit
+/// operator repair that replaces the result of a spawn that already ended, which a plain
+/// record refuses ([`result_refusal`]). Unknown flags, a missing/empty id and a third
+/// positional are all rejected with a clear message.
 fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::Error>> {
+    const USAGE: &str = "rigger result <id> [<output>] [--error] [--supersede]";
     let mut id: Option<String> = None;
     let mut text: Option<String> = None;
     let mut is_error = false;
-    let mut if_absent = false;
     let mut supersede = false;
-    let mut meta: Option<serde_json::Value> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
+    for arg in args {
+        match arg.as_str() {
             "--error" => is_error = true,
-            "--if-absent" => if_absent = true,
             "--supersede" => supersede = true,
-            "--meta" => {
-                let raw = args.get(i + 1).ok_or(
-                    "result: --meta needs a JSON object: rigger result <id> --meta '<json>'",
-                )?;
-                let value: serde_json::Value = serde_json::from_str(raw)
-                    .map_err(|e| format!("result: --meta is not valid JSON: {e}"))?;
-                if !value.is_object() {
-                    return Err(format!(
-                        "result: --meta must be a JSON object, got {}",
-                        json_type_name(&value)
-                    )
-                    .into());
-                }
-                meta = Some(value);
-                i += 1;
-            }
             flag if flag.starts_with("--") => {
                 return Err(format!("result: unknown flag {flag:?}").into());
             }
@@ -3068,17 +1609,14 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
                     text = Some(positional.to_string());
                 } else {
                     return Err(format!(
-                        "result: unexpected extra argument {positional:?}; usage: rigger result <id> [<output>] [--error] [--meta '<json>']"
+                        "result: unexpected extra argument {positional:?}; usage: {USAGE}"
                     )
                     .into());
                 }
             }
         }
-        i += 1;
     }
-    let id = id.ok_or(
-        "result: expected a spawn id: rigger result <id> [<output>] [--error] [--meta '<json>']",
-    )?;
+    let id = id.ok_or_else(|| format!("result: expected a spawn id: {USAGE}"))?;
     if id.is_empty() {
         return Err("result: the spawn id must not be empty".into());
     }
@@ -3086,9 +1624,7 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
         id,
         text,
         is_error,
-        if_absent,
         supersede,
-        meta,
     })
 }
 
@@ -3098,30 +1634,24 @@ fn parse_result_args(args: &[String]) -> Result<ResultArgs, Box<dyn std::error::
 /// Split from [`cmd_result`] (which does the stdin + store I/O) so the outcome-shaping
 /// rules are a pure, unit-testable function. `--error` needs a NON-EMPTY message: a
 /// blank error would leave [`spawn::SpawnResult::is_error`] false, so the replay driver
-/// would answer the spawn AS a success and silently swallow the failure the courier
+/// would answer the spawn AS a success and silently swallow the failure the operator
 /// meant to record. A success may carry empty output (an agent that finished with no
 /// final message is a valid outcome).
 fn build_result(
     id: &str,
     text: &str,
     is_error: bool,
-    meta: Option<serde_json::Value>,
 ) -> Result<spawn::SpawnResult, Box<dyn std::error::Error>> {
-    let mut res = if is_error {
-        if text.trim().is_empty() {
-            return Err(format!(
-                "result: --error for {id:?} needs a non-empty message (a blank error would replay as a success)"
-            )
-            .into());
-        }
-        spawn::SpawnResult::failed(id, text)
-    } else {
-        spawn::SpawnResult::ok(id, text)
-    };
-    if let Some(m) = meta {
-        res = res.with_meta(m);
+    if !is_error {
+        return Ok(spawn::SpawnResult::ok(id, text));
     }
-    Ok(res)
+    if text.trim().is_empty() {
+        return Err(format!(
+            "result: --error for {id:?} needs a non-empty message (a blank error would replay as a success)"
+        )
+        .into());
+    }
+    Ok(spawn::SpawnResult::failed(id, text))
 }
 
 /// Read the outcome payload from stdin when it was not given as an argument. A pipe /
@@ -3146,27 +1676,19 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
     Ok(buf)
 }
 
-/// `rigger result <id> [<output>] [--error] [--if-absent] [--meta '<json>']` - record a
-/// parked spawn's OUTCOME to the run log, so the conductor's replay driver answers that
-/// spawn from the log instead of re-parking it and the next `rigger step` / `rigger run`
-/// advances past it (spec 04). The courier that ran the parked agent reports its final
-/// message as `<output>` (or on stdin); a worker that died is reported with `--error
-/// <message>`; `--meta` attaches optional bookkeeping (e.g. the resolved model id).
-///
-/// `--if-absent` makes the write CONDITIONAL and atomic: the outcome is recorded only
-/// when the spawn has no result yet, and an already-recorded result is left UNTOUCHED
-/// (still exit 0). The thin driver's death courier uses it to record a died-worker
-/// failure without clobbering a self-report that landed first - one atomic operation
-/// closing the TOCTOU window the old two-process `rigger reported <id> || rigger result
-/// <id> --error` guard left open (spec 05). See [`spawn_store::record_result_if_absent`].
+/// `rigger result <id> [<output>] [--error] [--supersede]` - record a spawn's OUTCOME to
+/// the run log, so the next `rigger run` answers that spawn from the log instead of
+/// running it. It is the operator's repair for a halt that names it: a reviewer whose
+/// recorded result carries no verdict, or only empty output, is answered by recording the
+/// substantive result over the standing one with `--supersede`, then relaunching the run.
 ///
 /// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
-/// stream the conductor drives, so the write lands exactly where the replay driver reads.
+/// stream the conductor drives, so the write lands exactly where the replay reads.
 /// A recorded failure replays AS a failure - the conductor remediates it just as it would
 /// a live one. The store is RESOLVED by walking up to the project's existing `.rigger`
-/// (refusing to fabricate one in the wrong cwd, spec 05 - see [`require_store_dir`]); and
-/// before recording, a single pre-write read of the stream refuses to replace the result of
-/// a spawn that already ended unless `--supersede` (see [`result_refusal`]), then prints
+/// (refusing to fabricate one in the wrong cwd - see [`require_store_dir`]); and before
+/// recording, a single pre-write read of the stream refuses to replace the result of a
+/// spawn that already ended unless `--supersede` (see [`result_refusal`]), then prints
 /// stderr advisories for an ORPHAN id (no matching spawn request) or for SUPERSEDING an
 /// existing result (see [`result_advisories`]).
 pub(crate) fn cmd_result(args: &[String]) -> Res {
@@ -3177,108 +1699,55 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
         Some(t) => t,
         None => read_outcome_from_stdin()?,
     };
-    let res = build_result(&parsed.id, &text, parsed.is_error, parsed.meta)?;
+    let res = build_result(&parsed.id, &text, parsed.is_error)?;
 
     // Resolve the EXISTING store (walk up; refuse if none) rather than fabricating one
-    // in the wrong cwd, scoped by the RESOLVED root's identity: a courier run from a unit
-    // worktree would otherwise record into a fresh dead store (no store) or misfile under
-    // the worktree's own namespace (walked-up store) while the real spawn stays parked
-    // forever - both fixed here (see [`require_store_dir`] / [`StoreLocation::identity`]).
+    // in the wrong cwd, scoped by the RESOLVED root's identity, so the record lands in the
+    // stream the run reads (see [`require_store_dir`] / [`StoreLocation::identity`]).
     let (loc, selection) = require_store_dir()?;
-    // Spec 62 (couriers count as activity): re-stamp this project's registry heartbeat before
-    // the real work below, so the instance stays discoverable even if this result is the only
-    // traffic in the run for a while. Best-effort/warn-only; never fails the result.
+    // A recorded result is project activity: re-stamp this project's registry heartbeat before
+    // the work below, so the instance stays discoverable. Best-effort; never fails the result.
     refresh_registry_entry(&loc, &selection);
     over_the_run_store_at(&loc, &selection, |store| {
         // One cheap pre-write read of the run stream. A plain record over the result of a spawn
-        // that already ended is refused (gap 108: a driver resume re-spawns the workers of a
-        // replayed wave, and a stale one must never overwrite the result that stands) unless
-        // `--supersede` names the repair; `--if-absent` never replaces anything, so it is left
-        // to its CAS. A record that goes ahead is then advised (on stderr) about an orphan id or
-        // about superseding an existing result (see [`result_advisories`]). Weave with unit-10:
-        // under `--if-absent` nothing can supersede (the CAS refuses), so the supersede note is
-        // suppressed - the "left it untouched" line below reports that case honestly.
+        // that already ended is refused unless `--supersede` names the repair; a record that
+        // goes ahead is then advised (on stderr) about an orphan id or about superseding an
+        // existing result (see [`result_advisories`]).
         let (prior, _) = runscope::read::read_current_run(store, conductor::STREAM)?;
-        if !parsed.if_absent {
-            if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
-                return Err(refusal.into());
-            }
+        if let Some(refusal) = result_refusal(&prior, &res.id, parsed.supersede)? {
+            return Err(refusal.into());
         }
-        for note in result_advisories(&prior, &res.id, !parsed.if_absent) {
+        for note in result_advisories(&prior, &res.id) {
             eprintln!("{note}");
         }
-
         let kind = if res.is_error() {
             "error result"
         } else {
             "result"
         };
-        // The position an append actually landed at, or `None` when `--if-absent` was a no-op
-        // (a result already stood, so a prior `rigger result` already folded it - see the fold
-        // below). Only a real append is folded into the graph.
-        let recorded = if parsed.if_absent {
-            // Conditional atomic record: write only if the spawn is still unanswered, never
-            // overwriting an existing result. A no-op (a result already stood) is a success,
-            // so the courier's `|| ...`-free single command always exits 0.
-            match spawn_store::record_result_if_absent(store, &res)? {
-                Some(pos) => {
-                    println!("recorded {kind} for {} (position {pos})", res.id);
-                    Some(pos)
-                }
-                None => {
-                    println!(
-                        "{} already has a result; --if-absent left it untouched",
-                        res.id
-                    );
-                    None
-                }
-            }
-        } else {
-            let pos = spawn_store::record_result(store, &res)?;
-            println!("recorded {kind} for {} (position {pos})", res.id);
-            Some(pos)
-        };
+        let pos = spawn_store::record_result(store, &res)?;
+        println!("recorded {kind} for {} (position {pos})", res.id);
 
-        // Disposition-expiry (spec 25, criterion 1): fold the just-recorded result into this run's
-        // context graph through the same fold outcome `rigger emit` reports (see [`cmd_emit`] /
-        // [`mcpserver::emit_event`]). The adjudicator's recorded `SpawnResult` is the ONLY place a
-        // review's findings are disposed: the `TYPE_SPAWN_RESULT` fold arm reads its verdict line's
-        // `discarded` ids (through the single [`spawn::SpawnResult::adjudication`] authority) and
-        // invalidates those findings' graph edges, so grounding stops surfacing them. Without this
-        // fold the arm is inert in production - the courier appends the verdict to `events.db` but
-        // nothing ever folds a `SpawnResult` into the persistent `graph.db`, so a discarded finding
-        // is never pruned. Only an adjudicator result disposes anything (`adjudication` self-gates
-        // on the adjudicator role and returns `None` otherwise), so folding EVERY recorded result
-        // is safe: a plain worker/courier result folds to nothing.
+        // Fold the just-recorded result into this run's context graph through the same fold
+        // outcome `rigger emit` reports (see [`cmd_emit`] / [`mcpserver::emit_event`]). An
+        // adjudicator's recorded `SpawnResult` is where a review's findings are disposed: the
+        // `TYPE_SPAWN_RESULT` fold arm reads its verdict line's `discarded` ids and invalidates
+        // those findings' graph edges, so grounding stops surfacing them. Only an adjudicator
+        // result disposes anything, so folding every recorded result is safe.
         //
         // AFTER the durable append, as `emit_event` does: the record already landed in the log, so
-        // a fold that cannot happen (a graph that owes its rebuild, or one whose write lock or
-        // catch-up held the fold past the appender's ceiling) never fails a result the log holds -
-        // but it is SAID, with the reason, because a current graph that missed the fold keeps the
-        // result out of grounding until a later `rigger setup` folds it (a graph that owes its
-        // rebuild re-derives it from the live selection a `SpawnResult` is in, and so does a file
-        // not yet carrying the cursor whose seeding finds the hole the result left in its applied
-        // ledger old; setup's catch-up folds any other such hole forward from the file's cursor),
-        // and until then a lost adjudicator verdict keeps its discarded findings in grounding. A
-        // `--if-absent` no-op appended nothing, so there is nothing new to fold (the prior record
-        // already did).
-        if let Some(pos) = recorded {
-            if let contextgraph::Fold::NotFolded(why) =
-                fold_recorded_result(&loc, &selection, &res, pos)
-            {
-                println!("{}", not_folded(&why));
-            }
+        // a fold that cannot happen never fails it - but it is SAID, with the reason, because a
+        // graph that missed the fold keeps the result out of grounding until a later
+        // `rigger setup` folds it.
+        if let contextgraph::Fold::NotFolded(why) =
+            fold_recorded_result(&loc, &selection, &res, pos)
+        {
+            println!("{}", not_folded(&why));
         }
 
-        // Per-spawn scratch reclamation (spec 34, criterion 1): the moment this spawn's result is
-        // recorded - for ANY outcome (a success, a reject verdict, an `--error`, or a
-        // liveness/infra fault, all of which reach the store through THIS courier) - reclaim the
-        // dedicated scratch dir rigger assigned it under `.rigger/tmp`. `cmd_result` only ever
-        // runs for the spawn being reported, so a spawn with no recorded result is never touched
-        // (the "keeps its scratch" half of the criterion, by construction). Reclaimed even on a
-        // `--if-absent` no-op: a result already stood, so a prior `rigger result` already
-        // reclaimed it and reclaiming an already-gone path is a graceful no-op. Best-effort - the
-        // record already landed durably, so scratch reclamation may never fail a recorded result.
+        // Reclaim the dedicated scratch dir rigger assigned this spawn under `.rigger/tmp`, for
+        // any outcome. Best-effort: the record already landed durably, so scratch reclamation
+        // never fails a recorded result, and an already-gone path is a graceful no-op.
         reclaim_spawn_scratch(&loc, &prior, &res.id);
         Ok(())
     })
@@ -3353,51 +1822,6 @@ fn fold_recorded_result(
     }
 }
 
-/// The pid-scoped parent-to-child contract's env var name (spec 66, criterion 5 disposition,
-/// closing the ad-hoc-mechanism class two earlier rounds tried and a reviewer rejected: a
-/// bare presence sentinel leaks across unrelated process trees, an in-process static leaks
-/// across in-process calls but not across a real process boundary). A nesting surface that
-/// has already printed [`spec_lint_next_step`]'s reminder sets this to ITS OWN process id
-/// before spawning a child; a genuinely nested child then suppresses its own reminder. An
-/// INTERMEDIARY (a non-rigger wrapper such as `shim/shim.mjs` that spawns rigger as its own
-/// OS child) passes the contract through in the same pass-through form: see `shim.mjs`'s
-/// mirror of this name and [`spec_lint_reminder_suppressed`]'s doc comment.
-const SPEC_LINT_REMINDER_PID_ENV: &str = "RIGGER_SPEC_LINT_REMINDER_PID";
-
-/// Whether the spec-lint discoverability reminder is suppressed for THIS process, per the
-/// [`SPEC_LINT_REMINDER_PID_ENV`] contract (spec 66, criterion 5): suppressed ONLY when
-/// `env_value` parses as a `u32` AND equals `parent_pid` (the real direct OS parent, e.g.
-/// `std::os::unix::process::parent_id()`) - an absent, foreign (parses but names some other
-/// process), stale, or malformed value always means "print". Pure over its inputs (no env or
-/// process reads inside) so both directions - nested invocation suppressed, ambient pollution
-/// from an unrelated process tree still prints - are unit-testable without a real process
-/// tree; [`spec_lint_reminder_should_print`] is the impure wrapper real call sites use.
-fn spec_lint_reminder_suppressed(env_value: Option<&str>, parent_pid: u32) -> bool {
-    env_value
-        .and_then(|v| v.trim().parse::<u32>().ok())
-        .is_some_and(|seen_pid| seen_pid == parent_pid)
-}
-
-/// The real-environment, real-process wrapper around [`spec_lint_reminder_suppressed`]: reads
-/// [`SPEC_LINT_REMINDER_PID_ENV`] and this process's real direct parent id, so every
-/// reminder-printing call site (`run_cli`, `run_workflow`, `cmd_workflow`, `cmd_step`)
-/// shares ONE decision rather than per-site copies that could drift. `parent_id()` is Unix-only in `std`; a
-/// non-Unix build has no parent-pid seam to check, so it always prints (never silently
-/// suppresses on a platform this contract cannot verify).
-fn spec_lint_reminder_should_print() -> bool {
-    #[cfg(unix)]
-    {
-        !spec_lint_reminder_suppressed(
-            std::env::var(SPEC_LINT_REMINDER_PID_ENV).ok().as_deref(),
-            std::os::unix::process::parent_id(),
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
 fn print_run_state(rs: &RunState, base: &str) {
     println!("run state:");
     for (name, u) in &rs.units {
@@ -3421,8 +1845,7 @@ fn print_run_state(rs: &RunState, base: &str) {
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
 /// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop. The text form of the `halted` key a `rigger step` pass
-/// stamps; a held step runs no pass.
+/// stop's), `None` on any other stop.
 fn halted_line(rs: &RunState) -> Option<String> {
     rs.budget_halt
         .as_ref()
@@ -3432,710 +1855,84 @@ fn halted_line(rs: &RunState) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{pgid_of, test_spawn_host};
-    use std::process::Command;
 
-    // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
-
-    /// The nested-invocation direction: a child whose env names EXACTLY its own real direct
-    /// parent pid is suppressed (the nesting surface just printed and passed its own pid
-    /// down).
-    #[test]
-    fn spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid() {
-        assert!(spec_lint_reminder_suppressed(Some("4242"), 4242));
+    /// What `rigger result <args>` parses to: `Ok((id, text, is_error, supersede))`, or the
+    /// error it refuses with.
+    fn assert_parsed_result(args: &[&str], want: Result<(&str, Option<&str>, bool, bool), &str>) {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let got = parse_result_args(&args)
+            .map(|a| (a.id, a.text, a.is_error, a.supersede))
+            .map_err(|e| e.to_string());
+        let want = want
+            .map(|(id, text, is_error, supersede)| {
+                (
+                    id.to_string(),
+                    text.map(str::to_string),
+                    is_error,
+                    supersede,
+                )
+            })
+            .map_err(str::to_string);
+        assert_eq!(got, want, "rigger result {args:?}");
     }
 
-    /// The ambient-pollution direction: absent, foreign (a pid that is not the real direct
-    /// parent), stale, or malformed values must never suppress - state lives ONLY in the
-    /// explicit parent-to-child contract, never ambient env presence.
-    #[test]
-    fn spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env() {
-        assert!(
-            !spec_lint_reminder_suppressed(None, 4242),
-            "an absent value must print"
+    rigger::test_cases! {
+        parse_result_takes_an_id_and_an_optional_output_arg: assert_parsed_result(
+            &["u/implementer#0", "the diff"],
+            Ok(("u/implementer#0", Some("the diff"), false, false)),
         );
-        assert!(
-            !spec_lint_reminder_suppressed(Some("1"), 4242),
-            "a foreign pid (not the real direct parent) must print"
+        /// Just an id leaves the text unset, so `cmd_result` reads the outcome from stdin.
+        parse_result_with_no_output_defers_to_stdin: assert_parsed_result(
+            &["u/implementer#0"],
+            Ok(("u/implementer#0", None, false, false)),
         );
-        assert!(
-            !spec_lint_reminder_suppressed(Some("not-a-pid"), 4242),
-            "a malformed value must print"
+        parse_result_error_flag_before_the_output: assert_parsed_result(
+            &["u/adjudicator#1", "--error", "boom"],
+            Ok(("u/adjudicator#1", Some("boom"), true, false)),
         );
-        assert!(
-            !spec_lint_reminder_suppressed(Some(""), 4242),
-            "a stale/empty value must print"
+        parse_result_error_flag_after_the_output: assert_parsed_result(
+            &["u/adjudicator#1", "boom", "--error"],
+            Ok(("u/adjudicator#1", Some("boom"), true, false)),
         );
-        assert!(
-            !spec_lint_reminder_suppressed(Some(" 4242 "), 4243),
-            "a value that parses but does not equal the real direct parent must print"
+        parse_result_supersede_is_a_bare_flag: assert_parsed_result(
+            &["u/implementer#0", "--supersede", "corrected"],
+            Ok(("u/implementer#0", Some("corrected"), false, true)),
         );
-    }
-
-    // --- Spec 39, criterion 1: idempotent start of the run dashboard on the step path ---
-
-    /// The flagship criterion-1 proof: a `step` with NO dash serving starts exactly one, and
-    /// a later `step` while it is serving starts NONE - the marker/pid check short-circuits.
-    /// `start` is injected (counting spawns and recording a marker owned by THIS process, a
-    /// guaranteed-live pid), so the injected liveness predicate finds the recorded dash
-    /// serving on the second call - proving idempotency without a real dashboard process.
-    #[test]
-    fn ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker() {
-        use std::cell::Cell;
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        let starts = Cell::new(0u32);
-        let live = dash::DashMarker {
-            port: 54321,
-            pid: std::process::id(),
-        };
-
-        // First step of the run: no marker yet -> start one and record its marker.
-        let first = ensure_run_dashboard_at(
-            &marker_path,
-            |m| m.pid == std::process::id(),
-            || {
-                starts.set(starts.get() + 1);
-                Ok(live)
-            },
+        parse_result_requires_an_id: assert_parsed_result(
+            &[],
+            Err("result: expected a spawn id: rigger result <id> [<output>] [--error] [--supersede]"),
         );
-        assert_eq!(
-            first,
-            DashStart::Started(54321),
-            "the first step starts a dash"
+        parse_result_rejects_an_empty_id: assert_parsed_result(
+            &[""],
+            Err("result: the spawn id must not be empty"),
         );
-        assert_eq!(starts.get(), 1, "exactly one dash was started");
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            Some(live),
-            "the started dash is recorded for later steps to discover"
+        parse_result_rejects_a_third_positional: assert_parsed_result(
+            &["id", "out", "extra"],
+            Err("result: unexpected extra argument \"extra\"; usage: rigger result <id> [<output>] [--error] [--supersede]"),
         );
-
-        // A later step WHILE it is serving: the marker names a live dash -> NO second start.
-        let second = ensure_run_dashboard_at(
-            &marker_path,
-            |m| m.pid == std::process::id(),
-            || {
-                starts.set(starts.get() + 1);
-                Ok(dash::DashMarker {
-                    port: 60000,
-                    pid: std::process::id(),
-                })
-            },
-        );
-        assert_eq!(
-            second,
-            DashStart::AlreadyServing(54321),
-            "a later step is a no-op while a dash is serving"
-        );
-        assert_eq!(
-            starts.get(),
-            1,
-            "no second dash was started - the start is idempotent across steps"
+        parse_result_rejects_an_unknown_flag: assert_parsed_result(
+            &["id", "--if-absent"],
+            Err("result: unknown flag \"--if-absent\""),
         );
     }
 
-    /// [`dash_marker_serving`] is the ONE named predicate `ensure_run_dashboard`'s real
-    /// production wiring passes to [`ensure_run_dashboard_at`] - pinned directly, not only
-    /// through an injected test double, so a mutant that made it unconditionally trust any
-    /// marker (round 3, part of closing adv-u69c4r2-mismatched-marker-still-trusts-a-dead-url's
-    /// remediation) cannot slip through untested. A port nothing binds must read as NOT
-    /// serving - the real network probe, never a bare presence check.
-    #[test]
-    fn dash_marker_serving_reports_false_when_nothing_answers_the_markers_port() {
-        let port = dash::free_port_from(40000).expect("a free loopback port must be available");
-        assert!(
-            !dash_marker_serving(dash::DashMarker { port, pid: 1 }),
-            "a marker naming a port nothing serves must read as not serving"
-        );
+    /// What [`build_result`] makes of `(text, is_error)`: `Ok((is_error, output, error))`, or
+    /// a refusal. A blank `--error` would replay as a success, so it is refused.
+    fn assert_built_result(text: &str, is_error: bool, want: Option<(bool, &str, &str)>) {
+        let got = build_result("u/adjudicator#1", text, is_error)
+            .ok()
+            .map(|r| (r.is_error(), r.output, r.error));
+        let want = want.map(|(e, o, err)| (e, o.to_string(), err.to_string()));
+        assert_eq!(got, want, "build_result({text:?}, {is_error})");
     }
 
-    /// A dash that holds its marker's port but is too busy to answer within the probe window is
-    /// alive: the step reads it as serving and starts no second dash, which could only fail to
-    /// bind the held port - the reading `rigger status` and `rigger watch` give the same probe.
-    /// Driven through the two halves [`dash_marker_serving`] composes, so a failure names the
-    /// answer the probe actually gave.
-    #[test]
-    fn dash_marker_serving_reads_a_silent_port_holder_as_a_busy_dash() {
-        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = held.local_addr().unwrap().port();
-        let answer = dash::dash_answer_on(port);
-        assert!(
-            answer_reads_serving(&answer),
-            "a marker whose port is held but silent names a busy dash, never a gone one; the \
-             probe answered {answer:?}"
-        );
-    }
-
-    /// Only a port the probe PROVED serves no dash lets the step start one: a busy holder and a
-    /// probe that could not run at all proved no dash gone, so the step starts no second dash
-    /// that could only fail to bind the held port.
-    #[test]
-    fn only_a_port_proven_unserved_lets_the_step_start_a_dash() {
-        assert!(answer_reads_serving(&dash::DashAnswer::Serving));
-        assert!(answer_reads_serving(&dash::DashAnswer::Unresponsive));
-        assert!(
-            answer_reads_serving(&dash::DashAnswer::ProbeFailed(
-                "Too many open files (os error 24)".into()
-            )),
-            "a probe that failed locally proves no dash gone"
-        );
-        assert!(!answer_reads_serving(&dash::DashAnswer::NotServing));
-    }
-
-    /// A marker left by a crashed/reaped dash (recorded but NOT serving) does not suppress a
-    /// fresh start: the step starts a new dash and overwrites the stale marker.
-    #[test]
-    fn ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        dash::DashMarker {
-            port: 40000,
-            pid: 123,
-        }
-        .write(&marker_path)
-        .unwrap();
-        let outcome = ensure_run_dashboard_at(
-            &marker_path,
-            |_| false, // the recorded dash is gone
-            || {
-                Ok(dash::DashMarker {
-                    port: 40001,
-                    pid: 456,
-                })
-            },
-        );
-        assert_eq!(
-            outcome,
-            DashStart::Started(40001),
-            "a dead marker -> start a fresh dash"
-        );
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            Some(dash::DashMarker {
-                port: 40001,
-                pid: 456
-            }),
-            "the fresh dash replaces the stale marker"
-        );
-    }
-
-    /// A best-effort start failure degrades to headless (a warning, `DashStart::Failed`) and
-    /// records no marker - never a panic or a failed step. The failure's diagnosis text (spec 62
-    /// round 2 fix, adv-u62c3-diagnosis-unreachable-from-step-path-auto-start) is carried
-    /// through verbatim - the `io::Error`'s `Display` - rather than discarded, so this pins the
-    /// carry-through at the injected-closure seam directly.
-    #[test]
-    fn ensure_run_dashboard_at_reports_failed_when_the_start_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        let outcome = ensure_run_dashboard_at(
-            &marker_path,
-            |_| false,
-            || Err(std::io::Error::other("no free port")),
-        );
-        assert_eq!(
-            outcome,
-            DashStart::Failed("no free port".to_string()),
-            "a start failure degrades to headless, not a panic, carrying the failure's own \
-             diagnosis text rather than discarding it"
-        );
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            None,
-            "a failed start records no marker"
-        );
-    }
-
-    // --- Spec 62, criterion 1: marker follows bind (confirmed ACROSS the process boundary) ---
-
-    /// The success arm of [`wait_for_dash_bind`]: once a port genuinely answers as a rigger dash
-    /// (carrying [`dash::DASH_HEADER`], exactly what `dash_serving_on` itself checks for), the
-    /// wait confirms PROMPTLY - well inside its window - rather than waiting the window out.
-    /// `child` here is a real, independently-spawned long-lived process standing in for "the
-    /// detached child launched"; the REAL server thread plays the "its port is now answering"
-    /// role, matching how production separates the two (a spawn succeeding is not a confirmed
-    /// bind - only the probe answering is).
-    #[test]
-    fn wait_for_dash_bind_confirms_promptly_once_the_port_answers_as_a_dash() {
-        use std::io::Write as _;
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
-                        dash::DASH_HEADER
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn a real, long-lived child standing in for the detached dash process");
-
-        let start = std::time::Instant::now();
-        let confirmed = wait_for_dash_bind(
-            port,
-            &mut child,
-            std::time::Duration::from_secs(5),
-            std::time::Duration::from_millis(20),
-        );
-
-        assert!(
-            confirmed,
-            "a port genuinely answering as a rigger dash must be confirmed"
-        );
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "a confirmed bind must return promptly, not wait out the whole window; took {:?}",
-            start.elapsed()
-        );
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    /// The early-exit arm: `cmd.spawn()` succeeding proves only that the OS launched a process,
-    /// never that it bound (spec 62, criterion 1) - so a child that exits BEFORE ever confirming
-    /// a bind must fail FAST, never wait out the whole window. `sleep 0` is a real process that
-    /// exits almost immediately without binding anything.
-    #[test]
-    fn wait_for_dash_bind_fails_fast_when_the_child_exits_before_confirming() {
-        let port = dash::free_port_from(42000).expect("a free loopback port must be available");
-        let mut child = Command::new("sleep")
-            .arg("0")
-            .spawn()
-            .expect("spawn a real, near-instantly-exiting child");
-        // Give the OS a moment to make the exit visible to `try_wait` before the wait begins, so
-        // this proves the early-exit short-circuit rather than racing the child's own exit.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let start = std::time::Instant::now();
-        let confirmed = wait_for_dash_bind(
-            port,
-            &mut child,
-            std::time::Duration::from_secs(5),
-            std::time::Duration::from_millis(20),
-        );
-
-        assert!(
-            !confirmed,
-            "a child that exited before confirming a bind must never be confirmed"
-        );
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(1),
-            "an already-exited child must fail FAST, not wait out the whole window; took {:?}",
-            start.elapsed()
-        );
-    }
-
-    /// The window-bound arm, proven against a REAL held port - not only an injected stand-in -
-    /// per the criterion's own instruction ("this criterion's test exercises this real path end
-    /// to end - a real detached spawn against a real held port"). A plain listener HOLDS a real
-    /// port but never calls `accept()`: the kernel completes the TCP handshake from its backlog,
-    /// but nothing application-level ever reads or writes, so a probing client hangs until ITS
-    /// OWN read timeout - exactly the "job-control-stopped predecessor whose socket never
-    /// accepts" shape spec 62 names. The stand-in `child` stays alive the whole time too, so only
-    /// the bounded window (never an early exit) can end this wait. Run on a background thread
-    /// with a hard `recv_timeout` so a regression to an unbounded loop fails LOUD here instead of
-    /// hanging the whole suite (the same discipline `dash_serving_on_is_bounded_against_a_byte_
-    /// dribbling_holder` in `dash.rs` uses).
-    #[test]
-    fn wait_for_dash_bind_times_out_against_a_real_held_port() {
-        use std::sync::mpsc;
-
-        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = held.local_addr().unwrap().port();
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn a real, long-lived child standing in for the detached dash process");
-
-        let (tx, rx) = mpsc::channel();
-        let start = std::time::Instant::now();
-        std::thread::spawn(move || {
-            let confirmed = wait_for_dash_bind(
-                port,
-                &mut child,
-                std::time::Duration::from_millis(900),
-                std::time::Duration::from_millis(20),
-            );
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = tx.send(confirmed);
-        });
-
-        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(confirmed) => {
-                assert!(
-                    !confirmed,
-                    "a port held by a listener that never accepts must never be confirmed as a bind"
-                );
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(5),
-                    "wait_for_dash_bind must be bounded against a real held port; it took {:?}",
-                    start.elapsed()
-                );
-            }
-            Err(_) => panic!(
-                "wait_for_dash_bind HUNG against a real held port - it never returned within 5s \
-                 (a regression that would hang every caller, including ensure_run_dashboard)"
-            ),
-        }
-        drop(held);
-    }
-
-    /// Spec 62 round 4 fix (adj-u62c3r3-verdict-reject-child-self-attribution): the DEADLINE
-    /// sub-case of `wait_for_dash_bind` (window elapses while `child` is STILL ALIVE, never the
-    /// early-exit sub-case) must never let the HELD-PORT DIAGNOSIS self-attribute the port to
-    /// the very spawn attempt that is still starting. Mirrors `wait_for_dash_bind_times_out_
-    /// against_a_real_held_port` above (a real `TcpListener` bound in THIS test process stands
-    /// in for "the port is genuinely held" - a plain listener never calls `accept()`, so it
-    /// never answers as a dash and the wait can only end via the window, never the probe) but
-    /// drives the composed `wait_for_dash_bind_or_diagnose` instead of the bare probe, with
-    /// `spawned_pid` set to THIS test process's own pid - the exact pid the bound listener makes
-    /// independently discoverable via `/proc`, standing in for "the spawned child has bound the
-    /// port itself" without needing an external interpreter to fabricate one. `child` (used only
-    /// for the `try_wait` liveness check `wait_for_dash_bind` itself performs) stays a real,
-    /// unrelated, long-lived `sleep` process, decoupled from `spawned_pid` exactly as production
-    /// couples them (`child.id()`) only incidentally - the composed function's two parameters
-    /// are independent by construction, which is what makes this scenario constructible at all.
-    ///
-    /// Before this fix, the "already in use by pid {spawned_pid}" framing fired here exactly as
-    /// it would for a genuine competing holder (empirically reproduced by the round-3 adversary
-    /// review with a real bound child); the fix must instead recognize the pid match and report
-    /// a distinct, honest "still starting" message that never claims a competing occupant.
-    #[test]
-    fn wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn() {
-        if !Path::new("/proc").is_dir() {
-            return;
-        }
-
-        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = held.local_addr().unwrap().port();
-        let spawned_pid = std::process::id();
-
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn a real, long-lived child standing in for the detached dash process");
-
-        let result = wait_for_dash_bind_or_diagnose(
-            port,
-            &mut child,
-            spawned_pid,
-            std::time::Duration::from_millis(200),
-            std::time::Duration::from_millis(20),
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
-        drop(held);
-
-        let msg = result
-            .expect_err("a port held by a listener that never accepts must never confirm a bind");
-        assert!(
-            !msg.contains("already in use"),
-            "the discovered holder IS spawned_pid itself - this must never be framed as a \
-             competing external holder; got: {msg}"
-        );
-        assert!(
-            msg.contains(&spawned_pid.to_string()),
-            "the still-starting message must still name the pid so an operator can correlate \
-             it; got: {msg}"
-        );
-        let lower = msg.to_lowercase();
-        assert!(
-            lower.contains("starting") || lower.contains("slow"),
-            "the self-attribution case must get a distinct, honest message explaining this is \
-             the spawn attempt itself, not a competing process; got: {msg}"
-        );
-    }
-
-    /// The REAL production seam end to end - not only `ensure_run_dashboard_at`'s already-correct
-    /// injected-closure ordering test (spec 62, criterion 1's own instruction). Under `cargo
-    /// test`, `current_exe()` names THIS test binary, which never recognizes `dash` as a
-    /// subcommand and exits immediately without binding anything - so `spawn_run_dashboard_
-    /// detached` deterministically reaches the "child exited before confirming" arm of
-    /// `wait_for_dash_bind`, proving the UN-injected real seam surfaces `Err` (never a premature
-    /// `Ok` merely because `Command::spawn` succeeded) for a bind that never actually happened.
-    /// Wired through `ensure_run_dashboard_at` end to end: NO marker is written, and a
-    /// PRE-EXISTING marker is left completely untouched - the write ordering this criterion owns.
-    ///
-    /// `DASH_PORT_ENV` is pinned to a fresh ephemeral port (never the fixed default) so this can
-    /// never collide with a real dash already serving this machine's singleton address; serialized
-    /// with the project's other real-dash tests since it mutates process-wide environment state.
-    #[test]
-    #[serial_test::serial(dash_default_port)]
-    fn ensure_run_dashboard_at_writes_no_marker_when_the_real_spawn_never_confirms_a_bind() {
-        let port = dash::free_port_from(41000).expect("a free loopback port must be available");
-        std::env::set_var(DASH_PORT_ENV, port.to_string());
-        let outcome = std::panic::catch_unwind(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let marker_path = dir.path().join(DASH_MARKER_FILE);
-            let stale = dash::DashMarker {
-                port: 40002,
-                pid: 999_999,
-            };
-            stale.write(&marker_path).unwrap();
-
-            let outcome =
-                ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
-
-            assert!(
-                matches!(outcome, DashStart::Failed(_)),
-                "a bind that is never confirmed degrades to headless, not a fabricated success; \
-                 got: {outcome:?}"
-            );
-            assert_eq!(
-                dash::DashMarker::read(&marker_path),
-                Some(stale),
-                "a bind that never confirmed must leave a pre-existing marker completely untouched"
-            );
-        });
-        std::env::remove_var(DASH_PORT_ENV);
-        outcome.unwrap();
-    }
-
-    /// Spec 62 round 2 fix (adv-u62c3-diagnosis-unreachable-from-step-path-auto-start): the
-    /// step-path auto-start's OWN failure message names the holder of a genuinely held port -
-    /// not only the manual `rigger dash` CLI arm. This is the real, un-injected
-    /// `spawn_run_dashboard_detached` seam (same as the sibling test above), but this time the
-    /// ensure port is pinned to a port THIS test process holds itself with a plain listener, so
-    /// the spawned child's `bind_singleton` (were it ever reached) would see a genuine
-    /// `AddrInUse` - the exact conflict shape spec 62's criterion 3 exists to explain. Before
-    /// this fix, `DashStart::Failed` carried no payload at all, so this assertion could not even
-    /// be expressed; the held port's pid must now appear in the returned diagnosis, closing the
-    /// gap the adjudicator's reject upheld: the diagnosis was structurally unreachable from this
-    /// exact path.
-    #[test]
-    #[serial_test::serial(dash_default_port)]
-    fn ensure_run_dashboard_at_names_the_held_ports_holder_when_the_real_spawn_fails() {
-        if !Path::new("/proc").is_dir() {
-            // The `/proc`-surface discovery is Unix/Linux-only by design (spec 62 Notes); this
-            // test's assertions are unavailable elsewhere.
-            return;
-        }
-        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = held.local_addr().unwrap().port();
-        std::env::set_var(DASH_PORT_ENV, port.to_string());
-        let outcome = std::panic::catch_unwind(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let marker_path = dir.path().join(DASH_MARKER_FILE);
-
-            let outcome =
-                ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
-
-            let my_pid = std::process::id().to_string();
-            match outcome {
-                DashStart::Failed(msg) => {
-                    assert!(
-                        msg.contains(&format!("by pid {my_pid}")),
-                        "a bind that fails against a port THIS test process holds must name \
-                         this process's own pid as the holder - the HELD-PORT DIAGNOSIS, not \
-                         only the bare 'did not confirm a bind' wording; checked as the exact \
-                         `by pid {{N}}` attribution phrase, not a raw pid-string substring test, \
-                         since this project's mandatory pid-namespace test sandbox \
-                         (.cargo/pidns-runner.sh, every test binary here runs AS PID 1 of its own \
-                         fresh namespace) makes a raw substring check vacuous - \"1\" trivially \
-                         matches inside the loopback address \"127.0.0.1\" regardless of what the \
-                         message actually reports; got: {msg}"
-                    );
-                    assert!(
-                        msg.contains(&port.to_string()),
-                        "the diagnosis must always name the held address; got: {msg}"
-                    );
-                }
-                other => panic!(
-                    "expected DashStart::Failed(..) naming the held port's holder pid \
-                     {my_pid}, got {other:?}"
-                ),
-            }
-        });
-        std::env::remove_var(DASH_PORT_ENV);
-        drop(held);
-        outcome.unwrap();
-    }
-
-    /// Spec 62 round 3 fix (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel), mirroring
-    /// `cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched` (tests/cli.rs) for the step path:
-    /// a bind that `wait_for_dash_bind` never confirms for a reason UNRELATED to a genuinely
-    /// held port must never be framed as "already in use" - the false-positive the adjudicator
-    /// reproduced (round 2 fired that framing unconditionally on every `wait_for_dash_bind`
-    /// failure; `RIGGER_DASH_PORT=1` gave a real `PermissionDenied`, not `AddrInUse`).
-    ///
-    /// This test cannot reproduce that exact `PermissionDenied` shape through the real-spawn
-    /// seam (under `cargo test`, the spawned child is the TEST BINARY itself via `current_exe`,
-    /// which never reaches a real `bind_singleton` call at all - see the sibling test above's own
-    /// doc), but it exercises the SAME gate this round's fix adds from the other side: an
-    /// ephemeral port NOTHING holds. `wait_for_dash_bind` fails here for the harness's own
-    /// early-exit reason, not a held port - the exact "unrelated reason" class this fix must
-    /// never mislabel. `describe_held_port_if_confirmed` (crates/rigger-dash/src/dash.rs) is unit-tested directly
-    /// against both a held and an unheld port; this test locks the PRODUCTION WIRING end to end,
-    /// the gap round 2 shipped with (no step-path mirror of the CLI arm's regression test).
-    #[test]
-    #[serial_test::serial(dash_default_port)]
-    fn ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port() {
-        let port = dash::free_port_from(41500).expect("a free loopback port must be available");
-        std::env::set_var(DASH_PORT_ENV, port.to_string());
-        let outcome = std::panic::catch_unwind(|| {
-            let dir = tempfile::tempdir().unwrap();
-            let marker_path = dir.path().join(DASH_MARKER_FILE);
-
-            let outcome =
-                ensure_run_dashboard_at(&marker_path, |_| false, spawn_run_dashboard_detached);
-
-            match outcome {
-                DashStart::Failed(msg) => {
-                    assert!(
-                        !msg.contains("already in use"),
-                        "nothing holds this ephemeral port - the diagnosis must not claim a \
-                         phantom holder just because wait_for_dash_bind failed for an unrelated \
-                         reason; got: {msg}"
-                    );
-                }
-                other => panic!("expected DashStart::Failed(..), got {other:?}"),
-            }
-        });
-        std::env::remove_var(DASH_PORT_ENV);
-        outcome.unwrap();
-    }
-
-    // --- Spec 62, criterion 2: self-heal (a successful start replaces a stale marker) ---
-
-    /// A marker naming a DEAD pid whose recorded port nothing answers: wired through the REAL
-    /// `dash_marker_serving` probe (not an injected fake, unlike
-    /// `ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone` above, which already
-    /// covers this same overwrite mechanically but only through an injected `|_| false`), the
-    /// port never actually answering as a dash makes the step start a fresh one, and the stale
-    /// record is REPLACED with the new server's own port/pid - the first of the two forms spec
-    /// 62 criterion 2's Done-when text names ("dead PID").
-    #[test]
-    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        let dead_port =
-            dash::free_port_from(41100).expect("a free loopback port must be available");
-        dash::DashMarker {
-            port: dead_port,
-            // No process on this machine is required to hold this exact pid; the REAL probe
-            // below decides self-heal purely from the port, never this field.
-            pid: 999_999,
-        }
-        .write(&marker_path)
-        .unwrap();
-
-        let fresh = dash::DashMarker {
-            port: dead_port + 1,
-            pid: std::process::id(),
-        };
-        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
-
-        assert_eq!(
-            outcome,
-            DashStart::Started(fresh.port),
-            "the REAL still-serving probe finds nothing answering the dead marker's port, so a \
-             fresh dash starts"
-        );
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            Some(fresh),
-            "self-heal replaces the dead-pid marker with the new server's own record"
-        );
-    }
-
-    /// A marker naming a LIVE pid (this very test process, unambiguously alive) whose recorded
-    /// port nothing answers as a dash: `dash_marker_serving` never reads the pid field at all,
-    /// only probes the port (see its own doc), so a genuinely-alive-but-unrelated pid must never
-    /// suppress self-heal. The second of the two forms spec 62 criterion 2's Done-when text
-    /// names ("live PID not serving the recorded port") - distinct from the dead-pid case above
-    /// precisely because pid liveness itself is never load-bearing for this decision, only the
-    /// port's own probe is.
-    #[test]
-    fn ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        let unserved_port =
-            dash::free_port_from(41200).expect("a free loopback port must be available");
-        let live_pid = std::process::id();
-        dash::DashMarker {
-            port: unserved_port,
-            pid: live_pid,
-        }
-        .write(&marker_path)
-        .unwrap();
-
-        let fresh = dash::DashMarker {
-            port: unserved_port + 1,
-            pid: live_pid,
-        };
-        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || Ok(fresh));
-
-        assert_eq!(
-            outcome,
-            DashStart::Started(fresh.port),
-            "a live-but-unrelated pid never suppresses self-heal - only the port's own probe \
-             decides whether the recorded dash is still serving"
-        );
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            Some(fresh),
-            "self-heal replaces the marker even though its old pid field was genuinely alive"
-        );
-    }
-
-    /// The still-serving short-circuit is UNCHANGED by self-heal (the design bullet's own text)
-    /// even for the one case self-heal deliberately does NOT correct: a marker carrying
-    /// `dash::UNATTRIBUTED_PID` whose port genuinely keeps answering. `d-u62c1-unattributable-
-    /// serving-disposition` scopes self-heal to DEAD or stale markers only, never a live-but-
-    /// unattributable server - this proves that scope holds in the real wiring: with a REAL
-    /// listener answering as a dash (the same DASH_HEADER response `wait_for_dash_bind`'s own
-    /// test above uses), `ensure_run_dashboard_at` short-circuits to `AlreadyServing` WITHOUT
-    /// ever calling `start` (a call here would panic), and the on-disk marker - sentinel pid and
-    /// all - is left completely untouched. Regression-locks
-    /// `adv-u62c1r5-eventually-correct-claim-unreachable-while-the-same-dash-serves`.
-    #[test]
-    fn ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker() {
-        use std::io::Write as _;
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        std::thread::spawn(move || {
-            for mut s in listener.incoming().flatten() {
-                let _ = s.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\n{}: probe\r\nConnection: close\r\n\r\n",
-                        dash::DASH_HEADER
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-
-        let dir = tempfile::tempdir().unwrap();
-        let marker_path = dir.path().join(DASH_MARKER_FILE);
-        let sentinel = dash::DashMarker {
-            port,
-            pid: dash::UNATTRIBUTED_PID,
-        };
-        sentinel.write(&marker_path).unwrap();
-
-        let outcome = ensure_run_dashboard_at(&marker_path, dash_marker_serving, || {
-            panic!("self-heal must never call start() while the recorded port still serves")
-        });
-
-        assert_eq!(
-            outcome,
-            DashStart::AlreadyServing(port),
-            "a still-serving sentinel marker short-circuits; self-heal never gets a chance to run"
-        );
-        assert_eq!(
-            dash::DashMarker::read(&marker_path),
-            Some(sentinel),
-            "the still-serving marker, sentinel pid and all, is left completely untouched"
-        );
+    rigger::test_cases! {
+        build_result_records_output_as_a_success: assert_built_result("the diff", false, Some((false, "the diff", "")));
+        /// An agent that finished with no final message is a valid outcome.
+        build_result_keeps_an_empty_success: assert_built_result("", false, Some((false, "", "")));
+        build_result_records_an_error_as_a_failure: assert_built_result("crashed", true, Some((true, "", "crashed")));
+        build_result_refuses_a_blank_error: assert_built_result("   ", true, None);
+        build_result_refuses_an_empty_error: assert_built_result("", true, None);
     }
 
     /// Spec 50, criterion 4 (opt-out): the always-on ensure is suppressed by EITHER opt-out - the
@@ -4166,70 +1963,15 @@ mod tests {
         );
     }
 
-    /// Spec 50, criterion 4 (stable fixed address): the step-path ensure port resolves to the
-    /// FIXED [`dash::DEFAULT_PORT`] when the override env is unset - production's no-free-port-search
-    /// singleton contract - and only a VALID `u16` override relocates it; an empty or malformed
-    /// value degrades to the default so a bad knob never breaks a run's observability. Pure over the
-    /// already-read env value so both branches are provable without mutating the process
-    /// environment (the same discipline as `dash_ensure_suppressed`).
-    #[test]
-    fn dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it() {
-        // Unset: the fixed default, with no free-port search - the production singleton address.
-        assert_eq!(
-            dash_ensure_port_from(None),
-            dash::DEFAULT_PORT,
-            "an unset override binds the fixed DEFAULT_PORT (the stable singleton address)"
-        );
-        // A valid u16 relocates it (the seam the step-path dash tests use to inject an ephemeral
-        // port and never fight a real machine dash on the fixed default).
-        assert_eq!(
-            dash_ensure_port_from(Some("54321")),
-            54321,
-            "a valid u16 override relocates the ensure port"
-        );
-        assert_eq!(
-            dash_ensure_port_from(Some("  8080  ")),
-            8080,
-            "surrounding whitespace is trimmed before parsing"
-        );
-        // Absent-shaped or malformed values degrade to the default, never a panic or a break.
-        for bad in ["", "   ", "not-a-port", "70000", "-1", "80.5"] {
-            assert_eq!(
-                dash_ensure_port_from(Some(bad)),
-                dash::DEFAULT_PORT,
-                "a malformed override ({bad:?}) falls back to the fixed default"
-            );
-        }
-    }
-
-    // ---- `rigger result`: argument parsing and outcome shaping (the stepwise CLI) ----
-
-    #[test]
-    fn parse_result_takes_an_id_and_an_optional_output_arg() {
-        let a = parse_result_args(&["u/implementer#0".into(), "the diff".into()]).unwrap();
-        assert_eq!(a.id, "u/implementer#0");
-        assert_eq!(a.text.as_deref(), Some("the diff"));
-        assert!(!a.is_error);
-        assert!(a.meta.is_none());
-    }
-
-    #[test]
-    fn parse_result_with_no_output_defers_to_stdin() {
-        // Just an id -> text is None, so cmd_result reads the outcome from stdin.
-        let a = parse_result_args(&["u/implementer#0".into()]).unwrap();
-        assert_eq!(a.id, "u/implementer#0");
-        assert!(a.text.is_none());
-    }
-
     #[test]
     fn reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch() {
         // spec 34, criterion 3: the terminal-state run teardown reclaims EXACTLY the run-level
         // shared areas - `agent-scratch`, `agent-live`, `agent-stream`, and the SHARED build cache
         // (`cargo-target` + `target` directly under the root, the driver's `CARGO_TARGET_DIR`) -
         // and NOTHING else. Per-unit worktrees (`rigger-wt-<slug>`) and per-unit build caches
-        // (`cargo-target-<slug>`) are owned by their unit's own terminal reclamation (Worktree::
-        // remove / sweep_terminal / the orphan-sweep), never this run-level teardown, so they are
-        // SPARED here even though `cargo-target-<slug>` shares the build-cache prefix.
+        // (`cargo-target-<slug>`) are owned by their unit's own reclamation
+        // (`Worktree::remove`), never this run-level teardown, so they are SPARED here even
+        // though `cargo-target-<slug>` shares the build-cache prefix.
         const AREAS: [&str; 5] = [
             "agent-scratch",
             "agent-live",
@@ -4351,504 +2093,6 @@ mod tests {
             !agent_scratch.exists(),
             "contention on the shared cache alone must never abort the REST of the teardown"
         );
-    }
-
-    #[test]
-    fn parse_result_error_flag_is_order_independent() {
-        // `--error` is a bare flag, so it composes with the output positional in either
-        // order: `<id> --error <msg>` and `<id> <msg> --error` both mean the same thing.
-        for args in [
-            vec![
-                "u/adjudicator#1".to_string(),
-                "--error".into(),
-                "boom".into(),
-            ],
-            vec![
-                "u/adjudicator#1".to_string(),
-                "boom".into(),
-                "--error".into(),
-            ],
-        ] {
-            let a = parse_result_args(&args).unwrap();
-            assert_eq!(a.id, "u/adjudicator#1");
-            assert_eq!(a.text.as_deref(), Some("boom"));
-            assert!(a.is_error);
-        }
-    }
-
-    #[test]
-    fn parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag() {
-        // Absent by default (the plain `rigger result` still records unconditionally).
-        let plain = parse_result_args(&["u/implementer#0".into(), "done".into()]).unwrap();
-        assert!(!plain.if_absent, "--if-absent defaults off");
-
-        // `--if-absent` is a bare flag that composes with `--error` and the output
-        // positional in any order (the death courier passes `<id> --if-absent --error <msg>`).
-        for args in [
-            vec![
-                "u/adjudicator#1".to_string(),
-                "--if-absent".into(),
-                "--error".into(),
-                "died".into(),
-            ],
-            vec![
-                "u/adjudicator#1".to_string(),
-                "died".into(),
-                "--error".into(),
-                "--if-absent".into(),
-            ],
-        ] {
-            let a = parse_result_args(&args).unwrap();
-            assert_eq!(a.id, "u/adjudicator#1");
-            assert_eq!(a.text.as_deref(), Some("died"));
-            assert!(a.is_error);
-            assert!(a.if_absent, "--if-absent must parse regardless of position");
-        }
-    }
-
-    /// Gap 108 (A DRIVER RESUME REPLAYS CACHED COURIER STEPS): a resumed driver re-spawns the
-    /// workers of a replayed wave, so `rigger prompt` - the call every worker makes first -
-    /// refuses a spawn whose result is recorded, naming that result's position, while a parked
-    /// spawn and one answered only by the step's liveness fault still get their task.
-    #[test]
-    fn prompt_refuses_a_spawn_whose_result_is_recorded() {
-        let req = crate::test_support::test_request("u", "impl", "implementer", 0, "do it");
-        let parked = req.to_event().unwrap();
-        let mut fault = spawn::SpawnResult::liveness_fault(&req.id, "hung", "infra")
-            .to_event()
-            .unwrap();
-        fault.position = 4;
-        let mut ended = spawn::SpawnResult::ok(&req.id, "done").to_event().unwrap();
-        ended.position = 7;
-
-        assert_eq!(
-            prompt_reply(std::slice::from_ref(&parked), &req.id),
-            Ok("do it".to_string())
-        );
-        assert_eq!(
-            prompt_reply(&[parked.clone(), fault.clone()], &req.id),
-            Ok("do it".to_string()),
-            "a liveness fault never ends a spawn"
-        );
-        let refused = prompt_reply(&[parked, fault, ended], &req.id).unwrap_err();
-        assert!(
-            refused.contains("u/implementer#0") && refused.contains("already ended (result at position 7)"),
-            "the refusal names the spawn and the position of the result that ended it; got {refused}"
-        );
-    }
-
-    #[test]
-    fn parse_result_supersede_is_off_by_default_and_a_bare_flag() {
-        let plain = parse_result_args(&["u/implementer#0".into(), "done".into()]).unwrap();
-        assert!(!plain.supersede, "--supersede defaults off");
-        let a = parse_result_args(&[
-            "u/implementer#0".into(),
-            "--supersede".into(),
-            "corrected".into(),
-        ])
-        .unwrap();
-        assert_eq!(a.text.as_deref(), Some("corrected"));
-        assert!(a.supersede, "--supersede is a bare flag");
-    }
-
-    #[test]
-    fn parse_result_meta_must_be_a_json_object() {
-        let a = parse_result_args(&[
-            "u/implementer#0".into(),
-            "out".into(),
-            "--meta".into(),
-            r#"{"resolved_model":"claude-x"}"#.into(),
-        ])
-        .unwrap();
-        assert_eq!(a.meta.unwrap()["resolved_model"], "claude-x");
-
-        // A non-object JSON --meta is rejected (mirrors `rigger emit`'s object contract).
-        assert!(
-            parse_result_args(&[
-                "u/implementer#0".into(),
-                "--meta".into(),
-                "\"just-a-string\"".into(),
-            ])
-            .is_err(),
-            "a non-object --meta is rejected"
-        );
-        // Invalid JSON is rejected.
-        assert!(
-            parse_result_args(&[
-                "u/implementer#0".into(),
-                "--meta".into(),
-                "{not json".into()
-            ])
-            .is_err(),
-            "malformed --meta json is rejected"
-        );
-        // --meta with no following value is rejected.
-        assert!(
-            parse_result_args(&["u/implementer#0".into(), "--meta".into()]).is_err(),
-            "--meta needs a value"
-        );
-    }
-
-    #[test]
-    fn parse_result_rejects_missing_id_extra_args_and_unknown_flags() {
-        assert!(parse_result_args(&[]).is_err(), "the id is required");
-        assert!(
-            parse_result_args(&["".into()]).is_err(),
-            "an empty id is rejected"
-        );
-        assert!(
-            parse_result_args(&["id".into(), "out".into(), "extra".into()]).is_err(),
-            "a third positional is rejected"
-        );
-        assert!(
-            parse_result_args(&["id".into(), "--bogus".into()]).is_err(),
-            "an unknown flag is rejected"
-        );
-    }
-
-    #[test]
-    fn build_result_shapes_success_and_failure() {
-        let ok = build_result("u/implementer#0", "the diff", false, None).unwrap();
-        assert!(!ok.is_error());
-        assert_eq!(ok.output, "the diff");
-
-        let failed = build_result("u/adjudicator#1", "crashed", true, None).unwrap();
-        assert!(failed.is_error());
-        assert_eq!(failed.error, "crashed");
-
-        // A success may legitimately carry empty output (an agent with no final message).
-        assert!(build_result("u/implementer#0", "", false, None)
-            .unwrap()
-            .output
-            .is_empty());
-    }
-
-    #[test]
-    fn build_result_rejects_a_blank_error_message() {
-        // A blank --error would leave is_error() false and replay AS a success, silently
-        // swallowing the failure the courier meant to record - so it is rejected.
-        assert!(build_result("u/adjudicator#1", "   ", true, None).is_err());
-        assert!(build_result("u/adjudicator#1", "", true, None).is_err());
-    }
-
-    #[test]
-    fn build_result_attaches_meta() {
-        let res = build_result(
-            "u/implementer#0",
-            "out",
-            false,
-            Some(serde_json::json!({"resolved_model": "claude-x"})),
-        )
-        .unwrap();
-        assert_eq!(res.meta["resolved_model"], "claude-x");
-    }
-
-    /// Spawn the implementer `id` of unit `u` through a [`ReplayDriver`] over `store`, the way
-    /// the conductor's next step does.
-    fn replay_spawn(
-        store: &Namespaced<'_>,
-        id: &str,
-    ) -> Result<rigger::conductor::AgentResult, rigger::conductor::Error> {
-        use rigger::conductor::{AgentDriver, Error, SpawnOpts};
-        let opts = SpawnOpts {
-            id: id.to_string(),
-            unit: "u".into(),
-            stage: "u".into(),
-            ..SpawnOpts::new(test_spawn_host())
-        };
-        let no_emit = |_: &str, _: serde_json::Value| -> Result<(), Error> { Ok(()) };
-        ReplayDriver::new(store, "").spawn(
-            &rigger::config::AgentDef::default(),
-            "do it",
-            &opts,
-            &no_emit,
-        )
-    }
-
-    #[test]
-    fn a_recorded_result_lets_the_replay_driver_advance_past_the_spawn() {
-        // The acceptance shape for this unit: a result recorded through the SAME seam
-        // cmd_result uses (build_result -> spawn_store::record_result on the per-project
-        // namespaced run stream) flips a PARKED spawn to one the replay driver answers -
-        // i.e. the next step advances past it (spec 04, Done-when).
-        let backend = Store::open(":memory:").unwrap();
-        let store = Namespaced::new(&backend, "proj");
-        let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
-
-        // Before any result is recorded, the frontier PARKS (it waits for the courier).
-        let parked = replay_spawn(&store, &id).expect_err("an unrecorded spawn parks the frontier");
-        assert!(rigger::conductor::is_parked(&parked));
-
-        // `rigger result u/implementer#0 "the diff"` records the outcome through the seam.
-        let res = build_result(&id, "the diff", false, None).unwrap();
-        spawn_store::record_result(&store, &res).unwrap();
-
-        // Now the next step ADVANCES PAST it: the same spawn is answered from the log.
-        let answered =
-            replay_spawn(&store, &id).expect("a recorded result replays instead of re-parking");
-        assert_eq!(answered.output, "the diff");
-    }
-
-    #[test]
-    fn a_recorded_error_result_replays_as_a_failure_not_a_fake_success() {
-        // `rigger result <id> --error <msg>` must replay AS a failure so the conductor
-        // remediates it exactly as a live failure, never a fabricated success.
-        let backend = Store::open(":memory:").unwrap();
-        let store = Namespaced::new(&backend, "proj");
-        let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
-
-        let res = build_result(&id, "worker died: non-zero exit", true, None).unwrap();
-        spawn_store::record_result(&store, &res).unwrap();
-
-        let err = replay_spawn(&store, &id).expect_err("a recorded failure replays as an error");
-        assert_eq!(err.0, "worker died: non-zero exit");
-        assert!(
-            !rigger::conductor::is_parked(&err),
-            "a recorded failure is a real failure, not a park"
-        );
-    }
-
-    /// `rigger workflow` accepts an optional spec AND `--base <ref>` (spec 18, criterion 6):
-    /// `--base` is no longer rejected as "expected at most one spec path". Spec and flag
-    /// compose in any order; a second positional and a valueless `--base` are hard errors.
-    #[test]
-    fn parse_workflow_args_reads_spec_and_base() {
-        let w =
-            |a: &[&str]| parse_workflow_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-
-        // Bare: no spec, no base.
-        let (spec, base) = w(&[]).unwrap();
-        assert!(spec.is_none());
-        assert!(base.is_none());
-
-        // Just a spec (the pre-existing behavior).
-        let (spec, base) = w(&["spec.md"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert!(base.is_none());
-
-        // `rigger workflow <spec> --base <ref>` and the order-flipped form both parse.
-        let (spec, base) = w(&["spec.md", "--base", "my-feature"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert_eq!(base.as_deref(), Some("my-feature"));
-        let (spec, base) = w(&["--base", "my-feature", "spec.md"]).unwrap();
-        assert_eq!(spec.as_deref(), Some("spec.md"));
-        assert_eq!(base.as_deref(), Some("my-feature"));
-
-        // `--base` with no spec is fine (the default spec-less workflow, re-anchored).
-        let (spec, base) = w(&["--base", "my-feature"]).unwrap();
-        assert!(spec.is_none());
-        assert_eq!(base.as_deref(), Some("my-feature"));
-
-        // A second spec path is still the same clear error; a valueless --base names the fix.
-        let err = w(&["a.md", "b.md"]).unwrap_err().to_string();
-        assert_eq!(
-            err, "workflow: unexpected second positional argument \"b.md\"",
-            "a second positional must be rejected through the shared spec rule"
-        );
-        let err = w(&["--base"]).unwrap_err().to_string();
-        assert!(
-            err.contains("--base expects a ref"),
-            "the error must explain --base needs a ref; got: {err:?}"
-        );
-    }
-
-    /// `rigger step` accepts `--spec` and `--base`: `--base` defaults to `origin/main`,
-    /// both flags require a value, and an unknown flag or bare positional is rejected.
-    #[test]
-    fn parse_step_args_reads_spec_and_base_with_default() {
-        let s = |a: &[&str]| parse_step_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-
-        // Default base when --base is not given; no spec. The default is NOT flagged as
-        // explicit, so steady-state reuse stays silent.
-        let a = s(&[]).unwrap();
-        assert_eq!(a.base, DEFAULT_BASE_REF);
-        assert_eq!(a.base, "origin/main");
-        assert!(a.spec.is_none());
-        assert!(!a.base_explicit, "an unspecified --base is not explicit");
-
-        // --base overrides the default and is flagged explicit; --spec is read
-        // independently and order-free.
-        let a = s(&["--base", "rigger-run-1"]).unwrap();
-        assert_eq!(a.base, "rigger-run-1");
-        assert!(a.spec.is_none());
-        assert!(a.base_explicit, "a given --base is explicit");
-
-        let a = s(&["--spec", "specs/04.md", "--base", "origin/next"]).unwrap();
-        assert_eq!(a.spec.as_deref(), Some("specs/04.md"));
-        assert_eq!(a.base, "origin/next");
-        assert!(a.base_explicit);
-
-        // An explicit --base equal to the default is still explicit (so an ignored
-        // re-anchor to origin/main is reported, not swallowed as a default).
-        let a = s(&["--base", "origin/main"]).unwrap();
-        assert_eq!(a.base, "origin/main");
-        assert!(a.base_explicit);
-
-        // Each flag requires its value; typos and positionals are hard errors.
-        assert!(s(&["--base"]).is_err(), "--base without a value must error");
-        assert!(s(&["--spec"]).is_err(), "--spec without a value must error");
-        assert!(s(&["--nope"]).is_err(), "an unknown flag must error");
-        assert!(s(&["bare"]).is_err(), "a bare positional must error");
-
-        // `--fresh` is a bare boolean flag (off by default), composing with the others.
-        assert!(!s(&[]).unwrap().fresh, "--fresh is off unless asked");
-        let a = s(&["--fresh", "--spec", "specs/12.md"]).unwrap();
-        assert!(a.fresh, "--fresh sets the fresh-restart flag on a step");
-        assert_eq!(a.spec.as_deref(), Some("specs/12.md"));
-
-        // `--rebase-definition` (spec 13, unit 1) is likewise a bare boolean, off by default.
-        assert!(
-            !s(&[]).unwrap().rebase_definition,
-            "--rebase-definition is off unless asked"
-        );
-        let a = s(&["--rebase-definition", "--base", "origin/next"]).unwrap();
-        assert!(
-            a.rebase_definition,
-            "--rebase-definition sets the mid-campaign-edit escape on a step"
-        );
-        assert_eq!(a.base, "origin/next");
-    }
-
-    /// `merge_hung_attention` leaves `attention` untouched - and never evaluates the
-    /// (potentially expensive) reason closure - given `newly_hung`, `why` naming the case.
-    fn assert_merge_hung_attention_leaves_untouched(
-        attention: Vec<ledger::AttentionEntry>,
-        newly_hung: bool,
-        why: &str,
-    ) {
-        let merged = merge_hung_attention(attention.clone(), newly_hung, || {
-            panic!("the reason closure must not run: {why}")
-        });
-        assert_eq!(merged, attention, "attention must be untouched: {why}");
-    }
-
-    rigger::test_cases! {
-        /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
-        /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
-        /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
-        /// here would restamp on every call exactly like the defect this round fixes.
-        merge_hung_attention_does_nothing_when_not_newly_hung:
-            assert_merge_hung_attention_leaves_untouched(
-                vec![ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_ESCALATED,
-                    "u",
-                    "escalated after exhausting remediation",
-                )],
-                false,
-                "nothing is newly hung",
-            );
-        /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
-        /// (mirroring the precedence the `halted` wire field gives a conductor halt - the budget
-        /// breaker's, else a plan-critique spec-defect stop's - over its hung fallback, just
-        /// above this function's call site in `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
-        /// evaluate the reason closure, when one is already present.
-        merge_hung_attention_defers_to_an_existing_budget_halt:
-            assert_merge_hung_attention_leaves_untouched(
-                vec![ledger::AttentionEntry::run_scoped(
-                    ledger::ATTENTION_HALTED,
-                    "budget exhausted: 1/1 spawns",
-                )],
-                true,
-                "a halted entry already exists",
-            );
-    }
-
-    /// The merge must land the hung-liveness `halted` entry in its CANONICAL position
-    /// (escalated, halted, reject-recurrence, budget-final-tenth, stalled-frontier) even
-    /// when `compute_attention` already produced entries both BEFORE and AFTER that slot in
-    /// the SAME step (a different unit independently escalating, and a third stalling) - a
-    /// naive push-to-the-end would leave `halted` stuck last, violating the wire's
-    /// documented deterministic order.
-    #[test]
-    fn merge_hung_attention_lands_in_canonical_position_alongside_other_signals() {
-        let attention = vec![
-            ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_ESCALATED,
-                "e",
-                "escalated after exhausting remediation",
-            ),
-            ledger::AttentionEntry::unit_scoped(
-                ledger::ATTENTION_STALLED_FRONTIER,
-                "s",
-                "3 recorded results, still parked",
-            ),
-        ];
-        let merged =
-            merge_hung_attention(attention, true, || "liveness: 1 spawn(s) hung".to_string());
-        assert_eq!(
-            merged,
-            vec![
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_ESCALATED,
-                    "e",
-                    "escalated after exhausting remediation",
-                ),
-                ledger::AttentionEntry::run_scoped(
-                    ledger::ATTENTION_HALTED,
-                    "liveness: 1 spawn(s) hung",
-                ),
-                ledger::AttentionEntry::unit_scoped(
-                    ledger::ATTENTION_STALLED_FRONTIER,
-                    "s",
-                    "3 recorded results, still parked",
-                ),
-            ],
-            "the hung halted entry must be inserted BETWEEN escalated and stalled-frontier, \
-             the canonical order, not appended after both"
-        );
-    }
-
-    /// `cmd_reported` validates its arg count BEFORE any store I/O: exactly one spawn id is
-    /// required, so a typo (zero args, or extra args) is a clear error rather than a silent
-    /// read of the wrong thing. The single-id read path itself is covered by `result_of_at`
-    /// (the testable seam), which `cmd_reported` wraps for I/O + identity + the exit decision.
-    #[test]
-    fn cmd_reported_requires_exactly_one_id() {
-        let none = cmd_reported(&[]).expect_err("no id must be a clear error");
-        assert!(
-            none.to_string().contains("rigger reported <id>"),
-            "the no-id error must show the usage; got: {none}"
-        );
-        let extra = cmd_reported(&["a".to_string(), "b".to_string()])
-            .expect_err("extra args must be a clear error");
-        assert!(
-            extra.to_string().contains("rigger reported <id>"),
-            "the extra-args error must show the usage; got: {extra}"
-        );
-    }
-
-    /// End-to-end wiring: the dash actually spawned by [`spawn_dash_child_process`] (the raw
-    /// launch [`spawn_run_dashboard_detached`] wraps) is placed in its own process group (PGID ==
-    /// the spawned pid, a different group than this parent), so the production step path really
-    /// does session-detach the always-on dash (spec 44 criterion 3), not merely the seam in
-    /// isolation. This calls the raw launch directly, not `spawn_run_dashboard_detached` itself:
-    /// under `cargo test`, `current_exe()` is the TEST harness binary, which can never confirm a
-    /// bind (see the module doc on `spawn_dash_child_process`), so a test proving detachment must
-    /// observe the spawn itself rather than a bind confirmation. The spawned child is deliberately
-    /// un-reaped - being un-reaped across steps is the whole point of "detached" - and the OS
-    /// reaps this transient child when the test process exits.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn spawn_run_dashboard_detached_session_detaches_the_dash() {
-        let parent_pgid = pgid_of(std::process::id());
-
-        let port = dash::free_port_from(40000).expect("a free loopback port must be available");
-        let (child, pid) = spawn_dash_child_process(port).expect("spawn the detached dash");
-        let dash_pgid = pgid_of(pid);
-
-        assert_eq!(
-            dash_pgid, pid,
-            "the spawned dash is its own process-group leader (PGID == its PID)"
-        );
-        assert_ne!(
-            dash_pgid, parent_pgid,
-            "the spawned dash is in a DIFFERENT process group than the step process that spawned \
-             it - so tearing down the step command's process group does not reap the dash"
-        );
-
-        // Deliberately un-reaped: `Child`'s Drop neither waits nor kills, matching production -
-        // being un-reaped across steps is the whole point of "detached".
-        drop(child);
     }
 
     // --- Spec 105, LIVENESS: the supervisor beat ---
