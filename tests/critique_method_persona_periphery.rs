@@ -44,8 +44,8 @@ use common::cli::{
 };
 use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
-    critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, read_text,
-    served_task, stand_in_launches, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER, PLANNING_POLICY,
+    critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, policy_counts,
+    read_text, served_task, stand_in_launches, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
     RECORD_EACH_LAUNCH, UNIT_SIZE_CAP_SCOPE, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION,
     WIDGET_UNIT,
 };
@@ -267,7 +267,7 @@ fn copy_in_the_committed_planner(root: &Path) {
 fn planning_counts(text: &str) -> ([usize; 6], usize) {
     let text = rigger::wave::normalize_ws(text);
     (
-        PLANNING_POLICY.map(|sentence| text.matches(sentence).count()),
+        policy_counts(&text),
         text.matches(UNIT_SIZE_CAP_SCOPE).count(),
     )
 }

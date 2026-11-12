@@ -15653,10 +15653,10 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, dag_critique_prompt, dag_critique_verdict_paragraph, keyed_index,
-        keyed_payload, payloads_of_type, plan_protocol_text, run_log, spec_defect_halt_text,
-        stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
-        DAG_PRIOR_REJECT_HEADER, DAG_SIZE_CAP_CAUSE, PLANNING_POLICY, STOP_ESCALATED_KEY,
-        STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SCOPE, WIDGET_CRITERION,
+        keyed_payload, payloads_of_type, plan_protocol_text, policy_counts, run_log,
+        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
+        DAG_PRIOR_REJECT_HEADER, DAG_SIZE_CAP_CAUSE, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+        STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SCOPE, WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -48784,13 +48784,11 @@ mod tests {
             Some(protocol.as_str()),
             "the planner's task ends with the emit protocol and then the plan protocol alone"
         );
-        for sentence in PLANNING_POLICY {
-            assert_eq!(
-                planner.matches(sentence).count(),
-                0,
-                "the planner's task states the planning policy {sentence:?}:\n{planner}"
-            );
-        }
+        assert_eq!(
+            policy_counts(&planner),
+            [0; 6],
+            "the planner's task states none of the planning policy:\n{planner}"
+        );
     }
 
     #[test]

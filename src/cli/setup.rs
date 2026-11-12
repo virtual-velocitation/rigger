@@ -4898,13 +4898,11 @@ mod tests {
     #[test]
     fn the_planner_persona_and_its_seed_state_the_planning_policy() {
         for (at, text) in shipped_planners() {
-            for sentence in crate::test_support::PLANNING_POLICY {
-                assert_eq!(
-                    text.matches(sentence).count(),
-                    1,
-                    "{at} states the planning policy sentence {sentence:?} once"
-                );
-            }
+            assert_eq!(
+                crate::test_support::policy_counts(&text),
+                [1; 6],
+                "{at} states each planning policy sentence once"
+            );
         }
     }
 
