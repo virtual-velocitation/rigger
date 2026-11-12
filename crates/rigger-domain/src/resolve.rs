@@ -399,7 +399,7 @@ impl<'v> Resolver<'v> {
         let mut by_id: BTreeMap<(&'v str, &'v str), Vec<(DefRef<'v>, bool)>> = BTreeMap::new();
         for d in self.view.defs_named(leaf) {
             if d.file.half == Half::Code {
-                let test = d.test || self.is_test_file(d.file.path);
+                let test = self.is_test(d.test, d.file.path);
                 by_id
                     .entry((d.file.path, d.local))
                     .or_default()
@@ -762,7 +762,7 @@ impl<'v> Resolver<'v> {
         for leaf in leaves.iter().map(String::as_str) {
             for m in self.view.mentions_named(leaf) {
                 let path = m.file.path;
-                let test = m.test || self.is_test_file(path);
+                let test = self.is_test(m.test, path);
                 if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
                     continue;
                 }
@@ -907,7 +907,7 @@ pub fn resettle(
         .filter(|l| targets(&was, l) != targets(&now, l))
     {
         for m in view.mentions_named(leaf) {
-            let test = m.test || now.is_test_file(m.file.path);
+            let test = now.is_test(m.test, m.file.path);
             if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
                 redo.insert(m.file.path.to_string());
             }
