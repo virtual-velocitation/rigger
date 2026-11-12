@@ -708,6 +708,12 @@ impl<'v> Resolver<'v> {
         })
     }
 
+    /// [`Self::proof_calls`], moved out of the resolver rather than copied.
+    pub fn into_proof_calls(self) -> Vec<ProofCall> {
+        self.proof_calls();
+        self.proof_calls.into_inner().unwrap_or_default()
+    }
+
     /// Whether the view holds its proof calls settled, so a reader need not walk them
     /// ([`Self::file_proofs`]).
     pub fn proofs_settled(&self) -> bool {

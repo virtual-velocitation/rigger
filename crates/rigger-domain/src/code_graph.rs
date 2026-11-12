@@ -17,7 +17,7 @@ use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
 use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
-use crate::resolve::{Entity, Resolver};
+use crate::resolve::{Entity, ProofCall, Resolver};
 
 /// The attribute naming the file a design or workflow node's facts came from.
 pub(crate) const DOC_ATTR: &str = "doc";
@@ -251,6 +251,11 @@ impl<'v> CodeGraph<'v> {
     /// The resolver the graph is built by.
     pub fn resolver(&self) -> &Resolver<'v> {
         &self.resolver
+    }
+
+    /// The resolver's proof calls ([`Resolver::into_proof_calls`]), moved out with it.
+    pub fn into_proof_calls(self) -> Vec<ProofCall> {
+        self.resolver.into_proof_calls()
     }
 
     /// Every node and edge of the view under the filter, nodes in id order and edges in ends then

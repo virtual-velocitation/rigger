@@ -20,7 +20,8 @@ use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
 use crate::composed::{
-    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, CodeHalf, Indexed,
+    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, provers_of, CodeHalf,
+    Indexed,
 };
 use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
 use crate::contextgraph::{
@@ -278,6 +279,8 @@ struct State<'v> {
     attach: FxHashMap<(usize, String), Option<usize>>,
     /// Each code file's proof calls, by place.
     proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
+    /// The test entities proving each id resolved so far, kept while the filter hides tests.
+    provers: FxHashMap<String, Vec<String>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
     attached: FxHashMap<(usize, String), Arc<Vec<String>>>,
     /// Each (place, id) whose code assertions were read, in the order read.
@@ -314,6 +317,7 @@ impl<'v> Near<'v> {
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
                 proofs_in: FxHashMap::default(),
+                provers: FxHashMap::default(),
                 #[cfg(test)]
                 read_code: Vec::new(),
                 attached: FxHashMap::default(),
@@ -565,12 +569,16 @@ impl<'v> State<'v> {
             }
         }
         if !leaves.is_empty() {
-            let evidence: Vec<String> = (self.graph.resolver().proofs_of(id))
-                .into_iter()
-                .map(|c| c.evidence)
-                .collect();
+            let (evidence, provers): (Vec<String>, Vec<String>) =
+                (self.graph.resolver().proofs_of(id))
+                    .into_iter()
+                    .map(|c| (c.evidence, c.caller))
+                    .unzip();
             if !evidence.is_empty() {
                 b.prove(id, &evidence);
+            }
+            if self.tests == Tests::Exclude && !provers.is_empty() {
+                self.provers.insert(id.to_string(), provers);
             }
         }
         let Graph { nodes, edges } = b.into_graph(self.tests);
@@ -1031,8 +1039,25 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
     }
-    fn hidden_provers(&self, _ids: &[String]) -> usize {
-        0
+    /// Counted from the proofs read resolving `ids`, or, once the view is resolved whole, from
+    /// the proof calls that read.
+    fn hidden_provers(&self, ids: &[String]) -> usize {
+        let state = self.state();
+        if state.tests != Tests::Exclude {
+            return 0;
+        }
+        match self.whole.get() {
+            Some(_) => {
+                let proofs = state.graph.resolver().proof_calls().iter();
+                provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+            }
+            None => {
+                let proofs = (state.provers.iter()).flat_map(|(id, provers)| {
+                    provers.iter().map(move |p| (id.as_str(), p.as_str()))
+                });
+                provers_of(proofs, ids)
+            }
+        }
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
