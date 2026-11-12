@@ -585,6 +585,15 @@ impl<'g> Buckets<'g> {
         matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
     }
 
+    /// Whether `node` is a MEMBER of the bucket [`whole_graph_lens_key`] folds it to, rather than
+    /// only standing in for that bucket on its coupling edges. Under [`Lens::Files`] a file's members
+    /// are spec 119's, the nodes [`member_file`] gives it, so a bare placeholder the fold resolves
+    /// by its leaf attributes its edges to its definition's file but is none of that file's
+    /// members; every node a derived lens folds is a member of its bucket.
+    pub(crate) fn is_member(&self, node: &Node) -> bool {
+        !matches!(self.lens, Lens::Files) || member_file(node).is_some()
+    }
+
     /// The derived lens's own documented texts ([`CODE_LENS_TEXTS`] under [`Lens::Code`],
     /// [`CONCEPTS_LENS_TEXTS`] under [`Lens::Concepts`]), or `None` under [`Lens::Files`], which
     /// is never underived, never reaches a derived re-projection (`dash.rs`'s `reproject_files`
@@ -877,33 +886,21 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// stays `None`). A bigger one keeps only its [`CLUSTER_RENDER_BUDGET`] highest-degree members ranked
 /// by INTRA-CLUSTER degree with an ID tie-break, and sets `truncated = Some(total)`. Every returned
 /// edge has BOTH endpoints in the rendered set. An unknown / empty `key` yields an empty drill, never
-/// an error. Under [`Lens::Files`] (spec 63 c3), a file cluster is the atomic LEAF subject - drilling
-/// ANY key here is unconditionally EMPTY.
+/// an error. Under [`Lens::Files`] (spec 63 c3) a file drills to its entities, its members by spec
+/// 119's member rule ([`member_file`]), through this same budget, truncation and ordering.
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
-    if matches!(lens, Lens::Files) {
-        return Neighborhood {
-            seed: key.to_string(),
-            depth: 0,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            path: Vec::new(),
-            explain: None,
-            truncated: None,
-            dir: None,
-            referenced_not_called: Vec::new(),
-            memory: None,
-        };
-    }
     let buckets = Buckets::new(graph, lens);
-    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code/concepts
-    // lenses' purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files), keyed
-    // by id for a deterministic, deduped set. A node the lens EXCLUDES (a super-node under the code or
-    // concepts lens, or - spec 63 c1/c4 - a non-code-entity / membership-less node there) is never a
-    // member of any bucket.
+    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` that is a member of
+    // it ([`Buckets::is_member`]), keyed by id for a deterministic, deduped set. A node the lens
+    // EXCLUDES (a super-node under the code or concepts lens, or - spec 63 c1/c3/c4 - a
+    // non-code-entity / membership-less node there) is never a member of any bucket, and a
+    // placeholder the files lens resolves by its leaf is none of its definition file's members.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| whole_graph_lens_key(&buckets, n).as_deref() == Some(key))
+        .filter(|n| {
+            buckets.is_member(n) && whole_graph_lens_key(&buckets, n).as_deref() == Some(key)
+        })
         .map(|n| n.id.as_str())
         .collect();
     let total = members.len();
