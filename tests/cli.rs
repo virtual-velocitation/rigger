@@ -1704,6 +1704,25 @@ fn footprint_roots(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     (scratch, cache_home)
 }
 
+/// The fingerprint the code store holding the facts memo `memo` was last advanced to, as its one
+/// `CURRENT-<fingerprint>` pointer names it; empty in a build with no extractor, which keeps no
+/// code store and so reaps no memo.
+fn advanced_code_store_fingerprint(memo: &Path) -> String {
+    let store = memo
+        .parent()
+        .expect("the facts memo lies in the code store's directory");
+    let names = std::fs::read_dir(store).into_iter().flatten().flatten();
+    let pointers: Vec<String> = names
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter_map(|name| name.strip_prefix("CURRENT-").map(str::to_owned))
+        .collect();
+    assert!(
+        pointers.len() <= 1,
+        "one advance names one fingerprint: {pointers:?}"
+    );
+    pointers.into_iter().next().unwrap_or_default()
+}
+
 /// [`validate_with_scratch_and_cache_home`], asserting validate still exits 0 while it flags
 /// footprint advisories; returns (stdout, stderr).
 fn validate_footprint_advisories(
@@ -13655,9 +13674,15 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
     // whole size is dead share by design (spec 77 Design, criterion 5): this is the
     // category the dead-share-breach half of this test exercises.
     seed_bytes(scratch.join("cargo-target").join("x.rlib"), 4096);
-    // The code store's facts memo, reported as its own category.
+    // The code store's facts memo, reported as its own category: an entry of the fingerprint a
+    // first validate advanced the store to, the only fingerprint the store's reaper keeps.
+    validate_footprint_advisories(root, &scratch, &cache_home);
     let memo = rigger_store::code::Store::new(root).memo_dir();
-    seed_bytes(memo.join("a.facts"), 30);
+    let fingerprint = advanced_code_store_fingerprint(&memo);
+    seed_bytes(
+        memo.join(format!("{fingerprint}-0000000000000000-0.facts")),
+        30,
+    );
 
     let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 

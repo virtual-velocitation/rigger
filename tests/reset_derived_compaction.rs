@@ -85,11 +85,13 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
 /// `rigger reset --derived` clears the code store's facts memo first, on any backend: GIVEN a
 /// project whose memo holds two entries, WHEN `--derived` runs configured for the server-backed
 /// store, THEN it names the bytes it removed and leaves no memo before it refuses the delete;
-/// and WHEN it runs again on the sqlite backend, THEN with no memo left it says nothing of one.
+/// and WHEN it runs again on the sqlite backend, THEN with no memo left it says nothing of one
+/// and deletes the derived rows.
 #[test]
 fn reset_derived_clears_the_code_facts_memo_first_on_any_backend() {
     let dir = temp_rigger_project();
     let root = dir.path();
+    seed_derived_duplicates(root);
     let memo = rigger_store::code::Store::new(root).memo_dir();
     std::fs::create_dir_all(&memo).unwrap();
     std::fs::write(memo.join("a.facts"), [0u8; 10]).unwrap();
@@ -112,9 +114,12 @@ fn reset_derived_clears_the_code_facts_memo_first_on_any_backend() {
     );
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
-    assert!(ok, "the sqlite delete runs; stderr: {err}");
-    assert!(
-        !out.contains("code facts memo"),
-        "with no memo left, nothing is said of one; stdout: {out}"
+    assert_eq!(
+        (ok, out),
+        (
+            true,
+            deleted_line(common::cli::DUP_ROUNDS) + LOG_LEFT_AS_IT_STANDS_LINE
+        ),
+        "with no memo left nothing is said of one, and the sqlite delete runs; stderr: {err}"
     );
 }
