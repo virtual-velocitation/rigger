@@ -648,8 +648,11 @@ def run_files(directory):
     return sorted(p for p in directory.iterdir() if RUN_FILE.match(p.name))
 
 
-def before(path):
-    return [p for p in run_files(path.parent) if p.name < path.name]
+# The run files a run file named `name` follows: those under docs/evaluation/ that sort before it.
+# measure and check both select through here, wherever the file being written or checked lives.
+def earlier_run_files(name):
+    directory = Path(os.environ["EVALUATE_ROOT"]) / "docs" / "evaluation"
+    return [p for p in run_files(directory) if p.name < name] if directory.is_dir() else []
 
 
 def metric_value(card, key):
@@ -720,7 +723,7 @@ def measure(wanted, out):
     template = directory / "TEMPLATE.md"
     if not template.is_file():
         refuse(f"no template at {template}")
-    earlier = before(own)
+    earlier = earlier_run_files(own.name)
     history = []
     for p in earlier[-5:]:
         c = blocks_of(p.read_text(encoding="utf-8"))[0].get("scorecard")
@@ -856,7 +859,7 @@ def problems_of(path):
     slugs = []
     if blocks.get("classes") not in (None, ValueError):
         slugs = check_classes(blocks["classes"], problems)
-    earlier = before(path)
+    earlier = earlier_run_files(path.name)
     previous_path = earlier[-1] if earlier else None
     recurring = set()
     if previous_path is not None:
