@@ -50898,7 +50898,7 @@ mod tests {
         let item_line = "- {path}: {finding}\n";
         let failure = |f: PriorFailure| f.block("{unit}", 2);
         let pattern = fill(
-            &prior(&["PRIOR_PATTERN"]),
+            &prior(&["PATTERN_LABEL", "PRIOR_PATTERN"]),
             &[("audit", &audit_id("{unit}", 2))],
         );
         let review_round = |delta: &[&str], required: Vec<RequiredItem>| {
@@ -51029,7 +51029,7 @@ mod tests {
                         &round(&["ROUND_LEAD_IN", "ROUND_REQUIRED_HEADER"]),
                         &[("delta", "{a}, {b}")]
                     ),
-                    round(&["ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
+                    round(&["PATTERN_LABEL", "ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
                 ),
             ),
             (

@@ -556,6 +556,7 @@ mod tests {
         ("LESSONS_HEADER", "FRAMING"),
         ("LOOKUP_LEAD_IN", "FRAMING"),
         ("LOOKUP_VERBS", "CONTRACT"),
+        ("PATTERN_LABEL", "CONTRACT"),
         ("PEERS_POINTER", "FRAMING"),
         ("PLAN_COPY_TEXT", "CONTRACT"),
         ("PLAN_CRITERIA_LEAD", "CONTRACT"),
