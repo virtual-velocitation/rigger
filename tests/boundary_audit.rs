@@ -741,7 +741,14 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
         "crates/rigger-dash/src/lib.rs",
         "fn serve() {\n    let g = Projector::open(p, q);\n}\n",
     );
+    write_file(
+        root,
+        "crates/rigger-dash/src/pass.rs",
+        "fn passes() {\n    let g = read(p, q, Projector::open);\n    \
+         let s = read(p, Store::open);\n    let c = read(p, open_connection);\n}\n",
+    );
     let constructors = misplaced_constructors(root);
+    let passes = || "crates/rigger-dash/src/pass.rs:passes".to_string();
     assert_eq!(
         constructors,
         vec![
@@ -749,16 +756,24 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
                 "crates/rigger-dash/src/lib.rs:serve".to_string(),
                 "graph projection"
             ),
+            (passes(), "event store"),
+            (passes(), "graph projection"),
+            (passes(), "sqlite opener"),
             ("src/conductor.rs:wave".to_string(), "event store"),
-        ]
+        ],
+        "a constructor called or named as a value for a callee to call is one"
     );
+    let projections: Vec<&str> = (constructors.iter())
+        .filter(|(_, family)| *family == "graph projection")
+        .map(|(site, _)| site.as_str())
+        .collect();
     assert_eq!(
         stream_sites(root),
         StreamSites {
             appends: BTreeSet::new(),
-            opens: site_set(&[constructors[0].0.as_str()]),
+            opens: site_set(&projections),
         },
-        "the appender audit's Projector::open( is Rule 2's graph projection constructor"
+        "the appender audit's Projector::open is Rule 2's graph projection constructor"
     );
 }
 
