@@ -2444,6 +2444,34 @@ mod tests {
         )
     }
 
+    /// Deleting the derived events and reclaiming the space they held leaves the log's
+    /// write-ahead log empty while another connection holds the file open: the delete frees
+    /// pages, so the reclamation rewrites the file and ends with the truncating checkpoint.
+    #[test]
+    fn a_derived_delete_and_its_reclamation_leave_the_write_ahead_log_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let derived = crate::retention::DERIVED_TYPES[0];
+        let events: Vec<Event> = (0..3_000)
+            .map(|i| match i % 3 {
+                0 => Event::new("DecisionMade", vec![b'r'; 200]),
+                _ => keyed(derived, &format!("gc/a{i}.rs@h1")),
+            })
+            .collect();
+        let s = pre_ledger_store_with(path.to_str().unwrap(), &[("p-run", events)]);
+        let held_open = crate::sqlite::open_connection(path.to_str().unwrap()).unwrap();
+
+        let deleted = s.delete_derived("p-run").unwrap();
+        let reclaimed = s.reclaim_space(s.bytes_on_disk());
+        let wal = std::fs::metadata(format!("{}-wal", path.display())).map_or(0, |m| m.len());
+        assert_eq!(
+            (deleted, reclaimed.compaction_ran, wal),
+            (2_000, true, 0),
+            "the delete freed pages, so the reclamation ran and emptied the log"
+        );
+        drop(held_open);
+    }
+
     /// The count and the delete reach every derived type of the one stream they are handed, and
     /// never a row of a stream whose name only starts with it, another stream, or a non-derived
     /// row: the count changes nothing, the delete removes exactly what it counted and answers
