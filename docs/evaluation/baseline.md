@@ -29,6 +29,27 @@ Every figure in the block is the script's own measure of those 14 runs, totalled
 | escalations | 0.5 | 0.5 | 0 | |
 | agent_busy_hours_per_unit | 3.31 | 3.311 | 0 | |
 
+The baseline is exactly these 14 runs, by run id and first `RunStarted` in Central time, with their integrated units:
+
+| Run | Started | Units |
+|---|---|---|
+| cf4ceb24 | 2026-09-07 04:49 | 5 |
+| ceb43bf1 | 2026-09-09 02:00 | 4 |
+| a56448fd | 2026-09-10 13:56 | 4 |
+| 4dabfe2c | 2026-09-11 07:50 | 5 |
+| 8220e91a | 2026-09-13 01:36 | 4 |
+| c6ccaf8e | 2026-09-13 18:47 | 7 |
+| 0f85a1f5 | 2026-09-15 00:18 | 4 |
+| a1c45db7 | 2026-09-15 08:46 | 7 |
+| 14e2b32d | 2026-09-17 07:52 | 7 |
+| cf12df79 | 2026-09-18 03:54 | 5 |
+| f5021a11 | 2026-09-19 17:43 | 7 |
+| eb8f55d6 | 2026-09-21 14:18 | 10 |
+| ec9ab8f5 | 2026-09-22 18:56 | 5 |
+| 34c25db1 | 2026-09-23 10:38 | 8 |
+
+Two runs of the same period stopped before any unit integrated, 61a52a6d (2026-09-08 06:55) and b4556cd0 (2026-09-19 16:56), and are excluded: rejects_per_unit is 1.44 without them and 1.52 with them. Every later run file compares against this one set.
+
 1 + rejects_per_unit + gate_fails_per_unit is not attempts_per_unit, by definition: attempts count the failures of units that integrated, while rejects and gate fails count every failure in the run, a unit that never integrated included.
 
 ## Method
