@@ -714,7 +714,7 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 | tagged reference | Mention `Tagged(k)` | candidates restricted to `reference_candidate_kinds(k)`: exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file |
+| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |

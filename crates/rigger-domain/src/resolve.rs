@@ -677,10 +677,14 @@ impl<'v> Resolver<'v> {
             None => file.to_string(),
         };
         for decl in &facts.modules {
-            let test = decl.test || file_test;
-            let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
+            let Some(target) = self.module_target(decl) else {
                 continue;
             };
+            // A declaration reaching a test file is test code wherever it is written.
+            let test = decl.test || file_test || self.is_test_file(target);
+            if test && !tests {
+                continue;
+            }
             sink(
                 &from_of(Some(decl.def)),
                 REL_CONTAINS,
