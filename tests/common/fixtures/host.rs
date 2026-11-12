@@ -189,11 +189,13 @@ pub fn thread_ids() -> std::collections::BTreeSet<u32> {
         .collect()
 }
 
-/// How many of the open files of process `pid` ([`rigger::holders::open_files`]) name the file at
-/// `path`: a connection that opened the file holds one. A process that is gone holds none.
+/// How many of the files process `pid` itself opened ([`rigger::holders::own_open_files`]) name
+/// the file at `path`: a connection that opened the file holds one. A process that is gone holds
+/// none, and so does a child this test just spawned that has not yet exec'd, whose descriptors are
+/// still the test's own.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn files_open_by(pid: u32, path: &Path) -> usize {
-    rigger::holders::open_files(pid)
+    rigger::holders::own_open_files(pid)
         .filter(|named| named == path)
         .count()
 }
