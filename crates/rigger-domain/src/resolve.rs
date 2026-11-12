@@ -167,6 +167,13 @@ pub struct ProofCall {
     pub evidence: String,
 }
 
+impl ProofCall {
+    /// The file the call sits in, read off its evidence.
+    pub fn file(&self) -> Option<&str> {
+        self.evidence.rsplit_once(':').map(|(file, _)| file)
+    }
+}
+
 /// One node a design concept or a workflow node names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentNode {
@@ -219,8 +226,7 @@ fn one_here_else_one_anywhere<'c, 'v>(
 /// `file:line` as text, then the caller.
 fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
     fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
-        let file = c.evidence.rsplit_once(':').map_or("", |(file, _)| file);
-        (&c.target, file, &c.evidence, &c.caller)
+        (&c.target, c.file().unwrap_or(""), &c.evidence, &c.caller)
     }
     calls.sort_by(|a, b| key(a).cmp(&key(b)));
     calls
@@ -886,10 +892,7 @@ pub fn resettle(
             }
         }
     }
-    let redone = |c: &ProofCall| {
-        let file = c.evidence.rsplit_once(':').map(|(file, _)| file);
-        file.is_some_and(|file| redo.contains(file))
-    };
+    let redone = |c: &ProofCall| c.file().is_some_and(|file| redo.contains(file));
     let mut calls: Vec<ProofCall> = (was.proof_calls().iter())
         .filter(|c| !redone(c))
         .cloned()

@@ -240,14 +240,10 @@ impl Settled for Overlay {
 
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
         let calls = self.resettled().1.iter();
-        let file = |c: &ProofCall| c.evidence.rsplit_once(':').map(|(file, _)| file.to_owned());
         match of {
             Proofs::All => calls.cloned().collect(),
             Proofs::Of(id) => calls.filter(|c| c.target == id).cloned().collect(),
-            Proofs::In(path) => calls
-                .filter(|c| file(c).as_deref() == Some(path))
-                .cloned()
-                .collect(),
+            Proofs::In(path) => calls.filter(|c| c.file() == Some(path)).cloned().collect(),
         }
     }
 }
