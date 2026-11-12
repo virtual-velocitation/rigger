@@ -466,6 +466,10 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// store, a reader racing it extracting its files again, so it runs first in `--derived`, ahead
 /// of the event log's backend refusal and live-writer guard. Answers the line that says what it
 /// removed, or none when there was no memo.
+///
+/// reap-exempt (spec 79, criterion 2): the memo is a flat directory of entry files the code store
+/// writes and reads from within rigger's own process, never a working directory: no process
+/// rigger runs is ever started with its cwd inside it, so nothing can be rooted there to reap.
 fn clear_code_facts_memo(root: &Path) -> Result<Option<String>, String> {
     let memo = rigger_store::code::Store::new(root).memo_dir();
     let bytes = dir_size_bytes(&memo);
