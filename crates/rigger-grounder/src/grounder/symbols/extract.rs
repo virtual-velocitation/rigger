@@ -237,9 +237,28 @@ fn record_def(
     None
 }
 
-/// Extract one file's definitions and references by running the INJECTED grammar's tag query
-/// over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
-/// supplies the grammar and its query (unit 2's registry decides WHICH), and everything it
+/// A grammar's `tags` query compiled against the grammar: what [`extract`] runs over a source.
+/// Compiling is the costly step and matching the per-file one, so the registry compiles each of
+/// its grammar and query pairs once per process ([`LanguageEntry::tags`]).
+///
+/// [`LanguageEntry::tags`]: crate::grounder::symbols::registry::LanguageEntry::tags
+pub struct CompiledTags {
+    config: TagsConfiguration,
+}
+
+impl CompiledTags {
+    /// `tags_query` compiled against `language`, or an `Err` naming the tags-config step when the
+    /// query is malformed or does not fit the grammar.
+    pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
+        TagsConfiguration::new(language.clone(), tags_query, "")
+            .map(|config| Self { config })
+            .map_err(|e| format!("symbols: tags config: {e}"))
+    }
+}
+
+/// Extract one file's definitions and references by running the INJECTED grammar's compiled tag
+/// query over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
+/// supplies the compiled grammar and query (unit 2's registry decides WHICH), and everything it
 /// returns is the parser-free `FileSymbols`.
 ///
 /// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and in its caller range
@@ -271,24 +290,19 @@ fn record_def(
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.
-pub fn extract(
-    source: &str,
-    lang: Lang,
-    ts_language: &tree_sitter::Language,
-    tags_query: &str,
-) -> Result<FileSymbols, String> {
-    let config = TagsConfiguration::new(ts_language.clone(), tags_query, "")
-        .map_err(|e| format!("symbols: tags config: {e}"))?;
+pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymbols, String> {
+    let config = &tags.config;
+    let ts_language = &config.language;
     let mut ctx = TagsContext::new();
     let (tags, _) = ctx
-        .generate_tags(&config, source.as_bytes(), None)
+        .generate_tags(config, source.as_bytes(), None)
         .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    // The full parse of `source` (the SAME tree `tags_query` runs against, parsed a second time with
+    // The full parse of `source` (the SAME tree the tags query runs against, parsed a second time with
     // the full grammar), read for what the tags pass cannot express: a tagged definition's own
     // node, impl blocks, tuple fields, test attributes, and out-of-line module declarations. This
     // is still the one function touching tree-sitter, so the single-parsing-authority invariant
     // (5.5.3) survives. A `Parser::set_language` or `parse` failure here is defensive only:
-    // `ts_language` already configured the tags query above, using the identical language, so
+    // `ts_language` already configured the tags query the tags pass ran, so
     // this path degrades to an `Err` rather than a panic without ever being expected to fire in
     // practice.
     let mut parser = tree_sitter::Parser::new();
@@ -2118,8 +2132,7 @@ pub struct Recorded<'a> {
 pub fn locate_extent(
     source: &str,
     lang: Lang,
-    ts_language: &tree_sitter::Language,
-    tags_query: &str,
+    tags: &CompiledTags,
     recorded: Recorded,
 ) -> Result<Option<u32>, String> {
     let Recorded {
@@ -2128,7 +2141,7 @@ pub fn locate_extent(
         kind,
         line,
     } = recorded;
-    let symbols = extract(source, lang, ts_language, tags_query)?;
+    let symbols = extract(source, lang, tags)?;
     Ok(symbols
         .defs
         .iter()
@@ -2205,6 +2218,11 @@ mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
+    /// `query` compiled against `language`, for a test that injects a query of its own.
+    fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
+        CompiledTags::compile(language, query).expect("the query compiles")
+    }
+
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
     /// existed already holds, none renamed by reading it from a constant and none swapped for
     /// another, and the kinds spec 116 adds (the caller rule's at criterion 2, the Rust data
@@ -2256,7 +2274,12 @@ mod tests {
     fn extracts_a_rust_definition_and_a_reference() {
         let src = "fn parse(x: u8) -> u8 { x }\nfn caller() { parse(1); }\n";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
         // The definition `parse` is found with its kind and 1-based line.
         assert!(fs
             .defs
@@ -2352,7 +2375,12 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         // parsing the earlier, well-formed `greet` function normally.
         let src = "function greet() { return 1; }\nfunction broken(\n";
         let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
-        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Js,
+            &compiled(&language, tree_sitter_javascript::TAGS_QUERY),
+        )
+        .unwrap();
         assert!(
             fs.partial,
             "a JS source containing an unrecoverable syntax error must set partial: true; got {fs:?}"
@@ -2371,7 +2399,12 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
         // file must NEVER carry the degraded marker.
         let src = "function greet() { return 1; }\n";
         let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
-        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Js,
+            &compiled(&language, tree_sitter_javascript::TAGS_QUERY),
+        )
+        .unwrap();
         assert!(
             !fs.partial,
             "a well-formed JS file must never set partial: true; got {fs:?}"
@@ -2394,7 +2427,12 @@ macro_rules! mymac { () => {} }
 fn free() {}
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
         let kind_of_def = |name: &str| fs.defs.iter().find(|d| d.name == name).map(|d| d.kind);
 
         // The arms the upstream query reaches: struct/enum -> Type, method -> Method,
@@ -2448,7 +2486,12 @@ fn outer() {
 setup!();
 ";
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        let fs = extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap();
+        let fs = extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap();
 
         // The `Draw` bound in the `impl` header (line 3) attributes to the impl block.
         let draw = fs
@@ -2931,7 +2974,7 @@ pub fn bang() {}
         expected: &[(u32, &str, Kind)],
     ) {
         let entry = crate::symbol_index::registered(ext);
-        let fs = extract(src, lang, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(src, lang, entry.tags().unwrap()).unwrap();
         let on_lines: Vec<_> = crate::symbol_index::defs_by_line(&fs)
             .into_iter()
             .filter(|(line, _, _)| lines.contains(line))
@@ -3071,8 +3114,12 @@ fn b() {
         let fs = extract(
             "trait T { fn m(&self); }\n",
             Lang::Rust,
-            &language,
-            &format!("(function_signature_item name: (identifier) @name) @definition.{category}"),
+            &compiled(
+                &language,
+                &format!(
+                    "(function_signature_item name: (identifier) @name) @definition.{category}"
+                ),
+            ),
         )
         .unwrap();
         assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
@@ -3081,7 +3128,12 @@ fn b() {
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        extract(src, Lang::Rust, &language, tree_sitter_rust::TAGS_QUERY).unwrap()
+        extract(
+            src,
+            Lang::Rust,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
+        )
+        .unwrap()
     }
 
     /// Each `(name, is_test, why)` of `expected` names a definition of the Rust source `src` and
@@ -3434,9 +3486,9 @@ fn product() {}
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         // A malformed tags query must return Err from the config step, never panic, so a bad
         // registry entry degrades loudly instead of crashing the indexer.
-        let bad = extract("fn f(){}", Lang::Rust, &language, "(this is not valid scm");
-        assert!(bad.is_err(), "malformed query should be Err, got {bad:?}");
-        let msg = bad.unwrap_err();
+        let msg = CompiledTags::compile(&language, "(this is not valid scm")
+            .err()
+            .expect("malformed query should be Err");
         assert!(
             msg.starts_with("symbols: tags config:"),
             "error should come from the tags-config step, got: {msg}"
@@ -3446,8 +3498,7 @@ fn product() {}
         let ok = extract(
             "fn f(){}",
             Lang::Rust,
-            &language,
-            tree_sitter_rust::TAGS_QUERY,
+            &compiled(&language, tree_sitter_rust::TAGS_QUERY),
         )
         .expect("valid query extracts");
         assert!(ok
@@ -3736,8 +3787,7 @@ class K
         locate_extent(
             source,
             entry.lang,
-            &entry.language,
-            entry.tags_query,
+            entry.tags().unwrap(),
             Recorded {
                 name,
                 path: None,

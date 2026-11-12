@@ -97,14 +97,10 @@ pub(crate) fn extracted<S: AsRef<str>>(
 ) -> Option<Option<(S, model::FileSymbols)>> {
     let grammar = registry::for_path(path, override_lang)?;
     Some(source().and_then(|text| {
-        extract::extract(
-            text.as_ref(),
-            grammar.lang,
-            &grammar.language,
-            grammar.tags_query,
-        )
-        .ok()
-        .map(|symbols| (text, symbols))
+        let tags = grammar.tags().ok()?;
+        extract::extract(text.as_ref(), grammar.lang, tags)
+            .ok()
+            .map(|symbols| (text, symbols))
     }))
 }
 

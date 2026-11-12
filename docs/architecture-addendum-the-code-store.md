@@ -558,6 +558,9 @@ Grouping before and after:
 | write + fsync + swap | ~ 20 ms | ~ 20 ms |
 | **budget (Done-when)** | **<= 3 s** | **<= 8 s** (today: 5 min 23.5 s) |
 
+A grammar's tags query is compiled once per process, at its first extraction, never per file
+(`LanguageEntry::tags`).
+
 ---
 
 ## 6. The read path
@@ -1292,6 +1295,8 @@ a reader holding one open (or mapped) never blocks a writer.
   `groupings_under_the_overlay_are_labelled_with_the_stamp`.
 - `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
   to its worktree is in the second attempt's recorded seed, read from that worktree.
+- `a_grammars_tags_query_compiles_once_per_process`: every lookup of a grammar and query pair
+  returns the one compilation.
 - `the_overlaid_worktree_answers_what_a_commit_of_its_content_answers`: the overlay of a worktree
   answers what the store advanced to a commit of the worktree's content answers, over the
   resolver's tree with a changed file that flips another file's test-ness and proofs, under each

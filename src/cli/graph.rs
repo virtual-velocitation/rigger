@@ -581,8 +581,7 @@ fn locate_definition_extent(
     extract::locate_extent(
         source,
         entry.lang,
-        &entry.language,
-        entry.tags_query,
+        entry.tags().map_err(Unbounded::Note)?,
         Recorded {
             name,
             path: id_path,

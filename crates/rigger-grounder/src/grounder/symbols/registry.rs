@@ -6,6 +6,7 @@
 //! `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
 //! the parser-free model stays in the light lane.
 
+use crate::grounder::symbols::extract::CompiledTags;
 use crate::grounder::symbols::model::Lang;
 use std::sync::OnceLock;
 
@@ -264,12 +265,29 @@ const PYTHON_TAGS: &str = r#"
 "#;
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
-/// extractor runs over a file in that language. The three the extractor needs, resolved
-/// together so a file maps to exactly one grammar+query pair.
+/// extractor runs over a file in that language, resolved together so a file maps to exactly one
+/// grammar+query pair, with that pair's one compilation ([`LanguageEntry::tags`]).
 pub struct LanguageEntry {
     pub lang: Lang,
     pub language: tree_sitter::Language,
     pub tags_query: &'static str,
+    compiled: &'static Compiled,
+}
+
+/// The process's one compilation of a grammar+query pair, made at its first use.
+type Compiled = OnceLock<Result<CompiledTags, String>>;
+
+impl LanguageEntry {
+    /// The entry's `tags` query compiled against its grammar: compiled at the first call in the
+    /// process, and that compilation every later call for the same grammar+query pair returns, so
+    /// the extractor matches each file against an already compiled query and an entry looked up for
+    /// its `lang` alone compiles nothing. An `Err` is a query that does not compile.
+    pub fn tags(&self) -> Result<&'static CompiledTags, String> {
+        self.compiled
+            .get_or_init(|| CompiledTags::compile(&self.language, self.tags_query))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
 }
 
 /// Resolve the grammar for a bare extension (no leading dot), or `None` when the extension is
@@ -296,12 +314,32 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     static JS_TAGS: OnceLock<String> = OnceLock::new();
     static TS_TAGS: OnceLock<String> = OnceLock::new();
     static TSX_TAGS: OnceLock<String> = OnceLock::new();
-    let (lang, language, tags_query): (Lang, tree_sitter::Language, &'static str) = match ext {
-        "rs" => (Lang::Rust, tree_sitter_rust::LANGUAGE.into(), RUST_TAGS),
+    // Each grammar+query pair's one compilation, keyed by the pair, never by `Lang`: `.ts` and
+    // `.tsx` share a `Lang` but neither grammar nor query.
+    static RUST: Compiled = OnceLock::new();
+    static CSHARP: Compiled = OnceLock::new();
+    static TS: Compiled = OnceLock::new();
+    static TSX: Compiled = OnceLock::new();
+    static JS: Compiled = OnceLock::new();
+    static GO: Compiled = OnceLock::new();
+    static PYTHON: Compiled = OnceLock::new();
+    let (lang, language, tags_query, compiled): (
+        Lang,
+        tree_sitter::Language,
+        &'static str,
+        &'static Compiled,
+    ) = match ext {
+        "rs" => (
+            Lang::Rust,
+            tree_sitter_rust::LANGUAGE.into(),
+            RUST_TAGS,
+            &RUST,
+        ),
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
             CSHARP_TAGS,
+            &CSHARP,
         ),
         "ts" => (
             Lang::Ts,
@@ -320,6 +358,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &TS,
         ),
         "tsx" => (
             Lang::Ts,
@@ -338,6 +377,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
             Lang::Js,
@@ -353,16 +393,19 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            &JS,
         ),
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            &GO,
         ),
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
             PYTHON_TAGS,
+            &PYTHON,
         ),
         _ => return None,
     };
@@ -370,6 +413,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         lang,
         language,
         tags_query,
+        compiled,
     })
 }
 
@@ -899,6 +943,24 @@ pub(crate) mod tests {
         assert!(for_extension("txt").is_none());
     }
 
+    /// A grammar's tags query compiles once per process: every entry resolving to a grammar and
+    /// query pair returns the one compilation, a forced language's included, while two pairs
+    /// sharing a `Lang` (`.ts` and `.tsx`) each hold their own.
+    #[test]
+    fn a_grammars_tags_query_compiles_once_per_process() {
+        let compiled = |entry: LanguageEntry| -> *const CompiledTags {
+            entry.tags().expect("the registered query compiles")
+        };
+        let by_extension = |ext| compiled(for_extension(ext).unwrap());
+        assert_eq!(by_extension("rs"), by_extension("rs"));
+        assert_eq!(by_extension("js"), by_extension("jsx"));
+        assert_ne!(by_extension("ts"), by_extension("tsx"));
+        assert_eq!(
+            compiled(for_path("notes.txt", Some(Lang::Rust)).unwrap()),
+            by_extension("rs")
+        );
+    }
+
     #[test]
     fn language_override_wins_over_extension() {
         // A `.txt` with an explicit override still resolves (the `--language` override).
@@ -941,7 +1003,7 @@ pub(crate) mod tests {
         let entry = for_path("Panel.tsx", Some(Lang::Ts)).unwrap();
         assert_eq!(entry.lang, Lang::Ts);
         let src = "function Panel() { return <div>{title}</div>; }\n";
-        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        let fs = extract(src, entry.lang, entry.tags().unwrap()).unwrap();
         assert!(
             fs.defs.iter().any(|d| d.name == "Panel"),
             "override --language ts on a .tsx file should keep the JSX-aware grammar, got {:?}",
@@ -967,7 +1029,9 @@ pub(crate) mod tests {
         ];
         for (ext, src, expected) in cases {
             let entry = crate::symbol_index::registered(ext);
-            let fs = extract(src, entry.lang, &entry.language, entry.tags_query)
+            let fs = entry
+                .tags()
+                .and_then(|tags| extract(src, entry.lang, tags))
                 .unwrap_or_else(|e| panic!("extraction failed for .{ext}: {e}"));
             assert!(
                 fs.defs.iter().any(|d| d.name == *expected),
