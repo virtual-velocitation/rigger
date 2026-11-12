@@ -591,9 +591,10 @@ members', which give its label and hash, and its attached tests', which give its
 differing file withholds the nodes in it; a worktree that cannot be compared puts every file in
 doubt. Only code-half nodes are withheld: a record is never stale.
 
-K is the number of hits of this answer that were withheld, counted in the read that answered: the
-nodes it would have answered or reported hidden (`--around`, `--show`, `--lookup`, the MCP graph
-tool, the dash) and the locations `rigger ground` would have shown or reported hidden.
+K is the number of hits of this answer that were withheld, counted in the read that answered and
+in one unit, nodes: the nodes it would have answered or reported hidden (`--around`, `--show`,
+`--lookup`, the MCP graph tool, the dash), and for `rigger ground` the entities its withheld hits
+name, keyed as its ranked page keys its rows, so a definition and its calls count once.
 
 W is the caller's worktree: the git top-level of the cwd, else, outside any repository, the cwd;
 a git failure inside a repository is an error. Every reader names it by that one rule (graph,

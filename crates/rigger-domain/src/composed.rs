@@ -52,7 +52,7 @@ pub struct Label {
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
     /// The hits of the answer withheld because their file differs or the worktree cannot be
-    /// compared: the nodes of a graph read, the locations of a grounding.
+    /// compared, counted as nodes: a grounding's are the entities its withheld hits name.
     pub withheld: usize,
 }
 

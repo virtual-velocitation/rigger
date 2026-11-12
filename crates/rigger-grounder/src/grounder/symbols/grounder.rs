@@ -673,7 +673,7 @@ impl Grounder for Symbols {
                     text: h.name,
                 })
                 .collect();
-            (rows, hidden, withheld_hits(sight, &terms, tests))
+            (rows, hidden, withheld_entities(sight, &terms, tests))
         });
         label.withheld = withheld;
         Grounded {
@@ -800,7 +800,7 @@ impl Grounder for Symbols {
             let rows =
                 (k == 0 || has_strong(sight, &terms)).then(|| ranked_in(sight, &terms, k, tests));
             let hidden = hidden_test_hits(&scored_hits(sight, &terms), tests);
-            (rows, hidden, withheld_hits(sight, &terms, tests))
+            (rows, hidden, withheld_entities(sight, &terms, tests))
         });
         label.withheld = withheld;
         Grounded {
@@ -842,12 +842,15 @@ impl Grounder for Symbols {
     }
 }
 
-/// How many hits of `terms` the files `sight` withholds held: the hits its answer under `tests`
-/// would have shown or reported hidden, found by the pass that finds the hits it serves.
-fn withheld_hits(sight: &Sight<'_>, terms: &[&str], tests: Tests) -> usize {
-    (scored_hits(&sight.withheld_part(), terms).iter())
-        .filter(|h| h.test || tests.admits(h.test))
-        .count()
+/// How many entities the hits of `terms` in the files `sight` withholds name, keyed as the
+/// ranked page keys its rows: those its answer under `tests` would have shown or reported hidden,
+/// the unit every graph read counts its withheld nodes in.
+fn withheld_entities(sight: &Sight<'_>, terms: &[&str], tests: Tests) -> usize {
+    let counted = match tests {
+        Tests::Only => Tests::Only,
+        Tests::Include | Tests::Exclude => Tests::Include,
+    };
+    ranked_in(&sight.withheld_part(), terms, usize::MAX, counted).len()
 }
 
 /// How many of `hits` are test locations `tests` leaves out of an answer: none unless it excludes
@@ -2910,7 +2913,8 @@ mod tests {
     }
 
     /// Every answer's label states what was withheld, and counts the hits of that answer the
-    /// differing files withheld: the hits it would have shown or reported hidden, in the same read.
+    /// differing files withheld: the entities it would have shown or reported hidden, a definition
+    /// and its calls one, in the same read.
     /// The view holds `alpha` defined and called in `src/a.rs` and the test `alpha_test` in
     /// `tests/t.rs`; the query is `alpha`. Each row: the worktree's difference, the filter, the
     /// label's text after `describes <tree>` (the same on the plain and the ranked page) and the
@@ -2941,14 +2945,14 @@ mod tests {
                 "the product file differs",
                 differing(a, &[]),
                 Tests::Exclude,
-                "; 1 file in W differs; 2 withheld",
+                "; 1 file in W differs; 1 withheld",
                 1,
             ),
             (
                 "an untracked differing file holds no hit",
                 differing(a, &["src/b.rs"]),
                 Tests::Include,
-                "; 2 files in W differ; 2 withheld",
+                "; 2 files in W differ; 1 withheld",
                 0,
             ),
             (
@@ -2976,7 +2980,7 @@ mod tests {
                 "not comparable",
                 Err("no such commit".to_string()),
                 Tests::Include,
-                "; W cannot be compared; 3 withheld",
+                "; W cannot be compared; 2 withheld",
                 0,
             ),
         ];
