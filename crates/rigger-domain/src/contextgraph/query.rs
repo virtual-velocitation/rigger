@@ -891,7 +891,8 @@ pub fn fold_buckets<'g>(
 /// a thousand nodes.
 pub const CLUSTER_RENDER_BUDGET: usize = 60;
 
-/// Drill a cluster to its members (spec 42 c3): the nodes whose [`cluster_key`] equals `key`, the
+/// Drill a cluster to its members (spec 42 c3): the nodes the lens folds to `key`
+/// (`whole_graph_lens_key`) that are members of it (`Buckets::is_member`), the
 /// currently-valid edges AMONG them, each returned node carrying its degree WITHIN the returned set
 /// and its god-node flag - reusing spec 30's [`Neighborhood`] shape so the SAME renderer draws it.
 ///

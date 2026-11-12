@@ -3307,10 +3307,12 @@ fn route_hiding(
         // The unified-KG panel: ONE route, THREE views selected by parameter (spec 42 c4, extending
         // the spec 30 c5 seeded panel):
         //   * `cluster=<key>` -> the DRILL: `cluster_detail(key)` as a Neighborhood (the cluster's
-        //     members, so the same renderer draws it). The key is a module DIRECTORY (carries `/`) or
-        //     a node KIND, `encodeURIComponent`d by the client like a seed id, so it is percent-decoded
-        //     back to the exact fold key; an empty / unknown key drills to an empty neighborhood
-        //     (graceful), never an error.
+        //     members, so the same renderer draws it). The key is the bucket key the lens folds to:
+        //     under the files lens a FILE PATH, which drills to that file's members by spec 119's
+        //     member rule; under a derived lens a community or concept id.
+        //     `encodeURIComponent`d by the client like a seed id, it is percent-decoded back to the
+        //     exact fold key; an empty / unknown key drills to an empty neighborhood (graceful),
+        //     never an error.
         //   * an empty `seed` with no `cluster` -> the DEFAULT view: `clustered_overview`, the
         //     whole-graph fold the panel loads on open.
         //   * a non-empty `seed` -> the spec 30 seeded neighborhood, UNCHANGED. A spec-30 request never
