@@ -1,7 +1,8 @@
 //! Rigger's process adapters, ring 3 of the workspace: the one process-spawn port every child
 //! is built through, the reaper that ends processes rooted inside a directory, the read-only
 //! check for a process still holding a directory, the machine-wide
-//! build-slot budget, the ordered parallel map and the keep-awake adapter behind the domain's
+//! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share and the
+//! keep-awake adapter behind the domain's
 //! `SleepHold` port. They know `std::process`, the filesystem, threads and the host's OS
 //! facilities; the root `rigger` crate re-exports every module under its historical path.
 
@@ -21,6 +22,7 @@ pub mod parallel;
 pub mod reap;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod subprocess;
+pub mod whole_line;
 
 // The parameterised-test macro the moved tests name by its historical `crate::` path. Every
 // module whose tests expand it is store-gated, so it is imported where those modules compile.

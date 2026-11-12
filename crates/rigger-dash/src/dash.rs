@@ -31,6 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use rigger_process::whole_line;
 use serde::Serialize;
 
 use crate::console::unix_seconds;
@@ -3520,12 +3521,12 @@ fn parse_request_line(line: &str) -> Option<(String, String)> {
 // The blocking server loop.
 // ---------------------------------------------------------------------------
 
-/// Say on `out` the address the dash serves at, `bound`. A run's dash shares the run's stderr,
-/// and the run says its own pointer to the dash there while this line is written.
+/// Say on `out` the address the dash serves at, `bound`, in one write ([`whole_line`]): a run's
+/// dash shares the run's stderr, and the run says its own pointer to the dash there meanwhile.
 fn announce_serving(out: &mut dyn Write, bound: SocketAddr) -> io::Result<()> {
-    writeln!(
+    whole_line::write_line(
         out,
-        "rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)"
+        format_args!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)"),
     )
 }
 
@@ -3590,10 +3591,10 @@ where
                     run_branch,
                     base,
                 ) {
-                    eprintln!("rigger dash: connection error: {e}");
+                    whole_line::eprint_line(format_args!("rigger dash: connection error: {e}"));
                 }
             }
-            Err(e) => eprintln!("rigger dash: accept error: {e}"),
+            Err(e) => whole_line::eprint_line(format_args!("rigger dash: accept error: {e}")),
         }
     }
     Ok(())

@@ -119,6 +119,8 @@ pub use rigger_process::keep_awake;
 pub use rigger_process::parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::reap;
+/// The whole-line writer for a stream other processes share: see that module's own doc.
+pub use rigger_process::whole_line;
 /// The one advisory lock-file guard every rigger lock is held through: see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_store_sqlite::lockfile;
