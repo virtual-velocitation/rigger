@@ -1,4 +1,10 @@
 use super::*;
+use rigger::prompt_surface::{
+    GUARD_WRITE_DENY, GUARD_WRITE_NO_ROOT, GUARD_WRITE_PAYLOAD_UNREADABLE, GUARD_WRITE_ROOT_EMPTY,
+    GUARD_WRITE_ROOT_MISSING, GUARD_WRITE_ROOT_RELATIVE, GUARD_WRITE_STDERR_PREFIX,
+    GUARD_WRITE_UNKNOWN_ARG,
+};
+use rigger_domain::prompt_surface::{debug_escaped, fill};
 
 /// A `rigger grep-guard` decision: pass the tool call through untouched, or block it with the
 /// reason shown to the agent (spec 92, criterion 4: the graph-first lookup hook's stated
@@ -299,31 +305,25 @@ fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::
     while i < args.len() {
         match args[i].as_str() {
             "--root" => {
-                let dir = args.get(i + 1).ok_or(
-                    "guard-write: --root expects a directory: rigger guard-write --root <dir>...",
-                )?;
+                let dir = args.get(i + 1).ok_or(GUARD_WRITE_ROOT_MISSING)?;
                 if dir.is_empty() {
-                    return Err("guard-write: --root expects a non-empty directory".into());
+                    return Err(GUARD_WRITE_ROOT_EMPTY.into());
                 }
                 if !Path::new(dir).is_absolute() {
-                    return Err(format!(
-                        "guard-write: --root expects an absolute directory, got {dir:?}"
-                    )
-                    .into());
+                    return Err(
+                        fill(GUARD_WRITE_ROOT_RELATIVE, &[("dir", &debug_escaped(dir))]).into(),
+                    );
                 }
                 roots.push(dir.clone());
                 i += 2;
             }
             other => {
-                return Err(format!(
-                    "guard-write: unknown argument {other:?}: rigger guard-write --root <dir>..."
-                )
-                .into())
+                return Err(fill(GUARD_WRITE_UNKNOWN_ARG, &[("arg", &debug_escaped(other))]).into())
             }
         }
     }
     if roots.is_empty() {
-        return Err("guard-write: at least one --root is required".into());
+        return Err(GUARD_WRITE_NO_ROOT.into());
     }
     Ok(roots)
 }
@@ -492,9 +492,7 @@ fn write_target_under_root(target: &Path, root: &str) -> bool {
 /// cases read identically to whatever consumes the decision.
 fn guard_write_deny_outside_first_root(roots: &[String]) -> GuardDecision {
     let first_root = roots.first().map(String::as_str).unwrap_or("");
-    GuardDecision::Deny(format!(
-        "write target is outside the allowed root: {first_root}"
-    ))
+    GuardDecision::Deny(fill(GUARD_WRITE_DENY, &[("root", first_root)]))
 }
 
 /// THE WRITE GUARD's pure decision core (spec 104 criterion 4): a target outside every
@@ -533,6 +531,24 @@ fn guard_write_decision(roots: &[String], cwd: &str, target: WriteTarget) -> Gua
 /// (op-104-write-guard-deny-by-default-complete-audit).
 const GUARD_WRITE_BLOCKING_EXIT_CODE: i32 = 2;
 
+/// `reason` as `rigger guard-write` prints it on stderr before an exit-2 refusal: after
+/// [`GUARD_WRITE_STDERR_PREFIX`].
+fn guard_write_stderr(reason: &str) -> String {
+    format!("{GUARD_WRITE_STDERR_PREFIX}{reason}")
+}
+
+/// The refusal of a PreToolUse payload stdin could not yield, naming the read's `error`.
+fn guard_write_payload_unreadable(error: &str) -> String {
+    fill(GUARD_WRITE_PAYLOAD_UNREADABLE, &[("error", error)])
+}
+
+/// Refuse a `rigger guard-write` invocation: print `reason` on stderr as [`guard_write_stderr`]
+/// renders it and exit [`GUARD_WRITE_BLOCKING_EXIT_CODE`], the one blocking exit.
+fn guard_write_block(reason: &str) -> ! {
+    eprintln!("{}", guard_write_stderr(reason));
+    std::process::exit(GUARD_WRITE_BLOCKING_EXIT_CODE);
+}
+
 /// `rigger guard-write --root <dir> [--root <dir> ...]`: THE WRITE GUARD (spec 104
 /// criterion 4) - the `PreToolUse` command hook for the editing tools the host
 /// injects into a launched agent's settings. Reads ONE PreToolUse payload
@@ -557,15 +573,11 @@ const GUARD_WRITE_BLOCKING_EXIT_CODE: i32 = 2;
 /// the containment boundary, so a transport failure that read as non-blocking would
 /// silently allow every write for the rest of the spawn's life.
 pub(crate) fn cmd_guard_write(args: &[String]) -> Res {
-    let roots = parse_guard_write_roots(args).unwrap_or_else(|e| {
-        eprintln!("rigger guard-write: {e}");
-        std::process::exit(GUARD_WRITE_BLOCKING_EXIT_CODE);
-    });
+    let roots = parse_guard_write_roots(args).unwrap_or_else(|e| guard_write_block(&e.to_string()));
 
     let mut input = String::new();
     if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input) {
-        eprintln!("rigger guard-write: failed to read the PreToolUse payload from stdin: {e}");
-        std::process::exit(GUARD_WRITE_BLOCKING_EXIT_CODE);
+        guard_write_block(&guard_write_payload_unreadable(&e.to_string()));
     }
     let (target, cwd) = match serde_json::from_str::<serde_json::Value>(input.trim()) {
         Ok(payload) => guard_write_read_target(&payload),

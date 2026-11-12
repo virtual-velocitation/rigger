@@ -37,9 +37,7 @@ pub const RESUME_HELD: &str = ": the run was held {held_for_s}s ({reason}) and i
 pub const RESUME_CLASS: &str = " by {class}";
 
 /// The driver's groups by surface, each in render order: the progress frame, each process
-/// host's report verb, then the resume note and its three `{why}` clauses. Its readers are
-/// tests, so it is compiled for tests alone.
-#[cfg(test)]
+/// host's report verb, then the resume note and its three `{why}` clauses.
 pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
     rigger_domain::prompt_groups![
         "driver::progress_framed" => [PROGRESS_FRAME, PROGRESS_LINE],

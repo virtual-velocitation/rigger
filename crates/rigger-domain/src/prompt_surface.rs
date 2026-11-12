@@ -4,10 +4,10 @@
 //! agent). A renderer formats from those consts, through [`fill`] wherever a const carries a
 //! `{slot}`, so no prompt literal stays in a renderer. Each crate lists its texts as [`Group`]s
 //! from its own `prompt_groups()`, grouped by surface and in render order within one, so a
-//! surface's groups concatenate to its render; until the binary crate's `all_groups()` reads
-//! them, each crate's tests are their only reader, so each is compiled for tests alone. This
-//! module holds the registry types and the domain's own texts: the spec critique prompt's and the
-//! composed system prompt's heading. It is pure and compiles in the `core` lane.
+//! surface's groups concatenate to its render; the binary crate's `all_groups()` collects every
+//! crate's list. This module holds the registry types, [`fill`] and [`debug_escaped`], and the
+//! domain's own texts: the spec critique prompt's and the composed system prompt's heading. It is
+//! pure and compiles in the `core` lane.
 
 /// One sentence group of one class on one surface: `surface` names the renderer that prints it,
 /// `name` is its const's identifier and `text` is that const, whose `{slot}` placeholders
@@ -60,6 +60,13 @@ pub fn fill(text: &str, slots: &[(&str, &str)]) -> String {
     out
 }
 
+/// `s` as its `Debug` form prints it between its quotes: each quote, backslash and control
+/// character escaped, so a value a prompt text quotes reads as one quoted string.
+pub fn debug_escaped(s: &str) -> String {
+    let quoted = format!("{s:?}");
+    quoted[1..quoted.len() - 1].to_string()
+}
+
 /// FRAMING: the built-in layer's heading, opening the injected layers of every composed system
 /// prompt; `instructions::render` and `rigger prime` print it too, and tests key on it.
 pub const INSTRUCTIONS_HEADING: &str = "# Rigger instructions";
@@ -103,8 +110,7 @@ pub const CRITIQUE_SPEC_TAIL: &str =
     "The spec under critique, `{spec_path}`, verbatim:\n\n{spec_text}";
 
 /// The domain's groups: the composed system prompt's heading, then the spec critique prompt's
-/// four in render order. Its readers are tests, so it is compiled for tests alone.
-#[cfg(test)]
+/// four in render order.
 pub fn prompt_groups() -> &'static [Group] {
     crate::prompt_groups![
         "instructions::compose" => [INSTRUCTIONS_HEADING],

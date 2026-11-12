@@ -61,7 +61,7 @@ pub use rigger_domain::agent::{
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
-use rigger_domain::prompt_surface::fill;
+use rigger_domain::prompt_surface::{debug_escaped, fill};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -1551,13 +1551,6 @@ fn conflict_resolution_prompt(unit: &str, conflicting: &[String]) -> String {
         CONFLICT_RESOLUTION,
         &[("unit", &debug_escaped(unit)), ("paths", &paths)],
     )
-}
-
-/// `s` as its `Debug` form prints it between its quotes: each quote, backslash and control
-/// character escaped, so a value a prompt text quotes reads as one quoted string.
-fn debug_escaped(s: &str) -> String {
-    let quoted = format!("{s:?}");
-    quoted[1..quoted.len() - 1].to_string()
 }
 
 /// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way

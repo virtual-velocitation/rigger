@@ -394,8 +394,7 @@ pub const CANARY_VERDICT: &str = "\nRender your gating verdict as a single JSON 
 
 /// The conductor's and the canary's groups by surface, each named by its renderer and listing
 /// every group its render prints, a sub-renderer's and a slot-filling group's included, in
-/// render order. Its readers are tests, so it is compiled for tests alone.
-#[cfg(test)]
+/// render order.
 pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
     rigger_domain::prompt_groups![
         "conductor::emit_protocol" => [EMIT_PROTOCOL, EMIT_LIVE],

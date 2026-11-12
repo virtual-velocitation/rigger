@@ -96,8 +96,7 @@ pub const SPAWN_BOUND_RIGGER_SCRATCH: &str =
 
 /// The dash's groups by surface, the spawn-bound and lookup tool lists in turn, each in
 /// the document order of the descriptions `tool_list` advertises on it; a shared const is a group
-/// on each surface that advertises it. Its readers are tests, so it is compiled for tests alone.
-#[cfg(test)]
+/// on each surface that advertises it.
 pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
     rigger_domain::prompt_groups![
         "mcpserver::tool_list::SpawnBound" => [
