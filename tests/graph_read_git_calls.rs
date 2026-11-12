@@ -25,7 +25,7 @@ fn one_open_runs_exactly_the_diff_and_the_untracked_listing() {
     write_text(root, "src/other.rs", "pub fn gamma() {}\n");
     let traces = tempfile::tempdir().unwrap();
     let head = git_out(root, &["rev-parse", "HEAD"]);
-    let mut expected = vec!["diff --name-status".to_string(), "ls-files --others".into()];
+    let mut expected = vec!["diff --raw".to_string(), "ls-files --others".into()];
     if !cfg!(feature = "symbols") {
         expected.extend([
             format!("rev-parse '{head}^{{commit}}'"),

@@ -128,24 +128,48 @@ impl TreeSource for DirTreeSource {
             .iter()
             .map(|e| (e.path.as_str(), e.blob.as_str()))
             .collect();
-        let mut changed: BTreeSet<String> = held
-            .iter()
-            .filter(|(path, blob)| blobs.get(path.as_str()) != Some(&blob.as_str()))
-            .map(|(path, _)| path.clone())
+        let unreadable: BTreeSet<&str> = now.unreadable.iter().map(String::as_str).collect();
+        let mut diff = WorktreeDiff::default();
+        for (path, blob) in &held {
+            match blobs.get(path.as_str()) {
+                Some(now) if now == blob => {}
+                Some(_) => diff.modified.push(path.clone()),
+                // A file the worktree holds but cannot read is modified, since its content is
+                // unknown; a read of it then fails.
+                None if unreadable.contains(path.as_str()) => diff.modified.push(path.clone()),
+                None => diff.deleted.push(path.clone()),
+            }
+        }
+        let unheld = (blobs.keys().copied()).chain(unreadable.iter().copied());
+        diff.untracked = unheld
+            .filter(|path| !held.contains_key(*path))
+            .map(str::to_owned)
             .collect();
-        // A file the worktree holds but cannot read is changed whatever the tree holds there,
-        // since its content is unknown.
-        changed.extend(now.unreadable);
-        let mut untracked: Vec<String> = blobs
-            .keys()
-            .filter(|path| !held.contains_key(**path))
-            .map(|path| (*path).to_owned())
-            .collect();
-        untracked.sort();
-        Ok(WorktreeDiff {
-            changed: changed.into_iter().collect(),
-            untracked,
-        })
+        for paths in [&mut diff.modified, &mut diff.deleted, &mut diff.untracked] {
+            paths.sort();
+        }
+        Ok(diff)
+    }
+
+    /// Reads each path from `worktree` as a walk lists a file: a regular file, never through a
+    /// symlink and never a FIFO or device, which a walk skips.
+    fn read_worktree(
+        &self,
+        worktree: &Path,
+        paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String> {
+        for path in paths {
+            let file = worktree.join(path);
+            let regular = std::fs::symlink_metadata(&file).is_ok_and(|m| m.file_type().is_file());
+            if !regular {
+                return Err(format!("{} is not a regular file", file.display()));
+            }
+            let bytes =
+                std::fs::read(&file).map_err(|e| format!("read {}: {e}", file.display()))?;
+            sink(path, &bytes);
+        }
+        Ok(())
     }
 
     /// Reads each blob from a path a remembered listing gives it, and refuses bytes that no
@@ -218,6 +242,8 @@ mod tests {
         outside_refused: bool,
         outside_read: Vec<String>,
         diff: WorktreeDiff,
+        /// Whether a read of the corner from the worktree gave bytes.
+        corner_read: bool,
     }
 
     /// The source's answers over `root`, run off the test's thread so a corner that blocks a read
@@ -240,6 +266,9 @@ mod tests {
                     })
                     .is_err();
                 let diff = source.changed_against_worktree(&tip.tree, &at)?;
+                let corner_read = source
+                    .read_worktree(&at, &["src/corner.rs"], &mut |_, _| {})
+                    .is_ok();
                 Ok(Answers {
                     paths: listing.into_iter().map(|e| e.path).collect(),
                     blobs,
@@ -247,6 +276,7 @@ mod tests {
                     outside_refused,
                     outside_read,
                     diff,
+                    corner_read,
                 })
             };
             let _ = done.send(run());
@@ -294,8 +324,8 @@ mod tests {
             /// Plants the corner at `file`, given a regular file outside the root; answers
             /// whether it took for this user (root reads a file whatever its bits).
             plant: fn(&Path, &Path) -> bool,
-            /// The paths the worktree diff calls changed when the corner took.
-            changed: &'static [&'static str],
+            /// The paths the worktree diff names untracked when the corner took.
+            untracked: &'static [&'static str],
         }
         let corners = [
             Corner {
@@ -304,7 +334,7 @@ mod tests {
                     symlink(outside, file).expect("link the corner outside the root");
                     true
                 },
-                changed: &[],
+                untracked: &[],
             },
             Corner {
                 name: "a FIFO",
@@ -312,17 +342,17 @@ mod tests {
                     mkfifo(file);
                     true
                 },
-                changed: &[],
+                untracked: &[],
             },
             Corner {
-                name: "an unreadable file: withheld as changed, since its content is unknown",
+                name: "an unreadable file: differing, since its content is unknown",
                 plant: |file, _| {
                     std::fs::write(file, b"locked\n").expect("write the locked file");
                     std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o000))
                         .expect("strip the file's permission bits");
                     std::fs::read(file).is_err()
                 },
-                changed: &[".rigger/workflow.yml", "src/corner.rs"],
+                untracked: &[".rigger/workflow.yml", "src/corner.rs"],
             },
         ];
         for corner in corners {
@@ -337,8 +367,8 @@ mod tests {
 
             let got = answers(root.path(), content_id(OUTSIDE));
             // A corner that did not take is a plain file, listed and unchanged like any other.
-            let (listed, changed): (&[&str], &[&str]) = if took {
-                (&["src/lib.rs"], corner.changed)
+            let (listed, untracked): (&[&str], &[&str]) = if took {
+                (&["src/lib.rs"], corner.untracked)
             } else {
                 (
                     &[".rigger/workflow.yml", "src/corner.rs", "src/lib.rs"],
@@ -360,10 +390,15 @@ mod tests {
             assert_eq!(
                 got.diff,
                 WorktreeDiff {
-                    changed: changed.iter().map(|p| (*p).to_owned()).collect(),
-                    untracked: Vec::new(),
+                    untracked: untracked.iter().map(|p| (*p).to_owned()).collect(),
+                    ..WorktreeDiff::default()
                 },
                 "{}: worktree diff",
+                corner.name
+            );
+            assert_eq!(
+                got.corner_read, !took,
+                "{}: a worktree read gives a regular file's bytes and refuses the corner",
                 corner.name
             );
         }

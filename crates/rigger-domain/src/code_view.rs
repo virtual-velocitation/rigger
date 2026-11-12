@@ -89,11 +89,13 @@ pub struct Entry {
     pub blob: String,
 }
 
-/// How a worktree differs from a tree.
+/// How a worktree differs from a tree, path by path as git's status names each.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorktreeDiff {
-    /// Paths the tree holds that the worktree modified or deleted.
-    pub changed: Vec<String>,
+    /// Paths the tree holds whose content the worktree changed.
+    pub modified: Vec<String>,
+    /// Paths the tree holds that the worktree deleted.
+    pub deleted: Vec<String>,
     /// Paths the worktree holds that the tree does not.
     pub untracked: Vec<String>,
 }
@@ -102,7 +104,8 @@ impl WorktreeDiff {
     /// The files that differ, less those outside the tree's scope ([`in_scope`]): rigger's own
     /// state holds no fact, so it never counts as a difference.
     pub fn files_in_scope(self) -> BTreeSet<String> {
-        (self.changed.into_iter())
+        (self.modified.into_iter())
+            .chain(self.deleted)
             .chain(self.untracked)
             .filter(|f| in_scope(f))
             .collect()
@@ -249,6 +252,15 @@ pub trait TreeSource {
     /// How `worktree` differs from `tree`.
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
         -> Result<WorktreeDiff, String>;
+    /// Hands each of `paths` (as [`Self::changed_against_worktree`] names them) to `sink` as
+    /// (path, bytes), read from `worktree` as this source reads a file into a tree: the bytes a
+    /// commit of the worktree's content would hold there. A path it cannot read is an error.
+    fn read_worktree(
+        &self,
+        worktree: &Path,
+        paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String>;
     /// Hands each of `blobs` to `sink` as (blob id, bytes).
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8]))
         -> Result<(), String>;
@@ -576,8 +588,9 @@ mod tests {
     fn a_diff_withholds_its_differing_files_or_all_when_uncomparable() {
         let differing = |changed: &[&str]| {
             Ok(WorktreeDiff {
-                changed: changed.iter().map(|f| f.to_string()).collect(),
+                modified: changed.iter().map(|f| f.to_string()).collect(),
                 untracked: vec![".rigger/events.db".to_string()],
+                ..WorktreeDiff::default()
             })
         };
         let cases = [
@@ -615,33 +628,36 @@ mod tests {
     /// Each row: how a worktree differs and the files that count as differing.
     #[test]
     fn a_diff_counts_only_the_files_the_tree_covers() {
-        let diff = |changed: &[&str], untracked: &[&str]| WorktreeDiff {
-            changed: changed.iter().map(|f| f.to_string()).collect(),
-            untracked: untracked.iter().map(|f| f.to_string()).collect(),
+        let owned = |paths: &[&str]| paths.iter().map(|f| f.to_string()).collect();
+        let diff = |modified: &[&str], deleted: &[&str], untracked: &[&str]| WorktreeDiff {
+            modified: owned(modified),
+            deleted: owned(deleted),
+            untracked: owned(untracked),
         };
         let cases = [
-            ("no difference", diff(&[], &[]), vec![]),
+            ("no difference", diff(&[], &[], &[]), vec![]),
             (
-                "changed and untracked together",
-                diff(&["src/b.rs"], &["src/a.rs"]),
-                vec!["src/a.rs", "src/b.rs"],
+                "modified, deleted and untracked together",
+                diff(&["src/b.rs"], &["src/c.rs"], &["src/a.rs"]),
+                vec!["src/a.rs", "src/b.rs", "src/c.rs"],
             ),
             (
-                "a file in both lists counts once",
-                diff(&["src/a.rs"], &["src/a.rs"]),
+                "a file in two lists counts once",
+                diff(&["src/a.rs"], &[], &["src/a.rs"]),
                 vec!["src/a.rs"],
             ),
             (
                 "rigger's own state is out of scope",
                 diff(
                     &[".rigger/events.db"],
+                    &[],
                     &[".rigger/store/code/CURRENT", "README.md"],
                 ),
                 vec!["README.md"],
             ),
             (
                 "the workflow definition is in scope",
-                diff(&[".rigger/workflow.yml"], &[]),
+                diff(&[".rigger/workflow.yml"], &[], &[]),
                 vec![".rigger/workflow.yml"],
             ),
         ];

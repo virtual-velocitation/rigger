@@ -372,7 +372,8 @@ mod tests {
         let hidden = |tests: Tests, changed: &[&str]| -> (Vec<String>, usize) {
             let records = Indexed::default();
             let diff = crate::code_view::WorktreeDiff {
-                changed: changed.iter().map(|f| f.to_string()).collect(),
+                modified: changed.iter().map(|f| f.to_string()).collect(),
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             };
             let honesty = Honesty {

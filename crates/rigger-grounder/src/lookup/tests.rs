@@ -498,7 +498,8 @@ fn diverged() -> (
     );
     let records = rigger_domain::composed::Indexed::new(Graph::default(), Vec::new());
     let diff = rigger_domain::code_view::WorktreeDiff {
-        changed: vec!["edited.rs".to_string(), "gone.rs".to_string()],
+        modified: vec!["edited.rs".to_string()],
+        deleted: vec!["gone.rs".to_string()],
         untracked: vec!["added.rs".to_string()],
     };
     (dir, records, view, diff)
@@ -804,7 +805,8 @@ fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
     let (records, view) = named_tree();
     let diffs = [
         Ok(WorktreeDiff {
-            changed: vec!["src/edited.rs".to_string(), "tests/edited.rs".to_string()],
+            modified: vec!["src/edited.rs".to_string(), "tests/edited.rs".to_string()],
+            deleted: Vec::new(),
             untracked: Vec::new(),
         }),
         Err("the worktree could not be listed".to_string()),
@@ -902,7 +904,8 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
         let honesty = Honesty {
             worktree: "W".to_string(),
             diff: Ok(WorktreeDiff {
-                changed: vec!["src/edited.rs".to_string()],
+                modified: vec!["src/edited.rs".to_string()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             }),
             behind: None,

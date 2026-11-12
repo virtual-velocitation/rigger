@@ -1985,7 +1985,8 @@ mod tests {
     #[test]
     fn the_honesty_label_names_the_stamp_and_counts_differing_files() {
         let differing = WorktreeDiff {
-            changed: vec!["src/a.rs".into()],
+            modified: vec!["src/a.rs".into()],
+            deleted: Vec::new(),
             untracked: vec!["src/new.rs".into()],
         };
         // (stamp commit, diff, behind, label)
@@ -2006,7 +2007,8 @@ mod tests {
             (
                 Some("c1"),
                 Ok(WorktreeDiff {
-                    changed: vec![".rigger/graph.db".into()],
+                    modified: vec![".rigger/graph.db".into()],
+                    deleted: Vec::new(),
                     untracked: vec![".rigger/workflow.yml".into()],
                 }),
                 None,
@@ -2042,7 +2044,8 @@ mod tests {
     fn hits_in_differing_files_are_withheld_and_counted() {
         let (records, view) = (records(), view(Some("c1")));
         let diff = WorktreeDiff {
-            changed: vec!["src/b.rs".into()],
+            modified: vec!["src/b.rs".into()],
+            deleted: Vec::new(),
             untracked: Vec::new(),
         };
         let g = composed(&records, &view, honest(Ok(diff)));
@@ -2127,7 +2130,8 @@ mod tests {
     fn a_consuming_whole_read_answers_the_borrowing_one() {
         let differing = |path: &str| {
             Ok(WorktreeDiff {
-                changed: vec![path.into()],
+                modified: vec![path.into()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             })
         };
@@ -2197,7 +2201,8 @@ mod tests {
         let records = Indexed::new(rows, aliases);
         let differing = |path: &str| {
             Ok(WorktreeDiff {
-                changed: vec![path.into()],
+                modified: vec![path.into()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             })
         };
@@ -2261,7 +2266,8 @@ mod tests {
         let probes = [code.as_slice(), &["src/gone.rs", "glossary"]].concat();
         let differing = |path: &str| {
             Ok(WorktreeDiff {
-                changed: vec![path.into()],
+                modified: vec![path.into()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             })
         };
@@ -2369,7 +2375,8 @@ mod tests {
         let (records, view) = (records(), view(Some("c1")));
         let differing = || {
             honest(Ok(WorktreeDiff {
-                changed: vec!["src/b.rs".into()],
+                modified: vec!["src/b.rs".into()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             }))
         };

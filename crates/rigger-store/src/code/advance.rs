@@ -1487,9 +1487,19 @@ mod tests {
                 return Err("refused".into());
             }
             Ok(WorktreeDiff {
-                changed: vec![tree.to_owned()],
+                modified: vec![tree.to_owned()],
+                deleted: Vec::new(),
                 untracked: Vec::new(),
             })
+        }
+
+        fn read_worktree(
+            &self,
+            worktree: &Path,
+            paths: &[&str],
+            sink: &mut dyn FnMut(&str, &[u8]),
+        ) -> Result<(), String> {
+            self.inner.read_worktree(worktree, paths, sink)
         }
 
         fn read_blobs(
@@ -1567,7 +1577,7 @@ mod tests {
                 "{name}: view"
             );
             assert_eq!(
-                diff.map(|d| d.changed),
+                diff.map(|d| d.modified),
                 Ok(vec![trees[answered].clone()]),
                 "{name}: the comparison answered"
             );

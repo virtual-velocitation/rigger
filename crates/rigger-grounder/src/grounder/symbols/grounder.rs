@@ -2638,7 +2638,8 @@ mod tests {
     fn differing(changed: &[&str], untracked: &[&str]) -> Result<WorktreeDiff, String> {
         let owned = |files: &[&str]| files.iter().map(|f| f.to_string()).collect();
         Ok(WorktreeDiff {
-            changed: owned(changed),
+            modified: owned(changed),
+            deleted: Vec::new(),
             untracked: owned(untracked),
         })
     }

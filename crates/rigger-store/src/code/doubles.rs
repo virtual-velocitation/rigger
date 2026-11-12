@@ -240,6 +240,15 @@ impl TreeSource for MemSource {
         Err("a memory source has no worktree".into())
     }
 
+    fn read_worktree(
+        &self,
+        _: &Path,
+        _: &[&str],
+        _: &mut dyn FnMut(&str, &[u8]),
+    ) -> Result<(), String> {
+        Err("a memory source has no worktree".into())
+    }
+
     fn read_blobs(
         &self,
         blobs: &[String],

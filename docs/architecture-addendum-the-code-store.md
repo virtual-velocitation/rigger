@@ -567,7 +567,7 @@ Grouping before and after:
 open(caller worktree W, filter)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
-  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --name-status + the
+  diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --raw + the
                                                                    untracked list: < 20 ms over a
                                                                    refreshed index)
   diff empty      -> answers describe W exactly; label "describes <commit>"
@@ -782,7 +782,9 @@ pub trait TreeSource {
     fn head(&self) -> Result<Tip, String>;                         // HEAD commit + tree
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String>;      // path, blob
     fn changed_against_worktree(&self, tree: &str, worktree: &Path)
-        -> Result<WorktreeDiff, String>;                           // changed + untracked paths
+        -> Result<WorktreeDiff, String>;                           // modified, deleted, untracked
+    fn read_worktree(&self, worktree: &Path, paths: &[&str],
+        sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;  // a commit of W's bytes
     fn read_blobs(&self, blobs: &[String], sink: &mut dyn FnMut(&str, &[u8])) -> Result<(), String>;
 }
 
@@ -802,7 +804,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | Interface | Implementations |
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
-| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --name-status` over a copy of the worktree's index (6.1), `ls-files --others --exclude-standard`, `cat-file --batch` through the existing `BlobBatch`); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
+| `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
