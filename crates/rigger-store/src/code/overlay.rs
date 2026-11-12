@@ -239,13 +239,19 @@ impl Settled for Overlay {
     }
 
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
-        let calls = self.resettled().1.iter();
+        let calls = self.resettled().1.iter().inspect(|_| read_proof_row());
         match of {
             Proofs::All => calls.cloned().collect(),
             Proofs::Of(id) => calls.filter(|c| c.target == id).cloned().collect(),
             Proofs::In(path) => calls.filter(|c| c.file() == Some(path)).cloned().collect(),
         }
     }
+}
+
+/// Counts one proof row an overlay's lookup read, so a test sees how many rows a lookup reads.
+fn read_proof_row() {
+    #[cfg(test)]
+    tests::PROOF_ROWS_READ.with(|read| read.set(read.get() + 1));
 }
 
 /// The head's view `base` with the files at `hidden` masked and `changed`'s facts merged in by
@@ -346,6 +352,11 @@ mod tests {
 
     /// What a worktree changes: each path with its bytes, or none when it deleted the file.
     type Changes<'a> = &'a [(&'a str, Option<&'a str>)];
+
+    thread_local! {
+        /// The proof rows the overlays this thread read have read ([`read_proof_row`]).
+        pub(super) static PROOF_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
 
     /// A store advanced to a commit of `FILES` in `source`, read by a reader in the worktree `W`.
     struct Fixture {
@@ -620,6 +631,54 @@ mod tests {
         );
         let want = format!("describes W ({c1} + 1 file); groupings describe {c1}");
         assert_eq!(answer(&head).1, want);
+    }
+
+    /// A proof lookup over the overlay reads only its hits, as the snapshot's do: GIVEN an overlay
+    /// that settled one test file's proofs again beside the head's, WHEN the proofs of one
+    /// definition or in one file are read, THEN they are its calls in proof order, and the rows
+    /// read are those calls alone.
+    #[test]
+    fn overlay_proof_lookups_read_only_their_hits() {
+        let files = [
+            ("src/a.rs", "def alpha\ndef beta\ndef gamma\n"),
+            (
+                "tests/t.rs",
+                "def check\ncall alpha\ncall beta\ncall gamma\n",
+            ),
+            ("tests/u.rs", "def other\ncall beta\n"),
+        ];
+        let fx = Fixture::new(&files);
+        let u = ("tests/u.rs", Some("def other\ncall beta\ncall gamma\n"));
+        let head = fx.head(&[u], &Memo::new(Memo::BOUND));
+        let settled = head.view.settled().expect("the overlay settles its proofs");
+        assert_eq!(settled.proofs(Proofs::All).len(), 5);
+        // (the lookup, the evidence of the calls it answers, in proof order)
+        let cases: [(Proofs, &[&str]); 6] = [
+            (Proofs::Of("src/a.rs::alpha"), &["tests/t.rs:2"]),
+            (
+                Proofs::Of("src/a.rs::beta"),
+                &["tests/t.rs:3", "tests/u.rs:2"],
+            ),
+            (
+                Proofs::Of("src/a.rs::gamma"),
+                &["tests/t.rs:4", "tests/u.rs:3"],
+            ),
+            (Proofs::Of("src/a.rs::none"), &[]),
+            (Proofs::In("tests/u.rs"), &["tests/u.rs:2", "tests/u.rs:3"]),
+            (
+                Proofs::In("tests/t.rs"),
+                &["tests/t.rs:2", "tests/t.rs:3", "tests/t.rs:4"],
+            ),
+        ];
+        for (of, want) in cases {
+            let before = PROOF_ROWS_READ.with(std::cell::Cell::get);
+            let got: Vec<String> = (settled.proofs(of).into_iter())
+                .map(|c| c.evidence)
+                .collect();
+            let read = PROOF_ROWS_READ.with(std::cell::Cell::get) - before;
+            assert_eq!(got, want, "{of:?}");
+            assert_eq!(read, want.len(), "rows read for {of:?}");
+        }
     }
 
     /// A worktree whose differing file cannot be read, or that cannot be compared at all, is
