@@ -9,13 +9,13 @@
 //! that one path; any other entry is absent and removed, and the file is extracted again. The key
 //! is the content, so an entry is never stale; it is only unused.
 //!
-//! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, none unread for more than three
-//! days. Its reaper ([`reap`]) runs with the store's on every advance and after every overlay
-//! open that writes an entry. It keeps the entries of the fingerprints the store keeps the
-//! snapshots of, so two binaries sharing a store keep each other's, the most recently read first
-//! across them, recency being the modification time a read sets; it removes every other file but
-//! a temp younger than a minute. `rigger reset --derived` removes the whole memo, and `rigger
-//! validate` reports its size.
+//! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, each counted in whole 4 KiB
+//! blocks, none unread for more than three days. Its reaper ([`reap`]) runs with the store's on
+//! every advance and after every overlay open that writes an entry. It keeps the entries of the
+//! fingerprints the store keeps the snapshots of, so two binaries sharing a store keep each
+//! other's, the most recently read first across them, recency being the modification time a read
+//! sets; it removes every other file but a temp younger than a minute. `rigger reset --derived`
+//! removes the whole memo, and `rigger validate` reports its size.
 
 use crate::code::dir_source::content_id;
 use crate::code::snapshot::{encode, Snapshot};
@@ -31,8 +31,12 @@ pub(crate) const DIR: &str = "memo";
 const FACTS: &str = ".facts";
 /// How long a temp is left for its writer to rename: one older is a crashed writer's.
 const TEMP_GRACE: Duration = Duration::from_secs(60);
+/// The block the cap counts an entry in, the allocation unit of the common file systems: an entry
+/// takes its bytes rounded up to it on disk, however few they are.
+const BLOCK: u64 = 4096;
 
-/// How much the memo on disk keeps: at most `bytes` of entries, none unread for longer than `age`.
+/// How much the memo on disk keeps: at most `bytes` of entries, each counted as the 4 KiB blocks it
+/// takes, none unread for longer than `age`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemoCap {
     pub bytes: u64,
@@ -40,7 +44,7 @@ pub struct MemoCap {
 }
 
 impl MemoCap {
-    /// 64 MiB of entries, none unread for more than three days.
+    /// 64 MiB of entries in 4 KiB blocks, none unread for more than three days.
     pub const STATED: MemoCap = MemoCap {
         bytes: 64 << 20,
         age: Duration::from_secs(3 * 24 * 60 * 60),
@@ -126,10 +130,11 @@ impl DiskMemo {
 }
 
 /// Reaps the memo directory `dir` to the entries of the fingerprints in `kept` read within the
-/// cap's age, the most recently read first up to the cap's bytes across them, and removes every
-/// other file in it but a temp a writer may still rename. Recency is an entry's modification time,
-/// which a read sets ([`touch`]). Best-effort: a file that cannot be listed or removed is left for
-/// the next reap, and a reader whose entry goes extracts its file again.
+/// cap's age, the most recently read first up to the cap's bytes across them, each entry counted
+/// in whole 4 KiB blocks ([`allocated`]), and removes every other file in it but a temp a writer
+/// may still rename. Recency is an entry's modification time, which a read sets ([`touch`]).
+/// Best-effort: a file that cannot be listed or removed is left for the next reap, and a reader
+/// whose entry goes extracts its file again.
 pub(crate) fn reap(dir: &Path, kept: &[u64], cap: MemoCap, now: SystemTime) {
     let kept: Vec<String> = kept.iter().map(|fp| format!("{fp:016x}-")).collect();
     let (mut held, mut gone) = (Vec::new(), Vec::new());
@@ -143,7 +148,7 @@ pub(crate) fn reap(dir: &Path, kept: &[u64], cap: MemoCap, now: SystemTime) {
         let is_kept = name.ends_with(FACTS) && kept.iter().any(|fp| name.starts_with(fp));
         match name.ends_with(TEMP) {
             true if unread <= TEMP_GRACE => {}
-            false if is_kept && unread <= cap.age => held.push((unread, name, meta.len())),
+            false if is_kept && unread <= cap.age => held.push((unread, name, allocated(&meta))),
             _ => gone.push(name),
         }
     }
@@ -158,6 +163,11 @@ pub(crate) fn reap(dir: &Path, kept: &[u64], cap: MemoCap, now: SystemTime) {
     for name in gone {
         let _ = std::fs::remove_file(dir.join(name));
     }
+}
+
+/// The bytes the entry `meta` describes takes on disk, counted in whole [`BLOCK`]s.
+fn allocated(meta: &std::fs::Metadata) -> u64 {
+    meta.len().div_ceil(BLOCK) * BLOCK
 }
 
 /// Marks the entry at `at` read now, its recency for the reaper. Best-effort: a mark that fails

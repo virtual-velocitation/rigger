@@ -1173,7 +1173,10 @@ because its key is the content. It has two tiers:
 The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
 
 - **Bound:** 64 MiB of entries across every kept fingerprint, none unread for more than three
-  days.
+  days. The bytes are allocated bytes at a 4 KiB block: an entry counts its length rounded up to
+  4 KiB, the allocation unit of the common file systems and so what it takes on disk, and many
+  small entries cannot hold more of the disk than the cap.
+  `rigger validate`'s footprint keeps its own measure, the files' lengths.
 - **Recency:** an entry's modification time, which a read sets (`File::set_modified`, section 15).
   The least recently read go first once the bytes pass the cap.
 - **Fingerprint:** the entries of every fingerprint the store keeps a pointer for (at most two,
