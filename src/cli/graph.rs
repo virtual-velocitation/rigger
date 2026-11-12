@@ -221,7 +221,7 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[St
         if rest > 0 {
             println!(
                 "  (+{rest} more decision(s)/finding(s) not shown - {})",
-                conductor::RECORD_RECOVERY
+                rigger_conductor::prompt_surface::RECORD_RECOVERY
             );
         }
     }

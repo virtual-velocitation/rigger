@@ -890,7 +890,7 @@ pub const PEER_SUMMARY_BYTES: usize = 480;
 /// budget for the whole reply, [`PEERS_REPLY_BUDGET_BYTES`], taken through the conductor's one
 /// [`within_budget`](crate::conductor::within_budget) rule. When records are left out, a
 /// `left_out` object counts them per kind and carries the one-line `note` naming how to narrow
-/// the call or read a left-out record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)),
+/// the call or read a left-out record by id ([`RECORD_RECOVERY`](rigger_conductor::prompt_surface::RECORD_RECOVERY)),
 /// and the budget holds with that object in the reply.
 pub fn peers_json(peers: &Sidecar, files: &[String], caller: Option<&str>) -> Value {
     let ranked = peers.ranked(files, caller);
@@ -948,7 +948,7 @@ fn peers_reply(records: Vec<String>, out: [(&str, usize); 3]) -> Value {
                 "(+{} ranked below these left out to keep this reply under budget - narrow with \
                  fewer files, or {})",
                 counts.join(", "),
-                crate::conductor::RECORD_RECOVERY
+                rigger_conductor::prompt_surface::RECORD_RECOVERY
             ),
         });
     }

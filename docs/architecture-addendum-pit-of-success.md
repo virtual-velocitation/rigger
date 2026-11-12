@@ -235,7 +235,7 @@ copy still supersedes its baseline, (b) a paraphrase now matches by id instead o
 duplicating, and (c) an intentional split still runs and emits the `unmatched-proposal`
 signal.
 
-_Code:_ `harvest_proposed`, `normalize_ws`, `baseline_units`, `PLAN_PROTOCOL`
+_Code:_ `harvest_proposed`, `normalize_ws`, `baseline_units`, `render_plan_protocol`
 (`crates/rigger-conductor/src/conductor.rs`).
 
 ### 3.4 `--base` reachability + missing-files refusal

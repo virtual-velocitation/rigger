@@ -34,7 +34,12 @@ use crate::contextgraph::TYPE_REVIEW_FINDING;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
+use crate::prompt_surface::{
+    CANARY_FINDINGS_LEAD, CANARY_NO_ANCHOR, CANARY_NO_FINDINGS, CANARY_REVIEW_HEADER,
+    CANARY_VERDICT,
+};
 use crate::spawn::{review_step_role, ReviewKind, ROLE_ADJUDICATOR};
+use rigger_domain::prompt_surface::fill;
 use rigger_domain::review::{step_adjudicator, step_ordinal, VERDICT_APPROVE, VERDICT_REJECT};
 
 /// A single canary corpus item: a micro-unit under review with its GROUND TRUTH. Parsed
@@ -664,19 +669,18 @@ fn spawn_collecting(
     Ok((result, findings.into_inner()))
 }
 
-/// The header presented to every tier: names the file under review (so a reviewer that
-/// finds a defect attributes its finding to that file) and frames the snippet.
+/// The header presented to every tier ([`CANARY_REVIEW_HEADER`]): names the file under review
+/// (so a reviewer that finds a defect attributes its finding to that file), or
+/// [`CANARY_NO_ANCHOR`] when the item has no anchor, and frames the snippet.
 fn review_header(item: &CanaryItem) -> String {
     let file = if item.anchor.is_empty() {
-        "the code below"
+        CANARY_NO_ANCHOR
     } else {
         &item.anchor
     };
-    format!(
-        "You are reviewing a micro-unit. The code under review is the file `{file}`. \
-         Review it for defects and raise a finding about `{file}` for each one you find.\n\n\
-         ----- BEGIN {file} -----\n{}\n----- END {file} -----",
-        item.review
+    fill(
+        CANARY_REVIEW_HEADER,
+        &[("file", file), ("review", &item.review)],
     )
 }
 
@@ -684,21 +688,18 @@ fn review_header(item: &CanaryItem) -> String {
 /// the given ORDER (the position-bias probe reorders this list), and the fail-closed
 /// verdict instruction [`verdict_approves`] reads.
 fn adjudicator_prompt(item: &CanaryItem, findings: &[&Finding]) -> String {
-    let mut block = String::new();
+    let mut prompt = review_header(item);
+    prompt.push_str(CANARY_FINDINGS_LEAD);
     if findings.is_empty() {
-        block.push_str("(no findings were raised)\n");
+        prompt.push_str(CANARY_NO_FINDINGS);
     } else {
         for (i, f) in findings.iter().enumerate() {
             let about = f.about.join(", ");
-            block.push_str(&format!("{}. [{about}] {}\n", i + 1, f.summary));
+            prompt.push_str(&format!("{}. [{about}] {}\n", i + 1, f.summary));
         }
     }
-    format!(
-        "{}\n\nThe review tiers raised these findings, in order:\n{block}\n\
-         Render your gating verdict as a single JSON line: {{\"verdict\":\"approve\"}} to \
-         integrate, or {{\"verdict\":\"reject\"}} to send it back.",
-        review_header(item)
-    )
+    prompt.push_str(CANARY_VERDICT);
+    prompt
 }
 
 #[cfg(test)]

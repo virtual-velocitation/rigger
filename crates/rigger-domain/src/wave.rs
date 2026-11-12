@@ -9,7 +9,7 @@ use crate::playbooks::fnv1a_64;
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
 /// then collapse every internal run of ASCII whitespace to a single space. The planner
-/// is told to cite the criterion text VERBATIM (PLAN_PROTOCOL), so an exact match is
+/// is told to cite the criterion text VERBATIM (`render_plan_protocol`), so an exact match is
 /// the contract; normalizing whitespace on both sides makes it robust to incidental
 /// reflowing/indentation differences without loosening into fuzzy matching (a planner
 /// that PARAPHRASES a criterion deliberately will not match, and is correctly treated
