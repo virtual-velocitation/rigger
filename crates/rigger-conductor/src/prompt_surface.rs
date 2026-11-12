@@ -474,14 +474,12 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
         "conductor::write_code_neighborhood" => [
             CODE_NEIGHBORHOOD_HEADER,
             ELISION_NOTE_DEFINITIONS,
-            GRAPH_AROUND_ANY,
             GRAPH_AROUND_ONE,
             GRAPH_AROUND_EACH,
         ],
         "conductor::write_design_intent" => [
             DESIGN_INTENT_HEADER,
             ELISION_NOTE_DESIGN_INTENT,
-            GRAPH_AROUND_ANY,
             GRAPH_AROUND_ONE,
             GRAPH_AROUND_EACH,
         ],
