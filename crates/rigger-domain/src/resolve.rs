@@ -1479,9 +1479,14 @@ pub(crate) mod tests {
                 &[
                     "src/a.rs::helper <- src/a.rs:25",
                     "src/a.rs::run <- src/a.rs:26 src/a_tests.rs:4 tests/it.rs:2",
-                    "src/b.rs::compute <- tests/it.rs:3",
                 ],
                 &["draw", "tests/it.rs::"],
+            ),
+            (
+                "proof: none for a call the call rule lands on its own file's test definition",
+                Ask::Proofs,
+                &[],
+                &["tests/it.rs:3"],
             ),
             (
                 "duplicate id, kind precedence: one entity, the type's kind and line",
