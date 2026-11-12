@@ -11,7 +11,7 @@
 //!
 //! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, each counted in whole 4 KiB
 //! blocks, none unread for more than three days. Its reaper ([`reap`]) runs with the store's on
-//! every advance and after every overlay open that writes an entry. It keeps the entries of the
+//! every advance and after every overlay open that extracts a file. It keeps the entries of the
 //! fingerprints the store keeps the snapshots of, so two binaries sharing a store keep each
 //! other's, the most recently read first across them, recency being the modification time a read
 //! sets; it removes every other file but a temp younger than a minute. `rigger reset --derived`

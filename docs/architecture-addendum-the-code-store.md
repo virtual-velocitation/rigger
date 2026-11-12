@@ -440,7 +440,7 @@ What is *not* done, and why:
   the entries of the fingerprints whose pointers the store keeps, so two binaries sharing a store
   keep each other's entries and a fingerprint's entries go with its snapshot. Across those, it
   keeps the entries read within three days, the most recently read first up to 64 MiB, and an
-  overlay open that writes an entry reaps it too.
+  overlay open that extracts a file reaps it too.
 
 ### 5.2 What advances the stamp
 
@@ -1187,7 +1187,8 @@ The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
   fingerprint.
 - **Temps:** a temp older than a minute is a crashed writer's, and goes.
 - **When:** with the store's reaper on every advance, under LOCK, and after every overlay open
-  that writes an entry.
+  that extracts a file, whether or not its entry was written, since a write that fails part way
+  can still leave bytes behind.
 - **Hygiene:** `rigger reset --derived` removes the memo once its delete has run, so a
   `--derived` refused on its backend or on a live run removes nothing, and `rigger validate`
   reports its size as the footprint's `code facts memo` category. A clear a reader's write
@@ -1367,7 +1368,7 @@ a reader holding one open (or mapped) never blocks a writer.
   `a_read_entry_outlives_one_read_before_it`,
   `an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps`,
   `two_fingerprints_alternating_reads_extract_once_each`,
-  `an_open_that_writes_the_memo_reaps_it`, `a_reaper_racing_reads_fails_closed_to_extraction`,
+  `an_open_that_extracts_reaps_the_memo`, `a_reaper_racing_reads_fails_closed_to_extraction`,
   `reset_derived_clears_the_code_facts_memo_only_once_the_delete_may_run`,
   `a_writer_racing_the_memo_clear_leaves_a_line_naming_what_is_left`,
   `validate_reports_footprint_by_category_and_flags_a_dead_share_breach` and

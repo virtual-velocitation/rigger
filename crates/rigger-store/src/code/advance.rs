@@ -326,7 +326,7 @@ impl Store {
     /// ([`Self::ranked_pointers`]), within `cap` ([`disk_memo::reap`]): two binaries sharing a
     /// store keep each other's entries as they keep each other's snapshots, and a fingerprint's
     /// entries go with its snapshot. Run by every reap of the store, under its lock, and by an
-    /// overlay open that writes an entry, without it.
+    /// overlay open that extracts a file, without it.
     pub(crate) fn reap_memo(&self, cap: MemoCap, now: SystemTime) {
         let (kept, _) = self.ranked_pointers();
         let kept: Vec<u64> = (kept.iter())

@@ -67,8 +67,10 @@ pub fn open_head(
 /// its bytes read once through `source`, each file's facts taken from `memo` when it holds them
 /// for those bytes, then from the facts memo on disk under the store at `root` when `memo` reads
 /// one, and the rest extracted in parallel ([`extract_parallel`]) and kept in both, the memo on
-/// disk reaped once an entry is written ([`Store::reap_memo`]). A file that is not read is an
-/// error; a memo on disk that cannot be read or written is not, since extracting answers the same.
+/// disk reaped once a file is extracted ([`Store::reap_memo`]), whether or not its entry could be
+/// written, since a write that fails part way can still leave bytes behind. A file that is not
+/// read is an error; a memo on disk that cannot be read or written is not, since
+/// extracting answers the same.
 fn read_changed(
     root: &Path,
     source: &dyn TreeSource,
@@ -107,14 +109,14 @@ fn read_changed(
     }
     let bytes_of = |path: &str| bytes.get(path).map_or(&[][..], Vec::as_slice);
     let extracted = extract_parallel(extract, &missed, &|entry| bytes_of(&entry.path))?;
-    let mut wrote = false;
     for f in &extracted {
         memo.put(held_under, f.clone());
         if let Some((disk, _)) = &disk {
-            wrote |= disk.put(bytes_of(&f.path), f).is_ok();
+            // A write that fails is a miss on the next read, which extracts again.
+            let _ = disk.put(bytes_of(&f.path), f);
         }
     }
-    if let Some((_, cap)) = disk.filter(|_| wrote) {
+    if let Some((_, cap)) = disk.filter(|_| !extracted.is_empty()) {
         store.reap_memo(cap, SystemTime::now());
     }
     facts.extend(extracted);
