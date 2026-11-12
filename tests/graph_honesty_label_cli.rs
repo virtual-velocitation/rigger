@@ -284,6 +284,48 @@ fn show_counts_the_hidden_tests_its_query_names() {
     }
 }
 
+/// GIVEN a built project where `p` is defined in two files, so a call to it from another file
+/// lands on that file's placeholder and proves neither, and the test `t` and the test helper `h`
+/// call it from a test file while the test `u` calls `h`, WHEN `rigger graph --around` reads one
+/// `p` under each `--tests` setting, THEN `exclude` counts the two tests the callers walk reaches
+/// through their placeholder at any depth (never stepping from one to reach `u`), and `include`
+/// shows them and counts nothing.
+#[test]
+fn around_counts_the_hidden_tests_calling_through_a_placeholder() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub mod a;\npub mod b;\n");
+    write_text(root, "src/a.rs", "pub fn p() {}\n");
+    write_text(root, "src/b.rs", "pub fn p() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn t() { p(); }\nfn h() { p(); }\n#[test]\nfn u() { h(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let two = "2 test hits not shown; the tests filter (include or only) shows them";
+    let around = ["graph", "--around", "src/a.rs::p", "--depth"];
+    // (the depth and filter arguments, the line under the label when one counts hidden tests)
+    let cases: [(&[&str], Option<&str>); 3] = [
+        (&["1"], Some(two)),
+        (&["2"], Some(two)),
+        (&["2", "--tests", "include"], None),
+    ];
+    for (extra, line) in cases {
+        let args = [&around[..], extra].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        match line {
+            Some(line) => assert_eq!(out.lines().nth(1), Some(line), "{args:?}:\n{out}"),
+            None => {
+                assert!(!out.contains("not shown"), "{args:?}:\n{out}");
+                assert!(out.contains("node tests/t.rs::h"), "{args:?}:\n{out}");
+            }
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.
