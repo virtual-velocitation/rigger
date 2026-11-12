@@ -1096,15 +1096,15 @@ pub trait ContextGraph: Send + Sync {
         Ok(names)
     }
 
-    /// The code entities named `name` this graph answers, ordered by id: those of
-    /// How many distinct test entities the graph's `tests` filter hides prove a node of `ids`,
-    /// counted from the proofs read for those nodes: what an answer showing them says it leaves
-    /// out. None when tests are shown, the worktree cannot be compared, or by default (a graph
-    /// that holds no code, a test double).
-    fn hidden_provers(&self, _ids: &[String]) -> Result<usize, Error> {
-        Ok(0)
+    /// The distinct test entities the graph's `tests` filter hides that prove a node of `ids`,
+    /// in id order, read from the proofs read for those nodes: what an answer showing them says
+    /// it leaves out. None when tests are shown, the worktree cannot be compared, or by default
+    /// (a graph that holds no code, a test double).
+    fn hidden_provers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
     }
 
+    /// The code entities named `name` this graph answers, ordered by id: those of
     /// [`Self::nodes_of_kind`] named `name`, read near the name. A hit it withholds is counted
     /// in its label as every withheld hit is.
     fn entities_named(&self, name: &str) -> Result<Vec<Node>, Error> {
@@ -1303,6 +1303,25 @@ pub struct Rows {
     pub out: Vec<Edge>,
     /// [`Neighbors::incoming`] at the id.
     pub incoming: Vec<Edge>,
+}
+
+/// How many test hits a show of `entity` that located `located` leaves out under a filter that
+/// hides tests, each counted once: the hidden tests the query names, by the rule
+/// [`crate::composed::locate`] names a shown definition by, and those proving the one node it
+/// locates ([`ContextGraph::hidden_provers`]). What `rigger graph --show` and the `rigger_graph` tool's
+/// `show` count under their label; none when tests are shown.
+pub fn show_tests_hidden(
+    graph: &dyn ContextGraph,
+    entity: &str,
+    located: &Located,
+) -> Result<usize, Error> {
+    let mut hidden = crate::composed::hidden_named(graph, entity)?;
+    if let Located::One(site) = located {
+        hidden.extend(graph.hidden_provers(std::slice::from_ref(&site.id))?);
+    }
+    hidden.sort_unstable();
+    hidden.dedup();
+    Ok(hidden.len())
 }
 
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the

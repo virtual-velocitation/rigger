@@ -105,19 +105,18 @@ fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     // The label heads the answer (6.1), counting what the reads above withheld.
     println!("{}", graph.stamp_label());
     let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
-    print_tests_hidden(graph, &shown)?;
+    print_tests_hidden(graph.hidden_provers(&shown)?.len());
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &queried, &unresolved);
     Ok(())
 }
 
-/// The line under an answer's label saying how many test entities the tests filter hides prove
-/// the nodes `shown`, when any do.
-fn print_tests_hidden(graph: &dyn ContextGraph, shown: &[String]) -> Res {
-    if let Some(line) = tests_hidden_line(graph.hidden_provers(shown)?) {
+/// The line under an answer's label saying how many test hits the tests filter hid, when any
+/// did.
+fn print_tests_hidden(hidden: usize) {
+    if let Some(line) = tests_hidden_line(hidden) {
         println!("{line}");
     }
-    Ok(())
 }
 
 /// The number of newest governing decision/finding nodes `rigger graph --around` prints in full
@@ -310,20 +309,21 @@ fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     })
 }
 
-/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined.
+/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined. A
+/// query that names only tests the filter hid answers with their count alone.
 fn print_show(graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
+    let hidden = contextgraph::show_tests_hidden(graph, entity, &located)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
-    if let Located::One(site) = &located {
-        print_tests_hidden(graph, std::slice::from_ref(&site.id))?;
-    }
+    print_tests_hidden(hidden);
     match located {
         Located::None => match logged_site(entity)? {
             Some(site) => {
                 print_entity_site(&site);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
+            None if hidden > 0 => {}
             None => println!(
                 "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
             ),

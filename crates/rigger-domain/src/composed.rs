@@ -400,9 +400,9 @@ pub trait CodeHalf: Neighbors {
     fn entity_names(&self) -> Vec<String>;
     /// The test entities named `name` the filter hides, in id order.
     fn hidden_tests_named(&self, name: &str) -> Vec<Node>;
-    /// How many distinct test entities the filter hides prove a node of `ids`, counted from the
-    /// proofs the half read for them ([`ContextGraph::hidden_provers`]).
-    fn hidden_provers(&self, ids: &[String]) -> usize;
+    /// The distinct test entities the filter hides that prove a node of `ids`, in id order,
+    /// read from the proofs the half read for them ([`ContextGraph::hidden_provers`]).
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -417,18 +417,18 @@ pub trait CodeHalf: Neighbors {
     }
 }
 
-/// How many distinct provers of the `(proved, prover)` pairs `proofs` prove an id of `ids`: the
-/// one count of [`CodeHalf::hidden_provers`].
+/// The distinct provers of the `(proved, prover)` pairs `proofs` that prove an id of `ids`, in
+/// order: the one reading of [`CodeHalf::hidden_provers`].
 pub(crate) fn provers_of<'p>(
     proofs: impl Iterator<Item = (&'p str, &'p str)>,
     ids: &[String],
-) -> usize {
+) -> Vec<String> {
     let ids: FxHashSet<&str> = ids.iter().map(String::as_str).collect();
-    let provers: FxHashSet<&str> = proofs
+    let provers: BTreeSet<&str> = proofs
         .filter(|(proved, _)| ids.contains(proved))
         .map(|(_, prover)| prover)
         .collect();
-    provers.len()
+    provers.into_iter().map(str::to_string).collect()
 }
 
 /// The file `node`'s facts came from, the one rule withholding reads: a design or workflow node's
@@ -580,7 +580,7 @@ impl CodeHalf for Whole {
             .cloned()
             .collect()
     }
-    fn hidden_provers(&self, ids: &[String]) -> usize {
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let proofs = self.proofs.iter();
         provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
     }
@@ -1140,9 +1140,9 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             .filter(|n| !self.withholds_code(n))
             .collect())
     }
-    fn hidden_provers(&self, ids: &[String]) -> Result<usize, Error> {
+    fn hidden_provers(&self, ids: &[String]) -> Result<Vec<String>, Error> {
         if self.stale {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         Ok(self.code.hidden_provers(ids))
     }
@@ -1258,12 +1258,17 @@ fn definitions(
             Admitted::Named => true,
             Admitted::CallTargets => is_call_target(n.attrs.get("kind").map(String::as_str)),
         })
-        .filter(|n| file.is_none_or(|f| n.id.starts_with(&entity_id(f, ""))))
         .map(|n| n.id)
+        .filter(|id| in_file(id, file))
         .collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// Whether `id` is in `file`'s `<file>::` id range, any id when no file is given.
+fn in_file(id: &str, file: Option<&str>) -> bool {
+    file.is_none_or(|f| id.starts_with(&entity_id(f, "")))
 }
 
 /// Whether the named node `id` is a call target: `Some(true)` for a definition a call resolves
@@ -1541,16 +1546,27 @@ fn is_bare_flat_node(node: &Node) -> bool {
         && split_id(&node.id).1.is_some()
 }
 
-/// The definitions a show query names when no exact id answers it, sorted: the first non-empty of
-/// the query as a leaf, its path leaf filtered on the id suffix `::<query>`, and its rest half as
-/// a leaf in its file half.
+/// The definitions a show query names when no exact id answers it, sorted.
 fn shown_candidates(graph: &dyn Neighbors, query: &str) -> Result<Vec<String>, Error> {
-    let by_leaf = definitions(graph, query, Admitted::Named, None)?;
+    named_by(query, |leaf, file| {
+        definitions(graph, leaf, Admitted::Named, file)
+    })
+}
+
+/// The ids a show query names among those `named` reads by leaf (in a file's id range when one
+/// is given), sorted: the first non-empty of the query as a leaf, its path leaf filtered on the
+/// id suffix `::<query>`, and its rest half as a leaf in its file half. The one rule of what a
+/// show names, read over the shown definitions and over the hidden tests alike.
+fn named_by(
+    query: &str,
+    named: impl Fn(&str, Option<&str>) -> Result<Vec<String>, Error>,
+) -> Result<Vec<String>, Error> {
+    let by_leaf = named(query, None)?;
     if !by_leaf.is_empty() {
         return Ok(by_leaf);
     }
     let suffix = entity_id("", query);
-    let by_path: Vec<String> = definitions(graph, path_leaf(query), Admitted::Named, None)?
+    let by_path: Vec<String> = named(path_leaf(query), None)?
         .into_iter()
         .filter(|id| id.ends_with(&suffix))
         .collect();
@@ -1558,7 +1574,26 @@ fn shown_candidates(graph: &dyn Neighbors, query: &str) -> Result<Vec<String>, E
         return Ok(by_path);
     }
     let (file, rest) = split_id(query);
-    definitions(graph, rest.unwrap_or_default(), Admitted::Named, Some(file))
+    named(rest.unwrap_or_default(), Some(file))
+}
+
+/// The test entities the graph's `tests` filter hides that a show of `query` names, sorted: the
+/// one whose id is the query, else those [`named_by`] names among the hidden tests, as
+/// [`locate`] names a shown definition. None when tests are shown.
+pub(crate) fn hidden_named(graph: &dyn ContextGraph, query: &str) -> Result<Vec<String>, Error> {
+    let hidden = |leaf: &str, file: Option<&str>| -> Result<Vec<String>, Error> {
+        Ok((graph.hidden_tests_named(leaf)?.into_iter())
+            .map(|n| n.id)
+            .filter(|id| in_file(id, file))
+            .collect())
+    };
+    let exact: Vec<String> = (hidden(path_leaf(query), None)?.into_iter())
+        .filter(|id| id == query)
+        .collect();
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    named_by(query, hidden)
 }
 
 /// [`ContextGraph::locate`] over `graph`: an exact id (a bare flat node's only once no definition

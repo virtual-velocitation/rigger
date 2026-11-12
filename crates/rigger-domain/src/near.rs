@@ -1039,12 +1039,12 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
     }
-    /// Counted from the proofs read resolving `ids`, or, once the view is resolved whole, from
-    /// the proof calls that read.
-    fn hidden_provers(&self, ids: &[String]) -> usize {
+    /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
+    /// proof calls that read.
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let state = self.state();
         if state.tests != Tests::Exclude {
-            return 0;
+            return Vec::new();
         }
         match self.whole.get() {
             Some(_) => {
@@ -1479,11 +1479,15 @@ mod tests {
             for (held, read) in [("facts", &counting as &dyn CodeView), ("settled", &settles)] {
                 let at = format!("{tests:?} {compared:?} {held} {ids:?}");
                 let whole = Composed::new(&records, read, filter, honesty(compared)).unwrap();
-                assert_eq!(whole.hidden_provers(&ids).unwrap(), want, "whole {at}");
+                assert_eq!(
+                    whole.hidden_provers(&ids).unwrap().len(),
+                    want,
+                    "whole {at}"
+                );
                 let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
                 near.subgraph(&ids, 1).unwrap();
                 counting.taken();
-                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near {at}");
+                assert_eq!(near.hidden_provers(&ids).unwrap().len(), want, "near {at}");
                 assert_eq!(
                     counting.taken(),
                     Vec::<String>::new(),
@@ -1491,7 +1495,11 @@ mod tests {
                 );
                 near.whole().unwrap();
                 counting.taken();
-                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near whole {at}");
+                assert_eq!(
+                    near.hidden_provers(&ids).unwrap().len(),
+                    want,
+                    "near whole {at}"
+                );
                 assert_eq!(
                     counting.taken(),
                     Vec::<String>::new(),

@@ -613,9 +613,9 @@ impl<'a> Server<'a> {
     }
 
     /// `rigger_graph`'s `show` or `around` answer from `graph`: where `show` is defined when it is
-    /// asked, else the neighbourhood within `depth` hops of `around`. A located node and a
-    /// neighbourhood carry `tests_hidden`, how many test entities the `tests` filter hides prove
-    /// the nodes shown.
+    /// asked, else the neighbourhood within `depth` hops of `around`. Each carries `tests_hidden`:
+    /// for a show the test hits the `tests` filter hid ([`crate::contextgraph::show_tests_hidden`]),
+    /// for a neighbourhood how many hidden test entities prove the nodes shown.
     fn graph_answer(
         &self,
         graph: &dyn ContextGraph,
@@ -625,6 +625,8 @@ impl<'a> Server<'a> {
     ) -> Result<Value, ToolError> {
         if !show.is_empty() {
             let located = graph.locate(show).map_err(|e| e.to_string())?;
+            let tests_hidden = crate::contextgraph::show_tests_hidden(graph, show, &located)
+                .map_err(|e| e.to_string())?;
             let label = graph.stamp_label().to_string();
             return Ok(match located {
                 // A record the graph no longer holds (pruned by `rigger reset --runs`, which
@@ -638,26 +640,31 @@ impl<'a> Server<'a> {
                         "status": "one",
                         "site": site_object(&site, &[]),
                         "note": crate::sidecar::LOGGED_SITE_NOTE,
+                        "tests_hidden": tests_hidden,
                     }),
-                    None => json!({"label": label, "status": "none"}),
+                    None => json!({"label": label, "status": "none", "tests_hidden": tests_hidden}),
                 },
                 Located::Many(cands) => json!({
                     "label": label,
                     "status": "many",
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
+                    "tests_hidden": tests_hidden,
                 }),
-                Located::One(site) => {
-                    let shown = std::slice::from_ref(&site.id);
-                    let tests_hidden = graph.hidden_provers(shown).map_err(|e| e.to_string())?;
-                    json!({"label": label, "status": "one", "site": site_object(&site, &[]),
-                           "tests_hidden": tests_hidden})
-                }
+                Located::One(site) => json!({
+                    "label": label,
+                    "status": "one",
+                    "site": site_object(&site, &[]),
+                    "tests_hidden": tests_hidden,
+                }),
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
         let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
-        let tests_hidden = graph.hidden_provers(&shown).map_err(|e| e.to_string())?;
+        let tests_hidden = graph
+            .hidden_provers(&shown)
+            .map_err(|e| e.to_string())?
+            .len();
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
@@ -2734,7 +2741,7 @@ mod tests {
 
     /// The MCP `show` of an id the graph no longer holds falls back to the run store's log, as the
     /// CLI's does: the record's site as a graph node's, with the note naming where it was read
-    /// from; an id the log does not hold either still answers none.
+    /// from; an id the log does not hold either still answers none. Each counts no hidden test.
     #[test]
     fn rigger_graph_show_reads_a_record_the_graph_no_longer_holds_from_the_log() {
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -2773,8 +2780,9 @@ mod tests {
                     "site": {"id": "d-old", "kind": "decision", "degree": 2, "summary": "chose X"},
                     "note": "read from the event log: the graph no longer holds this record",
                     "label": label,
+                    "tests_hidden": 0,
                 }),
-                json!({"status": "none", "label": label}),
+                json!({"status": "none", "label": label, "tests_hidden": 0}),
             ]
         );
     }
