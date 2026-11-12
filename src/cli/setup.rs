@@ -225,7 +225,8 @@ fn init_project(
     // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
     // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
     // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
-    // that every graph read rewrites, so left untracked it would read as a dirty tree.
+    // that every graph read rewrites, and its facts memo, so left untracked they would read as a
+    // dirty tree.
     // Record WHICH patterns were appended so the summary reports the real gitignore change and
     // nothing it did not do.
     let mut gitignore_added = Vec::new();
@@ -3502,6 +3503,34 @@ mod tests {
         /// every graph read, so `rigger init`/`setup` ignores them like the other runtime state.
         init_project_gitignores_the_code_store_idempotently:
             assert_init_gitignores_idempotently(&[".rigger/store"]);
+    }
+
+    /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
+    /// the project's own `.gitignore` ignores it by the code store's line: a memo entry never
+    /// reads as a dirty tree nor rides a commit.
+    #[test]
+    fn init_project_ignores_the_code_facts_memo_by_the_code_store_line() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
+        let memo = rigger_store::code::Store::new(dir.path()).memo_dir();
+        let entry = memo.join("entry.facts");
+        let relative = entry.strip_prefix(dir.path()).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["check-ignore", "-v"])
+            .arg(relative)
+            .current_dir(dir.path())
+            .output()
+            .expect("git runs");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let source = stdout.split('\t').next().unwrap_or_default();
+        let mut fields = source.splitn(3, ':');
+        let (file, pattern) = (fields.next(), fields.nth(1));
+        assert_eq!(
+            (out.status.success(), file, pattern),
+            (true, Some(".gitignore"), Some(".rigger/store")),
+            "the memo is ignored by the project's .rigger/store line; git said: {stdout}"
+        );
     }
 
     /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
