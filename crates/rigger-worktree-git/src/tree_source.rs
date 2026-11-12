@@ -145,18 +145,25 @@ fn file_side(mode: &str, blob: &str) -> Option<String> {
 }
 
 impl TreeSource for GitTreeSource {
-    /// The checked-out commit and its tree. A branch with no commit yet, which git answers by
-    /// its quiet no that `HEAD` names no object, names the empty tree; a head git fails to read
-    /// any other way, a commit it cannot read included, is an error.
+    /// The checked-out commit and its tree, both peeled in one query from the object `HEAD`
+    /// names. A branch with no commit yet, which git answers by its quiet no that `HEAD` names no
+    /// object, names the empty tree; a head git fails to read any other way, a commit it cannot
+    /// read included, is an error.
     fn head(&self) -> Result<Tip, String> {
         let branch = self.query(&["symbolic-ref", "--short", "-q", "HEAD"])?;
         let named = self.query(&["rev-parse", "--verify", "-q", "HEAD"])?;
         let (commit, tree) = match (named, &branch) {
             (Some(named), _) => {
-                let commit =
-                    self.answer(&["rev-parse", "--verify", &format!("{named}^{{commit}}")])?;
-                let tree = self.answer(&["rev-parse", &format!("{commit}^{{tree}}")])?;
-                (Some(commit), tree)
+                let args = [
+                    "rev-parse",
+                    &format!("{named}^{{commit}}"),
+                    &format!("{named}^{{tree}}"),
+                ];
+                let peeled = self.answer(&args)?;
+                let (commit, tree) = peeled
+                    .split_once('\n')
+                    .ok_or_else(|| failed(&self.root, &args, peeled.as_bytes()))?;
+                (Some(commit.to_owned()), tree.to_owned())
             }
             (None, Some(_)) => (
                 None,
