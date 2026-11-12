@@ -7,7 +7,9 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
-///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`].
+///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`]. It first
+///     clears the code store's facts memo ([`clear_code_facts_memo`]), which needs neither the
+///     backend nor the live-writer guard the delete does.
 ///
 /// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
 /// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
@@ -465,8 +467,19 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// of the event log's backend refusal and live-writer guard. Answers the line that says what it
 /// removed, or none when there was no memo.
 fn clear_code_facts_memo(root: &Path) -> Result<Option<String>, String> {
-    let _ = root;
-    Ok(None)
+    let memo = rigger_store::code::Store::new(root).memo_dir();
+    let bytes = dir_size_bytes(&memo);
+    match std::fs::remove_dir_all(&memo) {
+        Ok(()) => Ok(Some(format!(
+            "reset --derived: removed the code facts memo ({})",
+            human_size(bytes)
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "reset --derived: remove the code facts memo {}: {e}",
+            memo.display()
+        )),
+    }
 }
 
 /// `rigger reset --derived`: delete every derived event of the event log, the step that ends the

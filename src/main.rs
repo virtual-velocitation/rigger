@@ -301,6 +301,8 @@ rigger reset --derived      delete every derived event of the EVENT LOG in one\n
 transaction (`rigger setup` runs the same delete once\n                              \
 its rebuilt graph is in place), and vacuum so the file\n                              \
 shrinks on disk.\n                              \
+It first removes the code store's facts memo (a cache\n                              \
+reads refill), on any backend and with a run live.\n                              \
 Every other event survives;\n                              \
 composes with --runs (each sheds its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \

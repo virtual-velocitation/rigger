@@ -4102,6 +4102,11 @@ const FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT: u64 = 50;
 const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
     "reclaimed automatically by the next `rigger run`, or remove the listed dirs directly";
 
+/// Reclaim hint for the code store's facts memo: the store reaps it within its cap by itself,
+/// and `rigger reset --derived` clears it whole.
+const FOOTPRINT_RECLAIM_HINT_CODE_FACTS_MEMO: &str =
+    "reaped by the code store within its cap, or cleared by `rigger reset --derived`";
+
 /// Reclaim hint for dead per-unit caches (gap 96): `rigger reset --build-cache` reclaims them
 /// now, and the next `rigger run`'s orphan backstop ([`reclaim_orphan_scratch`]) would too - an
 /// operator with no run to start needs the verb, not a run that may never come.
@@ -4380,7 +4385,9 @@ fn classify_agent_scratch(
 /// top-level ad-hoc dir directly under `agent-scratch` with no run/spawn owner is reported
 /// separately here, never folded into "registered scratch roots"'s dead-run-keyed tally
 /// ([`classify_agent_scratch`]). The registered scratch roots category is `agent-scratch`
-/// alone.
+/// alone. An eighth, "code facts memo", is the code store's facts memo under the project's
+/// `.rigger/store/code/`, which the store reaps within its cap and `rigger reset --derived`
+/// clears; none of it is dead.
 ///
 /// Pure over its filesystem reads (every call is a plain `read_dir`/`metadata` walk with
 /// no side effect), so a fixture tree with seeded files/dirs drives this directly in a
@@ -4421,6 +4428,9 @@ fn footprint_report(
     let ad_hoc_bytes: u64 = ad_hoc_entries.iter().map(|(_, bytes)| bytes).sum();
     let agent_scratch_well_formed_total =
         dir_size_bytes(&agent_scratch_root).saturating_sub(ad_hoc_bytes);
+    let code_facts_memo = (rigger_dir.parent())
+        .map(|root| rigger_store::code::Store::new(root).memo_dir())
+        .unwrap_or_default();
     vec![
         FootprintCategory {
             name: "store",
@@ -4467,6 +4477,15 @@ fn footprint_report(
                     root: scratch_root.to_path_buf(),
                 })
                 .collect(),
+        },
+        FootprintCategory {
+            name: "code facts memo",
+            total_bytes: dir_size_bytes(&code_facts_memo),
+            // Every entry is one a read may take, and the store reaps the memo itself within its
+            // cap on each advance and each overlay read that writes it, so none is dead.
+            dead_bytes: 0,
+            reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_CODE_FACTS_MEMO),
+            reclaimable: Vec::new(),
         },
     ]
 }
