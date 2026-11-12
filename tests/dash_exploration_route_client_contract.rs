@@ -11,10 +11,9 @@
 //! those keys, the viz would draw wrong (uniform circles, no god emphasis, no cap caption) while the
 //! page still loads.
 //!
-//! Driven over `?lens=code` (`Lens::Code`) rather than the default `Lens::Files`: spec 63 c3
-//! (FILES-LENS PURITY) makes a files-lens drill UNCONDITIONALLY EMPTY (a file is that lens's atomic
-//! subject, so there is no longer a many-member bucket for the god-node / degree / cap mechanics this
-//! layer exists to pin), and the earlier spec 63 c1 (already-merged CODE-LENS PURITY) means neither
+//! Driven over `?lens=code` (`Lens::Code`): the god-node / degree / cap mechanics this layer exists
+//! to pin are one drill under every lens (a files-lens drill shows a file's entities through the
+//! same code, spec 63 c3), and the earlier spec 63 c1 (already-merged CODE-LENS PURITY) means neither
 //! lens ever folds a dev-loop node (a decision, a finding) into a cluster of its own - so the old
 //! "decision cluster, a different dominant kind" fixture is no longer reachable under EITHER lens: a
 //! cluster's dominant `kind` is always [`KIND_CODE_ENTITY`] now. The MANY-MEMBER god-node / degree /

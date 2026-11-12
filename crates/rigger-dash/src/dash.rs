@@ -6520,12 +6520,9 @@ mod tests {
     /// intra-cluster degree. This test OWNS the drill projection + the budget cap; it does NOT
     /// exercise the overview aggregation (c2) or the route dispatch (c4).
     ///
-    /// Driven over [`Lens::Code`] rather than [`Lens::Files`]: spec 63 c3 (FILES-LENS PURITY) makes a
-    /// files-lens drill unconditionally empty (a file is that lens's atomic subject - there is no
-    /// longer a many-member bucket to cap/rank under it), so the MANY-MEMBER budget-cap / degree /
-    /// no-dangle mechanics this test exists to pin are proven here over two coupling COMMUNITIES
-    /// instead, which still drill to real members under the already-merged spec 63 c1 (CODE-LENS
-    /// PURITY).
+    /// Driven over [`Lens::Code`]: the MANY-MEMBER budget-cap / degree / no-dangle mechanics are one
+    /// drill under every lens (a file drills through the same code, spec 63 c3), so they are proven
+    /// here over two coupling COMMUNITIES under spec 63 c1 (CODE-LENS PURITY).
     #[test]
     fn cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree() {
         let ce = |id: &str| Node {
@@ -6772,19 +6769,15 @@ mod tests {
         assert!(empty.nodes.is_empty() && empty.edges.is_empty() && empty.truncated.is_none());
     }
 
-    /// Spec 63 c3 (FILES-LENS PURITY): under [`Lens::Files`], drilling a cluster is UNCONDITIONALLY
-    /// EMPTY - never a members-of-a-file fallback - because a file is this lens's atomic LEAF
-    /// subject (there is nothing further to drill INTO; a file's members are the metadata
-    /// card's job, criterion 2's). This holds regardless of whether `key` names a REAL, populated
-    /// file cluster, an unknown key, or the graph is empty - the SAME graceful-degradation shape
-    /// [`cluster_detail`] already promises for every lens, just unconditional here.
+    /// Spec 63 c3: under [`Lens::Files`] a drill shows the file's entities - its MEMBERS by spec
+    /// 119's member rule ([`member_file`]) - exactly as a community or a concept drills to its
+    /// members, with the same render budget, truncation and ordering: a bare placeholder whose leaf
+    /// resolves to one of the file's definitions folds under the file for its coupling edges but is
+    /// no member, so it never renders; a file over the budget keeps its highest intra-file degree
+    /// members; an unknown key and an empty graph still drill to nothing.
     #[test]
-    fn cluster_detail_under_files_lens_is_unconditionally_empty() {
-        let ce = |id: &str| Node {
-            id: id.to_string(),
-            kind: KIND_CODE_ENTITY.to_string(),
-            attrs: BTreeMap::new(),
-        };
+    fn cluster_detail_under_files_lens_drills_a_file_to_its_member_entities() {
+        use crate::test_support::{leaf_named_node, plain};
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
@@ -6795,20 +6788,69 @@ mod tests {
             tier: TIER_EXTRACTED.into(),
         };
         let populated = Graph {
-            nodes: vec![ce("src/a.rs::foo"), ce("src/a.rs::bar")],
-            edges: vec![refs("src/a.rs::foo", "src/a.rs::bar")],
+            nodes: vec![
+                leaf_named_node("src/a.rs::foo"),
+                leaf_named_node("src/a.rs::bar"),
+                // A placeholder in b.rs's namespace whose leaf resolves to a.rs's `bar`.
+                plain("src/b.rs::%bar", KIND_CODE_ENTITY),
+                leaf_named_node("src/b.rs::baz"),
+            ],
+            edges: vec![
+                refs("src/a.rs::foo", "src/a.rs::bar"),
+                refs("src/b.rs::baz", "src/b.rs::%bar"),
+            ],
         };
 
-        // A REAL, populated file cluster - drilling it is still empty.
         let real = cluster_detail(&populated, "src/a.rs", &Lens::Files);
         assert_eq!(
             real.seed, "src/a.rs",
-            "the drill still echoes the drilled key as its seed"
+            "the drill echoes the drilled key as its seed"
         );
         assert_eq!(real.depth, 0);
+        let ids: Vec<&str> = real.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["src/a.rs::bar", "src/a.rs::foo"],
+            "a file drills to its named entities in id order, never the placeholder its leaf \
+             resolves: {real:?}"
+        );
+        let edges: Vec<(&str, &str)> = (real.edges.iter())
+            .map(|e| (e.from.as_str(), e.to.as_str()))
+            .collect();
+        assert_eq!(edges, [("src/a.rs::foo", "src/a.rs::bar")], "{real:?}");
+        assert_eq!(
+            real.truncated, None,
+            "a file under the budget renders whole"
+        );
+
+        // A file over the budget: a hub referencing every other member keeps itself and the
+        // lowest-id members, and the drill states the file's full member count.
+        let leaves: Vec<String> = (1..=CLUSTER_RENDER_BUDGET)
+            .map(|i| format!("src/big.rs::m{i:03}"))
+            .collect();
+        let big = Graph {
+            nodes: std::iter::once("src/big.rs::hub".to_string())
+                .chain(leaves.iter().cloned())
+                .map(|id| leaf_named_node(&id))
+                .collect(),
+            edges: leaves.iter().map(|l| refs("src/big.rs::hub", l)).collect(),
+        };
+        let capped = cluster_detail(&big, "src/big.rs", &Lens::Files);
+        let kept: BTreeSet<&str> = capped.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(capped.truncated, Some(CLUSTER_RENDER_BUDGET + 1));
+        assert_eq!(kept.len(), CLUSTER_RENDER_BUDGET);
         assert!(
-            real.nodes.is_empty() && real.edges.is_empty() && real.truncated.is_none(),
-            "a real, populated file cluster still drills to nothing under files-lens purity: {real:?}"
+            kept.contains("src/big.rs::hub"),
+            "the hub ranks first: {kept:?}"
+        );
+        assert!(
+            !kept.contains(leaves[CLUSTER_RENDER_BUDGET - 1].as_str()),
+            "the highest-id leaf is the one the cap drops: {kept:?}"
+        );
+        assert_eq!(
+            capped.edges.len(),
+            CLUSTER_RENDER_BUDGET - 1,
+            "no edge dangles"
         );
 
         // An unknown key over the same populated graph.
@@ -7622,24 +7664,31 @@ mod tests {
         };
 
         // VIEW 1 - DRILL: `cluster=<key>` returns `cluster_detail(key)` (a Neighborhood echoing the
-        // drilled cluster key as its seed). The key `src/a` carries a `/`, so the client
-        // `encodeURIComponent`s it (`src%2Fa`) and the route percent-decodes it back, exactly like a
-        // seed id. Under the default `Lens::Files` (no `lens=` param), a drill is UNCONDITIONALLY
-        // EMPTY (spec 63 c3 FILES-LENS PURITY - a file is this lens's atomic leaf subject, so there is
-        // nothing to drill INTO), regardless of whether `src/a` names real members.
-        let drill = call("/api/graph?cluster=src%2Fa");
+        // drilled cluster key as its seed). The key `src/a/mod.rs` carries `/`, so the client
+        // `encodeURIComponent`s it and the route percent-decodes it back, exactly like a seed id.
+        // Under the default `Lens::Files` (no `lens=` param) a file drills to its entities (spec 63
+        // c3): `foo` and `bar`, with the reference between them.
+        let drill = call("/api/graph?cluster=src%2Fa%2Fmod.rs");
         assert_eq!(
-            drill["seed"], "src/a",
+            drill["seed"], "src/a/mod.rs",
             "a cluster drill echoes the decoded cluster key as its seed: {drill}"
         );
         assert!(
             drill["clusters"].is_null(),
             "a drill is a neighborhood, not an overview (no clusters key): {drill}"
         );
+        let ids: Vec<&str> = (drill["nodes"].as_array().unwrap().iter())
+            .map(|n| n["id"].as_str().unwrap())
+            .collect();
         assert_eq!(
-            drill["nodes"].as_array().unwrap().len(),
-            0,
-            "under the default files lens a drill is unconditionally empty (spec 63 c3): {drill}"
+            ids,
+            ["src/a/mod.rs::bar", "src/a/mod.rs::foo"],
+            "under the default files lens a file drills to its entities (spec 63 c3): {drill}"
+        );
+        assert_eq!(
+            drill["edges"].as_array().unwrap().len(),
+            1,
+            "the drill carries the one reference between the file's entities: {drill}"
         );
 
         // VIEW 2 - OVERVIEW: an empty `seed` with no `cluster` returns `clustered_overview` (the

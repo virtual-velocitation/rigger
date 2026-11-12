@@ -17487,8 +17487,8 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
     // file and its two fns; around the other file, the file and beta. A show or a lookup of alpha
     // counts its two bindings, alpha and the other file's `crate::alpha` reference. A grounding
     // counts the one entity its withheld hits name. A fold counts the withheld nodes it would
-    // have held: the overview every file, fn, reference and community; the files lens drills to
-    // nothing; a community or a file's member set its fns. A rationale counts nothing.
+    // have held: the overview every file, fn, reference and community; a community, a file's drill
+    // or a file's member set its fns. A rationale counts nothing.
     let counts: [(&str, usize); 19] = [
         ("--around the file", 3),
         ("--show alpha", 2),
@@ -17504,7 +17504,7 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
         ("the dash's card of alpha", 1),
         ("the dash's card of beta", 1),
         ("the dash's rationale of both", 0),
-        ("the dash's files drill", 0),
+        ("the dash's drill of the file", 2),
         ("the dash's drill of the file's community", 2),
         ("the dash's drill of the other community", 1),
         ("the dash's file under the code lens", 2),
@@ -17627,7 +17627,10 @@ fn surface_labels(root: &Path) -> Vec<(&'static str, String)> {
             "the dash's rationale of both",
             "/api/graph?explain=src%2Flib.rs%3A%3Aalpha,src%2Fother.rs%3A%3Abeta",
         ),
-        ("the dash's files drill", "/api/graph?cluster=src"),
+        (
+            "the dash's drill of the file",
+            "/api/graph?cluster=src%2Flib.rs",
+        ),
         (
             "the dash's drill of the file's community",
             "/api/graph?cluster=community%2F1%2F0&lens=code",

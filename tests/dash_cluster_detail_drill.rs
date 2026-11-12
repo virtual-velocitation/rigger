@@ -4,12 +4,9 @@
 //! to its highest intra-cluster-degree members so the library-free SVG panel never draws a thousand
 //! nodes.
 //!
-//! Driven over [`rigger::dash::Lens::Code`] rather than [`rigger::dash::Lens::Files`]: spec 63 c3
-//! (FILES-LENS PURITY) makes a files-lens drill UNCONDITIONALLY EMPTY (a file is that lens's atomic
-//! subject - entities never render as nodes there, at any zoom, so there is no longer a many-member
-//! bucket to cap/rank under it). The MANY-MEMBER budget-cap / degree / no-dangle mechanics this file
-//! exists to pin are still fully general - `fold_buckets` runs identically under every lens - so they
-//! are proven here over a coupling COMMUNITY instead, which still drills to real members.
+//! Driven over [`rigger::dash::Lens::Code`]: the MANY-MEMBER budget-cap / degree / no-dangle
+//! mechanics this file exists to pin are one drill under every lens (a file drills to its entities
+//! through the same code, spec 63 c3), so they are proven here over a coupling COMMUNITY.
 //!
 //! This runs OUTSIDE the crate, over the library's PUBLIC surface. The implementer's inside-out unit
 //! test in `dash.rs` calls `cluster_detail` IN-MODULE and compares the returned `Neighborhood` via

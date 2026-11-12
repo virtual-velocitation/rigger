@@ -2,8 +2,8 @@
 //! default `Lens::Files` whole-graph fold, purified the same shape as the already-merged code lens
 //! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`node_file`]) -
 //! never its directory, never its kind - so a cluster IS a file, sized by its CONTAINED-ENTITY count;
-//! weighted cross-file coupling edges connect files that reference each other; and drilling ANY
-//! cluster is unconditionally empty, because a file is this lens's atomic LEAF subject. Handoff
+//! weighted cross-file coupling edges connect files that reference each other; and drilling a file
+//! shows its entities, its members by spec 119's member rule, as a community drill shows its. Handoff
 //! MECHANICS (a file's card, its listed top entities) are criterion 2's, not this one's - this
 //! criterion owns only the purity of what renders as a NODE, HUB, or GROUP LABEL in this lens, at any
 //! zoom: no code-entity node and no per-type storage-schema bucket ever does.
@@ -23,8 +23,8 @@
 //!    invisible in-process; here it reddens, because this drives the exact body-builder `serve` ships.
 //!  - THE SERIALIZED WIRE-SHAPE back-compat: `Cluster.label` / `ClusterOverview.empty_state` /
 //!    `Neighborhood.truncated` are all `skip_serializing_if`, so the files overview an external JS
-//!    panel reads carries NO `label`, NO `empty_state`, and a files drill carries NO `truncated` (it
-//!    is always complete - trivially, vacuously - since it is always empty). The unit test asserts
+//!    panel reads carries NO `label`, NO `empty_state`, and a files drill under the render budget
+//!    carries NO `truncated` (it is complete). The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!  - THE CARD HANDOFF SEAM surviving this criterion's purity: [`neighborhood`] is LENS-AGNOSTIC (a
 //!    generic BFS over every currently-valid edge, regardless of relation, and the file-member
@@ -441,11 +441,12 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     );
 }
 
-/// THE FILES-LENS DRILL over the public boundary is UNCONDITIONALLY EMPTY (spec 63 c3): a file is
-/// this lens's atomic LEAF subject, so drilling it - a REAL, populated file cluster, an unknown key,
-/// or any key over an empty graph - never yields members, never an error.
+/// THE FILES-LENS DRILL over the public boundary shows the file's entities (spec 63 c3): drilling a
+/// file yields its members and the edges among them, its file node, the decision and the
+/// design-doc never; an unknown key or any key over an empty graph yields an empty drill, never an
+/// error.
 #[test]
-fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
+fn files_lens_drill_shows_the_files_entities_at_the_public_boundary() {
     let graph = lens_graph();
 
     let real = cluster_detail(&graph, FILE_A, &Lens::Files);
@@ -454,9 +455,23 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
         "the drill echoes the drilled key as its seed"
     );
     assert_eq!(real.depth, 0, "a cluster drill is not a hop-bounded walk");
+    let ids: Vec<&str> = real.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [BAR, FOO],
+        "a file drills to its own entities: {real:?}"
+    );
+    let edges: Vec<(&str, &str)> = (real.edges.iter())
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(
+        edges,
+        [(FOO, BAR)],
+        "only the intra-file edge renders, never one to another file or a non-member: {real:?}"
+    );
     assert!(
-        real.nodes.is_empty() && real.edges.is_empty() && real.truncated.is_none(),
-        "a REAL, populated file cluster still drills to nothing under files-lens purity: {real:?}"
+        real.truncated.is_none(),
+        "a file under the budget renders whole"
     );
 
     let unknown = cluster_detail(&graph, "no/such/file.rs", &Lens::Files);
@@ -528,20 +543,23 @@ fn the_served_graph_route_defaults_to_the_purified_files_lens() {
         "an explicit lens=files is byte-identical to the lens-absent default"
     );
 
-    // The served drill is unconditionally empty too, over the same live graph.
+    // The served drill shows the file's entities, over the same live graph.
     let drill = served_json(&format!(
         "/api/graph?cluster={}",
         FILE_A.replace('/', "%2F")
     ));
     assert_eq!(drill["seed"].as_str(), Some(FILE_A));
+    let ids: Vec<&str> = (drill["nodes"].as_array().expect("drill nodes array").iter())
+        .map(|n| n["id"].as_str().expect("a drill node id is a string"))
+        .collect();
     assert_eq!(
-        drill["nodes"].as_array().expect("drill nodes array").len(),
-        0,
-        "the served files-lens drill is unconditionally empty: {drill}"
+        ids,
+        [BAR, FOO],
+        "the served files-lens drill shows the file's entities: {drill}"
     );
     assert!(
         drill.get("truncated").is_none(),
-        "an always-empty drill is always complete, so truncated never serializes: {drill}"
+        "a drill under the budget is complete, so truncated never serializes: {drill}"
     );
 }
 

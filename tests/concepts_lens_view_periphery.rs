@@ -50,6 +50,7 @@ use crate::common;
 use std::collections::BTreeSet;
 
 use common::fixtures::edge;
+use common::fixtures::leaf_named_node;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
@@ -414,10 +415,9 @@ rigger::test_cases! {
 /// `skip_serializing_if = is_not_shared`, so:
 ///   * a CONCEPTS drill's genuinely-shared member DOES carry `"shared": true`;
 ///   * every SINGLE-concept concepts-drill node OMITS the key (byte-identical to before this lens);
-///   * a FILES-lens drill is UNCONDITIONALLY EMPTY (spec 63 c3, FILES-LENS PURITY - a file is that
-///     lens's atomic leaf subject), so the shared-under-concepts node never even RENDERS there; the
-///     marker being concepts-lens-only is now vacuously true for that lens rather than proven by an
-///     omitted key on a present node.
+///   * a FILES-lens drill of the file defining the shared-under-concepts node renders that node
+///     (spec 63 c3, a file drills to its entities) and OMITS the key: the marker is concepts-lens-
+///     only, proven by an omitted key on a present node.
 #[test]
 fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
     let graph = lens_graph();
@@ -446,14 +446,27 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
         );
     }
 
-    // --- FILES drill: unconditionally empty (spec 63 c3) - the shared-under-concepts append never
-    // renders here at all, so the shared marker's concepts-lens-only claim is vacuous for this lens.
-    let files = serde_json::to_value(cluster_detail(&graph, "src/store", &Lens::Files))
+    // --- FILES drill of append's own file: append renders and carries NO shared key. The fixture's
+    // append is a bare id; here it is the named definition a file's member is (spec 119), still
+    // realizing both concepts.
+    let mut named = lens_graph();
+    for n in &mut named.nodes {
+        if n.id == APPEND {
+            *n = leaf_named_node(APPEND);
+        }
+    }
+    let files = serde_json::to_value(cluster_detail(&named, "src/store/log.rs", &Lens::Files))
         .expect("the files drill serializes to JSON");
-    assert_eq!(
-        files["nodes"].as_array().expect("files drill nodes is a JSON array").len(),
-        0,
-        "under files-lens purity a drill is unconditionally empty, so append never renders: {files}"
+    let nodes = files["nodes"]
+        .as_array()
+        .expect("files drill nodes is a JSON array");
+    let append = nodes
+        .iter()
+        .find(|n| n["id"] == APPEND)
+        .unwrap_or_else(|| panic!("the files drill of append's file renders append: {files}"));
+    assert!(
+        append.get("shared").is_none(),
+        "the shared marker is concepts-lens-only: append carries NO shared key under files: {files}"
     );
 }
 

@@ -1139,10 +1139,9 @@ rigger::test_cases! {
 /// and seeds over the real socket. Under the DEFAULT (Files) lens (spec 63 c3, FILES-LENS PURITY): a
 /// cluster IS A FILE, not a directory - the two `src/a/mod.rs` entities merge into ONE cluster there,
 /// `src/b/mod.rs::baz` is a different file and its own cluster, and the decision node carries NO
-/// cluster at all (a non-code-entity never folds under this lens). Drilling a files-lens cluster is
-/// now unconditionally empty (spec 63 c3), so the DRILL dispatch below is proven instead over
-/// `?lens=code`, where the same two `src/a/mod.rs` entities are ADDITIONALLY wired into one coupling
-/// community and so stay a real, many-member drill target; the OVERVIEW and SEED dispatch stay
+/// cluster at all (a non-code-entity never folds under this lens). The DRILL dispatch below is
+/// proven over `?lens=code`, where the same two `src/a/mod.rs` entities are ADDITIONALLY wired into
+/// one coupling community, a many-member drill target; the OVERVIEW and SEED dispatch stay
 /// proven over the default (lens-absent) request, unaffected by the added membership edges.
 fn exploration_graph() -> Graph {
     let mut graph = common::fixtures::two_module_graph();
@@ -1180,8 +1179,7 @@ fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
         serde_json::from_str(body_of(&resp)).expect("the served body is valid JSON")
     };
 
-    // DRILL: proven over `?lens=code` - spec 63 c3 makes the default Files-lens drill unconditionally
-    // empty (see the fixture's module doc), so it is no longer a vehicle for this assertion.
+    // DRILL: proven over `?lens=code` (see the fixture's module doc).
     // `cluster=community%2F1%2F0` (the `/` in the key is `encodeURIComponent`d) is decoded back and
     // returns the community's members as a neighborhood echoing the cluster key as its seed.
     let drill = served("/api/graph?lens=code&cluster=community%2F1%2F0");
@@ -1281,8 +1279,7 @@ fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
     };
 
     // PRECEDENCE: `cluster=community%2F1%2F0` AND `seed=d1` are both present (over `?lens=code`, per
-    // the fixture's module doc - the default Files-lens drill is unconditionally empty under spec 63
-    // c3, so it cannot discriminate this precedence). The drill wins - the body echoes the community
+    // the fixture's module doc). The drill wins - the body echoes the community
     // key as its seed and carries the community's members, NOT the depth-1 seeded neighborhood of
     // `d1` (which would echo seed `d1` and carry {d1, foo}). Reordering the dispatch to check `seed`
     // before `cluster` would return the d1 neighborhood and redden both asserts.
