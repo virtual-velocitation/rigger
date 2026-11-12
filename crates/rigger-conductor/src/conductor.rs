@@ -45250,6 +45250,15 @@ mod tests {
             "the re-run's prompt names the refusal: {}",
             prompts[rerun]
         );
+        let refused = rerun.replace("~retry2", "~retry1");
+        assert!(
+            prompts[rerun].starts_with(&format!(
+                "{}\n\nYour previous run's record was refused: ",
+                prompts[&refused]
+            )),
+            "the re-run's prompt is the refused run's task, then the refusal: {}",
+            prompts[rerun]
+        );
         assert_eq!(merged, "RESOLVED\n", "the resolution lands");
     }
 
@@ -47251,7 +47260,7 @@ mod tests {
     /// docs, and a round that changed nothing state no such fact.
     #[test]
     fn a_doc_only_round_states_only_the_fact_to_the_sdet_author() {
-        use crate::test_support::DOC_ONLY_ROUND_FACT as FACT;
+        use crate::test_support::{DOC_ONLY_ROUND_FACT as FACT, LATER_ATTEMPT_CLOSE};
         for (second_round, told, why) in [
             (
                 &["docs/diagram.svg", "README.md"][..],
@@ -47279,7 +47288,7 @@ mod tests {
                 for (round, (resumed, turn)) in turns.iter().enumerate() {
                     let stated = told && round == 1;
                     let tail = if *resumed {
-                        format!("Bring the periphery tests in line with that change.\n{FACT}")
+                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}")
                     } else {
                         format!("\n\n{FACT}")
                     };
@@ -49413,6 +49422,14 @@ mod tests {
             )) && !rerun.contains('\u{1}'),
             "the re-run's prompt names the refusal, unmarked: {rerun}"
         );
+        let tasks = driver.prompts_for(author.agent);
+        let refused_task = &tasks[tasks.len() - 2];
+        assert!(
+            rerun.starts_with(&format!(
+                "{refused_task}\n\nYour previous run's record was refused: "
+            )),
+            "the re-run's prompt is the refused run's task, then the refusal: {rerun}"
+        );
         for holder in author.holders {
             assert!(
                 rerun.contains(&format!("recorded by {holder}")),
@@ -50584,16 +50601,23 @@ mod tests {
         );
     }
 
+    /// The registered groups `names` of the conductor surface `surface`, concatenated in registry
+    /// order as the renderer under test must produce them.
+    fn groups(surface: &str, names: &[&str]) -> String {
+        crate::prompt_surface_fixtures::rendered_groups(
+            crate::prompt_surface::prompt_groups(),
+            surface,
+            names,
+        )
+    }
+
     /// Spec 121, criterion 16: over the placeholder fixture each protocol, note block and task
     /// block the conductor renders is its registry groups concatenated in registry order, on each
     /// branch, a computed slot value filled into its group and a list's lines spelled here, since
     /// neither a skeleton nor a joiner is a group.
     #[test]
     fn the_conductor_protocols_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        use crate::prompt_surface_fixtures::assert_renders;
         let plan = |names: &[&str]| groups("conductor::render_plan_protocol", names);
         let plan_body = plan(&[
             "PLAN_ROLE",
@@ -50801,10 +50825,7 @@ mod tests {
     /// gate's lines spelled here, since neither a skeleton nor a joiner is a group.
     #[test]
     fn the_retry_and_review_round_blocks_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        use crate::prompt_surface_fixtures::assert_renders;
         let prior = |names: &[&str]| groups("conductor::PriorFailure::block", names);
         let round = |names: &[&str]| groups("conductor::ReviewRound::block", names);
         let evidence = |names: &[&str]| groups("conductor::gate_evidence_block", names);
@@ -51005,19 +51026,13 @@ mod tests {
     /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
     /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
-    /// none, and a re-plan under a cap whose unit holds each and overlaps another, its rows'
-    /// lists filled into their slots.
+    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, and a
+    /// re-plan under a cap whose unit holds each and overlaps another, its rows' lists filled into
+    /// their slots.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let dag = |names: &[&str]| {
-            rendered_groups(
-                prompt_groups(),
-                "conductor::build_dag_critique_prompt",
-                names,
-            )
-        };
+        use crate::prompt_surface_fixtures::assert_renders;
+        let dag = |names: &[&str]| groups("conductor::build_dag_critique_prompt", names);
         let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let critique = |coverage: &str,
                         needs: &[&str],
@@ -51069,6 +51084,24 @@ mod tests {
                 ),
             ),
             (
+                "a first plan whose criterion holds a quote and a backslash",
+                critique(r#" keep "a\b" whole "#, &[], &[], &[], "", None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", r#"keep \"a\\b\" whole"#),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
+                    contract("")
+                ),
+            ),
+            (
                 "a re-plan under a cap",
                 critique(
                     "{criterion}",
@@ -51096,8 +51129,7 @@ mod tests {
             (
                 "a re-plan's lead",
                 re_plan_lead("{feedback}"),
-                rendered_groups(
-                    prompt_groups(),
+                groups(
                     "conductor::re_plan_lead",
                     &["REPLAN_LEAD", "REPLAN_ID_CONTRACT"],
                 ),
@@ -51117,12 +51149,9 @@ mod tests {
     /// here, since a skeleton is not a group.
     #[test]
     fn the_grounding_sections_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::prompt_surface_fixtures::assert_renders;
         use crate::test_support::{edge, node_with_attrs};
         type Writer = fn(&mut String, &Graph, &[String]);
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
         let written = |write: Writer, g: &Graph, seed: &[String]| {
             let mut b = String::new();
             write(&mut b, g, seed);

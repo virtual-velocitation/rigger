@@ -33,7 +33,8 @@ use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
     critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
     hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
-    write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
+    write_critique_stub_then, BOUND_TOOLS, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
+    SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -68,9 +69,12 @@ const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: no
 
 /// The critic's `--allowed-tools`: its replacement tools, which already hold every rigger tool
 /// the embedded helpers and the operator's copies declare, then the host's own grant.
-const CRITIC_PRE_APPROVAL: &str =
-    "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
-     mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+fn critic_pre_approval() -> String {
+    format!(
+        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+         {BOUND_TOOLS}"
+    )
+}
 
 const SPEC_REL: &str = "specs/9-demo.md";
 const SPEC: &str = "# 9 - A demo spec\n\n## Design\n\nThe widget renders.\n\n## Done when\n\n\
@@ -257,7 +261,10 @@ fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
                 serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
                 flag_value(&argv, "--allowed-tools"),
             ),
-            (handed_helpers_agents_json(copies), CRITIC_PRE_APPROVAL),
+            (
+                handed_helpers_agents_json(copies),
+                critic_pre_approval().as_str()
+            ),
             "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
              ones, and its tools already hold the rigger tools either declares, so the \
              pre-approval adds only the host's own"
@@ -347,7 +354,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        CRITIC_PRE_APPROVAL,
+        critic_pre_approval(),
         "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
          the deny below wins over"
     );

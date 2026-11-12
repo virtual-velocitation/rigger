@@ -564,7 +564,9 @@ pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{write_helper_copies, write_helper_copy, OPERATOR_HELPER_COPIES};
+    use crate::test_support::{
+        hook, hook_block, write_helper_copies, write_helper_copy, OPERATOR_HELPER_COPIES,
+    };
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
     /// onto its own output leaves each command of `counted` exactly as many times as it names.
@@ -691,16 +693,6 @@ mod tests {
                 ],
             );
         }
-    }
-
-    /// One hook block running `command` under `matcher`, as the installers write it.
-    fn hook_block(matcher: &str, command: &str) -> Value {
-        json!({"matcher": matcher, "hooks": [hook(command)]})
-    }
-
-    /// One inner hook running `command`.
-    fn hook(command: &str) -> Value {
-        json!({"type": "command", "command": command})
     }
 
     /// `settings` as the bytes of a compact settings file.

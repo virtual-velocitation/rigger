@@ -42,6 +42,16 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     }
 }
 
+/// One hook block running `command` under `matcher`, as the settings installers write it.
+pub fn hook_block(matcher: &str, command: &str) -> serde_json::Value {
+    serde_json::json!({"matcher": matcher, "hooks": [hook(command)]})
+}
+
+/// One inner hook running `command`, as the settings installers write it.
+pub fn hook(command: &str) -> serde_json::Value {
+    serde_json::json!({"type": "command", "command": command})
+}
+
 /// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
 pub type HelperFile<'a> = (&'a str, &'a str);
 

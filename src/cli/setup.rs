@@ -4210,7 +4210,7 @@ mod tests {
     /// drifted matcher is replaced.
     #[test]
     fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
-        let block = |matcher: &str, command: &str| serde_json::json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+        use crate::test_support::hook_block as block;
         let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
         let foreign = block("Write", "prettier --write");
         let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});

@@ -8390,7 +8390,9 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
 #[cfg(unix)]
 #[test]
 fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
-    use common::fixtures::{status_sha, DOC_ONLY_ROUND_FACT, DOC_ONLY_ROUND_RULE};
+    use common::fixtures::{
+        status_sha, DOC_ONLY_ROUND_FACT, DOC_ONLY_ROUND_RULE, LATER_ATTEMPT_CLOSE,
+    };
     let rule = DOC_ONLY_ROUND_RULE.to_lowercase();
     for (case, writes, changed, stated) in [
         (
@@ -8492,8 +8494,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. Bring the periphery tests in line with that change.\n\
-                         {fact}{LIVE_PROGRESS_FRAME}"
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{LIVE_PROGRESS_FRAME}"
                     ),
                     "{at}: the resumed session's whole task"
                 );
@@ -8620,12 +8621,13 @@ fn the_build_seam_launches_the_test_author_the_workflow_declares() {
 }
 
 /// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD, end to end: given a reviewed unit whose
-/// first round rejects with two REQUIRED pattern items of different shapes and one plain item,
-/// when `rigger run` drives the second round, whether each role resumes its session (the
-/// later-attempt task) or that session is gone (the whole prompt), then the implementer's second
-/// launch is told each pattern item's shape and the DecisionMade `audit-solo-1` to record it
-/// under, each review tier's second launch is told that shape and that record as the
-/// implementer's, the plain item carries no `PATTERN:` line and no first launch carries any. How
+/// first round rejects with two REQUIRED pattern items of different shapes, one plain item and one
+/// whose pattern is blanks alone, when `rigger run` drives the second round, whether each role
+/// resumes its session (the later-attempt task) or that session is gone (the whole prompt), then
+/// the implementer's second launch is told each pattern item's shape, trimmed, and the
+/// DecisionMade `audit-solo-1` to record it under, each review tier's second launch is told that
+/// shape and that record as the implementer's, the plain and the blank item carry no `PATTERN:`
+/// line and no first launch carries any. How
 /// the audit is done and bounded is in no task: each second launch's system prompt carries every
 /// sentence of the working-discipline built-in's bounded-audit bullet once. The fake `claude`
 /// answers each spawn from one arm keyed on the spawn id, recording what each launch received

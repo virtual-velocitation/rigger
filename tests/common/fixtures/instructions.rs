@@ -205,6 +205,10 @@ pub const DOC_ONLY_ROUND_RULE: &str = "Extend the existing owner test's needle f
 /// that changed documentation only.
 pub const DOC_ONLY_ROUND_FACT: &str = "This round changed documentation only.";
 
+/// The sentence a resumed sdet-author session's task closes its later-attempt line with, ahead of
+/// the round's fact.
+pub const LATER_ATTEMPT_CLOSE: &str = "Bring the periphery tests in line with that change.";
+
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
 pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
     let from = text.find(heading).expect("the text carries the heading");
