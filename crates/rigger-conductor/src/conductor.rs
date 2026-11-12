@@ -5371,6 +5371,17 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// The definition of the agent `agent_id` that stage `st` spawns as `role`, or the stage
+    /// error naming the stage, the role and the id when no agent defines it.
+    fn stage_agent(&self, st: &Stage, role: &str, agent_id: &str) -> Result<&AgentDef, Error> {
+        self.cfg.agents.get(agent_id).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown {role} {agent_id:?}",
+                st.name
+            ))
+        })
+    }
+
     /// Build a REVIEWER's spawn options. A reviewer writes no code to integrate, but
     /// it still has tools that touch the filesystem (every review agent has `Bash`;
     /// the sdet lens has `Edit`/`Write`), so it must NOT run in the live main checkout
@@ -5408,12 +5419,7 @@ impl RunCtx<'_> {
         } else {
             crate::worktree::UNIT_REVIEW_CACHE_PREFIX
         };
-        let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
-            Error(format!(
-                "stage {:?} references unknown {role} {agent_id:?}",
-                st.name
-            ))
-        })?;
+        let agent_def = self.stage_agent(st, role, agent_id)?;
         let build_env = self.build_env()?;
         Ok(SpawnOpts {
             system_prompt: self.build_system_prompt(agent_def),
@@ -6107,7 +6113,9 @@ impl RunCtx<'_> {
     /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
     /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
     /// an outage to rerun, so the single lane fails its stage with it and a speculation candidate
-    /// loses.
+    /// loses. Returns the stage error naming the role and the id, before any budget slot, when the
+    /// declared id names no defined agent, which only a config that never went through a load
+    /// holds: the single lane fails its stage with it and a speculation candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends that round's fact ([`doc_only_round`]) to the prompt and to a resumed session's
@@ -6136,15 +6144,12 @@ impl RunCtx<'_> {
         }
         // No declared test author is a clean no-op (the build proceeds without the seam),
         // whatever agents the project defines: the seam spawns only the agent the workflow names.
-        let author = &self.cfg.workflow.defaults.test_author;
-        if author.is_empty() {
-            return Ok(());
-        }
-        // A load refuses a declared id no agent defines (`Config::validate`), so this arm is
-        // reached only by a config that never went through one; it proceeds author-less too.
-        let Some(sdet_def) = self.cfg.agents.get(author) else {
+        let Some(author) = self.cfg.workflow.defaults.declared_test_author() else {
             return Ok(());
         };
+        // A load refuses a declared id no agent defines (`Config::validate`); a config that never
+        // went through one fails here, before any budget slot, as an unknown review agent does.
+        let sdet_def = self.stage_agent(st, ROLE_SDET_AUTHOR, author)?;
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.

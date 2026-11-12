@@ -311,7 +311,7 @@ impl Config {
         // structurally sound depth policy (a configured light tier names an adjudicator step).
         // The declared test author (`defaults.test_author`, spec 121) must name a real agent too
         // when set: the build seam spawns exactly the agent it names, so an id no agent defines
-        // is refused here rather than silently spawning no test author.
+        // is refused here, before any run reaches the seam.
         wf.defaults
             .review
             .validate_steps()
@@ -322,9 +322,10 @@ impl Config {
             .agent_ids()
             .into_iter()
             .map(|aid| ("review", aid));
-        let author = Some(&wf.defaults.test_author)
-            .filter(|aid| !aid.is_empty())
-            .map(|aid| ("test_author", aid.clone()));
+        let author = wf
+            .defaults
+            .declared_test_author()
+            .map(|aid| ("test_author", aid.to_string()));
         for (key, aid) in review.chain(author) {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(

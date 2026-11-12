@@ -882,6 +882,13 @@ pub struct Defaults {
     pub max_unit_added_lines: u32,
 }
 
+impl Defaults {
+    /// The declared test author's id: `test_author` when it is non-empty, else `None`.
+    pub fn declared_test_author(&self) -> Option<&str> {
+        Some(self.test_author.as_str()).filter(|id| !id.is_empty())
+    }
+}
+
 /// Stage is one node of the workflow DAG.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
