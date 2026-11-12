@@ -303,6 +303,9 @@
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
   .kgtoggle.active { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  /* Beside the tests toggle: the view on show leaves out the tests the filter hides. */
+  .kgteststate { color: var(--muted); white-space: nowrap; }
+  .kgteststate[hidden] { display: none; }
   /* The RATIONALE OVERLAY badge-and-expand (spec 55 c4): a native <details> per node that carries
      rationale - the <summary> is the "why - N" count, the body lists each leaf as its own native
      <details> (a one-line preview that expands to the full content). Rendered ONLY when the overlay
@@ -402,6 +405,7 @@
       <span class="kglabel" id="kglabel" hidden></span>
       <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
       <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
+      <span class="kgteststate" id="kgtestsstate" hidden></span>
     </div>
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
@@ -837,12 +841,16 @@ function syncOverlayToggle() {
 }
 
 // Reflect the tests filter on its static toggle: "Show tests" while tests are hidden, else which
-// tests are shown.
+// tests are shown. While tests are hidden, every view but the overview (whose toolbar counts them)
+// says so beside the toggle, so no view looks complete when it is not.
 function syncTestsToggle() {
   const t = el("kgteststoggle");
-  if (!t) return;
+  const state = el("kgtestsstate");
+  if (!t || !state) return;
   t.textContent = { exclude: "Show tests", include: "tests: shown", only: "tests: only" }[kgTests];
   t.className = "kgtoggle" + (kgTests === "exclude" ? "" : " active");
+  state.hidden = kgTests !== "exclude" || kgMode === "overview";
+  state.textContent = state.hidden ? "" : "tests hidden";
 }
 
 // Step the tests filter exclude -> include -> only -> exclude, remember it in the browser (a store
@@ -1022,8 +1030,7 @@ async function reprojectSubject(subject) {
 // (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
 // never confidently wrong. An empty member set degrades to a message, never an error.
 function renderReprojection(rp) {
-  kgMode = "reproject";
-  kgViewData = rp;
+  holdKgView("reproject", rp);
   const subject = (rp && rp.subject) || kgSubject || "";
   // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
   // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
@@ -1171,9 +1178,8 @@ function renderGraph(g) {
   // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
   kgLast = g;
   // Record which view is current + its body so the overlay toggle can re-render it in place (spec 55
-  // c4). These are state-only assignments; they do NOT change this view's rendered output.
-  kgMode = "seed";
-  kgViewData = g;
+  // c4). State only beside the header's tests state; it does NOT change this view's rendered output.
+  holdKgView("seed", g);
   // The SUBJECT VIEW's docked memory rail (spec 63 c5): the seed's governing decisions/findings/
   // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
   // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
@@ -1320,6 +1326,14 @@ async function pathTo(target) {
 
 // Which view the panel currently holds ("overview" | "drill"); the seed view is spec 30's renderGraph.
 let kgMode = "overview";
+
+// Record the view the panel now holds and its body (so a toggle re-renders it in place), and bring
+// the header's tests state up to that view.
+function holdKgView(mode, body) {
+  kgMode = mode;
+  kgViewData = body;
+  syncTestsToggle();
+}
 
 // A deterministic per-kind colour, so a given graph yields one stable palette every poll (no
 // Math.random anywhere). Known dev-loop/code kinds get a fixed hue; any other kind hashes to a stable
@@ -1922,8 +1936,7 @@ function bindKgView() {
 // thickness scales with its weight. A click on a super-node (data-cluster) DRILLS it. An empty graph
 // degrades to an empty-graph message, never an error.
 function renderKgOverview(ov) {
-  kgMode = "overview";
-  kgViewData = ov;
+  holdKgView("overview", ov);
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
   const controls = lensControls();
@@ -1994,8 +2007,7 @@ function lensControls() {
 // <title> - so honest membership is met end-to-end, not just on the wire. Every other lens sends no
 // `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
-  kgMode = "drill";
-  kgViewData = nb;
+  holdKgView("drill", nb);
   const nodes = (nb && nb.nodes) || [];
   const edges = (nb && nb.edges) || [];
   const key = (nb && nb.seed) || "";
@@ -2137,8 +2149,7 @@ async function seedCalls(seed, dir) {
 // beside the traversed DAG. A frontier node carries its candidates for the expand; a plain call node
 // re-seeds the neighborhood. An empty walk degrades to a message, never an error.
 function renderKgCalls(cg) {
-  kgMode = "calls";
-  kgViewData = cg;
+  holdKgView("calls", cg);
   const nodes = (cg && cg.nodes) || [];
   const edges = (cg && cg.edges) || [];
   const seed = (cg && cg.seed) || "";
