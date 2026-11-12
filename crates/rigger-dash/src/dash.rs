@@ -3530,20 +3530,21 @@ fn announce_serving(out: &mut dyn Write, bound: SocketAddr) -> io::Result<()> {
     )
 }
 
-/// Say on `out` the URL of the dash a run just started, `url`: the run's own pointer to its dash,
-/// said on the stderr the run shares with that dash while the dash says its serving line there.
+/// Say on `out` the URL of the dash a run just started, `url`, in one write ([`whole_line`]): the
+/// run's own pointer to its dash, said on the stderr the run shares with that dash while the dash
+/// says its serving line there.
 pub fn announce_run_serving(out: &mut dyn Write, url: &str) -> io::Result<()> {
-    writeln!(out, "rigger dash: serving this run at {url}")
+    whole_line::write_line(out, format_args!("rigger dash: serving this run at {url}"))
 }
 
-/// Say on `out` that the dash's `failed` step (`connection` or `accept`) failed with `error`, on
-/// the stderr a run's dash shares with the run.
+/// Say on `out` that the dash's `failed` step (`connection` or `accept`) failed with `error`, in
+/// one write ([`whole_line`]), on the stderr a run's dash shares with the run.
 fn report_error(
     out: &mut dyn Write,
     failed: &str,
     error: &dyn std::fmt::Display,
 ) -> io::Result<()> {
-    writeln!(out, "rigger dash: {failed} error: {error}")
+    whole_line::write_line(out, format_args!("rigger dash: {failed} error: {error}"))
 }
 
 /// Serve the dash on an ALREADY-BOUND `listener` until the process is stopped, re-reading
