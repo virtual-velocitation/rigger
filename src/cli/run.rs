@@ -734,14 +734,13 @@ impl SleepHold for RecordingSleepHold {
     }
 }
 
-/// Append `line` and a newline to the file at `path`, creating the file when absent.
+/// Append `line` and a newline to the file at `path` in one write, creating the file when absent.
 fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?
-        .write_all(format!("{line}\n").as_bytes())
+        .open(path)?;
+    rigger::whole_line::write_line(&mut file, format_args!("{line}"))
 }
 
 /// The keep-awake fake whose every acquire answers unavailable with its reason: what

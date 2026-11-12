@@ -22,6 +22,7 @@ pub mod parallel;
 pub mod reap;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod subprocess;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod whole_line;
 
 // The parameterised-test macro the moved tests name by its historical `crate::` path. Every
