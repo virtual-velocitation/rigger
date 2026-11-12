@@ -711,13 +711,14 @@ def measure(wanted, out):
     if fold.started_ns is None:
         refuse(f"run {run} has no RunStarted in its slice")
     stamp = datetime.fromtimestamp(fold.started_ns / 1e9, tz=timezone.utc).strftime("%Y%m%d-%H%M")
-    path = Path(out) if out else directory / f"{stamp}-{run[:8]}.md"
+    own = directory / f"{stamp}-{run[:8]}.md"
+    path = Path(out) if out else own
     if path.exists():
         refuse(f"{path} exists; remove it to measure again")
     template = directory / "TEMPLATE.md"
     if not template.is_file():
         refuse(f"no template at {template}")
-    earlier = before(path) if path.parent == directory else run_files(directory)
+    earlier = before(own)
     history = []
     for p in earlier[-5:]:
         c = blocks_of(p.read_text(encoding="utf-8"))[0].get("scorecard")
