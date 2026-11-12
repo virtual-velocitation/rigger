@@ -340,8 +340,14 @@ impl std::str::FromStr for Tests {
 /// The one line every reader prints when the tests filter hid `n` test hits from its answer, or
 /// none when it hid nothing.
 pub fn tests_hidden_line(n: usize) -> Option<String> {
-    let _ = n;
-    None
+    let noun = match n {
+        0 => return None,
+        1 => "hit",
+        _ => "hits",
+    };
+    Some(format!(
+        "{n} test {noun} not shown; the tests filter (include or only) shows them"
+    ))
 }
 
 /// What a reader asks of a view.

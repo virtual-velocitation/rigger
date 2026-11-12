@@ -1,5 +1,5 @@
 use super::*;
-use rigger_domain::code_view::{Tests, ViewFilter};
+use rigger_domain::code_view::{tests_hidden_line, Tests, ViewFilter};
 
 /// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
 /// every reader shares, else the refusal that names the three.
@@ -815,10 +815,8 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         eprintln!("{label}");
     }
     // The test hits the filter left out, counted apart from the rows above.
-    let hidden = grounded.tests_hidden;
-    if hidden > 0 {
-        let noun = if hidden == 1 { "hit" } else { "hits" };
-        eprintln!("{hidden} test {noun} not shown; --tests include or only shows them");
+    if let Some(line) = tests_hidden_line(grounded.tests_hidden) {
+        eprintln!("{line}");
     }
     Ok(())
 }

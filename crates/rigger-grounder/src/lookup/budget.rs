@@ -5,6 +5,8 @@
 
 use std::fmt::Write as _;
 
+use rigger_domain::code_view::tests_hidden_line;
+
 use super::graph::{Answered, Entity, Site, TermGraph};
 use super::prose::Ranked;
 use super::text::TermText;
@@ -128,12 +130,8 @@ fn graph_section(out: &mut String, terms: &[&str], answered: &Answered) {
                 }
             }
         }
-        if *tests > 0 {
-            let noun = if *tests == 1 { "hit" } else { "hits" };
-            let _ = writeln!(
-                out,
-                "{tests} test {noun} not shown; the tests filter (include or only) shows them"
-            );
+        if let Some(line) = tests_hidden_line(*tests) {
+            let _ = writeln!(out, "{line}");
         }
     }
 }
