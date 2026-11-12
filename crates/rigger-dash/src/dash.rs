@@ -5260,7 +5260,7 @@ mod tests {
 
     /// The CSS rules whose line opens with a selector list holding a selector `picks` accepts
     /// (each selector trimmed), from the selector list to its closing `}`.
-    fn rules_selecting<'a>(page: &'a str, picks: impl Fn(&str) -> bool) -> Vec<&'a str> {
+    fn rules_selecting(page: &str, picks: impl Fn(&str) -> bool) -> Vec<&str> {
         let mut rules = Vec::new();
         let mut at = 0;
         for line in page.split_inclusive('\n') {
