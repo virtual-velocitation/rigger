@@ -770,3 +770,177 @@ fn the_sweep_reports_each_unregistered_literal_and_each_miscounted_entry() {
         );
     }
 }
+
+// --- the sweep ---
+
+/// The tokens a prompt-bearing file's production text spells on a code line.
+const TOKENS: [&str; 3] = ["SpawnOpts", "SpawnHost", "prompt_surface"];
+
+/// The fewest characters a qualifying literal holds.
+const MIN_CHARS: usize = 40;
+
+/// A qualifying literal: the 1-based line it opens on and its decoded value.
+type Literal = (usize, String);
+
+/// Every violation of the sweep over the production `sources` against the registry's group
+/// `texts` and `allow_list`, sorted: each qualifying literal of a `prompt_surface` module no
+/// group text contains, each other qualifying literal no group text contains that no allow-list
+/// entry of its file prefixes or that two distinct entry texts prefix, and each entry text listed
+/// a different number of times than the literals it alone prefixes.
+fn sweep(sources: &[(String, String)], texts: &[&str], allow_list: &[Allowed]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut unregistered: BTreeMap<&str, Vec<Literal>> = BTreeMap::new();
+    for (file, text) in sources.iter().filter(|(_, text)| prompt_bearing(text)) {
+        for (line, value) in qualifying_literals(text) {
+            if texts.iter().any(|group| group.contains(value.as_str())) {
+                continue;
+            }
+            if in_module(file) {
+                violations.push(format!("{file}:{line}: {value:?} is in no registry group"));
+            } else {
+                unregistered
+                    .entry(file.as_str())
+                    .or_default()
+                    .push((line, value));
+            }
+        }
+    }
+    let mut files: Vec<&str> = unregistered
+        .keys()
+        .copied()
+        .chain(allow_list.iter().map(|(file, ..)| *file))
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    for file in files {
+        let entries: Vec<(Category, &str)> = allow_list
+            .iter()
+            .filter(|(listed, ..)| *listed == file)
+            .flat_map(|(_, category, prefixes)| {
+                prefixes.iter().map(move |prefix| (*category, *prefix))
+            })
+            .collect();
+        let literals = unregistered.get(file).map_or(&[][..], Vec::as_slice);
+        violations.extend(account(file, literals, &entries));
+    }
+    violations.sort();
+    violations
+}
+
+/// One file's allow-list accounting: each of its unregistered `literals` that no entry prefixes
+/// or that two distinct entry texts prefix, and each distinct entry text listed a different
+/// number of times than the literals it alone prefixes.
+fn account(file: &str, literals: &[Literal], entries: &[(Category, &str)]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut prefixed: BTreeMap<&str, usize> = BTreeMap::new();
+    for (line, value) in literals {
+        let mut matches: Vec<&str> = entries
+            .iter()
+            .map(|(_, prefix)| *prefix)
+            .filter(|prefix| value.starts_with(prefix))
+            .collect();
+        matches.sort_unstable();
+        matches.dedup();
+        match matches.as_slice() {
+            [prefix] => *prefixed.entry(*prefix).or_default() += 1,
+            [] => violations.push(format!(
+                "{file}:{line}: {value:?} is in no registry group and no allow-list entry"
+            )),
+            several => violations.push(format!(
+                "{file}:{line}: {value:?} is prefixed by {} allow-list entries",
+                several.len()
+            )),
+        }
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for (category, prefix) in entries {
+        if seen.contains(prefix) {
+            continue;
+        }
+        seen.push(*prefix);
+        let listed = entries.iter().filter(|(_, other)| other == prefix).count();
+        let count = prefixed.get(prefix).copied().unwrap_or(0);
+        if listed != count {
+            violations.push(format!(
+                "{file}: {category:?} entry {prefix:?} is listed {listed} time(s) for {count} literal(s)"
+            ));
+        }
+    }
+    violations
+}
+
+/// Whether `file` is a crate's `prompt_surface` module.
+fn in_module(file: &str) -> bool {
+    file.rsplit('/').next() == Some("prompt_surface.rs")
+}
+
+/// Whether the production `text` spells one of [`TOKENS`] on a line whose first non-blank
+/// characters are not `//`.
+fn prompt_bearing(text: &str) -> bool {
+    text.lines().any(|line| {
+        !line.trim_start().starts_with("//") && TOKENS.iter().any(|token| line.contains(token))
+    })
+}
+
+/// Each string literal of `text` of at least [`MIN_CHARS`] characters holding a space, as the
+/// 1-based line it opens on and its decoded value, in source order. Comments hold none.
+fn qualifying_literals(text: &str) -> Vec<Literal> {
+    let chars: Vec<char> = text.chars().collect();
+    tokenize(&chars)
+        .into_iter()
+        .filter(|token| token.kind == RawKind::Lit)
+        .filter_map(|token| Some((token.line, string_value(&token.text)?)))
+        .filter(|(_, value)| value.chars().count() >= MIN_CHARS && value.contains(' '))
+        .collect()
+}
+
+/// The value of the string-literal `token` (escaped, raw, or either as bytes), or `None` for a
+/// char or number literal: a raw literal's body as written, an escaped one's through
+/// [`unescape`].
+fn string_value(token: &str) -> Option<String> {
+    let token = token.strip_prefix('b').unwrap_or(token);
+    if let Some(raw) = token.strip_prefix('r') {
+        let hashes = raw.len() - raw.trim_start_matches('#').len();
+        return Some(raw[hashes + 1..raw.len() - 1 - hashes].to_string());
+    }
+    Some(unescape(token.strip_prefix('"')?.strip_suffix('"')?))
+}
+
+/// The value of an escaped literal's `body`: each escape decoded as Rust decodes it, and a line
+/// continuation (a backslash ending the line) dropping the line break and the whitespace after it.
+fn unescape(body: &str) -> String {
+    let mut value = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            value.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => value.push('\n'),
+            Some('t') => value.push('\t'),
+            Some('r') => value.push('\r'),
+            Some('0') => value.push('\0'),
+            Some('x') => {
+                let hex: String = chars.by_ref().take(2).collect();
+                value.push(char::from(
+                    u8::from_str_radix(&hex, 16).expect("a \\x escape"),
+                ));
+            }
+            Some('u') => {
+                let hex: String = chars.by_ref().skip(1).take_while(|c| *c != '}').collect();
+                let code = u32::from_str_radix(&hex, 16).expect("a \\u escape");
+                value.push(char::from_u32(code).expect("a scalar value"));
+            }
+            Some('\n' | '\r') => {
+                while chars
+                    .next_if(|c| matches!(c, ' ' | '\t' | '\n' | '\r'))
+                    .is_some()
+                {}
+            }
+            Some(other) => value.push(other),
+            None => {}
+        }
+    }
+    value
+}
