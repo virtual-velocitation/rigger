@@ -56,6 +56,18 @@ pub struct Label {
     pub withheld: usize,
 }
 
+/// A whole read: the graph it answers, the part of the graph it withheld, and its label.
+#[derive(Debug)]
+pub struct WholeRead {
+    /// The graph the read answers.
+    pub graph: Graph,
+    /// The nodes the read withheld and the edges it dropped for an end it withheld: empty when
+    /// nothing is withheld, so a view of the answer can count the withheld hits it would have held.
+    pub withheld: Graph,
+    /// What the read describes.
+    pub label: Label,
+}
+
 impl Label {
     /// The label of answers drawn from the view at `tip`, read for `worktree` with `withheld` in
     /// doubt, behind its tree for the reason `behind` gives when it is.
@@ -775,8 +787,13 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
 
     /// Both halves whole over `code`, the code half's whole graph, `withheld` the groupings
     /// that summarise a withheld file ([`Self::withheld_groupings`]): of the code half it reads
-    /// only [`CodeHalf::concepts_of`], so `code` may have been moved out of it.
-    fn whole_over(&self, code: Graph, withheld: &FxHashSet<String>) -> Result<Graph, Error> {
+    /// only [`CodeHalf::concepts_of`], so `code` may have been moved out of it. Beside it, the
+    /// part withheld: the held nodes not answered and the edges dropped for an end not answered.
+    fn whole_over(
+        &self,
+        code: Graph,
+        withheld: &FxHashSet<String>,
+    ) -> Result<(Graph, Graph), Error> {
         let records = self.records.whole()?;
         let is_alias = |n: &Node| self.canonical.contains_key(&n.id);
         // Each id's record nodes, in the order recorded, folded onto its code node in turn.
@@ -827,8 +844,10 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
             None => !(aliased.contains(id) && withholds(&artifact(id))),
         };
         // Nothing withheld answers every edge.
+        let mut dropped = Vec::new();
         if !self.stale.withholds_nothing() {
-            edges.retain(|e| answered(&e.from) && answered(&e.to));
+            (edges, dropped) =
+                (edges.into_iter()).partition(|e| answered(&e.from) && answered(&e.to));
         }
         let mut ends: BTreeMap<&str, Node> = BTreeMap::new();
         for e in &edges {
@@ -840,18 +859,25 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         }
         drop(answers);
         let mut nodes: Vec<Node> = Vec::with_capacity(held.len() + ends.len());
+        let mut unanswered = Vec::new();
         let mut ends = ends.into_values().peekable();
         for (n, answered) in held {
             nodes.extend(std::iter::from_fn(|| ends.next_if(|a| a.id < n.id)));
-            if answered {
-                nodes.push(n);
+            match answered {
+                true => nodes.push(n),
+                false => unanswered.push(n),
             }
         }
         nodes.extend(ends);
-        Ok(Graph {
+        let whole = Graph {
             nodes,
             edges: ordered(edges),
-        })
+        };
+        let withheld = Graph {
+            nodes: unanswered,
+            edges: ordered(dropped),
+        };
+        Ok((whole, withheld))
     }
 
     /// The node `id` names in both halves, merged, before any is withheld; `None` for an alias.
@@ -990,7 +1016,9 @@ impl<C: CodeHalf> Neighbors for Composed<'_, C> {
         self.records.aliases()
     }
     fn whole(&self) -> Result<Graph, Error> {
-        self.whole_over(self.code.whole()?, &self.withheld_groupings())
+        Ok(self
+            .whole_over(self.code.whole()?, &self.withheld_groupings())?
+            .0)
     }
     /// The record half's rows at every spelling of `ids` not read ahead yet, read together.
     fn read_ahead(&self, ids: &[String]) -> Result<(), Error> {
@@ -1087,11 +1115,15 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     }
     /// The whole read in two phases: what withholding reads of the code half beside its graph
     /// first, then the graph moved out of the half and merged with the record half's.
-    fn into_whole(mut self: Box<Self>) -> Result<(Graph, Label), Error> {
+    fn into_whole(mut self: Box<Self>) -> Result<WholeRead, Error> {
         let withheld = self.withheld_groupings();
         let code = self.code.take_whole()?;
-        let whole = self.whole_over(code, &withheld)?;
-        Ok((whole, self.stamp_label()))
+        let (graph, withheld) = self.whole_over(code, &withheld)?;
+        Ok(WholeRead {
+            graph,
+            withheld,
+            label: self.stamp_label(),
+        })
     }
     fn stamp_label(&self) -> Label {
         Label {
@@ -2110,7 +2142,8 @@ mod tests {
                 // Neither a node nor an edge compares, so the two read as their debug forms.
                 let borrowed = open();
                 let want = format!("{:#?}", (borrowed.whole().unwrap(), borrowed.stamp_label()));
-                let got = format!("{:#?}", open().into_whole().unwrap());
+                let read = open().into_whole().unwrap();
+                let got = format!("{:#?}", (read.graph, read.label));
                 assert_eq!(got, want, "{case} (near {near})");
             }
         }
@@ -2265,11 +2298,29 @@ mod tests {
                 };
                 let whole = g.whole().unwrap();
                 assert_eq!(held(&whole), want, "{case} (near {near}): the whole holds");
-                let (whole, _) = g.into_whole().unwrap();
+                let read = g.into_whole().unwrap();
                 assert_eq!(
-                    held(&whole),
+                    held(&read.graph),
                     want,
                     "{case} (near {near}): the consumed whole holds"
+                );
+                assert_eq!(
+                    held(&read.withheld),
+                    withheld.to_vec(),
+                    "{case} (near {near}): the withheld part holds the rest"
+                );
+                let edges = |graphs: &[&Graph]| {
+                    let mut edges: Vec<String> = (graphs.iter())
+                        .flat_map(|g| g.edges.iter().map(|e| format!("{e:?}")))
+                        .collect();
+                    edges.sort();
+                    edges
+                };
+                let agreeing = composed(&records, &view, honest(Ok(WorktreeDiff::default())));
+                assert_eq!(
+                    edges(&[&read.graph, &read.withheld]),
+                    edges(&[&Neighbors::whole(&agreeing).unwrap()]),
+                    "{case} (near {near}): the edges answered and dropped are the whole's"
                 );
             }
         }

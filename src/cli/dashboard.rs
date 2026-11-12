@@ -547,8 +547,8 @@ fn dash_read_graph(graph_db: &str, identity: &str, events: &[Event]) -> dash::Gr
     }));
     dash::GraphRead {
         graph,
-        tests_hidden: 0,
         label: Some(label),
+        ..dash::GraphRead::default()
     }
 }
 
@@ -618,14 +618,16 @@ fn unattached(instance: Option<&str>) -> dash::GraphLabel {
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
 fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
-    let ((graph, tests_hidden), label) = described(dash_open(graph_db, identity, tests, |g| {
-        let tests_hidden = g.hidden_tests()?.len();
-        let (graph, label) = g.into_whole()?;
-        Ok(((graph, tests_hidden), label))
-    }));
+    let ((graph, withheld, tests_hidden), label) =
+        described(dash_open(graph_db, identity, tests, |g| {
+            let tests_hidden = g.hidden_tests()?.len();
+            let read = g.into_whole()?;
+            Ok(((read.graph, read.withheld, tests_hidden), read.label))
+        }));
     dash::GraphRead {
         graph,
         tests_hidden,
+        withheld,
         label: Some(label),
     }
 }

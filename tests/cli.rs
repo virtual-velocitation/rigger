@@ -17425,24 +17425,38 @@ fn a_dash_graph_reply_states_what_it_describes() {
 
 /// GIVEN a committed, built project of two files, one of them edited after the build, WHEN every
 /// surface reads it - `rigger graph --around / --show / --lookup`, `rigger ground`, the MCP graph
-/// and ground tools, the dash's overview - THEN each label counts as withheld exactly the hits of
-/// its own answer that the differing file withheld (spec 6.1): the nodes a graph read would have
-/// answered, the locations a grounding would have shown, never the differing file's whole count.
+/// and ground tools, and each dash graph view - THEN each label counts as withheld exactly the
+/// nodes of its own answer that the differing file withheld (spec 6.1): a walk the withheld nodes
+/// it reaches, never stepping from one; a fold the withheld nodes it would have held; a grounding
+/// the entities its withheld hits name; never the differing file's whole count.
 #[cfg(feature = "symbols")]
 #[test]
 fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
     let dir = temp_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
-    std::fs::write(root.join("src/other.rs"), "pub fn beta() {}\n").unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "pub fn alpha() {}\n\npub fn delta() {\n    alpha();\n    alpha();\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/other.rs"),
+        "pub fn beta() {\n    crate::alpha();\n}\n",
+    )
+    .unwrap();
     common::fixtures::git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     std::fs::write(root.join("src/lib.rs"), "pub fn gamma() {}\n").unwrap();
     let head = common::fixtures::git_out(root, &["rev-parse", "HEAD"]);
     let worktree = root.canonicalize().unwrap().display().to_string();
+    // A label withholding nothing states no count.
     let label = |withheld: usize| {
-        format!("describes {head}; 1 file in {worktree} differs; {withheld} withheld")
+        let differs = format!("describes {head}; 1 file in {worktree} differs");
+        match withheld {
+            0 => differs,
+            n => format!("{differs}; {n} withheld"),
+        }
     };
     let first_label = |text: &str| {
         (text.lines())
@@ -17499,29 +17513,85 @@ fn every_surface_counts_the_hits_of_its_own_answer_as_withheld() {
         ),
     ];
     mcp.finish_cleanly();
+    // (surface, the dash view's request)
+    let views = [
+        ("the dash's overview", "/api/graph"),
+        (
+            "the dash around the file",
+            "/api/graph?seed=src%2Flib.rs&depth=1",
+        ),
+        (
+            "the dash around the other file",
+            "/api/graph?seed=src%2Fother.rs&depth=1",
+        ),
+        (
+            "the dash's card of alpha",
+            "/api/graph?card=src%2Flib.rs%3A%3Aalpha",
+        ),
+        (
+            "the dash's card of beta",
+            "/api/graph?card=src%2Fother.rs%3A%3Abeta",
+        ),
+        (
+            "the dash's rationale of both",
+            "/api/graph?explain=src%2Flib.rs%3A%3Aalpha,src%2Fother.rs%3A%3Abeta",
+        ),
+        ("the dash's files drill", "/api/graph?cluster=src"),
+        (
+            "the dash's drill of the file's community",
+            "/api/graph?cluster=community%2F1%2F0&lens=code",
+        ),
+        (
+            "the dash's drill of the other community",
+            "/api/graph?cluster=community%2F1%2F1&lens=code",
+        ),
+        (
+            "the dash's file under the code lens",
+            "/api/graph?seed=src%2Flib.rs&lens=code",
+        ),
+        (
+            "the dash's other file under the code lens",
+            "/api/graph?seed=src%2Fother.rs&lens=code",
+        ),
+    ];
     let port = free_loopback_port();
     let dash = serving_dash(root, port);
-    let reply = http_get_path(port, "/api/graph");
+    for (surface, path) in views {
+        let reply = http_get_path(port, path)
+            .unwrap_or_else(|| panic!("{surface}: the dash never served {path}"));
+        let stated = (reply.lines())
+            .find_map(|l| l.strip_prefix("X-Rigger-Graph-Label: "))
+            .map(percent_decoded)
+            .unwrap_or_default();
+        labels.push((surface, stated));
+    }
     drop(dash);
-    let reply = reply.expect("the dash never served /api/graph");
-    let overview = (reply.lines())
-        .find_map(|l| l.strip_prefix("X-Rigger-Graph-Label: "))
-        .map(percent_decoded)
-        .unwrap_or_default();
-    labels.push(("the dash's overview", overview));
 
-    // The file's node and its fn's; the fn alone; its one definition line; and for the overview
-    // the community the two alone make up besides.
+    // A walk counts the withheld nodes it reaches and never steps from one: around the file, the
+    // file and its two fns; alpha alone; nothing around the other file or at beta. A grounding
+    // counts the one entity its three withheld hits name. A fold counts the withheld nodes it
+    // would have held: the overview the file, its fns and their community; the files lens drills
+    // to nothing; the file's community and the file's member set hold its two fns.
     let expected = [
-        ("--around the file", label(2)),
+        ("--around the file", label(3)),
         ("--show alpha", label(1)),
         ("--lookup alpha", label(1)),
         ("ground alpha", label(1)),
-        ("MCP around the file", label(2)),
+        ("MCP around the file", label(3)),
         ("MCP show alpha", label(1)),
         ("MCP lookup alpha", label(1)),
         ("MCP ground alpha", label(1)),
-        ("the dash's overview", label(3)),
+        ("the dash's overview", label(4)),
+        ("the dash around the file", label(3)),
+        ("the dash around the other file", label(0)),
+        ("the dash's card of alpha", label(1)),
+        ("the dash's card of beta", label(0)),
+        ("the dash's rationale of both", label(0)),
+        ("the dash's files drill", label(0)),
+        ("the dash's drill of the file's community", label(2)),
+        ("the dash's drill of the other community", label(0)),
+        ("the dash's file under the code lens", label(2)),
+        ("the dash's other file under the code lens", label(0)),
     ];
     assert_eq!(labels, expected.to_vec());
 }

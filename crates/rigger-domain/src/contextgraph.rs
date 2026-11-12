@@ -1025,10 +1025,14 @@ pub trait ContextGraph: Send + Sync {
     fn stamp_label(&self) -> crate::composed::Label;
 
     /// [`Self::whole`] and then [`Self::stamp_label`], read by consuming the graph so a graph
-    /// that holds its nodes may move them into the answer rather than copy them.
-    fn into_whole(self: Box<Self>) -> Result<(Graph, crate::composed::Label), Error> {
-        let whole = self.whole()?;
-        Ok((whole, self.stamp_label()))
+    /// that holds its nodes may move them into the answer rather than copy them; a graph that
+    /// withholds nothing has no withheld part.
+    fn into_whole(self: Box<Self>) -> Result<crate::composed::WholeRead, Error> {
+        Ok(crate::composed::WholeRead {
+            graph: self.whole()?,
+            withheld: Graph::default(),
+            label: self.stamp_label(),
+        })
     }
 }
 

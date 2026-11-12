@@ -596,6 +596,15 @@ in one unit, nodes: the nodes it would have answered or reported hidden (`--arou
 `--lookup`, the MCP graph tool, the dash), and for `rigger ground` the entities its withheld hits
 name, keyed as its ranked page keys its rows, so a definition and its calls count once.
 
+A walk (`--around`, `--show`, the dash's seeded neighbourhood and its card's one hop) counts the
+withheld nodes it reaches and never steps from one; a withheld seed still reaches its members by
+the member rule, which reads no edge. The dash's whole read keeps the part it withheld (the
+withheld nodes and the edges dropped for a withheld end) beside the graph it answers, so each view
+counts its own answer: a walk as above, a fold (a cluster drill, a subject's re-projection, the
+rationale batch) the withheld nodes it would have held had nothing been withheld, and the
+overview, a fold of the whole read, the read's own count. The directed-call view and the run
+snapshot each read their own answer and count it as they read.
+
 W is the caller's worktree: the git top-level of the cwd, else, outside any repository, the cwd;
 a git failure inside a repository is an error. Every reader names it by that one rule (graph,
 ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing

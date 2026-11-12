@@ -1077,6 +1077,61 @@ pub fn neighborhood(graph: &Graph, seed: &str, depth: i64) -> Neighborhood {
     neighborhood_of(graph, std::slice::from_ref(&seed.to_string()), seed, depth)
 }
 
+/// How many nodes of `withheld` - the part a read withheld beside `graph`, the nodes it withheld
+/// and the edges it dropped for an end it withheld - the walk [`neighborhood_of`] takes from
+/// `seeds` within `depth` hops reaches, stepping as the store's walk does: a withheld node is
+/// counted and never stepped from, except that a withheld seed still reaches its members by THE
+/// MEMBER RULE, which reads no edge. The label of a walk's answer counts these.
+pub fn withheld_reached(graph: &Graph, withheld: &Graph, seeds: &[String], depth: i64) -> usize {
+    let held: BTreeSet<&str> = withheld.nodes.iter().map(|n| n.id.as_str()).collect();
+    if held.is_empty() {
+        return 0;
+    }
+    let mut members_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut file_of_member: BTreeMap<&str, &str> = BTreeMap::new();
+    for n in graph.nodes.iter().chain(&withheld.nodes) {
+        if let Some(file) = member_file(n) {
+            members_of.entry(file).or_default().push(n.id.as_str());
+            file_of_member.insert(n.id.as_str(), file);
+        }
+    }
+    // Each node's neighbours either way over the live edges: every answered edge, and a dropped
+    // edge toward its withheld end alone.
+    let mut adjacent: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let answered = graph.edges.iter().map(|e| (e, true));
+    for (e, answered) in answered.chain(withheld.edges.iter().map(|e| (e, false))) {
+        if e.valid_to.is_some() {
+            continue;
+        }
+        for (near, far) in [(&e.from, &e.to), (&e.to, &e.from)] {
+            if answered || held.contains(far.as_str()) {
+                adjacent.entry(near).or_default().push(far);
+            }
+        }
+    }
+    let mut reached: BTreeSet<&str> = seeds.iter().map(String::as_str).collect();
+    let mut frontier: Vec<&str> = reached.iter().copied().collect();
+    for _ in 0..depth {
+        let mut next = Vec::new();
+        for near in std::mem::take(&mut frontier) {
+            let members = members_of.get(near).into_iter().flatten().copied();
+            let far: Vec<&str> = match held.contains(near) {
+                true => members.collect(),
+                false => (members.chain(file_of_member.get(near).copied()))
+                    .chain(adjacent.get(near).into_iter().flatten().copied())
+                    .collect(),
+            };
+            for far in far {
+                if reached.insert(far) && !held.contains(far) {
+                    next.push(far);
+                }
+            }
+        }
+        frontier = next;
+    }
+    reached.iter().filter(|id| held.contains(*id)).count()
+}
+
 /// The multi-seed core of [`neighborhood`]: the seeded BFS over `seeds` (each seed is initially
 /// reached, so the walk fans out from ALL of them at once), returning the reached nodes and the
 /// tier-tagged edges among them, with `echo_seed` recorded as the response's `seed`. This is the

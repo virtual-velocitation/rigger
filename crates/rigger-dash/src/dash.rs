@@ -52,7 +52,7 @@ use crate::contextgraph::{
 use crate::contextgraph::query::{
     bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
     memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
-    Buckets,
+    withheld_reached, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -3091,6 +3091,7 @@ pub fn route(
         target,
         events,
         graph,
+        &Graph::default(),
         0,
         None,
         progress_events,
@@ -3133,11 +3134,15 @@ pub enum GraphLabel {
 }
 
 /// What a whole-graph provider reads: the graph a read drew, how many test entities its `tests`
-/// filter removed from it, which the graph itself does not hold, and what that read describes.
+/// filter removed from it, which the graph itself does not hold, the part of the graph it
+/// withheld, and what that read describes.
 #[derive(Debug, Default)]
 pub struct GraphRead {
     pub graph: Graph,
     pub tests_hidden: usize,
+    /// The nodes the read withheld and the edges it dropped for an end it withheld, from which
+    /// each view counts the withheld hits of its own answer; empty when nothing is withheld.
+    pub withheld: Graph,
     /// What the read describes; `None` for a provider that opens no store.
     pub label: Option<GraphLabel>,
 }
@@ -3147,8 +3152,7 @@ impl From<Graph> for GraphRead {
     fn from(graph: Graph) -> Self {
         GraphRead {
             graph,
-            tests_hidden: 0,
-            label: None,
+            ..GraphRead::default()
         }
     }
 }
@@ -3193,14 +3197,38 @@ impl From<CallGraph> for CallsRead {
     }
 }
 
-/// [`route`] over a graph read that hid `tests_hidden` test entities, which the overview reports,
-/// and that describes `graph_label`, which the run snapshot states.
+/// `graph` with the part a read withheld beside it, `withheld`, added back: the whole graph a
+/// fold reads to count the withheld nodes it would have held.
+fn unwithheld(graph: &Graph, withheld: &Graph) -> Graph {
+    let mut whole = graph.clone();
+    whole.nodes.extend(withheld.nodes.iter().cloned());
+    whole.edges.extend(withheld.edges.iter().cloned());
+    whole
+}
+
+/// How many distinct nodes of `withheld` are among the ids `held` gives, read only when
+/// something was withheld.
+fn count_withheld(withheld: &Graph, held: impl FnOnce() -> Vec<String>) -> usize {
+    if withheld.nodes.is_empty() {
+        return 0;
+    }
+    let ids: BTreeSet<String> = held().into_iter().collect();
+    (withheld.nodes.iter())
+        .filter(|n| ids.contains(&n.id))
+        .count()
+}
+
+/// [`route`] over a graph read that withheld `withheld` beside `graph`, which each graph view
+/// counts the withheld hits of its own answer from, that hid `tests_hidden` test entities, which
+/// the overview reports, and that describes `graph_label`, which the run snapshot states and each
+/// graph view states with its own count.
 #[allow(clippy::too_many_arguments)]
 fn route_hiding(
     method: &str,
     target: &str,
     events: &[Event],
     graph: &Graph,
+    withheld: &Graph,
     tests_hidden: usize,
     graph_label: Option<&GraphLabel>,
     progress_events: &[Event],
@@ -3304,6 +3332,24 @@ fn route_hiding(
             // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
             // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
             // is present, so every existing `/api/graph` view stays byte-identical.
+            //
+            // Each view states the read's label with its own answer's withheld count: a walk (the
+            // seeded neighborhood, a card's one hop) the withheld nodes it reaches without stepping
+            // from one, as the store's walk counts them; a fold (a drill, a re-projection, the
+            // rationale batch) the withheld nodes it would have held had nothing been withheld; the
+            // overview, a fold of the whole read, the read's own count.
+            let labelled = |response: Response, withheld_hits: Option<usize>| {
+                response.labelled(graph_label.map(|label| match (label, withheld_hits) {
+                    (GraphLabel::Read(l), Some(withheld)) => GraphLabel::Read(Label {
+                        withheld,
+                        ..l.clone()
+                    }),
+                    _ => label.clone(),
+                }))
+            };
+            // A fold's count: the withheld nodes among `held`, the ids the fold computed over the
+            // whole graph would have held.
+            let unwithheld = || unwithheld(graph, withheld);
             if let Some(raw_explain) = query_param(target, "explain") {
                 let ids: Vec<String> = raw_explain
                     .split(',')
@@ -3313,12 +3359,18 @@ fn route_hiding(
                 let batch = RationaleBatch {
                     nodes: rationale_batch(graph, &ids),
                 };
-                return match serde_json::to_string(&batch) {
+                let hits = count_withheld(withheld, || {
+                    (rationale_batch(&unwithheld(), &ids).into_iter())
+                        .map(|r| r.node)
+                        .collect()
+                });
+                let response = match serde_json::to_string(&batch) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => {
                         Response::text(500, &format!("dash: rationale projection failed: {e}"))
                     }
                 };
+                return labelled(response, Some(hits));
             }
             // The METADATA CARD (spec 63 c2): `card=<id>` returns ONE subject's card - content
             // only, on demand, mirroring `explain=`'s per-node shape (never riding every other
@@ -3328,13 +3380,16 @@ fn route_hiding(
             // never a 404/500. Checked alongside `explain=`, before the lens/seed dispatch, so
             // every existing `/api/graph` view stays byte-identical.
             if let Some(raw_card) = query_param(target, "card") {
+                let subject = percent_decode(raw_card);
                 let body = CardResponse {
-                    card: card(graph, &percent_decode(raw_card)),
+                    card: card(graph, &subject),
                 };
-                return match serde_json::to_string(&body) {
+                let hits = withheld_reached(graph, withheld, &[subject], 1);
+                let response = match serde_json::to_string(&body) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
+                return labelled(response, Some(hits));
             }
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
             // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
@@ -3345,8 +3400,17 @@ fn route_hiding(
                     .map(percent_decode)
                     .as_deref(),
             );
-            let body = if let Some(raw_cluster) = query_param(target, "cluster") {
-                serde_json::to_string(&cluster_detail(graph, &percent_decode(raw_cluster), &lens))
+            let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
+                let key = percent_decode(raw_cluster);
+                let hits = count_withheld(withheld, || {
+                    (cluster_detail(&unwithheld(), &key, &lens).nodes.into_iter())
+                        .map(|n| n.id)
+                        .collect()
+                });
+                (
+                    serde_json::to_string(&cluster_detail(graph, &key, &lens)),
+                    Some(hits),
+                )
             } else {
                 let seed = query_param(target, "seed")
                     .map(percent_decode)
@@ -3354,7 +3418,7 @@ fn route_hiding(
                 if seed.is_empty() {
                     let mut overview = clustered_overview(graph, &lens);
                     overview.tests_hidden = tests_hidden;
-                    serde_json::to_string(&overview)
+                    (serde_json::to_string(&overview), None)
                 } else if query_param(target, "lens").is_some() {
                     // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
                     // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
@@ -3362,7 +3426,15 @@ fn route_hiding(
                     // fires only when a lens is explicitly present, so a lens-ABSENT seed request
                     // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
                     // composition-absent back-compat).
-                    serde_json::to_string(&reproject(graph, &seed, &lens))
+                    let hits = count_withheld(withheld, || {
+                        (member_set(&unwithheld(), &seed).into_iter())
+                            .map(|n| n.id.clone())
+                            .collect()
+                    });
+                    (
+                        serde_json::to_string(&reproject(graph, &seed, &lens)),
+                        Some(hits),
+                    )
                 } else {
                     let depth = query_param(target, "depth")
                         .and_then(|v| v.parse::<i64>().ok())
@@ -3374,13 +3446,18 @@ fn route_hiding(
                     // a graph node. Re-point it onto that unit's content nodes so the click lands on
                     // a real neighborhood; a seed that already resolves to a node is unchanged.
                     let seeds = repoint_seed(events, graph, &seed);
-                    graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref())
+                    let hits = withheld_reached(graph, withheld, &seeds, depth);
+                    (
+                        graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref()),
+                        Some(hits),
+                    )
                 }
             };
-            match body {
+            let response = match body {
                 Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                 Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
-            }
+            };
+            labelled(response, hits)
         }
         _ => Response::text(404, "not found"),
     }
@@ -3688,6 +3765,7 @@ where
                                 &target,
                                 &events,
                                 &read.graph,
+                                &read.withheld,
                                 read.tests_hidden,
                                 read.label.as_ref(),
                                 &progress,
@@ -3697,12 +3775,9 @@ where
                                 base,
                                 &[],
                             );
-                            // A graph view states what its read describes in its headers; the run
-                            // snapshot states it in its body, beside the decisions it draws.
-                            let answer = match path {
-                                "/api/graph" => answer.labelled(read.label),
-                                _ => answer,
-                            };
+                            // A graph view states what its read describes in its headers (the route
+                            // counts its own answer's withheld hits); the run snapshot states it in
+                            // its body, beside the decisions it draws.
                             drawn = read.graph;
                             answer
                         }
@@ -6498,6 +6573,7 @@ mod tests {
                 &format!("/api/graph?lens={lens_name}"),
                 &[],
                 &graph,
+                &Graph::default(),
                 hidden,
                 None,
                 &[],
@@ -8527,9 +8603,8 @@ mod tests {
             let graph_provider = move |_: Option<&str>, tests: Tests| {
                 g.lock().unwrap().push(tests);
                 GraphRead {
-                    graph: Graph::default(),
                     tests_hidden: 4,
-                    label: None,
+                    ..GraphRead::default()
                 }
             };
             let calls_provider = move |_: Option<&str>,
@@ -8712,7 +8787,16 @@ mod tests {
                 ))
             });
             let whole = read.clone();
+            // The read withheld `x` alone: a view counts the withheld hits of its own answer.
             let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
+                withheld: Graph {
+                    nodes: vec![Node {
+                        id: "x".to_string(),
+                        kind: KIND_CODE_ENTITY.to_string(),
+                        attrs: BTreeMap::new(),
+                    }],
+                    ..Graph::default()
+                },
                 label: whole.clone(),
                 ..GraphRead::default()
             };
@@ -8758,11 +8842,14 @@ mod tests {
             withheld: 3,
         });
         let label = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 3 withheld";
+        // The seed view reaches the one withheld node, `x`, so it states 1 where the overview
+        // states the whole read's 3.
+        let seeded = "X-Rigger-Graph-Label: describes c1; 1 file in /w/%C3%BC differs; 1 withheld";
         let unread = GraphLabel::Unread("the code store cannot be opened: 100%".to_string());
         let error = "X-Rigger-Graph-Error: the code store cannot be opened: 100%25";
         let cases: [(&str, Option<GraphLabel>, Vec<&str>); 6] = [
             ("/api/graph", Some(described.clone()), vec![label]),
-            ("/api/graph?seed=x", Some(described.clone()), vec![label]),
+            ("/api/graph?seed=x", Some(described.clone()), vec![seeded]),
             ("/api/graph", Some(unread.clone()), vec![error]),
             (
                 "/api/graph?view=calls&seed=x&dir=both",
