@@ -4461,13 +4461,8 @@ mod tests {
             "every built-in body, and the reviewer discipline and its build-cache sentence on \
              each review-tier surface, are read"
         );
-        let hits: Vec<(&str, Vec<&str>)> = texts
-            .iter()
-            .map(|(at, text)| (at.as_str(), language_marker_hits(text)))
-            .filter(|(_, markers)| !markers.is_empty())
-            .collect();
         assert_eq!(
-            hits,
+            texts_hit_by(&texts, language_marker_hits),
             Vec::<(&str, Vec<&str>)>::new(),
             "the built-in layer and the reviewer discipline name no language"
         );
@@ -4497,6 +4492,29 @@ mod tests {
         "do not repeat",
         "address or refute",
     ];
+
+    /// Every phrase of [`PRESCRIPTION_PHRASES`] the lower-cased `text` holds, in list order.
+    fn prescription_phrase_hits(text: &str) -> Vec<&'static str> {
+        let text = text.to_lowercase();
+        PRESCRIPTION_PHRASES
+            .iter()
+            .copied()
+            .filter(|phrase| text.contains(phrase))
+            .collect()
+    }
+
+    /// Each labelled text of `texts` that `check` finds a hit in, with its hits, in `texts`
+    /// order.
+    fn texts_hit_by<T: AsRef<str>>(
+        texts: &[(String, T)],
+        check: fn(&str) -> Vec<&'static str>,
+    ) -> Vec<(&str, Vec<&'static str>)> {
+        texts
+            .iter()
+            .map(|(at, text)| (at.as_str(), check(text.as_ref())))
+            .filter(|(_, hits)| !hits.is_empty())
+            .collect()
+    }
 
     /// The conductor's `EMIT_PROTOCOL` as it read before spec 121 cut its cadence clause.
     const PRE_MOVE_EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit \
