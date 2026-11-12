@@ -52,13 +52,12 @@ const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
 
-/// A `fetch` shim resolving every `/api/graph` request from a tiny in-memory fixture: `card=<id>`
-/// serves one of three fixture cards (a code entity, its file, and the concept it realizes); a
-/// `seed=&lens=` re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body
-/// naming the requested subject (so `kgSubject`/`kgSeed` land on it); anything else (the initial
-/// whole-graph overview, `explain=`, `/api/instances`, `/api/state`) serves a graceful empty. Every
-/// other kind of URL rejects (matching the live page's own network shape when nothing else answers).
-const RESOLVING_FETCH: &str = r#"
+/// The in-memory `/api/graph` fixture the `fetch` shims answer from: `card=<id>` serves one of
+/// three fixture cards (a code entity, its file, and the concept it realizes); a `seed=&lens=`
+/// re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body naming the
+/// requested subject (so `kgSubject`/`kgSeed` land on it); anything else (the initial whole-graph
+/// overview, `explain=`, `/api/instances`, `/api/state`) serves a graceful empty.
+const CARD_FIXTURE: &str = r#"
 const CODE_CARD = { id: "combat.rs::fire", kind: "code-entity", label: "fire",
   file: "combat.rs", line: "42", degree: 5, community: "combat lifecycle",
   concepts: [ { id: "concept/combat", label: "combat resolution" } ],
@@ -90,11 +89,33 @@ function __view(url){
   if (seed !== null) return { seed: seed, depth: 2, nodes: [], edges: [] };
   return { clusters: [], edges: [], total: 0 };
 }
+function __answer(url){
+  return { headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } };
+}
+"#;
+
+/// A `fetch` shim answering every `/api/graph` request from [`CARD_FIXTURE`] at once. Every other
+/// kind of URL rejects (matching the live page's own network shape when nothing else answers).
+const RESOLVING_FETCH: &str = r#"
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } });
+    return Promise.resolve(__answer(url));
   }
   return Promise.reject(new Error("no network for " + url));
+};
+"#;
+
+/// A `fetch` shim like [`RESOLVING_FETCH`] except that each `card=` request waits until the driver
+/// releases it, so a driver can see what a view draws while its card is still being fetched and
+/// what a card that lands late does. `__releaseCardsNewestFirst()` answers every held request, the
+/// latest one first.
+const HELD_CARD_FETCH: &str = r#"
+const __heldCards = [];
+function __releaseCardsNewestFirst(){ while (__heldCards.length) __heldCards.pop()(); }
+const fetch = function(url){
+  if (String(url).indexOf("/api/graph") === -1) return Promise.reject(new Error("no network for " + url));
+  if (__qval(url, "card") === null) return Promise.resolve(__answer(url));
+  return new Promise(function(resolve){ __heldCards.push(function(){ resolve(__answer(url)); }); });
 };
 "#;
 
@@ -229,14 +250,72 @@ rigger::test_cases! {
     /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
     /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
     metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
     /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
     /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
     /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
     /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
     metadata_card_wiring_fires_at_every_render_and_drill_call_site:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
+    /// RUNTIME guard that each view is drawn beside the panes it shows: a view sets the rail and
+    /// the card (holding the card's column while its body is fetched) before it draws, so a
+    /// drawing is laid out once in the room the panes leave; and a card that lands after its view
+    /// was left never opens over the next view - the latest card request is the only one drawn.
+    every_view_is_drawn_after_its_panes_and_a_late_card_is_dropped:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH], PANES_DRIVER, HARNESS_FILE), "OK every-view-drawn-after-its-panes");
 }
+
+/// Driver for the PANES' ORDER against each view's drawing: it records, at every write of
+/// `#kgpanel`, whether the card and the rail show, while every card fetch is held.
+/// - A files-lens drill is drawn with its card's column already held, the dock still empty.
+/// - Leaving that drill before its card lands, the overview is drawn with both panes hidden, and
+///   the drill's card, released afterwards, stays hidden.
+/// - The seed is drawn beside its rail and its card's column; the re-projection that follows is
+///   drawn beside its card's column; released newest first, the re-projection's card is the one
+///   shown and the seed's late card is dropped.
+const PANES_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const draws = [];
+  Object.defineProperty(el("kgpanel"), "innerHTML", { get(){ return this._html; },
+    set(v){ draws.push({ card: !el("kgcard").hidden, rail: !el("kgrail").hidden }); this._html = String(v); } });
+  const drawn = () => JSON.stringify(draws[draws.length - 1]);
+  renderMemoryRail(null);
+  renderCard(null);
+
+  kgLens = "files";
+  await drillCluster("combat.rs");
+  await flush();
+  if (drawn() !== JSON.stringify({ card: true, rail: false }))
+    throw new Error("REGRESSION: the drill was drawn before its card's column was held: " + drawn());
+  if (el("kgcard").hidden !== false || el("kgcard")._html !== "")
+    throw new Error("REGRESSION: while its card is fetched the dock holds the column, empty: " + el("kgcard")._html);
+
+  renderMemoryRail({ decisions: [], findings: [], concepts: [] });
+  await loadKgOverview();
+  await flush();
+  if (drawn() !== JSON.stringify({ card: false, rail: false }))
+    throw new Error("REGRESSION: the overview was drawn before it hid the panes: " + drawn());
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: a card that landed after its drill was left opened over the overview");
+
+  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [], memory: { decisions: [], findings: [], concepts: [] } });
+  if (drawn() !== JSON.stringify({ card: true, rail: true }))
+    throw new Error("REGRESSION: the seed was drawn before its rail and its card's column: " + drawn());
+  renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
+  if (drawn() !== JSON.stringify({ card: true, rail: true }))
+    throw new Error("REGRESSION: the re-projection was drawn before its card's column: " + drawn());
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard")._html.indexOf("TOP ENTITIES") === -1)
+    throw new Error("REGRESSION: the seed's late card replaced the re-projection's: " + el("kgcard")._html);
+
+  console.log("OK every-view-drawn-after-its-panes");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
 
 /// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in
 /// isolation (called directly with fixture data), which is structurally blind to whether the

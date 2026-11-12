@@ -5219,14 +5219,18 @@ mod tests {
             .filter(|_| !element.id.is_empty())
             .chain(element.classes.iter().map(|c| format!(".{c}")))
             .collect();
+        rules_selecting(page, |selector| names.iter().any(|name| selector == name))
+    }
+
+    /// The CSS rules whose line opens with a selector list holding a selector `picks` accepts
+    /// (each selector trimmed), from the selector list to its closing `}`.
+    fn rules_selecting<'a>(page: &'a str, picks: impl Fn(&str) -> bool) -> Vec<&'a str> {
         let mut rules = Vec::new();
         let mut at = 0;
         for line in page.split_inclusive('\n') {
             let trimmed = line.trim_start();
             let named = trimmed.split_once('{').is_some_and(|(selectors, _)| {
-                selectors
-                    .split(',')
-                    .any(|selector| names.iter().any(|name| selector.trim() == name))
+                selectors.split(',').any(|selector| picks(selector.trim()))
             });
             if named {
                 let open = at + line.len() - trimmed.len();
@@ -5410,6 +5414,55 @@ mod tests {
             page.contains(r#"box.innerHTML = '<div class="kgcard-body">'"#),
             "renderCard writes the card's rows inside the visible card"
         );
+    }
+
+    /// GIVEN the served page, WHEN the memory rail or the metadata card shows, THEN the panel
+    /// gives that pane's column up: a rule selecting `#kgpanel` while the pane is not hidden sets
+    /// the panel's margin on the pane's side to the pane's own width (one declaration, on the box
+    /// both dock in) plus its inset, so no drawn node, list row or panel control sits under either
+    /// pane, whether the pane's top is anchored below the control rows or, in a browser without
+    /// anchor positioning, the plain top. The rule is a sibling selector, so each pane precedes
+    /// the panel in the markup. Layout is outside what the page harness can run, so this pins the
+    /// column each pane takes from the panel.
+    #[test]
+    fn a_shown_rail_or_card_takes_its_column_from_the_panel() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let panel = explorer_index(&markup, "kgpanel");
+        let parent = &markup[*markup[panel]
+            .ancestors
+            .last()
+            .expect("the panel has a parent")];
+        for (docked, side) in [("kgrail", "right"), ("kgcard", "left")] {
+            let at = explorer_index(&markup, docked);
+            assert!(
+                at < panel && markup[at].ancestors == markup[panel].ancestors,
+                "#{docked} precedes #kgpanel as its sibling"
+            );
+            let rules = rules_of(&page, &markup[at]);
+            let width = declared(&rules, "width").unwrap_or_default();
+            let name = width
+                .strip_prefix("var(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .unwrap_or_else(|| {
+                    panic!("#{docked} takes its width from one declaration: {width:?}")
+                });
+            assert!(
+                declared(&rules_of(&page, parent), name).is_some(),
+                "{name} is declared on the box both panes dock in, {:?}",
+                parent.classes
+            );
+            let reserve = rules_selecting(&page, |selector| {
+                selector == format!("#{docked}:not([hidden]) ~ #kgpanel")
+            });
+            let margin = declared(&reserve, &format!("margin-{side}")).unwrap_or_default();
+            let inset = declared(&rules, side).unwrap_or_default();
+            assert!(
+                margin.contains(&width) && (inset == "0" || margin.contains(&inset)),
+                "a shown #{docked} takes {width} and its {side} inset {inset:?} from the panel, \
+                 not {margin:?}: {reserve:?}"
+            );
+        }
     }
 
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
