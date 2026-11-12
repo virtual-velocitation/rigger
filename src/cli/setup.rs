@@ -1697,95 +1697,6 @@ fn top_level_key(line: &str) -> Option<&str> {
     Some(key.trim_end())
 }
 
-/// The first line `rigger prime` prints: the instruction layers in force for this project, read
-/// from `instructions::resolve_layers` over its `operator` files, so a session starts knowing
-/// which law its agents are held to. It lists the built-ins in force in `BUILTIN` order, a
-/// replaced one as `<name> (replaced)` and a switched-off one not at all (`none` when no built-in
-/// is in force), and counts only the operator files that shadow no built-in.
-fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String {
-    let layers = instructions::resolve_layers(operator);
-    let in_force = layers
-        .builtins
-        .iter()
-        .filter_map(|layer| {
-            layer
-                .state
-                .in_force()
-                .map(|_| match layer.state.shadow_verb() {
-                    Some(verb) => format!("{} ({verb})", layer.name),
-                    None => layer.name.to_string(),
-                })
-        })
-        .collect::<Vec<_>>();
-    let builtin = if in_force.is_empty() {
-        "none".to_string()
-    } else {
-        in_force.join(", ")
-    };
-    let extra = match layers.operator.len() {
-        0 => String::new(),
-        operator => format!(" (+{operator} operator files)"),
-    };
-    format!(
-        "{} in force: {builtin}{extra} - see rigger instructions",
-        instructions::HEADING
-    )
-}
-
-/// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
-/// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
-/// criterion 5) so an operator or agent about to drive `rigger run <spec>` finds `rigger
-/// validate <spec>` instead of stumbling onto it by accident. `args.first()` is the spec
-/// path; the bare `rigger prime` the installed hook actually runs carries none, and stays
-/// exactly as it was - no lint mention.
-pub(crate) fn cmd_prime(args: &[String]) -> Res {
-    let spec_path = args.first();
-    // A session started in a subdirectory or a unit worktree of a git repository reads the
-    // instruction layer of the project at or above its place in the main checkout, never a
-    // worktree's own, and outside git the layer at the cwd, with or without a store and inside a
-    // gate's store fence alike ([`project_instruction_layer`]); its store and identity come from
-    // the one store-location authority every courier resolves through.
-    println!(
-        "{}",
-        instructions_in_force_line(&project_instruction_layer()?)
-    );
-    let found = store_if_any()?;
-    let Some((loc, selection)) = found else {
-        println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
-        if let Some(spec) = spec_path {
-            println!("{}", spec_lint_next_step(spec));
-        }
-        return Ok(());
-    };
-    // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
-    // reads the decisions it prints and nothing else - no derived event, no other project's.
-    let decisions = over_the_run_store_at(&loc, &selection, |store| {
-        Ok(store.read_stream_typed(
-            conductor::STREAM,
-            0,
-            rigger::eventstore::TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
-        )?)
-    })?;
-    println!("# Rigger: recent decisions");
-    let mut shown = 0;
-    for e in decisions.iter().rev() {
-        if let Ok(d) = serde_json::from_slice::<PeerDecision>(&e.data) {
-            println!("- {}: {}", d.id, d.summary);
-            shown += 1;
-            if shown >= 10 {
-                break;
-            }
-        }
-    }
-    if shown == 0 {
-        println!("(none yet)");
-    }
-    if let Some(spec) = spec_path {
-        println!("{}", spec_lint_next_step(spec));
-    }
-    Ok(())
-}
-
 /// Write `content` to `path` only when it does not already exist, returning `Ok(true)`
 /// when it WROTE the file and `Ok(false)` when it KEPT an existing one. Keeping is silent
 /// (a `rigger setup` / `rigger init` rerun must not narrate every file it left untouched),
@@ -4492,21 +4403,18 @@ mod tests {
             .collect()
     }
 
-    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
-    /// fan-out helpers, the built-in instruction entries, the discipline every review-tier
-    /// prompt carries and the build-cache sentence a review tier whose spawn carries a cache reads.
+    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, every
+    /// prompt-surface registry group `rigger::prompt_surface::all_groups()` returns (labelled
+    /// `REGISTRY <surface>::<name>`, the reviewer discipline and its build-cache sentence on each
+    /// review-tier surface among them), the fan-out helpers and the built-in instruction entries.
     fn every_shipped_agent_text() -> Vec<(String, String)> {
         let mut all = every_shipped_persona();
-        all.extend([
+        all.extend(rigger::prompt_surface::all_groups().into_iter().map(|g| {
             (
-                "REVIEWER_DISCIPLINE".to_string(),
-                conductor::REVIEWER_DISCIPLINE.to_string(),
-            ),
-            (
-                "REVIEWER_BUILD_CACHE".to_string(),
-                conductor::REVIEWER_BUILD_CACHE.to_string(),
-            ),
-        ]);
+                format!("REGISTRY {}::{}", g.surface, g.name),
+                g.text.to_string(),
+            )
+        }));
         all.extend(
             hooks::HELPER_AGENTS
                 .iter()
@@ -4562,22 +4470,25 @@ mod tests {
     }
 
     /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline with its build-cache sentence, read through the shipped-text helper, spell no
-    /// marker of the MARKERS rule.
+    /// discipline with its build-cache sentence on both review-tier surfaces, read through the
+    /// shipped-text helper, spell no marker of the MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
+        let reviewer = [
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_BUILD_CACHE",
+            "REGISTRY conductor::review_protocol::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::review_protocol::REVIEWER_BUILD_CACHE",
+        ];
         let texts: Vec<(String, String)> = every_shipped_agent_text()
             .into_iter()
-            .filter(|(at, _)| {
-                at.starts_with("BUILTIN ")
-                    || at == "REVIEWER_DISCIPLINE"
-                    || at == "REVIEWER_BUILD_CACHE"
-            })
+            .filter(|(at, _)| at.starts_with("BUILTIN ") || reviewer.contains(&at.as_str()))
             .collect();
         assert_eq!(
             texts.len(),
-            instructions::BUILTIN.len() + 2,
-            "every built-in body, the reviewer discipline and its build-cache sentence are read"
+            instructions::BUILTIN.len() + reviewer.len(),
+            "every built-in body, and the reviewer discipline and its build-cache sentence on \
+             each review-tier surface, are read"
         );
         let hits: Vec<(&str, Vec<&str>)> = texts
             .iter()
@@ -5663,41 +5574,6 @@ mod tests {
             hits.is_empty(),
             "size-limit sentences ship:\n{}",
             hits.join("\n")
-        );
-    }
-
-    /// `rigger prime`'s first line lists the built-ins in force over the named-entry fixture, a
-    /// replaced one marked and a switched-off one left out, and counts only the operator files
-    /// that shadow no built-in: one, then none once the unshadowed file is dropped.
-    #[test]
-    fn the_in_force_line_names_each_built_in_s_state_and_counts_only_unshadowed_files() {
-        use crate::test_support::{shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE};
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()),
-            SHADOWING_LAYER_IN_FORCE_LINE,
-            "the replaced built-in is marked, the switched-off one omitted, one file counted"
-        );
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()[1..]),
-            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
-             see rigger instructions",
-            "a file that shadows a built-in is never counted as an operator file"
-        );
-    }
-
-    /// With every built-in switched off, `rigger prime`'s first line says none is in force.
-    #[test]
-    fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
-        use crate::test_support::op;
-        let off = |name| op(name, Default::default());
-        assert_eq!(
-            instructions_in_force_line(&[
-                off("communication"),
-                off("engineering-principles"),
-                off("working-discipline"),
-            ]),
-            "# Rigger instructions in force: none - see rigger instructions",
-            "no built-in is in force and no operator file remains"
         );
     }
 }

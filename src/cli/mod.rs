@@ -44,6 +44,7 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, su
 use rigger_worktree_git::discover::{rev_parse, Location};
 
 use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
+use rigger::prompt_surface::GREP_GUARD_MESSAGE;
 
 mod critique;
 mod dashboard;
@@ -54,6 +55,7 @@ mod guard;
 mod hold;
 mod hygiene;
 mod observe;
+mod prime;
 mod run;
 mod setup;
 mod validate;
@@ -66,6 +68,7 @@ pub(crate) use guard::*;
 pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
+pub(crate) use prime::*;
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -5419,20 +5422,6 @@ fn git_repo_at(root: &Path) -> Result<String, String> {
     rev_parse(root, Location::Toplevel).map(Option::unwrap_or_default)
 }
 
-/// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a
-/// name, path or word from the graph, the caller's tree and the project's prose in one call, then
-/// the graph calls that answer the narrower name lookups (who calls a name, where a name is
-/// defined), with a
-/// `<name>` placeholder so it names no language, then the guard's rule and its escape hatch. The
-/// hatch is named in the one spelling that survives a sibling PreToolUse hook's rewrite:
-/// `--literal` inside a trailing shell comment, which the shell discards before the command runs
-/// (lesson-u101c2r3-grep-guard-literal-not-stripped).
-const GREP_GUARD_MESSAGE: &str = "A name lookup is a graph call: rigger_graph `lookup` <term>... \
-     answers a name, path or word from the graph, your working tree and the project's prose in one \
-     call; who calls <name> is rigger_graph `around` <name>, and where <name> is defined is \
-     rigger_graph `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end \
-     the command with a `# --literal` comment to proceed";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6170,6 +6159,22 @@ mod tests {
         assert!(
             line.contains(BUILD_PROVENANCE),
             "version line must report the build-provenance id; got: {line}"
+        );
+    }
+
+    /// The discipline docs' grep-guard message is its one group, `cli::docs_context`'s
+    /// `GREP_GUARD_MESSAGE` (spec 121, criterion 16): `docs_context` renders it on its one branch.
+    #[test]
+    fn the_docs_context_grep_guard_message_is_its_group() {
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        assert_renders(
+            "the docs context's grep-guard message",
+            &docs_context().grep_guard_message,
+            &rendered_groups(
+                rigger::prompt_surface::prompt_groups(),
+                "cli::docs_context",
+                &["GREP_GUARD_MESSAGE"],
+            ),
         );
     }
 

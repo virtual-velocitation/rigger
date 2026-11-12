@@ -30,9 +30,7 @@ use common::git::temp_git_project_with_commit;
 use source_audit::gate_name_in;
 
 use rigger::code_facts::{Def, FileFacts};
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, REVIEWER_DISCIPLINE,
-};
+use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -46,6 +44,7 @@ use rigger::grounder::{Grounder, Ref};
 use rigger::progress::GREP_FALLBACK_PREFIX;
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use rigger::wave::normalize_ws;
+use rigger_conductor::prompt_surface::REVIEWER_DISCIPLINE;
 use serde_json::{json, Value};
 
 use common::fixtures::apply_next_json;

@@ -375,23 +375,30 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
 /// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
 /// `(repo-relative path, text)`.
 pub fn production_sources(root: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-    collect_rs_files(&root.join("crates"), &mut files);
-    files
+    rs_files_under(root, &["src", "crates"])
         .into_iter()
-        .map(|p| {
-            let rel = p
-                .strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            (rel, p)
-        })
-        .filter(|(rel, _)| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
-        .map(|(rel, p)| {
-            let text = super::fixtures::read_text(&p);
+        .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
+        .map(|rel| {
+            let text = super::fixtures::read_text(&root.join(&rel));
             (rel, text)
+        })
+        .collect()
+}
+
+/// Every `.rs` file strictly under each of `root`'s `dirs`, in `dirs` order and sorted within
+/// each, as a repo-relative `/`-separated path.
+pub fn rs_files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
+    let mut files = Vec::new();
+    for dir in dirs {
+        collect_rs_files(&root.join(dir), &mut files);
+    }
+    files
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
         })
         .collect()
 }

@@ -85,6 +85,9 @@ pub use rigger_domain::instructions;
 pub use rigger_domain::ledger;
 pub use rigger_domain::metrics;
 pub use rigger_domain::progress;
+/// The binary crate's prompt texts and [`prompt_surface::all_groups`], every crate's registry
+/// groups (spec 121, criterion 16): see that module's own doc.
+pub mod prompt_surface;
 /// The classes of event (spec 107): the perception and episodic type lists and the ledger entry.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::retention;

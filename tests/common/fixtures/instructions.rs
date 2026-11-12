@@ -348,7 +348,10 @@ pub fn composed_system_prompt(agent_file: &str) -> String {
 /// persona, the bare heading, then each named section in order, its body with trailing
 /// whitespace trimmed.
 pub fn expected_composed_prompt(persona: &str, sections: &[(&str, &str)]) -> String {
-    let mut out = format!("{persona}\n\n{}\n", rigger::instructions::HEADING);
+    let mut out = format!(
+        "{persona}\n\n{}\n",
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
+    );
     for (name, body) in sections {
         out.push_str(&format!("\n## {name}\n{}\n", body.trim_end()));
     }
@@ -451,7 +454,7 @@ fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> Str
         "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
-        rigger::instructions::HEADING,
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING,
         builtin_body("engineering-principles").trim_end()
     )
 }
@@ -473,7 +476,7 @@ pub fn rendered_built_ins_only_layer() -> String {
     .concat();
     format!(
         "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
-        rigger::instructions::HEADING
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
     )
 }
 

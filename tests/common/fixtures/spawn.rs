@@ -200,6 +200,23 @@ pub fn scratch_tool_entry() -> serde_json::Value {
     })
 }
 
+/// Each text the MCP tool list `tools` advertises beside its stem under spec 121's THE NAMING
+/// RULE, in document order: a tool's description under `<TOOL>`, then each `inputSchema` property
+/// description under `<TOOL>_<ARG>`.
+pub fn stemmed_texts(tools: &serde_json::Value) -> Vec<(String, &str)> {
+    let mut texts = Vec::new();
+    for tool in tools.as_array().unwrap() {
+        let stem = tool["name"].as_str().unwrap().to_uppercase();
+        texts.push((stem.clone(), tool["description"].as_str().unwrap()));
+        for (arg, property) in tool["inputSchema"]["properties"].as_object().unwrap() {
+            if let Some(text) = property["description"].as_str() {
+                texts.push((format!("{stem}_{}", arg.to_uppercase()), text));
+            }
+        }
+    }
+    texts
+}
+
 /// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.
 pub fn recorded_argv(path: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(path)

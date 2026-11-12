@@ -44,10 +44,10 @@ use rigger::liveness::{marker_path, scratch_subpath};
 use rigger::progress::{RunStamped, SpawnLaunched, StopFailure};
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
-    CRITIQUE_RECORDED_FINDINGS,
 };
 use rigger::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
+use rigger_domain::prompt_surface::CRITIQUE_RECORDED_FINDINGS;
 use serde_json::{json, Value};
 
 /// A workflow whose plan-critique gate names the `critic` persona as its adversary.

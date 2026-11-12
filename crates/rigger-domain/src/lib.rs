@@ -53,6 +53,9 @@ mod near;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
 pub mod progress;
+/// The prompt-surface registry (spec 121): the `Group` type, `fill`, and the domain's own prompt
+/// texts, each one const whose doc comment opens with its class.
+pub mod prompt_surface;
 pub mod quoting;
 pub mod resolve;
 /// The classes of event (spec 107): the perception and episodic type lists and the ledger entry
@@ -114,6 +117,10 @@ mod ingest_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/instructions.rs"]
 mod instructions_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/prompt_surface.rs"]
+mod prompt_surface_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]

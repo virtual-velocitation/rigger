@@ -309,10 +309,11 @@ struct CriticHost<'a> {
 impl CriticHost<'_> {
     /// Park and spawn the critic at the hash's next attempt through the headless host, on the
     /// spec text with `union`'s findings recorded in the prompt
-    /// ([`review::CRITIQUE_RECORDED_FINDINGS`]), then judge that spawn by its own result the store
-    /// holds for the hash ([`review::read_spawned_critique`]) - never the session's own output nor
-    /// another attempt's - and reap what the spawn left under the scratch root ([`reap_spawn`]),
-    /// pass or not. A recorded result that is not a pass is an error saying why.
+    /// ([`rigger_domain::prompt_surface::CRITIQUE_RECORDED_FINDINGS`]), then judge that spawn by
+    /// its own result the store holds for the hash ([`review::read_spawned_critique`]) - never the
+    /// session's own output nor another attempt's - and reap what the spawn left under the scratch
+    /// root ([`reap_spawn`]), pass or not. A recorded result that is not a pass is an error saying
+    /// why.
     fn critique(&self, spec: &str, text: &str, hash: &str, union: &Critique) -> Res {
         let persona = self.cfg.agents.get(&self.critic.persona).ok_or_else(|| {
             format!(

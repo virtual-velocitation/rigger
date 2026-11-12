@@ -26,6 +26,7 @@ use crate::grounder::{BlastRadius, Grounder, StampedRadius};
 use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
+use crate::prompt_surface::*;
 use crate::safety;
 use crate::spawn::{
     self, review_step_role, spawn_id, spawn_retry_id, speculation_group_id, ReviewKind,
@@ -60,6 +61,7 @@ pub use rigger_domain::agent::{
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
+use rigger_domain::prompt_surface::{debug_escaped, fill};
 #[cfg(test)]
 use rigger_domain::wave::{ready_stages, unit_slug};
 
@@ -1310,14 +1312,13 @@ fn gate_evidence_block(events: &[Event], unit: &str, commit: &str) -> String {
     if rows.is_empty() {
         return String::new();
     }
-    let mut b = format!(
-        "\n\nGATE EVIDENCE for the commit under review (commit {commit}, which `git rev-parse \
-         HEAD` prints in the unit's worktree): every gate below already ran on exactly this \
-         commit.\n"
-    );
+    let mut b = fill(GATE_EVIDENCE_HEADER, &[("commit", commit)]);
     for (gate, pass, digest, evidence) in rows {
         let verdict = if pass { "PASS" } else { "FAIL" };
-        b.push_str(&format!("- {gate}: {verdict} (input digest {digest})\n"));
+        b.push_str(&fill(
+            GATE_EVIDENCE_ROW,
+            &[("gate", &gate), ("verdict", verdict), ("digest", &digest)],
+        ));
         for line in evidence.lines() {
             b.push_str(&format!("    {line}\n"));
         }
@@ -1538,23 +1539,17 @@ fn implementer_retry(ordinal: u32) -> u32 {
 /// The remediation prompt for a merge-conflict re-park (spec 88, criterion 1): lists ONLY
 /// the conflicting SOURCE paths a real edit must resolve - never a full re-implementation
 /// prompt, and never a registered regenerable path also in conflict (the conductor
-/// regenerates those itself, in a follow-up commit, after this one lands).
+/// regenerates those itself, in a follow-up commit, after this one lands). The unit's name sits
+/// quoted in the text, escaped as [`debug_escaped`] escapes it.
 fn conflict_resolution_prompt(unit: &str, conflicting: &[String]) -> String {
-    format!(
-        "Your unit {unit:?}'s change was approved and gated green, but integrating it hit a \
-         real merge conflict against work another unit landed on the run branch meanwhile - \
-         this is not a defect in your implementation, and no remediation attempt is charged for \
-         it. The run branch has already been merged into your worktree (`git merge \
-         --no-commit`) and conflict markers are left in place in exactly these path(s):\n{}\n\n\
-         Resolve the conflicts in these paths only, preserving both sides' intent, `git add` \
-         each resolved path, and `git commit` to complete the merge on your CURRENT branch. Do \
-         not revert, discard, or re-implement any of your PRIOR commits - they stay exactly as \
-         they are; you are only completing this one merge.",
-        conflicting
-            .iter()
-            .map(|p| format!("- {p}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+    let paths = conflicting
+        .iter()
+        .map(|p| format!("- {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fill(
+        CONFLICT_RESOLUTION,
+        &[("unit", &debug_escaped(unit)), ("paths", &paths)],
     )
 }
 
@@ -2149,11 +2144,9 @@ impl PriorFailure {
             // Spec 89, criterion 1: "the re-park prompt names that commit and says
             // 'finish and report; do not start over'" - verbatim, so the agent reads
             // an unambiguous instruction rather than inferring one from the sha alone.
-            b.push_str(&format!(
-                "A prior incarnation of this spawn was halted before it could report; \
-                 its uncommitted work is captured as commit {} on your branch. Finish \
-                 and report; do not start over.\n",
-                self.halted_commit.trim()
+            b.push_str(&fill(
+                PRIOR_HALTED,
+                &[("commit", self.halted_commit.trim())],
             ));
         }
         if !self.gate_evidence.is_empty()
@@ -2161,37 +2154,32 @@ impl PriorFailure {
             || !self.required.is_empty()
             || !self.contradiction.trim().is_empty()
         {
-            b.push_str(
-                "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n",
-            );
+            b.push_str(PRIOR_RETRY_HEADER);
         }
         for ev in &self.gate_evidence {
-            b.push_str("Your previous attempt failed these gates: ");
-            b.push_str(ev);
-            b.push('\n');
+            b.push_str(&fill(PRIOR_GATE, &[("evidence", ev)]));
         }
         if !self.review_reason.trim().is_empty() {
-            b.push_str("Your previous attempt was rejected by review: ");
-            b.push_str(self.review_reason.trim());
-            b.push('\n');
+            b.push_str(&fill(
+                PRIOR_REVIEW,
+                &[("reason", self.review_reason.trim())],
+            ));
         }
         if !self.required.is_empty() {
             let audit = audit_id(unit, attempt);
-            b.push_str("REQUIRED - review holds the next round to each of these:\n");
+            b.push_str(PRIOR_REQUIRED_LEAD);
             b.push_str(&required_lines(&self.required, |shape| {
-                format!("  PATTERN: {shape}. Record DecisionMade `{audit}` for it.\n")
+                fill(PRIOR_PATTERN, &[("shape", shape), ("audit", &audit)])
             }));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
             // unit's integrated change wrong, so your integrating commit was REVERTED off
             // the run branch. Fix the specific contradiction, do not blindly restart.
-            b.push_str(
-                "A later unit's work proved your integrated change wrong; your integrating \
-                 commit was REVERTED off the run branch. Fix exactly this contradiction: ",
-            );
-            b.push_str(self.contradiction.trim());
-            b.push('\n');
+            b.push_str(&fill(
+                PRIOR_CONTRADICTION,
+                &[("contradiction", self.contradiction.trim())],
+            ));
         }
         b.push('\n');
         b
@@ -2276,11 +2264,11 @@ fn marked(marker: &str, message: impl std::fmt::Display) -> Error {
     Error(format!("{marker}{message}"))
 }
 
-/// The note a spawn re-run after the emit guard refused a record it emitted carries: the
-/// refusal its previous run's error named, kept by [`RefusedRecord::reruns`] and put after the
-/// role's prompt by [`RefusedRecord::task`], so the author reads why its record did not land.
-/// Empty until a refusal, and set once: a second refusal reaches the role's own failure
-/// handling instead of a further re-run.
+/// The refusal a spawn re-run after the emit guard refused a record it emitted is told: the
+/// refusal its previous run's error named, kept by [`RefusedRecord::reruns`] and filled after the
+/// role's prompt into [`REFUSED_RECORD_NOTE`] by [`RefusedRecord::task`], so the author reads why
+/// its record did not land. Empty until a refusal, and set once: a second refusal reaches the
+/// role's own failure handling instead of a further re-run.
 #[derive(Default)]
 struct RefusedRecord(Option<String>);
 
@@ -2292,18 +2280,19 @@ impl RefusedRecord {
     fn reruns(&mut self, e: &Error, retry_left: bool) -> bool {
         let rerun = self.0.is_none() && retry_left && carries_marker(e, EMIT_REFUSED_MARKER);
         if rerun {
-            self.0 = Some(format!(
-                "Your previous run's record was refused: {}; emit it again correctly.",
-                strip_failure_marker(e).trim_end_matches('.')
-            ));
+            self.0 = Some(strip_failure_marker(e).trim_end_matches('.').to_string());
         }
         rerun
     }
 
-    /// `prompt`, followed by the refusal note once a refusal is kept.
+    /// `prompt`, followed by the refusal note ([`REFUSED_RECORD_NOTE`]) once a refusal is kept.
     fn task<'p>(&self, prompt: &'p str) -> std::borrow::Cow<'p, str> {
         match &self.0 {
-            Some(note) => format!("{prompt}\n\n{note}").into(),
+            Some(refusal) => fill(
+                REFUSED_RECORD_NOTE,
+                &[("prompt", prompt), ("refusal", refusal)],
+            )
+            .into(),
             None => prompt.into(),
         }
     }
@@ -2827,14 +2816,14 @@ struct UnitProposed {
     #[serde(default)]
     needs: Vec<String>,
     /// The spec criterion the proposed unit serves. The planner emits it as
-    /// `criterion` (the PLAN_PROTOCOL shape); `coverage` is accepted as an alias so a
+    /// `criterion` (the `render_plan_protocol` shape); `coverage` is accepted as an alias so a
     /// hand-authored proposal using the stage `coverage` vocabulary still maps.
     #[serde(default, alias = "criterion")]
     coverage: String,
     #[serde(default)]
     gates: Vec<String>,
     /// The STABLE id of the baseline criterion this proposal serves (spec 18 §3.3),
-    /// echoed from the id PLAN_PROTOCOL shows next to each criterion. The criteria are
+    /// echoed from the id `render_plan_protocol` shows next to each criterion. The criteria are
     /// displayed as `- [<id>] <text>`, so the surrounding display brackets are stripped
     /// ([`normalize_criterion_id`]) before matching - a compliant echo resolves whether
     /// or not it kept the brackets. When it matches a baseline's
@@ -6121,7 +6110,7 @@ impl RunCtx<'_> {
     /// loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
-    /// appends [`DOC_ONLY_ROUND`], that round's fact, to the prompt and to a resumed session's
+    /// appends that round's fact ([`doc_only_round`]) to the prompt and to a resumed session's
     /// task.
     fn spawn_sdet_author(
         &self,
@@ -6168,20 +6157,16 @@ impl RunCtx<'_> {
         // The doc-only fact is framing, never a gate: a delta that cannot be read leaves the
         // prompt without it, so this seam still errs only on a park.
         let delta = self.round_delta(wt, &st.name, attempt);
-        let doc_only = delta
-            .as_ref()
-            .is_some_and(|(_, paths)| is_documentation_only(paths));
-        if doc_only {
+        let doc_only = doc_only_round(delta.as_ref());
+        if !doc_only.is_empty() {
             sdet_prompt.push_str("\n\n");
-            sdet_prompt.push_str(DOC_ONLY_ROUND);
+            sdet_prompt.push_str(doc_only);
         }
         // A later attempt continues the sdet-author's own session, sent what sent the unit back
         // - the review round's delta, the gates the last attempt failed, or both - to bring the
         // periphery tests in line with (and the doc-only fact when it holds).
         let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
-        if doc_only {
-            resume_task.push_str(DOC_ONLY_ROUND);
-        }
+        resume_task.push_str(doc_only);
         let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
@@ -8864,9 +8849,9 @@ impl RunCtx<'_> {
     /// step's routed review roster (spec 67, criterion 4) - the CALLER's already-computed value
     /// over the routed panel (light or full), [`step_roster`] or [`adjudicator_roster`] -
     /// stamped verbatim as this spawn's [`SpawnOpts::reviews`].
-    /// Its prompt says which findings its verdict line upholds ([`UPHELD_PROTOCOL`]), how a
-    /// reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) and, on
-    /// a later review round, ends with that round's block, where a reject naming no
+    /// Its prompt carries the [`adjudicator_contract`] - which findings its verdict line upholds
+    /// ([`UPHELD_PROTOCOL`]) and how a reject names its REQUIRED list ([`REQUIRED_PROTOCOL`]) -
+    /// and, on a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
     // attempt, the ensure-on-park worktree, the step's roster and the review round) - the same
@@ -8898,9 +8883,9 @@ impl RunCtx<'_> {
         // `review_protocol` (spec 103, criterion 6), appended directly here, its build cache
         // sentence included exactly when its spawn at `dir` carries the unit's review cache.
         let prompt = format!(
-            "{}{}{UPHELD_PROTOCOL}{REQUIRED_PROTOCOL}{}",
+            "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            reviewer_discipline(Self::reviewer_carries_build_cache(dir)),
+            adjudicator_contract(Self::reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -8980,99 +8965,6 @@ impl RunCtx<'_> {
         units
     }
 
-    /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
-    /// output contract, never the method, which stands in each reviewer's persona. It names
-    /// those decomposition rules, states the unit size cap the workflow declares, if any
-    /// ([`Self::unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
-    /// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
-    /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
-    /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
-    /// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
-    /// leads with the prior rejection so the reviewer judges the revised
-    /// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
-    /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
-    /// fan-out).
-    fn build_dag_critique_prompt(
-        &self,
-        stages: &BTreeMap<String, Stage>,
-        radii: &[(String, Vec<String>)],
-        conflicts: &[(String, String, Vec<String>)],
-        prior_reason: &str,
-    ) -> String {
-        let mut b = String::new();
-        if !prior_reason.trim().is_empty() {
-            b.push_str("A prior plan-critique REJECTED this decomposition:\n");
-            b.push_str(prior_reason.trim());
-            b.push_str("\n\nThe planner has since revised the DAG; re-review it below.\n\n");
-        }
-        b.push_str(&format!(
-            "You are the plan-critique gate. Review the PROPOSED unit DAG below - the \
-             decomposition the planner produced - BEFORE any implementer runs, and judge \
-             it against the decomposition rules in your persona: the CROSS-UNIT rules that \
-             per-unit review cannot see.\n\n{}",
-            self.unit_size_cap_then("\n\n")
-        ));
-        b.push_str("Proposed units:\n");
-        for (name, files) in radii {
-            let st = &stages[name];
-            let criterion = if st.coverage.trim().is_empty() {
-                "(no criterion)"
-            } else {
-                st.coverage.trim()
-            };
-            let needs = if st.needs.is_empty() {
-                "none".to_string()
-            } else {
-                st.needs.join(", ")
-            };
-            let radius = if files.is_empty() {
-                "(none grounded)".to_string()
-            } else {
-                files.join(", ")
-            };
-            b.push_str(&format!(
-                "- `{name}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n"
-            ));
-        }
-        if conflicts.is_empty() {
-            b.push_str(
-                "\nBlast-radius overlap (informational): every proposed unit has a DISJOINT \
-                 blast radius.\n",
-            );
-        } else {
-            b.push_str(
-                "\nBlast-radius overlap (informational - the partitioner serializes these \
-                 into sequential batches):\n",
-            );
-            for (a, other, shared) in conflicts {
-                b.push_str(&format!(
-                    "- units `{a}` and `{other}` both touch: {}\n",
-                    shared.join(", ")
-                ));
-            }
-        }
-        // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
-        // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
-        // a defect in a criterion's own text from one a re-plan can fix.
-        b.push_str(&format!(
-            "\nRender your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to \
-             release the fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition \
-             back to the planner. A reject's cause follows this gate's contract, \
-             which governs it over any generic cause wording in your persona: \
-             \"cause\":\"{}\" only when the upheld defect is in a criterion's \
-             own text and no decomposition can remove it (two criteria that contradict \
-             under every landing order, a criterion no plan can satisfy, a demanded \
-             mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for every \
-             defect a re-plan can fix (twin units, a missing exclusion between units, {}a unit \
-             owning no criterion, a split the planner chose). When unsure, \
-             \"cause\":\"decomposition-conflict\".\n",
-            spawn::CAUSE_SPEC_AMBIGUITY,
-            self.declared_unit_size_cap()
-                .map_or("", |_| DAG_SIZE_CAP_CAUSE)
-        ));
-        b
-    }
-
     /// Re-spawn the planner with the plan-critique's rejection feedback so it revises the
     /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
     /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
@@ -9095,20 +8987,7 @@ impl RunCtx<'_> {
                 plan_st.agent
             ))
         })?;
-        let prompt = format!(
-            "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
-             the unit DAG to resolve it, then re-emit your UnitProposed refinements. To \
-             REFINE an existing unit, re-emit it under its EXACT existing unit-id - the \
-             refinement UPDATES that unit in place: its criterion text, when given, becomes \
-             the unit's text and its needs edges are replaced. The unit keeps the criterion \
-             it serves, so a re-emit naming a DIFFERENT criterion keeps the unit's text; use \
-             a NEW unit-id ONLY for a genuinely new or split unit. A NEW id serving a \
-             criterion replaces every unit an earlier pass proposed for it that this pass \
-             does not re-emit, so re-emitting a refinement under a NEW id drops the unit it \
-             meant to refine instead of refining it.\n\n{}",
-            feedback.trim(),
-            self.build_prompt(plan_st)?
-        );
+        let prompt = format!("{}{}", re_plan_lead(feedback), self.build_prompt(plan_st)?);
         let build_env = self.build_env()?;
         rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
             let id = spawn_retry_id(plan_name, ROLE_REPLAN, critique_attempt, retry);
@@ -9354,7 +9233,13 @@ impl RunCtx<'_> {
             // partitioner does not address and per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
             let conflicts = blast_radius_conflicts(&radii);
-            let prompt = self.build_dag_critique_prompt(stages, &radii, &conflicts, &prior_reason);
+            let prompt = build_dag_critique_prompt(
+                stages,
+                &radii,
+                &conflicts,
+                &prior_reason,
+                self.declared_unit_size_cap(),
+            );
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
             // (the review_protocol), so the adjudicator - grounding after it - reads them.
             // `None`: like `run_fan_out_review_loop`, this gate reviews in a throwaway
@@ -11922,26 +11807,13 @@ impl RunCtx<'_> {
         if !is_producer(st) {
             return String::new();
         }
-        let criteria = if self.deps.criteria.is_empty() {
-            "(no enumerated acceptance criteria)".to_string()
-        } else {
-            // Prefix each criterion with the SAME stable id its baseline carries
-            // (spec 18 §3.3): 1-based position, matching `baseline_units`, so the id
-            // the planner echoes equals the id `harvest_proposed` matches against.
-            self.deps
-                .criteria
-                .iter()
-                .enumerate()
-                .map(|(i, c)| format!("- [{}] {c}", criterion_stable_id(i + 1, c)))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
         format!(
             "\n\n{}\n",
-            PLAN_PROTOCOL
-                .replace("{unit_size_cap}", &self.unit_size_cap_then(" "))
-                .replace("{implementer}", &self.implementer_agent())
-                .replace("{criteria}", &criteria)
+            render_plan_protocol(
+                self.declared_unit_size_cap(),
+                &self.implementer_agent(),
+                &self.deps.criteria,
+            )
         )
     }
 
@@ -11950,15 +11822,6 @@ impl RunCtx<'_> {
     /// is declared.
     fn declared_unit_size_cap(&self) -> Option<u32> {
         Some(self.cfg.workflow.defaults.max_unit_added_lines).filter(|&cap| cap > 0)
-    }
-
-    /// What a prompt's cap slot holds: the [`unit_size_cap`] sentence and the `separator` after
-    /// it (the plan protocol's space, the DAG critique prompt's blank line) when the workflow
-    /// declares a cap ([`Self::declared_unit_size_cap`]), else nothing.
-    fn unit_size_cap_then(&self, separator: &str) -> String {
-        self.declared_unit_size_cap()
-            .map(|cap| format!("{}{separator}", unit_size_cap(cap)))
-            .unwrap_or_default()
     }
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
@@ -12249,7 +12112,7 @@ impl RunCtx<'_> {
         // two stitched sources onto the single unified traversal.
         let seed = self.grounded_seed(st);
         b.push_str(&self.graph_context(&seed, slice));
-        b.push_str(EMIT_PROTOCOL);
+        b.push_str(&emit_protocol());
         // A planner stage carries the refine protocol + the spec's acceptance criteria,
         // so it knows the baseline already exists and refines it, never re-decomposing.
         b.push_str(&self.plan_protocol(st));
@@ -13042,7 +12905,7 @@ impl RunCtx<'_> {
         // branch mutates only at the moment ITS OWN same-id event is walked - so whether a
         // same-episode sibling's ADD correctly saw a refined unit's NEW episode depended on
         // which of the two same-episode events (the refine, or the sibling's ADD) the log
-        // happened to order first. PLAN_PROTOCOL never constrains a planner's emit order
+        // happened to order first. `render_plan_protocol` never constrains a planner's emit order
         // within one re_plan spawn, so both orders are production-reachable; THE SUPERSEDE
         // RULE is unconditional on event order ("never a stage from its OWN episode, in
         // any event order"). Resolving every id's FINAL episode BEFORE any prior_owners
@@ -13083,7 +12946,7 @@ impl RunCtx<'_> {
             // PLAN-EPISODE IDENTITY, the authoritative source (spec 72 round-2 REJECT
             // fix: f-c1-episode-writeside-unwired / sdet-c1-episode-writeside-unwired-
             // test-blindspot / adv-u72c1-writeside-unwired-independently-confirmed).
-            // PLAN_PROTOCOL (below) never asks the planner to echo an `episode` value in
+            // `render_plan_protocol` (below) never asks the planner to echo an `episode` value in
             // its UnitProposed JSON, so trusting `u.episode` from the DATA payload alone
             // left every REAL planner proposal's episode permanently empty - every real
             // proposal shared rank 0 and THE SUPERSEDE RULE could never fire in
@@ -13396,7 +13259,7 @@ impl RunCtx<'_> {
             // Hold the fan-out behind the plan-critique gate (the resume-safety fix, spec
             // 10 done-when 1: ONLY an approve releases the wave). A conductor-synthesized
             // baseline inherits `[plan-critique, plan]` from the implement template, so it
-            // is naturally held; a PLANNER-proposed unit's `needs` (PLAN_PROTOCOL) name
+            // is naturally held; a PLANNER-proposed unit's `needs` (`render_plan_protocol`) name
             // only sibling unit ids, NEVER the gate, so without this it would be scheduled
             // the moment `plan` integrates - and on a RESUME the pre-gate planning wave
             // fans it out BEFORE the gate renders (or replays) its verdict, implementing a
@@ -13549,7 +13412,7 @@ fn union_gates(base: &[String], additional: &[String]) -> Vec<String> {
 /// form the display invites: a compliant echo then supersedes its one baseline instead
 /// of re-opening the paraphrase duplicate this unit exists to kill (spec 18 §3.3). A
 /// stable id never contains `[`/`]`, so trimming them from both ends is loss-free, and
-/// PLAN_PROTOCOL tells the planner the brackets are display delimiters, so the prompt
+/// `render_plan_protocol` tells the planner the brackets are display delimiters, so the prompt
 /// and the matcher agree that either form (with or without brackets) resolves.
 fn normalize_criterion_id(id: &str) -> &str {
     id.trim().trim_matches(|c| c == '[' || c == ']').trim()
@@ -13654,33 +13517,163 @@ fn gate_failure_cause(evidence: &[String]) -> String {
     format!("gate:{name}")
 }
 
-/// The unit size cap's sentence for a cap of `cap` lines: a unit is too large for one review
-/// round when it is expected to add more than `cap` lines. The plan protocol and every round of
-/// the DAG critique prompt carry it only when the workflow declares a cap
-/// (`defaults.max_unit_added_lines`); no gate measures it: the planner reads it in
-/// [`PLAN_PROTOCOL`] and splits a criterion by it, and the plan critique rejects a unit over it.
-/// That the cap measures review scope, never code shape, the planner's and both critiquing
-/// personas state.
-fn unit_size_cap(cap: u32) -> String {
-    format!("A unit is too large when it is expected to add more than {cap} lines.")
+/// What a prompt's cap slot holds for the declared unit size cap `cap`: the [`UNIT_SIZE_CAP`]
+/// sentence and the `separator` after it (the plan protocol's space, the DAG critique prompt's
+/// blank line), else nothing. A unit is too large for one review round when it is expected to add
+/// more than the cap's lines. The planner's refine protocol ([`render_plan_protocol`]) and every
+/// round of the DAG critique prompt ([`build_dag_critique_prompt`]) carry it only when the
+/// workflow declares a cap (`defaults.max_unit_added_lines`); no gate measures it: the planner
+/// reads it and splits a criterion by it, and the plan critique rejects a unit over it. That the
+/// cap measures review scope, never code shape, the planner's and both critiquing personas
+/// state.
+fn unit_size_cap_then(cap: Option<u32>, separator: &str) -> String {
+    cap.map(|cap| {
+        format!(
+            "{}{separator}",
+            fill(UNIT_SIZE_CAP, &[("cap", &cap.to_string())])
+        )
+    })
+    .unwrap_or_default()
 }
 
-/// The cause example the DAG critique's cause contract names among the defects a re-plan can
-/// fix, only when the workflow declares a unit size cap.
-const DAG_SIZE_CAP_CAUSE: &str = "a unit over the size cap, ";
-
-const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit tool with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it to the shared event log live, so other agents see it immediately.";
+/// The decision protocol every stage's prompt carries: how it records a decision
+/// ([`EMIT_PROTOCOL`]) and what the record does ([`EMIT_LIVE`]).
+fn emit_protocol() -> String {
+    format!("{EMIT_PROTOCOL}{EMIT_LIVE}")
+}
 
 /// The protocol a PLANNER (a `produces: dag`) stage follows: what the conductor does with the
 /// planner's output and the `UnitProposed` shape it reads, never how to plan - the planning
 /// policy lives in the planner's persona. The conductor has ALREADY created one deterministic
 /// baseline implement unit per acceptance criterion, which the planner REFINES; each
-/// refinement is a `UnitProposed` carrying the spec criterion it serves. The `{criteria}`
-/// placeholder is filled with the run's actual acceptance criteria, `{implementer}` with the
-/// implementer agent id the conductor assigned the baseline, and `{unit_size_cap}` with the unit
-/// size cap sentence ([`unit_size_cap`]) and a space when the workflow declares a cap, else
-/// nothing.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it. {unit_size_cap}Each part of a split echoes the split criterion's id and ends its `criterion` text with an OWNS sentence naming its part (the conductor keeps that sentence after the criterion's exact text as that unit's contract).\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor pairs your unit with its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nA unit whose `criterion_id` is none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+/// refinement is a `UnitProposed` carrying the spec criterion it serves. Its groups' `{criteria}`
+/// slot holds the run's acceptance `criteria`, one line each ([`PLAN_NO_CRITERIA`] when there is
+/// none), `{implementer}` the `implementer` agent id the conductor assigned the baseline, and
+/// `{unit_size_cap}` the unit size cap sentence and a space when the workflow declares `cap`
+/// ([`unit_size_cap_then`]), else nothing.
+fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]) -> String {
+    let criteria = if criteria.is_empty() {
+        PLAN_NO_CRITERIA.to_string()
+    } else {
+        // Prefix each criterion with the SAME stable id its baseline carries
+        // (spec 18 section 3.3): 1-based position, matching `baseline_units`, so the id
+        // the planner echoes equals the id `harvest_proposed` matches against.
+        criteria
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("- [{}] {c}", criterion_stable_id(i + 1, c)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    fill(
+        &[
+            PLAN_ROLE,
+            PLAN_SPLIT_ID_ECHO,
+            PLAN_PAIRING,
+            PLAN_COPY_TEXT,
+            PLAN_REAL_SPLIT,
+            PLAN_UNIT_PROPOSED,
+            PLAN_UNMATCHED,
+            PLAN_CRITERIA_LEAD,
+        ]
+        .concat(),
+        &[
+            ("unit_size_cap", &unit_size_cap_then(cap, " ")),
+            ("implementer", implementer),
+            ("criteria", &criteria),
+        ],
+    )
+}
+
+/// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
+/// output contract, never the method, which stands in each reviewer's persona. It names
+/// those decomposition rules, states the unit size cap the workflow declares, `cap`, if any
+/// ([`unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
+/// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
+/// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
+/// criterion 5) from one a re-plan can fix, naming a unit over the size cap
+/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
+/// leads with the prior rejection so the reviewer judges the revised
+/// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+/// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
+/// fan-out).
+fn build_dag_critique_prompt(
+    stages: &BTreeMap<String, Stage>,
+    radii: &[(String, Vec<String>)],
+    conflicts: &[(String, String, Vec<String>)],
+    prior_reason: &str,
+    cap: Option<u32>,
+) -> String {
+    let mut b = String::new();
+    if !prior_reason.trim().is_empty() {
+        b.push_str(&fill(
+            DAG_PRIOR_REJECT,
+            &[("prior_reason", prior_reason.trim())],
+        ));
+    }
+    b.push_str(DAG_CRITIQUE_OPENER);
+    b.push_str(&unit_size_cap_then(cap, "\n\n"));
+    b.push_str(DAG_UNITS_HEADER);
+    for (name, files) in radii {
+        let st = &stages[name];
+        let criterion = if st.coverage.trim().is_empty() {
+            DAG_NO_CRITERION
+        } else {
+            st.coverage.trim()
+        };
+        let needs = if st.needs.is_empty() {
+            DAG_NO_NEEDS.to_string()
+        } else {
+            st.needs.join(", ")
+        };
+        let radius = if files.is_empty() {
+            DAG_NO_RADIUS.to_string()
+        } else {
+            files.join(", ")
+        };
+        b.push_str(&fill(
+            DAG_UNIT_ROW,
+            &[
+                ("name", name),
+                ("criterion", &debug_escaped(criterion)),
+                ("needs", &needs),
+                ("radius", &radius),
+            ],
+        ));
+    }
+    if conflicts.is_empty() {
+        b.push_str(DAG_OVERLAP_DISJOINT);
+    } else {
+        b.push_str(DAG_OVERLAP_HEADER);
+        for (a, other, shared) in conflicts {
+            b.push_str(&fill(
+                DAG_OVERLAP_ROW,
+                &[("a", a), ("other", other), ("shared", &shared.join(", "))],
+            ));
+        }
+    }
+    // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
+    // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
+    // a defect in a criterion's own text from one a re-plan can fix.
+    b.push_str(&fill(
+        DAG_CRITIQUE_CONTRACT,
+        &[
+            ("spec_ambiguity", spawn::CAUSE_SPEC_AMBIGUITY),
+            ("size_cap_cause", cap.map_or("", |_| DAG_SIZE_CAP_CAUSE)),
+        ],
+    ));
+    b
+}
+
+/// The lead a re-plan's prompt opens with, ahead of the planner's own prompt: the plan
+/// critique's rejection `feedback` ([`REPLAN_LEAD`]), then how the re-plan's ids refine or replace
+/// the units an earlier pass proposed ([`REPLAN_ID_CONTRACT`]).
+fn re_plan_lead(feedback: &str) -> String {
+    format!(
+        "{}{REPLAN_ID_CONTRACT}",
+        fill(REPLAN_LEAD, &[("feedback", feedback.trim())])
+    )
+}
 
 /// The protocol a REVIEW agent (a lens or the adversary) follows so its findings
 /// reach the shared context graph - the cross-agent memory the three tiers
@@ -13690,7 +13683,7 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// agent's stdout into another's prompt. When to record a finding, and what to do with one
 /// another reviewer already raised, are guidance the communication and working-discipline
 /// built-ins state, so the protocol carries only the tool, its data and what the record
-/// reaches.
+/// reaches ([`REVIEW_FINDING_PROTOCOL`] and [`REVIEW_FINDING_LIVE`]).
 ///
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
@@ -13715,42 +13708,32 @@ const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY crea
 /// one.
 pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
     format!(
-        "Record each review finding you raise by calling the rigger_emit tool with type \"ReviewFinding\" and data:\n\
-         {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
-         The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers).{}",
+        "{}{REVIEW_FINDING_LIVE}{}",
+        fill(REVIEW_FINDING_PROTOCOL, &[("actor", actor)]),
         reviewer_discipline(carries_cache)
     )
 }
 
-/// The contract every review-tier prompt carries: only what the harness enforces or provides,
-/// never a method of review. A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6):
-/// its two sentences spell out in prose what [`RunCtx::guard_review_round_tree`]
-/// enforces at runtime - a reviewer that behaves like an implementer and edits the unit's own
-/// worktree leaves exactly the residue that guard exists to catch, name in a lesson, and restore.
-/// The cache the harness provides is [`REVIEWER_BUILD_CACHE`], appended by
-/// [`reviewer_discipline`] only for a reviewer whose environment carries it. The review
-/// method - never re-running the battery or a gate its
-/// [`gate_evidence_block`] shows green, the one targeted reproduction in a scratch worktree, and
-/// never running a gate's command as the gate runs it - is guidance, so it sits under the
-/// working-discipline body's `## When you review` section, which reaches a reviewer through
-/// [`crate::instructions::compose`]. Shared through [`reviewer_discipline`] by
-/// [`review_protocol`] (the lens and adversary tiers, which also record findings through it)
-/// and [`RunCtx::run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
-/// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
-/// wording rather than three hand-copied near-duplicates.
-pub const REVIEWER_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. Leave the unit's worktree exactly as you found it.";
-
-/// The build cache a reviewer's reproduction builds into: the unit's review cache, which
-/// [`RunCtx::spawn_env`] sets in the reviewer's environment. Held apart from
-/// [`REVIEWER_DISCIPLINE`] because a reviewer whose tree has no unit sibling (a standalone
-/// review stage, a plan critique) carries no such cache, and a sentence naming one would be
-/// false there; [`reviewer_discipline`] appends it exactly when the environment carries it.
-pub const REVIEWER_BUILD_CACHE: &str = " A reproduction builds into the build cache your spawn carries: the unit's review cache, never the cache the unit's gates use.";
-
 /// The reviewer contract a review-tier prompt ends with: [`REVIEWER_DISCIPLINE`], followed by
 /// [`REVIEWER_BUILD_CACHE`] when `carries_cache` - the spawn's environment carries the unit's
 /// review cache ([`RunCtx::reviewer_carries_build_cache`]).
+///
+/// It carries only what the harness enforces or provides, never a method of review. A REVIEW
+/// ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): [`REVIEWER_DISCIPLINE`]'s two
+/// sentences spell out in prose what [`RunCtx::guard_review_round_tree`] enforces at runtime - a
+/// reviewer that behaves like an implementer and edits the unit's own worktree leaves exactly the
+/// residue that guard exists to catch, name in a lesson, and restore. The cache the harness
+/// provides, [`REVIEWER_BUILD_CACHE`], which [`RunCtx::spawn_env`] sets in the reviewer's
+/// environment, is held apart because a reviewer whose tree has no unit sibling (a standalone
+/// review stage, a plan critique) carries no such cache, and a sentence naming one would be false
+/// there. The review method - never re-running the battery or a gate its [`gate_evidence_block`]
+/// shows green, the one targeted reproduction in a scratch worktree, and never running a gate's
+/// command as the gate runs it - is guidance, so it sits under the working-discipline body's
+/// `## When you review` section, which reaches a reviewer through [`crate::instructions::compose`].
+/// Shared by [`review_protocol`] (the lens and adversary tiers, which also record findings through
+/// it) and [`adjudicator_contract`] (whose stdout is a verdict, never a finding, so its prompt
+/// never reaches `review_protocol` at all) - ONE contract, so all three tiers carry identical
+/// wording rather than three hand-copied near-duplicates.
 fn reviewer_discipline(carries_cache: bool) -> String {
     let cache = if carries_cache {
         REVIEWER_BUILD_CACHE
@@ -13760,17 +13743,19 @@ fn reviewer_discipline(carries_cache: bool) -> String {
     format!("{REVIEWER_DISCIPLINE}{cache}")
 }
 
-/// What an adjudicator's reject names on its verdict line beside the verdict: its REQUIRED
-/// list ([`RequiredItem`]), which the next attempt is handed ([`PriorFailure::block`]) and
-/// the next review round holds it to ([`ReviewRound::block`]). Appended to every
-/// adjudicator's prompt by [`RunCtx::run_adjudicator`].
-const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the next attempt must fix, as \"required\":[{\"finding\":\"<what must change>\",\"path\":\"<the repo-relative file it is in>\",\"correctness\":<true for a correctness defect, else false>,\"pattern\":\"<the defect's shape when it recurs across sites, else empty>\"}].";
-
-/// What an adjudicator's verdict line names beside the verdict, approve or reject: the id of
-/// every finding it agrees is real, a note among them, which is how a workflow's check-in stage
-/// learns the notes it fixes ([`run_notes`]). Appended to every adjudicator's prompt by
-/// [`RunCtx::run_adjudicator`], before [`REQUIRED_PROTOCOL`].
-const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] every finding you agree is real, a note as well as a blocking one: the upheld notes are the run's notes, fixed once by the workflow's check-in stage where it has one.";
+/// The contract every adjudicator's prompt carries after its review base
+/// ([`RunCtx::run_adjudicator`]): the [`reviewer_discipline`] of `carries_cache`, then what its
+/// verdict line names beside the verdict, approve or reject - the id of every finding it agrees
+/// is real, a note among them ([`UPHELD_PROTOCOL`]), which is how a workflow's check-in stage
+/// learns the notes it fixes ([`UPHELD_NOTES`], [`run_notes`]) - and, on a reject, its REQUIRED
+/// list ([`REQUIRED_PROTOCOL`], [`RequiredItem`]), which the next attempt is handed
+/// ([`PriorFailure::block`]) and the next review round holds it to ([`ReviewRound::block`]).
+fn adjudicator_contract(carries_cache: bool) -> String {
+    format!(
+        "{}{UPHELD_PROTOCOL}{UPHELD_NOTES}{REQUIRED_PROTOCOL}",
+        reviewer_discipline(carries_cache)
+    )
+}
 
 /// The block the check-in stage's first prompt ends with when the run's review upheld any
 /// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what
@@ -13779,7 +13764,7 @@ fn notes_block(notes: &[RunNote]) -> String {
     if notes.is_empty() {
         return String::new();
     }
-    let mut block = String::from("\n\nRUN NOTES: the review of this run upheld these findings:\n");
+    let mut block = String::from(RUN_NOTES_HEADER);
     for note in notes {
         let at = if note.about.is_empty() {
             String::new()
@@ -13788,9 +13773,7 @@ fn notes_block(notes: &[RunNote]) -> String {
         };
         block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
     }
-    block.push_str(
-        "Fix every note that is still true; leave a note that is false or already fixed.\n",
-    );
+    block.push_str(RUN_NOTES_CLOSING);
     block
 }
 
@@ -13817,32 +13800,25 @@ impl ReviewRound {
     /// The block every review tier's prompt ends with on this round: what it reviews (the
     /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
     fn block(&self) -> String {
-        let base = &self.base;
         let delta = if self.delta.is_empty() {
-            "nothing".to_string()
+            DELTA_NONE.to_string()
         } else {
             self.delta.join(", ")
         };
         let required = if self.required.is_empty() {
-            "That round required no item.\n".to_string()
+            ROUND_REQUIRED_NONE.to_string()
         } else {
             let audit = &self.audit;
             format!(
-                "The items that round REQUIRED:\n{}",
+                "{ROUND_REQUIRED_HEADER}{}",
                 required_lines(&self.required, |shape| {
-                    format!(
-                    "  PATTERN: {shape}. The implementer's audit record is DecisionMade `{audit}`.\n"
-                )
+                    fill(ROUND_PATTERN, &[("shape", shape), ("audit", audit)])
                 })
             )
         };
         format!(
-            "\n\nLATER REVIEW ROUND: an earlier round judged this unit at {base} and sent it back. \
-             Review what changed since - `git diff {base}..HEAD`, which changed {delta} - and \
-             whether each item that round required is now fixed.\n{required}\
-             A finding outside that delta blocks only as a correctness defect \
-             (`\"correctness\":true`); any other finding outside it is recorded for the operator \
-             and never blocks. A reject this round names every item it requires in `required`.\n"
+            "{}{required}{ROUND_OUTSIDE_DELTA}",
+            fill(ROUND_LEAD_IN, &[("base", &self.base), ("delta", &delta)])
         )
     }
 }
@@ -13919,10 +13895,6 @@ pub const FINDINGS_VERBATIM_N: usize = 24;
 /// never blow the prompt, but generous enough to carry the findings a later tier weighs.
 pub const FINDINGS_BUDGET_BYTES: usize = 48 * 1024;
 
-/// The header for the decisions-that-govern injection - single-sourced so the
-/// capped renderer and any test that asserts its presence agree byte-for-byte.
-const DECISIONS_HEADER: &str = "Decisions that govern these files:";
-
 /// Spec 29c criterion 1 prompt budget: how many code-entity DEFINITIONS the code-neighborhood
 /// section keeps verbatim - the code half of the unified graph the ONE seeded traversal surfaces
 /// around the touched files, ordered by (file, line, id) so the earliest-in-file definitions
@@ -13946,17 +13918,8 @@ fn task_block(st: &Stage) -> String {
     if is_producer(st) || criterion.is_empty() {
         return String::new();
     }
-    format!(
-        "UNIT: {}\nACCEPTANCE CRITERION (verbatim from the spec - this is your whole contract; \
-         the reviewer judges the unit against exactly this text):\n{criterion}\n\n",
-        st.name
-    )
+    fill(TASK_BLOCK, &[("name", &st.name), ("criterion", criterion)])
 }
-
-/// The header for the code-neighborhood injection - single-sourced so the renderer and any test
-/// that asserts its presence agree byte-for-byte.
-const CODE_NEIGHBORHOOD_HEADER: &str =
-    "Code neighborhood of these files (definitions the run extracted into the unified graph):";
 
 /// The design-intent node kinds (spec 29b) the design-intent grounding section surfaces (spec 29c
 /// criterion 3): the RA / architecture doc / addendum that SPECIFIES a file, the load-bearing
@@ -13999,11 +13962,6 @@ const DESIGN_INTENT_VERBATIM_N: usize = 24;
 /// the full graph; only this prompt slice narrows.
 const DESIGN_INTENT_BUDGET_BYTES: usize = 24 * 1024;
 
-/// The header for the design-intent injection (spec 29c criterion 3) - single-sourced so the
-/// renderer and any test that asserts its presence agree byte-for-byte.
-const DESIGN_INTENT_HEADER: &str =
-    "Design intent that governs these files (the handbook rule that governs them, the RA/architecture section that specifies them, the load-bearing decision that constrains them, and the local rationale - reached by the one graph traversal):";
-
 /// The ONE budget rule every capped record surface shares - the prompt sections (through
 /// [`render_capped_section`]) and `rigger peers` / the `rigger_peers` tool alike: walking
 /// `entries` in their ranked order (newest first for a prompt section, best-ranked first for
@@ -14030,14 +13988,6 @@ pub fn within_budget<T>(
     }
     kept
 }
-
-/// How a reader reaches a decision, lesson or finding a capped surface left out: by its id
-/// through the graph. Every capped record surface names it in its left-out note - the prompt
-/// sections, `rigger peers` (which keeps only its best-ranked records under one budget, so it is
-/// no full-set recovery) and `rigger graph --around`'s governance tail - so the instruction is
-/// stated once.
-pub const RECORD_RECOVERY: &str = "read one by id with `rigger graph --show <id>` (the \
-     `rigger_graph` tool's `show`; its `around` on a file lists the ids)";
 
 /// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -
 /// the three node sections (through [`write_capped_section`]) AND the code-neighborhood section
@@ -14295,8 +14245,13 @@ fn write_capped_section<'g>(
                 .collect()
         },
         |elided: usize| {
-            format!(
-                "- (+{elided} older {noun}(s) elided to keep this prompt under budget - {RECORD_RECOVERY})\n",
+            fill(
+                ELISION_NOTE_RECORDS,
+                &[
+                    ("elided", &elided.to_string()),
+                    ("noun", noun),
+                    ("recover", RECORD_RECOVERY),
+                ],
             )
         },
     );
@@ -14341,12 +14296,9 @@ fn plain_node_line(n: &contextgraph::Node) -> String {
 /// definition nor an elided design-intent node.
 fn graph_around_recovery(seed: &[String]) -> String {
     match seed {
-        [] => "`rigger graph --around <file>`".to_string(),
-        [one] => format!("`rigger graph --around {one}`"),
-        _ => format!(
-            "`rigger graph --around <file>` on each of: {}",
-            seed.join(" ")
-        ),
+        [] => GRAPH_AROUND_ANY.to_string(),
+        [one] => fill(GRAPH_AROUND_ONE, &[("seed", one)]),
+        _ => fill(GRAPH_AROUND_EACH, &[("seeds", &seed.join(" "))]),
     }
 }
 
@@ -14395,9 +14347,12 @@ fn write_code_neighborhood(b: &mut String, g: &Graph, seed: &[String]) {
         // code neighborhood restores nothing (its slice is already fact-complete).
         |_rendered_ids| Vec::new(),
         |elided: usize| {
-            let recover = graph_around_recovery(seed);
-            format!(
-                "- (+{elided} more definition(s) elided to keep this prompt under budget - recover the full set with {recover})\n",
+            fill(
+                ELISION_NOTE_DEFINITIONS,
+                &[
+                    ("elided", &elided.to_string()),
+                    ("recover", &graph_around_recovery(seed)),
+                ],
             )
         },
     );
@@ -14591,9 +14546,12 @@ fn write_design_intent(b: &mut String, g: &Graph, seed: &[String]) {
         // citation, which this section deliberately does not render.
         |_rendered_ids| Vec::new(),
         |elided: usize| {
-            let recover = graph_around_recovery(seed);
-            format!(
-                "- (+{elided} more design-intent node(s) elided to keep this prompt under budget - recover the full set with {recover})\n",
+            fill(
+                ELISION_NOTE_DESIGN_INTENT,
+                &[
+                    ("elided", &elided.to_string()),
+                    ("recover", &graph_around_recovery(seed)),
+                ],
             )
         },
     );
@@ -14630,7 +14588,7 @@ fn write_capped_lessons(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_LESSON,
         contextgraph::REL_ABOUT,
-        "Lessons already learned about these files:",
+        LESSONS_HEADER,
         "lesson",
         LESSONS_VERBATIM_N,
         LESSONS_BUDGET_BYTES,
@@ -14655,7 +14613,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         seed,
         contextgraph::KIND_FINDING,
         contextgraph::REL_ABOUT,
-        "Findings other reviewers have already raised about these files:",
+        FINDINGS_HEADER,
         "finding",
         FINDINGS_VERBATIM_N,
         FINDINGS_BUDGET_BYTES,
@@ -14684,12 +14642,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
 /// string with no seed/graph data, so it is deterministic by construction. Hyphens only (a gate
 /// rejects U+2014), and it names only first-party tools.
 fn write_peers_pointer(b: &mut String) {
-    b.push_str(
-        "\nPrior decisions, lessons, and findings about these files are not inlined here to keep \
-         this prompt precise - retrieve the ones your sub-problem needs, scoped to your \
-         blast-radius files, with the lookup verbs below (the full history is retained in the \
-         store and any record reads by id, not truncated into this prompt).\n",
-    );
+    b.push_str(PEERS_POINTER);
     write_lookup_pointer(b);
 }
 
@@ -14708,15 +14661,8 @@ fn write_peers_pointer(b: &mut String) {
 /// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
 /// gate rejects U+2014), and it names only first-party tools.
 fn write_lookup_pointer(b: &mut String) {
-    b.push_str(
-        "\nThe knowledge graph answers lookups through four verbs: `rigger graph --lookup \
-         <term>...` (each term at once from the graph, a live scan of your working tree and the \
-         project's ranked prose), `rigger graph --around <file|entity>` (structure: callers, \
-         callees, neighbors), `rigger graph --show <entity>` \
-         (text: definition site and body), `rigger peers <file>...` (memory: decisions, findings, \
-         lessons). Who calls <name>: `rigger graph --around <name>`. Where is <name> defined: \
-         `rigger graph --show <name>`.\n",
-    );
+    b.push_str(LOOKUP_LEAD_IN);
+    b.push_str(LOOKUP_VERBS);
 }
 
 /// The DETERMINISTIC branch a unit's worktree uses across runs (resume-continuity):
@@ -15216,32 +15162,36 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
     let mut causes: Vec<String> = Vec::new();
     if let Some((base, paths)) = delta {
         let changed = if paths.is_empty() {
-            "nothing".to_string()
+            DELTA_NONE.to_string()
         } else {
             paths.join(", ")
         };
-        causes.push(format!(
-            "review sent this unit back at {base} - `git diff {base}..HEAD` since changed {changed}"
+        causes.push(fill(
+            LATER_ATTEMPT_REVIEW_CAUSE,
+            &[("base", base), ("changed", &changed)],
         ));
     }
     for ev in gate_evidence {
-        causes.push(format!("the previous attempt failed these gates: {ev}"));
+        causes.push(fill(LATER_ATTEMPT_GATE_CAUSE, &[("evidence", ev)]));
     }
     if causes.is_empty() {
         return String::new();
     }
-    format!(
-        "LATER ATTEMPT: the implementer has revised this unit since {}. Bring the periphery tests \
-         in line with that change.\n",
-        causes.join("; and ")
-    )
+    fill(LATER_ATTEMPT, &[("causes", &causes.join("; and "))])
 }
 
 /// The fact the sdet-author's fresh prompt and a resumed session's task state on a round
-/// whose delta changed documentation only ([`is_documentation_only`]). It is the round's
-/// fact alone: what such a round asks of the periphery tests is the sdet-author persona's
-/// guidance, never this prompt's.
-const DOC_ONLY_ROUND: &str = "This round changed documentation only.";
+/// whose `delta` changed documentation only ([`is_documentation_only`]): [`DOC_ONLY_ROUND`],
+/// else nothing - on any other round, and with no delta. It is the round's fact alone: what
+/// such a round asks of the periphery tests is the sdet-author persona's guidance, never this
+/// prompt's.
+fn doc_only_round(delta: Option<&(String, Vec<String>)>) -> &'static str {
+    if delta.is_some_and(|(_, paths)| is_documentation_only(paths)) {
+        DOC_ONLY_ROUND
+    } else {
+        ""
+    }
+}
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
 /// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
@@ -18452,14 +18402,14 @@ mod tests {
         );
         assert_eq!(
             checkin_prompt(&driver),
-            format!("{EMIT_PROTOCOL}{}", notes_block(&want)),
+            format!("{}{}", emit_protocol(), notes_block(&want)),
             "the check-in prompt is today's, then each upheld note once"
         );
         let judged = driver.prompts_for("adj");
         assert_eq!(judged.len(), 4, "premise: four review rounds were judged");
         for prompt in judged {
             assert!(
-                prompt.contains(UPHELD_PROTOCOL),
+                prompt.contains(&format!("{UPHELD_PROTOCOL}{UPHELD_NOTES}")),
                 "every adjudicator is told to list the notes it upholds:\n{prompt}"
             );
         }
@@ -18481,7 +18431,7 @@ mod tests {
             Vec::new(),
             &[],
         );
-        assert_eq!(checkin_prompt(&driver), EMIT_PROTOCOL);
+        assert_eq!(checkin_prompt(&driver), emit_protocol());
         let mut want = Vec::new();
         for unit in [u1.as_str(), u2.as_str(), "checkin"] {
             want.extend([
@@ -18499,7 +18449,7 @@ mod tests {
     #[test]
     fn producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec() {
         // A `produces: dag` planner stage must be wired: its prompt carries the spec's
-        // acceptance criteria AND the PLAN_PROTOCOL (the refine-protocol), and it
+        // acceptance criteria AND the `render_plan_protocol` (the refine-protocol), and it
         // GROUNDS on the spec criteria - NOT on a `coverage: required` label. A file
         // named for the criterion is found by grounding; a "required" decoy is NOT,
         // proving the literal coverage label is never the grounding query.
@@ -18537,7 +18487,7 @@ mod tests {
         );
         // A fan-out implement template, so the conductor's baseline closes the
         // criterion (coverage holds after planning) and the implementer agent id the
-        // PLAN_PROTOCOL names is "worker".
+        // `render_plan_protocol` names is "worker".
         cfg.workflow.stages.insert(
             "implement".into(),
             Stage {
@@ -18595,15 +18545,15 @@ mod tests {
             prompt.contains(criterion),
             "the planner prompt must list the spec acceptance criteria; got:\n{prompt}"
         );
-        // The PLAN_PROTOCOL (refine-protocol) reaches the planner, naming the
+        // The `render_plan_protocol` (refine-protocol) reaches the planner, naming the
         // implementer agent and the UnitProposed shape.
         assert!(
             prompt.contains("UnitProposed") && prompt.contains("REFINE"),
-            "the planner prompt must carry the PLAN_PROTOCOL refine instructions; got:\n{prompt}"
+            "the planner prompt must carry the `render_plan_protocol` refine instructions; got:\n{prompt}"
         );
         assert!(
             prompt.contains("\"agent\":\"worker\""),
-            "the PLAN_PROTOCOL must tell the planner the implementer agent id; got:\n{prompt}"
+            "the `render_plan_protocol` must tell the planner the implementer agent id; got:\n{prompt}"
         );
         // Grounding is on the SPEC, not the label: the unified traversal seeds on the
         // criterion-matching file (metrics.rs) and surfaces its code neighborhood, while the
@@ -18888,7 +18838,7 @@ mod tests {
         let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
         // The planner splits the one criterion into TWO sub-units, both citing it
-        // verbatim (the PLAN_PROTOCOL shape).
+        // verbatim (the `render_plan_protocol` shape).
         let driver = Stub {
             emits: vec![
                 (
@@ -19581,7 +19531,7 @@ mod tests {
         // the EXACT unit id - `harvest_proposed` folds a re-emit only when
         // `stages.contains_key(&u.id)` - and NEVER on the shared criterion. So two DISTINCT
         // new ids the planner intentionally SPLITS across one criterion (each citing it
-        // verbatim, the PLAN_PROTOCOL shape) BOTH survive harvest: the first supersedes the
+        // verbatim, the `render_plan_protocol` shape) BOTH survive harvest: the first supersedes the
         // criterion's baseline, and the sibling - a genuinely-new id - finds the baseline
         // already removed and is simply ADDED. Neither is folded into the other, and the
         // split is never collapsed to a single owner. Were the fold to key on shared
@@ -20207,13 +20157,13 @@ mod tests {
         };
         /// spec 72 criterion 1, round-2 REJECT fix (f-c1-episode-writeside-unwired /
         /// sdet-c1-episode-writeside-unwired-test-blindspot / adv-u72c1-writeside-unwired-
-        /// independently-confirmed): PLAN_PROTOCOL's JSON template
+        /// independently-confirmed): `render_plan_protocol`'s JSON template
         /// (`{"id","agent","criterion","criterion_id","needs"}`) never asks the planner to echo an
         /// `episode` value, so every REAL proposal's `data.episode` deserializes to the
         /// serde-default empty string. Unlike
         /// `a_later_episodes_proposal_supersedes_an_earlier_episodes_planner_unit` above (which
         /// hand-supplies `data.episode` and so cannot catch this), these two events carry NO
-        /// `episode` key in their JSON `data` at all - exactly the PLAN_PROTOCOL shape - and are
+        /// `episode` key in their JSON `data` at all - exactly the `render_plan_protocol` shape - and are
         /// distinguished ONLY by `meta.spawn`, exactly what the spawn-bound MCP server
         /// (mcpserver.rs) and the `rigger emit --spawn` courier both stamp authoritatively on
         /// the real write path. RED before the fix: both proposals fold to episode `""` (shared
@@ -20236,7 +20186,7 @@ mod tests {
         // Guards the comparison direction itself (not criterion 2's same-CALL split
         // proof): a proposal must never treat its OWN episode as "earlier than itself"
         // on a re-fold. Two proposals sharing one episode id, both citing the SAME
-        // criterion (the PLAN_PROTOCOL "several units echoing the SAME id" real-split
+        // criterion (the `render_plan_protocol` "several units echoing the SAME id" real-split
         // shape), must both survive - a `<` comparison that degenerated to `<=` would
         // wrongly let the second same-episode proposal supersede the first.
         let criterion = "the gadget module is implemented";
@@ -20869,20 +20819,21 @@ mod tests {
     #[test]
     fn plan_protocol_tells_the_planner_gates_come_from_the_template() {
         // spec 103 criterion 1 ("THE PROTOCOL STAYS SILENT ON GATES", decided):
-        // PLAN_PROTOCOL keeps its JSON proposal shape exactly as documented - id,
-        // agent, criterion, criterion_id, needs - but states in prose that every
-        // proposed unit runs the fan-out template's own gates automatically, so the
-        // planner never needs to (though a `gates` field is still accepted for
-        // compatibility, per the harvest-side union proven above).
+        // The planner's refine protocol ([`render_plan_protocol`]) keeps its JSON proposal
+        // shape exactly as documented - id, agent, criterion, criterion_id, needs - but states
+        // in prose that every proposed unit runs the fan-out template's own gates
+        // automatically, so the planner never needs to (though a `gates` field is still
+        // accepted for compatibility, per the harvest-side union proven above).
+        let plan_protocol = render_plan_protocol(None, "worker", &[]);
         assert!(
-            PLAN_PROTOCOL.to_lowercase().contains("gate"),
-            "PLAN_PROTOCOL must tell the planner that every proposed unit runs the \
-             fan-out template's own gates automatically; got:\n{PLAN_PROTOCOL}"
+            plan_protocol.to_lowercase().contains("gate"),
+            "the refine protocol must tell the planner that every proposed unit runs the \
+             fan-out template's own gates automatically; got:\n{plan_protocol}"
         );
         assert!(
-            !PLAN_PROTOCOL.contains("\"gates\""),
-            "PLAN_PROTOCOL's JSON proposal shape must stay silent on gates - the \
-             planner never authors them; got:\n{PLAN_PROTOCOL}"
+            !plan_protocol.contains("\"gates\""),
+            "the refine protocol's JSON proposal shape must stay silent on gates - the \
+             planner never authors them; got:\n{plan_protocol}"
         );
     }
 
@@ -20995,7 +20946,7 @@ mod tests {
         };
         /// Regression for the bracketed-id-echo defect (spec 18 §3.3, adjudicator remedy): the
         /// criteria are DISPLAYED to the planner as `- [<id>] <text>` (`plan_protocol`/
-        /// PLAN_PROTOCOL), so a planner that echoes the id AS SHOWN copies the display brackets and
+        /// `render_plan_protocol`), so a planner that echoes the id AS SHOWN copies the display brackets and
         /// emits `criterion_id = "[c1-<hex>]"`, while the baseline stores the UN-bracketed
         /// `c1-<hex>`. The matcher MUST tolerate that bracketed form (strip surrounding brackets
         /// before comparing) or a compliant echo paired with a PARAPHRASE re-opens the exact
@@ -38328,7 +38279,7 @@ mod tests {
         let rows: [(&str, String, String, Stated); 9] = [
             (
                 "the decision protocol",
-                EMIT_PROTOCOL.to_string(),
+                emit_protocol(),
                 "Record each decision you make by calling the rigger_emit tool with type \
                  \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\
                  \"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\nThis writes it \
@@ -48702,7 +48653,9 @@ mod tests {
             let critique = driver.adj_prompts.lock().unwrap()[0].clone();
             assert_eq!(
                 (
-                    planner.rsplit_once(EMIT_PROTOCOL).map(|(_, tail)| tail),
+                    planner
+                        .rsplit_once(emit_protocol().as_str())
+                        .map(|(_, tail)| tail),
                     critique.as_str()
                 ),
                 (
@@ -48753,7 +48706,9 @@ mod tests {
         let id = criterion_stable_id(1, WIDGET_CRITERION);
         let protocol = plan_protocol_text("worker", &format!("- [{id}] {WIDGET_CRITERION}"), 0);
         assert_eq!(
-            planner.rsplit_once(EMIT_PROTOCOL).map(|(_, tail)| tail),
+            planner
+                .rsplit_once(emit_protocol().as_str())
+                .map(|(_, tail)| tail),
             Some(protocol.as_str()),
             "the planner's task ends with the emit protocol and then the plan protocol alone"
         );
@@ -49116,7 +49071,7 @@ mod tests {
         );
     }
 
-    /// PLAN_PROTOCOL shape: the split units carry `needs:[]` (only sibling ids ever appear
+    /// `render_plan_protocol` shape: the split units carry `needs:[]` (only sibling ids ever appear
     /// here, never the gate) - the exact shape that bypassed the pre-gate wave.
     fn widget_split() -> Vec<(String, Value)> {
         ["u-a", "u-b"]
@@ -49163,7 +49118,7 @@ mod tests {
     fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_escalated() {
         // The resume-hold arm the approve-only resume test cannot reach (spec 10,
         // done-when 1: ONLY an approve releases the wave). A real planner follows
-        // PLAN_PROTOCOL - its proposed units' `needs` name sibling unit ids, NEVER the
+        // `render_plan_protocol` - its proposed units' `needs` name sibling unit ids, NEVER the
         // gate - so it emits the split with `needs:[]`. Two run() over ONE store model
         // a resumed `rigger run`: run 1 the gate
         // ESCALATES (its adjudicator never approves the shared-blast-radius split); run 2
@@ -50295,7 +50250,7 @@ mod tests {
         // RELEASES the wave). The fix gives PLANNER-proposed units the gate as a
         // dependency; this pins that the dependency is SATISFIED on approve, so a proposed
         // unit (not only a conductor baseline) fans out once the gate integrates. The
-        // planner proposes two DISJOINT units (each `needs:[]`, the PLAN_PROTOCOL shape),
+        // planner proposes two DISJOINT units (each `needs:[]`, the `render_plan_protocol` shape),
         // superseding the baselines; disjoint blast radii draw no rule-6 conflict, the
         // adjudicator approves, and BOTH proposed implementers run.
         let dir = tempfile::tempdir().unwrap();
@@ -50412,7 +50367,7 @@ mod tests {
     }
 
     /// A driver that answers the PLANNER (emitting a shared-blast-radius split in the
-    /// real PLAN_PROTOCOL `needs:[]` shape) but PARKS every reviewer, so the plan-critique
+    /// real `render_plan_protocol` `needs:[]` shape) but PARKS every reviewer, so the plan-critique
     /// gate stays UNRESOLVED (mid-review) across a step boundary - the resumed-run shape
     /// where the gate's adversary and adjudicator each park across their own pass. Any
     /// implementer (`worker`) spawn is recorded via `calls` before it parks, so a fan-out
@@ -50625,5 +50580,740 @@ mod tests {
             message.contains(crate::ledger::TYPE_UNIT_STATUS),
             "and names the event that was lost: {message}"
         );
+    }
+
+    /// Spec 121, criterion 16: over the placeholder fixture each protocol, note block and task
+    /// block the conductor renders is its registry groups concatenated in registry order, on each
+    /// branch, a computed slot value filled into its group and a list's lines spelled here, since
+    /// neither a skeleton nor a joiner is a group.
+    #[test]
+    fn the_conductor_protocols_are_their_groups_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let groups =
+            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        let plan = |names: &[&str]| groups("conductor::render_plan_protocol", names);
+        let plan_body = plan(&[
+            "PLAN_ROLE",
+            "PLAN_SPLIT_ID_ECHO",
+            "PLAN_PAIRING",
+            "PLAN_COPY_TEXT",
+            "PLAN_REAL_SPLIT",
+            "PLAN_UNIT_PROPOSED",
+            "PLAN_UNMATCHED",
+            "PLAN_CRITERIA_LEAD",
+        ]);
+        let capped = format!("{} ", fill(&plan(&["UNIT_SIZE_CAP"]), &[("cap", "7")]));
+        let criterion = format!(
+            "- [{}] {{criterion}}",
+            criterion_stable_id(1, "{criterion}")
+        );
+        let adjudicator = |names: &[&str]| groups("conductor::adjudicator_contract", names);
+        let review = |names: &[&str]| groups("conductor::review_protocol", names);
+        let notes = |names: &[&str]| groups("conductor::notes_block", names);
+        let note = |id: &str, about: &[&str], summary: &str| RunNote {
+            id: id.to_string(),
+            about: about.iter().map(|a| a.to_string()).collect(),
+            summary: summary.to_string(),
+        };
+        let mut refused = RefusedRecord::default();
+        let unrefused = refused.task("{prompt}").into_owned();
+        assert!(
+            refused.reruns(&marked(EMIT_REFUSED_MARKER, "{refusal}."), true),
+            "premise: the emit guard's first refusal re-runs the spawn"
+        );
+        let task = |coverage: &str, produces: &str| {
+            task_block(&Stage {
+                name: "{name}".to_string(),
+                coverage: coverage.to_string(),
+                produces: produces.to_string(),
+                ..Stage::default()
+            })
+        };
+        let conflict = groups(
+            "conductor::conflict_resolution_prompt",
+            &["CONFLICT_RESOLUTION"],
+        );
+        let round = |paths: &[&str]| {
+            let delta = (
+                "{base}".to_string(),
+                paths.iter().map(|p| p.to_string()).collect(),
+            );
+            doc_only_round(Some(&delta)).to_string()
+        };
+        let pushed = |write: fn(&mut String)| {
+            let mut b = String::new();
+            write(&mut b);
+            b
+        };
+        let cases = [
+            (
+                "the emit protocol",
+                emit_protocol(),
+                groups("conductor::emit_protocol", &["EMIT_PROTOCOL", "EMIT_LIVE"]),
+            ),
+            (
+                "the plan protocol with no cap and no criterion",
+                render_plan_protocol(None, "{implementer}", &[]),
+                fill(
+                    &plan_body,
+                    &[
+                        ("unit_size_cap", ""),
+                        ("criteria", &plan(&["PLAN_NO_CRITERIA"])),
+                    ],
+                ),
+            ),
+            (
+                "the plan protocol with a cap and a criterion",
+                render_plan_protocol(Some(7), "{implementer}", &["{criterion}".to_string()]),
+                fill(
+                    &plan_body,
+                    &[("unit_size_cap", &capped), ("criteria", &criterion)],
+                ),
+            ),
+            (
+                "the adjudicator contract of a spawn carrying a build cache",
+                adjudicator_contract(true),
+                adjudicator(&[
+                    "REVIEWER_DISCIPLINE",
+                    "REVIEWER_BUILD_CACHE",
+                    "UPHELD_PROTOCOL",
+                    "UPHELD_NOTES",
+                    "REQUIRED_PROTOCOL",
+                ]),
+            ),
+            (
+                "the adjudicator contract of a spawn carrying none",
+                adjudicator_contract(false),
+                adjudicator(&[
+                    "REVIEWER_DISCIPLINE",
+                    "UPHELD_PROTOCOL",
+                    "UPHELD_NOTES",
+                    "REQUIRED_PROTOCOL",
+                ]),
+            ),
+            (
+                "the finding protocol of a spawn carrying a build cache",
+                review_protocol("{actor}", true),
+                review(&[
+                    "REVIEW_FINDING_PROTOCOL",
+                    "REVIEW_FINDING_LIVE",
+                    "REVIEWER_DISCIPLINE",
+                    "REVIEWER_BUILD_CACHE",
+                ]),
+            ),
+            (
+                "the finding protocol of a spawn carrying none",
+                review_protocol("{actor}", false),
+                review(&[
+                    "REVIEW_FINDING_PROTOCOL",
+                    "REVIEW_FINDING_LIVE",
+                    "REVIEWER_DISCIPLINE",
+                ]),
+            ),
+            ("no run note", notes_block(&[]), String::new()),
+            (
+                "two run notes, one about no location",
+                notes_block(&[
+                    note("{id}", &["{a}", "{b}"], "{summary}"),
+                    note("{bare}", &[], "{text}"),
+                ]),
+                format!(
+                    "{}- {{id}} ({{a}}, {{b}}): {{summary}}\n- {{bare}}: {{text}}\n{}",
+                    notes(&["RUN_NOTES_HEADER"]),
+                    notes(&["RUN_NOTES_CLOSING"])
+                ),
+            ),
+            (
+                "a task with no refusal kept",
+                unrefused,
+                "{prompt}".to_string(),
+            ),
+            (
+                "a task re-run after a refusal",
+                refused.task("{prompt}").into_owned(),
+                groups("conductor::RefusedRecord::task", &["REFUSED_RECORD_NOTE"]),
+            ),
+            (
+                "a producer's task",
+                task("{criterion}", "dag"),
+                String::new(),
+            ),
+            (
+                "the task of a stage owning no criterion",
+                task("  ", ""),
+                String::new(),
+            ),
+            (
+                "a unit's task",
+                task("{criterion}", ""),
+                groups("conductor::task_block", &["TASK_BLOCK"]),
+            ),
+            (
+                "a conflict over one path",
+                conflict_resolution_prompt("{unit}", &["{path}".to_string()]),
+                fill(&conflict, &[("paths", "- {path}")]),
+            ),
+            (
+                "a conflict over two paths of a unit whose name holds a quote",
+                conflict_resolution_prompt("a\"b", &["p".to_string(), "q".to_string()]),
+                fill(&conflict, &[("unit", r#"a\"b"#), ("paths", "- p\n- q")]),
+            ),
+            (
+                "a round that changed documentation only",
+                round(&["docs/a.md"]),
+                groups("conductor::doc_only_round", &["DOC_ONLY_ROUND"]),
+            ),
+            (
+                "a round that changed code",
+                round(&["src/a.rs"]),
+                String::new(),
+            ),
+            ("no round", doc_only_round(None).to_string(), String::new()),
+            (
+                "the peers pointer",
+                pushed(write_peers_pointer),
+                groups(
+                    "conductor::write_peers_pointer",
+                    &["PEERS_POINTER", "LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
+                ),
+            ),
+            (
+                "the lookup pointer",
+                pushed(write_lookup_pointer),
+                groups(
+                    "conductor::write_lookup_pointer",
+                    &["LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
+                ),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// Spec 121, criterion 16: over the placeholder fixture the blocks a retried or re-reviewed
+    /// unit's prompts carry - the prior failure, the later review round, the gate evidence and
+    /// the sdet-author's later attempt - are their registry groups concatenated in registry order,
+    /// on each branch, a computed slot value filled into its group and each REQUIRED item's and
+    /// gate's lines spelled here, since neither a skeleton nor a joiner is a group.
+    #[test]
+    fn the_retry_and_review_round_blocks_are_their_groups_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let groups =
+            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        let prior = |names: &[&str]| groups("conductor::PriorFailure::block", names);
+        let round = |names: &[&str]| groups("conductor::ReviewRound::block", names);
+        let evidence = |names: &[&str]| groups("conductor::gate_evidence_block", names);
+        let later = |names: &[&str]| groups("conductor::later_attempt_block", names);
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let required = |pattern: &str| RequiredItem {
+            finding: "{finding}".to_string(),
+            path: "{path}".to_string(),
+            pattern: pattern.to_string(),
+            ..RequiredItem::default()
+        };
+        let item_line = "- {path}: {finding}\n";
+        let failure = |f: PriorFailure| f.block("{unit}", 2);
+        let pattern = fill(
+            &prior(&["PRIOR_PATTERN"]),
+            &[("audit", &audit_id("{unit}", 2))],
+        );
+        let review_round = |delta: &[&str], required: Vec<RequiredItem>| {
+            ReviewRound {
+                base: "{base}".to_string(),
+                delta: strings(delta),
+                required,
+                audit: "{audit}".to_string(),
+            }
+            .block()
+        };
+        let ran =
+            |gate: &str, pass: bool, commit: &str| digested_verdict("u-1", gate, 1, pass, commit);
+        let gated = [ran("fmt", true, "c0ffee"), ran("test", false, "c0ffee")];
+        let elsewhere = [ran("fmt", true, "deadbeef")];
+        let row = |gate: &str, verdict: &str| {
+            let digest = input_digest(gate, "c0ffee");
+            format!(
+                "{}    {gate}-1\n    line two\n",
+                fill(
+                    &evidence(&["GATE_EVIDENCE_ROW"]),
+                    &[("gate", gate), ("verdict", verdict), ("digest", &digest)]
+                )
+            )
+        };
+        let attempt = |paths: Option<&[&str]>, gates: &[&str]| {
+            let delta = paths.map(|p| ("{base}".to_string(), strings(p)));
+            later_attempt_block(delta.as_ref(), &strings(gates))
+        };
+        let review_cause = |changed: &str| {
+            fill(
+                &later(&["LATER_ATTEMPT_REVIEW_CAUSE"]),
+                &[("changed", changed)],
+            )
+        };
+        let later_lead = |causes: &str| fill(&later(&["LATER_ATTEMPT"]), &[("causes", causes)]);
+        let cases = [
+            (
+                "no prior failure",
+                failure(PriorFailure::default()),
+                String::new(),
+            ),
+            (
+                "a halted spawn alone",
+                failure(PriorFailure {
+                    halted_commit: "{commit}".to_string(),
+                    ..PriorFailure::default()
+                }),
+                format!("{}\n", prior(&["PRIOR_HALTED"])),
+            ),
+            (
+                "a failed gate alone",
+                failure(PriorFailure {
+                    gate_evidence: strings(&["{evidence}"]),
+                    ..PriorFailure::default()
+                }),
+                format!("{}\n", prior(&["PRIOR_RETRY_HEADER", "PRIOR_GATE"])),
+            ),
+            (
+                "a review reason alone",
+                failure(PriorFailure {
+                    review_reason: "{reason}".to_string(),
+                    ..PriorFailure::default()
+                }),
+                format!("{}\n", prior(&["PRIOR_RETRY_HEADER", "PRIOR_REVIEW"])),
+            ),
+            (
+                "a REQUIRED item with no pattern alone",
+                failure(PriorFailure {
+                    required: vec![required("")],
+                    ..PriorFailure::default()
+                }),
+                format!(
+                    "{}{item_line}\n",
+                    prior(&["PRIOR_RETRY_HEADER", "PRIOR_REQUIRED_LEAD"])
+                ),
+            ),
+            (
+                "a contradiction alone",
+                failure(PriorFailure {
+                    contradiction: "{contradiction}".to_string(),
+                    ..PriorFailure::default()
+                }),
+                format!(
+                    "{}\n",
+                    prior(&["PRIOR_RETRY_HEADER", "PRIOR_CONTRADICTION"])
+                ),
+            ),
+            (
+                "every prior failure at once",
+                failure(PriorFailure {
+                    gate_evidence: strings(&["{evidence}"]),
+                    review_reason: "{reason}".to_string(),
+                    required: vec![required("{shape}")],
+                    contradiction: "{contradiction}".to_string(),
+                    halted_commit: "{commit}".to_string(),
+                }),
+                format!(
+                    "{}{item_line}{pattern}{}\n",
+                    prior(&[
+                        "PRIOR_HALTED",
+                        "PRIOR_RETRY_HEADER",
+                        "PRIOR_GATE",
+                        "PRIOR_REVIEW",
+                        "PRIOR_REQUIRED_LEAD",
+                    ]),
+                    prior(&["PRIOR_CONTRADICTION"])
+                ),
+            ),
+            (
+                "a review round with no delta and no REQUIRED item",
+                review_round(&[], Vec::new()),
+                format!(
+                    "{}{}",
+                    fill(
+                        &round(&["ROUND_LEAD_IN"]),
+                        &[("delta", &round(&["DELTA_NONE"]))]
+                    ),
+                    round(&["ROUND_REQUIRED_NONE", "ROUND_OUTSIDE_DELTA"])
+                ),
+            ),
+            (
+                "a review round with a delta and a REQUIRED pattern item",
+                review_round(&["{a}", "{b}"], vec![required("{shape}")]),
+                format!(
+                    "{}{item_line}{}",
+                    fill(
+                        &round(&["ROUND_LEAD_IN", "ROUND_REQUIRED_HEADER"]),
+                        &[("delta", "{a}, {b}")]
+                    ),
+                    round(&["ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
+                ),
+            ),
+            (
+                "gate evidence with no commit",
+                gate_evidence_block(&gated, "u-1", ""),
+                String::new(),
+            ),
+            (
+                "gate evidence of gates that ran on another commit",
+                gate_evidence_block(&elsewhere, "u-1", "c0ffee"),
+                String::new(),
+            ),
+            (
+                "gate evidence of a passed and a failed gate",
+                gate_evidence_block(&gated, "u-1", "c0ffee"),
+                format!(
+                    "{}{}{}",
+                    fill(
+                        &evidence(&["GATE_EVIDENCE_HEADER"]),
+                        &[("commit", "c0ffee")]
+                    ),
+                    row("fmt", "PASS"),
+                    row("test", "FAIL")
+                ),
+            ),
+            ("a first attempt", attempt(None, &[]), String::new()),
+            (
+                "a later attempt after a review round that changed nothing",
+                attempt(Some(&[]), &[]),
+                later_lead(&review_cause(&later(&["DELTA_NONE"]))),
+            ),
+            (
+                "a later attempt after a review round and a failed gate",
+                attempt(Some(&["{a}", "{b}"]), &["{evidence}"]),
+                later_lead(&format!(
+                    "{}; and {}",
+                    review_cause("{a}, {b}"),
+                    later(&["LATER_ATTEMPT_GATE_CAUSE"])
+                )),
+            ),
+            (
+                "a later attempt after a failed gate alone",
+                attempt(None, &["{evidence}"]),
+                later_lead(&later(&["LATER_ATTEMPT_GATE_CAUSE"])),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
+    /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
+    /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
+    /// none, and a re-plan under a cap whose unit holds each and overlaps another, its rows'
+    /// lists filled into their slots.
+    #[test]
+    fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let dag = |names: &[&str]| {
+            rendered_groups(
+                prompt_groups(),
+                "conductor::build_dag_critique_prompt",
+                names,
+            )
+        };
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let critique = |coverage: &str,
+                        needs: &[&str],
+                        radius: &[&str],
+                        conflicts: &[(String, String, Vec<String>)],
+                        prior: &str,
+                        cap: Option<u32>| {
+            let stage = Stage {
+                name: "{name}".to_string(),
+                coverage: coverage.to_string(),
+                needs: strings(needs),
+                ..Stage::default()
+            };
+            let stages = BTreeMap::from([("{name}".to_string(), stage)]);
+            let radii = [("{name}".to_string(), strings(radius))];
+            build_dag_critique_prompt(&stages, &radii, conflicts, prior, cap)
+        };
+        let contract = |size_cap_cause: &str| {
+            fill(
+                &dag(&["DAG_CRITIQUE_CONTRACT"]),
+                &[
+                    ("spec_ambiguity", spawn::CAUSE_SPEC_AMBIGUITY),
+                    ("size_cap_cause", size_cap_cause),
+                ],
+            )
+        };
+        let overlap = [(
+            "{a}".to_string(),
+            "{other}".to_string(),
+            strings(&["{s}", "{t}"]),
+        )];
+        let cases = [
+            (
+                "a first plan",
+                critique("  ", &[], &[], &[], "  ", None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
+                    contract("")
+                ),
+            ),
+            (
+                "a re-plan under a cap",
+                critique(
+                    "{criterion}",
+                    &["{x}", "{y}"],
+                    &["{p}", "{q}"],
+                    &overlap,
+                    "{prior_reason}",
+                    Some(7),
+                ),
+                format!(
+                    "{}{}\n\n{}{}{}",
+                    dag(&["DAG_PRIOR_REJECT", "DAG_CRITIQUE_OPENER"]),
+                    fill(&dag(&["UNIT_SIZE_CAP"]), &[("cap", "7")]),
+                    fill(
+                        &dag(&["DAG_UNITS_HEADER", "DAG_UNIT_ROW"]),
+                        &[("needs", "{x}, {y}"), ("radius", "{p}, {q}")]
+                    ),
+                    fill(
+                        &dag(&["DAG_OVERLAP_HEADER", "DAG_OVERLAP_ROW"]),
+                        &[("shared", "{s}, {t}")]
+                    ),
+                    contract(&dag(&["DAG_SIZE_CAP_CAUSE"]))
+                ),
+            ),
+            (
+                "a re-plan's lead",
+                re_plan_lead("{feedback}"),
+                rendered_groups(
+                    prompt_groups(),
+                    "conductor::re_plan_lead",
+                    &["REPLAN_LEAD", "REPLAN_ID_CONTRACT"],
+                ),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// Spec 121, criterion 16: over the placeholder fixture each grounding section is its
+    /// registry groups concatenated in registry order, on each branch: no candidate renders
+    /// nothing, one renders the header and its line, and one over the section's byte budget
+    /// renders the header and the elision note naming one elided entry and its recovery, which for
+    /// the code neighborhood and the design intent names the one seed, or each of two seeds; the
+    /// `--around` recovery names any file, the one seed, or each seed. The entry lines are spelled
+    /// here, since a skeleton is not a group.
+    #[test]
+    fn the_grounding_sections_are_their_groups_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::test_support::{edge, node_with_attrs};
+        type Writer = fn(&mut String, &Graph, &[String]);
+        let groups =
+            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        let written = |write: Writer, g: &Graph, seed: &[String]| {
+            let mut b = String::new();
+            write(&mut b, g, seed);
+            b
+        };
+        let over = |budget: usize| "x".repeat(budget);
+        let seed = vec!["core.rs".to_string()];
+        let records: [(&str, &str, &str, Writer, String, &str, String); 3] = [
+            (
+                "conductor::write_capped_decisions",
+                "DECISIONS_HEADER",
+                "decision",
+                write_capped_decisions,
+                render_capped_decisions(&[("d-one", "{summary}".to_string(), "")], &seed),
+                "- d-one: {summary}\n",
+                render_capped_decisions(&[("d-one", over(DECISIONS_BUDGET_BYTES), "")], &seed),
+            ),
+            (
+                "conductor::write_capped_lessons",
+                "LESSONS_HEADER",
+                "lesson",
+                write_capped_lessons,
+                render_capped_lessons(&[("l-one", "{summary}".to_string())], &seed),
+                "- l-one: {summary}\n",
+                render_capped_lessons(&[("l-one", over(LESSONS_BUDGET_BYTES))], &seed),
+            ),
+            (
+                "conductor::write_capped_findings",
+                "FINDINGS_HEADER",
+                "finding",
+                write_capped_findings,
+                render_capped_findings(&[("f-one", "{by}", "{summary}".to_string())], &seed),
+                "- {by} (f-one): {summary}\n",
+                render_capped_findings(&[("f-one", "{by}", over(FINDINGS_BUDGET_BYTES))], &seed),
+            ),
+        ];
+        let mut cases: Vec<(String, String, String)> = Vec::new();
+        for (surface, header, noun, write, one, line, over_budget) in records {
+            let header = groups(surface, &[header]);
+            let note = fill(
+                &groups(surface, &["ELISION_NOTE_RECORDS"]),
+                &[
+                    ("elided", "1"),
+                    ("noun", noun),
+                    ("recover", &groups(surface, &["RECORD_RECOVERY"])),
+                ],
+            );
+            cases.extend([
+                (
+                    format!("{surface}: no record"),
+                    written(write, &Graph::default(), &seed),
+                    String::new(),
+                ),
+                (
+                    format!("{surface}: one record"),
+                    one,
+                    format!("{header}\n{line}\n"),
+                ),
+                (
+                    format!("{surface}: one record over the budget"),
+                    over_budget,
+                    format!("{header}\n{note}\n"),
+                ),
+            ]);
+        }
+        let neighborhood = |names: &[&str]| groups("conductor::write_code_neighborhood", names);
+        let code_header = neighborhood(&["CODE_NEIGHBORHOOD_HEADER"]);
+        let code_note = |recover: String| {
+            fill(
+                &neighborhood(&["ELISION_NOTE_DEFINITIONS"]),
+                &[("elided", "1"), ("recover", &recover)],
+            )
+        };
+        let long_name = over(CODE_NEIGHBORHOOD_BUDGET_BYTES);
+        let intent = |names: &[&str]| groups("conductor::write_design_intent", names);
+        let intent_header = intent(&["DESIGN_INTENT_HEADER"]);
+        let intent_note = |recover: String| {
+            fill(
+                &intent(&["ELISION_NOTE_DESIGN_INTENT"]),
+                &[("elided", "1"), ("recover", &recover)],
+            )
+        };
+        let intent_seed = vec!["{seed}".to_string()];
+        let two_seeds = |first: &str| vec![first.to_string(), "{other}".to_string()];
+        let intent_graph = |title: &str| Graph {
+            nodes: vec![node_with_attrs(
+                "{id}",
+                contextgraph::KIND_DESIGN_DOC,
+                &[("title", title)],
+            )],
+            edges: vec![edge(
+                "{id}",
+                "{seed}",
+                contextgraph::REL_SPECIFIES,
+                contextgraph::TIER_EXTRACTED,
+            )],
+        };
+        let around = |names: &[&str]| groups("conductor::graph_around_recovery", names);
+        cases.extend([
+            (
+                "the code neighborhood with no definition".to_string(),
+                written(write_code_neighborhood, &Graph::default(), &seed),
+                String::new(),
+            ),
+            (
+                "the code neighborhood with one definition".to_string(),
+                render_code_neighborhood(&[("core.rs", "run", "function", 1)], &seed),
+                format!("{code_header}\n- core.rs:1  function run\n\n"),
+            ),
+            (
+                "the code neighborhood with one definition over the budget".to_string(),
+                render_code_neighborhood(&[("core.rs", &long_name, "function", 1)], &seed),
+                format!(
+                    "{code_header}\n{}\n",
+                    code_note(fill(
+                        &neighborhood(&["GRAPH_AROUND_ONE"]),
+                        &[("seed", "core.rs")]
+                    ))
+                ),
+            ),
+            (
+                "the code neighborhood of two seeds with one definition over the budget"
+                    .to_string(),
+                render_code_neighborhood(
+                    &[("core.rs", &long_name, "function", 1)],
+                    &two_seeds("core.rs"),
+                ),
+                format!(
+                    "{code_header}\n{}\n",
+                    code_note(fill(
+                        &neighborhood(&["GRAPH_AROUND_EACH"]),
+                        &[("seeds", "core.rs {other}")]
+                    ))
+                ),
+            ),
+            (
+                "the design intent with no node".to_string(),
+                written(write_design_intent, &Graph::default(), &intent_seed),
+                String::new(),
+            ),
+            (
+                "the design intent with one node".to_string(),
+                written(write_design_intent, &intent_graph("{title}"), &intent_seed),
+                format!(
+                    "{intent_header}\n- {} {{seed}}  {{id}}: {{title}}\n\n",
+                    contextgraph::REL_SPECIFIES
+                ),
+            ),
+            (
+                "the design intent with one node over the budget".to_string(),
+                written(
+                    write_design_intent,
+                    &intent_graph(&over(DESIGN_INTENT_BUDGET_BYTES)),
+                    &intent_seed,
+                ),
+                format!(
+                    "{intent_header}\n{}\n",
+                    intent_note(intent(&["GRAPH_AROUND_ONE"]))
+                ),
+            ),
+            (
+                "the design intent of two seeds with one node over the budget".to_string(),
+                written(
+                    write_design_intent,
+                    &intent_graph(&over(DESIGN_INTENT_BUDGET_BYTES)),
+                    &two_seeds("{seed}"),
+                ),
+                format!(
+                    "{intent_header}\n{}\n",
+                    intent_note(fill(
+                        &intent(&["GRAPH_AROUND_EACH"]),
+                        &[("seeds", "{seed} {other}")]
+                    ))
+                ),
+            ),
+            (
+                "the recovery of no seed".to_string(),
+                graph_around_recovery(&[]),
+                around(&["GRAPH_AROUND_ANY"]),
+            ),
+            (
+                "the recovery of one seed".to_string(),
+                graph_around_recovery(&["{seed}".to_string()]),
+                around(&["GRAPH_AROUND_ONE"]),
+            ),
+            (
+                "the recovery of two seeds".to_string(),
+                graph_around_recovery(&["{a}".to_string(), "{b}".to_string()]),
+                fill(&around(&["GRAPH_AROUND_EACH"]), &[("seeds", "{a} {b}")]),
+            ),
+        ]);
+        for (case, render, expected) in &cases {
+            assert_renders(case, render, expected);
+        }
     }
 }

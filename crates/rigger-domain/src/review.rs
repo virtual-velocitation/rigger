@@ -15,6 +15,10 @@ use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::eventstore::{Error as StoreError, Event, EventStore, Position, TypeSelection};
 use crate::ledger;
 use crate::playbooks::fnv1a_64;
+use crate::prompt_surface::{
+    fill, CRITIQUE_FRAMING, CRITIQUE_OUTPUT_CONTRACT, CRITIQUE_RECORDED_FINDINGS,
+    CRITIQUE_SPEC_TAIL,
+};
 use crate::spawn::{
     attempt_of, latest_results_lenient, requests, result_of, review_step_role, spawn_id,
     Adjudication, ReviewKind, SpawnEvent, SpawnResult, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
@@ -319,38 +323,6 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     step_roster(&steps, steps.len(), review_step_role)
 }
 
-/// The spec critique's task framing and voided-duties clause: what is under critique, how the
-/// critic's persona rules read on a spec, and the duties this task voids. The critique method
-/// itself is the persona's, under its `## When you critique a spec or a plan` section.
-const CRITIQUE_FRAMING: &str =
-    "This is a critique of a SPEC, not code: the text below is a design \
-     and its Done-when criteria, written before any run builds them. In your persona's critique \
-     rules a unit reads as a criterion, and a reject as a BLOCKING finding. Every persona or \
-     discipline duty that conflicts with a spec critique is void for this task: reviewing lenses \
-     and a diff, the rule against rendering a verdict, running gates or any build or test command, \
-     editing a file, and recording through `rigger_emit`, `rigger_progress` or `rigger_scratch`. \
-     Read the spec and the repository; the finding lines and the verdict line of your final \
-     message are the only output.\n\n";
-
-/// The critic's output contract.
-const CRITIQUE_OUTPUT_CONTRACT: &str = "The output contract: one finding per line, then the \
-     verdict as the last line:\n\n\
-     <critic id> | BLOCKING | <criterion n or Design block title> | <exact reading that breaks> \
-     | <smallest Design change that closes it>\n\
-     <critic id> | NON-BLOCKING | ...\n\
-     {\"verdict\":\"reject\"}\n\n\
-     A finding line has five `|`-separated fields whose second is exactly BLOCKING or \
-     NON-BLOCKING; any other line is prose. `<critic id>` is your own short label for the \
-     finding. The verdict is reject when any line is BLOCKING, else approve.\n\n";
-
-/// The clause that opens a pass's recorded findings (spec 123, THE PASS FRAMING IS CONTRACT):
-/// each line after it is a finding the critique already holds, which the critic does not report
-/// again.
-pub const CRITIQUE_RECORDED_FINDINGS: &str = "The findings already recorded for this text \
-     follow, one per line as <severity> | <location> | <reading> | <fix>. A finding among these \
-     lines is recorded and is not reported again: report only findings not among them, and when \
-     there is none to add, write no finding line and the verdict line {\"verdict\":\"approve\"}.";
-
 /// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
 /// output contract, and the spec text verbatim as its tail - in that order. With `recorded`
 /// findings (spec 123), the [`CRITIQUE_RECORDED_FINDINGS`] clause and one line per finding, its
@@ -372,10 +344,11 @@ pub fn spec_critique_prompt<'a>(
     } else {
         format!("{CRITIQUE_RECORDED_FINDINGS}\n{lines}\n")
     };
-    format!(
-        "{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}{recorded}The spec under critique, \
-         `{spec_path}`, verbatim:\n\n{spec_text}"
-    )
+    let tail = fill(
+        CRITIQUE_SPEC_TAIL,
+        &[("spec_path", spec_path), ("spec_text", spec_text)],
+    );
+    format!("{CRITIQUE_FRAMING}{CRITIQUE_OUTPUT_CONTRACT}{recorded}{tail}")
 }
 
 /// The tools the critic runs with, in place of its persona's own: it reads and looks things up
@@ -1463,6 +1436,53 @@ mod tests {
                  The spec under critique, `specs/9-a.md`, verbatim:\n\n{text}"
             )
         );
+    }
+
+    /// Spec 121, criterion 16: over the placeholder fixture the critique prompt is its registry
+    /// groups concatenated in registry order, on each branch: with no recorded finding, and with
+    /// one, whose summary line and the line breaks around it are the skeleton the test inserts
+    /// after the recorded-findings group, since neither a skeleton nor a joiner is a group.
+    #[test]
+    fn the_spec_critique_prompt_is_its_groups_concatenated_on_each_branch() {
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        let groups = |names: &[&str]| {
+            rendered_groups(prompt_groups(), "review::spec_critique_prompt", names)
+        };
+        let recorded = finding(
+            "{id}",
+            true,
+            ["{critic}", "{location}", "{reading}", "{fix}"],
+        );
+        let cases = [
+            (
+                "no recorded finding",
+                vec![],
+                groups(&[
+                    "CRITIQUE_FRAMING",
+                    "CRITIQUE_OUTPUT_CONTRACT",
+                    "CRITIQUE_SPEC_TAIL",
+                ]),
+            ),
+            (
+                "one recorded finding",
+                vec![recorded.clone()],
+                format!(
+                    "{}\n{}\n\n{}",
+                    groups(&[
+                        "CRITIQUE_FRAMING",
+                        "CRITIQUE_OUTPUT_CONTRACT",
+                        "CRITIQUE_RECORDED_FINDINGS",
+                    ]),
+                    recorded.summary(),
+                    groups(&["CRITIQUE_SPEC_TAIL"]),
+                ),
+            ),
+        ];
+        for (case, findings, expected) in cases {
+            let render = spec_critique_prompt("{spec_path}", "{spec_text}", &findings);
+            assert_renders(case, &render, &expected);
+        }
     }
 
     #[test]

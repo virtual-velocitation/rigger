@@ -16,6 +16,7 @@ use crate::contextgraph::{
 };
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
 use crate::grounder::Grounder;
+use crate::prompt_surface;
 use crate::sidecar::{Peer, PeerDecision, PeerFinding, PeerLesson, RankedPeer, Sidecar};
 use rigger_domain::code_view::{Tests, ViewFilter};
 use rigger_domain::lookup::Lookup;
@@ -680,48 +681,26 @@ impl<'a> Server<'a> {
     /// gets exactly the six named tools; the operator's lookup surface (spec 92, no spawn)
     /// gets `rigger_peers`/`rigger_ground`/`rigger_graph`. One method, driven by
     /// [`surface`](Server::surface), so the advertised list can never drift from what
-    /// [`call_tool`](Server::call_tool) actually dispatches.
+    /// [`call_tool`](Server::call_tool) actually dispatches. Every tool and argument description
+    /// is a [`prompt_surface`] const (spec 121), the one home of its text.
     fn tool_list(&self) -> Value {
         match self.surface() {
             Surface::SpawnBound => json!([
-                {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: your own unit's records, then this run's, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_emit", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT, "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT_META, "additionalProperties": {"type": "string"}}, "valid_from": {"description": prompt_surface::SPAWN_BOUND_RIGGER_EMIT_VALID_FROM, "type": ["integer", "string"]}}, "required": ["type", "data"]}},
+                {"name": "rigger_peers", "description": prompt_surface::SPAWN_BOUND_RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 ground_tool(),
                 graph_tool(),
-                {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
-                {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or build cache you create must live under, never /tmp or a session scratchpad. Reaped once your result records.", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "rigger_progress", "description": prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS, "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS_ACTIVITY}}, "required": ["activity"]}},
+                {"name": "rigger_scratch", "description": prompt_surface::SPAWN_BOUND_RIGGER_SCRATCH, "inputSchema": {"type": "object", "properties": {}}},
             ]),
             Surface::Lookup => json!([
-                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far, this run's and earlier runs', so you do not work blind to them. Each record is one line, `<kind> <id> | LIVE|HISTORICAL | [by <reviewer> | ]<summary>`, best first: this run's records, then those naming more of `files`, then the newest, with reviewer verdicts last. The reply stays under one size budget; when records are left out, `left_out` counts them and says how to read one by id (`rigger_graph` `show` <id> returns a whole record). Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it for every file.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_peers", "description": prompt_surface::LOOKUP_RIGGER_PEERS, "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 ground_tool(),
                 graph_tool(),
             ]),
         }
     }
 }
-
-/// CONTRACT and FRAMING: the `rigger_graph` tool's description, the one text every surface lists.
-/// It names the tool's three forms and their arguments, the CLI form each is the same as, the
-/// sections a `lookup` reply carries and the tree it answers from.
-pub const RIGGER_GRAPH: &str =
-    "Three lookups in one tool; pass exactly one of `lookup`, `show` or \
-`around`. `lookup` <term>... answers each term from three sources in one reply, each section \
-labelled by its source: `graph` (each entity the term names, its definition site `file:line`, its \
-callers and callees; a term resolves exactly, by case or separator variant, by prefix or fuzzily, \
-and one that resolves to no entity is answered with the nearest names), `text` (every line of your \
-working tree holding the term, scanned live) and `prose:<kind>` (specs, their criteria, personas, \
-instructions, skills, docs, decisions, lessons and findings, ranked by relevance). Every section \
-answers from your own working tree: the graph takes each file that differs there from the \
-commit it was built at from your tree, and the label heading the section says so; a tree that \
-cannot be compared withholds every graph hit and counts them in the label. Same as `rigger graph --lookup <term>...`. `show` \
-<entity> gives its definition site (same as `rigger graph --show <entity>`); `around` \
-<file|entity> (optionally `depth`) its structural neighborhood (same as `rigger graph --around \
-<file|entity> --depth <n>`). Worked examples - who calls <name>: pass `around` <name>; where is \
-<name> defined: pass `show` <name>.";
-
-/// CONTRACT: the `rigger_graph` `lookup` argument's description.
-pub const RIGGER_GRAPH_LOOKUP: &str =
-    "one or more terms: names, paths or words; each is answered in its own group of every section";
 
 /// What `rigger_graph` answers when it is passed none of its three forms.
 const GRAPH_ARGUMENTS_MISSING: &str =
@@ -732,32 +711,29 @@ const NO_GRAPH_WIRED: &str = "no context graph is wired on this server";
 
 /// The `rigger_ground` entry of a tool list, the same on every surface.
 fn ground_tool() -> Value {
-    json!({"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {
-        "query": {"type": "string", "description": "the natural-language query"},
-        "k": {"type": "integer", "description": "how many results (default 8)"},
-        "tests": tests_property(),
+    json!({"name": "rigger_ground", "description": prompt_surface::RIGGER_GROUND, "inputSchema": {"type": "object", "properties": {
+        "query": {"type": "string", "description": prompt_surface::RIGGER_GROUND_QUERY},
+        "k": {"type": "integer", "description": prompt_surface::RIGGER_GROUND_K},
+        "tests": tests_property(prompt_surface::RIGGER_GROUND_TESTS),
     }, "required": ["query"]}})
 }
 
-/// The `tests` property both lookup tools take, the same on every surface.
-fn tests_property() -> Value {
-    json!({"type": "string", "enum": ["exclude", "include", "only"], "description": RIGGER_GRAPH_TESTS})
+/// The `tests` property both lookup tools take, the same on every surface, described by the
+/// taking tool's own `description`.
+fn tests_property(description: &str) -> Value {
+    json!({"type": "string", "enum": ["exclude", "include", "only"], "description": description})
 }
 
 /// The `rigger_graph` entry of a tool list, the same on every surface.
 fn graph_tool() -> Value {
-    json!({"name": "rigger_graph", "description": RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {
-        "lookup": {"type": "array", "items": {"type": "string"}, "description": RIGGER_GRAPH_LOOKUP},
+    json!({"name": "rigger_graph", "description": prompt_surface::RIGGER_GRAPH, "inputSchema": {"type": "object", "properties": {
+        "lookup": {"type": "array", "items": {"type": "string"}, "description": prompt_surface::RIGGER_GRAPH_LOOKUP},
         "show": {"type": "string"},
         "around": {"type": "string"},
-        "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"},
-        "tests": tests_property(),
+        "depth": {"type": "integer", "description": prompt_surface::RIGGER_GRAPH_DEPTH},
+        "tests": tests_property(prompt_surface::RIGGER_GRAPH_TESTS),
     }}})
 }
-
-/// CONTRACT: the `rigger_graph` `tests` argument's description.
-pub const RIGGER_GRAPH_TESTS: &str =
-    "whether test code is shown: `exclude` (the default), `include` or `only`";
 
 /// The `tests` setting `tool`'s `tests` argument names: `exclude` when it is absent, else the one
 /// [`Tests`] parser's reading, a refusal naming `tool`.
@@ -914,7 +890,7 @@ pub const PEER_SUMMARY_BYTES: usize = 480;
 /// budget for the whole reply, [`PEERS_REPLY_BUDGET_BYTES`], taken through the conductor's one
 /// [`within_budget`](crate::conductor::within_budget) rule. When records are left out, a
 /// `left_out` object counts them per kind and carries the one-line `note` naming how to narrow
-/// the call or read a left-out record by id ([`RECORD_RECOVERY`](crate::conductor::RECORD_RECOVERY)),
+/// the call or read a left-out record by id ([`RECORD_RECOVERY`](rigger_conductor::prompt_surface::RECORD_RECOVERY)),
 /// and the budget holds with that object in the reply.
 pub fn peers_json(peers: &Sidecar, files: &[String], caller: Option<&str>) -> Value {
     let ranked = peers.ranked(files, caller);
@@ -972,7 +948,7 @@ fn peers_reply(records: Vec<String>, out: [(&str, usize); 3]) -> Value {
                 "(+{} ranked below these left out to keep this reply under budget - narrow with \
                  fewer files, or {})",
                 counts.join(", "),
-                crate::conductor::RECORD_RECOVERY
+                rigger_conductor::prompt_surface::RECORD_RECOVERY
             ),
         });
     }
@@ -1182,6 +1158,9 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
+    use crate::prompt_surface::prompt_groups;
+    use crate::prompt_surface_fixtures::{assert_renders, registry_test, rendered_groups};
+    use crate::test_support::stemmed_texts;
     use std::io::Cursor;
 
     /// Send one JSON-RPC request line to `server` and parse its one reply.
@@ -1957,7 +1936,7 @@ mod tests {
             assert!(structured["left_out"]["note"]
                 .as_str()
                 .unwrap()
-                .contains(crate::conductor::RECORD_RECOVERY));
+                .contains(rigger_conductor::prompt_surface::RECORD_RECOVERY));
         }
     }
 
@@ -2126,6 +2105,128 @@ mod tests {
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
     }
 
+    // =======================================================================================
+    // Spec 121, criterion 16: THE REGISTRY HOLDS EVERY PROMPT TEXT. Every description
+    // `tool_list` advertises is one const of `crate::prompt_surface`, named by THE NAMING RULE.
+    // =======================================================================================
+
+    /// Each surface `tool_list` serves, in registry order: its registry surface, its prefix
+    /// under THE NAMING RULE and the tools it advertises.
+    fn tool_surfaces() -> [(&'static str, &'static str, Value); 2] {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let server = || Server::new(&store, "run");
+        [
+            (
+                "mcpserver::tool_list::SpawnBound",
+                "SPAWN_BOUND",
+                server().with_spawn("u/implementer#0").tool_list(),
+            ),
+            (
+                "mcpserver::tool_list::Lookup",
+                "LOOKUP",
+                server().with_grounder(Ok(&Nop)).tool_list(),
+            ),
+        ]
+    }
+
+    /// Every `description` string `json` holds, at any depth, in document order.
+    fn descriptions(json: &Value) -> Vec<&str> {
+        match json {
+            Value::Array(items) => items.iter().flat_map(descriptions).collect(),
+            Value::Object(fields) => fields
+                .iter()
+                .flat_map(|(key, value)| match value {
+                    Value::String(text) if key == "description" => vec![text.as_str()],
+                    _ => descriptions(value),
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// THE NAMING RULE over every surface: each text a surface advertises beside the const it
+    /// names, in document order. A stem and text two or more surfaces advertise word for word
+    /// are shared, named by the stem alone; any other text is named `<SURFACE>_<stem>`.
+    fn rule_named(
+        surfaces: &[(&'static str, &'static str, Value)],
+    ) -> Vec<(&'static str, Vec<(String, String)>)> {
+        let stemmed: Vec<Vec<(String, &str)>> = surfaces
+            .iter()
+            .map(|(_, _, tools)| stemmed_texts(tools))
+            .collect();
+        surfaces
+            .iter()
+            .zip(&stemmed)
+            .map(|((surface, prefix, _), texts)| {
+                let named = texts
+                    .iter()
+                    .map(|(stem, text)| {
+                        let advertisers = stemmed
+                            .iter()
+                            .filter(|other| other.iter().any(|(s, t)| s == stem && t == text))
+                            .count();
+                        let name = if advertisers > 1 {
+                            stem.clone()
+                        } else {
+                            format!("{prefix}_{stem}")
+                        };
+                        (name, text.to_string())
+                    })
+                    .collect();
+                (*surface, named)
+            })
+            .collect()
+    }
+
+    /// The dash's rows of THE CLASS TABLE, derived by THE NAMING RULE rather than enumerated:
+    /// each const the rule names on any surface, once, CONTRACT.
+    fn rule_pins() -> Vec<(String, &'static str)> {
+        let mut names: Vec<String> = rule_named(&tool_surfaces())
+            .into_iter()
+            .flat_map(|(_, named)| named.into_iter().map(|(name, _)| name))
+            .collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().map(|name| (name, "CONTRACT")).collect()
+    }
+
+    registry_test!(
+        every_advertised_tool_text_is_one_contract_const_named_by_the_naming_rule,
+        &rule_pins()
+    );
+
+    /// THE REGISTRY HOLDS EVERY PROMPT TEXT for `tool_list`: on each surface, every
+    /// `description` string the advertised JSON holds, concatenated in document order, is the
+    /// surface's groups concatenated in registry order, and those groups are, one for one and
+    /// in that order, the consts THE NAMING RULE names holding the texts it names them for.
+    #[test]
+    fn each_tool_list_surface_is_its_groups_concatenated() {
+        let surfaces = tool_surfaces();
+        for ((surface, _, tools), (_, named)) in surfaces.iter().zip(rule_named(&surfaces)) {
+            let held: Vec<(&str, &str)> = prompt_groups()
+                .iter()
+                .filter(|group| group.surface == *surface)
+                .map(|group| (group.name, group.text))
+                .collect();
+            let wanted: Vec<(&str, &str)> = named
+                .iter()
+                .map(|(name, text)| (name.as_str(), text.as_str()))
+                .collect();
+            assert_eq!(
+                held, wanted,
+                "{surface}: the groups are the named texts in document order"
+            );
+            let names: Vec<&str> = named.iter().map(|(name, _)| name.as_str()).collect();
+            assert_renders(
+                surface,
+                &descriptions(tools).concat(),
+                &rendered_groups(prompt_groups(), surface, &names),
+            );
+        }
+    }
+
     /// Every surface that lists `rigger_graph` gives one worked example of each question it
     /// answers: who calls a name is `around` that name, and where a name is defined is `show` it.
     #[test]
@@ -2153,14 +2254,19 @@ mod tests {
             ] {
                 assert!(text.contains(example), "{surface}: {example:?} in {text:?}");
             }
-            assert_eq!(text, RIGGER_GRAPH, "{surface} lists the one description");
+            assert_eq!(
+                text,
+                prompt_surface::RIGGER_GRAPH,
+                "{surface} lists the one description"
+            );
             let at = |form: &str| text.find(form).unwrap();
             assert!(
                 at("`lookup`") < at("`show`") && at("`lookup`") < at("`around`"),
                 "{surface}: the description leads with the combined lookup"
             );
             assert_eq!(
-                graph["inputSchema"]["properties"]["lookup"]["description"], RIGGER_GRAPH_LOOKUP,
+                graph["inputSchema"]["properties"]["lookup"]["description"],
+                prompt_surface::RIGGER_GRAPH_LOOKUP,
                 "{surface}: `lookup` is an argument"
             );
         }

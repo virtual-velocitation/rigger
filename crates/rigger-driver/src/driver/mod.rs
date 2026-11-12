@@ -14,6 +14,8 @@ use crate::agent::{Error, SpawnHost, SpawnOpts};
 use crate::config::AgentDef;
 use crate::hooks;
 use crate::progress::SpawnLaunched;
+use crate::prompt_surface::{PROGRESS_FRAME, PROGRESS_LINE};
+use rigger_domain::prompt_surface::fill;
 
 pub mod claude_code;
 pub mod cli;
@@ -67,7 +69,8 @@ pub(crate) fn allowed_tools_args(
 /// its arguments, completing the sentence "record a progress line ...". When to report is the
 /// `communication` built-in's.
 pub(crate) fn progress_framed(task: &str, report: &str) -> String {
-    format!("{task}\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line {report}.")
+    let frame = fill(PROGRESS_FRAME, &[("task", task)]);
+    frame + &fill(PROGRESS_LINE, &[("report", report)])
 }
 
 /// One composed configuration as the inline JSON argument its flag takes, or the error naming
@@ -432,7 +435,33 @@ pub(crate) fn spawn_config_args(
 mod tests {
     use super::*;
     use crate::agent::HelperCopy;
+    use crate::prompt_surface::prompt_groups;
+    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
     use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
+    use rigger_domain::prompt_surface::fill;
+
+    /// The progress frame's groups, `PROGRESS_FRAME` then `PROGRESS_LINE`, with `report` filled
+    /// into the line's `{report}` slot: a process host's `framed` render over the placeholder
+    /// fixture, given that host's report verb.
+    pub(super) fn framed_groups(report: &str) -> String {
+        let groups = rendered_groups(
+            prompt_groups(),
+            "driver::progress_framed",
+            &["PROGRESS_FRAME", "PROGRESS_LINE"],
+        );
+        fill(&groups, &[("report", report)])
+    }
+
+    /// `progress_framed` over the placeholder fixture is its two groups concatenated in registry
+    /// order.
+    #[test]
+    fn progress_framed_is_its_groups_concatenated() {
+        assert_renders(
+            "the progress frame",
+            &progress_framed("{task}", "{report}"),
+            &framed_groups("{report}"),
+        );
+    }
 
     /// `allowed_tools_args` over every order and repeat a grant can arrive in: the agent's own
     /// tools, then the host's helpers', then the host's bound ones, each name once where it first

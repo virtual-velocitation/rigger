@@ -62,6 +62,7 @@ use common::repo::{
 };
 use common::rigger_bin;
 use common::workflow_probe::write_workflow;
+use rigger_dash::prompt_surface;
 
 /// Append `line` (plus a newline) to the file at `path`, standing in for a hand edit that a
 /// deterministic render would never produce - used to drive a committed file OUT of sync
@@ -6942,6 +6943,91 @@ rigger::test_cases! {
     /// takes no argument.
     a_spawns_mcp_server_lists_the_scratch_tool_naming_no_toolchain:
         assert_a_spawns_server_lists("rigger_scratch", common::fixtures::scratch_tool_entry());
+}
+
+/// Assert the texts the built binary advertises over stdio in its `tools/list` answer to an
+/// initialized `rigger <args>` session over the project `project` makes are exactly `expected`:
+/// each text beside its stem under THE NAMING RULE, in document order. `end` closes the session
+/// through its handle before the comparison.
+fn assert_a_surface_advertises(
+    project: fn() -> tempfile::TempDir,
+    args: &[&str],
+    end: fn(McpSession),
+    expected: &[(&str, &str)],
+) {
+    let dir = project();
+    let mut mcp = McpSession::start_with(dir.path(), args);
+    mcp.initialize();
+    let tools = mcp.call("tools/list", serde_json::json!({}))["result"]["tools"].clone();
+    end(mcp);
+    let stemmed = common::fixtures::stemmed_texts(&tools);
+    let advertised: Vec<(&str, &str)> = stemmed
+        .iter()
+        .map(|(stem, text)| (stem.as_str(), *text))
+        .collect();
+    assert_eq!(
+        advertised,
+        expected,
+        "rigger {}: each advertised text, in document order, is the dash registry const named for \
+         its stem",
+        args.join(" ")
+    );
+}
+
+rigger::test_cases! {
+    /// Spec 121's THE REGISTRY HOLDS EVERY PROMPT TEXT at the built binary's spawn-bound server:
+    /// given a project, when a spawn's agent lists the tools of `rigger mcp --spawn` over stdio,
+    /// then every tool and argument description the list carries, in document order, is the
+    /// `rigger_dash::prompt_surface` const THE NAMING RULE names for its stem.
+    a_spawns_mcp_server_advertises_the_registry_const_named_for_each_stem:
+        assert_a_surface_advertises(
+            temp_store_project,
+            &["mcp", "--spawn", "u/implementer#0"],
+            McpSession::finish_cleanly,
+            &[
+                ("RIGGER_EMIT", prompt_surface::SPAWN_BOUND_RIGGER_EMIT),
+                ("RIGGER_EMIT_META", prompt_surface::SPAWN_BOUND_RIGGER_EMIT_META),
+                (
+                    "RIGGER_EMIT_VALID_FROM",
+                    prompt_surface::SPAWN_BOUND_RIGGER_EMIT_VALID_FROM,
+                ),
+                ("RIGGER_PEERS", prompt_surface::SPAWN_BOUND_RIGGER_PEERS),
+                ("RIGGER_GROUND", prompt_surface::RIGGER_GROUND),
+                ("RIGGER_GROUND_K", prompt_surface::RIGGER_GROUND_K),
+                ("RIGGER_GROUND_QUERY", prompt_surface::RIGGER_GROUND_QUERY),
+                ("RIGGER_GROUND_TESTS", prompt_surface::RIGGER_GROUND_TESTS),
+                ("RIGGER_GRAPH", prompt_surface::RIGGER_GRAPH),
+                ("RIGGER_GRAPH_DEPTH", prompt_surface::RIGGER_GRAPH_DEPTH),
+                ("RIGGER_GRAPH_LOOKUP", prompt_surface::RIGGER_GRAPH_LOOKUP),
+                ("RIGGER_GRAPH_TESTS", prompt_surface::RIGGER_GRAPH_TESTS),
+                ("RIGGER_PROGRESS", prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS),
+                (
+                    "RIGGER_PROGRESS_ACTIVITY",
+                    prompt_surface::SPAWN_BOUND_RIGGER_PROGRESS_ACTIVITY,
+                ),
+                ("RIGGER_SCRATCH", prompt_surface::SPAWN_BOUND_RIGGER_SCRATCH),
+            ],
+        );
+    /// The same at the lookup server: given a project, when the operator's session lists the
+    /// tools of `rigger mcp` over stdio, then each description is the const THE NAMING RULE names
+    /// for its stem.
+    the_lookup_mcp_server_advertises_the_registry_const_named_for_each_stem:
+        assert_a_surface_advertises(
+            temp_store_project,
+            &["mcp"],
+            McpSession::finish_cleanly,
+            &[
+                ("RIGGER_PEERS", prompt_surface::LOOKUP_RIGGER_PEERS),
+                ("RIGGER_GROUND", prompt_surface::RIGGER_GROUND),
+                ("RIGGER_GROUND_K", prompt_surface::RIGGER_GROUND_K),
+                ("RIGGER_GROUND_QUERY", prompt_surface::RIGGER_GROUND_QUERY),
+                ("RIGGER_GROUND_TESTS", prompt_surface::RIGGER_GROUND_TESTS),
+                ("RIGGER_GRAPH", prompt_surface::RIGGER_GRAPH),
+                ("RIGGER_GRAPH_DEPTH", prompt_surface::RIGGER_GRAPH_DEPTH),
+                ("RIGGER_GRAPH_LOOKUP", prompt_surface::RIGGER_GRAPH_LOOKUP),
+                ("RIGGER_GRAPH_TESTS", prompt_surface::RIGGER_GRAPH_TESTS),
+            ],
+        );
 }
 
 /// How far past the interval a beat of `rigger run` may land: the gap between two beats is the
@@ -25307,7 +25393,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
     let proj = temp_project();
     let root = proj.path();
 
-    // No store seeded: `cmd_prime` takes its absent-db early-return path (mirroring
+    // No store seeded: `cmd_prime` takes its absent-db path (mirroring
     // cmd_stats's NO_RUNS_MESSAGE guard) - the spec-lint reminder must still appear there,
     // since a project with no run history yet is exactly when the reminder matters most.
     let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
@@ -25329,7 +25415,7 @@ fn prime_given_a_spec_path_names_the_spec_lint_alongside_recent_decisions() {
 
     // A seeded-but-empty store takes cmd_prime's OTHER path (the "recent decisions"
     // listing, here empty -> "(none yet)") - the reminder must appear there too, not only
-    // on the absent-db early return, so both of cmd_prime's paths stay in lock-step.
+    // on the absent-db path, so both of cmd_prime's paths stay in lock-step.
     let (out, err, ok) = run_rigger(root, &["prime", "specs/42-widgets.md"]);
     assert!(
         ok,
@@ -26551,16 +26637,26 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
 }
 
 /// `rigger <args>` fed `stdin` must exit the Claude-Code-documented BLOCKING code (2) - never a
-/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed.
-/// `why` names the failure.
-fn assert_blocks(args: &[&str], stdin: &[u8], why: &str) {
+/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed -
+/// and its whole stderr must be the `guard::cmd_guard_write` surface's groups concatenated:
+/// `GUARD_WRITE_STDERR_PREFIX`, then `reason` (the branch's reason group, its slots filled),
+/// then the line break. `why` names the failure.
+fn assert_blocks(args: &[&str], stdin: &[u8], reason: &str, why: &str) {
     let cwd_dir = temp_project();
     let out = pipe_into_rigger(cwd_dir.path(), args, stdin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
         Some(2),
-        "{why} must exit the BLOCKING code (2); stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        "{why} must exit the BLOCKING code (2); stderr:\n{stderr}"
+    );
+    assert_eq!(
+        stderr,
+        format!(
+            "{}{reason}\n",
+            rigger::prompt_surface::GUARD_WRITE_STDERR_PREFIX
+        ),
+        "{why} must print exactly its guard::cmd_guard_write groups on stderr"
     );
 }
 
@@ -26852,12 +26948,14 @@ fn guard_write_covers_notebook_edit_and_ignores_other_tools() {
 /// a non-2 nonzero exit is NON-blocking to Claude Code (the tool call proceeds anyway,
 /// stderr shown only for information), so asserting mere non-success here would be green
 /// while still silently allowing every future write - exactly the property this test's own
-/// name claims to prove, so it must check the actual code, not just its sign.
+/// name claims to prove, so it must check the actual code, not just its sign. Its stderr is
+/// the prefix group then `GUARD_WRITE_NO_ROOT`, pinned byte-exact by `assert_blocks`.
 #[test]
 fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
     assert_blocks(
         &["guard-write"],
         b"{}",
+        rigger::prompt_surface::GUARD_WRITE_NO_ROOT,
         "guard-write with no --root (never silently allowing every write)",
     );
 }
@@ -26868,13 +26966,21 @@ fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
 /// flag with no value, and stdin bytes that are not even valid UTF-8 (a distinct failure
 /// from merely-unparseable-as-JSON-but-valid-UTF-8, which the JSON layer still handles as
 /// an exit-0 deny body, proven by `guard_write_denies_every_malformed_payload_shape_completely`).
+/// Each branch's stderr is the prefix group then that branch's reason group, pinned byte-exact
+/// by `assert_blocks`.
 #[test]
 fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
     // A dangling `--root` flag with no directory following it.
-    assert_blocks(&["guard-write", "--root"], b"{}", "a dangling --root flag");
+    assert_blocks(
+        &["guard-write", "--root"],
+        b"{}",
+        rigger::prompt_surface::GUARD_WRITE_ROOT_MISSING,
+        "a dangling --root flag",
+    );
 
     // Invalid-UTF-8 stdin: `read_to_string` itself fails, a transport failure distinct
-    // from an unparseable-but-valid-UTF-8 JSON payload.
+    // from an unparseable-but-valid-UTF-8 JSON payload. Its `{error}` slot carries std's
+    // fixed text for that read error.
     let root = tempfile::tempdir().unwrap();
     let root_str = std::fs::canonicalize(root.path())
         .unwrap()
@@ -26884,6 +26990,10 @@ fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
     assert_blocks(
         &["guard-write", "--root", &root_str],
         &[0xFF, 0xFE, 0xFD],
+        &rigger_domain::prompt_surface::fill(
+            rigger::prompt_surface::GUARD_WRITE_PAYLOAD_UNREADABLE,
+            &[("error", "stream did not contain valid UTF-8")],
+        ),
         "invalid-UTF-8 stdin (never falling through to a non-blocking exit)",
     );
 }

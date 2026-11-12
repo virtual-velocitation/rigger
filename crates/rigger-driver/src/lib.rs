@@ -14,6 +14,9 @@ pub mod driver;
 pub mod hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod liveness;
+/// The driver's prompt texts (spec 121): the progress frame, the report verbs and the resume
+/// note, each one const whose doc comment opens with its class.
+pub mod prompt_surface;
 /// The supervised child-process guard: a dropped guard kills and reaps its child.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod reaped_child;
@@ -72,6 +75,10 @@ mod config_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/events.rs"]
 mod event_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/prompt_surface.rs"]
+mod prompt_surface_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
