@@ -234,6 +234,8 @@ impl<'a> Container<'a> {
 
 /// Distinguishes the temp files of concurrent writers within one process.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// The suffix of every temp [`write_atomic`] writes, by which a reaper knows one.
+pub(crate) const TEMP: &str = ".tmp";
 
 /// Publishes `bytes` at `path` atomically: a reader sees the old file or the new one, never a
 /// part. The bytes go to a `.tmp` sibling that is fsynced, renamed over `path`, and the directory
@@ -247,7 +249,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))?;
     let tmp = dir.join(format!(
-        ".{file_name}.{}.{}.tmp",
+        ".{file_name}.{}.{}{TEMP}",
         std::process::id(),
         TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
     ));

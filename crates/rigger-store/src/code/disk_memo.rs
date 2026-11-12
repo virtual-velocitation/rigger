@@ -11,7 +11,7 @@
 
 use crate::code::dir_source::content_id;
 use crate::code::snapshot::{encode, Snapshot};
-use crate::format::{crc32, write_atomic};
+use crate::format::{crc32, write_atomic, TEMP};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{CodeView, FactsView, Groupings};
 use rigger_domain::playbooks::fnv1a_64;
@@ -21,6 +21,8 @@ use std::time::{Duration, SystemTime};
 /// The memo's directory under the code store's.
 pub(crate) const DIR: &str = "memo";
 const FACTS: &str = ".facts";
+/// How long a temp is left for its writer to rename: one older is a crashed writer's.
+const TEMP_GRACE: Duration = Duration::from_secs(60);
 
 /// How much the memo on disk keeps: at most `bytes` of entries, none unread for longer than `age`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,9 +91,39 @@ impl DiskMemo {
 
     /// Keeps the entries of this fingerprint read within the cap's age, the most recently read
     /// first up to the cap's bytes, and removes every other file in the directory but a temp a
-    /// writer may still rename.
+    /// writer may still rename. Recency is an entry's modification time, which a read sets
+    /// ([`touch`]). Best-effort: a file that cannot be listed or removed is left for the next
+    /// reap, and a reader whose entry goes extracts its file again.
     pub(crate) fn reap(&self, now: SystemTime) {
-        let _ = (self.cap, now);
+        let own = format!("{:016x}-", self.fingerprint);
+        let (mut kept, mut gone) = (Vec::new(), Vec::new());
+        for file in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let (Ok(name), Ok(meta)) = (file.file_name().into_string(), file.metadata()) else {
+                continue;
+            };
+            let modified = meta.modified().ok();
+            let unread = modified.and_then(|at| now.duration_since(at).ok());
+            let unread = unread.unwrap_or_default();
+            let is_entry = name.starts_with(&own) && name.ends_with(FACTS);
+            match name.ends_with(TEMP) {
+                true if unread <= TEMP_GRACE => {}
+                false if is_entry && unread <= self.cap.age => {
+                    kept.push((unread, name, meta.len()))
+                }
+                _ => gone.push(name),
+            }
+        }
+        kept.sort();
+        let mut total = 0u64;
+        for (_, name, len) in kept {
+            total = total.saturating_add(len);
+            if total > self.cap.bytes {
+                gone.push(name);
+            }
+        }
+        for name in gone {
+            let _ = std::fs::remove_file(self.dir.join(name));
+        }
     }
 
     /// The entry name of the file at `path` holding `bytes`: one name prefix a fingerprint.
@@ -200,6 +232,9 @@ mod tests {
         format!("{fp:016x}-{name}{FACTS}")
     }
 
+    /// A file seeded in the memo directory: its name, its length, and how many seconds unread.
+    type Seeded = (String, usize, u64);
+
     /// Writes `len` bytes at `at`, last read `unread` seconds before `now`.
     fn seed(at: &std::path::Path, len: usize, unread: u64, now: SystemTime) {
         std::fs::write(at, vec![b'x'; len]).unwrap();
@@ -219,7 +254,7 @@ mod tests {
         };
         let (own, other) = (|n| entry(7, n), |n| entry(8, n));
         let (old_temp, new_temp) = (".x.facts.1.0.tmp".to_owned(), ".y.facts.1.1.tmp".to_owned());
-        let cases: [(&str, Vec<(String, usize, u64)>, Vec<String>); 7] = [
+        let cases: [(&str, Vec<Seeded>, Vec<String>); 7] = [
             (
                 "a fresh entry of its fingerprint stays",
                 vec![(own("a"), 10, 0)],

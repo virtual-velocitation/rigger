@@ -8,8 +8,9 @@
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
 //! snapshots, so two binaries sharing a store each keep theirs.
 
+use crate::code::disk_memo::{DiskMemo, MemoCap};
 use crate::code::snapshot::{encode, stamp_unchecked, Snapshot};
-use crate::format::{write_atomic, WriteLock};
+use crate::format::{write_atomic, WriteLock, TEMP};
 use crate::published::Published;
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{
@@ -21,6 +22,7 @@ use rigger_domain::resolve::SETTLED_GENERATION;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The prefix of a pointer file: `CURRENT-<fingerprint>` names the snapshot in force under that
 /// fingerprint, in sixteen lowercase hex digits.
@@ -28,7 +30,6 @@ const CURRENT: &str = "CURRENT-";
 /// The lock file every writer holds.
 pub const LOCK: &str = "LOCK";
 const SNAP: &str = ".snap";
-const TMP: &str = ".tmp";
 /// How many times a reader re-reads its pointer when the snapshot it named was reaped first.
 const READ_ATTEMPTS: usize = 3;
 /// How many fingerprints' snapshots the store keeps: the two most recently advanced.
@@ -209,7 +210,7 @@ impl Store {
         let fingerprint = fingerprint(extract, group);
         let base = match self.current(fingerprint)? {
             Some(snap) if snap.stamp().tip == *target => {
-                self.reap();
+                self.reap(fingerprint);
                 return Ok(snap);
             }
             other => other,
@@ -248,7 +249,7 @@ impl Store {
         self.publish.publish(&self.dir.join(&name), snap.bytes())?;
         self.publish
             .publish(&self.dir.join(pointer_name(fingerprint)), name.as_bytes())?;
-        self.reap();
+        self.reap(fingerprint);
         Ok(snap)
     }
 
@@ -285,8 +286,10 @@ impl Store {
     /// before its snapshot, so a crash between leaves an unnamed snapshot the next reap removes,
     /// never a pointer naming nothing. A pointer that cannot be read is left for the next advance,
     /// though the snapshot it names is not kept, since which one it names is unknown; so is a
-    /// failed delete (a reader holding the file open on an OS that refuses it).
-    fn reap(&self) {
+    /// failed delete (a reader holding the file open on an OS that refuses it). The facts memo is
+    /// reaped with them, to the entries of `fingerprint`, the one advanced, within
+    /// [`MemoCap::STATED`] ([`DiskMemo::reap`]).
+    fn reap(&self, fingerprint: u64) {
         let mut ranked: Vec<(String, Option<u64>)> = self.pointers().collect();
         ranked.sort_by_key(|(_, seq)| std::cmp::Reverse(*seq));
         let stale = ranked.split_off(KEPT_FINGERPRINTS.min(ranked.len()));
@@ -296,11 +299,12 @@ impl Store {
             .collect();
         let unnamed: Vec<String> = self
             .names()
-            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TMP))
+            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TEMP))
             .collect();
         for name in stale.into_iter().map(|(name, _)| name).chain(unnamed) {
             let _ = std::fs::remove_file(self.dir.join(name));
         }
+        DiskMemo::new(self.memo_dir(), fingerprint, MemoCap::STATED).reap(SystemTime::now());
     }
 }
 
@@ -515,14 +519,13 @@ pub(crate) fn open_current_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::code::disk_memo::MemoCap;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::format::{Container, WriteLock};
     use rigger_domain::code_facts::FileFacts;
     use rigger_domain::code_view::{CodeView, Groupings};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
     const FP: u64 = 1;
 

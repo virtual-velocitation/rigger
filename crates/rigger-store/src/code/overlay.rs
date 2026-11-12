@@ -25,6 +25,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{LazyLock, Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// The head of the code store at `root` read for a reader in `worktree`: the view of the head
 /// ([`open_compared`]), overlaid with the worktree's differing files when it differs. One
@@ -65,9 +66,9 @@ pub fn open_head(
 /// The facts of each file `diff` reads from the worktree ([`WorktreeDiff::read_from_worktree`]):
 /// its bytes read once through `source`, each file's facts taken from `memo` when it holds them
 /// for those bytes, then from the facts memo on disk under the store at `root` when `memo` reads
-/// one, and the rest extracted in parallel ([`extract_parallel`]) and kept in both. A file that is
-/// not read is an error; a memo on disk that cannot be read or written is not, since extracting
-/// answers the same.
+/// one, and the rest extracted in parallel ([`extract_parallel`]) and kept in both, the memo on
+/// disk reaped once an entry is written ([`DiskMemo::reap`]). A file that is not read is an
+/// error; a memo on disk that cannot be read or written is not, since extracting answers the same.
 fn read_changed(
     root: &Path,
     source: &dyn TreeSource,
@@ -105,11 +106,15 @@ fn read_changed(
     }
     let bytes_of = |path: &str| bytes.get(path).map_or(&[][..], Vec::as_slice);
     let extracted = extract_parallel(extract, &missed, &|entry| bytes_of(&entry.path))?;
+    let mut wrote = false;
     for f in &extracted {
         memo.put(held_under, f.clone());
         if let Some(disk) = &disk {
-            let _ = disk.put(bytes_of(&f.path), f);
+            wrote |= disk.put(bytes_of(&f.path), f).is_ok();
         }
+    }
+    if let Some(disk) = disk.as_ref().filter(|_| wrote) {
+        disk.reap(SystemTime::now());
     }
     facts.extend(extracted);
     Ok(facts)
@@ -427,7 +432,6 @@ mod tests {
     use rigger_domain::code_view::{Tests, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty, Indexed};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
-    use std::time::SystemTime;
 
     /// What a worktree changes: each path with its bytes, or none when it deleted the file.
     type Changes<'a> = &'a [(&'a str, Option<&'a str>)];
