@@ -26602,16 +26602,26 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
 }
 
 /// `rigger <args>` fed `stdin` must exit the Claude-Code-documented BLOCKING code (2) - never a
-/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed.
-/// `why` names the failure.
-fn assert_blocks(args: &[&str], stdin: &[u8], why: &str) {
+/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed -
+/// and its whole stderr must be the `guard::cmd_guard_write` surface's groups concatenated:
+/// `GUARD_WRITE_STDERR_PREFIX`, then `reason` (the branch's reason group, its slots filled),
+/// then the line break. `why` names the failure.
+fn assert_blocks(args: &[&str], stdin: &[u8], reason: &str, why: &str) {
     let cwd_dir = temp_project();
     let out = pipe_into_rigger(cwd_dir.path(), args, stdin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
         Some(2),
-        "{why} must exit the BLOCKING code (2); stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        "{why} must exit the BLOCKING code (2); stderr:\n{stderr}"
+    );
+    assert_eq!(
+        stderr,
+        format!(
+            "{}{reason}\n",
+            rigger::prompt_surface::GUARD_WRITE_STDERR_PREFIX
+        ),
+        "{why} must print exactly its guard::cmd_guard_write groups on stderr"
     );
 }
 
@@ -26903,12 +26913,14 @@ fn guard_write_covers_notebook_edit_and_ignores_other_tools() {
 /// a non-2 nonzero exit is NON-blocking to Claude Code (the tool call proceeds anyway,
 /// stderr shown only for information), so asserting mere non-success here would be green
 /// while still silently allowing every future write - exactly the property this test's own
-/// name claims to prove, so it must check the actual code, not just its sign.
+/// name claims to prove, so it must check the actual code, not just its sign. Its stderr is
+/// the prefix group then `GUARD_WRITE_NO_ROOT`, pinned byte-exact by `assert_blocks`.
 #[test]
 fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
     assert_blocks(
         &["guard-write"],
         b"{}",
+        rigger::prompt_surface::GUARD_WRITE_NO_ROOT,
         "guard-write with no --root (never silently allowing every write)",
     );
 }
@@ -26919,13 +26931,21 @@ fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
 /// flag with no value, and stdin bytes that are not even valid UTF-8 (a distinct failure
 /// from merely-unparseable-as-JSON-but-valid-UTF-8, which the JSON layer still handles as
 /// an exit-0 deny body, proven by `guard_write_denies_every_malformed_payload_shape_completely`).
+/// Each branch's stderr is the prefix group then that branch's reason group, pinned byte-exact
+/// by `assert_blocks`.
 #[test]
 fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
     // A dangling `--root` flag with no directory following it.
-    assert_blocks(&["guard-write", "--root"], b"{}", "a dangling --root flag");
+    assert_blocks(
+        &["guard-write", "--root"],
+        b"{}",
+        rigger::prompt_surface::GUARD_WRITE_ROOT_MISSING,
+        "a dangling --root flag",
+    );
 
     // Invalid-UTF-8 stdin: `read_to_string` itself fails, a transport failure distinct
-    // from an unparseable-but-valid-UTF-8 JSON payload.
+    // from an unparseable-but-valid-UTF-8 JSON payload. Its `{error}` slot carries std's
+    // fixed text for that read error.
     let root = tempfile::tempdir().unwrap();
     let root_str = std::fs::canonicalize(root.path())
         .unwrap()
@@ -26935,6 +26955,10 @@ fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
     assert_blocks(
         &["guard-write", "--root", &root_str],
         &[0xFF, 0xFE, 0xFD],
+        &rigger_domain::prompt_surface::fill(
+            rigger::prompt_surface::GUARD_WRITE_PAYLOAD_UNREADABLE,
+            &[("error", "stream did not contain valid UTF-8")],
+        ),
         "invalid-UTF-8 stdin (never falling through to a non-blocking exit)",
     );
 }
