@@ -89,33 +89,49 @@ pub fn resolve_spawn_host(
 /// The fan-out helpers a spawn of the checkout at `root` carries, one per [`HELPER_AGENTS`] entry
 /// in its order: the operator's copy under [`HELPER_AGENTS_DIR`] where the checkout holds one,
 /// whatever its text, else the embedded text. A missing file, or an agents path that is no
-/// directory, holds no copy; a copy that cannot be read, or does not parse as a helper
-/// definition, fails naming its path and never falls back to the embedded text.
+/// directory, holds no copy; a copy that cannot be read, does not parse as a helper definition,
+/// or names the helper another file defines, fails naming its path and never falls back to the
+/// embedded text, so `--agents` and the tool pre-approval read one helper per name.
 pub fn resolved_helpers(root: &Path) -> Result<Vec<HelperCopy>, Error> {
-    HELPER_AGENTS
-        .iter()
-        .map(|(file, embedded)| {
-            let path = root.join(HELPER_AGENTS_DIR).join(file);
-            let (text, present) = match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    parse_helper(path.display(), &text)?;
-                    (text, true)
-                }
-                Err(e) if is_absent(&e) => (embedded.to_string(), false),
-                Err(e) => return Err(helper_error(path.display(), e)),
+    let mut named: Vec<(String, std::path::PathBuf, HelperCopy)> = Vec::new();
+    for (file, embedded) in HELPER_AGENTS {
+        let path = root.join(HELPER_AGENTS_DIR).join(file);
+        let (text, present) = match std::fs::read_to_string(&path) {
+            Ok(text) => (text, true),
+            Err(e) if is_absent(&e) => (embedded.to_string(), false),
+            Err(e) => return Err(helper_error(path.display(), e)),
+        };
+        let (name, _) = parse_helper(path.display(), &text)?;
+        if let Some((_, first_path, first)) = named.iter().find(|(seen, ..)| *seen == name) {
+            // The embedded helpers name themselves apart, so of the two one is an operator's copy:
+            // the error names that copy, and the other file.
+            let (copy, other) = if present {
+                (&path, first.name.as_str())
+            } else {
+                (first_path, *file)
             };
-            Ok(HelperCopy {
+            return Err(helper_error(
+                copy.display(),
+                format!("the name {name:?} is also {other}'s"),
+            ));
+        }
+        named.push((
+            name,
+            path,
+            HelperCopy {
                 name: file.to_string(),
                 text,
                 present,
-            })
-        })
-        .collect()
+            },
+        ));
+    }
+    Ok(named.into_iter().map(|(.., copy)| copy).collect())
 }
 
 /// Whether the failed read `e` found no file at the path: nothing there, or a path component
-/// that is no directory.
-fn is_absent(e: &std::io::Error) -> bool {
+/// that is no directory. The one test for "an operator's copy that is not there is no copy",
+/// read wherever a project's own file shadows a shipped default.
+pub fn is_absent(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
@@ -127,38 +143,27 @@ fn helper_error(label: impl std::fmt::Display, reason: impl std::fmt::Display) -
     Error(format!("helper agent {label}: {reason}"))
 }
 
-/// The helper definition `text` holds, as `--agents` keys it: its name and its fields, each
-/// frontmatter field verbatim (`tools` as the list its comma-separated value spells) and its
-/// body as the prompt. A text that does not parse fails naming `label`.
+/// The helper definition `text` holds, as `--agents` keys it: its name and its fields, its
+/// frontmatter read as the YAML Claude Code reads (`tools` as a list, whether written as one or
+/// as a comma-separated string) and its body as the prompt. A text that does not parse, or whose
+/// frontmatter names no helper, fails naming `label`.
 fn parse_helper(
     label: impl std::fmt::Display,
     text: &str,
 ) -> Result<(String, Map<String, Value>), Error> {
     let (front, body) =
         rigger_domain::config::split_frontmatter(text).map_err(|e| helper_error(&label, e))?;
-    let mut def = Map::new();
-    let mut name = None;
-    for line in front.lines() {
-        let (key, value) = line
-            .split_once(':')
-            .ok_or_else(|| helper_error(&label, format!("frontmatter line {line:?}")))?;
-        let value = value.trim();
-        match key {
-            "name" => name = Some(value),
-            "tools" => {
-                def.insert(
-                    key.to_string(),
-                    value.split(',').map(str::trim).collect::<Vec<_>>().into(),
-                );
-            }
-            _ => {
-                def.insert(key.to_string(), value.into());
-            }
-        }
+    let mut def: Map<String, Value> = rigger_domain::config::parse_yaml_naming_unknown_keys(front)
+        .map_err(|e| helper_error(&label, e))?;
+    let Some(Value::String(name)) = def.remove("name") else {
+        return Err(helper_error(&label, "no name"));
+    };
+    if let Some(Value::String(tools)) = def.get("tools") {
+        let tools: Vec<Value> = tools.split(',').map(|tool| tool.trim().into()).collect();
+        def.insert("tools".to_string(), tools.into());
     }
     def.insert("prompt".to_string(), body.into());
-    let name = name.ok_or_else(|| helper_error(&label, "no name"))?;
-    Ok((name.to_string(), def))
+    Ok((name, def))
 }
 
 /// Merge the session settings rigger installs - the SessionStart prime hook and the status line,
@@ -307,9 +312,9 @@ pub fn carries_session_settings(existing: &[u8], grep_guard: bool) -> bool {
 }
 
 /// The `helpers` as the JSON object Claude Code's `--agents` flag takes:
-/// `{name: {description, model, tools: [..], prompt}}`, each field read from the helper's own
-/// frontmatter and the prompt its body, verbatim. A helper that does not parse fails naming its
-/// file.
+/// `{name: {description, model, tools: [..], prompt}}`, each field the value the helper's own
+/// YAML frontmatter gives it and the prompt its body, verbatim ([`parse_helper`]). A helper that
+/// does not parse fails naming its file.
 pub fn helper_agents_json(helpers: &[HelperCopy]) -> Result<Value, Error> {
     let mut agents = Map::new();
     for helper in helpers {

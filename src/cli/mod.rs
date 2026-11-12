@@ -4805,14 +4805,7 @@ fn read_project_skill(
     let path = project_skill_path(root, name);
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
+        Err(e) if hooks::is_absent(&e) => Ok(None),
         Err(e) => Err(setup_read_error(&path, e)),
     }
 }
