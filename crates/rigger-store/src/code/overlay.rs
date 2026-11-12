@@ -42,7 +42,13 @@ pub fn open_head(
     let compared = Compared::of(diff.as_ref().map_err(String::as_str));
     let (view, compared) = match diff {
         Ok(diff) if diff.files_in_scope().is_empty() => (base, compared),
-        Ok(_) => (base, Compared::Uncomparable),
+        Ok(diff) => match read_changed(source, extract, worktree, &diff, memo) {
+            Ok(changed) => {
+                let overlay = Overlay::new(base, &diff, changed);
+                (Box::new(overlay) as Box<dyn CodeView>, compared)
+            }
+            Err(_) => (base, Compared::Uncomparable),
+        },
         Err(_) => (base, compared),
     };
     Ok(Head {

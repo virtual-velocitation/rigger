@@ -799,10 +799,11 @@ top of this document gives the full design; this is its shape.
   folds the record events alone and skips a derived type by its type, so a log written before the
   code store refolds to the graph its records alone fold to.
 - **Reads compose the two.** `Composed` joins the record graph and the code view, and an honesty
-  check runs once per view: it compares the snapshot's tree with the caller's worktree, withholds
-  every code node in a file that differs (and every code node when the worktree cannot be
-  compared), and labels every answer with the commit it describes and what it withheld. The CLI
-  prints the label, the MCP tools return it, the dash shows it.
+  check runs once per view: it compares the snapshot's tree with the caller's worktree, takes the
+  facts of every file that differs from the worktree's bytes over the snapshot's (the overlay;
+  the groupings stay the snapshot's), withholds every code node when the worktree cannot be
+  compared, and labels every answer with what it describes and what it withheld. The CLI prints
+  the label, the MCP tools return it, the dash shows it.
 - **Test views.** Test code is held in the snapshot and filtered by one `tests` option on every
   reader (CLI `--tests`, MCP `tests`, dash `tests=`): `exclude` (the default), `include`, `only`.
   A read that hides tests reports how many it hid.
