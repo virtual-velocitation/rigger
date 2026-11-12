@@ -347,7 +347,8 @@ contract test, `tests/boundary_audit.rs`, beside its Rule 2 (`misplaced_construc
   `conductor::STREAM` or `run::STREAM` (`crates/rigger-domain/src/run.rs:32`, re-exported at
   `conductor.rs:63`), or a bare `STREAM` in a file whose `use` of a
   `STREAM_MODULES` member (`run` and `conductor`, `tests/boundary_audit.rs`) names `STREAM`;
-- OPEN: `Projector::open(`, `open_graph_for_write(`, `open_graph(` and `.graph()`
+- OPEN: `Projector::open(`, or `Projector::open` named as a value for a callee to call (counted
+  at the item that names it), `open_graph_for_write(`, `open_graph(` and `.graph()`
   (`StoreLocation::graph`, `src/cli/mod.rs:1403`).
 The hits are compared as a set of `file:item` entries against this block's allow-list and nothing
 else, so a new site fails the test until it is listed, and a listed site that vanished fails it too.
