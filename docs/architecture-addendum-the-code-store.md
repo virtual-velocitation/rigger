@@ -403,7 +403,8 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   write   CURRENT-<fp>.tmp ; fsync ; rename to CURRENT-<fp>  ; sync_dir
   reap    keep the two CURRENT-* naming the highest seqs; remove every other CURRENT-*, then
           every *.snap neither names, and every *.tmp (a failed delete is left for the next
-          advance); then reap the facts memo to fp's entries within its cap (section 13)
+          advance); then reap the facts memo to the entries of the fingerprints of the two
+          kept CURRENT-*, within its cap across them (section 13)
   release LOCK
 ```
 
@@ -436,8 +437,10 @@ What is *not* done, and why:
   and snapshot. Recency is the order the pointers were written in, which is the order of the
   sequence numbers they name, since every pointer is written under LOCK with the next number.
 - **No unbounded memo.** The overlay's facts memo (section 13) is reaped with the snapshots, to
-  the advanced fingerprint's entries read within three days, the most recently read first up to
-  64 MiB, and an overlay open that writes an entry reaps it too.
+  the entries of the fingerprints whose pointers the store keeps, so two binaries sharing a store
+  keep each other's entries and a fingerprint's entries go with its snapshot. Across those, it
+  keeps the entries read within three days, the most recently read first up to 64 MiB, and an
+  overlay open that writes an entry reaps it too.
 
 ### 5.2 What advances the stamp
 
@@ -1167,13 +1170,18 @@ because its key is the content. It has two tiers:
   and is removed. Two processes writing one entry write the same bytes, and the rename keeps one
   whole. A disk error is never an answer's error: the file is extracted as without a memo.
 
-The memo on disk is bounded and reaped (`DiskMemo::reap`, `MemoCap::STATED`):
+The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
 
-- **Bound:** 64 MiB of entries, none unread for more than three days.
+- **Bound:** 64 MiB of entries across every kept fingerprint, none unread for more than three
+  days.
 - **Recency:** an entry's modification time, which a read sets (`File::set_modified`, section 15).
   The least recently read go first once the bytes pass the cap.
-- **Fingerprint:** only the entries of the fingerprint being reaped for stay, so a new binary
-  never reads, nor keeps, another's entries.
+- **Fingerprint:** the entries of every fingerprint the store keeps a pointer for (at most two,
+  section 5.1) stay, and every other fingerprint's go. Two binaries sharing a store then read
+  their own entries on alternate reads and extract nothing again, which is the thrash the
+  store's two kept pointers exist to stop; a third fingerprint's advance drops the least recent
+  fingerprint's entries with its snapshot. A binary only ever reads entries of its own
+  fingerprint.
 - **Temps:** a temp older than a minute is a crashed writer's, and goes.
 - **When:** with the store's reaper on every advance, under LOCK, and after every overlay open
   that writes an entry.
@@ -1350,10 +1358,12 @@ a reader holding one open (or mapped) never blocks a writer.
   (a file edited back and forth, each answer compared with a fresh extraction),
   `a_damaged_entry_reads_as_absent_and_is_replaced`, `an_unwritable_memo_leaves_the_answer_alone`,
   `writers_of_one_entry_leave_it_whole`,
-  `a_reap_keeps_the_recently_read_entries_of_its_fingerprint_within_the_cap`,
-  `a_read_entry_outlives_one_read_before_it`, `an_advance_reaps_the_memo`,
+  `a_reap_keeps_the_recently_read_entries_of_the_kept_fingerprints_within_the_cap`,
+  `a_read_entry_outlives_one_read_before_it`,
+  `an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps`,
+  `two_fingerprints_alternating_reads_extract_once_each`,
   `an_open_that_writes_the_memo_reaps_it`, `a_reaper_racing_reads_fails_closed_to_extraction`,
-  `reset_derived_clears_the_code_facts_memo_first_on_any_backend`,
+  `reset_derived_clears_the_code_facts_memo_only_once_the_delete_may_run`,
   `validate_reports_footprint_by_category_and_flags_a_dead_share_breach` and
   `init_project_ignores_the_code_facts_memo_by_the_code_store_line`.
 - `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
