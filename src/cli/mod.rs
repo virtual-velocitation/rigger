@@ -7479,6 +7479,8 @@ mod tests {
         let rigger_dir = root.path().join(".rigger");
         write_file(&rigger_dir.join("events.db"), &[0u8; 100]);
         write_file(&rigger_dir.join("events.db.bak-1"), &[0u8; 30]);
+        let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+        write_file(&memo.join("a.facts"), &[0u8; 25]);
 
         let scratch = root.path().join("scratch");
         write_file(&scratch.join("rigger-wt-unit-dead").join("x"), &[0u8; 40]);
@@ -7511,11 +7513,14 @@ mod tests {
 
         assert_eq!(
             categories.len(),
-            7,
-            "the six Design-named categories plus 'unowned agent scratch', no more no less"
+            8,
+            "the six Design-named categories plus 'unowned agent scratch' and 'code facts memo', \
+             no more no less"
         );
         let by_name = |n: &str| categories.iter().find(|c| c.name == n).unwrap().clone();
         assert_eq!(by_name("store").total_bytes, 100);
+        assert_eq!(by_name("code facts memo").total_bytes, 25);
+        assert_eq!(by_name("code facts memo").dead_bytes, 0);
         assert_eq!(by_name("backups").total_bytes, 30);
         assert_eq!(by_name("shared build cache").total_bytes, 900);
         assert_eq!(by_name("worktrees").total_bytes, 40);

@@ -13655,6 +13655,9 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
     // whole size is dead share by design (spec 77 Design, criterion 5): this is the
     // category the dead-share-breach half of this test exercises.
     seed_bytes(scratch.join("cargo-target").join("x.rlib"), 4096);
+    // The code store's facts memo, reported as its own category.
+    let memo = rigger_store::code::Store::new(root).memo_dir();
+    seed_bytes(memo.join("a.facts"), 30);
 
     let (out, err) = validate_footprint_advisories(root, &scratch, &cache_home);
 
@@ -13675,6 +13678,10 @@ fn validate_reports_footprint_by_category_and_flags_a_dead_share_breach() {
     assert!(
         out.contains("footprint: shared build cache 4.0K"),
         "the seeded build-cache size must be reported; stdout:\n{out}"
+    );
+    assert!(
+        out.contains("footprint: code facts memo 30B"),
+        "the seeded facts memo's size must be reported; stdout:\n{out}"
     );
 
     // The shared build cache's 100% dead share breaches the advisory threshold and names

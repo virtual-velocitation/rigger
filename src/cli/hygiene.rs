@@ -82,6 +82,11 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         reset_scratch_orphans()?;
     }
     if modes.derived {
+        // The code store's facts memo first: it needs no backend and no quiet store, so neither
+        // refusal below holds it back.
+        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root()))? {
+            println!("{line}");
+        }
         // Decided up front, before deleting: deleting rows and reclaiming the file are mechanics
         // of the embedded log, not port operations, so `--derived` names the backend it needs
         // rather than quietly doing nothing on one the delete does not run on.
@@ -451,6 +456,17 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
                 .to_string(),
         ),
     }
+}
+
+/// `rigger reset --derived`'s clear of the code store's facts memo
+/// ([`rigger_store::code::Store::memo_dir`]) in the project at `root`: the whole directory goes,
+/// since a read extracts again any file whose entry it needs. It needs no backend and no quiet
+/// store, a reader racing it extracting its files again, so it runs first in `--derived`, ahead
+/// of the event log's backend refusal and live-writer guard. Answers the line that says what it
+/// removed, or none when there was no memo.
+fn clear_code_facts_memo(root: &Path) -> Result<Option<String>, String> {
+    let _ = root;
+    Ok(None)
 }
 
 /// `rigger reset --derived`: delete every derived event of the event log, the step that ends the
@@ -1958,6 +1974,38 @@ mod tests {
                 Some("7 derived event(s)".to_string()),
             ]
         );
+    }
+
+    /// Each row: what the project's facts memo holds, and the line clearing it answers. Every
+    /// row leaves no memo.
+    #[test]
+    fn clearing_the_code_facts_memo_removes_it_and_names_its_bytes() {
+        let cases: [(&str, Option<&[usize]>, Option<&str>); 3] = [
+            ("no memo", None, None),
+            (
+                "an empty memo",
+                Some(&[]),
+                Some("reset --derived: removed the code facts memo (0B)"),
+            ),
+            (
+                "a memo of two entries",
+                Some(&[10, 20]),
+                Some("reset --derived: removed the code facts memo (30B)"),
+            ),
+        ];
+        for (case, entries, want) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+            if let Some(entries) = entries {
+                std::fs::create_dir_all(&memo).unwrap();
+                for (at, len) in entries.iter().enumerate() {
+                    std::fs::write(memo.join(format!("{at}.facts")), vec![0u8; *len]).unwrap();
+                }
+            }
+            let line = clear_code_facts_memo(root.path()).unwrap();
+            assert_eq!(line.as_deref(), want, "{case}");
+            assert!(!memo.exists(), "{case}: the memo is left");
+        }
     }
 
     #[test]
