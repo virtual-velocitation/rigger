@@ -18,8 +18,11 @@
 #                        comparison with the baseline and the last five run files, and the
 #                        previous run file's adopted proposal scored. Refuses to overwrite a
 #                        file. Prints the file's path.
-#   evidence [run]       print the run's rejects, gate failures, other failures, escalations and
-#                        deferred gate failures as JSON, for the evaluator. Never committed.
+#   evidence [run]       print the evaluator's three sources as JSON: the failures (rejects, gate
+#                        failures, other failures, escalations and deferred gate failures, each
+#                        with its measured rework), the cost (time by unit, label, battery and
+#                        gate, the repeats the log shows and what it cannot show), and the grep
+#                        fallbacks grouped by what they searched for. Never committed.
 #   check [file]         grade a run file's format (default: the newest run file); exit 1 with
 #                        one line per problem. It never judges content.
 #   emit [file]          once check passes, record each proposal as a ReviewFinding through
@@ -78,8 +81,9 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
-from collections import Counter
+from collections import Counter, namedtuple
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -102,12 +106,20 @@ SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RUN_FILE = re.compile(r"^\d{8}-\d{4}-[0-9A-Za-z_-]{8}\.md$")
 BLOCK = re.compile(r"^```json (\w+)\n(.*?)^```$", re.M | re.S)
 BLOCKS = ("scorecard", "previous", "classes", "proposals")
+# Where a class comes from: the run's failures, what its time cost, or its grep fallbacks.
+SOURCES = ("failures", "cost", "grep-fallbacks")
 SURFACES = ("persona", "gate", "workflow", "spec-skill", "binary")
 FORMS = ("check", "gate", "instruction")
 INSTRUCTION_SURFACES = ("persona", "spec-skill")
 BY_MAPS = ("failures_by_cause", "reject_items_by_class", "rejects_by_cause",
            "gate_fails_by_gate", "deferred_gate_fails_by_gate", "red_verdicts_by_gate",
-           "time_shares")
+           "time_shares", "hours_by_label", "gate_hours_by_gate", "repeated_hours",
+           "grep_fallbacks_by_target")
+# The metrics a cost class may name: hours by-maps and top-level hours, or shares of unit elapsed
+# time, which the bound on hours_saved converts to hours.
+COST_HOURS = ("hours_by_label", "gate_hours_by_gate", "repeated_hours", "unit_elapsed_hours")
+COST_SHARES = ("time_shares", "gates_share", "post_merge_gates_share")
+GREP_METRICS = ("grep_fallbacks", "grep_fallbacks_by_target")
 COMPARED = ("units_integrated", "first_pass_rate", "attempts_per_unit", "rejects_per_unit",
             "gate_fails_per_unit", "escalations", "agent_busy_hours_per_unit",
             "wall_hours_per_criterion_unit", "live_wall_hours_per_criterion_unit",
@@ -117,11 +129,42 @@ COMPARED = ("units_integrated", "first_pass_rate", "attempts_per_unit", "rejects
 # the graph could not answer; the binary's own grep-fallback count uses the same prefix.
 GREP_FALLBACK = "grep-fallback:"
 UNSOURCED = {
-    "grounding_share": "unmeasured: no event marks the end of an agent's orientation; nearest "
-                       "instrument: the agent session transcripts (time before the first edit)",
+    "grounding_share": "unmeasured: no event marks the end of an agent's orientation, and "
+                       "FileTouched is recorded from the diff after the gate battery, so no event "
+                       "times a session's first edit; nearest instrument: the agent session "
+                       "transcripts",
+    "context_restarts": "unmeasured: SpawnResult records no end reason, so a session that ran out "
+                        "of context is not told from one that finished; relaunched_sessions counts "
+                        "the launches a relaunch continued, whatever stopped them",
 }
 SELF_REPORTED = ("self-reported: agents record these lines themselves, so a fallback no agent "
                  "reported is not counted")
+# What a grep fallback searched for, by the first rule its line matches, in this order. A grep is
+# always literal, so "literal" says nothing; a line also often says why the graph had no node, so
+# the text rule comes before the symbol rule.
+GREP_TARGETS = (
+    ("caller", re.compile(r"\bcall(?:er|ers|s|ing)?\b|\bcall sites?\b|--around|\breaders?\b|"
+                          r"\bconsumers?\b|\bconstructions?\b|\buses\b", re.I)),
+    ("text", re.compile(r"\bprose\b|\btexts?\b|\bspellings?\b|\bwording\b|\bphrases?\b|"
+                        r"\bstrings?\b|\bsentences?\b|\bcensus\b|\bmentions\b", re.I)),
+    ("symbol", re.compile(r"\bno (?:graph |test-helper |head-tree )?nodes?\b|--show|\bshow\b|"
+                          r"returned (?:none|no nodes)|\bhelpers?\b|\bimpls?\b|\bdefs?\b|"
+                          r"\bdefinitions?\b|\bfields?\b", re.I)),
+    ("file", re.compile(r"\bheadings?\b|\bsections?\b|\bdeclarations\b|\bfiles?\b", re.I)),
+)
+GREP_GROUPING = ("self-reported, grouped by the first rule a line matches, in the order caller, "
+                 "text, symbol, file; a line matching none is unclassified")
+UNIT_HOURS = ("unit hours: a unit's live elapsed time, outages removed; units run in parallel, so "
+              "their hours add up past the run's wall time")
+GATE_HOURS = ("each fresh verdict's time since the previous verdict of its battery, or since the "
+              "battery opened; the driver runs a battery's gates one at a time, so this is the "
+              "gate's run plus the driver's step before it")
+REWORK_HOURS = ("each failure's unit hours from the failure to its unit's next failure, next merge "
+                "attempt or integration, whichever comes first")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+# One gate battery: its opening (a writer's result), its last fresh verdict, whether that verdict
+# is post-merge, the writer's spawn id, and its verdicts as (time, info, position) in time order.
+Battery = namedtuple("Battery", "opened last post opener verdicts")
 TAIL = 2000
 
 
@@ -187,7 +230,7 @@ def store():
     return open_read_only(db)
 
 
-# The (data, recorded_at) rows of one type on the run's own progress stream
+# The (position, data, recorded_at) rows of one type on the run's own progress stream
 # (`<namespace>progress/<run id>`) in log order, or None when there is no progress store.
 def progress_rows(run, typ):
     db = Path(os.environ["EVALUATE_PROGRESS"])
@@ -196,26 +239,36 @@ def progress_rows(run, typ):
     con = open_read_only(db)
     suffix = "progress/" + run
     rows = con.execute(
-        "SELECT data, recorded_at FROM events WHERE type = ? "
+        "SELECT position, data, recorded_at FROM events WHERE type = ? "
         "AND substr(stream, -length(?)) = ? ORDER BY position", (typ, suffix, suffix)).fetchall()
     con.close()
     return rows
 
 
-# The progress lines that report a grep fallback, or None when there is no progress store. A line
-# counts only when an agent recorded it, so a fallback no agent reported is not counted.
-def grep_fallbacks(run):
+# The progress lines that report a grep fallback, as {target: [{id, by, line}]} with each line's
+# target by GREP_TARGETS, or None when there is no progress store. A line counts only when an
+# agent recorded it, so a fallback no agent reported is not counted.
+def grep_fallback_lines(run):
     rows = progress_rows(run, "AgentProgress")
     if rows is None:
         return None
-    return sum(1 for data, _ in rows
-               if str(decode(data).get("activity") or "").lstrip().startswith(GREP_FALLBACK))
+    grouped = {name: [] for name, _ in GREP_TARGETS}
+    grouped["unclassified"] = []
+    for pos, data, _ in rows:
+        record = decode(data)
+        line = str(record.get("activity") or "").strip()
+        if not line.startswith(GREP_FALLBACK):
+            continue
+        line = line[len(GREP_FALLBACK):].strip()
+        target = next((name for name, rule in GREP_TARGETS if rule.search(line)), "unclassified")
+        grouped[target].append({"id": f"progress:{pos}", "by": record.get("id") or "", "line": line})
+    return grouped
 
 
 # The driver's heartbeat gaps longer than BEAT_GAP_S, as (start, end) seconds, or None when the run
 # recorded no heartbeat.
 def beat_gaps(run):
-    times = sorted(at / 1e9 for _, at in progress_rows(run, "SupervisorBeat") or [])
+    times = sorted(at / 1e9 for _, _, at in progress_rows(run, "SupervisorBeat") or [])
     if not times:
         return None
     return [(a, b) for a, b in zip(times, times[1:]) if b - a > BEAT_GAP_S]
@@ -302,6 +355,8 @@ class Fold:
         self.review_only = set()
         self.last_landing_ns = None
         self.failures = []
+        self.failure_at = {}
+        self.relaunches = []
         self.escalations = []
         self.deferred = []
         self.red_verdicts = Counter()
@@ -311,25 +366,31 @@ class Fold:
         self.spawns = []
         self.timeline = {}
 
-    # Each unit's events in log order, in seconds, for the time shares. A gate verdict belongs to
-    # the unit its replay key opens with; a unit's start to the unit its branch names.
-    def track(self, typ, data, meta, at):
+    # Each unit's events in log order, as (seconds, type, info, position), for the time shares and
+    # the cost. A gate verdict belongs to the unit its replay key opens with; a unit's start to the
+    # unit its branch names. A verdict's commit is the one its input digest
+    # (`<command digest>:<commit>`) names.
+    def track(self, pos, typ, data, meta, at):
         if typ in ("RunStarted", "RunHeld", "RunReleased", "UnitFailed", "UnitEscalated",
                    "DeferredGateFailed"):
             return
         if typ == "GateVerdict":
             key = str(meta.get("replay_key") or "")
             unit = key.split("/")[0]
-            info = {"cache": "cache_hit_of" in meta, "post": "postmerge" in key}
+            digest = str(meta.get("input_digest") or "")
+            commit = digest.rpartition(":")[2]
+            info = {"cache": "cache_hit_of" in meta, "post": "postmerge" in key,
+                    "gate": str(data.get("gate") or ""), "skipped": bool(data.get("skipped")),
+                    "digest": digest, "commit": commit if COMMIT.match(commit) else ""}
         else:
             unit = data.get("unit") or str(data.get("id") or "").split("/")[0]
             if typ == "UnitStarted":
                 unit = str(data.get("branch") or "").replace("rigger/u/", "") or unit
             info = data.get("status") if typ == "UnitStatus" else str(data.get("id") or "")
-        self.timeline.setdefault(unit, []).append((at / 1e9, typ, info))
+        self.timeline.setdefault(unit, []).append((at / 1e9, typ, info, pos))
 
     def add(self, pos, typ, data, meta, at):
-        self.track(typ, data, meta, at)
+        self.track(pos, typ, data, meta, at)
         self.last_ns = at
         if typ == "RunStarted":
             if self.started_ns is None:
@@ -352,8 +413,15 @@ class Fold:
             else:
                 self.integrated.add(data.get("id", ""))
                 self.last_landing_ns = at
+        elif typ == "UnitStatus":
+            # A relaunch continues an interrupted launch under a new session id, so the session
+            # the spawn continued differs from the one it ran as.
+            resumed = meta.get("resumed_from")
+            if data.get("status") == "spawn-session" and resumed and resumed != meta.get("session_id"):
+                self.relaunches.append((pos, str(meta.get("spawn") or "")))
         elif typ == "UnitFailed":
             self.failures.append((pos, data))
+            self.failure_at[pos] = at / 1e9
             unit = data.get("id", "")
             # A review reject takes the cause the unit's last adjudicator reject stated.
             if data.get("cause") == "reject" and unit in self.verdict_cause:
@@ -450,23 +518,32 @@ def overlap(spans, a, b):
 def unit_work(events):
     events = sorted(events, key=lambda event: event[0])
     spans, requested = [], {}
-    for t, typ, info in events:
+    for t, typ, info, _ in events:
         if typ == "SpawnRequested":
             requested[info] = t
         elif typ == "SpawnResult" and info in requested:
             spans.append((requested.pop(info), t))
-    batteries, opened, last, post = [], None, None, False
-    for t, typ, info in events:
+    batteries = []
+
+    def close(current):
+        opened, opener, verdicts = current
+        fresh = [v for v in verdicts if not v[1]["cache"]]
+        if fresh:
+            last, info, _ = fresh[-1]
+            batteries.append(Battery(opened, last, info["post"], opener,
+                                     [v for v in verdicts if v[0] <= last]))
+
+    current = None
+    for t, typ, info, pos in events:
         if typ == "SpawnResult" and any(w in info for w in WRITERS):
-            opened, last, post = t, None, False
-        elif typ == "GateVerdict" and not info["cache"] and opened is not None:
-            last, post = t, info["post"]
-        elif typ == "SpawnRequested" and opened is not None:
-            if last is not None:
-                batteries.append((opened, last, post))
-            opened = None
-    if opened is not None and last is not None:
-        batteries.append((opened, last, post))
+            current = (t, info, [])
+        elif typ == "GateVerdict" and current is not None:
+            current[2].append((t, info, pos))
+        elif typ == "SpawnRequested" and current is not None:
+            close(current)
+            current = None
+    if current is not None:
+        close(current)
     return events, spans, batteries
 
 
@@ -484,7 +561,7 @@ def outages(fold, work, run):
     if gaps is None and not holds:
         return [], "none recorded"
     busy = [(a, b) for _, spans, batteries in work for a, b in
-            spans + [(a, b) for a, b, _ in batteries]]
+            spans + [(battery.opened, battery.last) for battery in batteries]]
     by_host = [(a, b) for a, b, by in holds if by != "operator"]
     by_operator = minus([(a, b) for a, b, by in holds if by == "operator"], busy)
     source = "heartbeat and holds" if gaps is not None else "holds only: no heartbeat recorded"
@@ -497,13 +574,14 @@ def outages(fold, work, run):
 # (its last review to its integration); a second with none is waiting. Outage seconds are then
 # dropped. None when the unit has no start or no integration in the slice.
 def unit_partition(events, spans, batteries, dead):
-    t0 = min((t for t, typ, _ in events if typ in ("UnitStarted", "SpawnRequested")), default=None)
-    t1 = max((t for t, typ, _ in events if typ == "UnitIntegrated"), default=None)
+    t0 = min((t for t, typ, _, _ in events if typ in ("UnitStarted", "SpawnRequested")),
+             default=None)
+    t1 = max((t for t, typ, _, _ in events if typ == "UnitIntegrated"), default=None)
     if t0 is None or t1 is None:
         return None
-    merging = min((t for t, typ, info in events
+    merging = min((t for t, typ, info, _ in events
                    if typ == "UnitStatus" and info == "integrate-merge-attempt"), default=None)
-    reviewed = max((t for t, typ, info in events
+    reviewed = max((t for t, typ, info, _ in events
                     if typ == "UnitStatus" and info == "reviewed"), default=t1)
     label = {}
 
@@ -516,12 +594,163 @@ def unit_partition(events, spans, batteries, dead):
         paint(max(a, t0), min(b, t1), "outage", -1)
     for a, b in spans:
         paint(a, b, "merge_spawn" if merging is not None and a >= merging else "spawn", 0)
-    for a, b, after_merge in batteries:
-        paint(a, b, "post_merge_gates" if after_merge else "gates", 1)
+    for battery in batteries:
+        paint(battery.opened, battery.last, "post_merge_gates" if battery.post else "gates", 1)
     paint(reviewed, t1, "integration", 2)
     part = Counter(label.get(s, ("waiting", 9))[0] for s in range(int(t0), int(t1)))
     dropped = part.pop("outage", 0)
     return max(int(t1) - int(t0) - dropped, 0), part
+
+
+# ---- cost ----
+
+def live(a, b, dead):
+    """The seconds of [a, b) outside the outages."""
+    return max(b - a, 0) - overlap(dead, a, b)
+
+
+def attempt_of(spawn):
+    match = SPAWN_ID.match(spawn or "")
+    return int(match["attempt"]) if match else 0
+
+
+# Each commit's tree as the repository resolves it, or None for a commit it cannot resolve.
+def trees_of(commits):
+    commits = sorted({c for c in commits if c})
+    if not commits:
+        return {}
+    try:
+        lines = subprocess.run(
+            ["git", "-C", os.environ["EVALUATE_ROOT"], "cat-file", "--batch-check=%(objectname)"],
+            input="".join(c + "^{tree}\n" for c in commits), capture_output=True, text=True,
+            check=True).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError):
+        return {c: None for c in commits}
+    return {c: (line if COMMIT.match(line) else None) for c, line in zip(commits, lines)}
+
+
+def unit_hours(seconds):
+    return round(seconds / 3600, 3)
+
+
+# What the integrated units' time cost and what of it repeated, from the same partition as the
+# time shares: hours by unit, label, battery and gate, and three repeats the log can show.
+#   post_merge_same_tree: a post-merge battery over the same tree as the unit's last pre-merge
+#     battery, so the merge changed nothing it gates (null when a tree does not resolve);
+#   retry_batteries: a pre-merge battery opened by a writer at attempt 1 or later, re-running the
+#     battery after a failure;
+#   same_input_reruns: a fresh verdict of a gate over an input digest (command and commit) an
+#     earlier fresh verdict of that gate already judged.
+def cost(fold, work, dead):
+    units, batteries, gates, by_label = [], [], {}, Counter()
+    judged, reruns = set(), [0.0, []]
+    for unit, (events, spans, unit_batteries) in zip(fold.timeline, work):
+        partition = unit in fold.integrated and unit_partition(events, spans, unit_batteries, dead)
+        if not partition:
+            continue
+        by_label.update(partition[1])
+        attempts = 1 + max((attempt_of(info) for _, typ, info, _ in events
+                            if typ == "SpawnRequested" and any(w in info for w in WRITERS)),
+                           default=0)
+        units.append({"unit": unit, "positions": [events[0][3], events[-1][3]],
+                      "attempts": attempts, "batteries": len(unit_batteries),
+                      "hours": {k: unit_hours(v) for k, v in sorted(partition[1].items())}})
+        pre_merge_commit = ""
+        for battery in unit_batteries:
+            previous, counts, fresh = battery.opened, Counter(), []
+            for t, info, pos in battery.verdicts:
+                kind = "cache" if info["cache"] else "skipped" if info["skipped"] else "fresh"
+                counts[kind] += 1
+                if kind == "fresh":
+                    seconds = live(previous, t, dead)
+                    fresh.append((pos, info))
+                    gate = gates.setdefault(info["gate"], Counter())
+                    gate["runs"] += 1
+                    gate["seconds"] += seconds
+                    phase = "post_merge" if battery.post else (
+                        "retry" if attempt_of(battery.opener) >= 1 else "")
+                    if phase:
+                        gate[phase + "_runs"] += 1
+                        gate[phase + "_seconds"] += seconds
+                    key = (info["gate"], info["digest"])
+                    if info["digest"] and key in judged:
+                        reruns[0] += seconds
+                        reruns[1].append(pos)
+                    judged.add(key)
+                previous = t
+            commit = next((info["commit"] for _, info in reversed(fresh) if info["commit"]), "")
+            batteries.append({
+                "unit": unit, "kind": "post-merge" if battery.post else "pre-merge",
+                "opened_by": battery.opener, "attempt": attempt_of(battery.opener),
+                "hours": unit_hours(live(battery.opened, battery.last, dead)),
+                "verdicts": dict(sorted(counts.items())), "commit": commit,
+                "pre_merge_commit": pre_merge_commit if battery.post else None,
+                "positions": [pos for pos, _ in fresh]})
+            if not battery.post and commit:
+                pre_merge_commit = commit
+    trees = trees_of([b["commit"] for b in batteries] + [b["pre_merge_commit"] or "" for b in batteries])
+    for b in batteries:
+        if b["kind"] == "post-merge":
+            mine, theirs = trees.get(b["commit"]), trees.get(b["pre_merge_commit"] or "")
+            b["same_tree_as_pre_merge"] = mine == theirs if mine and theirs else None
+
+    def repeat(chosen):
+        return {"hours": round(sum(b["hours"] for b in chosen), 3), "batteries": len(chosen),
+                "evidence": [b["positions"][0] for b in chosen if b["positions"]]}
+
+    post = [b for b in batteries if b["kind"] == "post-merge"]
+    unresolved = sum(1 for b in post if b["same_tree_as_pre_merge"] is None)
+    same_tree = repeat([b for b in post if b["same_tree_as_pre_merge"]])
+    if unresolved:
+        same_tree["hours"] = None
+    repeats = {
+        "post_merge_same_tree": same_tree,
+        "retry_batteries": repeat([b for b in batteries
+                                   if b["kind"] == "pre-merge" and b["attempt"] >= 1]),
+        "same_input_reruns": {"hours": unit_hours(reruns[0]), "verdicts": len(reruns[1]),
+                              "evidence": reruns[1]},
+    }
+    gate_rows = []
+    for name, c in sorted(gates.items()):
+        row = {"gate": name, "runs": c["runs"], "hours": unit_hours(c["seconds"])}
+        for phase in ("retry", "post_merge"):
+            row[phase + "_runs"] = c[phase + "_runs"]
+            row[phase + "_hours"] = unit_hours(c[phase + "_seconds"])
+        gate_rows.append(row)
+    return {
+        "hours_by_label": {k: unit_hours(v) for k, v in sorted(by_label.items())},
+        "gate_hours_by_gate": {row["gate"]: row["hours"] for row in gate_rows},
+        "repeated_hours": {k: v["hours"] for k, v in repeats.items()},
+        "unresolved_trees": unresolved,
+        "units": units, "batteries": batteries, "gates": gate_rows, "repeats": repeats,
+        "relaunched_sessions": {"count": len(fold.relaunches),
+                                "evidence": [pos for pos, _ in fold.relaunches],
+                                "spawns": [spawn for _, spawn in fold.relaunches]},
+    }
+
+
+# Each failure's rework: its unit's live hours from the failure to the unit's next failure, its
+# next merge attempt or its integration, whichever comes first (the unit's last event when none
+# follows). Keyed by the failure's position.
+def failure_rework(fold, dead):
+    out = {}
+    for pos, data in fold.failures:
+        unit, t = data.get("id", ""), fold.failure_at[pos]
+        events = fold.timeline.get(unit, [])
+        ends = [e[0] for e in events if e[0] > t and (
+            e[1] == "UnitIntegrated" or (e[1] == "UnitStatus" and e[2] == "integrate-merge-attempt"))]
+        ends += [fold.failure_at[p] for p, d in fold.failures
+                 if d.get("id", "") == unit and fold.failure_at[p] > t]
+        end = min(ends, default=max((e[0] for e in events), default=t))
+        out[str(pos)] = unit_hours(live(t, end, dead))
+    return out
+
+
+# The run's work per unit and its outages: what the scorecard and the evidence both read.
+def run_work(fold, run):
+    work = [unit_work(events) for events in fold.timeline.values()]
+    dead, source = outages(fold, work, run)
+    return work, dead, source
 
 
 # A unit that joins a stage (its `needs` names no unit of the run, the way the check-in waits on
@@ -529,6 +758,13 @@ def unit_partition(events, spans, batteries, dead):
 def joins_a_stage(fold, unit):
     needs = fold.needs.get(unit)
     return isinstance(needs, list) and any(n not in fold.criterion for n in needs)
+
+
+def repeated_label(spent):
+    unresolved = spent["unresolved_trees"]
+    return ("unit hours of the batteries or verdicts that repeated earlier work; "
+            + (f"post_merge_same_tree is null: {unresolved} post-merge battery tree(s) did not "
+               "resolve in this repository" if unresolved else "every battery tree resolved"))
 
 
 def scorecard(fold, run, stream, lo, hi):
@@ -555,8 +791,9 @@ def scorecard(fold, run, stream, lo, hi):
                 items[item_class(item)] += 1
     criterion_units = [u for u in fold.integrated
                        if fold.criterion.get(u) and not joins_a_stage(fold, u)]
-    work = [unit_work(events) for events in fold.timeline.values()]
-    dead, outage_source = outages(fold, work, run)
+    work, dead, outage_source = run_work(fold, run)
+    spent = cost(fold, work, dead)
+    grep_lines = grep_fallback_lines(run)
     wall = outage = live_wall = None
     if fold.started_ns is not None and fold.last_landing_ns is not None:
         start, end = fold.started_ns / 1e9, fold.last_landing_ns / 1e9
@@ -619,7 +856,14 @@ def scorecard(fold, run, stream, lo, hi):
         "post_merge_gates_share": share("post_merge_gates"),
         "time_shares": {k: share(k) for k in sorted(parts)} if fold.spawns else None,
         "grounding_share": None,
-        "grep_fallbacks": grep_fallbacks(run),
+        "grep_fallbacks": sum(map(len, grep_lines.values())) if grep_lines is not None else None,
+        "hours_by_label": spent["hours_by_label"] if fold.spawns else None,
+        "gate_hours_by_gate": spent["gate_hours_by_gate"],
+        "repeated_hours": spent["repeated_hours"],
+        "relaunched_sessions": spent["relaunched_sessions"]["count"],
+        "failure_rework_hours": failure_rework(fold, dead),
+        "grep_fallbacks_by_target":
+            {k: len(v) for k, v in grep_lines.items()} if grep_lines is not None else None,
         "failures_by_cause": dict(sorted(by_cause.items())),
         "reject_items_by_class": dict(sorted(items.items())),
         "rejects_by_cause": dict(sorted(reject_causes.items())),
@@ -628,7 +872,10 @@ def scorecard(fold, run, stream, lo, hi):
             dict(sorted(Counter(d.get("gate", "") for _, d in fold.deferred).items())),
         "red_verdicts_by_gate": dict(sorted(fold.red_verdicts.items())),
         "unsourced": UNSOURCED,
-        "labels": {"run": state, "time_shares": shares_label, "grep_fallbacks": SELF_REPORTED},
+        "labels": {"run": state, "time_shares": shares_label, "grep_fallbacks": SELF_REPORTED,
+                   "hours_by_label": UNIT_HOURS, "gate_hours_by_gate": GATE_HOURS,
+                   "repeated_hours": repeated_label(spent), "failure_rework_hours": REWORK_HOURS,
+                   "grep_fallbacks_by_target": GREP_GROUPING},
     }
 
 
@@ -749,15 +996,22 @@ def measure(wanted, out):
     print(shown(path))
 
 
+# The evaluator's three sources: the failures (each with its measured rework), the cost (time by
+# unit, label, battery and gate, the repeats the log shows, and what it cannot show), and the grep
+# fallbacks grouped by what they searched for.
 def evidence(wanted):
     fold, run, _, _, _ = folded(wanted)
+    work, dead, outage_source = run_work(fold, run)
+    rework = failure_rework(fold, dead)
+    spent = cost(fold, work, dead)
+    grep_lines = grep_fallback_lines(run)
     out = {"run": run, "rejects": [], "gate_failures": [], "other_failures": [],
            "escalations": [], "deferred_gate_failures": [],
            "red_verdicts_by_gate": dict(sorted(fold.red_verdicts.items()))}
     for pos, data in fold.failures:
         cause = data.get("cause") or ""
         record = {"pos": pos, "unit": data.get("id"), "attempts": data.get("attempts"),
-                  "cause": cause}
+                  "cause": cause, "rework_hours": rework[str(pos)]}
         if cause == "reject":
             record["adjudicator_cause"] = fold.reject_cause.get(pos)
             record["review_reason"] = data.get("review_reason")
@@ -771,6 +1025,17 @@ def evidence(wanted):
     for pos, data in fold.deferred:
         out["deferred_gate_failures"].append(
             {"pos": pos, "gate": data.get("gate"), "evidence_tail": tail(data.get("evidence"))})
+    out["rework_label"] = REWORK_HOURS + "; " + UNIT_HOURS
+    out["cost"] = {
+        "label": UNIT_HOURS, "outages": outage_source, "gate_hours_label": GATE_HOURS,
+        "repeated_label": repeated_label(spent),
+        **{k: spent[k] for k in ("hours_by_label", "gate_hours_by_gate", "repeated_hours",
+                                 "repeats", "relaunched_sessions", "gates", "units",
+                                 "batteries")},
+        "not_shown": {"first_edit": UNSOURCED["grounding_share"],
+                      "context_restarts": UNSOURCED["context_restarts"]},
+    }
+    out["grep_fallbacks"] = {"label": GREP_GROUPING, "by_target": grep_lines}
     print(json.dumps(out, indent=1))
 
 
