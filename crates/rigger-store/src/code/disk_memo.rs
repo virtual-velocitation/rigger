@@ -228,6 +228,9 @@ mod tests {
         assert_eq!(memo.get("src/a.rs", bytes), Some(facts));
     }
 
+    /// The block the reap counts an entry's bytes in.
+    const FOUR_KIB: usize = 4096;
+
     /// The name of an entry of the fingerprint `fp`.
     fn entry(fp: u64, name: &str) -> String {
         format!("{fp:016x}-{name}{FACTS}")
@@ -245,17 +248,17 @@ mod tests {
     }
 
     /// Each row: the files in the memo directory as (name, bytes, seconds unread), and the names
-    /// a reap keeping the fingerprints 7 and 9 within 100 bytes and a day leaves.
+    /// a reap keeping the fingerprints 7 and 9 within three 4 KiB blocks and a day leaves.
     #[test]
     fn a_reap_keeps_the_recently_read_entries_of_the_kept_fingerprints_within_the_cap() {
         const DAY: u64 = 24 * 60 * 60;
         let cap = MemoCap {
-            bytes: 100,
+            bytes: 3 * FOUR_KIB as u64,
             age: Duration::from_secs(DAY),
         };
         let (first, second, other) = (|n| entry(7, n), |n| entry(9, n), |n| entry(8, n));
         let (old_temp, new_temp) = (".x.facts.1.0.tmp".to_owned(), ".y.facts.1.1.tmp".to_owned());
-        let cases: [(&str, Vec<Seeded>, Vec<String>); 7] = [
+        let cases: [(&str, Vec<Seeded>, Vec<String>); 8] = [
             (
                 "a fresh entry of each kept fingerprint stays",
                 vec![(first("a"), 10, 0), (second("b"), 10, 0)],
@@ -278,15 +281,25 @@ mod tests {
             (
                 "the least recently read go first beyond the bytes, across the kept fingerprints",
                 vec![
-                    (first("a"), 40, 30),
-                    (second("b"), 40, 20),
-                    (first("c"), 40, 10),
+                    (first("a"), 2 * FOUR_KIB, 30),
+                    (second("b"), FOUR_KIB, 20),
+                    (first("c"), FOUR_KIB, 10),
                 ],
                 vec![second("b"), first("c")],
             ),
             (
+                "an entry counts the 4 KiB blocks it takes, so four small ones pass three blocks",
+                vec![
+                    (first("a"), 10, 40),
+                    (first("b"), 10, 30),
+                    (second("c"), 10, 20),
+                    (first("d"), 10, 10),
+                ],
+                vec![first("b"), second("c"), first("d")],
+            ),
+            (
                 "an entry larger than the bytes goes",
-                vec![(first("a"), 101, 0)],
+                vec![(first("a"), 3 * FOUR_KIB + 1, 0)],
                 vec![],
             ),
             (
@@ -316,7 +329,7 @@ mod tests {
     }
 
     /// A read is what keeps an entry: GIVEN two entries, the one read longer ago read again,
-    /// WHEN the memo is reaped to the bytes of one of them, THEN the entry read again stays.
+    /// WHEN the memo is reaped to the one block either takes, THEN the entry read again stays.
     #[test]
     fn a_read_entry_outlives_one_read_before_it() {
         let root = tempfile::tempdir().unwrap();
@@ -335,8 +348,9 @@ mod tests {
         }
         assert_eq!(memo.get("src/a.rs", a), Some(of_a));
         let size = |name: &String| std::fs::metadata(dir.join(name)).unwrap().len();
+        assert!(size(&at_a).max(size(&at_b)) <= FOUR_KIB as u64);
         let cap = MemoCap {
-            bytes: size(&at_a).max(size(&at_b)),
+            bytes: FOUR_KIB as u64,
             ..MemoCap::STATED
         };
         reap(&dir, &[7], cap, SystemTime::now());
