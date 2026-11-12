@@ -1031,6 +1031,9 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
     }
+    fn hidden_provers(&self, _ids: &[String]) -> usize {
+        0
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
             let mut state = self.state();
@@ -1055,7 +1058,7 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{DefRef, FactsView, MentionRef, Proofs, Settled};
+    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
@@ -1318,7 +1321,8 @@ mod tests {
     }
 
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
-    /// subgraph, the walks both ways, the lookup of a definition and the hidden tests.
+    /// subgraph, the walks both ways, the lookup of a definition, the hidden tests and the hidden
+    /// tests proving what a subgraph shows.
     #[test]
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
@@ -1352,7 +1356,11 @@ mod tests {
                 for depth in [1, 2, 3] {
                     let at = format!("{tests:?} {held} {seed:?} {depth}");
                     let (got, want) = (near.subgraph(&seed, depth), whole.subgraph(&seed, depth));
-                    same!(got.unwrap(), want.unwrap(), "subgraph {at}");
+                    let (got, want) = (got.unwrap(), want.unwrap());
+                    let shown: Vec<String> = want.nodes.iter().map(|n| n.id.clone()).collect();
+                    same!(got, want, "subgraph {at}");
+                    let (got, want) = (near.hidden_provers(&shown), whole.hidden_provers(&shown));
+                    same!(got.unwrap(), want.unwrap(), "hidden provers {at}");
                     for direction in [Direction::Up, Direction::Down] {
                         for floor in [TIER_INFERRED, TIER_AMBIGUOUS] {
                             let got = near.calls(&seed, direction, depth, floor).unwrap();
@@ -1401,6 +1409,70 @@ mod tests {
                 }
             }
             same!(near.stamp_label(), whole.stamp_label());
+        }
+    }
+
+    /// HIDDEN PROVERS ARE COUNTED FROM THE PROOFS READ: under exclude, the distinct test entities
+    /// proving the nodes asked about, a test proving two counted once; none when tests are shown
+    /// or the worktree cannot be compared. The whole graph and a neighbourhood count alike, a
+    /// neighbourhood from the proofs it read showing those nodes, reading nothing more of the
+    /// view, before and after it is resolved whole.
+    #[test]
+    fn hidden_provers_are_the_distinct_tests_proving_the_nodes_shown_while_tests_are_hidden() {
+        let records = Indexed::default();
+        let honesty = |compared| Honesty {
+            worktree: "wt".into(),
+            compared,
+            behind: None,
+        };
+        let (run, helper) = ("src/a.rs::run", "src/a.rs::helper");
+        let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
+        let cases: &[(Tests, Compared, &[&str], usize)] = &[
+            // checks, checks_run and it_works call run; checks calls helper too.
+            (Tests::Exclude, compared, &[run], 3),
+            (Tests::Exclude, compared, &[helper], 1),
+            (Tests::Exclude, compared, &[run, helper], 3),
+            (
+                Tests::Exclude,
+                compared,
+                &["src/b.rs::compute", "src/a.rs", "docs/d.md", "missing"],
+                0,
+            ),
+            (Tests::Include, compared, &[run, helper], 0),
+            (Tests::Only, compared, &[run, helper], 0),
+            (Tests::Exclude, uncomparable, &[run, helper], 0),
+        ];
+        let settles = Settles::of(view());
+        for &(tests, compared, ids, want) in cases {
+            let filter = ViewFilter { tests };
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let counting = Counting {
+                view: view(),
+                reads: Mutex::new(Vec::new()),
+                settles: None,
+            };
+            for (held, read) in [("facts", &counting as &dyn CodeView), ("settled", &settles)] {
+                let at = format!("{tests:?} {compared:?} {held} {ids:?}");
+                let whole = Composed::new(&records, read, filter, honesty(compared)).unwrap();
+                assert_eq!(whole.hidden_provers(&ids).unwrap(), want, "whole {at}");
+                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                near.subgraph(&ids, 1).unwrap();
+                counting.taken();
+                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near {at}");
+                assert_eq!(
+                    counting.taken(),
+                    Vec::<String>::new(),
+                    "near reads more {at}"
+                );
+                near.whole().unwrap();
+                counting.taken();
+                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near whole {at}");
+                assert_eq!(
+                    counting.taken(),
+                    Vec::<String>::new(),
+                    "whole reads more {at}"
+                );
+            }
         }
     }
 

@@ -1097,6 +1097,14 @@ pub trait ContextGraph: Send + Sync {
     }
 
     /// The code entities named `name` this graph answers, ordered by id: those of
+    /// How many distinct test entities the graph's `tests` filter hides prove a node of `ids`,
+    /// counted from the proofs read for those nodes: what an answer showing them says it leaves
+    /// out. None when tests are shown, the worktree cannot be compared, or by default (a graph
+    /// that holds no code, a test double).
+    fn hidden_provers(&self, _ids: &[String]) -> Result<usize, Error> {
+        Ok(0)
+    }
+
     /// [`Self::nodes_of_kind`] named `name`, read near the name. A hit it withholds is counted
     /// in its label as every withheld hit is.
     fn entities_named(&self, name: &str) -> Result<Vec<Node>, Error> {

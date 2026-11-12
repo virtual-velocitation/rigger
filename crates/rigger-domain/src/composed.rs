@@ -400,6 +400,9 @@ pub trait CodeHalf: Neighbors {
     fn entity_names(&self) -> Vec<String>;
     /// The test entities named `name` the filter hides, in id order.
     fn hidden_tests_named(&self, name: &str) -> Vec<Node>;
+    /// How many distinct test entities the filter hides prove a node of `ids`, counted from the
+    /// proofs the half read for them ([`ContextGraph::hidden_provers`]).
+    fn hidden_provers(&self, ids: &[String]) -> usize;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -556,6 +559,9 @@ impl CodeHalf for Whole {
             .filter(|n| node_name(n) == Some(name))
             .cloned()
             .collect()
+    }
+    fn hidden_provers(&self, _ids: &[String]) -> usize {
+        0
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -1112,6 +1118,9 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             .into_iter()
             .filter(|n| !self.withholds_code(n))
             .collect())
+    }
+    fn hidden_provers(&self, ids: &[String]) -> Result<usize, Error> {
+        Ok(self.code.hidden_provers(ids))
     }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)
