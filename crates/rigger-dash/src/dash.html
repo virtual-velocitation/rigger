@@ -523,8 +523,15 @@ let selectedInstance = (function () {
 let lastInstances = [];
 
 // The tests filter (the "Show tests" toggle): `exclude` shows product code only, `include` product
-// and tests, `only` tests. It rides every /api/graph request through apiUrl.
-let kgTests = "exclude";
+// and tests, `only` tests. It rides every /api/graph request through apiUrl. The browser remembers
+// the choice, so a reload keeps it; a store that cannot be read, or holds no choice, leaves exclude.
+const TESTS_KEY = "rigger.explorer.tests";
+let kgTests = (function () {
+  try {
+    const kept = localStorage.getItem(TESTS_KEY);
+    return kept === "include" || kept === "only" ? kept : "exclude";
+  } catch (_) { return "exclude"; }
+})();
 
 // Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
 // /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
@@ -838,10 +845,12 @@ function syncTestsToggle() {
   t.className = "kgtoggle" + (kgTests === "exclude" ? "" : " active");
 }
 
-// Step the tests filter exclude -> include -> only -> exclude and re-read the current view under it:
-// the seeded neighborhood when one is open, else the whole-graph overview.
+// Step the tests filter exclude -> include -> only -> exclude, remember it in the browser (a store
+// that cannot be written keeps it for this page only), and re-read the current view under it: the
+// seeded neighborhood when one is open, else the whole-graph overview.
 function setTests(next) {
   kgTests = next;
+  try { localStorage.setItem(TESTS_KEY, next); } catch (_) { /* this page keeps it */ }
   syncTestsToggle();
   if (kgSeed) seedGraph(kgSeed); else loadKgOverview();
 }

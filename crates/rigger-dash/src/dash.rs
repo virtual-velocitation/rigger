@@ -8594,7 +8594,7 @@ mod tests {
         for needle in [
             r#"id="kgteststoggle""#,
             "Show tests",
-            r#"let kgTests = "exclude";"#,
+            r#"return kept === "include" || kept === "only" ? kept : "exclude";"#,
             r#""tests=" + encodeURIComponent(kgTests)"#,
             "function setTests(",
             "tests_hidden",
