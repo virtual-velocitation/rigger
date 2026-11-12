@@ -18,8 +18,6 @@ Those two sentences are the rule the binary is held to. The rest of this section
 
 **Language coverage.** Three tools cover some languages and not others; the rule binds them, and the operator carries the gap. A spawn's build and review caches reach it as `CARGO_TARGET_DIR`, which only Cargo reads, so another toolchain gets no per-unit cache. `build.wrapper` and `build.jobs` resolve only to Cargo's build settings, so another toolchain ignores them. The `symbols` grounder extracts symbols from Rust, C#, Go, JavaScript, TypeScript and Python and skips a file in any other language.
 
-**Open exceptions.** These prescriptions still stand in the binary against the rule, each named by its constant or surface, and each is struck from this list as it is removed:
-
 ### The review ceremony
 
 A panel is a sequence of review steps, and the official vocabulary names their three kinds: `lenses`, whose reviewers run in parallel; `adversary`, one reviewer who tests the findings so far; and `adjudicator`, one reviewer whose verdict gates integration. The map form (`lenses:`, `adversary:`, `adjudicator:`) declares the canonical sequence: one step for each key it sets, each key optional, in that order. The list form, `steps:`, declares any sequence of those kinds: a kind may repeat, and an adjudicator step comes at most once and last. This panel runs a second lens step and a second adversary step ahead of its one verdict:
