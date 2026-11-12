@@ -21,7 +21,7 @@ use super::{
 use crate::eventstore::{from_nanos, to_nanos, Event, EventStore, Filter, Position, Revision};
 use crate::lockfile::HeldLock;
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
-use crate::sqlite::open_connection;
+use crate::sqlite::{open_connection, truncate_log};
 use rigger_domain::retention::DERIVED_TYPES;
 
 const SCHEMA: &str = "
@@ -426,6 +426,10 @@ pub struct PruneStats {
 pub struct Rebuilt {
     /// What the run-closure prune removed, however many passes it took to get there.
     pub pruned: PruneStats,
+    /// Whether a reader still held the file's write-ahead log when the rebuild ended, so its
+    /// truncation declined and the log keeps the frames the swap wrote until the last connection
+    /// to the file closes.
+    pub log_held: bool,
 }
 
 /// The class of the cause a fold pass records for an event whose own payload the judge
@@ -747,7 +751,10 @@ impl Projector {
             tx.execute_batch(DROP_REBUILD_STATE).map_err(be)
         })
         .map_err(FrameError::unframed)?;
-        Ok(Some(Rebuilt { pruned }))
+        // The swap wrote every page through the write-ahead log, which a connection another
+        // process holds keeps standing at that size: the rebuild ends by truncating it.
+        let log_held = !truncate_log(live).map_err(be)?;
+        Ok(Some(Rebuilt { pruned, log_held }))
     }
 
     /// Whether a rebuild of the graph file `held` names was left unfinished (spec 107): the file
@@ -5814,7 +5821,8 @@ mod tests {
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
-                    }
+                    },
+                    log_held: false,
                 })),
                 false,
                 reset_runs_leaves(&log),
@@ -5913,7 +5921,8 @@ mod tests {
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
-                    }
+                    },
+                    log_held: false,
                 }),
                 crate::test_support::NOTHING_OWED_ONCE_SEEDED,
                 Some(6),
@@ -6060,7 +6069,10 @@ mod tests {
             nodes: 2,
             superseded_edges: 1,
         };
-        let report = Some(Rebuilt { pruned });
+        let report = Some(Rebuilt {
+            pruned,
+            log_held: false,
+        });
         let dir = tempfile::tempdir().unwrap();
         let fresh = |name: &str| {
             let path = dir.path().join(name).to_str().unwrap().to_string();
@@ -6142,13 +6154,15 @@ mod tests {
                     pruned: PruneStats {
                         nodes: 3,
                         superseded_edges: 0
-                    }
+                    },
+                    log_held: false,
                 }),
                 Some(Rebuilt {
                     pruned: PruneStats {
                         nodes: 3,
                         superseded_edges: 0
-                    }
+                    },
+                    log_held: false,
                 }),
             ),
             "the rebuild reports what reset --runs prunes, a rebuild resumed past its swap or in its \
@@ -7630,7 +7644,8 @@ mod tests {
                     pruned: PruneStats {
                         nodes: 1,
                         superseded_edges: 0
-                    }
+                    },
+                    log_held: false,
                 })),
                 reset_runs_leaves(log),
                 (false, false),

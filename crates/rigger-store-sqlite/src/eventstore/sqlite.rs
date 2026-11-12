@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use rigger_domain::quoting::single_quoted;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-use crate::sqlite::open_connection;
+use crate::sqlite::{open_connection, truncate_log};
 
 use super::{
     from_nanos, to_nanos, AliasHistory, Appended, ContentIdentity, Direction, Error, Event,
@@ -764,38 +764,17 @@ fn compact_in_place(conn: &Connection) -> Result<Compaction, Error> {
     // Fold the WAL back into the main file so the shrink lands on disk NOW rather than at some
     // later checkpoint: the reported reclamation must match what the operator sees on disk.
     //
-    // `PRAGMA wal_checkpoint` RETURNS ITS OUTCOME, and TRUNCATE is the mode that can decline:
-    // its first column is 1 when a reader still held a snapshot of the write-ahead log, in
-    // which case the frames stay in the `-wal` file and the file on disk did NOT shrink -
-    // total bytes on disk can even go UP. Discarding that column is what would turn the
-    // caller's before-and-after into a claim, so it is read. Retried a bounded number of
-    // times because a blocked checkpoint is transient (the deletes are already committed and
-    // the vacuum is done, so this is only about WHEN the frames land), and when it is still
-    // blocked the reclamation is reported as UNKNOWN rather than as a number the operator's
-    // own `ls` contradicts.
-    for attempt in 0..CHECKPOINT_TRUNCATE_ATTEMPTS {
-        let busy: i64 = conn
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))
-            .map_err(be)?;
-        if busy == 0 {
-            return Ok(Compaction::Landed);
-        }
-        if attempt + 1 < CHECKPOINT_TRUNCATE_ATTEMPTS {
-            std::thread::sleep(CHECKPOINT_TRUNCATE_BACKOFF);
-        }
-    }
-    Ok(Compaction::Pending)
+    // The truncating checkpoint RETURNS ITS OUTCOME: it declines while a reader still holds a
+    // snapshot of the write-ahead log, in which case the frames stay in the `-wal` file and the
+    // file on disk did NOT shrink - total bytes on disk can even go UP. So the outcome is read,
+    // and when it is still blocked the reclamation is reported as UNKNOWN rather than as a
+    // number the operator's own `ls` contradicts.
+    Ok(if truncate_log(conn).map_err(be)? {
+        Compaction::Landed
+    } else {
+        Compaction::Pending
+    })
 }
-
-/// How many times [`compact_in_place`] asks a blocked `wal_checkpoint(TRUNCATE)` again before it
-/// reports the on-disk reclamation as unmeasured, and how long it waits between asks.
-///
-/// Bounded and short on purpose: the caller's transaction has already committed and the vacuum has
-/// already run by the time this matters, so the only thing at stake is whether the freed frames
-/// land in the main file NOW or at the next checkpoint some later writer performs. Waiting a
-/// reader out indefinitely would trade a correct, honestly-reported result for a hang.
-const CHECKPOINT_TRUNCATE_ATTEMPTS: u32 = 5;
-const CHECKPOINT_TRUNCATE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// What one [`Store::reclaim_space`] call did to the log's file: the bytes the log lost on disk,
 /// whether it was rewritten to lose them at all, whether there was a before-size to measure them
