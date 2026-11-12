@@ -421,7 +421,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
-    // see `enclosing_def`) with its name and kind, and each reference's byte position. Collected
+    // see `enclosing_defs`) with its name and kind, and each reference's byte position. Collected
     // in this single tag pass; the enclosing definition is resolved below so the reference order
     // the emit pass depends on stays untouched.
     let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
@@ -562,13 +562,16 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         d.path = path;
         d.parent = parent;
     }
-    // Attribute each reference to its caller (`enclosing_def`: the innermost enclosing function,
+    // Attribute each reference to its caller (`enclosing_defs`: the innermost enclosing function,
     // else the innermost enclosing definition; spec 116), named by that definition's path (spec
     // 119 criterion 8: `T::new`, never the leaf `new`). The
     // reference order is unchanged - `enclosing` is a derived per-reference attribute, never a new
     // sort key, so identical source still yields byte-identical downstream events.
-    for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
-        r.enclosing = enclosing_def(&def_ranges, pos).map(|i| defs[i].path.clone());
+    for (r, caller) in refs
+        .iter_mut()
+        .zip(enclosing_defs(&def_ranges, &ref_positions))
+    {
+        r.enclosing = caller.map(|i| defs[i].path.clone());
     }
     // Spec 86 criterion 1: mark every definition and reference that falls inside a TEST REGION -
     // every test-attributed range (`test_regions`: a definition directly annotated
@@ -2178,35 +2181,72 @@ fn comma_separated_groups(tt: tree_sitter::Node) -> Vec<Vec<tree_sitter::Node>> 
     groups
 }
 
-/// The index in `def_ranges` of the reference at `pos`'s CALLER, whose `defs` entry at that
-/// index names it by its path (spec 119 criterion 8): the innermost FUNCTION-LIKE definition
-/// (`Function`, `Method`, `Constructor`, `Macro`) whose byte range contains `pos`, else the
-/// innermost definition of any other kind that does, else `None` when `pos` lies outside every
-/// definition (a top-level reference such as an import or a module-level call), the file then
-/// being the caller. A `Declaration` is never a caller: its range is skipped, so a reference in
-/// a signature takes the next enclosing definition. Each definition tag carries the byte range of
-/// the WHOLE tagged construct - the function body included, not just its name span - so a
-/// reference inside a body falls within its definition's range. "Innermost" is the smallest
-/// containing range, so a reference in a nested function attributes to the nested one, not its
-/// outer scope, while a data definition, impl, trait or module nested in a function leaves its
-/// references the function's. Deterministic for identical input: ties on span break on the range
-/// start, then the definition name.
-fn enclosing_def(
+/// The index in `def_ranges` of the CALLER of the reference at each of `positions`, in the order
+/// `positions` gives, whose `defs` entry at that index names it by its path (spec 119 criterion
+/// 8): the innermost FUNCTION-LIKE definition (`Function`, `Method`, `Constructor`, `Macro`) whose
+/// byte range contains the position, else the innermost definition of any other kind that does,
+/// else `None` when the position lies outside every definition (a top-level reference such as an
+/// import or a module-level call), the file then being the caller. A `Declaration` is never a
+/// caller: its range is skipped, so a reference in a signature takes the next enclosing
+/// definition. Each definition tag carries the byte range of the WHOLE tagged construct - the
+/// function body included, not just its name span - so a reference inside a body falls within its
+/// definition's range. "Innermost" is the smallest containing range, so a reference in a nested
+/// function attributes to the nested one, not its outer scope, while a data definition, impl,
+/// trait or module nested in a function leaves its references the function's. Deterministic for
+/// identical input: ties on span break on the range start, then the definition name, then the
+/// first definition recorded.
+///
+/// ONE SWEEP over the positions in ascending order: a definition opens when the sweep reaches its
+/// range's start and closes at its end, and each position takes the least open definition by that
+/// order, so the attribution costs a sort and a logarithmic step per definition and reference,
+/// never a scan of every definition per reference.
+fn enclosing_defs(
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
-    pos: usize,
-) -> Option<usize> {
-    def_ranges
-        .iter()
-        .enumerate()
-        .filter(|(_, (range, _, kind))| *kind != Kind::Declaration && range.contains(&pos))
-        .min_by_key(|(_, (range, name, kind))| {
-            let function_like = matches!(
-                kind,
-                Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
-            );
-            (!function_like, range.end - range.start, range.start, name)
+    positions: &[usize],
+) -> Vec<Option<usize>> {
+    let order = |i: usize| {
+        let (range, name, kind) = &def_ranges[i];
+        let function_like = matches!(
+            kind,
+            Kind::Function | Kind::Method | Kind::Constructor | Kind::Macro
+        );
+        (
+            !function_like,
+            range.end - range.start,
+            range.start,
+            name.as_str(),
+            i,
+        )
+    };
+    let mut by_start: Vec<usize> = (0..def_ranges.len())
+        .filter(|&i| {
+            let (range, _, kind) = &def_ranges[i];
+            *kind != Kind::Declaration && range.start < range.end
         })
-        .map(|(i, _)| i)
+        .collect();
+    by_start.sort_by_key(|&i| def_ranges[i].0.start);
+    let mut by_position: Vec<usize> = (0..positions.len()).collect();
+    by_position.sort_by_key(|&at| positions[at]);
+    let mut open = std::collections::BTreeSet::new();
+    let mut closing = std::collections::BinaryHeap::new();
+    let mut starts = by_start.into_iter().peekable();
+    let mut callers = vec![None; positions.len()];
+    for at in by_position {
+        let pos = positions[at];
+        while let Some(i) = starts.next_if(|&i| def_ranges[i].0.start <= pos) {
+            open.insert(order(i));
+            closing.push(std::cmp::Reverse((def_ranges[i].0.end, i)));
+        }
+        while let Some(&std::cmp::Reverse((end, i))) = closing.peek() {
+            if end > pos {
+                break;
+            }
+            closing.pop();
+            open.remove(&order(i));
+        }
+        callers[at] = open.first().map(|&(.., i)| i);
+    }
+    callers
 }
 
 /// A definition as its graph node records it, the one [`locate_extent`] bounds.
@@ -2708,14 +2748,69 @@ setup!();
         );
     }
 
-    /// The leaf of the caller [`enclosing_def`] picks for `pos` over hand-built
-    /// `(range, leaf, kind)` definition ranges.
-    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
-        let ranges: Vec<_> = ranges
+    /// Hand-built `(range, leaf, kind)` definition ranges as [`enclosing_defs`] reads them.
+    fn def_ranges(
+        ranges: &[(std::ops::Range<usize>, &str, Kind)],
+    ) -> Vec<(std::ops::Range<usize>, String, Kind)> {
+        ranges
             .iter()
             .map(|(range, leaf, kind)| (range.clone(), leaf.to_string(), *kind))
-            .collect();
-        enclosing_def(&ranges, pos).map(|i| ranges[i].1.clone())
+            .collect()
+    }
+
+    /// The leaf of the caller [`enclosing_defs`] picks for a lone reference at `pos` over
+    /// hand-built `(range, leaf, kind)` definition ranges.
+    fn caller(ranges: &[(std::ops::Range<usize>, &str, Kind)], pos: usize) -> Option<String> {
+        let ranges = def_ranges(ranges);
+        enclosing_defs(&ranges, &[pos])[0].map(|i| ranges[i].1.clone())
+    }
+
+    /// THE ATTRIBUTION SWEEP: references in any order, repeated ones among them, each take the
+    /// caller the rule gives that reference alone, while definitions enter the sweep at their
+    /// range's start and leave it at its end - nested, overlapping, identical (the first one
+    /// recorded wins), empty and `Declaration` ranges among them.
+    #[test]
+    fn one_sweep_attributes_every_reference_as_the_rule_attributes_it_alone() {
+        let ranges = def_ranges(&[
+            (0..100, "file_mod", Kind::Module),
+            (10..60, "outer", Kind::Function),
+            (20..30, "inner", Kind::Constant),
+            (25..45, "overlap", Kind::Method),
+            (40..40, "empty", Kind::Function),
+            (50..70, "decl", Kind::Declaration),
+            (55..65, "twin", Kind::Function),
+            (55..65, "twin", Kind::Function),
+            (80..90, "b", Kind::Trait),
+            (80..90, "a", Kind::Trait),
+            (95..99, "late", Kind::Field),
+        ]);
+        let expected: [(usize, Option<usize>); 22] = [
+            (99, Some(0)),
+            (0, Some(0)),
+            (40, Some(3)),
+            (25, Some(3)),
+            (5, Some(0)),
+            (60, Some(6)),
+            (100, None),
+            (44, Some(3)),
+            (10, Some(1)),
+            (59, Some(6)),
+            (55, Some(6)),
+            (64, Some(6)),
+            (65, Some(0)),
+            (80, Some(9)),
+            (25, Some(3)),
+            (89, Some(9)),
+            (90, Some(0)),
+            (96, Some(10)),
+            (9, Some(0)),
+            (30, Some(3)),
+            (20, Some(1)),
+            (45, Some(1)),
+        ];
+        let positions: Vec<usize> = expected.iter().map(|(pos, _)| *pos).collect();
+        let callers: Vec<Option<usize>> = expected.iter().map(|(_, caller)| *caller).collect();
+        assert_eq!(enclosing_defs(&ranges, &positions), callers);
     }
 
     /// THE NAME FILTER DROPS A NAMELESS DEFINITION (spec 116 criterion 3), pinned per language

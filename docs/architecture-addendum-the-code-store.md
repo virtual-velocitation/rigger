@@ -560,7 +560,9 @@ Grouping before and after:
 
 A grammar's tags query is compiled once per process, at its first extraction, never per file
 (`LanguageEntry::tags`). Each file is parsed once: the tags query runs over the tree the
-structural reads use.
+structural reads use. Every reference's caller is found in one sweep over the references in
+position order, each definition entering at its range's start and leaving at its end
+(`enclosing_defs`), never a scan of every definition per reference.
 
 ---
 
@@ -1297,7 +1299,8 @@ a reader holding one open (or mapped) never blocks a writer.
 - `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
   to its worktree is in the second attempt's recorded seed, read from that worktree.
 - `a_grammars_tags_query_compiles_once_per_process`: every lookup of a grammar and query pair
-  returns the one compilation; `a_capture_the_tags_reading_does_not_read_fails_to_compile`.
+  returns the one compilation; `a_capture_the_tags_reading_does_not_read_fails_to_compile`;
+  `one_sweep_attributes_every_reference_as_the_rule_attributes_it_alone`.
 - `the_overlaid_worktree_answers_what_a_commit_of_its_content_answers`: the overlay of a worktree
   answers what the store advanced to a commit of the worktree's content answers, over the
   resolver's tree with a changed file that flips another file's test-ness and proofs, under each
