@@ -5261,6 +5261,31 @@ mod tests {
         }
     }
 
+    /// GIVEN the served page, WHEN the explorer's header wraps (a long label, a narrow window),
+    /// THEN the tests state stays beside the tests toggle: it is the toggle's next sibling, in a
+    /// box of its own that does not wrap, so a wrap never carries it away from the toggle.
+    #[test]
+    fn the_tests_state_stays_beside_the_tests_toggle() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let toggle = explorer_index(&markup, "kgteststoggle");
+        let state = explorer_index(&markup, "kgtestsstate");
+        assert_eq!(
+            (state, &markup[state].ancestors),
+            (toggle + 1, &markup[toggle].ancestors),
+            "the tests state is the tests toggle's next sibling"
+        );
+        let pair = &markup[*markup[toggle].ancestors.last().expect("a parent")];
+        let rules = rules_of(&page, pair);
+        assert!(
+            rules.iter().any(|r| r.contains("white-space: nowrap"))
+                && !rules.iter().any(|r| r.contains("flex-wrap: wrap")),
+            "the box holding the toggle and its state, #{} {:?}, does not wrap: {rules:?}",
+            pair.id,
+            pair.classes
+        );
+    }
+
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
     /// WRAP at their hyphen/slash break opportunities - never one char per line, never forcing a
     /// page-level horizontal scrollbar - and the genuinely-wide cells (the event-feed JSON and
