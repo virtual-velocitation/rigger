@@ -789,7 +789,7 @@ const PROJECT_STREAM_APPENDS: &[&str] = &[
 ];
 
 /// Every production call to a graph opener the audit names, as `file:item`: a call to an
-/// [`OPEN_CALLS`] name, a method `.graph(` or `Projector::open(`.
+/// [`OPEN_CALLS`] name, a method `.graph(`, or `Projector::open` called or passed as a value.
 const GRAPH_OPENS: &[&str] = &[
     "src/cli/critique.rs:cmd_critique",
     "src/cli/dashboard.rs:cmd_mcp",
@@ -839,8 +839,16 @@ fn list_drift(listed: &[&str], found: &BTreeSet<String>) -> (Vec<String>, Vec<St
 const APPEND_CALLS: &[&str] = &["append_and_fold", "append_entry_and_fold", "emit_event"];
 
 /// The names whose call opens the context graph, in every call form, free, path or method;
-/// `graph` does too as a method `.graph(` only, and `open` as `Projector::open(` only.
+/// `graph` does too as a method `.graph(` only. `Projector::open` opens it wherever it is named
+/// ([`names_projector_open`]).
 const OPEN_CALLS: &[&str] = &["open_graph_for_write", "open_graph"];
+
+/// Whether the token at `at` names the graph projection's opener, `Projector::open`, called or
+/// passed as a value for a callee to call: either way the graph opens at that site.
+fn names_projector_open(toks: &[RawTok], at: usize) -> bool {
+    ref_token(toks.get(at), RawKind::Ident, "open")
+        && qualifier_before(toks, at).as_deref() == Some("Projector")
+}
 
 /// The modules whose `STREAM` is the project stream's constant: `run` defines it and
 /// `conductor` re-exports it.
@@ -897,14 +905,15 @@ fn stream_sites(root: &Path) -> StreamSites {
             .collect();
         let bare_is_project_stream = imports_project_stream(&toks);
         for at in 0..toks.len() {
+            if names_projector_open(&toks, at) {
+                sites.opens.insert(file.site(&rel, toks[at].line - 1));
+            }
             let Some(name) = called_at(&toks, at) else {
                 continue;
             };
             let method = ref_punct(at.checked_sub(1).and_then(|b| toks.get(b)), ".");
             let append = APPEND_CALLS.contains(&name) || name == "append" && method;
-            let open = OPEN_CALLS.contains(&name)
-                || name == "graph" && method
-                || name == "open" && qualifier_before(&toks, at).as_deref() == Some("Projector");
+            let open = OPEN_CALLS.contains(&name) || name == "graph" && method;
             if append
                 && (at + 2..close_of(&toks, at + 1, ")"))
                     .any(|arg| is_project_stream(&toks, arg, bare_is_project_stream))
