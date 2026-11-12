@@ -2168,9 +2168,10 @@ impl PriorFailure {
         if !self.required.is_empty() {
             let audit = audit_id(unit, attempt);
             b.push_str(PRIOR_REQUIRED_LEAD);
-            b.push_str(&required_lines(&self.required, |shape| {
-                fill(PRIOR_PATTERN, &[("shape", shape), ("audit", &audit)])
-            }));
+            b.push_str(&required_lines(
+                &self.required,
+                &fill(PRIOR_PATTERN, &[("audit", &audit)]),
+            ));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
@@ -13814,12 +13815,12 @@ impl ReviewRound {
         let required = if self.required.is_empty() {
             ROUND_REQUIRED_NONE.to_string()
         } else {
-            let audit = &self.audit;
             format!(
                 "{ROUND_REQUIRED_HEADER}{}",
-                required_lines(&self.required, |shape| {
-                    fill(ROUND_PATTERN, &[("shape", shape), ("audit", audit)])
-                })
+                required_lines(
+                    &self.required,
+                    &fill(ROUND_PATTERN, &[("audit", &self.audit)])
+                )
             )
         };
         format!(
@@ -13843,17 +13844,19 @@ fn rejects_without_required(output: &str) -> bool {
 /// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
-/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
-/// `pattern`'s clause for its shape: the one rendering the implementer's prior-failure block
-/// and a later round's review block share, each with its own pattern clause.
-fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> String {
+/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by its
+/// [`PATTERN_LABEL`] line, the trimmed shape and then `record`, the block's record sentence:
+/// the one rendering the implementer's prior-failure block and a later round's review block
+/// share, each passing its own record sentence.
+fn required_lines(items: &[RequiredItem], record: &str) -> String {
     items
         .iter()
         .map(|item| {
             let mut line = format!("- {}: {}\n", item.path, item.finding);
             let shape = item.pattern.trim();
             if !shape.is_empty() {
-                line.push_str(&pattern(shape));
+                line.push_str(&fill(PATTERN_LABEL, &[("shape", shape)]));
+                line.push_str(record);
             }
             line
         })

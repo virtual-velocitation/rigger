@@ -910,12 +910,12 @@ Criterion 16 owns the test and the Const column.
 | conductor | `PriorFailure::block` | gate: one line per failed gate's evidence (:1405-1409) | `PRIOR_GATE` | FRAMING |
 | conductor | `PriorFailure::block` | review: the review-rejection line (only when `review_reason` is set, :1410-1414) | `PRIOR_REVIEW` | FRAMING |
 | conductor | `PriorFailure::block` | REQUIRED lead-in (only when the REQUIRED list is non-empty, :1415-1417) | `PRIOR_REQUIRED_LEAD` | FRAMING |
-| conductor | `PriorFailure::block` | PATTERN: the line naming the record id (only for a REQUIRED item with a pattern shape, :1418-1423) | `PRIOR_PATTERN` | CONTRACT |
+| conductor | `PriorFailure::block` | PATTERN: the line naming the record id (only for a REQUIRED item with a pattern shape, :1418-1423) | `PATTERN_LABEL`, `PRIOR_PATTERN` | CONTRACT |
 | conductor | `PriorFailure::block` | contradiction: the reverted-change sentence and its lead into the contradiction (only when `contradiction` is set, :1425-1435) | `PRIOR_CONTRADICTION` | FRAMING |
 | conductor | `ReviewRound::block` (a later review round only) | round lead-in with `{base}` and `{delta}` (always; `{delta}` takes `DELTA_NONE` when the delta is empty, :13313-13318, :13333-13335) | `ROUND_LEAD_IN` | FRAMING |
 | conductor | `ReviewRound::block`, `later_attempt_block` | the empty-delta fill "nothing" (only when the delta is empty) | `DELTA_NONE` | FRAMING |
 | conductor | `ReviewRound::block` | the REQUIRED header (only when the round required an item, :13324) or the none-line "That round required no item." (only when it required none, :13320) | `ROUND_REQUIRED_HEADER`, `ROUND_REQUIRED_NONE` | FRAMING |
-| conductor | `ReviewRound::block` | PATTERN: the line naming the implementer's audit record (only for a REQUIRED item with a pattern shape, :13325-13328) | `ROUND_PATTERN` | CONTRACT |
+| conductor | `ReviewRound::block` | PATTERN: the line naming the implementer's audit record (only for a REQUIRED item with a pattern shape, :13325-13328) | `PATTERN_LABEL`, `ROUND_PATTERN` | CONTRACT |
 | conductor | `ReviewRound::block` | the outside-delta rule and the `required` sentence (always, :13336-13338) | `ROUND_OUTSIDE_DELTA` | CONTRACT |
 | conductor | `gate_evidence_block` (only with a commit and a gate run on it) | its framing sentence (always) | `GATE_EVIDENCE_HEADER` | FRAMING |
 | conductor | `gate_evidence_block` | one row per gate with its verdict and digest, its evidence lines indented below it (:617-623) | `GATE_EVIDENCE_ROW` | FRAMING |

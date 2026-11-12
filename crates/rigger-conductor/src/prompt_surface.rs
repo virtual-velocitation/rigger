@@ -209,9 +209,14 @@ pub const PRIOR_REVIEW: &str = "Your previous attempt was rejected by review: {r
 /// FRAMING: the lead-in to the REQUIRED items, printed only when the REQUIRED list is non-empty.
 pub const PRIOR_REQUIRED_LEAD: &str = "REQUIRED - review holds the next round to each of these:\n";
 
-/// CONTRACT: the audit record a REQUIRED pattern item asks for, its `{shape}` and the
-/// `DecisionMade` id `{audit}`; printed only for an item with a pattern shape.
-pub const PRIOR_PATTERN: &str = "  PATTERN: {shape}. Record DecisionMade `{audit}` for it.\n";
+/// CONTRACT: the label a REQUIRED pattern item's line opens with, its `{shape}`, before the
+/// block's record sentence ([`PRIOR_PATTERN`] or [`ROUND_PATTERN`]); printed only for an item
+/// with a pattern shape.
+pub const PATTERN_LABEL: &str = "  PATTERN: {shape}. ";
+
+/// CONTRACT: the audit record a REQUIRED pattern item asks for, the `DecisionMade` id `{audit}`,
+/// after [`PATTERN_LABEL`]; printed only for an item with a pattern shape.
+pub const PRIOR_PATTERN: &str = "Record DecisionMade `{audit}` for it.\n";
 
 /// FRAMING: the reverted-change sentence and its `{contradiction}`, printed only on a
 /// compensation re-entry.
@@ -235,10 +240,9 @@ pub const ROUND_REQUIRED_NONE: &str = "That round required no item.\n";
 /// one.
 pub const ROUND_REQUIRED_HEADER: &str = "The items that round REQUIRED:\n";
 
-/// CONTRACT: the implementer's audit record `{audit}` for a REQUIRED pattern item's `{shape}`;
-/// printed only for an item with a pattern shape.
-pub const ROUND_PATTERN: &str =
-    "  PATTERN: {shape}. The implementer's audit record is DecisionMade `{audit}`.\n";
+/// CONTRACT: the implementer's audit record `{audit}` for a REQUIRED pattern item, after
+/// [`PATTERN_LABEL`]; printed only for an item with a pattern shape.
+pub const ROUND_PATTERN: &str = "The implementer's audit record is DecisionMade `{audit}`.\n";
 
 /// CONTRACT: the rule that splits a finding outside the round's delta, and the `required` list a
 /// reject names.
@@ -432,6 +436,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             PRIOR_GATE,
             PRIOR_REVIEW,
             PRIOR_REQUIRED_LEAD,
+            PATTERN_LABEL,
             PRIOR_PATTERN,
             PRIOR_CONTRADICTION,
         ],
@@ -440,6 +445,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DELTA_NONE,
             ROUND_REQUIRED_NONE,
             ROUND_REQUIRED_HEADER,
+            PATTERN_LABEL,
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
