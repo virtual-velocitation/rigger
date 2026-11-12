@@ -3943,6 +3943,33 @@ mod tests {
         );
     }
 
+    /// A rebuild leaves the graph file's write-ahead log empty: its swap writes every page through
+    /// the log, and a connection another process holds open keeps the log file standing, so the
+    /// rebuild ends by truncating it rather than leaving it at the size of the whole file.
+    #[test]
+    fn a_rebuild_leaves_the_graph_file_s_write_ahead_log_empty() {
+        let log: Vec<Event> = (1..=200)
+            .map(|at| {
+                let data = format!(r#"{{"id":"f-{at}","summary":"s","file":"src/a{at}.rs"}}"#);
+                event_at(TYPE_REVIEW_FINDING, data.as_bytes(), at)
+            })
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.db");
+        let path = path.to_str().unwrap();
+        drop(Projector::open(path, "test").unwrap());
+        let held_open = connection_to(path);
+
+        let rebuilt = rebuild_in_batches(path, &log, 50, &mut Vec::new()).unwrap();
+        let wal = std::fs::metadata(format!("{path}-wal")).map_or(0, |m| m.len());
+        assert_eq!(
+            (rebuilt.is_some(), wal),
+            (true, 0),
+            "the rebuild ran and left its log empty while another connection holds the file open"
+        );
+        drop(held_open);
+    }
+
     /// A rebuild folds every lesson and finding the log holds as a node, one naming no location
     /// among them - the emit guard refuses such a record at emit only - and a finding naming its
     /// file is reached from that file (op-105-every-finding-reaches-the-graph).
