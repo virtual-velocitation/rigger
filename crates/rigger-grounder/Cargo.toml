@@ -19,7 +19,6 @@ store = ["rigger-domain/store", "rigger-config-files/store", "rigger-store/store
 core = ["rigger-domain/core", "rigger-config-files/core", "rigger-store/core"]
 symbols = [
     "dep:tree-sitter",
-    "dep:tree-sitter-tags",
     "dep:tree-sitter-rust",
     "dep:tree-sitter-c-sharp",
     "dep:tree-sitter-javascript",
@@ -38,19 +37,18 @@ rigger-store = { path = "../rigger-store", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
-# concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
-# definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
-# pins the runtime version; grammar crates couple only through `tree-sitter-language`, so a
-# grammar's `LANGUAGE` (a `LanguageFn`) converts to `tree_sitter::Language` via `.into()`
-# regardless of which `tree-sitter` minor built it. Unit 1 ships the Rust grammar; unit 2
-# adds the remaining four on this same base. All optional, all under the `symbols` feature.
+# concrete syntax tree, and the extractor runs each grammar's `tags` query over that one tree
+# to yield uniform definition/reference tags. Grammar crates couple only through
+# `tree-sitter-language`, so a grammar's `LANGUAGE` (a `LanguageFn`) converts to
+# `tree_sitter::Language` via `.into()` regardless of which `tree-sitter` minor built it. Unit 1
+# ships the Rust grammar; unit 2 adds the remaining four on this same base. All optional, all
+# under the `symbols` feature.
 tree-sitter = { version = "0.25", optional = true }
-tree-sitter-tags = { version = "0.25", optional = true }
 tree-sitter-rust = { version = "0.24", optional = true }
 # The remaining four shipped languages (unit 2). Each couples to the runtime only through
 # `tree-sitter-language` (its `LANGUAGE` is a `LanguageFn` that `.into()`s to
-# `tree_sitter::Language`), so the pinned `tree-sitter` / `tree-sitter-tags` 0.25 ABI drives
-# resolution and these grammar minors are chosen to match it. All optional, all under the
+# `tree_sitter::Language`), so the `tree-sitter` 0.25 ABI drives resolution and these grammar
+# minors are chosen to match it. All optional, all under the
 # `symbols` feature. The JavaScript/TypeScript family is two crates (one grammar each);
 # `tree-sitter-typescript` exposes `LANGUAGE_TYPESCRIPT` (and `LANGUAGE_TSX`), so `.ts`/`.tsx`
 # both resolve through it.

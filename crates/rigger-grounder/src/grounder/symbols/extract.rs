@@ -14,7 +14,7 @@ use crate::contextgraph::{
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::wave::normalize_ws;
-use tree_sitter_tags::{TagsConfiguration, TagsContext};
+use tree_sitter::StreamingIterator;
 
 /// Map a grammar tag's syntax-type NAME (the name half of a `tags.scm` category, e.g.
 /// "function", "method", "struct", "class", "interface", "trait", "module", "constant", "macro",
@@ -243,16 +243,126 @@ fn record_def(
 ///
 /// [`LanguageEntry::tags`]: crate::grounder::symbols::registry::LanguageEntry::tags
 pub struct CompiledTags {
-    config: TagsConfiguration,
+    language: tree_sitter::Language,
+    query: tree_sitter::Query,
+    /// What each of the query's captures is to the tags reading, by capture index.
+    captures: Vec<Capture>,
+}
+
+/// What one capture of a tags query is to the tags reading ([`CompiledTags::tags_in`]).
+enum Capture {
+    /// `@name`: the node naming the tag.
+    Name,
+    /// `@definition.<kind>`: a definition of the kind its suffix names.
+    Definition(Kind),
+    /// `@reference.<kind>`: a reference.
+    Reference,
+    /// `@doc`: a doc comment, which upstream queries capture and the reading passes over.
+    Doc,
+}
+
+/// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
+/// name's byte range and start row, and the kind it defines (`None` for a reference).
+struct Tag {
+    range: std::ops::Range<usize>,
+    name_range: std::ops::Range<usize>,
+    row: usize,
+    definition: Option<Kind>,
 }
 
 impl CompiledTags {
     /// `tags_query` compiled against `language`, or an `Err` naming the tags-config step when the
-    /// query is malformed or does not fit the grammar.
+    /// query is malformed, does not fit the grammar, or captures what the tags reading does not
+    /// read (anything but `@name`, `@doc`, `@definition.*` and `@reference.*`).
     pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
-        TagsConfiguration::new(language.clone(), tags_query, "")
-            .map(|config| Self { config })
-            .map_err(|e| format!("symbols: tags config: {e}"))
+        let query = tree_sitter::Query::new(language, tags_query)
+            .map_err(|e| format!("symbols: tags config: {e}"))?;
+        let captures = query
+            .capture_names()
+            .iter()
+            .map(|name| match *name {
+                "name" => Ok(Capture::Name),
+                "doc" => Ok(Capture::Doc),
+                _ => match (
+                    name.strip_prefix("definition."),
+                    name.strip_prefix("reference."),
+                ) {
+                    (Some(kind), _) => Ok(Capture::Definition(kind_of(kind))),
+                    (_, Some(_)) => Ok(Capture::Reference),
+                    _ => Err(format!(
+                        "symbols: tags config: the capture @{name} is not one a tags query \
+                         makes: @name, @doc, @definition.* or @reference.*"
+                    )),
+                },
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            language: language.clone(),
+            query,
+            captures,
+        })
+    }
+
+    /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
+    /// order the tree-sitter tags convention yields them: a match whose captures hold a name and a
+    /// definition or reference makes a tag, unless its name node holds a parse error; of the
+    /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
+    /// is yielded once a later-matched name starts past its name's end, the rest in name order
+    /// when the matches run out. Within a match the last name capture names it and the last
+    /// definition or reference capture is the tagged node.
+    fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&self.query, root, source.as_bytes());
+        // The tags not yet yielded, in (name end, name start) order, each with the pattern that
+        // made it.
+        let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
+        let mut tags = Vec::new();
+        loop {
+            while queue.len() > 1
+                && queue
+                    .back()
+                    .is_some_and(|(last, _)| queue[0].0.name_range.end < last.name_range.start)
+            {
+                tags.extend(queue.pop_front().map(|(tag, _)| tag));
+            }
+            let Some(found) = matches.next() else {
+                break;
+            };
+            let mut name = None;
+            let mut tagged = None;
+            for capture in found.captures {
+                match self.captures[capture.index as usize] {
+                    Capture::Name => name = Some(capture.node),
+                    Capture::Definition(kind) => tagged = Some((capture.node, Some(kind))),
+                    Capture::Reference => tagged = Some((capture.node, None)),
+                    Capture::Doc => {}
+                }
+            }
+            let (Some(name), Some((node, definition))) = (name, tagged) else {
+                continue;
+            };
+            if name.has_error() {
+                continue;
+            }
+            let name_range = name.byte_range();
+            let node_range = node.byte_range();
+            let tag = Tag {
+                range: node_range.start.min(name_range.start)..node_range.end.max(name_range.end),
+                row: name.start_position().row,
+                name_range,
+                definition,
+            };
+            let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
+            match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
+                Ok(at) if queue[at].1 > found.pattern_index => {
+                    queue[at] = (tag, found.pattern_index);
+                }
+                Ok(_) => {}
+                Err(at) => queue.insert(at, (tag, found.pattern_index)),
+            }
+        }
+        tags.extend(queue.into_iter().map(|(tag, _)| tag));
+        tags
     }
 }
 
@@ -288,31 +398,25 @@ impl CompiledTags {
 /// the file has the self type's leaf, else the impl block's.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
-/// tags mechanism yields are valid UTF-8 boundaries in practice) is skipped rather than
+/// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.
 pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymbols, String> {
-    let config = &tags.config;
-    let ts_language = &config.language;
-    let mut ctx = TagsContext::new();
-    let (tags, _) = ctx
-        .generate_tags(config, source.as_bytes(), None)
-        .map_err(|e| format!("symbols: generate tags: {e}"))?;
-    // The full parse of `source` (the SAME tree the tags query runs against, parsed a second time with
-    // the full grammar), read for what the tags pass cannot express: a tagged definition's own
-    // node, impl blocks, tuple fields, test attributes, and out-of-line module declarations. This
-    // is still the one function touching tree-sitter, so the single-parsing-authority invariant
-    // (5.5.3) survives. A `Parser::set_language` or `parse` failure here is defensive only:
-    // `ts_language` already configured the tags query the tags pass ran, so
-    // this path degrades to an `Err` rather than a panic without ever being expected to fire in
-    // practice.
+    // The one parse of `source`: the tags query runs over this tree, and the reads of what the
+    // tags cannot express (a tagged definition's own node, impl blocks, tuple fields, test
+    // attributes, out-of-line module declarations) read the same tree. This is the one function
+    // touching tree-sitter, so the single-parsing-authority invariant (5.5.3) holds. A
+    // `Parser::set_language` or `parse` failure is defensive only: the query compiled against the
+    // same language, so this path degrades to an `Err` rather than a panic without ever being
+    // expected to fire in practice.
     let mut parser = tree_sitter::Parser::new();
     parser
-        .set_language(ts_language)
+        .set_language(&tags.language)
         .map_err(|e| format!("symbols: parser language: {e}"))?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
+    let tags = tags.tags_in(root, source);
     let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
@@ -326,13 +430,12 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
-        let tag = tag.map_err(|e| format!("symbols: tag: {e}"))?;
         let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
             continue;
         };
-        // 1-based line from the tag span's start row.
-        let line = tag.span.start.row as u32 + 1;
-        if tag.is_definition {
+        // 1-based line from the tag name's start row.
+        let line = tag.row as u32 + 1;
+        if let Some(kind) = tag.definition {
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
             // definition is filtered by, recorded under and ranked by as a caller is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
@@ -340,7 +443,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 lang,
                 &text,
                 node,
-                kind_of(config.syntax_type_name(tag.syntax_type_id)),
+                kind,
                 (tag.range.clone(), def_leaf(node, name), line),
                 &mut defs,
                 &mut def_ranges,
@@ -3479,6 +3582,21 @@ fn product() {}
         );
         assert_eq!(groups[0][0].utf8_text(src.as_bytes()).unwrap(), "all");
         assert_eq!(groups[1][0].utf8_text(src.as_bytes()).unwrap(), "z");
+    }
+
+    /// A tags query capturing what the tags reading does not read fails to compile, naming the
+    /// capture: the upstream C# query's last pattern captures a bare `@module`, the reason the
+    /// registry authors its own C# query.
+    #[test]
+    fn a_capture_the_tags_reading_does_not_read_fails_to_compile() {
+        let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
+        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY)
+            .err()
+            .expect("a bare @module capture fails to compile");
+        assert!(
+            msg.starts_with("symbols: tags config:") && msg.contains("@module"),
+            "the error names the tags-config step and the capture, got: {msg}"
+        );
     }
 
     #[test]

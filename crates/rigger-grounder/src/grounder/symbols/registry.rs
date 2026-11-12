@@ -55,9 +55,9 @@ const RUST_TAGS: &str = r#"
 "#;
 
 /// The C# `tags` query. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose last
-/// pattern captures a bare `@module`, which `tree-sitter-tags` rejects (it accepts only
-/// `@definition.*` / `@reference.*` / `@name` / `@doc` / `@local.*`), so the shipped query fails
-/// to compile. That pattern is also redundant: the line above it already tags the same
+/// pattern captures a bare `@module`, which the extractor's tags reading refuses (it reads only
+/// `@definition.*` / `@reference.*` / `@name` / `@doc`), so the shipped query fails to compile.
+/// That pattern is also redundant: the line above it already tags the same
 /// `namespace_declaration` as `@definition.module`. This is the shipped query without that one
 /// invalid, redundant line - authored here per the spec's "author or verify each grammar's tag
 /// query" mandate - its namespace pattern taking any name node where the shipped one takes an

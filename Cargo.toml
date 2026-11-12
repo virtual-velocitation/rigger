@@ -142,13 +142,13 @@ store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlit
 # already unconditional.
 core = ["rigger-domain/core", "rigger-store-sqlite/core", "rigger-graph-sqlite/core", "rigger-process/core", "rigger-worktree-git/core", "rigger-gates-shell/core", "rigger-driver/core", "rigger-grounder/core", "rigger-config-files/core", "rigger-conductor/core", "rigger-console/core", "rigger-dash/core", "rigger-store/core"]
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
-# the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
+# each grammar's tags query, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
 # `--no-default-features`. Unit 1 gates ONLY the tree-sitter-touching code
 # (extraction); the parser-free data model compiles in BOTH lanes. The grammar crates
 # depend on `tree-sitter` only as a dev-dep and couple at runtime through
-# `tree-sitter-language`, so this set is ABI-pinned by `tree-sitter-tags` (which requires
-# an exact `tree-sitter` minor); unit 2 extends this feature with the other four grammars.
+# `tree-sitter-language`, so the `tree-sitter` runtime version alone sets the ABI; unit 2
+# extends this feature with the other four grammars.
 symbols = ["rigger-grounder/symbols", "rigger-conductor/symbols"]
 
 [dependencies]
