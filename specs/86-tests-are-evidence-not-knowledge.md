@@ -1,5 +1,12 @@
 # 86 - Tests are evidence, not knowledge: they leave the graph and land on the card
 
+**Status: partly superseded.** This spec is built. The code store (docs/architecture-addendum-the-code-store.md)
+replaces its exclusion of test code from the graph: test code is extracted fully, each test
+definition a code entity, and the tests filter hides it by default (section 8). The INGESTION,
+MIGRATION and CONSTRAINTS WALK sections and criteria 1 and 3 below are marked SUPERSEDED; the
+proof count a product entity carries from test references, computed whatever the filter, and the
+card's PROOF row stand.
+
 **Goal:** the knowledge graph ingests `tests/` and `#[cfg(test)]` code as code entities on equal
 footing with the product. On this repository that is 153 test files and 2,804 `#[test]`s inside
 the 9,211 code-entity nodes, and it shows: the code lens's largest districts are `tests: cli`,
@@ -11,6 +18,8 @@ re-applies a standing rule: the graph models the target project, not the machine
 
 ## Design
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes keeping test code out of the graph, which the code store replaces with full extraction and the tests filter; its proof count from test references stands.
+
 INGESTION, decided: the code-entity pass excludes test code from NODE creation - every file under
 `tests/`, every `#[cfg(test)]` module, and every `#[test]` function. Excluded code is still
 PARSED, because its references are the evidence: a call or type reference from a test into a
@@ -19,6 +28,8 @@ product entity records a `proven_by` count on that entity (and the referencing t
 per-entity count is available on the card and in the `/api/graph` payload as metadata; the
 files lens no longer lists test files as subjects; the concepts pass no longer draws evidence
 from test bodies (a concept's evidence is product code, docs and decisions).
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes keeping test code out of the graph, which the code store replaces with full extraction and the tests filter.
 
 MIGRATION, decided: existing test-entity nodes are retired by the fold's supersession
 mechanism on the next ingest, not by a store wipe. Supersession is keyed on a file's FRESH
@@ -38,6 +49,8 @@ WHERE PROOF RENDERS, decided: the card gains a PROOF row - "proven by N tests" w
 expand - and an explicit `no test reaches this entity` state (amber, not silent), since absence
 of proof is itself information the audit (spec 85) and reviewers want. The run-console
 (Mission Control) card carries the same row; the mock names the design.
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes keeping test code out of the graph, which the code store replaces with full extraction and the tests filter.
 
 CONSTRAINTS WALK: a product function defined inside a `#[cfg(test)]` module - excluded, by the
 rule; a test helper in `tests/common/` referenced only by tests - excluded (no product caller);
@@ -60,6 +73,10 @@ own because criterion 1's fixture-proven exclusion is the one rule both extracti
 - The operator's installed rigger binary is never replaced or modified by any unit.
 
 ## Done when
+
+Criteria 1 and 3 are SUPERSEDED by the code store: they test keeping test code out of the
+graph and retiring the test nodes it held, which the code store replaces with full extraction
+and the tests filter.
 
 - [ ] a test proves TESTS ARE NOT NODES: after ingesting a fixture with product code, a
   `tests/` file, a `#[cfg(test)]` module and `#[test]` functions, the graph contains a
