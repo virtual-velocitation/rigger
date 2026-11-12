@@ -45,9 +45,9 @@ Run these from the operator checkout, after the check-in has merged and before t
 | `class` | one of the file's classes |
 | `change` | the change, in one sentence |
 | `evidence` | the records that show the class |
-| `surface` | `persona`, `gate`, `workflow`, `spec-skill` or `binary`. A binary change becomes an ordinary spec. So does a spec-skill change: the spec-writing skills ship to every project that uses rigger, so a change to them is reviewed like a change to the binary. |
+| `surface` | `persona`, `gate`, `workflow`, `spec-skill` or `binary`. A binary change becomes an ordinary spec. So does a spec-skill change: the spec-writing skills ship to every project that uses rigger, so a change to them is reviewed like a change to the binary. A binary change is to rigger's own code and tests: rigger is language and process agnostic, so the binary never gains a gate, a mandatory step or a language rule. |
 | `path` | the file to change, or the spec to write |
-| `form` | `check`, `gate` or `instruction` |
+| `form` | `check`, `gate` or `instruction`. A `gate` is a workflow gate, so its surface is `gate` or `workflow`. |
 | `metric` | a measured scorecard key, or `<map>.<key>` of a by-map |
 | `predicted_move` | the signed move in the metric's units |
 | `hours_saved` | estimated hours saved per run, the ranking key |

@@ -36,11 +36,11 @@ Walk this checklist in order:
      - `gate` for a script under .rigger/gates/
      - `workflow` for .rigger/workflow.yml
      - `spec-skill` for the spec-writing skills under skills/ (planning-a-spec, spec-preflight). Those skills ship to every project that uses rigger, so a spec-skill proposal is handled like a binary one: an ordinary spec to write, and `path` names that spec's file.
-     - `binary` for the rigger binary. A binary proposal is an ordinary spec to write, and `path` names that spec's file.
+     - `binary` for the rigger binary: its own code and its own tests. A binary proposal is an ordinary spec to write, and `path` names that spec's file. Rigger is language and process agnostic, so a binary proposal never adds a gate, a mandatory step or a language or toolchain rule to the binary. A check that judges this repository's code or tests is this repository's own gate, on the `gate` or `workflow` surface.
    - `path`
    - `form`:
      - `check` for a mechanical check in a script or test
-     - `gate` for a workflow gate
+     - `gate` for a workflow gate: a script under .rigger/gates/ that .rigger/workflow.yml declares, so its surface is `gate` or `workflow`
      - `instruction` for text an agent reads. A persona or spec-skill change is always `instruction`.
    - `metric`: a scorecard key holding a measured number, or `<map>.<key>` of a by-map, for example `gate_fails_by_gate.style-spec`. A key under `unsourced` is never a metric.
    - `predicted_move`: signed, in the metric's units, never zero.

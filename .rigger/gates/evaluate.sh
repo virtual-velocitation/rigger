@@ -49,6 +49,8 @@
 #   - a persona or spec-skill proposal is not of form `instruction` (text is all those surfaces
 #     hold), or a proposal for a class the previous run file also diagnosed is not of form
 #     `check` or `gate`: instruction text already failed to remove that cause once;
+#   - a binary proposal is of form `gate`: rigger is language and process agnostic, so the binary
+#     gains no gate, and a gate is this repository's own, on the `gate` or `workflow` surface;
 #   - "adopted" is not null, "none" or one of the file's proposal ids;
 #   - the previous block differs from what measure computes from the previous run file.
 # WHY format only: the operator judges content when adopting at most one proposal; the script
@@ -823,6 +825,9 @@ def check_proposal(i, p, slugs, recurring, card, problems):
         problems.append(f"{name}: form {form!r} is not one of {', '.join(FORMS)}")
     if surface in INSTRUCTION_SURFACES and form in FORMS and form != "instruction":
         problems.append(f"{name}: a {surface} change is instruction text; its form is instruction")
+    if surface == "binary" and form == "gate":
+        problems.append(f"{name}: the binary gains no gate, since rigger is language and process "
+                        "agnostic; a gate is this repository's own, on the gate or workflow surface")
     if p.get("class") in recurring and form not in ("check", "gate"):
         problems.append(f"{name}: class {p.get('class')!r} was diagnosed in the previous run "
                         "file too, so its change must be a check or a gate")
