@@ -5140,6 +5140,127 @@ mod tests {
         );
     }
 
+    /// One element of the explorer section's markup: its id, its classes and the indices of its
+    /// ancestors within the section, outermost first.
+    struct Element {
+        id: String,
+        classes: Vec<String>,
+        ancestors: Vec<usize>,
+    }
+
+    /// The explorer section's (`#kg`) elements in document order, read by a tag scan of the served
+    /// markup, which holds only container elements, text and comments there.
+    fn explorer_markup(page: &str) -> Vec<Element> {
+        let start = page
+            .find(r#"<section class="view" id="kg">"#)
+            .expect("the page holds the explorer section");
+        let end = start
+            + page[start..]
+                .find("</section>")
+                .expect("the section closes");
+        let attr = |tag: &str, name: &str| {
+            let key = format!(" {name}=\"");
+            tag.find(&key).map(|at| {
+                let value = &tag[at + key.len()..];
+                value[..value.find('"').expect("a quoted value")].to_string()
+            })
+        };
+        let mut elements = Vec::new();
+        let mut open: Vec<usize> = Vec::new();
+        let mut rest = &page[start..end];
+        while let Some(at) = rest.find('<') {
+            rest = &rest[at..];
+            if let Some(comment) = rest.strip_prefix("<!--") {
+                rest = &comment[comment.find("-->").expect("the comment closes") + 3..];
+                continue;
+            }
+            let close = rest.find('>').expect("the tag closes");
+            let tag = &rest[..=close];
+            rest = &rest[close + 1..];
+            if tag.starts_with("</") {
+                open.pop();
+                continue;
+            }
+            elements.push(Element {
+                id: attr(tag, "id").unwrap_or_default(),
+                classes: attr(tag, "class")
+                    .map(|c| c.split_whitespace().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                ancestors: open.clone(),
+            });
+            open.push(elements.len() - 1);
+        }
+        elements
+    }
+
+    /// The CSS rules selecting `element` by its id or by one of its classes alone: each rule
+    /// whose line opens with `#id {` or `.class {`, from the selector to its closing `}`.
+    fn rules_of<'a>(page: &'a str, element: &Element) -> Vec<&'a str> {
+        let selectors = std::iter::once(format!("#{} {{", element.id))
+            .filter(|_| !element.id.is_empty())
+            .chain(element.classes.iter().map(|c| format!(".{c} {{")));
+        let mut rules = Vec::new();
+        for selector in selectors {
+            let mut at = 0;
+            for line in page.split_inclusive('\n') {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with(&selector) {
+                    let open = at + line.len() - trimmed.len();
+                    let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
+                    rules.push(&page[open..close]);
+                }
+                at += line.len();
+            }
+        }
+        rules
+    }
+
+    /// The explorer element whose id is `id`, by its index in [`explorer_markup`].
+    fn explorer_index(markup: &[Element], id: &str) -> usize {
+        markup
+            .iter()
+            .position(|e| e.id == id)
+            .unwrap_or_else(|| panic!("the explorer holds #{id}"))
+    }
+
+    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card, THEN
+    /// each is absolutely positioned against a box that does not hold the explorer's header, so
+    /// neither covers the header or its controls (the lens control, the label, the toggles and the
+    /// tests state) in any view. Layout is outside what the page harness can run, so this pins the
+    /// box each docks against.
+    #[test]
+    fn the_rail_and_the_card_dock_below_the_explorer_header() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let positioned = |e: &Element, how: &[&str]| {
+            rules_of(&page, e).iter().any(|rule| {
+                how.iter()
+                    .any(|value| rule.contains(&format!("position: {value}")))
+            })
+        };
+        let header = explorer_index(&markup, "kghead");
+        for docked in ["kgrail", "kgcard"] {
+            let at = explorer_index(&markup, docked);
+            assert!(
+                positioned(&markup[at], &["absolute"]),
+                "#{docked} docks absolutely"
+            );
+            let block = markup[at]
+                .ancestors
+                .iter()
+                .rev()
+                .copied()
+                .find(|&a| positioned(&markup[a], &["relative", "absolute", "fixed", "sticky"]))
+                .unwrap_or_else(|| panic!("#{docked} has a positioned box to dock against"));
+            assert!(
+                !markup[header].ancestors.contains(&block),
+                "#{docked} docks against #{} {:?}, which holds the header it would cover",
+                markup[block].id,
+                markup[block].classes
+            );
+        }
+    }
+
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
     /// WRAP at their hyphen/slash break opportunities - never one char per line, never forcing a
     /// page-level horizontal scrollbar - and the genuinely-wide cells (the event-feed JSON and
