@@ -8378,6 +8378,28 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     assert_eq!(logged, told, "each fallback on the operator's log; {err}");
 }
 
+/// The session rows of a later-round periphery test: whether each role's session resumes on the
+/// second round, the session's label, and what the fake `claude` does on a `--resume` launch, `:`
+/// serving it and `exit 1` reporting the session gone.
+#[cfg(unix)]
+const SESSION_ROWS: [(bool, &str, &str); 2] = [(true, "resumed", ":"), (false, "gone", "exit 1")];
+
+/// Asserts that the launch whose argv a stand-in `claude` recorded at `argv(0)` answered the first
+/// round fresh and the one at `argv(1)` answered the second resumed exactly when `resumes`.
+#[cfg(unix)]
+fn assert_resumed_per_round(argv: impl Fn(u32) -> std::path::PathBuf, resumes: bool, at: &str) {
+    let resumed = |attempt| {
+        recorded_argv(&argv(attempt))
+            .iter()
+            .any(|word| word == "--resume")
+    };
+    assert_eq!(
+        [resumed(0), resumed(1)],
+        [false, resumes],
+        "{at}: whether the launch that answered each round resumed"
+    );
+}
+
 /// Spec 121's A DOC-ONLY ROUND STATES ONLY THE FACT, end to end: given a reviewed unit rejected
 /// once, whose sdet-author is this repository's committed persona, when `rigger run` drives a
 /// second round that changed documentation only, then the sdet-author's second launch is told that
@@ -8415,12 +8437,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
         ),
     ] {
         let round_1 = writes.join("\n        ");
-        for resumes in [true, false] {
-            let (session, on_resume) = if resumes {
-                ("resumed", ":")
-            } else {
-                ("gone", "exit 1")
-            };
+        for (resumes, session, on_resume) in SESSION_ROWS {
             let dir = temp_git_project_with_commit();
             let root = dir.path();
             write_reviewed_unit(root);
@@ -8465,16 +8482,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
             );
             let recorded =
                 |what: &str, attempt: u32| fake.path().join(format!("bin/sdet-{what}-{attempt}"));
-            let resumed = |attempt| {
-                recorded_argv(&recorded("argv", attempt))
-                    .iter()
-                    .any(|word| word == "--resume")
-            };
-            assert_eq!(
-                [resumed(0), resumed(1)],
-                [false, resumes],
-                "{at}: whether the sdet-author's launch that answered each round resumed"
-            );
+            assert_resumed_per_round(|attempt| recorded("argv", attempt), resumes, &at);
             let opening = recorded_task(&recorded("first", 0));
             let closing = recorded_task(&recorded("first", 1));
             assert_eq!(
@@ -8641,7 +8649,7 @@ fn each_later_launch_names_a_required_pattern_by_its_shape_and_audit_record_alon
     };
     use rigger::wave::normalize_ws;
     const AUDIT: &str = "audit-solo-1";
-    for (resumes, session, on_resume) in [(true, "resumed", ":"), (false, "gone", "exit 1")] {
+    for (resumes, session, on_resume) in SESSION_ROWS {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_reviewed_unit(root);
@@ -8683,16 +8691,7 @@ fn each_later_launch_names_a_required_pattern_by_its_shape_and_audit_record_alon
             ("adjudicator", review_pattern_list(AUDIT)),
         ] {
             let at = format!("{role}, its session {session}");
-            let resumed = |attempt| {
-                recorded_argv(&recorded("argv", role, attempt))
-                    .iter()
-                    .any(|word| word == "--resume")
-            };
-            assert_eq!(
-                [resumed(0), resumed(1)],
-                [false, resumes],
-                "{at}: whether the launch that answered each round resumed"
-            );
+            assert_resumed_per_round(|attempt| recorded("argv", role, attempt), resumes, &at);
             let opening = recorded_task(&recorded("first", role, 0));
             let closing = recorded_task(&recorded("first", role, 1));
             assert_eq!(
