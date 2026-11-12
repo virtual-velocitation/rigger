@@ -61,11 +61,11 @@ pub fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
     Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to: None,
         source: 0,
-        tier: tier.to_string(),
+        tier: tier.to_string().into(),
     }
 }
 
@@ -564,7 +564,7 @@ pub fn edge_tier(g: &Graph, rel: &str, to: &str) -> String {
         1,
         "expected exactly one {rel} edge to {to}; got {matches:?}"
     );
-    matches[0].tier.clone()
+    matches[0].tier.to_string()
 }
 
 /// The call walk of `p` from `seed` in `direction`, five hops deep, at the inferred floor.

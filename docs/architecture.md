@@ -652,12 +652,16 @@ pub struct Node {
 pub struct Edge {
     pub from: String,
     pub to: String,
-    pub rel: String,                      // DECIDED | SUPERSEDES | TOUCHES | GOVERNS | CALLS |
+    pub rel: EdgeTerm,                    // DECIDED | SUPERSEDES | TOUCHES | GOVERNS | CALLS |
                                           // REFERENCES | IN_COMMUNITY | REALIZES | ABOUT | ...
     pub valid_from: i64,                  // bi-temporal validity interval ...
     pub valid_to: Option<i64>,            // ... None = still valid; Some = invalidated (NOT deleted)
     pub source: Position,                 // the event that asserted this edge (provenance)
+    pub tier: EdgeTerm,                   // extracted | inferred | ambiguous
 }
+// A relation or tier: a constant every code edge naming it shares, or the text a record edge
+// was read with; it compares and serializes as its text.
+pub struct EdgeTerm(Cow<'static, str>);
 pub trait Projection: Send + Sync {
     fn apply(&self, e: &Event) -> Result<(), Error>;
     fn subgraph(&self, seed: &[String], depth: i64) -> Result<Graph, Error>;

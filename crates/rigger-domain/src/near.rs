@@ -895,15 +895,15 @@ impl<'v> State<'v> {
 }
 
 /// The inferred edge `from` -`rel`-> `to` the groupings join on.
-fn inferred(from: &str, rel: &str, to: &str) -> Edge {
+fn inferred(from: &str, rel: &'static str, to: &str) -> Edge {
     Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.into(),
         valid_from: 0,
         valid_to: None,
         source: 0,
-        tier: TIER_INFERRED.to_string(),
+        tier: TIER_INFERRED.into(),
     }
 }
 

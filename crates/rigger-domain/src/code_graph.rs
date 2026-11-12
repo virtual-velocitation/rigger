@@ -174,11 +174,11 @@ impl Builder {
             .map(|((from, rel, to), (tier, _))| Edge {
                 from: ids[from].clone(),
                 to: ids[to].clone(),
-                rel: rel.to_string(),
+                rel: rel.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: tier.to_string(),
+                tier: tier.into(),
             })
             .collect();
         let mut slots: Vec<Option<Placed>> = nodes.into_iter().map(Some).collect();

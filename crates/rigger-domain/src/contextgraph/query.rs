@@ -954,8 +954,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         .map(|e| NeighborhoodEdge {
             from: e.from.clone(),
             to: e.to.clone(),
-            rel: e.rel.clone(),
-            tier: e.tier.clone(),
+            rel: e.rel.to_string(),
+            tier: e.tier.to_string(),
             // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
             back: false,
         })
@@ -1203,8 +1203,8 @@ pub fn neighborhood_of(
         .map(|e| NeighborhoodEdge {
             from: e.from.clone(),
             to: e.to.clone(),
-            rel: e.rel.clone(),
-            tier: e.tier.clone(),
+            rel: e.rel.to_string(),
+            tier: e.tier.to_string(),
             // A neighborhood / drill edge is never a directed-call back edge (spec 52 c4).
             back: false,
         })
@@ -1283,10 +1283,10 @@ pub fn explain(graph: &Graph, node: &str) -> Option<Explanation> {
         .iter()
         .filter(|e| e.valid_to.is_none() && (e.from == node || e.to == node))
         .map(|e| ProvenanceEdge {
-            rel: e.rel.clone(),
+            rel: e.rel.to_string(),
             from: e.from.clone(),
             to: e.to.clone(),
-            tier: e.tier.clone(),
+            tier: e.tier.to_string(),
             source: e.source,
         })
         .collect();
@@ -2178,11 +2178,11 @@ mod graph_ops_tests {
             edges: vec![Edge {
                 from: "src/a.rs".to_string(),
                 to: "src/a.rs::widget".to_string(),
-                rel: REL_CONTAINS.to_string(),
+                rel: REL_CONTAINS.into(),
                 valid_from: 1,
                 valid_to: None,
                 source: 1,
-                tier: "extracted".to_string(),
+                tier: "extracted".into(),
             }],
         }
     }

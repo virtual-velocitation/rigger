@@ -382,7 +382,7 @@ pub fn build(graph: &Graph) -> MapModel {
             continue;
         }
         if ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()) {
-            edges.push((e.from.clone(), e.to.clone(), e.rel.clone()));
+            edges.push((e.from.clone(), e.to.clone(), e.rel.to_string()));
         }
     }
 
@@ -1235,11 +1235,11 @@ mod tests {
         Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }
     }
 
@@ -2556,11 +2556,11 @@ mod tests {
         let about = |finding: &str, subject: &str| Edge {
             from: finding.to_string(),
             to: subject.to_string(),
-            rel: REL_ABOUT.to_string(),
+            rel: REL_ABOUT.into(),
             valid_from: 0,
             valid_to: None,
             source: Position::default(),
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         g.edges.push(about("f1", "src/worktree.rs::hub"));
         g.edges.push(about("f2", "src/worktree.rs::hub"));

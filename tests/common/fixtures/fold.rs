@@ -126,7 +126,7 @@ pub fn live_edges(
         .unwrap()
         .edges
         .into_iter()
-        .map(|e| (e.from, e.rel, e.to, e.valid_from, e.source))
+        .map(|e| (e.from, e.rel.into(), e.to, e.valid_from, e.source))
         .collect();
     edges.sort();
     edges
@@ -185,7 +185,7 @@ pub fn landed(
         .edges
         .into_iter()
         .filter(|e| e.rel == REL_REFERENCES || e.rel == REL_CALLS)
-        .map(|e| (e.from, e.rel, e.to, e.tier))
+        .map(|e| (e.from, e.rel.into(), e.to, e.tier.into()))
         .collect();
     edges.sort();
     edges
@@ -207,7 +207,7 @@ pub fn module_edges(
         .edges
         .iter()
         .filter(|e| e.rel == REL_CONTAINS && files.contains(e.to.as_str()))
-        .map(|e| (e.from.clone(), e.to.clone(), e.tier.clone()))
+        .map(|e| (e.from.clone(), e.to.clone(), e.tier.to_string()))
         .collect();
     edges.sort();
     edges

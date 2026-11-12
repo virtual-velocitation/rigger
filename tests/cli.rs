@@ -1118,10 +1118,10 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
                 (
                     e.from.clone(),
                     e.to.clone(),
-                    e.rel.clone(),
+                    e.rel.to_string(),
                     e.valid_from,
                     e.valid_to,
-                    e.tier.clone(),
+                    e.tier.to_string(),
                 )
             })
             .collect();

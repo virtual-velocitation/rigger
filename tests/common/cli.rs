@@ -1323,12 +1323,12 @@ pub fn planted_graph(root: &Path, graph: &rigger::contextgraph::Graph) -> Projec
             rusqlite::params![
                 e.from,
                 e.to,
-                e.rel,
+                e.rel.as_str(),
                 e.valid_from,
                 e.valid_to,
                 e.source,
                 project,
-                e.tier
+                e.tier.as_str()
             ],
         )
         .unwrap();

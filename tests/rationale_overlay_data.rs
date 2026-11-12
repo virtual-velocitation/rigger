@@ -46,11 +46,11 @@ fn rationale_graph() -> Graph {
     let edge = |from: &str, to: &str, rel: &str, valid_to: Option<i64>| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to,
         source: 0,
-        tier: TIER_INFERRED.to_string(),
+        tier: TIER_INFERRED.into(),
     };
     Graph {
         nodes: vec![

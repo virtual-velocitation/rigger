@@ -473,11 +473,11 @@ mod tests {
             es.push(Edge {
                 from: (*from).to_string(),
                 to: (*to).to_string(),
-                rel: (*rel).to_string(),
+                rel: (*rel).to_string().into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: (*tier).to_string(),
+                tier: (*tier).to_string().into(),
             });
         }
         let nodes = node_ids

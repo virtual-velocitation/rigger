@@ -354,11 +354,11 @@ pub(crate) fn joined(
                 .map(|(m, c)| Edge {
                     from: m.clone(),
                     to: c.clone(),
-                    rel: rel.to_string(),
+                    rel: rel.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: 0,
-                    tier: TIER_INFERRED.to_string(),
+                    tier: TIER_INFERRED.into(),
                 })
                 .collect::<Vec<Edge>>()
         })
@@ -602,11 +602,11 @@ fn attachment(governs: &Edge, concept: &str) -> Edge {
     Edge {
         from: governs.from.clone(),
         to: concept.to_string(),
-        rel: REL_REALIZES.to_string(),
+        rel: REL_REALIZES.into(),
         valid_from: governs.valid_from,
         valid_to: None,
         source: governs.source,
-        tier: TIER_INFERRED.to_string(),
+        tier: TIER_INFERRED.into(),
     }
 }
 
@@ -1412,7 +1412,7 @@ fn layered_call_walk(
                 edge: Edge {
                     from,
                     to,
-                    rel: REL_CALLS.to_string(),
+                    rel: REL_CALLS.into(),
                     valid_from: via.valid_from,
                     valid_to: None,
                     source: via.source,
@@ -1705,7 +1705,7 @@ mod tests {
         Edge {
             from: from.into(),
             to: to.into(),
-            rel: rel.into(),
+            rel: rel.to_string().into(),
             valid_from: 7,
             valid_to: None,
             source: 3,
@@ -2218,12 +2218,13 @@ mod tests {
                 };
                 let whole = ContextGraph::whole(&composed(&records, &view, honesty())).unwrap();
                 for id in ids(&whole.nodes) {
-                    let at = |edges: &[Edge]| -> Vec<(String, String, String)> {
-                        (edges.iter())
-                            .filter(|e| e.from == id || e.to == id)
-                            .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
-                            .collect()
-                    };
+                    let at =
+                        |edges: &[Edge]| -> Vec<(String, String, crate::contextgraph::EdgeTerm)> {
+                            (edges.iter())
+                                .filter(|e| e.from == id || e.to == id)
+                                .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
+                                .collect()
+                        };
                     let got = at(&g.subgraph(&[id.to_string()], 1).unwrap().edges);
                     assert_eq!(got, at(&whole.edges), "{case} (near {near}) at {id}");
                 }

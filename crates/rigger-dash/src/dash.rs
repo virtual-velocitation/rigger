@@ -1912,8 +1912,8 @@ fn call_edge_view(ce: &crate::contextgraph::CallEdge) -> NeighborhoodEdge {
     NeighborhoodEdge {
         from: ce.edge.from.clone(),
         to: ce.edge.to.clone(),
-        rel: ce.edge.rel.clone(),
-        tier: ce.edge.tier.clone(),
+        rel: ce.edge.rel.to_string(),
+        tier: ce.edge.tier.to_string(),
         back: ce.back,
     }
 }
@@ -1986,7 +1986,7 @@ fn calls_view(
                 .entry((
                     ce.edge.from.clone(),
                     ce.edge.to.clone(),
-                    ce.edge.rel.clone(),
+                    ce.edge.rel.to_string(),
                 ))
                 .or_insert_with(|| call_edge_view(ce));
         }
@@ -5995,11 +5995,11 @@ mod tests {
             edges: vec![Edge {
                 from: "d-new".to_string(),
                 to: "d-old".to_string(),
-                rel: REL_SUPERSEDES.to_string(),
+                rel: REL_SUPERSEDES.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         };
         let view = build_graph_view(&graph);
@@ -6106,11 +6106,11 @@ mod tests {
         let edge = |from: &str, to: &str, valid_to: Option<i64>| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let graph = Graph {
             nodes: vec![
@@ -6223,20 +6223,20 @@ mod tests {
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let member_of = |from: &str, community_id: &str| Edge {
             from: from.to_string(),
             to: community_id.to_string(),
-            rel: REL_IN_COMMUNITY.to_string(),
+            rel: REL_IN_COMMUNITY.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_INFERRED.to_string(),
+            tier: TIER_INFERRED.into(),
         };
 
         let lens = Lens::Code {
@@ -6283,11 +6283,11 @@ mod tests {
         edges.push(Edge {
             from: "src/small/lib.rs::a".to_string(),
             to: "src/small/lib.rs::b".to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: Some(9),
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         });
 
         // AT-THRESHOLD community EDGE: a hub + EXACTLY GOD_NODE_DEGREE_THRESHOLD leaves (degree 5,
@@ -6465,11 +6465,11 @@ mod tests {
         let refs = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let populated = Graph {
             nodes: vec![ce("src/a.rs::foo"), ce("src/a.rs::bar")],
@@ -6524,11 +6524,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_INFERRED.to_string(),
+            tier: TIER_INFERRED.into(),
         };
         let product = |drawn: bool| {
             let mut graph = Graph {
@@ -6636,11 +6636,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: tier.to_string(),
+            tier: tier.to_string().into(),
         };
 
         // Two coupling communities, each a pair of code entities in DIFFERENT directories that call
@@ -6849,11 +6849,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: rel.to_string(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: tier.to_string(),
+            tier: tier.to_string().into(),
         };
 
         // Two derived concepts, each grouping a DOC with the CODE it governs across directory lines
@@ -7171,11 +7171,11 @@ mod tests {
             edges: vec![Edge {
                 from: raw_id.to_string(),
                 to: "src/conductor.rs".to_string(),
-                rel: "explains".to_string(),
+                rel: "explains".into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         };
         // encodeURIComponent("src/conductor.rs#L19930") == "src%2Fconductor.rs%23L19930".
@@ -7546,11 +7546,11 @@ mod tests {
         let edge = |from: &str, to: &str| Edge {
             from: from.to_string(),
             to: to.to_string(),
-            rel: REL_REFERENCES.to_string(),
+            rel: REL_REFERENCES.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         };
         let node = |id: &str| Node {
             id: id.to_string(),
@@ -7703,11 +7703,11 @@ mod tests {
             Edge {
                 from: from.to_string(),
                 to: to.to_string(),
-                rel: rel.to_string(),
+                rel: rel.to_string().into(),
                 valid_from: 0,
                 valid_to,
                 source,
-                tier: tier.to_string(),
+                tier: tier.to_string().into(),
             }
         };
         Graph {
@@ -9938,11 +9938,11 @@ mod tests {
                 edges: vec![Edge {
                     from: "a".to_string(),
                     to: "b".to_string(),
-                    rel: REL_REFERENCES.to_string(),
+                    rel: REL_REFERENCES.into(),
                     valid_from: 0,
                     valid_to: None,
                     source: 0,
-                    tier: TIER_EXTRACTED.to_string(),
+                    tier: TIER_EXTRACTED.into(),
                 }],
             };
             let body = graph_json(&graph, "a", &["a".to_string()], 1, None, None).unwrap();

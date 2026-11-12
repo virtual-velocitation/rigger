@@ -443,11 +443,11 @@ fn the_served_graph_route_percent_decodes_a_special_char_seed_over_the_socket() 
         edges: vec![Edge {
             from: raw_id.to_string(),
             to: "src/conductor.rs".to_string(),
-            rel: "explains".to_string(),
+            rel: "explains".into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
     // encodeURIComponent("src/conductor.rs#L19930") == "src%2Fconductor.rs%23L19930".
@@ -711,11 +711,11 @@ fn the_served_graph_route_percent_decodes_special_char_path_endpoints() {
     let edge = |from: &str, to: &str| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: "explains".to_string(),
+        rel: "explains".into(),
         valid_from: 0,
         valid_to: None,
         source: 0,
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     };
     // A 3-node chain of special-char endpoints: from -> mid -> to, so the shortest path is all three.
     let graph = Graph {
@@ -829,11 +829,11 @@ fn the_served_graph_route_carries_the_seed_nodes_explain_provenance_over_the_soc
     let edge = |from: &str, to: &str, rel: &str, tier: &str, source: u64| Edge {
         from: from.to_string(),
         to: to.to_string(),
-        rel: rel.to_string(),
+        rel: rel.to_string().into(),
         valid_from: 0,
         valid_to: None,
         source,
-        tier: tier.to_string(),
+        tier: tier.to_string().into(),
     };
     // The seed decision `d1` DECIDED `u1` (event 7, extracted) and REFERENCES `c1` (event 9,
     // inferred): its provenance is two edges folded by two DISTINCT events at two tiers.
@@ -930,11 +930,11 @@ fn the_served_graph_route_omits_explain_for_an_unknown_seed_and_is_empty_for_an_
         edges: vec![Edge {
             from: "d1".to_string(),
             to: "u1".to_string(),
-            rel: REL_DECIDED.to_string(),
+            rel: REL_DECIDED.into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: TIER_EXTRACTED.to_string(),
+            tier: TIER_EXTRACTED.into(),
         }],
     };
 
@@ -1375,11 +1375,11 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
             edges: vec![Edge {
                 from: "shared-seed".to_string(),
                 to: neighbor.to_string(),
-                rel: REL_REFERENCES.to_string(),
+                rel: REL_REFERENCES.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             }],
         }
     };

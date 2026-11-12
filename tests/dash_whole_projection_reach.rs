@@ -75,7 +75,14 @@ fn whole_of(records: &Projector, view: &rigger::code_view::FactsView) -> Graph {
 fn edge_keys(g: &Graph) -> Vec<(String, String, String, i64)> {
     g.edges
         .iter()
-        .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone(), e.valid_from))
+        .map(|e| {
+            (
+                e.from.clone(),
+                e.to.clone(),
+                e.rel.to_string(),
+                e.valid_from,
+            )
+        })
         .collect()
 }
 

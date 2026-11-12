@@ -52,11 +52,11 @@ fn two_entity_graph() -> Graph {
     let membership = |entity: &str| Edge {
         from: entity.to_string(),
         to: ONE_COMMUNITY.to_string(),
-        rel: REL_IN_COMMUNITY.to_string(),
+        rel: REL_IN_COMMUNITY.into(),
         valid_from: 0,
         valid_to: None,
         source: Position::default(),
-        tier: TIER_EXTRACTED.to_string(),
+        tier: TIER_EXTRACTED.into(),
     };
     Graph {
         nodes: vec![
@@ -69,11 +69,11 @@ fn two_entity_graph() -> Graph {
             Edge {
                 from: "src/a.rs::caller".to_string(),
                 to: "src/a.rs::callee".to_string(),
-                rel: REL_CALLS.to_string(),
+                rel: REL_CALLS.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: Position::default(),
-                tier: TIER_EXTRACTED.to_string(),
+                tier: TIER_EXTRACTED.into(),
             },
         ],
     }

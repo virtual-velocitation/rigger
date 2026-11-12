@@ -41402,11 +41402,11 @@ mod tests {
         let edge = |from: &str, to: &str, rel: &str, tier: &str| contextgraph::Edge {
             from: from.into(),
             to: to.into(),
-            rel: rel.into(),
+            rel: rel.to_string().into(),
             valid_from: 0,
             valid_to: None,
             source: 0,
-            tier: tier.into(),
+            tier: tier.to_string().into(),
         };
         Graph {
             nodes: vec![

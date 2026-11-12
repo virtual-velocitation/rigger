@@ -635,11 +635,11 @@ fn a_plain_neighborhood_request_gains_no_call_fields_and_never_runs_the_directed
         edges: vec![Edge {
             from: "src/p.rs::n1".to_string(),
             to: "src/p.rs::n2".to_string(),
-            rel: REL_CALLS.to_string(),
+            rel: REL_CALLS.into(),
             valid_from: 1,
             valid_to: None,
             source: 1,
-            tier: TIER_INFERRED.to_string(),
+            tier: TIER_INFERRED.into(),
         }],
     };
     // The calls provider must exist for `serve_on` but must never be called by a plain request.

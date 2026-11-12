@@ -345,14 +345,106 @@ pub struct Node {
 pub struct Edge {
     pub from: String,
     pub to: String,
-    pub rel: String,
+    pub rel: EdgeTerm,
     pub valid_from: i64,
     pub valid_to: Option<i64>,
     pub source: Position,
     /// The confidence tier this edge was folded at: one of [`TIER_EXTRACTED`], [`TIER_INFERRED`],
     /// [`TIER_AMBIGUOUS`] (spec 29a, addendum 6.2). The `precise`/`safe` blast-radius split made a
     /// first-class edge attribute; a later traversal filters on it.
-    pub tier: String,
+    pub tier: EdgeTerm,
+}
+
+/// An edge's relation or tier: a constant every edge naming it shares, or the string a record
+/// edge was read with. It reads, compares, prints and serializes as its text.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EdgeTerm(std::borrow::Cow<'static, str>);
+
+impl EdgeTerm {
+    /// The term's text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for EdgeTerm {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<str> for EdgeTerm {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for EdgeTerm {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for EdgeTerm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<&'static str> for EdgeTerm {
+    fn from(term: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(term))
+    }
+}
+
+impl From<String> for EdgeTerm {
+    fn from(term: String) -> Self {
+        Self(std::borrow::Cow::Owned(term))
+    }
+}
+
+impl From<EdgeTerm> for String {
+    fn from(term: EdgeTerm) -> Self {
+        term.0.into_owned()
+    }
+}
+
+impl PartialEq<str> for EdgeTerm {
+    fn eq(&self, other: &str) -> bool {
+        *self.0 == *other
+    }
+}
+
+impl PartialEq<&str> for EdgeTerm {
+    fn eq(&self, other: &&str) -> bool {
+        *self.0 == **other
+    }
+}
+
+impl PartialEq<String> for EdgeTerm {
+    fn eq(&self, other: &String) -> bool {
+        *self.0 == **other
+    }
+}
+
+impl PartialEq<EdgeTerm> for &str {
+    fn eq(&self, other: &EdgeTerm) -> bool {
+        **self == *other.0
+    }
+}
+
+impl PartialEq<EdgeTerm> for str {
+    fn eq(&self, other: &EdgeTerm) -> bool {
+        *self == *other.0
+    }
+}
+
+impl PartialEq<EdgeTerm> for String {
+    fn eq(&self, other: &EdgeTerm) -> bool {
+        **self == *other.0
+    }
 }
 
 /// A set of nodes and the edges among them (e.g. a Subgraph result).
@@ -1217,7 +1309,7 @@ pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph
             g.nodes.push(c.node);
         }
     }
-    let mut edge_keys: std::collections::BTreeSet<(String, String, String)> = g
+    let mut edge_keys: std::collections::BTreeSet<(String, String, EdgeTerm)> = g
         .edges
         .iter()
         .map(|e| (e.from.clone(), e.to.clone(), e.rel.clone()))
@@ -1711,6 +1803,53 @@ mod graph_kinds {
                 (MODULE_FILE, KIND_FILE),
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod edge_term_wire {
+    use super::{Edge, EdgeTerm, REL_CALLS, TIER_INFERRED};
+
+    fn edge(rel: EdgeTerm, tier: EdgeTerm) -> Edge {
+        Edge {
+            from: "a".into(),
+            to: "b".into(),
+            rel,
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier,
+        }
+    }
+
+    /// A shared constant term and the same text read from a record are one term on the wire and
+    /// in every comparison: the edge serializes to the bytes a string field gave, and reads back
+    /// to an equal term.
+    #[test]
+    fn a_shared_term_and_a_read_one_are_the_same_text_on_the_wire() {
+        let wire = r#"{"from":"a","to":"b","rel":"CALLS","valid_from":0,"valid_to":null,"source":0,"tier":"inferred"}"#;
+        for (case, rel, tier) in [
+            (
+                "shared",
+                EdgeTerm::from(REL_CALLS),
+                EdgeTerm::from(TIER_INFERRED),
+            ),
+            (
+                "read",
+                EdgeTerm::from(REL_CALLS.to_string()),
+                EdgeTerm::from(TIER_INFERRED.to_string()),
+            ),
+        ] {
+            let e = edge(rel.clone(), tier.clone());
+            assert_eq!(serde_json::to_string(&e).unwrap(), wire, "{case}");
+            let back: Edge = serde_json::from_str(wire).unwrap();
+            assert_eq!((back.rel, back.tier), (rel.clone(), tier), "{case}");
+            assert_eq!(
+                (rel == REL_CALLS, rel.as_str(), rel.to_string()),
+                (true, REL_CALLS, REL_CALLS.to_string()),
+                "{case}"
+            );
+        }
     }
 }
 

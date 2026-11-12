@@ -2868,11 +2868,11 @@ fn row_to_edge(r: &rusqlite::Row) -> rusqlite::Result<Edge> {
     Ok(Edge {
         from: r.get(0)?,
         to: r.get(1)?,
-        rel: r.get(2)?,
+        rel: r.get::<_, String>(2)?.into(),
         valid_from: r.get(3)?,
         valid_to: None,
         source: r.get::<_, i64>(4)? as Position,
-        tier: r.get(5)?,
+        tier: r.get::<_, String>(5)?.into(),
     })
 }
 

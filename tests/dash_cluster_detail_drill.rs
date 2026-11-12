@@ -82,11 +82,11 @@ fn membership(id: &str) -> Edge {
     Edge {
         from: id.to_string(),
         to: ONE_COMMUNITY.to_string(),
-        rel: REL_IN_COMMUNITY.to_string(),
+        rel: REL_IN_COMMUNITY.into(),
         valid_from: 0,
         valid_to: None,
         source: 0,
-        tier: TIER_INFERRED.to_string(),
+        tier: TIER_INFERRED.into(),
     }
 }
 

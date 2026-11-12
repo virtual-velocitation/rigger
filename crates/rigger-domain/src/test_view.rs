@@ -109,11 +109,11 @@ pub fn join_tests(graph: &mut Graph, attachment: &TestAttachment, tests: Tests) 
             graph.edges.push(Edge {
                 from: test.to_string(),
                 to: cluster.to_string(),
-                rel: REL_TESTS.to_string(),
+                rel: REL_TESTS.into(),
                 valid_from: 0,
                 valid_to: None,
                 source: 0,
-                tier: TIER_INFERRED.to_string(),
+                tier: TIER_INFERRED.into(),
             });
         }
     }
