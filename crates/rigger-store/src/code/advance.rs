@@ -515,12 +515,14 @@ pub(crate) fn open_current_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::code::disk_memo::MemoCap;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::format::{Container, WriteLock};
     use rigger_domain::code_facts::FileFacts;
     use rigger_domain::code_view::{CodeView, Groupings};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
+    use std::time::{Duration, SystemTime};
 
     const FP: u64 = 1;
 
@@ -1006,6 +1008,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An advance reaps the facts memo: GIVEN a memo holding a fresh entry of the store's
+    /// fingerprint, one unread for longer than the stated age, and one of another fingerprint,
+    /// WHEN the store advances, THEN the fresh entry alone stays.
+    #[test]
+    fn an_advance_reaps_the_memo() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path());
+        let (source, group) = (MemSource::default(), CountingGroup::default());
+        let memo = store.memo_dir();
+        std::fs::create_dir_all(&memo).unwrap();
+        let entry = |fp: u64, name: &str| format!("{fp:016x}-{name}.facts");
+        let (fresh, old) = (entry(stamped(FP), "fresh"), entry(stamped(FP), "old"));
+        let other = entry(stamped(FP + 1), "other");
+        for name in [&fresh, &old, &other] {
+            std::fs::write(memo.join(name), b"an entry").unwrap();
+        }
+        let unread = MemoCap::STATED.age + Duration::from_secs(60);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(memo.join(&old));
+        file.unwrap()
+            .set_modified(SystemTime::now() - unread)
+            .unwrap();
+        let tip = source.commit("c1", A);
+        (store.advance(&source, &ToyExtract::new(FP), &group, &tip)).unwrap();
+        let left: Vec<String> = (std::fs::read_dir(&memo).unwrap().flatten())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, [fresh]);
     }
 
     /// Fails one publish, as a crash at that step would: a torn temp, or no pointer rename.

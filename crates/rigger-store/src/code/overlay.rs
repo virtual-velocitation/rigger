@@ -82,9 +82,9 @@ fn read_changed(
         bytes.insert(path.to_owned(), read.to_vec());
     })?;
     let held_under = extract.fingerprint();
-    let disk = (memo.disk).map(|_| {
+    let disk = (memo.disk).map(|cap| {
         let dir = Store::new(root).memo_dir();
-        DiskMemo::new(dir, fingerprint(extract, group))
+        DiskMemo::new(dir, fingerprint(extract, group), cap)
     });
     let (mut facts, mut missed) = (Vec::with_capacity(paths.len()), Vec::new());
     for path in paths {
@@ -427,6 +427,7 @@ mod tests {
     use rigger_domain::code_view::{Tests, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty, Indexed};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
+    use std::time::SystemTime;
 
     /// What a worktree changes: each path with its bytes, or none when it deleted the file.
     type Changes<'a> = &'a [(&'a str, Option<&'a str>)];
@@ -785,6 +786,59 @@ mod tests {
             assert_eq!(head.compared, Compared::Overlaid(1), "read {read}");
             assert_eq!(ungrouped(&answer(&head).0), fresh(a), "read {read}");
         }
+    }
+
+    /// An open that writes the memo reaps it: GIVEN a memo holding an entry of another
+    /// fingerprint, WHEN a one-shot read extracts a changed file, THEN that entry is gone and the
+    /// read's own stays.
+    #[test]
+    fn an_open_that_writes_the_memo_reaps_it() {
+        let fx = Fixture::new(FILES);
+        let dir = Store::new(fx.root.path()).memo_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = fingerprint(&fx.extract, &fx.group) ^ 1;
+        let other = dir.join(format!("{other:016x}-other.facts"));
+        std::fs::write(&other, b"an entry").unwrap();
+        fx.head(&[("src/a.rs", Some("def alpha\ndef gamma\n"))], &one_shot());
+        let entries = fx.entries();
+        assert!(!entries.contains(&other), "{entries:?}");
+        assert_eq!(entries.len(), 1, "{entries:?}");
+    }
+
+    /// A reaper racing reads fails closed to extraction: GIVEN a reaper emptying the memo over
+    /// and over, WHEN one-shot reads of a file edited back and forth run beside it, THEN every
+    /// read is overlaid and answers what a fresh extraction answers, and the reaper's last pass
+    /// leaves the memo empty.
+    #[test]
+    fn a_reaper_racing_reads_fails_closed_to_extraction() {
+        let fx = Fixture::new(FILES);
+        let empty = MemoCap {
+            bytes: 0,
+            ..MemoCap::STATED
+        };
+        let dir = Store::new(fx.root.path()).memo_dir();
+        let reaper = DiskMemo::new(dir, fingerprint(&fx.extract, &fx.group), empty);
+        let edits: [Changes; 2] = [
+            &[("src/a.rs", Some("def alpha\ndef gamma\n"))],
+            &[("src/a.rs", Some("def alpha\ncall beta\ndef delta\n"))],
+        ];
+        let wanted = edits.map(fresh);
+        std::thread::scope(|scope| {
+            let reads = scope.spawn(|| {
+                for round in 0..200 {
+                    let head = fx.head(edits[round % 2], &one_shot());
+                    assert_eq!(head.compared, Compared::Overlaid(1), "round {round}");
+                    let got = ungrouped(&answer(&head).0);
+                    assert_eq!(got, wanted[round % 2], "round {round}");
+                }
+            });
+            while !reads.is_finished() {
+                reaper.reap(SystemTime::now());
+            }
+            reaper.reap(SystemTime::now());
+            reads.join().unwrap();
+        });
+        assert_eq!(fx.entries(), Vec::<std::path::PathBuf>::new());
     }
 
     /// Resolution reads the overlaid view: GIVEN a commit whose `run` calls `helper`, which

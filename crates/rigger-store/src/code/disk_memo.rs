@@ -37,15 +37,20 @@ impl MemoCap {
     };
 }
 
-/// The entries of one store fingerprint in the memo directory `dir`.
+/// The entries of one store fingerprint in the memo directory `dir`, kept within `cap`.
 pub(crate) struct DiskMemo {
     dir: PathBuf,
     fingerprint: u64,
+    cap: MemoCap,
 }
 
 impl DiskMemo {
-    pub(crate) fn new(dir: PathBuf, fingerprint: u64) -> Self {
-        Self { dir, fingerprint }
+    pub(crate) fn new(dir: PathBuf, fingerprint: u64, cap: MemoCap) -> Self {
+        Self {
+            dir,
+            fingerprint,
+            cap,
+        }
     }
 
     /// The facts of the file at `path` holding `bytes`, when an entry holds them, marked read now.
@@ -80,6 +85,13 @@ impl DiskMemo {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         write_atomic(&self.dir.join(self.name(&facts.path, bytes)), snap.bytes())
+    }
+
+    /// Keeps the entries of this fingerprint read within the cap's age, the most recently read
+    /// first up to the cap's bytes, and removes every other file in the directory but a temp a
+    /// writer may still rename.
+    pub(crate) fn reap(&self, now: SystemTime) {
+        let _ = (self.cap, now);
     }
 
     /// The entry name of the file at `path` holding `bytes`: one name prefix a fingerprint.
@@ -167,7 +179,7 @@ mod tests {
     #[test]
     fn writers_of_one_entry_leave_it_whole() {
         let root = tempfile::tempdir().unwrap();
-        let memo = DiskMemo::new(root.path().join(DIR), 7);
+        let memo = DiskMemo::new(root.path().join(DIR), 7, MemoCap::STATED);
         let bytes = b"alpha\nbeta\n";
         let facts = facts_of("src/a.rs", bytes);
         std::thread::scope(|scope| {
@@ -181,5 +193,109 @@ mod tests {
         });
         assert_eq!(names(&root.path().join(DIR)).len(), 1);
         assert_eq!(memo.get("src/a.rs", bytes), Some(facts));
+    }
+
+    /// The name of an entry of the fingerprint `fp`.
+    fn entry(fp: u64, name: &str) -> String {
+        format!("{fp:016x}-{name}{FACTS}")
+    }
+
+    /// Writes `len` bytes at `at`, last read `unread` seconds before `now`.
+    fn seed(at: &std::path::Path, len: usize, unread: u64, now: SystemTime) {
+        std::fs::write(at, vec![b'x'; len]).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(at).unwrap();
+        file.set_modified(now - Duration::from_secs(unread))
+            .unwrap();
+    }
+
+    /// Each row: the files in the memo directory as (name, bytes, seconds unread), and the names
+    /// a reap of the fingerprint 7 within 100 bytes and a day leaves.
+    #[test]
+    fn a_reap_keeps_the_recently_read_entries_of_its_fingerprint_within_the_cap() {
+        const DAY: u64 = 24 * 60 * 60;
+        let cap = MemoCap {
+            bytes: 100,
+            age: Duration::from_secs(DAY),
+        };
+        let (own, other) = (|n| entry(7, n), |n| entry(8, n));
+        let (old_temp, new_temp) = (".x.facts.1.0.tmp".to_owned(), ".y.facts.1.1.tmp".to_owned());
+        let cases: [(&str, Vec<(String, usize, u64)>, Vec<String>); 7] = [
+            (
+                "a fresh entry of its fingerprint stays",
+                vec![(own("a"), 10, 0)],
+                vec![own("a")],
+            ),
+            (
+                "an entry of another fingerprint goes",
+                vec![(other("a"), 10, 0), (own("b"), 10, 0)],
+                vec![own("b")],
+            ),
+            (
+                "an entry unread for longer than the age goes",
+                vec![(own("a"), 10, DAY + 60), (own("b"), 10, DAY - 60)],
+                vec![own("b")],
+            ),
+            (
+                "the least recently read go first beyond the bytes",
+                vec![(own("a"), 40, 30), (own("b"), 40, 20), (own("c"), 40, 10)],
+                vec![own("b"), own("c")],
+            ),
+            (
+                "an entry larger than the bytes goes",
+                vec![(own("a"), 101, 0)],
+                vec![],
+            ),
+            (
+                "a temp older than a writer takes goes, a younger one stays",
+                vec![(old_temp, 10, 600), (new_temp.clone(), 10, 0)],
+                vec![new_temp],
+            ),
+            (
+                "a name the memo never writes goes",
+                vec![("notes.txt".to_owned(), 10, 0), (own("a"), 10, 0)],
+                vec![own("a")],
+            ),
+        ];
+        for (case, files, want) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join(DIR);
+            std::fs::create_dir(&dir).unwrap();
+            let now = SystemTime::now();
+            for (name, len, unread) in &files {
+                seed(&dir.join(name), *len, *unread, now);
+            }
+            DiskMemo::new(dir.clone(), 7, cap).reap(now);
+            let mut want = want;
+            want.sort();
+            assert_eq!(names(&dir), want, "{case}");
+        }
+    }
+
+    /// A read is what keeps an entry: GIVEN two entries, the one read longer ago read again,
+    /// WHEN the memo is reaped to the bytes of one of them, THEN the entry read again stays.
+    #[test]
+    fn a_read_entry_outlives_one_read_before_it() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join(DIR);
+        let (a, b) = (b"alpha\n".as_slice(), b"beta\n".as_slice());
+        let (of_a, of_b) = (facts_of("src/a.rs", a), facts_of("src/b.rs", b));
+        let memo = DiskMemo::new(dir.clone(), 7, MemoCap::STATED);
+        memo.put(a, &of_a).unwrap();
+        memo.put(b, &of_b).unwrap();
+        let (at_a, at_b) = (memo.name("src/a.rs", a), memo.name("src/b.rs", b));
+        let now = SystemTime::now();
+        for (name, unread) in [(&at_a, 20), (&at_b, 10)] {
+            let file = std::fs::OpenOptions::new().write(true).open(dir.join(name));
+            let mtime = now - Duration::from_secs(unread);
+            file.unwrap().set_modified(mtime).unwrap();
+        }
+        assert_eq!(memo.get("src/a.rs", a), Some(of_a));
+        let size = |name: &String| std::fs::metadata(dir.join(name)).unwrap().len();
+        let cap = MemoCap {
+            bytes: size(&at_a).max(size(&at_b)),
+            ..MemoCap::STATED
+        };
+        DiskMemo::new(dir.clone(), 7, cap).reap(SystemTime::now());
+        assert_eq!(names(&dir), [at_a]);
     }
 }
