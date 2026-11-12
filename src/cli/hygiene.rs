@@ -1529,6 +1529,57 @@ mod tests {
         );
     }
 
+    /// A writer racing `reset --derived`'s clear of the code facts memo can leave it partial, and
+    /// that is no error: GIVEN a memo of many entries and a writer adding entries until the clear
+    /// returns, WHEN the clear runs, THEN it answers one line, and a clear the writer left partial
+    /// names the bytes it left, measured after the delete and so not the memo's size before it,
+    /// rather than saying it removed the memo. Rounds repeat until one races.
+    #[test]
+    fn a_writer_racing_the_memo_clear_leaves_a_line_naming_what_is_left() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        // Seeds whose size dwarfs anything the writer adds while one clear runs.
+        const SEEDS: usize = 500;
+        const SEED: usize = 4096;
+        let before = human_size((SEEDS * SEED) as u64);
+        let mut raced = false;
+        for round in 0..50 {
+            let root = tempfile::tempdir().unwrap();
+            let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+            std::fs::create_dir_all(&memo).unwrap();
+            for n in 0..SEEDS {
+                std::fs::write(memo.join(format!("seeded-{n}.facts")), [b'x'; SEED]).unwrap();
+            }
+            let clearing = AtomicBool::new(true);
+            let answer = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for n in 0u64.. {
+                        if !clearing.load(SeqCst) {
+                            break;
+                        }
+                        let _ = std::fs::create_dir_all(&memo);
+                        let _ = std::fs::write(memo.join(format!("written-{n}.facts")), b"entry");
+                    }
+                });
+                let answer = clear_code_facts_memo(root.path());
+                clearing.store(false, SeqCst);
+                answer
+            });
+            let answer = answer.unwrap_or_else(|e| panic!("round {round}: the clear failed: {e}"));
+            let line = answer.unwrap_or_else(|| panic!("round {round}: a memo was there"));
+            if line.starts_with("reset --derived: could not remove the whole code facts memo (") {
+                assert!(line.ends_with(" left, which its reaper bounds"), "{line}");
+                assert!(!line.contains("removed"), "{line}");
+                assert!(!line.contains(&format!(" {before} left")), "{line}");
+                assert!(memo.is_dir(), "round {round}: {line}");
+                raced = true;
+                break;
+            }
+            let removed = "reset --derived: removed the code facts memo (";
+            assert!(line.starts_with(removed), "round {round}: {line}");
+        }
+        assert!(raced, "no round's writer raced the clear");
+    }
+
     // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS (spec 101: it reads liveness) ---
 
     /// A live spawn `id`, its marker touched `ago` seconds back, bounded at `bound` seconds.
