@@ -1895,8 +1895,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/fixtures/fold.rs:399-401` `lock_held_past`
 - `tests/common/fixtures/fold.rs:406-408` `catch_up_short_after`
 - `tests/common/fixtures/instructions.rs:293-295` `builtin_instruction_source`
-- `tests/common/fixtures/spawn.rs:160-165` `cli_progress_frame`
-- `tests/common/fixtures/spawn.rs:320-322` `printing`
+- `tests/common/fixtures/spawn.rs:161-166` `cli_progress_frame`
+- `tests/common/fixtures/spawn.rs:321-323` `printing`
 - `tests/halted_spawn_wip_recovery_periphery.rs:128-130` `unit_branch`
 - `tests/native_driver_pipelining_behavior.rs:597-599` `worker_prompts_harness`
 - `tests/regate_landed_on_resume_periphery.rs:77-79` `unit_branch`
@@ -1955,7 +1955,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:656-661` `no_result_failure`
 - `tests/common/fixtures/config.rs:462-464` `separator_refusal`
 - `tests/common/fixtures/plan_critique.rs:148-153` `spec_defect_halt_text`
-- `tests/common/fixtures/spawn.rs:281-294` `probe_arms`
+- `tests/common/fixtures/spawn.rs:282-295` `probe_arms`
 - `tests/compaction_generations_periphery.rs:5103-5108` `closed_unit_line`
 - `tests/new_run_critique_refusal_periphery.rs:156-158` `no_critic_line`
 - `tests/no_os_kill_audit.rs:52-54` `join`
@@ -2067,7 +2067,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/common/cli.rs:1830-1832` `reclaimed_line`
 - `tests/common/fixtures/cursor.rs:173-175` `caught_up_line`
 - `tests/common/fixtures/plan_critique.rs:97-99` `unit_size_cap_sentence`
-- `tests/common/fixtures/spawn.rs:328-330` `sleeping`
+- `tests/common/fixtures/spawn.rs:329-331` `sleeping`
 - `tests/spec_critique_periphery.rs:2324-2326` `gate_ceiling`
 
 #### `dup-cde89b281edb` (near, 4 sites)
@@ -3697,9 +3697,9 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `tests/cli.rs:34166-34166` `"/proc"`
 - `tests/common/fixtures/host.rs:83-83` `"/proc/{pid}/stat has a pgrp field after comm"`
 - `tests/common/fixtures/host.rs:189-189` `"/proc/self/task"`
-- `tests/common/fixtures/spawn.rs:338-338` `"/proc/self"`
-- `tests/common/fixtures/spawn.rs:339-339` `"{name}: the sleeper check reads /proc, which this host does not mount"`
-- `tests/common/fixtures/spawn.rs:348-348` `"/proc"`
+- `tests/common/fixtures/spawn.rs:339-339` `"/proc/self"`
+- `tests/common/fixtures/spawn.rs:340-340` `"{name}: the sleeper check reads /proc, which this host does not mount"`
+- `tests/common/fixtures/spawn.rs:349-349` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:100-100` `"/proc-path string literals"`
 - `tests/mutation_runner_pdeathsig_periphery.rs:170-170` `"cat /proc/self/limits; echo \"MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX-unset}\""`
 - `tests/proofs_settle_once_periphery.rs:40-40` `"/proc/thread-self/schedstat"`
