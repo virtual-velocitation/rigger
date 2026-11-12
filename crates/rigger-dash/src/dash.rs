@@ -1552,7 +1552,8 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE
 /// cross-file placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of
-/// that leaf - EXACTLY ONE folds under that definition's file, MORE THAN ONE (or zero) is surfaced
+/// that leaf - EXACTLY ONE folds under that definition's file (standing in for it, not counted
+/// again, when that definition is itself a member), MORE THAN ONE (or zero) is surfaced
 /// as a marked-unresolved entry carrying the sorted candidate ids, never a wrong attribution to the
 /// referencing file its id encodes; a member naming NO file under its kind's arm of [`node_file`]
 /// is marked unresolved with an EMPTY frontier too, never folded to its raw storage-schema KIND
@@ -1690,8 +1691,10 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 ///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
 ///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
-///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's file; MORE THAN ONE
-///   (or zero) is marked-unresolved with the sorted candidate ids;
+///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's
+///   file, and when that definition is itself a member the placeholder stands in for it, carrying
+///   its edges but not counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted
+///   candidate ids;
 /// - a member naming NO file under its kind's arm of [`node_file`] (a decision, or a `::`-less code
 ///   entity) is marked unresolved too, with an EMPTY candidate frontier - the same honesty shape a
 ///   zero-candidate bare placeholder already carries - rather than falling back to its raw KIND as
@@ -1708,9 +1711,12 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     let defs_by_suffix = defs_by_entity_suffix(graph);
 
     // Resolve each member to a file key (or mark it unresolved). `resolved` is member-id -> file key
-    // the fold reads back; `unresolved` collects the marked-unresolved frontiers.
+    // the fold reads back; `unresolved` collects the marked-unresolved frontiers; `stand_ins` holds
+    // the placeholders whose one definition is itself a member.
+    let member_ids: BTreeSet<&str> = members.iter().map(|m| m.id.as_str()).collect();
     let mut resolved: BTreeMap<&str, String> = BTreeMap::new();
     let mut unresolved: Vec<UnresolvedMember> = Vec::new();
+    let mut stand_ins: BTreeSet<&str> = BTreeSet::new();
     for m in members {
         let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
@@ -1723,6 +1729,9 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
                 [only] => {
                     if let Some(file) = node_file(KIND_CODE_ENTITY, only) {
                         resolved.insert(m.id.as_str(), file.to_string());
+                        if member_ids.contains(only) {
+                            stand_ins.insert(m.id.as_str());
+                        }
                         continue;
                     }
                     // A definition whose id names no file cannot attribute one: unresolved.
@@ -1764,8 +1773,11 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         members.iter().copied(),
         &graph.edges,
         |n| resolved.get(n.id.as_str()).cloned(),
-        // Every node of the subject's member set is a member of the file bucket it resolves to.
-        |_| true,
+        // Spec 119's member rule, within the subject: a placeholder whose one definition is itself
+        // a member stands in for it, carrying its edges but not counted again. A placeholder whose
+        // definition lies outside the subject is the subject's only hold on that file, so it
+        // counts there, as every other resolved member counts in its file's bucket.
+        |n| !stand_ins.contains(n.id.as_str()),
         &empty_label,
     );
     unresolved.sort_by(|a, b| a.id.cmp(&b.id));
