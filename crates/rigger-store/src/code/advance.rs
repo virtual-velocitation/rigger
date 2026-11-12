@@ -6,7 +6,8 @@
 //! snapshot is published before the pointer to it, each by an atomic rename, so a reader sees the
 //! old snapshot or the new one, never a part; a crash between the two leaves the old one current.
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
-//! snapshots, so two binaries sharing a store each keep theirs.
+//! snapshots, so two binaries sharing a store each keep theirs, and reaps the overlay's facts
+//! memo (`memo/`) to the advanced fingerprint's entries within its cap.
 
 use crate::code::disk_memo::{DiskMemo, MemoCap};
 use crate::code::snapshot::{encode, stamp_unchecked, Snapshot};

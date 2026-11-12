@@ -8,6 +8,13 @@
 //! holds. A read takes an entry only when it decodes whole with that stamp and holds the facts of
 //! that one path; any other entry is absent and removed, and the file is extracted again. The key
 //! is the content, so an entry is never stale; it is only unused.
+//!
+//! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, none unread for more than three
+//! days. Its reaper ([`DiskMemo::reap`]) runs with the store's on every advance and after every
+//! overlay open that writes an entry. It keeps only the entries of the fingerprint it runs for,
+//! the most recently read first, recency being the modification time a read sets; it removes
+//! every other file but a temp younger than a minute. `rigger reset --derived` removes the whole
+//! memo, and `rigger validate` reports its size.
 
 use crate::code::dir_source::content_id;
 use crate::code::snapshot::{encode, Snapshot};

@@ -1,6 +1,6 @@
 //! The code store: an immutable snapshot of the tree's facts at `.rigger/store/code/` for each of
 //! the two most recently advanced fingerprints, each named by its `CURRENT-<fingerprint>` pointer
-//! and advanced under a `LOCK`.
+//! and advanced under a `LOCK`, beside the worktree overlay's facts memo in `memo/`.
 
 mod advance;
 mod dir_source;

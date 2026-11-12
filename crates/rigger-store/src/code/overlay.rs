@@ -142,8 +142,9 @@ struct Held {
 
 impl Memo {
     /// The process memo's bound: 256 files' facts. A worktree's differing files are what a reader
-    /// re-reads, and a change set of more than 256 files re-extracts the rest at each open; at
-    /// tens of kilobytes of facts a file, the memo stays within a few megabytes.
+    /// re-reads, and a change set of more than 256 files takes the rest from the memo on disk, or
+    /// extracts them again at each open in a memo with none; at tens of kilobytes of facts a file,
+    /// the process memo stays within a few megabytes.
     pub const BOUND: usize = 256;
 
     /// An empty memo holding at most `bound` files' facts.
