@@ -1521,7 +1521,7 @@ mod tests {
         // `.rigger/agents/sdet-author.md` with Edit/Write tools + `isolation: worktree`,
         // DISTINCT from the read-only `sdet` review lens (which has neither Edit nor Write).
         // Proven over the REAL committed files (read from the crate manifest dir), so this
-        // asserts the artifact the loop actually spawns, not a fixture.
+        // asserts the agent a workflow declaring `test_author: sdet-author` spawns, not a fixture.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let author = parse_agent(
             &std::fs::read(root.join(".rigger/agents/sdet-author.md"))

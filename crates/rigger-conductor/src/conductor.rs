@@ -30549,7 +30549,9 @@ mod tests {
 
     /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
     /// gate before any review round, and its second attempt's sdet-author continues the session
-    /// its first ran as, sent the failed attempt's gate evidence as what changed.
+    /// its first ran as, sent the failed attempt's gate evidence as what changed. The test author
+    /// is declared under `test-writer`, an id other than its role token, so the session it resumes
+    /// is the `sdet-author` token's, whatever the declared agent is named.
     #[test]
     fn a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence() {
         let repo = temp_git_project_with_commit();
@@ -30565,8 +30567,14 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let mut cfg = session_cfg();
+        declare_test_author(&mut cfg, "test-writer");
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            driver.spawned("test-writer"),
+            "premise: the declared test-writer is the agent spawned"
+        );
         let first = spawn_id("implement", ROLE_SDET_AUTHOR, 0);
         let (from, task) = driver
             .resume_of(&spawn_id("implement", ROLE_SDET_AUTHOR, 1))
@@ -37969,8 +37977,10 @@ mod tests {
 
     /// Where each spawn builds and whether its task prompt names that build cache, for each kind
     /// of working tree a spawn gets, under either driver. A unit's panel builds into the unit's
-    /// caches - the implementer and the sdet-author into the unit's own, the lenses, the adversary
-    /// and the adjudicator into the unit's review cache, so a reproduction in a reviewer's scratch
+    /// caches - the implementer and the test author into the unit's own, the test author by its
+    /// `sdet-author` role token whatever id the workflow declares it under (here `test-writer`),
+    /// the lenses, the adversary and the adjudicator into the unit's review cache, so a
+    /// reproduction in a reviewer's scratch
     /// worktree never swaps a binary the unit's gates or another tier's test is using - in the
     /// spawn environment and in the parked request the host launches. Each review tier
     /// reads the reviewer discipline once, followed by the build-cache sentence. A spawn with no
@@ -37989,7 +37999,7 @@ mod tests {
         type Built<'a> = Vec<(&'a str, &'a [Option<&'a str>], usize, usize)>;
         let unit_panel: Setup = || {
             let mut cfg = per_unit_panel_cfg(None);
-            declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
+            declare_test_author(&mut cfg, "test-writer");
             let driver = Stub {
                 output: "reviewed the diff".into(),
                 write_file: Some("feature.rs".into()),
@@ -38051,7 +38061,7 @@ mod tests {
                 unit_panel,
                 vec![
                     ("worker", &[Some("cargo-target-implement")], 0, 0),
-                    (ROLE_SDET_AUTHOR, &[Some("cargo-target-implement")], 0, 0),
+                    ("test-writer", &[Some("cargo-target-implement")], 0, 0),
                     ("lens", &[Some("review-target-implement")], 1, 1),
                     ("adversary", &[Some("review-target-implement")], 1, 1),
                     ("adj", &[Some("review-target-implement")], 1, 1),
@@ -47957,7 +47967,7 @@ mod tests {
         ///
         /// The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does NOT
         /// short-circuit first), and the undeclared-author arm
-        /// (`if author.is_empty() { return Ok(()); }`) is the code under test. NON-VACUOUS: RED
+        /// (`let Some(author) = .. else { return Ok(()); }`) is the code under test. NON-VACUOUS: RED
         /// when that arm is made NON-tolerant - change its `return Ok(())` to
         /// `return Err(Error("no sdet-author".into()))` and the undeclared author propagates an
         /// error out of the seam (`spawn_sdet_author(..)?`), so the unit never integrates.
@@ -48091,6 +48101,32 @@ mod tests {
                 spawned, want,
                 "test_author {declared:?} over the agents {defined:?}, loaded first: {loaded}"
             );
+        }
+    }
+
+    /// The records a test author emits at the build seam carry the `sdet-author` role token as
+    /// their actor, whatever id the workflow declares the author under.
+    #[test]
+    fn a_test_authors_records_carry_the_sdet_author_token_as_their_actor() {
+        for declared in [ROLE_SDET_AUTHOR, "test-writer"] {
+            let mut cfg = sdet_lane_cfg(false);
+            declare_test_author(&mut cfg, declared);
+            let decision = json!({"id": "d-periphery", "summary": "periphery authored"});
+            let driver = Stub {
+                emits_by_agent: HashMap::from([(
+                    declared.to_string(),
+                    vec![(contextgraph::TYPE_DECISION_MADE.to_string(), decision)],
+                )]),
+                ..sdet_lane_driver()
+            };
+            let (run, events) = run_in_repo(&cfg, &driver);
+            run.expect("the unit integrates");
+            let actors: Vec<&str> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+                .map(|e| e.meta[contextgraph::META_ACTOR].as_str())
+                .collect();
+            assert_eq!(actors, [ROLE_SDET_AUTHOR], "test_author {declared:?}");
         }
     }
 
