@@ -67,7 +67,7 @@ pub fn open_head(
 /// its bytes read once through `source`, each file's facts taken from `memo` when it holds them
 /// for those bytes, then from the facts memo on disk under the store at `root` when `memo` reads
 /// one, and the rest extracted in parallel ([`extract_parallel`]) and kept in both, the memo on
-/// disk reaped once an entry is written ([`DiskMemo::reap`]). A file that is not read is an
+/// disk reaped once an entry is written ([`Store::reap_memo`]). A file that is not read is an
 /// error; a memo on disk that cannot be read or written is not, since extracting answers the same.
 fn read_changed(
     root: &Path,
@@ -83,9 +83,10 @@ fn read_changed(
         bytes.insert(path.to_owned(), read.to_vec());
     })?;
     let held_under = extract.fingerprint();
+    let store = Store::new(root);
     let disk = (memo.disk).map(|cap| {
-        let dir = Store::new(root).memo_dir();
-        DiskMemo::new(dir, fingerprint(extract, group), cap)
+        let dir = store.memo_dir();
+        (DiskMemo::new(dir, fingerprint(extract, group)), cap)
     });
     let (mut facts, mut missed) = (Vec::with_capacity(paths.len()), Vec::new());
     for path in paths {
@@ -95,7 +96,7 @@ fn read_changed(
             blob: content_id(read),
         };
         let on_disk = || {
-            let held = disk.as_ref()?.get(path, read)?;
+            let held = disk.as_ref()?.0.get(path, read)?;
             memo.put(held_under, held.clone());
             Some(held)
         };
@@ -109,12 +110,12 @@ fn read_changed(
     let mut wrote = false;
     for f in &extracted {
         memo.put(held_under, f.clone());
-        if let Some(disk) = &disk {
+        if let Some((disk, _)) = &disk {
             wrote |= disk.put(bytes_of(&f.path), f).is_ok();
         }
     }
-    if let Some(disk) = disk.as_ref().filter(|_| wrote) {
-        disk.reap(SystemTime::now());
+    if let Some((_, cap)) = disk.filter(|_| wrote) {
+        store.reap_memo(cap, SystemTime::now());
     }
     facts.extend(extracted);
     Ok(facts)
@@ -860,8 +861,7 @@ mod tests {
             bytes: 0,
             ..MemoCap::STATED
         };
-        let dir = Store::new(fx.root.path()).memo_dir();
-        let reaper = DiskMemo::new(dir, fingerprint(&fx.extract, &fx.group), empty);
+        let reaper = Store::new(fx.root.path());
         let edits: [Changes; 2] = [
             &[("src/a.rs", Some("def alpha\ndef gamma\n"))],
             &[("src/a.rs", Some("def alpha\ncall beta\ndef delta\n"))],
@@ -877,9 +877,9 @@ mod tests {
                 }
             });
             while !reads.is_finished() {
-                reaper.reap(SystemTime::now());
+                reaper.reap_memo(empty, SystemTime::now());
             }
-            reaper.reap(SystemTime::now());
+            reaper.reap_memo(empty, SystemTime::now());
             reads.join().unwrap();
         });
         assert_eq!(fx.entries(), Vec::<std::path::PathBuf>::new());
