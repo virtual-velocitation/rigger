@@ -162,6 +162,8 @@ def shown(path):
 
 
 def tail(text):
+    if isinstance(text, list):
+        text = "\n".join(part for part in text if isinstance(part, str))
     text = text if isinstance(text, str) else ""
     return text[-TAIL:]
 
