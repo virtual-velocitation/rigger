@@ -1330,10 +1330,10 @@ fn g(dir: &str) {
         assert_eq!(
             hits.len(),
             4,
-            "expected exactly the 3 exemptions u79c1-rewiring-complete-and-exemption-marker \
-             recorded (heal_corrupt_worktree_admin, cmd_replay's replay_dir, \
-             materialize_config_at_rev's checkout) and clear_code_facts_memo's memo; got \
-             {hits:?}"
+            "expected exactly the 4 exemptions: the 3 \
+             u79c1-rewiring-complete-and-exemption-marker recorded (heal_corrupt_worktree_admin, \
+             cmd_replay's replay_dir, materialize_config_at_rev's checkout) and \
+             clear_code_facts_memo's memo; got {hits:?}"
         );
         assert_eq!(
             files.iter().filter(|f| **f == "src/cli/mod.rs").count(),
