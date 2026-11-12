@@ -867,7 +867,9 @@ It splits by role:
   (the conductor's grounding, the MCP server, the dash) follows the store as merges advance it.
   `open(filter)` is `open_on(head(), filter)`: a read that also grounds (the conductor's blast
   radius) opens the head once and hands that `Head` to both the grounder and `open_on`, so the
-  seed, the stamp and the radius's graph tier all come from one tree.
+  seed, the stamp and the radius's graph tier all come from one tree. `head()` compares the head
+  with the reader's own worktree, `head_in(W)` with another worktree of the project (a unit's),
+  and the `Head` names the worktree it describes.
   `open_unowed(fold, read, filter)` refuses with REBUILD_OWED first when the record fold owes
   its rebuild.
 
@@ -1145,7 +1147,10 @@ the label says so.
 
 Every reader opens the head through this one open, so one store open and one diff serve each
 answer: `--around`, `--show` and `--lookup`, `rigger ground`, the MCP graph and ground tools, the
-dash's views and its polled state, and the conductor's blast radius.
+dash's views and its polled state, and the conductor's blast radius. The conductor opens a unit's
+head in the unit's own worktree (`OpenGraph::head_in`), and the grounder reads the worktree the
+head names, so the unit's seed, stamp and radius describe the tree its implementer works in: a
+file an earlier attempt added there grounds the next attempt.
 
 Its cost is extraction for each changed file (in parallel) plus the git diff (< 20 ms over a
 refreshed index, 6.1). The label in 6.1 reads "describes W (<commit> + N files); groupings
@@ -1285,6 +1290,8 @@ a reader holding one open (or mapped) never blocks a writer.
   `overlay_adds_untracked_files`, `overlay_memoises_by_content_hash`,
   `resolution_over_the_overlay_describes_the_worktree` and
   `groupings_under_the_overlay_are_labelled_with_the_stamp`.
+- `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
+  to its worktree is in the second attempt's recorded seed, read from that worktree.
 - `the_overlaid_worktree_answers_what_a_commit_of_its_content_answers`: the overlay of a worktree
   answers what the store advanced to a commit of the worktree's content answers, over the
   resolver's tree with a changed file that flips another file's test-ness and proofs, under each

@@ -5,6 +5,7 @@
 //! top-level use case; it depends only on ports and domain, never on an adapter.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -5109,7 +5110,7 @@ impl RunCtx<'_> {
             let safe = match (recorded.remove(name), stages.get(name)) {
                 (Some(safe), _) => safe,
                 (None, Some(st)) => {
-                    let stamped = self.grounded_blast_radius_stamped(st);
+                    let stamped = self.grounded_blast_radius_stamped(st, None);
                     self.record_blast_radius(st, 0, &stamped)?;
                     stamped.radius.safe
                 }
@@ -6641,7 +6642,8 @@ impl RunCtx<'_> {
             // `BlastRadiusComputed` audit (structural grounder only, incl. the empty-radius
             // fail-safe). On the non-symbols default `.safe` equals the seed, so routing is
             // unchanged and no audit is emitted.
-            let stamped = self.grounded_blast_radius_stamped(st);
+            let stamped =
+                self.grounded_blast_radius_stamped(st, (!dir.is_empty()).then(|| Path::new(dir)));
             self.record_blast_radius(st, attempts, &stamped)?;
             let StampedRadius {
                 seed: blast_radius,
@@ -7396,7 +7398,7 @@ impl RunCtx<'_> {
         // each lane's review tier. A speculation group is ONE unit reviewed per lane, so the audit
         // event is recorded once for the unit (keyed at attempt 0); on the non-symbols default
         // `.safe` equals the seed and no audit is emitted.
-        let stamped = self.grounded_blast_radius_stamped(st);
+        let stamped = self.grounded_blast_radius_stamped(st, None);
         self.record_blast_radius(st, 0, &stamped)?;
         let StampedRadius {
             seed: blast_radius,
@@ -11984,14 +11986,15 @@ impl RunCtx<'_> {
     /// naming no code keeps the empty radius. With no graph the grounder radius is returned
     /// verbatim (the fallback above).
     fn grounded_blast_radius(&self, st: &Stage) -> BlastRadius {
-        self.grounded_blast_radius_stamped(st).radius
+        self.grounded_blast_radius_stamped(st, None).radius
     }
 
     /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the provenance stamp of the
     /// grounder read that grounded it ([`Grounder::blast_radius_stamped`]), which
-    /// [`record_blast_radius`](Self::record_blast_radius) records.
-    fn grounded_blast_radius_stamped(&self, st: &Stage) -> StampedRadius {
-        self.grounded_blast_radius_at(st, BLAST_RADIUS_GRAPH_DEPTH)
+    /// [`record_blast_radius`](Self::record_blast_radius) records, of `unit_tree`: the worktree
+    /// the unit works in when it has one, else the checkout the run lands on.
+    fn grounded_blast_radius_stamped(&self, st: &Stage, unit_tree: Option<&Path>) -> StampedRadius {
+        self.grounded_blast_radius_at(st, unit_tree, BLAST_RADIUS_GRAPH_DEPTH)
     }
 
     /// [`grounded_blast_radius`](Self::grounded_blast_radius) with the graph arm expanding the seed
@@ -12000,8 +12003,15 @@ impl RunCtx<'_> {
     ///
     /// The grounder and the graph read ONE open of the head ([`OpenGraph::head`]): a store
     /// advanced between two opens would otherwise record a radius whose graph part describes
-    /// another tree than its seed and its stamp.
-    fn grounded_blast_radius_at(&self, st: &Stage, depth: i64) -> StampedRadius {
+    /// another tree than its seed and its stamp. A unit's open compares the head with the unit's
+    /// own worktree ([`OpenGraph::head_in`]), so the radius describes what the unit has built so
+    /// far; with no context the grounder reads its own worktree.
+    fn grounded_blast_radius_at(
+        &self,
+        st: &Stage,
+        unit_tree: Option<&Path>,
+        depth: i64,
+    ) -> StampedRadius {
         let Some(grounder) = self.deps.grounder else {
             return StampedRadius::default();
         };
@@ -12009,7 +12019,10 @@ impl RunCtx<'_> {
         let Some(context) = self.deps.context else {
             return grounder.blast_radius_stamped(&query, GROUNDED_SEED_K);
         };
-        let head = context.head();
+        let head = match unit_tree {
+            Some(tree) => context.head_in(tree),
+            None => context.head(),
+        };
         let StampedRadius {
             seed,
             radius: base,
@@ -15788,12 +15801,13 @@ mod tests {
 
         /// A `RecordFold` double: counts per-EVENT folds (`apply`) and records the size of every
         /// per-BATCH fold (`apply_batch`); opened as the context, it serves `graph` as every
-        /// subgraph and resolves no mention.
+        /// subgraph and resolves no mention, over an empty head compared with `worktree`.
         #[derive(Default)]
         pub(super) struct SpyGraph {
             pub(super) graph: Graph,
             pub(super) per_event: AtomicU32,
             pub(super) batch_folds: Mutex<Vec<usize>>,
+            pub(super) worktree: std::path::PathBuf,
         }
 
         impl RecordFold for SpyGraph {
@@ -15820,12 +15834,13 @@ mod tests {
 
         impl OpenGraph for SpyGraph {
             fn head(&self) -> Result<crate::code_view::Head, String> {
-                Ok(crate::test_support::matching_head(
-                    crate::test_support::empty_view(),
-                ))
+                self.head_in(&self.worktree)
             }
             fn head_in(&self, worktree: &Path) -> Result<crate::code_view::Head, String> {
-                (self.head()).map(|head| crate::test_support::opened_in(head, worktree))
+                Ok(crate::test_support::opened_in(
+                    crate::test_support::matching_head(crate::test_support::empty_view()),
+                    worktree,
+                ))
             }
             fn open_on(
                 &self,
@@ -41278,7 +41293,7 @@ mod tests {
             coverage: "`Damage`".to_string(),
             ..Default::default()
         };
-        let stamped = ctx.grounded_blast_radius_stamped(&st);
+        let stamped = ctx.grounded_blast_radius_stamped(&st, None);
         assert!(
             stamped.stamp.starts_with("tree-1/"),
             "the stamp names the first open: {}",
@@ -41293,8 +41308,8 @@ mod tests {
         assert_eq!(opens.load(Ordering::SeqCst), 1, "one radius, one open");
     }
 
-    /// The context graph of the directory each head is opened in, read from its files on disk,
-    /// recording every worktree a head is opened for.
+    /// The context graph over the code store of the project at `own`, each head compared with the
+    /// worktree it is opened for as a production reader's is, recording every worktree opened for.
     #[cfg(feature = "symbols")]
     struct DirectoryContext<'a> {
         records: &'a dyn contextgraph::Neighbors,
@@ -41310,7 +41325,7 @@ mod tests {
         fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
             use crate::code_view::OpenCodeView;
             self.opened_in.lock().unwrap().push(worktree.to_path_buf());
-            rigger_grounder::facts::DirectoryHead::new(worktree).head(worktree)
+            rigger_grounder::facts::DirectoryHead::new(&self.own).head(worktree)
         }
         fn open_on(
             &self,
@@ -41333,6 +41348,10 @@ mod tests {
     fn a_units_blast_radius_describes_the_units_own_worktree() {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
+        // As setup leaves a project: the code store under `.rigger` is never a local change.
+        std::fs::write(repo.path().join(".gitignore"), ".rigger/\n").unwrap();
+        git_ok(&repo_path, &["add", ".gitignore"]);
+        git_ok(&repo_path, &["commit", "-q", "-m", "ignore .rigger"]);
         let marks = tempfile::tempdir().unwrap();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -41799,7 +41818,10 @@ mod tests {
         std::fs::write(dir.path().join("parse.rs"), "fn parse() {}\n").unwrap();
         let grounder =
             crate::grounder::symbols::grounder::Symbols::in_directory(dir.path().to_str().unwrap());
-        let graph = SpyGraph::default();
+        let graph = SpyGraph {
+            worktree: dir.path().to_path_buf(),
+            ..Default::default()
+        };
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -41923,7 +41945,7 @@ mod tests {
                     };
                     (
                         id.clone(),
-                        ctx.grounded_blast_radius_at(&st, depth).radius.safe,
+                        ctx.grounded_blast_radius_at(&st, None, depth).radius.safe,
                     )
                 })
                 .collect()
@@ -42212,7 +42234,7 @@ mod tests {
 
         // The EXACT production call sequence (`run_single_stage` / `run_speculation`): the prompt
         // SEED and the two-view radius from one read, then the audit keyed at the attempt.
-        let stamped = ctx.grounded_blast_radius_stamped(&st);
+        let stamped = ctx.grounded_blast_radius_stamped(&st, None);
         ctx.record_blast_radius(&st, 0, &stamped).unwrap();
         let (seed, radius) = (&stamped.seed, &stamped.radius);
 

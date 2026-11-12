@@ -32,8 +32,9 @@ const AMBIGUITY_PERCENTILE: f64 = 0.90;
 /// the precise contract; every method reads the view afresh, so there is nothing to freshen after a
 /// unit integrates: the conductor advances the store after each landed merge.
 pub struct Symbols {
-    /// The caller's worktree: the tree the text search and the path checks read, and the one the
-    /// head's view is compared with.
+    /// The caller's worktree: the one a read the grounder opens itself compares the head's view
+    /// with, and the tree its text search and path checks read. A read over a head the caller
+    /// opened reads the worktree that head was compared with instead.
     root: String,
     heads: Box<dyn OpenCodeView>,
 }
@@ -76,17 +77,17 @@ impl Symbols {
         head: Result<&Head, &str>,
         read: impl FnOnce(&Sight<'_>) -> T,
     ) -> (T, Label, String) {
-        let worktree = self.root.clone();
         match head {
             Ok(head) => {
                 let tip = &head.view.stamp().tip;
+                let worktree = head.worktree.to_string_lossy().into_owned();
                 let label = Label::describing(tip, worktree, head.compared, head.behind.clone());
                 let tree = tip.tree.clone();
                 (read(&Sight::new(&*head.view, head.compared)), label, tree)
             }
             Err(reason) => (
                 read(&Sight::new(&unread_view(), Compared::Uncomparable)),
-                Label::unopened(worktree, reason),
+                Label::unopened(self.root.clone(), reason),
                 UNREAD_TREE.to_string(),
             ),
         }
@@ -97,8 +98,8 @@ impl Symbols {
         self.read_labelled(read).0
     }
 
-    /// [`Grounder::seed`] over one read's `sight`.
-    fn seed_in(&self, sight: &Sight<'_>, query: &str, k: usize) -> Vec<String> {
+    /// [`Grounder::seed`] over one read's `sight`, of the worktree at `tree`.
+    fn seed_in(&self, sight: &Sight<'_>, tree: &Path, query: &str, k: usize) -> Vec<String> {
         if query.is_empty() || k == 0 {
             return Vec::new();
         }
@@ -115,7 +116,7 @@ impl Symbols {
                 .map(|f| f.path)
                 .filter(|p| names_path(p, t))
                 .collect();
-            if served.is_empty() && held_in_tree(&self.root, t) {
+            if served.is_empty() && held_in_tree(tree, t) {
                 add(t);
             }
             served.into_iter().for_each(&mut add);
@@ -419,10 +420,10 @@ fn names_path(path: &str, term: &str) -> bool {
 
 /// Whether a path `term` the index does not hold facts for (`.gitignore`) is a file the tree holds. An
 /// absolute or `..` path, which would escape the tree, is never read.
-fn held_in_tree(root: &str, term: &str) -> bool {
+fn held_in_tree(root: &Path, term: &str) -> bool {
     !Path::new(term).is_absolute()
         && !term.split('/').any(|c| c == "..")
-        && Path::new(root).join(term).is_file()
+        && root.join(term).is_file()
 }
 
 /// The files that define `name`, product code before test code, each group in path order.
@@ -700,7 +701,7 @@ impl Grounder for Symbols {
     /// while a test file or test function the query names explicitly still seeds. At most `k`
     /// distinct files.
     fn seed(&self, query: &str, k: usize) -> Vec<String> {
-        self.read(|sight| self.seed_in(sight, query, k))
+        self.read(|sight| self.seed_in(sight, Path::new(&self.root), query, k))
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
@@ -764,8 +765,11 @@ impl Grounder for Symbols {
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
         let terms = code_terms(query);
+        // The worktree the head was compared with is the one the radius describes: the text
+        // search and the path checks read it too.
+        let worktree = head.map_or(Path::new(&self.root), |head| head.worktree.as_path());
         let ((seed, radius), _label, tree) = self.read_head(head, |sight| {
-            let seed = self.seed_in(sight, query, k);
+            let seed = self.seed_in(sight, worktree, query, k);
             // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
             // (an empty query, prose only, a single character, all punctuation) grounds to the
             // empty radius - empty precise and empty safe - which the scheduler runs alone and
@@ -773,7 +777,7 @@ impl Grounder for Symbols {
             let radius = if terms.is_empty() {
                 BlastRadius::default()
             } else {
-                self.radius(sight, &terms, k)
+                self.radius(sight, worktree, &terms, k)
             };
             (seed, radius)
         });
@@ -1021,9 +1025,9 @@ fn has_strong(sight: &Sight<'_>, terms: &[&str]) -> bool {
 }
 
 impl Symbols {
-    /// The two views of the radius of `terms` over what `sight` serves ([`Grounder::blast_radius`]
-    /// states the contract).
-    fn radius(&self, sight: &Sight<'_>, terms: &CodeTerms, k: usize) -> BlastRadius {
+    /// The two views of the radius of `terms` over what `sight` serves, of the worktree at `tree`
+    /// ([`Grounder::blast_radius`] states the contract).
+    fn radius(&self, sight: &Sight<'_>, tree: &Path, terms: &CodeTerms, k: usize) -> BlastRadius {
         let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a
@@ -1055,7 +1059,7 @@ impl Symbols {
             .paths
             .iter()
             .map(String::as_str)
-            .filter(|t| !found_paths.contains(t) && held_in_tree(&self.root, t))
+            .filter(|t| !found_paths.contains(t) && held_in_tree(tree, t))
             .collect();
         // Ranked: every definer file first, then each referencer that is not also a definer.
         let structural: Vec<String> = definers
@@ -1079,7 +1083,7 @@ impl Symbols {
         let mut safe = structural.clone();
         let mut seen: HashSet<String> = safe.iter().cloned().collect();
         let grep = Grep {
-            root: self.root.clone(),
+            root: tree.to_string_lossy().into_owned(),
         };
         // The grep-recovered tail: the files grep matched that the structural view missed. Grep
         // walks the tree in unsorted `read_dir` order, so collect the tail and SORT it before
