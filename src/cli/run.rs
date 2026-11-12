@@ -1459,7 +1459,7 @@ fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Opt
         Ok((guard, url)) => {
             // Stderr: stdout is the run's own report, which the run-start pointer stays out of.
             // One write, since the dash just started says its own line on the same stream.
-            rigger::whole_line::eprint_line(format_args!("rigger dash: serving this run at {url}"));
+            rigger::whole_line::on_stderr(|err| rigger::dash::announce_run_serving(err, &url));
             Some(guard)
         }
         Err(e) => {

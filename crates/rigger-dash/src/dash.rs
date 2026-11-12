@@ -3530,6 +3530,22 @@ fn announce_serving(out: &mut dyn Write, bound: SocketAddr) -> io::Result<()> {
     )
 }
 
+/// Say on `out` the URL of the dash a run just started, `url`: the run's own pointer to its dash,
+/// said on the stderr the run shares with that dash while the dash says its serving line there.
+pub fn announce_run_serving(out: &mut dyn Write, url: &str) -> io::Result<()> {
+    writeln!(out, "rigger dash: serving this run at {url}")
+}
+
+/// Say on `out` that the dash's `failed` step (`connection` or `accept`) failed with `error`, on
+/// the stderr a run's dash shares with the run.
+fn report_error(
+    out: &mut dyn Write,
+    failed: &str,
+    error: &dyn std::fmt::Display,
+) -> io::Result<()> {
+    writeln!(out, "rigger dash: {failed} error: {error}")
+}
+
 /// Serve the dash on an ALREADY-BOUND `listener` until the process is stopped, re-reading
 /// fresh projection inputs from `provider` on each request (the run advances while the dash
 /// watches) - the singleton-aware entrypoint (spec 50, criterion 1). `cmd_dash` binds the
@@ -3591,10 +3607,10 @@ where
                     run_branch,
                     base,
                 ) {
-                    whole_line::eprint_line(format_args!("rigger dash: connection error: {e}"));
+                    whole_line::on_stderr(|err| report_error(err, "connection", &e));
                 }
             }
-            Err(e) => whole_line::eprint_line(format_args!("rigger dash: accept error: {e}")),
+            Err(e) => whole_line::on_stderr(|err| report_error(err, "accept", &e)),
         }
     }
     Ok(())
@@ -4059,31 +4075,46 @@ mod tests {
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
 
-    /// GIVEN the address a dash serves at, WHEN the dash says it on a stream another process
-    /// shares, THEN the line and its newline reach the stream in one write, which a pipe keeps
-    /// whole, so the run's own line written there meanwhile never lands inside it.
-    #[test]
-    fn the_serving_line_reaches_its_stream_in_one_write() {
-        /// The writes a stream took, each as the bytes it carried.
-        #[derive(Default)]
-        struct Writes(Vec<Vec<u8>>);
-        impl Write for Writes {
-            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                self.0.push(buf.to_vec());
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
+    /// The writes a stream took, each as the bytes it carried.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
         }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The writes `say` hands its stream, each as the bytes it carried.
+    fn writes_of(say: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Vec<Vec<u8>> {
         let mut out = Writes::default();
-        announce_serving(&mut out, "127.0.0.1:7421".parse().unwrap()).unwrap();
-        assert_eq!(
-            out.0,
-            vec![
-                b"rigger dash: serving on http://127.0.0.1:7421/ (read-only; Ctrl-C to stop)\n"
-                    .to_vec()
-            ]
+        say(&mut out).unwrap();
+        out.0
+    }
+
+    // GIVEN a line the dash, or the run that started it, says on the stderr they share, WHEN it
+    // is said, THEN the line and its newline reach the stream in one write, which a pipe keeps
+    // whole, so the other process's line written there meanwhile never lands inside it.
+    crate::test_cases! {
+        the_serving_line_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| announce_serving(out, "127.0.0.1:7421".parse().unwrap())),
+            [b"rigger dash: serving on http://127.0.0.1:7421/ (read-only; Ctrl-C to stop)\n"]
+        );
+        the_runs_pointer_to_its_dash_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| announce_run_serving(out, "http://127.0.0.1:7421/")),
+            [b"rigger dash: serving this run at http://127.0.0.1:7421/\n"]
+        );
+        a_connection_error_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| report_error(out, "connection", &"reset by peer")),
+            [b"rigger dash: connection error: reset by peer\n"]
+        );
+        an_accept_error_reaches_its_stream_in_one_write: assert_eq!(
+            writes_of(|out| report_error(out, "accept", &"too many open files")),
+            [b"rigger dash: accept error: too many open files\n"]
         );
     }
 

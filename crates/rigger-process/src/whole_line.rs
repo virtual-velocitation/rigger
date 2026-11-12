@@ -12,8 +12,8 @@ pub fn write_line(out: &mut dyn Write, line: fmt::Arguments<'_>) -> io::Result<(
     out.write_all(format!("{line}\n").as_bytes())
 }
 
-/// Write `line` and its newline to this process's stderr in one write ([`write_line`]). A
-/// failure is dropped: a stderr that cannot take the line has nowhere else to say so.
-pub fn eprint_line(line: fmt::Arguments<'_>) {
-    let _ = write_line(&mut io::stderr().lock(), line);
+/// Have `say` write its line to this process's stderr. A failure is dropped: a stderr that cannot
+/// take the line has nowhere else to say so.
+pub fn on_stderr(say: impl FnOnce(&mut dyn Write) -> io::Result<()>) {
+    let _ = say(&mut io::stderr().lock());
 }
