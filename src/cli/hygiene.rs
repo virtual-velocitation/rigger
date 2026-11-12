@@ -1997,7 +1997,8 @@ mod tests {
     /// row leaves no memo.
     #[test]
     fn clearing_the_code_facts_memo_removes_it_and_names_its_bytes() {
-        let cases: [(&str, Option<&[usize]>, Option<&str>); 3] = [
+        type Case = (&'static str, Option<&'static [usize]>, Option<&'static str>);
+        let cases: [Case; 3] = [
             ("no memo", None, None),
             (
                 "an empty memo",
