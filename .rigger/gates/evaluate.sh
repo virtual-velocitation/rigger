@@ -43,12 +43,19 @@
 # check fails a run file when:
 #   - a block (scorecard, previous, classes, proposals) is missing, repeated, not JSON, or
 #     still null, or any text still reads "TO BE WRITTEN", or the file carries an em dash;
-#   - a class lacks a kebab-case slug, a summary or evidence, or repeats a slug;
+#   - a class lacks a kebab-case slug, a source (failures, cost or grep-fallbacks), a summary or
+#     evidence, or repeats a slug; its evidence is not stream positions (`progress:<position>`
+#     ids for a grep-fallbacks class);
 #   - there are more than three proposals, or none while a class exists; ids are not P1, P2, P3
-#     in order; they are not ranked by hours_saved, highest first;
+#     in order; they are not ranked by hours_saved, highest first (a null last);
 #   - a proposal lacks its class (one of the file's classes), change, evidence, surface, path,
 #     form, metric, a non-zero predicted_move or a positive hours_saved; its metric does not name
 #     a measured number in the scorecard (a top-level key, or `<map>.<key>` of a by-map);
+#   - hours_saved exceeds what the log measured for the class: a failure class's rework
+#     (failure_rework_hours of its evidence), a cost class's metric. A cost class's metric is a
+#     time measure its predicted_move lowers by at most its value. A grep-fallbacks class's
+#     metric is grep_fallbacks or grep_fallbacks_by_target.<target>, and its hours_saved is null
+#     (the log holds no duration for a fallback), ranked after every proposal with hours;
 #   - a persona or spec-skill proposal is not of form `instruction` (text is all those surfaces
 #     hold), or a proposal for a class the previous run file also diagnosed is not of form
 #     `check` or `gate`: instruction text already failed to remove that cause once;
@@ -1041,8 +1048,9 @@ def evidence(wanted):
 
 # ---- check ----
 
+# The file's classes as {slug: class}, appending a problem for each malformed one.
 def check_classes(classes, problems):
-    slugs = []
+    slugs = {}
     if not isinstance(classes, list):
         problems.append("the classes block is not a list")
         return slugs
@@ -1056,17 +1064,47 @@ def check_classes(classes, problems):
         elif slug in slugs:
             problems.append(f"class {slug!r} is listed twice")
         else:
-            slugs.append(slug)
+            slugs[slug] = c
+        if c.get("source") not in SOURCES:
+            problems.append(f"class {i}: source {c.get('source')!r} is not one of "
+                            f"{', '.join(SOURCES)}")
         if not isinstance(c.get("summary"), str) or not c["summary"].strip():
             problems.append(f"class {i} has no summary")
         if not nonempty_strings(c.get("evidence")):
             problems.append(f"class {i} has no evidence")
+        else:
+            shape = r"progress:\d+" if c.get("source") == "grep-fallbacks" else r"\d+"
+            if not all(re.fullmatch(shape, e.strip()) for e in c["evidence"]):
+                problems.append(f"class {i}: evidence is not a list of "
+                                + ("`progress:<position>` ids" if shape != r"\d+" else
+                                   "stream positions"))
     return slugs
 
 
 def nonempty_strings(value):
     return isinstance(value, list) and value and all(
         isinstance(v, str) and v.strip() for v in value)
+
+
+# The most hours a proposal for class `c` can claim, from measured numbers only: for a failure
+# class, the rework of the failures it lists; for a cost class, the hours its metric holds (a
+# share converted through unit_elapsed_hours). None when the file measures no such bound.
+def hours_bound(c, metric, card):
+    if c.get("source") == "cost":
+        value = metric_value(card, metric)
+        head = metric.partition(".")[0] if isinstance(metric, str) else ""
+        if value is None:
+            return None
+        if head in COST_SHARES:
+            return value * card["unit_elapsed_hours"] if is_number(
+                card.get("unit_elapsed_hours")) else None
+        return value
+    rework = card.get("failure_rework_hours")
+    if c.get("source") == "failures" and isinstance(rework, dict):
+        hits = [rework[e.strip()] for e in c.get("evidence") or [] if isinstance(e, str)
+                and is_number(rework.get(e.strip()))]
+        return sum(hits) if hits else None
+    return None
 
 
 def check_proposal(i, p, slugs, recurring, card, problems):
@@ -1078,6 +1116,9 @@ def check_proposal(i, p, slugs, recurring, card, problems):
         problems.append(f"proposal {i} has id {p.get('id')!r}; ids run P1, P2, P3 in order")
     if p.get("class") not in slugs:
         problems.append(f"{name}: class {p.get('class')!r} is not one of the diagnosed classes")
+    c = slugs.get(p.get("class")) or {}
+    source, metric = c.get("source"), p.get("metric")
+    head = metric.partition(".")[0] if isinstance(metric, str) else ""
     for field in ("change", "path"):
         if not isinstance(p.get(field), str) or not p[field].strip():
             problems.append(f"{name}: no {field}")
@@ -1101,8 +1142,29 @@ def check_proposal(i, p, slugs, recurring, card, problems):
                         "scorecard")
     if not is_number(p.get("predicted_move")) or p["predicted_move"] == 0:
         problems.append(f"{name}: predicted_move is not a non-zero number")
-    if not is_number(p.get("hours_saved")) or p["hours_saved"] <= 0:
+    if source == "cost":
+        if head not in COST_HOURS + COST_SHARES:
+            problems.append(f"{name}: a cost class's metric is a time measure ("
+                            + ", ".join(COST_HOURS + COST_SHARES) + f"), not {metric!r}")
+        value, move = metric_value(card, metric), p.get("predicted_move")
+        if is_number(value) and is_number(move) and not -value <= move < 0:
+            problems.append(f"{name}: a cost class's predicted_move lowers its metric by at most "
+                            f"the {value} it measures")
+    if source == "grep-fallbacks":
+        if head not in GREP_METRICS:
+            problems.append(f"{name}: a grep-fallbacks class's metric is grep_fallbacks or "
+                            f"grep_fallbacks_by_target.<target>, not {metric!r}")
+        if p.get("hours_saved") is not None:
+            problems.append(f"{name}: hours_saved is null for a grep-fallbacks class: the log "
+                            "holds no duration for a fallback")
+    elif not is_number(p.get("hours_saved")) or p["hours_saved"] <= 0:
         problems.append(f"{name}: hours_saved is not a positive number")
+    else:
+        bound = hours_bound(c, metric, card)
+        if bound is not None and p["hours_saved"] > round(bound, 3):
+            problems.append(f"{name}: hours_saved {p['hours_saved']} exceeds the {round(bound, 3)} "
+                            "h measured for its class (" + ("its metric" if source == "cost" else
+                            "the failure_rework_hours of its evidence") + ")")
 
 
 def problems_of(path):
@@ -1126,7 +1188,7 @@ def problems_of(path):
     if not isinstance(card, dict) or "run" not in card:
         problems.append("the scorecard block is not a measured scorecard")
         card = {}
-    slugs = []
+    slugs = {}
     if blocks.get("classes") not in (None, ValueError):
         slugs = check_classes(blocks["classes"], problems)
     earlier = earlier_run_files(path.name)
@@ -1148,9 +1210,12 @@ def problems_of(path):
             problems.append("classes are diagnosed but nothing is proposed")
         for i, p in enumerate(listed, 1):
             check_proposal(i, p, slugs, recurring, card, problems)
+        # Ranked by hours_saved, highest first; a proposal with none (a grep-fallbacks class) last.
         saved = [p.get("hours_saved") for p in listed if isinstance(p, dict)]
-        if all(is_number(s) for s in saved) and saved != sorted(saved, reverse=True):
-            problems.append("proposals are not ranked by hours_saved, highest first")
+        hours = [s for s in saved if is_number(s)]
+        if saved != sorted(hours, reverse=True) + [None] * (len(saved) - len(hours)):
+            problems.append("proposals are not ranked by hours_saved, highest first, with a "
+                            "null hours_saved last")
         if "adopted" not in proposals:
             problems.append("the proposals block has no `adopted` field")
         elif proposals["adopted"] not in [None, "none"] + [f"P{i}" for i in range(1, len(listed) + 1)]:
@@ -1199,9 +1264,10 @@ def emit(arg):
     record = shown(path)
     run8 = blocks["scorecard"]["run"][:8]
     for p in blocks["proposals"]["proposals"]:
+        saved = (f"about {p['hours_saved']} h saved per run" if p["hours_saved"] is not None
+                 else "hours saved not measured")
         summary = (f"[{p['class']}] {p['change']} Moves {p['metric']} by {p['predicted_move']}; "
-                   f"about {p['hours_saved']} h saved per run. Surface: {p['surface']} "
-                   f"({p['form']}).")
+                   f"{saved}. Surface: {p['surface']} ({p['form']}).")
         print(json.dumps({"id": f"eval-{run8}-{p['id']}", "by": "evaluator",
                           "summary": summary, "about": [p["path"], record]}))
 
