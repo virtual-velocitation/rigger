@@ -1190,7 +1190,9 @@ The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
   that writes an entry.
 - **Hygiene:** `rigger reset --derived` removes the memo once its delete has run, so a
   `--derived` refused on its backend or on a live run removes nothing, and `rigger validate`
-  reports its size as the footprint's `code facts memo` category. Setup's `.rigger/store` ignore
+  reports its size as the footprint's `code facts memo` category. A clear a reader's write
+  leaves partial is no error, since the delete has already run: the line names the bytes left,
+  which the reaper bounds, and never says the memo was removed. Setup's `.rigger/store` ignore
   line covers it.
 
 A reader that races the reaper fails closed: an entry gone before its read is a miss, and the
@@ -1367,6 +1369,7 @@ a reader holding one open (or mapped) never blocks a writer.
   `two_fingerprints_alternating_reads_extract_once_each`,
   `an_open_that_writes_the_memo_reaps_it`, `a_reaper_racing_reads_fails_closed_to_extraction`,
   `reset_derived_clears_the_code_facts_memo_only_once_the_delete_may_run`,
+  `a_writer_racing_the_memo_clear_leaves_a_line_naming_what_is_left`,
   `validate_reports_footprint_by_category_and_flags_a_dead_share_breach` and
   `init_project_ignores_the_code_facts_memo_by_the_code_store_line`.
 - `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added

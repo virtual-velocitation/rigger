@@ -119,7 +119,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         reset_derived(&loc)?;
         // The code store's facts memo last, once every refusal above has passed: a refused
         // `--derived` removes nothing.
-        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root()))? {
+        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root())) {
             println!("{line}");
         }
     }
@@ -465,23 +465,27 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
 /// since a read extracts again any file whose entry it needs, and a reader racing it extracts its
 /// files again. It runs last in `--derived`, once the delete has run, so a `--derived` refused on
 /// its backend, on a live run or on a rebuild leaves the memo as it stands. Answers the line that
-/// says what it removed, or none when there was no memo.
+/// says what it removed, or none when there was no memo. A clear left partial is no error, since
+/// the delete before it has already run: a reader writing an entry while the directory goes can
+/// keep it from going, and the line then names the bytes left, which the memo's reaper bounds,
+/// never saying the memo was removed.
 ///
 /// reap-exempt (spec 79, criterion 2): the memo is a flat directory of entry files the code store
 /// writes and reads from within rigger's own process, never a working directory: no process
 /// rigger runs is ever started with its cwd inside it, so nothing can be rooted there to reap.
-fn clear_code_facts_memo(root: &Path) -> Result<Option<String>, String> {
+fn clear_code_facts_memo(root: &Path) -> Option<String> {
     let memo = rigger_store::code::Store::new(root).memo_dir();
     let bytes = dir_size_bytes(&memo);
     match std::fs::remove_dir_all(&memo) {
-        Ok(()) => Ok(Some(format!(
+        Ok(()) => Some(format!(
             "reset --derived: removed the code facts memo ({})",
             human_size(bytes)
-        ))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "reset --derived: remove the code facts memo {}: {e}",
-            memo.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(format!(
+            "reset --derived: could not remove the whole code facts memo ({e}); {} left, which \
+             its reaper bounds",
+            human_size(dir_size_bytes(&memo))
         )),
     }
 }
@@ -1564,7 +1568,6 @@ mod tests {
                 clearing.store(false, SeqCst);
                 answer
             });
-            let answer = answer.unwrap_or_else(|e| panic!("round {round}: the clear failed: {e}"));
             let line = answer.unwrap_or_else(|| panic!("round {round}: a memo was there"));
             if line.starts_with("reset --derived: could not remove the whole code facts memo (") {
                 assert!(line.ends_with(" left, which its reaper bounds"), "{line}");
@@ -2071,7 +2074,7 @@ mod tests {
                     std::fs::write(memo.join(format!("{at}.facts")), vec![0u8; *len]).unwrap();
                 }
             }
-            let line = clear_code_facts_memo(root.path()).unwrap();
+            let line = clear_code_facts_memo(root.path());
             assert_eq!(line.as_deref(), want, "{case}");
             assert!(!memo.exists(), "{case}: the memo is left");
         }
