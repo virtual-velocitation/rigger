@@ -560,9 +560,11 @@ Grouping before and after:
 
 A grammar's tags query is compiled once per process, at its first extraction, never per file
 (`LanguageEntry::tags`). Each file is parsed once: the tags query runs over the tree the
-structural reads use. Every reference's caller is found in one sweep over the references in
-position order, each definition entering at its range's start and leaving at its end
-(`enclosing_defs`), never a scan of every definition per reference.
+structural reads use, and the impl blocks, Rust's tagged references and the test regions start
+from the nodes one walk of that tree gathers (`StructuralNodes`). Every reference's caller is
+found in one sweep over the references in position order, each definition entering at its
+range's start and leaving at its end (`enclosing_defs`), never a scan of every definition per
+reference.
 
 ---
 

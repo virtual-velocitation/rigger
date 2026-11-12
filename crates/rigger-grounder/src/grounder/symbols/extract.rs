@@ -464,7 +464,8 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // references attribute to the impl (the impl -> trait and impl -> type links) unless a
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
-    for block in impl_blocks(root, source.as_bytes()) {
+    let structure = StructuralNodes::of(root, lang);
+    for block in impl_blocks(&structure.impls, source.as_bytes()) {
         defs.push(def_of(
             &text,
             block.range.clone(),
@@ -490,7 +491,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // once every definition's test status is known.
     let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
     if lang == Lang::Rust {
-        for tagged in rust_references(root, source.as_bytes()) {
+        for tagged in rust_references(&structure, source.as_bytes()) {
             if let Some((impl_range, self_leaf)) = tagged.impl_from {
                 impl_rows.push((refs.len(), impl_range, self_leaf));
             }
@@ -583,7 +584,13 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
     // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(source.as_bytes(), root, &def_ranges, &dropped);
+    let regions = test_regions(
+        source.as_bytes(),
+        root,
+        &def_ranges,
+        &dropped,
+        &structure.gated,
+    );
     if !regions.is_empty() {
         for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
             d.is_test = regions
@@ -669,8 +676,9 @@ const GATED_NON_DEFINITIONS: [&str; 4] = [
 /// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
 /// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
 /// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
-/// each node of [`GATED_NON_DEFINITIONS`] - an extern block, a container that yields no
-/// definition, and a `use` or a statement (spec 117), which a reference sits in; and
+/// each `gated` node, the file's [`GATED_NON_DEFINITIONS`] ([`StructuralNodes`]) - an extern
+/// block, a container that yields no definition, and a `use` or a statement (spec 117), which a
+/// reference sits in; and
 /// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
 /// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
@@ -682,6 +690,7 @@ fn test_regions(
     root: tree_sitter::Node,
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
     dropped: &[std::ops::Range<usize>],
+    gated: &[tree_sitter::Node],
 ) -> Vec<std::ops::Range<usize>> {
     let mut regions: Vec<_> = def_ranges
         .iter()
@@ -691,10 +700,9 @@ fn test_regions(
         .cloned()
         .collect();
     regions.extend(
-        GATED_NON_DEFINITIONS
+        gated
             .iter()
-            .flat_map(|kind| nodes_of_kind(root, kind))
-            .filter(|node| node_preceded_by_test_attribute(*node, source))
+            .filter(|node| node_preceded_by_test_attribute(**node, source))
             .map(|node| node.byte_range()),
     );
     if opens_with_inner_test_attribute(root.named_child(0), source) {
@@ -806,14 +814,79 @@ struct ImplBlock {
     targets: Vec<(String, u32, usize)>,
 }
 
-/// Every `impl_item` anywhere under `root` (an impl nested in a function or module included), in
-/// source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node kind, so a file of any
-/// other language has none.
-fn impl_blocks(root: tree_sitter::Node, source: &[u8]) -> Vec<ImplBlock> {
-    nodes_of_kind(root, "impl_item")
-        .into_iter()
-        .filter_map(|node| impl_block(node, source))
+/// Each of the file's `impl_item` nodes `impls` ([`StructuralNodes`]: an impl nested in a function
+/// or module included), in source order, as an [`ImplBlock`]. Keyed on the Rust grammar's own node
+/// kind, so a file of any other language has none.
+fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
+    impls
+        .iter()
+        .filter_map(|&node| impl_block(node, source))
         .collect()
+}
+
+/// The nodes the structural reads of one parsed tree start from, gathered in ONE WALK of it, each
+/// list in source order: every `use_declaration` and every `impl_item` ([`rust_references`],
+/// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
+/// node [`rust_references`] reads - each one outside an [`OPAQUE_KINDS`] subtree, a
+/// `use_declaration` read whole by its leaves and never descended.
+struct StructuralNodes<'t> {
+    uses: Vec<tree_sitter::Node<'t>>,
+    impls: Vec<tree_sitter::Node<'t>>,
+    gated: Vec<tree_sitter::Node<'t>>,
+    references: Vec<tree_sitter::Node<'t>>,
+}
+
+impl<'t> StructuralNodes<'t> {
+    /// The one preorder walk of the tree under `root`, `root` included, by a single cursor.
+    fn of(root: tree_sitter::Node<'t>, lang: Lang) -> Self {
+        let mut nodes = StructuralNodes {
+            uses: Vec::new(),
+            impls: Vec::new(),
+            gated: Vec::new(),
+            references: Vec::new(),
+        };
+        let mut cursor = root.walk();
+        let mut depth = 0usize;
+        // The depth of the node whose subtree the walk is in and `references` leaves out.
+        let mut unread_from: Option<usize> = None;
+        loop {
+            let node = cursor.node();
+            let kind = node.kind();
+            match kind {
+                "use_declaration" => nodes.uses.push(node),
+                "impl_item" => nodes.impls.push(node),
+                _ => {}
+            }
+            if GATED_NON_DEFINITIONS.contains(&kind) {
+                nodes.gated.push(node);
+            }
+            if lang == Lang::Rust && unread_from.is_none() {
+                let opaque = OPAQUE_KINDS.contains(&kind);
+                if !opaque {
+                    nodes.references.push(node);
+                }
+                if opaque || kind == "use_declaration" {
+                    unread_from = Some(depth);
+                }
+            }
+            if cursor.goto_first_child() {
+                depth += 1;
+                continue;
+            }
+            loop {
+                if unread_from == Some(depth) {
+                    unread_from = None;
+                }
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return nodes;
+                }
+                depth -= 1;
+            }
+        }
+    }
 }
 
 /// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
@@ -937,7 +1010,8 @@ impl UseLeaf<'_> {
     }
 }
 
-/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one under `root` in source order. A
+/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one in the file the walk `structure`
+/// gathered ([`StructuralNodes`]), in source order. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
 /// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
@@ -947,17 +1021,18 @@ impl UseLeaf<'_> {
 /// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
 /// carrying the impl's range and its self type's leaf. A macro's token tree, an attribute, a
 /// `macro_rules!` body and a visibility path stage nothing, and no name [`excluded`] stages.
-fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
-    let uses: Vec<UseLeaf> = nodes_of_kind(root, "use_declaration")
-        .into_iter()
-        .flat_map(|decl| use_leaves(decl, source))
+fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef> {
+    let uses: Vec<UseLeaf> = structure
+        .uses
+        .iter()
+        .flat_map(|&decl| use_leaves(decl, source))
         .collect();
     let std_imports: Vec<&str> = uses
         .iter()
         .filter(|u| u.roots_at_std())
         .map(|u| u.bound.as_str())
         .collect();
-    let impls = nodes_of_kind(root, "impl_item");
+    let impls = &structure.impls;
     let headers: Vec<usize> = impls
         .iter()
         .flat_map(|i| {
@@ -988,7 +1063,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             });
         }
     };
-    for node in reference_nodes(root) {
+    for &node in &structure.references {
         match node.kind() {
             "use_declaration" => {
                 let leaves = uses
@@ -1048,7 +1123,7 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             _ => {}
         }
     }
-    for block in impls {
+    for &block in impls {
         let (Some(trait_node), Some(self_type)) = (
             block.child_by_field_name("trait"),
             block.child_by_field_name("type"),
@@ -1067,26 +1142,6 @@ fn rust_references(root: tree_sitter::Node, source: &[u8]) -> Vec<TaggedRef> {
             type_root(trait_node, source).as_deref(),
             Some((block.byte_range(), self_leaf.to_string())),
         );
-    }
-    out
-}
-
-/// Every node under `root` [`rust_references`] reads, in source order: each node outside an
-/// [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never descended.
-fn reference_nodes(root: tree_sitter::Node) -> Vec<tree_sitter::Node> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        if OPAQUE_KINDS.contains(&node.kind()) {
-            continue;
-        }
-        out.push(node);
-        if node.kind() == "use_declaration" {
-            continue;
-        }
-        let mut cursor = node.walk();
-        let children: Vec<_> = node.children(&mut cursor).collect();
-        stack.extend(children.into_iter().rev());
     }
     out
 }
