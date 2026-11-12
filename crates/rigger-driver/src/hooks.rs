@@ -849,8 +849,9 @@ mod tests {
         }
     }
 
-    /// A copy that exists but cannot be read, or does not parse as a helper definition, fails the
-    /// resolution with an error naming that file, never falling back to the embedded text.
+    /// A copy that exists but cannot be read, does not parse as a helper definition, or names the
+    /// helper another file defines, fails the resolution with an error naming that copy, and for a
+    /// repeated name the other file, never falling back to the embedded text.
     #[test]
     fn an_unreadable_or_malformed_helper_copy_fails_the_resolution_naming_the_file() {
         const NO_FRONTMATTER: &str = "Answer one question.\n";
@@ -873,10 +874,32 @@ mod tests {
                 },
             },
             Row {
-                name: "a frontmatter line with no colon",
+                name: "a frontmatter that is no YAML mapping",
                 setup: |root| write_helper_copy(root, "lookup.md", "---\nname lookup\n---\nbody\n"),
                 file: "lookup.md",
-                reason: |_| "frontmatter line \"name lookup\"".to_string(),
+                reason: |_| {
+                    rigger_domain::config::parse_yaml_naming_unknown_keys::<Map<String, Value>>(
+                        "name lookup",
+                    )
+                    .unwrap_err()
+                },
+            },
+            Row {
+                name: "a lookup copy naming the helper verify defines",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", "---\nname: verify\n---\nbody\n")
+                },
+                file: "lookup.md",
+                reason: |_| "the name \"verify\" is also verify.md's".to_string(),
+            },
+            Row {
+                name: "a verify copy naming the helper the lookup copy defines",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", OPERATOR_HELPER_COPIES[0].1);
+                    write_helper_copy(root, "verify.md", "---\nname: lookup\n---\nbody\n");
+                },
+                file: "verify.md",
+                reason: |_| "the name \"lookup\" is also lookup.md's".to_string(),
             },
             Row {
                 name: "a copy with no name",
@@ -1344,6 +1367,16 @@ mod tests {
             ),
             ("no helpers", vec![], Ok(vec![])),
             (
+                "a YAML list of tools declares each of its entries",
+                vec![HelperCopy {
+                    text:
+                        "---\nname: lookup\ntools: [mcp__rigger__rigger_graph, Read]\n---\nbody\n"
+                            .to_string(),
+                    ..resolved("lookup.md", true)
+                }],
+                Ok(vec!["mcp__rigger__rigger_graph"]),
+            ),
+            (
                 "a copy with no name",
                 vec![HelperCopy {
                     text: "---\nmodel: haiku\n---\nbody\n".to_string(),
@@ -1358,6 +1391,51 @@ mod tests {
                 expected
                     .map(|tools| tools.iter().map(|t| t.to_string()).collect::<Vec<_>>())
                     .map_err(str::to_string),
+                "{name}"
+            );
+        }
+    }
+
+    /// A helper copy's frontmatter reads as the YAML Claude Code reads it in the operator's own
+    /// session: a blank line and a comment are no field, a quoted value is its text, and `tools`
+    /// is a list whether written as one or as a comma-separated string.
+    #[test]
+    fn a_helper_copys_frontmatter_reads_as_yaml() {
+        let rows = [
+            (
+                "a blank line and a comment",
+                "---\nname: lookup\n\n# the operator's note\nmodel: sonnet\n---\nbody\n",
+                json!({"model": "sonnet", "prompt": "body\n"}),
+            ),
+            (
+                "a quoted name and a quoted value holding a colon",
+                "---\nname: \"lookup\"\ndescription: \"Answer: one node.\"\n---\nbody\n",
+                json!({"description": "Answer: one node.", "prompt": "body\n"}),
+            ),
+            (
+                "a flow list of tools",
+                "---\nname: lookup\ntools: [mcp__rigger__rigger_graph, Read]\n---\nbody\n",
+                json!({"tools": ["mcp__rigger__rigger_graph", "Read"], "prompt": "body\n"}),
+            ),
+            (
+                "a block list of tools",
+                "---\nname: lookup\ntools:\n  - Read\n  - Bash\n---\nbody\n",
+                json!({"tools": ["Read", "Bash"], "prompt": "body\n"}),
+            ),
+            (
+                "a comma-separated string of tools",
+                "---\nname: lookup\ntools: Read, Bash\n---\nbody\n",
+                json!({"tools": ["Read", "Bash"], "prompt": "body\n"}),
+            ),
+        ];
+        for (name, text, expected) in rows {
+            let copy = HelperCopy {
+                text: text.to_string(),
+                ..resolved("lookup.md", true)
+            };
+            assert_eq!(
+                helper_agents_json(&[copy]).map_err(|e| e.to_string()),
+                Ok(json!({ "lookup": expected })),
                 "{name}"
             );
         }
