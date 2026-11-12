@@ -31,10 +31,10 @@ use common::fixtures::{
 };
 use common::repo::{
     assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
-    hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
-    write_critique_stub_then, BOUND_TOOLS, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT,
-    SILENT_PAST_THE_POLL,
+    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers,
+    handed_helpers_agents_json, hold_critique_stub, hook_words, stub_path,
+    write_critique_stub_reporting, write_critique_stub_then, BOUND_TOOLS, CRITIQUE_CONN,
+    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -255,16 +255,9 @@ fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
         let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
         assert!(ok, "{name}: the critique is recorded; stderr:\n{err}");
 
-        let argv = critique_stub_argv(work.path());
         assert_eq!(
-            (
-                serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
-                flag_value(&argv, "--allowed-tools"),
-            ),
-            (
-                handed_helpers_agents_json(copies),
-                critic_pre_approval().as_str()
-            ),
+            handed_helpers(&critique_stub_argv(work.path())),
+            (handed_helpers_agents_json(copies), critic_pre_approval()),
             "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
              ones, and its tools already hold the rigger tools either declares, so the \
              pre-approval adds only the host's own"

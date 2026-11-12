@@ -313,15 +313,20 @@ pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     &argv[at + 1]
 }
 
-/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn, the helpers its
-/// `--agents` defines and the tools its `--allowed-tools` pre-approves.
+/// The helpers a launch's `argv` defines in its `--agents` and the tools its `--allowed-tools`
+/// pre-approves.
+pub fn handed_helpers(argv: &[String]) -> (serde_json::Value, String) {
+    let agents = serde_json::from_str(flag_value(argv, "--agents")).expect("the helpers are JSON");
+    (agents, flag_value(argv, "--allowed-tools").to_string())
+}
+
+/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn and the
+/// [`handed_helpers`] its argv carries.
 pub fn launch_helpers(launches: &Path) -> Vec<(String, serde_json::Value, String)> {
     super::fixtures::stand_in_launches(launches)
         .into_iter()
         .map(|launch| {
-            let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
-                .expect("the helpers are JSON");
-            let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
+            let (agents, tools) = handed_helpers(&launch.argv);
             (launch.spawn, agents, tools)
         })
         .collect()
