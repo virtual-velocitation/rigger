@@ -1014,35 +1014,85 @@ mod tests {
         }
     }
 
-    /// An advance reaps the facts memo: GIVEN a memo holding a fresh entry of the store's
-    /// fingerprint, one unread for longer than the stated age, and one of another fingerprint,
-    /// WHEN the store advances, THEN the fresh entry alone stays.
+    /// An entry seeded in the memo: the extractor of the fingerprint it is kept under, its name,
+    /// and how many seconds it is unread.
+    type MemoEntry = (u64, &'static str, u64);
+
+    /// Each row: the fingerprints the store advances under in turn, the entries the memo holds
+    /// before the last of them advances, and the entries left after it. An advance reaps the
+    /// memo to the fingerprints the store keeps the snapshots of, the two most recently advanced,
+    /// and to entries read within the stated age across them; a fingerprint's entries go with its
+    /// snapshot.
     #[test]
-    fn an_advance_reaps_the_memo() {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::new(root.path());
-        let (source, group) = (MemSource::default(), CountingGroup::default());
-        let memo = store.memo_dir();
-        std::fs::create_dir_all(&memo).unwrap();
-        let entry = |fp: u64, name: &str| format!("{fp:016x}-{name}.facts");
-        let (fresh, old) = (entry(stamped(FP), "fresh"), entry(stamped(FP), "old"));
-        let other = entry(stamped(FP + 1), "other");
-        for name in [&fresh, &old, &other] {
-            std::fs::write(memo.join(name), b"an entry").unwrap();
+    fn an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps() {
+        let old = MemoCap::STATED.age.as_secs() + 60;
+        let (b, c, d) = (FP + 1, FP + 2, FP + 5);
+        let cases: [(&str, &[u64], &[MemoEntry], &[MemoEntry]); 4] = [
+            (
+                "a fresh entry of the advanced fingerprint stays",
+                &[FP],
+                &[(FP, "fresh", 0), (FP, "old", old), (d, "no pointer", 0)],
+                &[(FP, "fresh", 0)],
+            ),
+            (
+                "the other kept fingerprint's entries stay",
+                &[b, FP],
+                &[(FP, "a", 0), (b, "b", 0), (d, "no pointer", 0)],
+                &[(FP, "a", 0), (b, "b", 0)],
+            ),
+            (
+                "the age holds across the kept fingerprints",
+                &[b, FP],
+                &[(FP, "a", old), (b, "b", old), (b, "c", 0)],
+                &[(b, "c", 0)],
+            ),
+            (
+                "a third fingerprint's advance removes the least recent one's entries",
+                &[FP, b, c],
+                &[(FP, "a", 0), (b, "b", 0)],
+                &[(b, "b", 0)],
+            ),
+        ];
+        let entry = |(fp, name, _): &MemoEntry| format!("{:016x}-{name}.facts", stamped(*fp));
+        for (case, advanced, seeded, left) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path());
+            let (source, group) = (MemSource::default(), CountingGroup::default());
+            let tip = source.commit("c1", A);
+            let advance = |fp: u64| store.advance(&source, &ToyExtract::new(fp), &group, &tip);
+            let (last, first) = advanced.split_last().unwrap();
+            for fp in first {
+                advance(*fp).unwrap();
+            }
+            let memo = store.memo_dir();
+            std::fs::create_dir_all(&memo).unwrap();
+            for seed in seeded {
+                std::fs::write(memo.join(entry(seed)), b"an entry").unwrap();
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(memo.join(entry(seed)));
+                let unread = Duration::from_secs(seed.2);
+                file.unwrap()
+                    .set_modified(SystemTime::now() - unread)
+                    .unwrap();
+            }
+            advance(*last).unwrap();
+            let listed = std::fs::read_dir(&memo).unwrap().flatten();
+            let entries: BTreeSet<String> = listed
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(entries, left.iter().map(entry).collect(), "{case}: entries");
+            let kept = &advanced[advanced.len().saturating_sub(KEPT_FINGERPRINTS)..];
+            let held = |fp: &u64| store.current(stamped(*fp)).unwrap().is_some();
+            let holds: Vec<bool> = advanced.iter().map(held).collect();
+            let want: Vec<bool> = advanced.iter().map(|fp| kept.contains(fp)).collect();
+            assert_eq!(holds, want, "{case}: which fingerprints hold a snapshot");
+            let snapshots = snap_names(&store)
+                .iter()
+                .filter(|n| seq_of(n).is_some())
+                .count();
+            assert_eq!(snapshots, kept.len(), "{case}: snapshot files");
         }
-        let unread = MemoCap::STATED.age + Duration::from_secs(60);
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(memo.join(&old));
-        file.unwrap()
-            .set_modified(SystemTime::now() - unread)
-            .unwrap();
-        let tip = source.commit("c1", A);
-        (store.advance(&source, &ToyExtract::new(FP), &group, &tip)).unwrap();
-        let left: Vec<String> = (std::fs::read_dir(&memo).unwrap().flatten())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(left, [fresh]);
     }
 
     /// Fails one publish, as a crash at that step would: a torn temp, or no pointer rename.

@@ -468,13 +468,23 @@ mod tests {
 
         /// The head read once the worktree holds `changes` ([`MemSource::worktree`]).
         fn head(&self, changes: Changes, memo: &Memo) -> Head {
+            self.head_as(&self.extract, changes, memo)
+        }
+
+        /// The head the extractor `extract` reads once the worktree holds `changes`: another
+        /// binary's read of the same store when `extract` is of another fingerprint.
+        fn head_as(&self, extract: &ToyExtract, changes: Changes, memo: &Memo) -> Head {
             self.source.worktree(changes);
-            self.open(memo).unwrap()
+            self.open_as(extract, memo).unwrap()
         }
 
         fn open(&self, memo: &Memo) -> Result<Head, String> {
+            self.open_as(&self.extract, memo)
+        }
+
+        fn open_as(&self, extract: &ToyExtract, memo: &Memo) -> Result<Head, String> {
             let (root, wt) = (self.root.path(), Path::new("W"));
-            open_head(root, &self.source, &self.extract, &self.group, wt, memo)
+            open_head(root, &self.source, extract, &self.group, wt, memo)
         }
 
         /// How many files reading the head extracts once the worktree holds `changes`.
@@ -793,9 +803,38 @@ mod tests {
         }
     }
 
-    /// An open that writes the memo reaps it: GIVEN a memo holding an entry of another
-    /// fingerprint, WHEN a one-shot read extracts a changed file, THEN that entry is gone and the
-    /// read's own stays.
+    /// Two binaries sharing a store keep each other's memo: GIVEN a store read by extractors of
+    /// two fingerprints, WHEN each reads the head of one changed worktree in turn, THEN each
+    /// extracts the file on its first read alone, every read answers what a fresh extraction
+    /// answers, and the memo holds one entry of each.
+    #[test]
+    fn two_fingerprints_alternating_reads_extract_once_each() {
+        let fx = Fixture::new(FILES);
+        let other = ToyExtract::new(2);
+        fx.head_as(&other, &[], &one_shot());
+        let a: Changes = &[("src/a.rs", Some("def alpha\ndef gamma\n"))];
+        // (the reader, the files its read extracts), in order.
+        let reads: [(&ToyExtract, usize); 6] = [
+            (&fx.extract, 1),
+            (&other, 1),
+            (&fx.extract, 0),
+            (&other, 0),
+            (&fx.extract, 0),
+            (&other, 0),
+        ];
+        for (read, (extract, want)) in reads.into_iter().enumerate() {
+            let before = extract.calls();
+            let head = fx.head_as(extract, a, &one_shot());
+            assert_eq!(extract.calls() - before, want, "read {read}: extracted");
+            assert_eq!(head.compared, Compared::Overlaid(1), "read {read}");
+            assert_eq!(ungrouped(&answer(&head).0), fresh(a), "read {read}");
+        }
+        assert_eq!(fx.entries().len(), 2, "{:?}", fx.entries());
+    }
+
+    /// An open that writes the memo reaps it: GIVEN a memo holding an entry of a fingerprint the
+    /// store keeps no snapshot of, WHEN a one-shot read extracts a changed file, THEN that entry
+    /// is gone and the read's own stays.
     #[test]
     fn an_open_that_writes_the_memo_reaps_it() {
         let fx = Fixture::new(FILES);
