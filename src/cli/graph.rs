@@ -104,8 +104,19 @@ fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     };
     // The label heads the answer (6.1), counting what the reads above withheld.
     println!("{}", graph.stamp_label());
+    let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+    print_tests_hidden(graph, &shown)?;
     println!("subgraph around {around:?} (depth {depth}):");
     print_around_subgraph(&g, &queried, &unresolved);
+    Ok(())
+}
+
+/// The line under an answer's label saying how many test entities the tests filter hides prove
+/// the nodes `shown`, when any do.
+fn print_tests_hidden(graph: &dyn ContextGraph, shown: &[String]) -> Res {
+    if let Some(line) = tests_hidden_line(graph.hidden_provers(shown)?) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -304,6 +315,9 @@ fn print_show(graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
+    if let Located::One(site) = &located {
+        print_tests_hidden(graph, std::slice::from_ref(&site.id))?;
+    }
     match located {
         Located::None => match logged_site(entity)? {
             Some(site) => {
