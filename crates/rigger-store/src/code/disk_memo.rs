@@ -216,6 +216,19 @@ mod tests {
         names
     }
 
+    /// A memo that cannot be written costs no encode: GIVEN a memo directory under a regular
+    /// file, WHEN facts are put that would not read back, THEN the put fails making the directory,
+    /// before it encodes the entry.
+    #[test]
+    fn an_unwritable_memo_fails_before_it_encodes() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"not a directory").unwrap();
+        let memo = DiskMemo::new(root.path().join("file").join(DIR), 7);
+        let put = memo.put(b"beta\n", &facts_of("src/a.rs", b"alpha\n"));
+        let err = put.expect_err("no directory is made under a file");
+        assert!(err.starts_with("create "), "{err}");
+    }
+
     /// Two writers of one entry leave one whole entry: GIVEN the same facts put by several
     /// threads at once, THEN the memo holds that one entry and no temp, and it reads back as the
     /// facts.
