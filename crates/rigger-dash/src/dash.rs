@@ -7591,6 +7591,93 @@ mod tests {
         assert_eq!(body["seed"], "a", "the neighborhood echoes its seed");
     }
 
+    /// Each view that draws nodes - the seeded neighborhood, the cluster drill and the call walk
+    /// with its referenced-not-called sidecar - names the drawn nodes that are test code in its
+    /// `test_nodes`, from the `test` attribute of the graph nodes its answer read, and omits it
+    /// when none is. Each row: the view, its body, and the ids it names.
+    #[test]
+    fn each_drawn_view_names_its_test_nodes() {
+        use crate::contextgraph::{CallGraph, CallNode};
+        use crate::test_support::{calls_edge, edge, node_with_attrs};
+        let product = node_with_attrs("src/a.rs::f", KIND_CODE_ENTITY, &[("name", "f")]);
+        let test = node_with_attrs(
+            "src/a.rs::tests::checks",
+            KIND_CODE_ENTITY,
+            &[("name", "checks"), ("test", "true")],
+        );
+        let test_file = node_with_attrs("tests/it.rs", KIND_FILE, &[("test", "true")]);
+        let graph = Graph {
+            nodes: vec![product.clone(), test.clone()],
+            edges: vec![edge(&test.id, &product.id, REL_CALLS, TIER_EXTRACTED)],
+        };
+        let routed = |graph: &Graph, target: &str| {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                graph,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+                &[],
+            );
+            String::from_utf8(r.body).unwrap()
+        };
+        let walk = CallGraph {
+            nodes: [(&product, 0), (&test, 1)]
+                .map(|(n, layer)| CallNode {
+                    node: n.clone(),
+                    layer,
+                    frontier: None,
+                })
+                .to_vec(),
+            edges: vec![calls_edge(&test.id, &product.id, false)],
+            referenced_not_called: vec![test_file.clone()],
+        };
+        let walked = |target: &str| {
+            let provider =
+                |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str, _: Tests| {
+                    walk.clone()
+                };
+            let r = calls_route(None, target, &provider).expect("a call view");
+            String::from_utf8(r.body).unwrap()
+        };
+        let named = |ids: &[&str]| Some(ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        let rows = [
+            (
+                "the seeded neighborhood",
+                routed(&graph, "/api/graph?seed=src%2Fa.rs%3A%3Af&depth=1"),
+                named(&[&test.id]),
+            ),
+            (
+                "the cluster drill",
+                routed(&graph, "/api/graph?cluster=src%2Fa.rs"),
+                named(&[&test.id]),
+            ),
+            (
+                "the call walk and its sidecar",
+                walked("/api/graph?view=calls&dir=up&seed=src%2Fa.rs%3A%3Af"),
+                named(&[&test.id, &test_file.id]),
+            ),
+            (
+                "a neighborhood with no test",
+                routed(&tiered_chain_graph(), "/api/graph?seed=a&depth=2"),
+                None,
+            ),
+        ];
+        for (view, body, names) in rows {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let got = v.get("test_nodes").map(|ids| {
+                (ids.as_array().unwrap().iter())
+                    .map(|id| id.as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(got, names, "{view}: {body}");
+        }
+    }
+
     #[test]
     fn the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars() {
         // A rationale / code-entity id carries `#` and `::` and `/`, which the client
