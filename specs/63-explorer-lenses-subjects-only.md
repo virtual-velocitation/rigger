@@ -23,10 +23,12 @@ The mockup file is the visual contract for all of the below; it renders standalo
   6's exclusively (see the Overview zoom bullet).
 - **Files lens**: nodes are files, sized by contained-entity count, labeled with the
   repo-relative path; edges are `uses` weighted by coupling (label carries weight);
-  directories are the same hull treatment. Entities never render as nodes here.
-  Criterion 3 OWNS this lens's storage-schema-name purity: no code-entity node and no
-  per-type bucket (nor any other storage schema name) ever renders as a node, hub, or
-  group label in this lens, at any zoom.
+  directories are the same hull treatment. Entities never render as nodes in the overview;
+  drilling a file shows the file's entities, as drilling a community or a concept shows its
+  members, with the same budget, truncation and ordering.
+  Criterion 3 OWNS this lens's storage-schema-name purity: no code-entity node in the
+  overview, and no per-type bucket (nor any other storage schema name) ever renders as a
+  node, hub, or group label in this lens, at any zoom.
 - **Concepts lens**: nodes are concepts, sized by evidence weight; edges join concepts
   sharing evidence, labeled with the count. Entities and files stay in the card.
   Criterion 4 OWNS this lens's storage-schema-name purity: no code-entity node, no file
@@ -96,8 +98,9 @@ The mockup file is the visual contract for all of the below; it renders standalo
   the zoomed-out collapse into community super-nodes specifically - a community node is a
   subject-taxonomy grouping, not a storage schema name, so criterion 6's collapse satisfies
   this rule rather than breaching it. Criterion 3 owns proving this same rule for the files
-  lens (no code-entity node, no per-type bucket, no storage schema name ever renders as a
-  node, hub, or group label in that lens); criterion 4 owns proving it for the concepts lens
+  lens (no code-entity node in its overview, and no per-type bucket or storage schema name
+  ever renders as a node, hub, or group label in that lens; a file's drill shows its
+  entities); criterion 4 owns proving it for the concepts lens
   (no code-entity node, no file node, no per-type bucket ever renders as a node, hub, or group
   label in that lens) - each lens proves its own taxonomy's purity, none is left unowned.
 - Card handoff ownership is total: criterion 2 proves the chip-to-lens handoff for every card
@@ -119,8 +122,8 @@ The mockup file is the visual contract for all of the below; it renders standalo
   chips, and memory counts, and a card chip resolves to a lens handoff target of the chip's
   own taxonomy carrying the chosen subject.
 - [ ] a test proves the FILES LENS: file nodes sized by entity count with weighted `uses`
-  edges, directory hulls, and a card listing the file's top entities - handoff MECHANICS are
-  criterion 2's, NOT this one's.
+  edges, directory hulls, a drill showing the file's entities, and a card listing the file's
+  top entities - handoff MECHANICS are criterion 2's, NOT this one's.
 - [ ] a test proves the CONCEPTS LENS: concept nodes sized by evidence weight with
   shared-evidence edges, and a card listing top evidence - handoff mechanics again
   criterion 2's, NOT this one's.
