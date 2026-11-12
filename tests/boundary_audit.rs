@@ -793,7 +793,7 @@ const PROJECT_STREAM_APPENDS: &[&str] = &[
 const GRAPH_OPENS: &[&str] = &[
     "src/cli/critique.rs:cmd_critique",
     "src/cli/dashboard.rs:cmd_mcp",
-    "src/cli/dashboard.rs:dash_read",
+    "src/cli/dashboard.rs:dash_open",
     "src/cli/graph.rs:cmd_emit",
     "src/cli/graph.rs:cmd_graph_build",
     "src/cli/hygiene.rs:reset_derived",
