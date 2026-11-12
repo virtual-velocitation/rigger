@@ -5564,6 +5564,38 @@ mod tests {
         );
     }
 
+    /// Spec 121's EXISTING DATA row for the moved sentences: the handbook's upgrade note, from its
+    /// persona lead-in to the next heading, quotes each sentence a prompt no longer carries
+    /// verbatim and once, the same text the persona pins hold - the sdet-author's
+    /// documentation-only round rule, the planner's planning policy and the unit size cap's scope.
+    #[test]
+    fn the_handbook_upgrade_note_quotes_each_moved_sentence_once() {
+        const LEAD: &str = "Some guidance an agent's prompt once carried now lives in a persona";
+        let page = read_text(&repo().join("docs/handbook/authoring-loops.md"));
+        let from = page
+            .find(LEAD)
+            .expect("authoring-loops.md holds the upgrade note's persona lead-in");
+        let note = &page[from..];
+        let note = rigger::wave::normalize_ws(note.split("\n#").next().unwrap_or(note));
+        let moved: Vec<&str> = [DOC_ONLY_ROUND_RULE]
+            .into_iter()
+            .chain(crate::test_support::PLANNING_POLICY)
+            .chain([crate::test_support::UNIT_SIZE_CAP_SCOPE])
+            .collect();
+        let quoted: Vec<(&str, usize)> = moved
+            .iter()
+            .map(|sentence| (*sentence, note.matches(&format!("\"{sentence}\"")).count()))
+            .collect();
+        assert_eq!(
+            quoted,
+            moved
+                .iter()
+                .map(|sentence| (*sentence, 1))
+                .collect::<Vec<_>>(),
+            "the upgrade note quotes each moved sentence once; it reads:\n{note}"
+        );
+    }
+
     /// The fan-out helpers the working discipline names live at `.claude/agents/`: committed
     /// in this repository and scaffolded byte-identical into every project `init` sets up.
     #[test]
