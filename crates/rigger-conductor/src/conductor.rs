@@ -51116,7 +51116,8 @@ mod tests {
     /// Spec 121, criterion 16: over the placeholder fixture each grounding section is its
     /// registry groups concatenated in registry order, on each branch: no candidate renders
     /// nothing, one renders the header and its line, and one over the section's byte budget
-    /// renders the header and the elision note naming one elided entry and its recovery; the
+    /// renders the header and the elision note naming one elided entry and its recovery, which for
+    /// the code neighborhood and the design intent names the one seed, or each of two seeds; the
     /// `--around` recovery names any file, the one seed, or each seed. The entry lines are spelled
     /// here, since a skeleton is not a group.
     #[test]
@@ -51194,24 +51195,23 @@ mod tests {
         }
         let neighborhood = |names: &[&str]| groups("conductor::write_code_neighborhood", names);
         let code_header = neighborhood(&["CODE_NEIGHBORHOOD_HEADER"]);
-        let code_note = fill(
-            &neighborhood(&["ELISION_NOTE_DEFINITIONS"]),
-            &[
-                ("elided", "1"),
-                (
-                    "recover",
-                    &fill(&neighborhood(&["GRAPH_AROUND_ONE"]), &[("seed", "core.rs")]),
-                ),
-            ],
-        );
+        let code_note = |recover: String| {
+            fill(
+                &neighborhood(&["ELISION_NOTE_DEFINITIONS"]),
+                &[("elided", "1"), ("recover", &recover)],
+            )
+        };
         let long_name = over(CODE_NEIGHBORHOOD_BUDGET_BYTES);
         let intent = |names: &[&str]| groups("conductor::write_design_intent", names);
         let intent_header = intent(&["DESIGN_INTENT_HEADER"]);
-        let intent_note = fill(
-            &intent(&["ELISION_NOTE_DESIGN_INTENT"]),
-            &[("elided", "1"), ("recover", &intent(&["GRAPH_AROUND_ONE"]))],
-        );
+        let intent_note = |recover: String| {
+            fill(
+                &intent(&["ELISION_NOTE_DESIGN_INTENT"]),
+                &[("elided", "1"), ("recover", &recover)],
+            )
+        };
         let intent_seed = vec!["{seed}".to_string()];
+        let two_seeds = |first: &str| vec![first.to_string(), "{other}".to_string()];
         let intent_graph = |title: &str| Graph {
             nodes: vec![node_with_attrs(
                 "{id}",
@@ -51240,7 +51240,28 @@ mod tests {
             (
                 "the code neighborhood with one definition over the budget".to_string(),
                 render_code_neighborhood(&[("core.rs", &long_name, "function", 1)], &seed),
-                format!("{code_header}\n{code_note}\n"),
+                format!(
+                    "{code_header}\n{}\n",
+                    code_note(fill(
+                        &neighborhood(&["GRAPH_AROUND_ONE"]),
+                        &[("seed", "core.rs")]
+                    ))
+                ),
+            ),
+            (
+                "the code neighborhood of two seeds with one definition over the budget"
+                    .to_string(),
+                render_code_neighborhood(
+                    &[("core.rs", &long_name, "function", 1)],
+                    &two_seeds("core.rs"),
+                ),
+                format!(
+                    "{code_header}\n{}\n",
+                    code_note(fill(
+                        &neighborhood(&["GRAPH_AROUND_EACH"]),
+                        &[("seeds", "core.rs {other}")]
+                    ))
+                ),
             ),
             (
                 "the design intent with no node".to_string(),
@@ -51262,7 +51283,25 @@ mod tests {
                     &intent_graph(&over(DESIGN_INTENT_BUDGET_BYTES)),
                     &intent_seed,
                 ),
-                format!("{intent_header}\n{intent_note}\n"),
+                format!(
+                    "{intent_header}\n{}\n",
+                    intent_note(intent(&["GRAPH_AROUND_ONE"]))
+                ),
+            ),
+            (
+                "the design intent of two seeds with one node over the budget".to_string(),
+                written(
+                    write_design_intent,
+                    &intent_graph(&over(DESIGN_INTENT_BUDGET_BYTES)),
+                    &two_seeds("{seed}"),
+                ),
+                format!(
+                    "{intent_header}\n{}\n",
+                    intent_note(fill(
+                        &intent(&["GRAPH_AROUND_EACH"]),
+                        &[("seeds", "{seed} {other}")]
+                    ))
+                ),
             ),
             (
                 "the recovery of no seed".to_string(),

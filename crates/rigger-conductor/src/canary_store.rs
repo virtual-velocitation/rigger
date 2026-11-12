@@ -2589,10 +2589,13 @@ mod tests {
             anchor: String::new(),
             ..anchored.clone()
         };
-        let unanchored_header = fill(
-            &header(&["CANARY_REVIEW_HEADER"]),
-            &[("file", &header(&["CANARY_NO_ANCHOR"]))],
-        );
+        // The anchorless header as the surface `pick` reads its groups from.
+        let unanchored_header = |pick: fn(&[&str]) -> String| {
+            fill(
+                &pick(&["CANARY_REVIEW_HEADER"]),
+                &[("file", &pick(&["CANARY_NO_ANCHOR"]))],
+            )
+        };
         let finding = |about: &[&str], summary: &str| Finding {
             about: about.iter().map(|a| a.to_string()).collect(),
             summary: summary.to_string(),
@@ -2610,13 +2613,14 @@ mod tests {
             (
                 "the review header of an anchorless item",
                 review_header(&anchorless),
-                unanchored_header.clone(),
+                unanchored_header(header),
             ),
             (
                 "the adjudicator prompt of an anchorless item and no finding",
                 adjudicator_prompt(&anchorless, &[]),
                 format!(
-                    "{unanchored_header}{}",
+                    "{}{}",
+                    unanchored_header(adjudicator),
                     adjudicator(&[
                         "CANARY_FINDINGS_LEAD",
                         "CANARY_NO_FINDINGS",
