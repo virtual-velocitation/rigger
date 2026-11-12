@@ -63,3 +63,4 @@
 # Glob covers both today and any future cargo-mutants rotation suffix so this
 # class cannot recur a third time in a different shape.
 mutants.out*/
+.rigger/store
