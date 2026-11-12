@@ -925,6 +925,9 @@ items in product files. An entity counts as a test entity when any of these hold
    module declarations. This is computed per view open from the MODULES section, using the same
    `module_target` function the module rule uses, so the two cannot disagree.
 
+A fixture is a test entity like any other: a definition these rules mark test is held, proved
+through and filtered the same way, with no fixture kind of its own.
+
 ### 8.2 How it is filtered
 
 ```
