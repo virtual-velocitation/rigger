@@ -1586,6 +1586,8 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
+// A driver answers graph reads itself by replacing __reply(url); by default a read is an empty overview.
+let __reply = function(){ return { clusters: [], edges: [], total: 0 }; };
 // Each graph reply carries the headers its URL names: label= a label, error= an error, else none.
 const fetch = function(url){
   const u = String(url);
@@ -1595,7 +1597,7 @@ const fetch = function(url){
   if (at("error") !== null) sent["X-Rigger-Graph-Error"] = at("error");
   return Promise.resolve({
     headers: { get: function(k){ return Object.prototype.hasOwnProperty.call(sent, k) ? sent[k] : null; } },
-    json: function(){ return Promise.resolve({ clusters: [], edges: [], total: 0 }); }
+    json: function(){ return Promise.resolve(__reply(u)); }
   });
 };
 "#;
@@ -1627,4 +1629,413 @@ rigger::test_cases! {
     /// label in the explorer's header, decoded, or the reason no graph could be read, marked as an
     /// error; a reply stating neither leaves the header as it was.
     the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
+}
+
+/// A node program loading the served page into a fresh realm per load over a browser store the
+/// loads share, so a second load is a reload in the same browser. It steps the explorer's tests
+/// toggle through the header's own click dispatch and records, per load, the toggle's text and the
+/// tests filter a graph read carries.
+const TESTS_CHOICE_HARNESS: &str = r#""use strict";
+const vm = require("vm");
+const fs = require("fs");
+const pageScript = fs.readFileSync(process.argv[2], "utf8");
+const SHIM = String.raw`__SHIM__`;
+// A browser store over `items`, which the test reads and corrupts directly.
+function store(items) {
+  return {
+    getItem: function(k){ return Object.prototype.hasOwnProperty.call(items, k) ? items[k] : null; },
+    setItem: function(k, v){ items[k] = String(v); },
+    removeItem: function(k){ delete items[k]; },
+  };
+}
+const refused = function(){ throw new Error("SecurityError: the store is blocked"); };
+// One page load: `storage` is a store, a getter standing for a store whose access throws, or
+// undefined for a realm with no store at all.
+function load(storage) {
+  const sandbox = { console: console, process: process };
+  if (typeof storage === "function") Object.defineProperty(sandbox, "localStorage", { get: storage });
+  else if (storage !== undefined) sandbox.localStorage = storage;
+  vm.createContext(sandbox);
+  vm.runInContext(SHIM + "\n" + pageScript, sandbox, { filename: "dash-tests-choice-harness.js" });
+  const page = vm.runInContext("({ el: el, apiUrl: apiUrl })", sandbox);
+  const seen = function(){
+    const m = page.apiUrl("/api/graph").match(/[?&]tests=([^&]*)/);
+    return page.el("kgteststoggle").textContent + " / " + (m ? m[1] : "exclude");
+  };
+  const step = function(){
+    const click = page.el("kghead")._listeners.click[0];
+    click({ target: { closest: function(sel){ return sel === "[data-tests]" ? {} : null; } },
+            preventDefault: function(){} });
+    return seen();
+  };
+  return { seen: seen, step: step };
+}
+const trace = [];
+const items = {};
+const browser = store(items);
+let page = load(browser);
+trace.push("fresh: " + page.seen());
+for (const _ of [1, 2, 3]) {
+  trace.push("step: " + page.step());
+  page = load(browser);
+  trace.push("reload: " + page.seen());
+}
+page.step();
+for (const k of Object.keys(items)) items[k] = "bogus";
+trace.push("garbage kept: " + load(browser).seen());
+for (const [name, storage] of [["no store", undefined], ["blocked store", refused],
+    ["full store", { getItem: refused, setItem: refused, removeItem: refused }]]) {
+  page = load(storage);
+  trace.push(name + ": " + page.seen() + ", step: " + page.step() + ", reload: " + load(storage).seen());
+}
+const expected = [
+  "fresh: Show tests / exclude",
+  "step: tests: shown / include",
+  "reload: tests: shown / include",
+  "step: tests: only / only",
+  "reload: tests: only / only",
+  "step: Show tests / exclude",
+  "reload: Show tests / exclude",
+  "garbage kept: Show tests / exclude",
+  "no store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+  "blocked store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+  "full store: Show tests / exclude, step: tests: shown / include, reload: Show tests / exclude",
+];
+if (JSON.stringify(trace) !== JSON.stringify(expected)) {
+  console.error("got:\n" + trace.join("\n") + "\nwant:\n" + expected.join("\n"));
+  process.exit(1);
+}
+console.log("OK the-explorer-remembers-its-tests-choice");
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: the explorer remembers its tests choice per browser, so a reload keeps it, and
+    /// starts at exclude when nothing is kept, the kept value is not a choice, or the browser's store
+    /// cannot be read or written, the toggle still cycling within the page.
+    the_explorer_remembers_its_tests_choice_across_a_reload: node_harness_passes(&TESTS_CHOICE_HARNESS.replace("__SHIM__", LABEL_SHIM), "OK the-explorer-remembers-its-tests-choice");
+}
+
+/// Driver: under each tests filter in turn, the explorer opens every graph view through its own
+/// entry (the overview, a seeded neighbourhood, a cluster drill, a re-projection, a call walk) and
+/// records what the header says beside the tests toggle, and the overview's own hidden-test count.
+/// While tests are hidden, every view but the overview says so beside the toggle, and the overview
+/// keeps its count; while they are shown, nothing is said.
+const TESTS_STATE_DRIVER: &str = r#"
+;(async function(){
+  const flush = async function(){ for (let k = 0; k < 24; k++) { await Promise.resolve(); } };
+  __reply = function(u){
+    if (/^\/api\/graph(\?tests=[a-z]*)?$/.test(u)) {
+      return { clusters: [{ key: "src", count: 2, kind: "code-entity" }], edges: [], total: 2,
+               tests_hidden: u.indexOf("tests=") === -1 ? 3 : 0 };
+    }
+    return { nodes: [], edges: [] };
+  };
+  const views = [
+    ["overview", function(){ return loadKgOverview(); }],
+    ["seeded neighbourhood", function(){ return seedGraph("src/a.rs::a"); }],
+    ["cluster drill", function(){ return drillCluster("src"); }],
+    ["re-projection", function(){ return reprojectSubject("src/a.rs::a"); }],
+    ["call walk", function(){ return seedCalls("src/a.rs::a", "down"); }],
+  ];
+  const beside = function(){
+    const s = el("kgtestsstate");
+    return s.hidden ? "nothing" : JSON.stringify(s.textContent);
+  };
+  const trace = [];
+  for (const tests of ["exclude", "include", "only", "exclude"]) {
+    if (kgTests !== tests) setTests({ exclude: "include", include: "only", only: "exclude" }[kgTests]);
+    await flush();
+    for (const [name, open] of views) {
+      await open();
+      await flush();
+      const count = el("kgpanel")._html.match(/(\d+) tests hidden/);
+      trace.push(tests + " " + name + ": " + beside() + (count ? ", toolbar " + count[1] : ""));
+    }
+  }
+  const expected = [];
+  for (const tests of ["exclude", "include", "only", "exclude"]) {
+    for (const [name] of views) {
+      const hidden = tests === "exclude";
+      expected.push(tests + " " + name + ": "
+        + (name === "overview" ? "nothing" + (hidden ? ", toolbar 3" : "") : hidden ? '"tests hidden"' : "nothing"));
+    }
+  }
+  if (JSON.stringify(trace) !== JSON.stringify(expected)) {
+    throw new Error("got:\n" + trace.join("\n") + "\nwant:\n" + expected.join("\n"));
+  }
+  console.log("OK every-view-says-when-tests-are-hidden");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: no graph view looks complete while the tests filter hides tests. The overview
+    /// keeps its own count of the hidden tests; every other view (a seeded neighbourhood and its
+    /// card, a cluster drill, a re-projection, a call walk) says "tests hidden" beside the toggle,
+    /// and says nothing while tests are shown.
+    every_graph_view_says_when_tests_are_hidden: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, TESTS_STATE_DRIVER, "dash-tests-state-harness.js"), "OK every-view-says-when-tests-are-hidden");
+}
+
+/// A product tree and its tests, one per way a test calls product code: a same-file test module, a
+/// test file importing the entity, one naming it by path, and a Python test calling at file level
+/// and inside a function; a test file calling its own helper while product code defines one of the
+/// same name; and a product caller in another file.
+#[cfg(feature = "symbols")]
+const PROVED_TREE: &[(&str, &str)] = &[
+    (
+        "src/w.rs",
+        "pub fn widget() {}\n\n#[cfg(test)]\nmod tests {\n    use super::widget;\n\n    #[test]\n    fn widget_works() {\n        widget();\n    }\n}\n",
+    ),
+    ("src/x.rs", "pub fn uses_widget() {\n    widget();\n}\n"),
+    ("src/h.rs", "pub fn helper() {}\n"),
+    (
+        "tests/t.rs",
+        "use w::widget;\n\n#[test]\nfn from_outside() {\n    widget();\n}\n",
+    ),
+    ("tests/path.rs", "#[test]\nfn by_path() {\n    w::widget();\n}\n"),
+    (
+        "tests/shadow.rs",
+        "fn helper() {}\n\n#[test]\nfn uses_own_helper() {\n    helper();\n}\n",
+    ),
+    ("lib/p.py", "def gadget():\n    pass\n"),
+    (
+        "tests/test_p.py",
+        "from lib.p import gadget\n\ngadget()\n\n\ndef test_gadget():\n    gadget()\n",
+    ),
+];
+
+/// The edges of `edges` touching `id` on the side `into` names, as `(other end, rel, tier)`.
+#[cfg(feature = "symbols")]
+fn touching<'e>(
+    edges: impl Iterator<Item = (&'e str, &'e str, &'e str, &'e str)>,
+    id: &str,
+    into: bool,
+) -> BTreeSet<(String, String, String)> {
+    edges
+        .filter(|(from, _, _, to)| if into { *to == id } else { *from == id })
+        .map(|(from, rel, tier, to)| {
+            let other = if into { from } else { to };
+            (other.to_string(), rel.to_string(), tier.to_string())
+        })
+        .collect()
+}
+
+/// An edge seen from one of its ends: the other end, the relation and the tier.
+#[cfg(feature = "symbols")]
+type Touch = (&'static str, &'static str, &'static str);
+
+/// WITH TESTS SHOWN, A TEST'S CALLS ARE ITS EDGES: under `include` and `only`, a product entity's
+/// neighbourhood holds every test entity that calls it, from its own file or another, by its CALLS
+/// edge, and a call at a test file's top level by the file's REFERENCES edge; under `exclude` none.
+/// A test calling its own helper keeps that edge, and a product caller's edge is the same under
+/// every filter. Read through the store's walk and through the explorer's seeded route.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_product_entity_s_neighbourhood_holds_the_shown_tests_that_call_it() {
+    use rigger::code_view::{Tests, ViewFilter};
+    use rigger::contextgraph::ContextGraph;
+
+    const IN: bool = true;
+    const OUT: bool = false;
+    let widget_in_by_tests: &[Touch] = &[
+        ("src/w.rs", "REFERENCES", "extracted"),
+        ("src/w.rs::tests", "REFERENCES", "extracted"),
+        ("src/w.rs::tests::widget_works", "CALLS", "extracted"),
+        ("tests/path.rs", "REFERENCES", "inferred"),
+        ("tests/path.rs::by_path", "CALLS", "inferred"),
+        ("tests/t.rs", "REFERENCES", "inferred"),
+        ("tests/t.rs::from_outside", "CALLS", "inferred"),
+    ];
+    let gadget_in_by_tests: &[Touch] = &[
+        ("tests/test_p.py", "REFERENCES", "inferred"),
+        ("tests/test_p.py::test_gadget", "CALLS", "inferred"),
+    ];
+    let contained = |file: &'static str| -> Vec<Touch> { vec![(file, "CONTAINS", "extracted")] };
+    let with = |mut a: Vec<Touch>, b: &[Touch]| {
+        a.extend_from_slice(b);
+        a
+    };
+    let rows: Vec<(Tests, &str, bool, Vec<Touch>)> = vec![
+        (
+            Tests::Exclude,
+            "src/w.rs::widget",
+            IN,
+            contained("src/w.rs"),
+        ),
+        (
+            Tests::Include,
+            "src/w.rs::widget",
+            IN,
+            with(contained("src/w.rs"), widget_in_by_tests),
+        ),
+        (
+            Tests::Only,
+            "src/w.rs::widget",
+            IN,
+            widget_in_by_tests.to_vec(),
+        ),
+        (
+            Tests::Exclude,
+            "lib/p.py::gadget",
+            IN,
+            contained("lib/p.py"),
+        ),
+        (
+            Tests::Include,
+            "lib/p.py::gadget",
+            IN,
+            with(contained("lib/p.py"), gadget_in_by_tests),
+        ),
+        (
+            Tests::Only,
+            "lib/p.py::gadget",
+            IN,
+            gadget_in_by_tests.to_vec(),
+        ),
+        (
+            Tests::Include,
+            "tests/shadow.rs::uses_own_helper",
+            OUT,
+            vec![("tests/shadow.rs::helper", "CALLS", "extracted")],
+        ),
+        (
+            Tests::Include,
+            "src/h.rs::helper",
+            IN,
+            contained("src/h.rs"),
+        ),
+        (
+            Tests::Exclude,
+            "src/x.rs::uses_widget",
+            OUT,
+            vec![("src/x.rs::%widget", "CALLS", "inferred")],
+        ),
+        (
+            Tests::Include,
+            "src/x.rs::uses_widget",
+            OUT,
+            vec![("src/x.rs::%widget", "CALLS", "inferred")],
+        ),
+    ];
+    let records = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+    let view = common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, PROVED_TREE);
+    let mut wrong = Vec::new();
+    for (tests, seed, into, want) in rows {
+        let want: BTreeSet<(String, String, String)> = (want.iter())
+            .map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string()))
+            .collect();
+        let honesty = rigger::composed::Honesty {
+            worktree: "the worktree".to_string(),
+            compared: rigger::code_view::Compared::Overlaid(0),
+            behind: None,
+        };
+        let g = rigger::composed::Composed::new(&records, &view, ViewFilter { tests }, honesty)
+            .expect("a view composes");
+        let walked = ContextGraph::subgraph(&g, &[seed.to_string()], 1).unwrap();
+        let walked = touching(
+            (walked.edges.iter()).map(|e| {
+                (
+                    e.from.as_str(),
+                    e.rel.as_str(),
+                    e.tier.as_str(),
+                    e.to.as_str(),
+                )
+            }),
+            seed,
+            into,
+        );
+        if walked != want {
+            wrong.push(format!(
+                "{tests:?} {seed}, the store's walk: {walked:?}, not {want:?}"
+            ));
+        }
+        let whole = ContextGraph::whole(&g).unwrap();
+        let served = served_json(&whole, &format!("/api/graph?seed={seed}&depth=1"));
+        let edges = served["edges"].as_array().expect("an edge list");
+        let served = touching(
+            edges.iter().map(|e| {
+                let s = |k: &str| e[k].as_str().expect("an edge field");
+                (s("from"), s("rel"), s("tier"), s("to"))
+            }),
+            seed,
+            into,
+        );
+        if served != want {
+            wrong.push(format!(
+                "{tests:?} {seed}, the seeded route: {served:?}, not {want:?}"
+            ));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Driver: the explorer seeds the product entity `src/w.rs::widget`, each seed read answered by the
+/// served route's own reply under the filter the request carries (`__SERVED__`). By default the
+/// panel draws no test entity; toggled to `include`, then `only`, it draws each test calling the
+/// entity, from its own file and from others, as a node with its CALLS edge.
+#[cfg(feature = "symbols")]
+const PROOF_DRAWN_DRIVER: &str = r#"
+;(async function(){
+  const SERVED = __SERVED__;
+  __reply = function(u){
+    if (u.indexOf("seed=") === -1) return { clusters: [], edges: [], total: 0, card: null };
+    const m = u.match(/[?&]tests=([^&]*)/);
+    return SERVED[m ? m[1] : "exclude"];
+  };
+  const flush = async function(){ for (let k = 0; k < 24; k++) { await Promise.resolve(); } };
+  const callers = ["src/w.rs::tests::widget_works", "tests/t.rs::from_outside", "tests/path.rs::by_path"];
+  const drawn = function(id){ return el("kgpanel")._html.indexOf('data-seed="' + id + '"') !== -1; };
+  const calls = function(id){
+    return el("kgpanel")._html.indexOf(id + ' <span class="kgrel">CALLS</span> src/w.rs::widget') !== -1;
+  };
+  seedGraph("src/w.rs::widget");
+  await flush();
+  if (!drawn("src/w.rs::widget")) throw new Error("the seed is not drawn: " + el("kgpanel")._html);
+  for (const id of callers) {
+    if (drawn(id) || calls(id)) throw new Error("exclude draws the test " + id + ": " + el("kgpanel")._html);
+  }
+  for (const tests of ["include", "only"]) {
+    setTests(tests);
+    await flush();
+    for (const id of callers) {
+      if (!drawn(id)) throw new Error(tests + " does not draw the test " + id + ": " + el("kgpanel")._html);
+      if (!calls(id)) throw new Error(tests + " does not draw " + id + "'s CALLS edge: " + el("kgpanel")._html);
+    }
+  }
+  console.log("OK the-explorer-draws-the-tests-that-call-an-entity");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// The explorer draws what the served route answers for a product entity's seeded neighbourhood:
+/// no test entity by default, and under `include` and `only` every test that calls the entity,
+/// with its CALLS edge. Each reply is the route's own JSON for the extracted [`PROVED_TREE`].
+#[cfg(feature = "symbols")]
+#[test]
+fn the_explorer_draws_the_tests_that_call_a_product_entity() {
+    use rigger::code_view::{Tests, ViewFilter};
+    use rigger::contextgraph::ContextGraph;
+    let records = rigger::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+    let view = common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, PROVED_TREE);
+    let mut served = serde_json::Map::new();
+    for (name, tests) in [
+        ("exclude", Tests::Exclude),
+        ("include", Tests::Include),
+        ("only", Tests::Only),
+    ] {
+        let honesty = rigger::composed::Honesty {
+            worktree: "the worktree".to_string(),
+            compared: rigger::code_view::Compared::Overlaid(0),
+            behind: None,
+        };
+        let g = rigger::composed::Composed::new(&records, &view, ViewFilter { tests }, honesty)
+            .expect("a view composes");
+        let whole = ContextGraph::whole(&g).unwrap();
+        let reply = served_json(&whole, "/api/graph?seed=src/w.rs::widget&depth=2");
+        served.insert(name.to_string(), reply);
+    }
+    let driver =
+        PROOF_DRAWN_DRIVER.replace("__SERVED__", &serde_json::Value::Object(served).to_string());
+    node_harness_passes(
+        &common::served::vm_harness(LABEL_SHIM, &driver, "dash-proof-drawn-harness.js"),
+        "OK the-explorer-draws-the-tests-that-call-an-entity",
+    );
 }

@@ -612,7 +612,9 @@ impl<'a> Server<'a> {
     }
 
     /// `rigger_graph`'s `show` or `around` answer from `graph`: where `show` is defined when it is
-    /// asked, else the neighbourhood within `depth` hops of `around`.
+    /// asked, else the neighbourhood within `depth` hops of `around`. A located node and a
+    /// neighbourhood carry `tests_hidden`, how many test entities the `tests` filter hides prove
+    /// the nodes shown.
     fn graph_answer(
         &self,
         graph: &dyn ContextGraph,
@@ -644,16 +646,22 @@ impl<'a> Server<'a> {
                     "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
                 }),
                 Located::One(site) => {
-                    json!({"label": label, "status": "one", "site": site_object(&site, &[])})
+                    let shown = std::slice::from_ref(&site.id);
+                    let tests_hidden = graph.hidden_provers(shown).map_err(|e| e.to_string())?;
+                    json!({"label": label, "status": "one", "site": site_object(&site, &[]),
+                           "tests_hidden": tests_hidden})
                 }
             });
         }
         let g = crate::contextgraph::around(graph, &[around.to_string()], depth)
             .map_err(|e| e.to_string())?;
+        let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
+        let tests_hidden = graph.hidden_provers(&shown).map_err(|e| e.to_string())?;
         // Each loaded node through the one renderer, its degree its edges in this merged graph
         // (`whole_graph_degree` over it): no node is read a second time from the store.
         Ok(json!({
             "label": graph.stamp_label().to_string(),
+            "tests_hidden": tests_hidden,
             "nodes": g
                 .nodes
                 .iter()
@@ -2502,6 +2510,38 @@ mod tests {
             .with_context(context)
             .with_grounder(Ok(&grounder));
         call(&server, &tools_call("rigger_graph", arguments))["result"]["structuredContent"].clone()
+    }
+
+    /// Each row: a `rigger_graph` `show` or `around` call over the shown tree, whose
+    /// `blank_is_blank` test, hidden under the default filter, proves `blank`, and the
+    /// `tests_hidden` its reply carries: how many hidden tests prove the nodes it shows, and none
+    /// when it shows no node.
+    #[test]
+    fn rigger_graph_around_and_show_count_the_hidden_tests_proving_what_they_show() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::test_support::{shown_tree_planted_view, ViewedRecords};
+
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let context = ViewedRecords {
+            records: &graph,
+            view: shown_tree_planted_view(),
+        };
+        for (arguments, hidden) in [
+            (json!({"show": "src/limits.rs::blank"}), json!(1)),
+            (
+                json!({"around": "src/limits.rs::blank", "depth": 1}),
+                json!(1),
+            ),
+            (json!({"show": "src/limits.rs::LIMIT"}), json!(0)),
+            (json!({"show": "nothing"}), Value::Null),
+        ] {
+            let answer = shown_graph_answer_over(&graph, &context, arguments.clone());
+            assert_eq!(
+                answer["tests_hidden"],
+                json!(hidden),
+                "{arguments}: {answer}"
+            );
+        }
     }
 
     /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens

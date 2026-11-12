@@ -332,15 +332,26 @@ pub fn graph_ok(root: &Path, args: &[&str]) -> String {
     past_label(&run_rigger_ok(root, args))
 }
 
-/// A graph answer's stdout past the honesty label that heads it (6.1), which
-/// `around_prints_the_label_first` pins.
+/// A graph answer's stdout past the honesty label block that heads it (6.1): the label, which
+/// `around_prints_the_label_first` pins, and the hidden-test line placed under it when the tests
+/// filter hid tests proving the answer, which `around_and_show_count_the_hidden_tests_proving_what_they_show`
+/// pins.
 pub fn past_label(out: &str) -> String {
     let (label, answer) = out.split_once('\n').unwrap_or((out, ""));
     assert!(
         label.starts_with("describes "),
         "a graph answer opens with its honesty label; stdout:\n{out}"
     );
-    answer.to_string()
+    let (first, rest) = answer.split_once('\n').unwrap_or((answer, ""));
+    let counted = first
+        .split_once(' ')
+        .and_then(|(n, _)| n.parse().ok())
+        .and_then(rigger::code_view::tests_hidden_line);
+    if counted.as_deref() == Some(first) {
+        rest.to_string()
+    } else {
+        answer.to_string()
+    }
 }
 
 /// Every printed `node <id> <kind>` line of a `rigger graph --around` transcript, parsed into its

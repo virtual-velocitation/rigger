@@ -68,11 +68,13 @@
   /* KG is the top, full-width feature holding ~half the viewport for graph exploration; the columns
      hold the remaining half and scroll INTERNALLY, so the whole dashboard fits one screen with no
      page overflow. */
-  /* position:relative so the docked memory rail (spec 63 c5, .kgrail) can be position:absolute
-     WITHIN this section, scoped to its bounds - never a flex sibling of #kgpanel, so opening or
-     closing the rail changes nothing about #kgpanel's own box and the graph layout never re-flows. */
-  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; position: relative; }
-  #kg > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; }
+  /* The explorer's body below its header: position:relative so the docked memory rail (spec 63 c5,
+     .kgrail) and the metadata card (spec 63 c2, .kgcard) are position:absolute WITHIN it, scoped to
+     its bounds - never flex siblings of #kgpanel, so opening or closing either changes nothing about
+     #kgpanel's own box and the graph layout never re-flows, and neither covers the header above. */
+  .kgbody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  .kgbody > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
   .columns { flex: 1 1 0; min-height: 0; display: flex; gap: 16px; }
   .columns > .col { flex: 1 1 46%; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
   /* Narrow screens: drop the fixed one-screen layout and allow normal page scroll. */
@@ -237,6 +239,11 @@
      PANS/ZOOMS within its own box (a #kgzoom group transforms) so the page body never scrolls. */
   .kgtoolbar { font-size: 12px; color: var(--muted); margin: 0 0 6px; overflow-wrap: anywhere; }
   .kgtoolbar b { color: var(--ink); }
+  /* The panel's control rows above its content - the toolbar (back link, lens controls) and, in a
+     neighbourhood, the heading, the directed-call links and the tier checkboxes - share one anchor
+     name, so the last one drawn is the anchor: the docked rail and card set their top against its
+     bottom edge, and however the rows wrap neither covers a panel control. */
+  .kgtoolbar, .kgseed, .kgcalls-offer, .kgtiers { anchor-name: --kgcontrols; }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
   /* The overview LENS selector (spec 53 c4 / spec 54 c3): pick the bucket key - `files`
@@ -303,6 +310,12 @@
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
   .kgtoggle.active { color: var(--ink); border-color: var(--accent); font-weight: 600; }
+  /* The tests toggle and its state, one box that never wraps, so the state stays beside the toggle
+     when the header wraps. */
+  .kgtests { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; margin-left: auto; }
+  /* Beside the tests toggle: the view on show leaves out the tests the filter hides. */
+  .kgteststate { color: var(--muted); white-space: nowrap; }
+  .kgteststate[hidden] { display: none; }
   /* The RATIONALE OVERLAY badge-and-expand (spec 55 c4): a native <details> per node that carries
      rationale - the <summary> is the "why - N" count, the body lists each leaf as its own native
      <details> (a one-line preview that expands to the full content). Rendered ONLY when the overlay
@@ -333,11 +346,15 @@
   .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
   .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
   /* The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely
-     positioned WITHIN #kg (never a flex sibling), so it docks to the right over the panel without
+     positioned WITHIN .kgbody (never a flex sibling), so it docks to the right over the panel without
      changing #kgpanel's own box - the canvas layout never re-flows when the rail opens or closes.
      Lists the focused subject's governing decisions/findings/concepts as scrollable cards; hidden
-     with no subject focused (mirrors .kgsubjectlens). */
-  .kgrail { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; max-width: 42%;
+     with no subject focused (mirrors .kgsubjectlens). Its top is the bottom edge of the panel's
+     last control row (the box's top with none drawn), by an explicit anchor() rather than a
+     default anchor, so it stays put when the panel scrolls; the plain top is for a browser
+     without anchors. */
+  .kgrail { position: absolute; top: 0; top: anchor(--kgcontrols bottom, 0px);
+    right: 0; bottom: 0; width: 260px; max-width: 42%;
     overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
   .kgrail[hidden] { display: none; }
@@ -349,11 +366,19 @@
   /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
      so populating it never touches the panel's own rendered nodes/edges. Docks TOP-LEFT (the
      memory rail docks right) so a code subject's card and its rail can show together without
-     overlapping - the graph layout never re-flows for either. Hidden with no subject carded. */
-  .kgcard { position: absolute; top: 8px; left: 8px; width: 280px; max-width: 46%;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 10px; box-sizing: border-box; font-size: 12px; z-index: 2; }
+     overlapping - the graph layout never re-flows for either. Hidden with no subject carded. Its
+     top sits just below the panel's last control row, anchored the same way as the rail's.
+     #kgcard is the DOCK: inset at both ends, so it spans exactly the room left in .kgbody, a
+     column that lets clicks through to the graph. The visible card (.kgcard-body) inside keeps its
+     content height up to the dock's and scrolls past that, so a long card never runs past the
+     explorer's bottom over the sections below. */
+  .kgcard { position: absolute; top: 8px; top: calc(anchor(--kgcontrols bottom, 0px) + 8px);
+    bottom: 8px; left: 8px; width: 280px; max-width: 46%; display: flex; flex-direction: column;
+    pointer-events: none; z-index: 2; }
   .kgcard[hidden] { display: none; }
+  .kgcard-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; pointer-events: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
   .kgcard-title { font-weight: 700; color: var(--ink); }
   .kgcard-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle; }
@@ -401,19 +426,26 @@
       <span class="kgsubjectlens" id="kgsubjectlens" hidden></span>
       <span class="kglabel" id="kglabel" hidden></span>
       <a href="#" class="kgtoggle" id="kgoverlaytoggle" data-overlay="1" title="reveal the decisions, findings, and lessons attached to each node">rationale overlay: off</a>
-      <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
+      <span class="kgtests">
+        <a href="#" class="kgtoggle" id="kgteststoggle" data-tests="1" title="show the tests beside product code, then only tests">Show tests</a>
+        <span class="kgteststate" id="kgtestsstate" hidden></span>
+      </span>
     </div>
-    <div class="kg" id="kgpanel">
-      <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
+    <!-- The body below the header: the panel and the two panes docked over it, so a docked pane
+         never covers the header's controls. -->
+    <div class="kgbody">
+      <div class="kg" id="kgpanel">
+        <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
+      </div>
+      <!-- The docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely positioned so
+           populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
+           focused (a plain node click), exactly like #kgsubjectlens. -->
+      <div class="kgrail" id="kgrail" hidden></div>
+      <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, absolutely positioned so
+           populating it never touches the panel's own rendered nodes/edges - hidden until a subject
+           is carded (a plain node click, or a files/concepts cluster click). -->
+      <div class="kgcard" id="kgcard" hidden></div>
     </div>
-    <!-- The docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely positioned so
-         populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
-         focused (a plain node click), exactly like #kgsubjectlens. -->
-    <div class="kgrail" id="kgrail" hidden></div>
-    <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, absolutely positioned so
-         populating it never touches the panel's own rendered nodes/edges - hidden until a subject
-         is carded (a plain node click, or a files/concepts cluster click). -->
-    <div class="kgcard" id="kgcard" hidden></div>
   </section>
 
   <div class="columns">
@@ -523,8 +555,15 @@ let selectedInstance = (function () {
 let lastInstances = [];
 
 // The tests filter (the "Show tests" toggle): `exclude` shows product code only, `include` product
-// and tests, `only` tests. It rides every /api/graph request through apiUrl.
-let kgTests = "exclude";
+// and tests, `only` tests. It rides every /api/graph request through apiUrl. The browser remembers
+// the choice, so a reload keeps it; a store that cannot be read, or holds no choice, leaves exclude.
+const TESTS_KEY = "rigger.explorer.tests";
+let kgTests = (function () {
+  try {
+    const kept = localStorage.getItem(TESTS_KEY);
+    return kept === "include" || kept === "only" ? kept : "exclude";
+  } catch (_) { return "exclude"; }
+})();
 
 // Thread the attached instance onto a store-reading API path so every run/graph poll (/api/state,
 // /api/events, /api/graph) lands on the SELECTED instance's stores (spec 50 c3). /api/instances is a
@@ -830,18 +869,24 @@ function syncOverlayToggle() {
 }
 
 // Reflect the tests filter on its static toggle: "Show tests" while tests are hidden, else which
-// tests are shown.
+// tests are shown. While tests are hidden, every view but the overview (whose toolbar counts them)
+// says so beside the toggle, so no view looks complete when it is not.
 function syncTestsToggle() {
   const t = el("kgteststoggle");
-  if (!t) return;
+  const state = el("kgtestsstate");
+  if (!t || !state) return;
   t.textContent = { exclude: "Show tests", include: "tests: shown", only: "tests: only" }[kgTests];
   t.className = "kgtoggle" + (kgTests === "exclude" ? "" : " active");
+  state.hidden = kgTests !== "exclude" || kgMode === "overview";
+  state.textContent = state.hidden ? "" : "tests hidden";
 }
 
-// Step the tests filter exclude -> include -> only -> exclude and re-read the current view under it:
-// the seeded neighborhood when one is open, else the whole-graph overview.
+// Step the tests filter exclude -> include -> only -> exclude, remember it in the browser (a store
+// that cannot be written keeps it for this page only), and re-read the current view under it: the
+// seeded neighborhood when one is open, else the whole-graph overview.
 function setTests(next) {
   kgTests = next;
+  try { localStorage.setItem(TESTS_KEY, next); } catch (_) { /* this page keeps it */ }
   syncTestsToggle();
   if (kgSeed) seedGraph(kgSeed); else loadKgOverview();
 }
@@ -955,8 +1000,9 @@ function renderCard(card) {
     rows += row("TOP EVIDENCE", (card.top_evidence || []).map(memberChip).join(""));
   }
   const dot = '<span class="kgcard-dot" style="background:' + esc(kindColor(card.kind)) + '"></span>';
-  box.innerHTML = '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'
-    + '<div class="kgcard-prov">' + prov + '</div>' + rows;
+  box.innerHTML = '<div class="kgcard-body">'
+    + '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'
+    + '<div class="kgcard-prov">' + prov + '</div>' + rows + '</div>';
 }
 
 // Fetch subject `id`'s metadata card from GET /api/graph?card=<id> and render it (spec 63 c2). The
@@ -1013,8 +1059,7 @@ async function reprojectSubject(subject) {
 // (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
 // never confidently wrong. An empty member set degrades to a message, never an error.
 function renderReprojection(rp) {
-  kgMode = "reproject";
-  kgViewData = rp;
+  holdKgView("reproject", rp);
   const subject = (rp && rp.subject) || kgSubject || "";
   // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
   // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
@@ -1162,9 +1207,8 @@ function renderGraph(g) {
   // re-fetch (spec 30 c7) - the body is unchanged, only the client's visible-tier set moved.
   kgLast = g;
   // Record which view is current + its body so the overlay toggle can re-render it in place (spec 55
-  // c4). These are state-only assignments; they do NOT change this view's rendered output.
-  kgMode = "seed";
-  kgViewData = g;
+  // c4). State only beside the header's tests state; it does NOT change this view's rendered output.
+  holdKgView("seed", g);
   // The SUBJECT VIEW's docked memory rail (spec 63 c5): the seed's governing decisions/findings/
   // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
   // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
@@ -1311,6 +1355,14 @@ async function pathTo(target) {
 
 // Which view the panel currently holds ("overview" | "drill"); the seed view is spec 30's renderGraph.
 let kgMode = "overview";
+
+// Record the view the panel now holds and its body (so a toggle re-renders it in place), and bring
+// the header's tests state up to that view.
+function holdKgView(mode, body) {
+  kgMode = mode;
+  kgViewData = body;
+  syncTestsToggle();
+}
 
 // A deterministic per-kind colour, so a given graph yields one stable palette every poll (no
 // Math.random anywhere). Known dev-loop/code kinds get a fixed hue; any other kind hashes to a stable
@@ -1913,8 +1965,7 @@ function bindKgView() {
 // thickness scales with its weight. A click on a super-node (data-cluster) DRILLS it. An empty graph
 // degrades to an empty-graph message, never an error.
 function renderKgOverview(ov) {
-  kgMode = "overview";
-  kgViewData = ov;
+  holdKgView("overview", ov);
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
   const controls = lensControls();
@@ -1985,8 +2036,7 @@ function lensControls() {
 // <title> - so honest membership is met end-to-end, not just on the wire. Every other lens sends no
 // `shared`, so the marker never appears and the drill stays byte-identical.
 function renderKgDrill(nb) {
-  kgMode = "drill";
-  kgViewData = nb;
+  holdKgView("drill", nb);
   const nodes = (nb && nb.nodes) || [];
   const edges = (nb && nb.edges) || [];
   const key = (nb && nb.seed) || "";
@@ -2128,8 +2178,7 @@ async function seedCalls(seed, dir) {
 // beside the traversed DAG. A frontier node carries its candidates for the expand; a plain call node
 // re-seeds the neighborhood. An empty walk degrades to a message, never an error.
 function renderKgCalls(cg) {
-  kgMode = "calls";
-  kgViewData = cg;
+  holdKgView("calls", cg);
   const nodes = (cg && cg.nodes) || [];
   const edges = (cg && cg.edges) || [];
   const seed = (cg && cg.seed) || "";

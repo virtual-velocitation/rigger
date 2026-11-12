@@ -400,6 +400,9 @@ pub trait CodeHalf: Neighbors {
     fn entity_names(&self) -> Vec<String>;
     /// The test entities named `name` the filter hides, in id order.
     fn hidden_tests_named(&self, name: &str) -> Vec<Node>;
+    /// How many distinct test entities the filter hides prove a node of `ids`, counted from the
+    /// proofs the half read for them ([`ContextGraph::hidden_provers`]).
+    fn hidden_provers(&self, ids: &[String]) -> usize;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -412,6 +415,20 @@ pub trait CodeHalf: Neighbors {
     fn take_whole(&mut self) -> Result<Graph, Error> {
         self.whole()
     }
+}
+
+/// How many distinct provers of the `(proved, prover)` pairs `proofs` prove an id of `ids`: the
+/// one count of [`CodeHalf::hidden_provers`].
+pub(crate) fn provers_of<'p>(
+    proofs: impl Iterator<Item = (&'p str, &'p str)>,
+    ids: &[String],
+) -> usize {
+    let ids: FxHashSet<&str> = ids.iter().map(String::as_str).collect();
+    let provers: FxHashSet<&str> = proofs
+        .filter(|(proved, _)| ids.contains(proved))
+        .map(|(_, prover)| prover)
+        .collect();
+    provers.len()
 }
 
 /// The file `node`'s facts came from, the one rule withholding reads: a design or workflow node's
@@ -452,6 +469,8 @@ pub struct Whole {
     /// The view's groupings and, per arm, the tests attached to them.
     groupings: Groupings,
     attachments: [TestAttachment; 2],
+    /// The proof calls read to attach the tests, kept while the filter hides tests.
+    proofs: Vec<ProofCall>,
 }
 
 impl Whole {
@@ -460,12 +479,15 @@ impl Whole {
         let groupings = view.groupings();
         let code_graph = CodeGraph::new(view, filter);
         let resolved = code_graph.resolved();
-        let proofs = code_graph.resolver().proof_calls();
-        let attachments = attachments(proofs, groupings);
+        let attachments = attachments(code_graph.resolver().proof_calls(), groupings);
         let code = Indexed::new(
             joined(resolved.graph, groupings, &attachments, filter.tests),
             Vec::new(),
         );
+        let proofs = match filter.tests {
+            Tests::Exclude => code_graph.into_proof_calls(),
+            Tests::Include | Tests::Only => Vec::new(),
+        };
         let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for c in &groupings.concepts {
@@ -484,6 +506,7 @@ impl Whole {
             hidden_tests: resolved.hidden_tests,
             groupings: groupings.clone(),
             attachments,
+            proofs,
         }
     }
 }
@@ -556,6 +579,10 @@ impl CodeHalf for Whole {
             .filter(|n| node_name(n) == Some(name))
             .cloned()
             .collect()
+    }
+    fn hidden_provers(&self, ids: &[String]) -> usize {
+        let proofs = self.proofs.iter();
+        provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -1112,6 +1139,12 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             .into_iter()
             .filter(|n| !self.withholds_code(n))
             .collect())
+    }
+    fn hidden_provers(&self, ids: &[String]) -> Result<usize, Error> {
+        if self.stale {
+            return Ok(0);
+        }
+        Ok(self.code.hidden_provers(ids))
     }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)

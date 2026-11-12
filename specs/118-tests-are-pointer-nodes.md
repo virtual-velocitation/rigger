@@ -1,5 +1,13 @@
 # 118 - Tests are pointer nodes
 
+**Status: superseded.** This spec was not built. The code store
+(docs/architecture-addendum-the-code-store.md) replaces it: test code is extracted fully, each
+test definition a code entity the tests filter hides by default (section 8); a product entity's
+proofs come from test mentions whatever the filter; a lookup answers test hits as a separate
+count; and the tree is read at a commit, so a removed file holds no definition. Its pointer nodes,
+`PROVES` edges, fold state, helper closure and gone-file retirement are marked SUPERSEDED below;
+nothing in it stands.
+
 **Goal:** the knowledge graph is the lookup surface every persona uses; a question it cannot answer
 becomes a grep. "Which tests exercise this fn" has no answer: a proof is a `file:line` string in a
 production node's attrs (`proven_by`, `proof_evidence`), never the test, a helper's references
@@ -12,6 +20,8 @@ project losing evidence, keeps tests out of every production view and ranking, a
 files at the whole-tree walk.
 
 ## Design
+
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes test pointer nodes, which the code store replaces with full extraction and the tests filter.
 
 **TESTS ARE POINTER NODES, decided here.** Spec 86's boundary, restated: test pointer records are
 evidence; no test internal is a node. THE FOLD STORES FACTS AND DERIVES NOTHING TRANSITIVE (fewest
@@ -204,6 +214,8 @@ time and stored nowhere.
 
 ## Notes (non-criteria)
 
+SUPERSEDED by the code store (docs/architecture-addendum-the-code-store.md): the section below describes test pointer nodes, which the code store replaces with full extraction and the tests filter.
+
 ARTIFACT OWNERSHIP. Owner = the criterion of the artifact's first production caller (for a field,
 table or constant, its first production reader or writer); "-" = not retired.
 
@@ -352,6 +364,9 @@ changes.
 - The light lane compiles no extraction (`symbols/mod.rs:20-28`): 15's, 12's and 14's `symbols/` clauses, 3's periphery clause, 4, 5 and 9 assert in the default lane; 1, 11, 12's `symbols/store.rs` clause (ungated, the `ts-tags-v5` index), the `contextgraph/sqlite.rs` clauses of 13, 2 and 3 (3's version-3 fixture among them; 3's after-rebuild half in the default lane only, recording its entries as the binary's own extraction of fixture bytes, since 107's light-lane `resolve_entry` stub answers every entry unresolved; the rebuild halves of 2 and 13 hand `Projector::rebuild` a re-extractor answering the fixture's hand-built batches (107's rebuild parameter), in the default and light lanes), and 6-8 load or render hand-built input in the default and light lanes; the core lane, compiling neither `contextgraph/sqlite.rs`, the MCP server nor the grounder and running no root-crate test, holds only the `contextgraph.rs` clauses of 3 and 6, which also run in the default and light lanes.
 
 ## Done when
+
+Every criterion is SUPERSEDED by the code store: they test test pointer nodes, which the
+code store replaces with full extraction and the tests filter.
 
 - [ ] a test proves WHOLE-GRAPH VIEWS SKIP TEST NODES: `Projector::subgraph` and `Projector::whole` load no `test` node and no edge touching one, so no lens, community or concept view over a graph `subgraph` or `whole` loaded shows one,
   asserted in root integration tests over graphs `tests/common/fixtures/test_graph.rs` writes, each

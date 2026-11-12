@@ -1303,6 +1303,12 @@ fn pay_owed_rebuild(
     if let Some(rebuilt) = rebuilt {
         println!("rebuilt graph.db from the event log");
         println!("{} from the rebuilt graph", pruned_line(&rebuilt.pruned));
+        if rebuilt.log_held {
+            println!(
+                "graph.db's write-ahead log was still held by a reader, so it keeps its size \
+                 until the last connection to graph.db closes"
+            );
+        }
     }
     let caught_up = if seeded == contextgraph::sqlite::Seeding::Skipped {
         println!(

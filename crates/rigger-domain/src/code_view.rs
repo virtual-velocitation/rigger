@@ -337,6 +337,19 @@ impl std::str::FromStr for Tests {
     }
 }
 
+/// The one line every reader prints when the tests filter hid `n` test hits from its answer, or
+/// none when it hid nothing.
+pub fn tests_hidden_line(n: usize) -> Option<String> {
+    let noun = match n {
+        0 => return None,
+        1 => "hit",
+        _ => "hits",
+    };
+    Some(format!(
+        "{n} test {noun} not shown; the tests filter (include or only) shows them"
+    ))
+}
+
 /// What a reader asks of a view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewFilter {
@@ -468,6 +481,23 @@ impl CodeView for FactsView {
 mod tests {
     use super::*;
     use crate::code_facts::{Def, Mention};
+
+    #[test]
+    fn tests_hidden_line_counts_the_hidden_hits_and_names_the_filter_that_shows_them() {
+        for (n, line) in [
+            (0, None),
+            (
+                1,
+                Some("1 test hit not shown; the tests filter (include or only) shows them"),
+            ),
+            (
+                2,
+                Some("2 test hits not shown; the tests filter (include or only) shows them"),
+            ),
+        ] {
+            assert_eq!(tests_hidden_line(n).as_deref(), line, "{n} hidden");
+        }
+    }
 
     #[test]
     fn in_scope_skips_hidden_paths_but_the_workflow_definition() {

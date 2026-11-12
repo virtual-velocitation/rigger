@@ -42,7 +42,7 @@ use crate::contextgraph::{
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
 /// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
 /// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 1;
+pub const SETTLED_GENERATION: u64 = 2;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -399,7 +399,7 @@ impl<'v> Resolver<'v> {
         let mut by_id: BTreeMap<(&'v str, &'v str), Vec<(DefRef<'v>, bool)>> = BTreeMap::new();
         for d in self.view.defs_named(leaf) {
             if d.file.half == Half::Code {
-                let test = d.test || self.is_test_file(d.file.path);
+                let test = self.is_test(d.test, d.file.path);
                 by_id
                     .entry((d.file.path, d.local))
                     .or_default()
@@ -482,9 +482,19 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// The proof rule: the product definition a test call to `leaf` from `file` proves.
+    /// The proof rule: the product definition a test call to `leaf` from `file` proves. A call
+    /// the call rule lands on the one call target of `leaf` in `file` proves that definition when
+    /// it is product and none when it is test, so a test's call edge and its proof name one
+    /// definition; any other call proves the one product call target in `file`, else the one in
+    /// the view.
     pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
+        let mut here = candidates
+            .iter()
+            .filter(|c| c.file == file && Pool::All.calls(c));
+        if let (Some(one), None) = (here.next(), here.next()) {
+            return (!one.test).then(|| one.id.clone());
+        }
         let targets: Vec<&Candidate> = candidates
             .iter()
             .filter(|c| Pool::Product.calls(c))
@@ -492,9 +502,30 @@ impl<'v> Resolver<'v> {
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
+    /// The call-edge rule: where the edge of a call to `leaf` from `file` lands, and its tier. A
+    /// product call, and a test call the call rule resolves in `file`, take the call rule. A test
+    /// call the call rule sends to a placeholder lands, INFERRED, on the definition the proof rule
+    /// credits with it, so a test's call edge and its proof name one definition; on the
+    /// placeholder when the proof rule credits none. INFERRED even when that definition is in
+    /// `file`: the call rule found a same-file test definition of the leaf contesting it.
+    fn call_edge(&self, file: &str, leaf: &str, test: bool) -> (String, &'static str) {
+        let (to, tier) = self.call(file, leaf, Pool::of(test));
+        if !test || tier == TIER_EXTRACTED {
+            return (to, tier);
+        }
+        self.proof(file, leaf)
+            .map_or((to, tier), |id| (id, TIER_INFERRED))
+    }
+
     /// Whether `m`, a mention in `facts`, is test code.
     pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
-        m.test || self.is_test_file(&facts.path)
+        self.is_test(m.test, &facts.path)
+    }
+
+    /// Whether a fact in `path` that its own mark calls test code when `marked` is test code: by
+    /// that mark, or by its file's scope or the test-module closure.
+    pub(crate) fn is_test(&self, marked: bool, path: &str) -> bool {
+        marked || self.is_test_file(path)
     }
 
     /// The entities of `facts`, one per id, in id order; test entities only when `tests`.
@@ -567,7 +598,7 @@ impl<'v> Resolver<'v> {
         self.each_declared_link(facts, tests, sink);
     }
 
-    /// The call and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
+    /// The call-edge and tagged rules' edges of `mentions`, mentions of `facts` in file order, handed
     /// to `sink` in [`Self::each_link`] order. A tagged reference a call holds stays held when
     /// `mentions` hold every call whose leaf a file-level tagged reference among them names.
     pub fn each_mention_link<'f>(
@@ -596,7 +627,7 @@ impl<'v> Resolver<'v> {
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
             }
-            let (to, tier) = self.call(file, &m.leaf, Pool::of(test));
+            let (to, tier) = self.call_edge(file, &m.leaf, test);
             if let Some(caller) = m.enclosing.and_then(entity) {
                 sink(caller, REL_CALLS, &to, tier, test);
             }
@@ -677,6 +708,12 @@ impl<'v> Resolver<'v> {
         })
     }
 
+    /// [`Self::proof_calls`], moved out of the resolver rather than copied.
+    pub fn into_proof_calls(self) -> Vec<ProofCall> {
+        self.proof_calls();
+        self.proof_calls.into_inner().unwrap_or_default()
+    }
+
     /// Whether the view holds its proof calls settled, so a reader need not walk them
     /// ([`Self::file_proofs`]).
     pub fn proofs_settled(&self) -> bool {
@@ -741,7 +778,7 @@ impl<'v> Resolver<'v> {
         for leaf in leaves.iter().map(String::as_str) {
             for m in self.view.mentions_named(leaf) {
                 let path = m.file.path;
-                let test = m.test || self.is_test_file(path);
+                let test = self.is_test(m.test, path);
                 if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
                     continue;
                 }
@@ -886,7 +923,7 @@ pub fn resettle(
         .filter(|l| targets(&was, l) != targets(&now, l))
     {
         for m in view.mentions_named(leaf) {
-            let test = m.test || now.is_test_file(m.file.path);
+            let test = now.is_test(m.test, m.file.path);
             if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
                 redo.insert(m.file.path.to_string());
             }
@@ -1300,7 +1337,7 @@ pub(crate) mod tests {
                 &["src/c.rs"],
                 changed(|files| {
                     let c = at(files, "src/c.rs");
-                    c.defs.push(def("compute", "function", 6, None, false));
+                    c.defs.push(def("run", "function", 6, None, false));
                 }),
             ),
             (
@@ -1458,9 +1495,14 @@ pub(crate) mod tests {
                 &[
                     "src/a.rs::helper <- src/a.rs:25",
                     "src/a.rs::run <- src/a.rs:26 src/a_tests.rs:4 tests/it.rs:2",
-                    "src/b.rs::compute <- tests/it.rs:3",
                 ],
                 &["draw", "tests/it.rs::"],
+            ),
+            (
+                "proof: none for a call the call rule lands on its own file's test definition",
+                Ask::Proofs,
+                &[],
+                &["tests/it.rs:3"],
             ),
             (
                 "duplicate id, kind precedence: one entity, the type's kind and line",
@@ -1503,7 +1545,7 @@ pub(crate) mod tests {
     /// is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (1, "b668e495a0e24465");
+        const PINNED: (u64, &str) = (2, "4cf253b08ef03faa");
         let view = fixture();
         let resolver = Resolver::new(&view);
         let test_files: Vec<&str> = (view.files())
@@ -1565,9 +1607,15 @@ pub(crate) mod tests {
             ),
             (
                 "a test call resolves against every candidate",
-                Ask::Links("src/a.rs", true),
-                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::%helper"],
+                Ask::Links("tests/it.rs", true),
+                &["tests/it.rs::it_works -CALLS/extracted-> tests/it.rs::compute"],
                 &[],
+            ),
+            (
+                "a contested test call lands inferred on the definition its proof credits",
+                Ask::Links("src/a.rs", true),
+                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::helper"],
+                &["src/a.rs::tests::checks -CALLS/inferred-> src/a.rs::%helper"],
             ),
         ]);
         let view = fixture();

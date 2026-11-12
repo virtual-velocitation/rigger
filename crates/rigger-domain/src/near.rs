@@ -4,11 +4,12 @@
 //!
 //! Resolving a view whole folds what every file asserts ([`crate::code_graph`]). What a file
 //! asserts about an id is fixed by the rules: a code id is asserted by its own file, by the files
-//! holding a tagged reference to one of its leaves, by the files declaring it as a module, and by
-//! the design and workflow facts that name it. So an id's node and edges are the whole graph's
-//! when exactly those assertions are folded, in file order, under the same filter; its proofs are
-//! the test calls of its leaves; and its groupings are read from the view's groupings by id. Each
-//! file's assertions are read once and kept for the answer.
+//! whose mentions of one of its leaves land on it from elsewhere (a tagged reference, and with
+//! tests shown a test call), by the files declaring it as a module, and by the design and workflow
+//! facts that name it. So an id's node and edges are the whole graph's when exactly those
+//! assertions are folded, in file order, under the same filter; its proofs are the test calls of
+//! its leaves; and its groupings are read from the view's groupings by id. Each file's assertions
+//! are read once and kept for the answer.
 
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -19,7 +20,8 @@ use crate::code_facts::{FileFacts, Half, MentionKind};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
 use crate::composed::{
-    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, CodeHalf, Indexed,
+    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, provers_of, CodeHalf,
+    Indexed,
 };
 use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
 use crate::contextgraph::{
@@ -174,8 +176,9 @@ enum Part {
 /// Which files' assertions a read folds.
 #[derive(Clone, Copy)]
 struct Reach {
-    /// The files holding a tagged reference to one of the id's leaves.
-    tagged: bool,
+    /// The files whose mentions of one of the id's leaves land on it from elsewhere
+    /// ([`State::landing`]).
+    landing: bool,
     /// The files declaring the id as a module.
     modules: bool,
 }
@@ -183,7 +186,7 @@ struct Reach {
 impl Reach {
     /// This reach's place among the four.
     fn at(self) -> usize {
-        usize::from(self.tagged) * 2 + usize::from(self.modules)
+        usize::from(self.landing) * 2 + usize::from(self.modules)
     }
 }
 
@@ -276,6 +279,8 @@ struct State<'v> {
     attach: FxHashMap<(usize, String), Option<usize>>,
     /// Each code file's proof calls, by place.
     proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
+    /// The test entities proving each id resolved so far, kept while the filter hides tests.
+    provers: FxHashMap<String, Vec<String>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
     attached: FxHashMap<(usize, String), Arc<Vec<String>>>,
     /// Each (place, id) whose code assertions were read, in the order read.
@@ -312,6 +317,7 @@ impl<'v> Near<'v> {
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
                 proofs_in: FxHashMap::default(),
+                provers: FxHashMap::default(),
                 #[cfg(test)]
                 read_code: Vec::new(),
                 attached: FxHashMap::default(),
@@ -504,12 +510,20 @@ impl<'v> State<'v> {
         def_leaves(&facts, local)
     }
 
-    /// The places of the code files holding a tagged reference to one of `leaves`.
-    fn tagging(&self, leaves: &[String]) -> Vec<u32> {
+    /// The places of the code files whose mentions of one of `leaves` can land on a definition in
+    /// another file: those holding a tagged reference to one, and, with tests shown, a test call of
+    /// one, which lands on the definition its proof credits.
+    fn landing(&self, leaves: &[String]) -> Vec<u32> {
+        let tests = self.tests != Tests::Exclude;
+        let resolver = self.graph.resolver();
         let mut places = Vec::new();
         for leaf in leaves {
             for m in self.view.mentions_named(leaf) {
-                if m.file.half == Half::Code && matches!(m.kind, MentionKind::Tagged(_)) {
+                let lands = match m.kind {
+                    MentionKind::Tagged(_) => true,
+                    MentionKind::Call => tests && resolver.is_test(m.test, m.file.path),
+                };
+                if m.file.half == Half::Code && lands {
                     places.extend(self.code_place(m.file.path));
                 }
             }
@@ -525,9 +539,9 @@ impl<'v> State<'v> {
         let own = self.code_place(file);
         sources.extend(own.map(|at| (at, Part::Code)));
         let leaves = self.leaves_of(id);
-        if reach.tagged {
-            let tagging = self.tagging(&leaves);
-            sources.extend(tagging.into_iter().map(|at| (at, Part::Code)));
+        if reach.landing {
+            let landing = self.landing(&leaves);
+            sources.extend(landing.into_iter().map(|at| (at, Part::Code)));
         }
         if reach.modules && rest.is_none() && own.is_some() {
             let declaring = self.declaring(file);
@@ -555,12 +569,16 @@ impl<'v> State<'v> {
             }
         }
         if !leaves.is_empty() {
-            let evidence: Vec<String> = (self.graph.resolver().proofs_of(id))
-                .into_iter()
-                .map(|c| c.evidence)
-                .collect();
+            let (evidence, provers): (Vec<String>, Vec<String>) =
+                (self.graph.resolver().proofs_of(id))
+                    .into_iter()
+                    .map(|c| (c.evidence, c.caller))
+                    .unzip();
             if !evidence.is_empty() {
                 b.prove(id, &evidence);
+            }
+            if self.tests == Tests::Exclude && !provers.is_empty() {
+                self.provers.insert(id.to_string(), provers);
             }
         }
         let Graph { nodes, edges } = b.into_graph(self.tests);
@@ -609,7 +627,7 @@ impl<'v> State<'v> {
         let only = self.tests == Tests::Only;
         let test_file = split_id(id).1.is_none() && self.graph.resolver().is_test_file(id);
         let reach = Reach {
-            tagged: only,
+            landing: only,
             modules: only || test_file,
         };
         self.resolved(id, reach).node.clone()
@@ -619,7 +637,7 @@ impl<'v> State<'v> {
     /// resolve that reads the node of a product id reads them.
     fn code_out(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
-            tagged: false,
+            landing: false,
             modules: false,
         };
         self.resolved(id, reach)
@@ -628,7 +646,7 @@ impl<'v> State<'v> {
     /// The code edges into `id`.
     fn code_incoming(&mut self, id: &str) -> Arc<Resolved> {
         let reach = Reach {
-            tagged: true,
+            landing: true,
             modules: true,
         };
         self.resolved(id, reach)
@@ -1021,6 +1039,26 @@ impl CodeHalf for Near<'_> {
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
     }
+    /// Counted from the proofs read resolving `ids`, or, once the view is resolved whole, from
+    /// the proof calls that read.
+    fn hidden_provers(&self, ids: &[String]) -> usize {
+        let state = self.state();
+        if state.tests != Tests::Exclude {
+            return 0;
+        }
+        match self.whole.get() {
+            Some(_) => {
+                let proofs = state.graph.resolver().proof_calls().iter();
+                provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+            }
+            None => {
+                let proofs = (state.provers.iter()).flat_map(|(id, provers)| {
+                    provers.iter().map(move |p| (id.as_str(), p.as_str()))
+                });
+                provers_of(proofs, ids)
+            }
+        }
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
             let mut state = self.state();
@@ -1045,7 +1083,7 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{DefRef, FactsView, MentionRef, Proofs, Settled};
+    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
@@ -1308,7 +1346,8 @@ mod tests {
     }
 
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
-    /// subgraph, the walks both ways, the lookup of a definition and the hidden tests.
+    /// subgraph, the walks both ways, the lookup of a definition, the hidden tests and the hidden
+    /// tests proving what a subgraph shows.
     #[test]
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
@@ -1342,7 +1381,11 @@ mod tests {
                 for depth in [1, 2, 3] {
                     let at = format!("{tests:?} {held} {seed:?} {depth}");
                     let (got, want) = (near.subgraph(&seed, depth), whole.subgraph(&seed, depth));
-                    same!(got.unwrap(), want.unwrap(), "subgraph {at}");
+                    let (got, want) = (got.unwrap(), want.unwrap());
+                    let shown: Vec<String> = want.nodes.iter().map(|n| n.id.clone()).collect();
+                    same!(got, want, "subgraph {at}");
+                    let (got, want) = (near.hidden_provers(&shown), whole.hidden_provers(&shown));
+                    same!(got.unwrap(), want.unwrap(), "hidden provers {at}");
                     for direction in [Direction::Up, Direction::Down] {
                         for floor in [TIER_INFERRED, TIER_AMBIGUOUS] {
                             let got = near.calls(&seed, direction, depth, floor).unwrap();
@@ -1391,6 +1434,70 @@ mod tests {
                 }
             }
             same!(near.stamp_label(), whole.stamp_label());
+        }
+    }
+
+    /// HIDDEN PROVERS ARE COUNTED FROM THE PROOFS READ: under exclude, the distinct test entities
+    /// proving the nodes asked about, a test proving two counted once; none when tests are shown
+    /// or the worktree cannot be compared. The whole graph and a neighbourhood count alike, a
+    /// neighbourhood from the proofs it read showing those nodes, reading nothing more of the
+    /// view, before and after it is resolved whole.
+    #[test]
+    fn hidden_provers_are_the_distinct_tests_proving_the_nodes_shown_while_tests_are_hidden() {
+        let records = Indexed::default();
+        let honesty = |compared| Honesty {
+            worktree: "wt".into(),
+            compared,
+            behind: None,
+        };
+        let (run, helper) = ("src/a.rs::run", "src/a.rs::helper");
+        let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
+        let cases: &[(Tests, Compared, &[&str], usize)] = &[
+            // checks, checks_run and it_works call run; checks calls helper too.
+            (Tests::Exclude, compared, &[run], 3),
+            (Tests::Exclude, compared, &[helper], 1),
+            (Tests::Exclude, compared, &[run, helper], 3),
+            (
+                Tests::Exclude,
+                compared,
+                &["src/b.rs::compute", "src/a.rs", "docs/d.md", "missing"],
+                0,
+            ),
+            (Tests::Include, compared, &[run, helper], 0),
+            (Tests::Only, compared, &[run, helper], 0),
+            (Tests::Exclude, uncomparable, &[run, helper], 0),
+        ];
+        let settles = Settles::of(view());
+        for &(tests, compared, ids, want) in cases {
+            let filter = ViewFilter { tests };
+            let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+            let counting = Counting {
+                view: view(),
+                reads: Mutex::new(Vec::new()),
+                settles: None,
+            };
+            for (held, read) in [("facts", &counting as &dyn CodeView), ("settled", &settles)] {
+                let at = format!("{tests:?} {compared:?} {held} {ids:?}");
+                let whole = Composed::new(&records, read, filter, honesty(compared)).unwrap();
+                assert_eq!(whole.hidden_provers(&ids).unwrap(), want, "whole {at}");
+                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                near.subgraph(&ids, 1).unwrap();
+                counting.taken();
+                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near {at}");
+                assert_eq!(
+                    counting.taken(),
+                    Vec::<String>::new(),
+                    "near reads more {at}"
+                );
+                near.whole().unwrap();
+                counting.taken();
+                assert_eq!(near.hidden_provers(&ids).unwrap(), want, "near whole {at}");
+                assert_eq!(
+                    counting.taken(),
+                    Vec::<String>::new(),
+                    "whole reads more {at}"
+                );
+            }
         }
     }
 

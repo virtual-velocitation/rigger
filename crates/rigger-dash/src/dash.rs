@@ -5140,6 +5140,260 @@ mod tests {
         );
     }
 
+    /// One element of the explorer section's markup: its id, its classes and the indices of its
+    /// ancestors within the section, outermost first.
+    struct Element {
+        id: String,
+        classes: Vec<String>,
+        ancestors: Vec<usize>,
+    }
+
+    /// The explorer section's (`#kg`) elements in document order, read by a tag scan of the served
+    /// markup, which holds only container elements, text and comments there.
+    fn explorer_markup(page: &str) -> Vec<Element> {
+        let start = page
+            .find(r#"<section class="view" id="kg">"#)
+            .expect("the page holds the explorer section");
+        let end = start
+            + page[start..]
+                .find("</section>")
+                .expect("the section closes");
+        let attr = |tag: &str, name: &str| {
+            let key = format!(" {name}=\"");
+            tag.find(&key).map(|at| {
+                let value = &tag[at + key.len()..];
+                value[..value.find('"').expect("a quoted value")].to_string()
+            })
+        };
+        let mut elements = Vec::new();
+        let mut open: Vec<usize> = Vec::new();
+        let mut rest = &page[start..end];
+        while let Some(at) = rest.find('<') {
+            rest = &rest[at..];
+            if let Some(comment) = rest.strip_prefix("<!--") {
+                rest = &comment[comment.find("-->").expect("the comment closes") + 3..];
+                continue;
+            }
+            let close = rest.find('>').expect("the tag closes");
+            let tag = &rest[..=close];
+            rest = &rest[close + 1..];
+            if tag.starts_with("</") {
+                open.pop();
+                continue;
+            }
+            elements.push(Element {
+                id: attr(tag, "id").unwrap_or_default(),
+                classes: attr(tag, "class")
+                    .map(|c| c.split_whitespace().map(str::to_string).collect())
+                    .unwrap_or_default(),
+                ancestors: open.clone(),
+            });
+            open.push(elements.len() - 1);
+        }
+        elements
+    }
+
+    /// The CSS rules selecting `element` by its id or by one of its classes alone: each rule
+    /// whose line opens with a selector list naming `#id` or `.class` as one of its selectors,
+    /// from the selector list to its closing `}`.
+    fn rules_of<'a>(page: &'a str, element: &Element) -> Vec<&'a str> {
+        let names: Vec<String> = std::iter::once(format!("#{}", element.id))
+            .filter(|_| !element.id.is_empty())
+            .chain(element.classes.iter().map(|c| format!(".{c}")))
+            .collect();
+        let mut rules = Vec::new();
+        let mut at = 0;
+        for line in page.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            let named = trimmed.split_once('{').is_some_and(|(selectors, _)| {
+                selectors
+                    .split(',')
+                    .any(|selector| names.iter().any(|name| selector.trim() == name))
+            });
+            if named {
+                let open = at + line.len() - trimmed.len();
+                let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
+                rules.push(&page[open..close]);
+            }
+            at += line.len();
+        }
+        rules
+    }
+
+    /// The value `rules` last declare for `property`, as the cascade reads them.
+    fn declared(rules: &[&str], property: &str) -> Option<String> {
+        rules
+            .iter()
+            .flat_map(|rule| rule[rule.find('{').map_or(0, |i| i + 1)..].split(';'))
+            .filter_map(|declaration| declaration.split_once(':'))
+            .filter(|(name, _)| name.trim() == property)
+            .map(|(_, value)| value.trim().trim_end_matches('}').trim().to_string())
+            .next_back()
+    }
+
+    /// The explorer element whose id is `id`, by its index in [`explorer_markup`].
+    fn explorer_index(markup: &[Element], id: &str) -> usize {
+        markup
+            .iter()
+            .position(|e| e.id == id)
+            .unwrap_or_else(|| panic!("the explorer holds #{id}"))
+    }
+
+    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card, THEN
+    /// each is absolutely positioned against a box that does not hold the explorer's header, so
+    /// neither covers the header or its controls (the lens control, the label, the toggles and the
+    /// tests state) in any view. Layout is outside what the page harness can run, so this pins the
+    /// box each docks against.
+    #[test]
+    fn the_rail_and_the_card_dock_below_the_explorer_header() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let positioned = |e: &Element, how: &[&str]| {
+            rules_of(&page, e).iter().any(|rule| {
+                how.iter()
+                    .any(|value| rule.contains(&format!("position: {value}")))
+            })
+        };
+        let header = explorer_index(&markup, "kghead");
+        for docked in ["kgrail", "kgcard"] {
+            let at = explorer_index(&markup, docked);
+            assert!(
+                positioned(&markup[at], &["absolute"]),
+                "#{docked} docks absolutely"
+            );
+            let block = markup[at]
+                .ancestors
+                .iter()
+                .rev()
+                .copied()
+                .find(|&a| positioned(&markup[a], &["relative", "absolute", "fixed", "sticky"]))
+                .unwrap_or_else(|| panic!("#{docked} has a positioned box to dock against"));
+            assert!(
+                !markup[header].ancestors.contains(&block),
+                "#{docked} docks against #{} {:?}, which holds the header it would cover",
+                markup[block].id,
+                markup[block].classes
+            );
+        }
+    }
+
+    /// GIVEN the served page, WHEN the explorer's header wraps (a long label, a narrow window),
+    /// THEN the tests state stays beside the tests toggle: it is the toggle's next sibling, in a
+    /// box of its own that does not wrap, so a wrap never carries it away from the toggle.
+    #[test]
+    fn the_tests_state_stays_beside_the_tests_toggle() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let toggle = explorer_index(&markup, "kgteststoggle");
+        let state = explorer_index(&markup, "kgtestsstate");
+        assert_eq!(
+            (state, &markup[state].ancestors),
+            (toggle + 1, &markup[toggle].ancestors),
+            "the tests state is the tests toggle's next sibling"
+        );
+        let pair = &markup[*markup[toggle].ancestors.last().expect("a parent")];
+        let rules = rules_of(&page, pair);
+        assert!(
+            rules.iter().any(|r| r.contains("white-space: nowrap"))
+                && !rules.iter().any(|r| r.contains("flex-wrap: wrap")),
+            "the box holding the toggle and its state, #{} {:?}, does not wrap: {rules:?}",
+            pair.id,
+            pair.classes
+        );
+    }
+
+    /// GIVEN the served page, WHEN a view draws the panel's control rows above its content (the
+    /// toolbar with the back link and the lens controls; in a neighbourhood the heading, the
+    /// directed-call links and the tier checkboxes) and the memory rail or the metadata card docks
+    /// over the panel, THEN each docks against the bottom edge of the last of those rows, so a
+    /// wrapped row pushes it down and neither covers a panel control; neither takes the rows as
+    /// its default anchor, so scrolling the panel never carries either up over the header. Layout
+    /// is outside what the page harness can run, so this pins the anchoring each declares.
+    #[test]
+    fn the_rail_and_the_card_dock_below_the_panel_toolbar() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let row_anchors: Vec<(&str, Option<String>)> =
+            ["kgtoolbar", "kgseed", "kgcalls-offer", "kgtiers"]
+                .into_iter()
+                .map(|row| {
+                    let element = Element {
+                        id: String::new(),
+                        classes: vec![row.to_string()],
+                        ancestors: Vec::new(),
+                    };
+                    (row, declared(&rules_of(&page, &element), "anchor-name"))
+                })
+                .collect();
+        let anchor = row_anchors[0]
+            .1
+            .clone()
+            .expect("the panel toolbar names itself as an anchor");
+        assert!(
+            row_anchors
+                .iter()
+                .all(|(_, name)| name.as_deref() == Some(anchor.as_str())),
+            "every control row above the panel's content names the one anchor: {row_anchors:?}"
+        );
+        for docked in ["kgrail", "kgcard"] {
+            let rules = rules_of(&page, &markup[explorer_index(&markup, docked)]);
+            let top = declared(&rules, "top").unwrap_or_default();
+            assert!(
+                top.contains(&format!("anchor({anchor} bottom")),
+                "#{docked} docks its top against the toolbar's bottom ({anchor}), not at {top:?}"
+            );
+            assert!(
+                declared(&rules, "position-anchor").is_none(),
+                "#{docked} does not follow the panel's scroll: {rules:?}"
+            );
+        }
+    }
+
+    /// GIVEN the served page, WHEN the metadata card carries more rows than the explorer's body
+    /// has room for below the panel's control rows, THEN the card scrolls inside the body and
+    /// never extends past its bottom: `#kgcard` is a dock inset at both ends, a column that lets
+    /// clicks through, and the visible card inside it keeps its content height up to the dock's
+    /// height and scrolls past that. Layout is outside what the page harness can run, so this pins
+    /// the box each declares and that `renderCard` writes the card inside the dock.
+    #[test]
+    fn a_card_taller_than_the_explorer_body_scrolls_inside_it() {
+        let page = live_page();
+        let markup = explorer_markup(&page);
+        let dock = rules_of(&page, &markup[explorer_index(&markup, "kgcard")]);
+        let body = rules_of(
+            &page,
+            &Element {
+                id: String::new(),
+                classes: vec!["kgcard-body".to_string()],
+                ancestors: Vec::new(),
+            },
+        );
+        let read = |rules: &[&str], property: &str| declared(rules, property).unwrap_or_default();
+        assert_eq!(
+            (
+                read(&dock, "bottom").is_empty(),
+                read(&dock, "display"),
+                read(&dock, "flex-direction"),
+                read(&dock, "pointer-events"),
+            ),
+            (false, "flex".into(), "column".into(), "none".into()),
+            "#kgcard is a column dock inset at its bottom that lets clicks through: {dock:?}"
+        );
+        assert_eq!(
+            (
+                read(&body, "min-height"),
+                read(&body, "overflow-y"),
+                read(&body, "pointer-events"),
+            ),
+            ("0".into(), "auto".into(), "auto".into()),
+            "the visible card shrinks to the dock and scrolls its rows: {body:?}"
+        );
+        assert!(
+            page.contains(r#"box.innerHTML = '<div class="kgcard-body">'"#),
+            "renderCard writes the card's rows inside the visible card"
+        );
+    }
+
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
     /// WRAP at their hyphen/slash break opportunities - never one char per line, never forcing a
     /// page-level horizontal scrollbar - and the genuinely-wide cells (the event-feed JSON and
@@ -8594,7 +8848,7 @@ mod tests {
         for needle in [
             r#"id="kgteststoggle""#,
             "Show tests",
-            r#"let kgTests = "exclude";"#,
+            r#"return kept === "include" || kept === "only" ? kept : "exclude";"#,
             r#""tests=" + encodeURIComponent(kgTests)"#,
             "function setTests(",
             "tests_hidden",
