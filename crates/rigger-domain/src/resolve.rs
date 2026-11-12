@@ -857,12 +857,50 @@ impl<'v> Resolver<'v> {
 /// leaf's targets, so no other proof call can change.
 pub fn resettle(
     base: &dyn CodeView,
-    _view: &dyn CodeView,
-    _differing: &BTreeSet<&str>,
+    view: &dyn CodeView,
+    differing: &BTreeSet<&str>,
 ) -> (Vec<String>, Vec<ProofCall>) {
-    let was = Resolver::new(base);
-    let test_files = was.test_files().into_iter().map(str::to_string).collect();
-    (test_files, was.proof_calls().to_vec())
+    let (was, now) = (Resolver::new(base), Resolver::new(view));
+    let flipped = (was.test_files.symmetric_difference(&now.test_files)).copied();
+    let reached: BTreeSet<&str> = differing.iter().copied().chain(flipped).collect();
+    let mut leaves = BTreeSet::new();
+    for path in &reached {
+        for facts in [base.file(path), view.file(path)].into_iter().flatten() {
+            leaves.extend(facts.defs.iter().map(|d| d.leaf.clone()));
+        }
+    }
+    let targets = |r: &Resolver, leaf: &str| -> Vec<String> {
+        let candidates = r.candidates(leaf);
+        let calls = candidates.iter().filter(|c| Pool::Product.calls(c));
+        calls.map(|c| c.id.clone()).collect()
+    };
+    let mut redo: BTreeSet<String> = reached.iter().map(|p| p.to_string()).collect();
+    for leaf in leaves
+        .iter()
+        .filter(|l| targets(&was, l) != targets(&now, l))
+    {
+        for m in view.mentions_named(leaf) {
+            let test = m.test || now.is_test_file(m.file.path);
+            if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
+                redo.insert(m.file.path.to_string());
+            }
+        }
+    }
+    let redone = |c: &ProofCall| {
+        let file = c.evidence.rsplit_once(':').map(|(file, _)| file);
+        file.is_some_and(|file| redo.contains(file))
+    };
+    let mut calls: Vec<ProofCall> = (was.proof_calls().iter())
+        .filter(|c| !redone(c))
+        .cloned()
+        .collect();
+    for path in redo.iter().filter(|p| now.is_code_file(p)) {
+        if let Some(facts) = view.file(path) {
+            calls.extend(now.file_proofs(&facts));
+        }
+    }
+    let test_files = now.test_files().into_iter().map(str::to_string).collect();
+    (test_files, proof_order(calls))
 }
 
 #[cfg(test)]

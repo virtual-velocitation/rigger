@@ -1118,6 +1118,16 @@ Overlay { base: &dyn CodeView, changed: FactsView, masked: set of paths }
 ```
 
 The resolver runs over the merged view, so tiers, proofs and test-ness describe W exactly.
+A reader takes a view's test files and proof calls as the store settled them at advance
+(`Settled`), not by resolving the whole view, so the overlay re-settles them
+(`resolve::resettle`) on its first read of them. A changed file can move the rows of a file
+that did not change: a module declaration (`#[cfg(test)] mod x;`) flips the test-ness of the
+files it reaches, and a definition gained or lost moves the product targets of every call to
+its leaf, which proves or unproves a test's call to it. Re-settling resolves both the base and
+the merged view, takes the merged view's test files, and redoes the proof calls of each file
+that differs or flipped and of each test file that calls a leaf whose targets moved; every
+other proof call is the base's, since only a definition in a file that differs or flipped can
+move a leaf's targets.
 Groupings still describe the stamp: a new entity shows no community until the next advance, and
 the label says so.
 
