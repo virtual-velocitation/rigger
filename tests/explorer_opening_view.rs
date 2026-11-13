@@ -794,10 +794,11 @@ const VIEW_STATE_DRIVER: &str = r##"
     };
     return node;
   }
-  // Dispatch an event of type to the panel's listeners, as from target; answers the event.
-  function dispatch(type, target){
-    const ev = { type: type, target: target, defaultPrevented: false,
-      preventDefault: function(){ ev.defaultPrevented = true; } };
+  // Dispatch an event of type to the panel's listeners, as from target, carrying the fields of extra;
+  // answers the event.
+  function dispatch(type, target, extra){
+    const ev = Object.assign({ type: type, target: target, defaultPrevented: false,
+      preventDefault: function(){ ev.defaultPrevented = true; } }, extra || {});
     (panel._listeners[type] || []).forEach(function(f){ f(ev); });
     return ev;
   }
@@ -827,6 +828,23 @@ const VIEW_STATE_DRIVER: &str = r##"
     dispatch("input", node);
   }
   function valueOf(mark){ const s = live(mark), node = element(mark); return s ? s.value : node ? node.value : null; }
+  // The change the browser fires when the user commits the text box node: only when the text it holds
+  // differs from the value its markup wrote, which a box the markup wrote again holds until typed in.
+  function committed(node){ if (node.value !== node.attrs.value) dispatch("change", node); }
+  // Enter pressed in the text box mark finds: its keydown, then the change it commits.
+  function enter(mark){
+    const node = target(mark);
+    node.value = valueOf(mark);
+    dispatch("keydown", node, { key: "Enter" });
+    committed(node);
+  }
+  // Leaving the text box mark finds: the change it commits, then its focusout.
+  function leave(mark){
+    const node = target(mark);
+    node.value = valueOf(mark);
+    committed(node);
+    dispatch("focusout", node);
+  }
   // Let the panel settle as a browser does: while its client box differs from the one its size
   // observer was last told of, tell it, and run the frames the page queued. A panel still changing
   // after 8 rounds redraws in a loop. Answers the redraws the settling made.
@@ -923,14 +941,16 @@ const VIEW_STATE_DRIVER: &str = r##"
       async show(){ type(this.BOX, "2.5"); },
       shown(){ return valueOf(this.BOX); },
       expect: "2.5",
+      // Enter after a window resize, leaving the box after a scrollbar's: either commits the grain
+      // typed, read once, the change the browser fires with it reading nothing more.
       async answer(){
-        const box = target(this.BOX), n = asked.length;
-        box.value = this.shown();
-        dispatch("change", box);
+        const n = asked.length, how = ROW.resize === "window" ? "Enter" : "leaving the box";
+        if (ROW.resize === "window") enter(this.BOX); else leave(this.BOX);
         await __flush();
-        if (!asked.slice(n).some(function(u){ return u.indexOf("lens=code") !== -1 && u.indexOf("resolution=2.5") !== -1; }))
-          throw new Error("REGRESSION: " + at + "the grain committed must read the code lens at 2.5, the page asked "
-            + JSON.stringify(asked.slice(n)));
+        const reads = asked.slice(n).filter(function(u){ return u.indexOf("lens=code") !== -1; });
+        if (reads.length !== 1 || reads[0].indexOf("resolution=2.5") === -1)
+          throw new Error("REGRESSION: " + at + how + " must commit the grain typed, reading the code lens once at 2.5, "
+            + "the page asked " + JSON.stringify(asked.slice(n)));
       }
     }
   };
