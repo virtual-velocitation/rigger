@@ -127,7 +127,7 @@ pub fn prompt_groups() -> &'static [Group] {
 mod tests {
     use super::*;
     use crate::prompt_surface_fixtures::{
-        assert_groups_name_the_consts, const_classes, registry_test,
+        assert_groups_name_the_consts, const_classes, registry_test, GroupPicks,
     };
     use crate::test_support::failure_message;
 
@@ -204,6 +204,79 @@ mod tests {
             "assertion `left == right` failed: no two groups share a surface and a name\n  \
              left: [(\"s\", \"A\")]\n right: []"
         );
+    }
+
+    /// One per-surface guard case: its name, each pick as its surface and names, and the
+    /// refusal, when the guard refuses.
+    type PicksCase<'a> = (&'a str, &'a [(&'a str, &'a [&'a str])], Option<&'a str>);
+
+    /// A concatenation test's picks end checked: every group a surface it picked from lists was
+    /// picked under that surface, else the test fails naming each unpicked (surface, name) pair
+    /// in registry order, while a surface it never picked from is outside the check and a test
+    /// already failing keeps its own message.
+    #[test]
+    fn group_picks_refuse_a_picked_surface_with_a_group_no_case_picks() {
+        let group = |surface, name| Group {
+            surface,
+            name,
+            text: name,
+        };
+        let groups = [
+            group("s", "A"),
+            group("s", "B"),
+            group("s", "C"),
+            group("t", "A"),
+            group("t", "D"),
+        ];
+        let refusal = |unpicked: &str| {
+            format!(
+                "assertion `left == right` failed: each group a surface lists is picked by a \
+                 case of that surface\n  left: [{unpicked}]\n right: []"
+            )
+        };
+        let one = refusal("(\"s\", \"B\")");
+        let two = refusal("(\"s\", \"A\"), (\"s\", \"C\")");
+        let other = refusal("(\"s\", \"A\")");
+        let misspelt = "assertion `left == right` failed: \"t\" holds each group the branch \
+                        renders\n  left: []\n right: [\"X\"]";
+        let cases: &[PicksCase] = &[
+            ("no pick", &[], None),
+            (
+                "each group of each surface, over several picks",
+                &[("s", &["A", "B"]), ("s", &["C"]), ("t", &["D", "A"])],
+                None,
+            ),
+            ("a surface no case picks", &[("s", &["A", "B", "C"])], None),
+            (
+                "a group picked twice",
+                &[("s", &["A", "B", "C"]), ("s", &["A"])],
+                None,
+            ),
+            ("a group no case picks", &[("s", &["A", "C"])], Some(&one)),
+            ("two groups no case picks", &[("s", &["B"])], Some(&two)),
+            (
+                "a group picked only under another surface",
+                &[("t", &["A", "D"]), ("s", &["B", "C"])],
+                Some(&other),
+            ),
+            (
+                "a failing pick after a pick that leaves a group, failing with its own message",
+                &[("s", &["A"]), ("t", &["X"])],
+                Some(misspelt),
+            ),
+        ];
+        for (case, picks, refused) in cases {
+            let run = || {
+                let recorder = GroupPicks::new(&groups);
+                for (surface, names) in *picks {
+                    recorder.rendered(surface, names);
+                }
+            };
+            match refused {
+                None => run(),
+                Some(refused) => assert_eq!(failure_message(run), *refused, "{case}"),
+            }
+        }
     }
 
     /// One `fill` case: its name, the template, the slots passed and the filled text.
