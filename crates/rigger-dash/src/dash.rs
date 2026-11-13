@@ -6620,10 +6620,10 @@ mod tests {
         assert!(styled > 0, "some rule styles the drawing's svg");
     }
 
-    /// The narrowest content box a docked pane leaves the panel: where the panes' columns would
-    /// leave less, they stack above the panel. The drawing's surface is that box, less the panel's
-    /// own scrollbar when what it holds overflows, and `kgDims` makes the drawing at its width
-    /// whatever that is.
+    /// The narrowest content box, the drawing's surface, a docked pane leaves the panel while it
+    /// shows no scrollbar of its own: where the panes' columns would leave less, they stack above
+    /// the panel. A scrollbar the panel shows when what it holds overflows takes its width from
+    /// that box, and `kgDims` makes the drawing at whatever width is left.
     const LEAST_DOCKED_CONTENT: f64 = 320.0;
 
     /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
@@ -6663,8 +6663,8 @@ mod tests {
             for (shown, rail, card) in PANE_STATES {
                 let layout = style.layout(rail, card, width);
                 let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
-                // The panel's content box: its width less its margins, and
-                // its own border and padding on each side.
+                // The panel's content box before any scrollbar of its own: its width less its
+                // margins, and its own border and padding on each side.
                 let edges = layout.edge(panel, "left") + layout.edge(panel, "right");
                 let content = width - left - right - edges;
                 let mut docked = Vec::new();

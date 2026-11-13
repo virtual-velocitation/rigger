@@ -76,9 +76,10 @@
      covers the header above), the card on the left and the rail on the right, and takes its
      column from #kgpanel's own box (the margin on the pane's side), so no drawn node, list row or
      panel control ever sits under a pane. The panes dock only where their columns leave the panel's
-     content box at least 320px (see the @container rules after .kgcard), which is the drawing's
-     surface less the panel's own scrollbar when what it holds overflows; the body is a size
-     container, so the room it actually has decides, whatever the viewport. Each
+     content box, the drawing's surface, at least 320px while the panel shows no scrollbar of its
+     own (see the @container rules after .kgcard); a scrollbar it shows when what it holds
+     overflows takes its width from that box. The body is a size container, so the room it
+     actually has decides, whatever the viewport. Each
      pane's width is declared once here, and each precedes #kgpanel so the sibling selectors can
      read its hidden state. Each view sets or clears both panes for its own subject before it draws
      (see setSubjectPanes); the card's dock shows only when a card arrives, and the view is laid out
@@ -397,8 +398,9 @@
      12px padding on each side and the rail's 260px column), a lone card from 632px (344 plus its
      8px inset and 280px width), the two together from 892px; below that every shown pane stays
      stacked and the panel keeps the body's whole width. The thresholds are those sums, so a docked
-     pane never leaves the panel's content box less than 320px, nor the drawing's surface less than
-     that box less the panel's own scrollbar when what the panel holds overflows. */
+     pane never leaves the panel's content box, the drawing's surface, less than 320px while the
+     panel shows no scrollbar of its own; one it shows when what it holds overflows takes its
+     width from that box. */
   @container kgbody (width >= 604px) {
     .kgrail { position: absolute; width: var(--kgrail-w); }
     #kgrail:not([hidden]) ~ #kgpanel { margin-right: var(--kgrail-w); }
