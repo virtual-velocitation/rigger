@@ -2287,11 +2287,22 @@ function renderKgOverview(ov) {
   kgDraw(toolbar, draw, "");
 }
 
+// Commit the code-lens RESOLUTION grain (spec 53 c4) the grain box holds: a grain other than the one
+// the view reads re-loads the overview at it, and an empty text names no grain, so the server reads
+// its default and the reply names it. A text equal to the grain the view reads commits nothing, so
+// Enter and the change the browser fires with it read once.
+function commitGrain(text) {
+  const grain = (text || "").trim();
+  if (grain === kgResolution) return;
+  kgResolution = grain;
+  loadKgOverview();
+}
+
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
 // `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
-// kgpanel click routes `data-lens` (switch lens) and the delegated change routes `data-lens-res`
-// (switch grain), each re-loading the overview; the active lens is marked. The box shows the grain
-// being typed (kgShown.grain) over the one the view reads, so a redraw keeps the draft.
+// kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
+// grain, each re-loading the overview; the active lens is marked. The box shows the grain being typed
+// (kgShown.grain) over the one the view reads, so a redraw keeps the draft.
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
@@ -2674,16 +2685,24 @@ function wireSelectToSeed() {
       if (kgLast) renderGraph(kgLast);
       return;
     }
-    // The code-lens RESOLUTION grain (spec 53 c4): a changed grain re-loads the overview at it; an
-    // empty value names no grain, so the server reads its default and the reply names it.
     const res = ev.target.closest("[data-lens-res]");
-    if (res) { kgResolution = (res.value || "").trim(); loadKgOverview(); }
+    if (res) commitGrain(res.value);
   });
-  // The grain being typed is view state: held on the view so a redraw before the change commits it
-  // writes the box with the draft rather than the grain the view reads.
+  // The grain being typed is view state: held on the view so a redraw before it is committed writes
+  // the box with the draft rather than the grain the view reads.
   el("kgpanel").addEventListener("input", ev => {
     const res = ev.target.closest("[data-lens-res]");
     if (res) kgShown.grain = res.value;
+  });
+  // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own.
+  el("kgpanel").addEventListener("keydown", ev => {
+    const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
+    if (res) commitGrain(res.value);
+  });
+  el("kgpanel").addEventListener("focusout", ev => {
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) commitGrain(res.value);
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
