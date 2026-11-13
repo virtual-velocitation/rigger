@@ -13,10 +13,6 @@ use serde::Deserialize;
 
 use crate::reaped_child::ReapedChild;
 
-/// The `authMethod` an interactive subscription login reports: a login that can expire under a
-/// long run, which `rigger validate` warns of.
-pub const SUBSCRIPTION_LOGIN: &str = "claude.ai";
-
 /// The agent binary a driver launches from `PATH` when it is given none, and so the one whose
 /// login `rigger validate` reads.
 pub const DEFAULT_BIN: &str = "claude";

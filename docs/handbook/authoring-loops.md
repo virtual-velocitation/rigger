@@ -167,7 +167,7 @@ A `.rigger/gates/mutation.sh` an earlier `rigger init` wrote reads `$MUTANTS`, w
 
 ## The driver
 
-`rigger run <spec> --base <ref>` drives every run. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed. Launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard (`rigger dash`). A killed or interrupted run resumes from its event log: relaunch the same command.
+`rigger run <spec> --base <ref>` drives every run. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed. Launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard (`rigger dash`). A killed or interrupted run resumes from its event log: relaunch the same command. An operator who wants unattended runs to outlive an interactive login may set the long-lived token (`CLAUDE_CODE_OAUTH_TOKEN`, made with `claude setup-token`) in the environment rigger runs in; rigger passes it through to the agents it spawns and neither requires nor reads it.
 
 Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus the hooks, the skills and the `rigger mcp` lookup server). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
 

@@ -21,24 +21,14 @@ const CLAUDE_LOGIN_BOUND: Duration = Duration::from_secs(5);
 
 /// The `rigger validate` CLAUDE LOGIN report (spec 105, WHAT A PERSON SEES): the auth method the
 /// one login reader ([`rigger::claude_auth::auth_method`]) reads from the `claude` on PATH within
-/// [`CLAUDE_LOGIN_BOUND`], on stdout, and a warning on stderr naming the long-lived token when it
-/// is the subscription login, which can expire under a long run; when no report came, one warning
-/// in its place. Neither changes the exit status.
+/// [`CLAUDE_LOGIN_BOUND`], on stdout, whatever the method; when no report came, one warning on
+/// stderr in its place. Neither changes the exit status.
 fn print_claude_login() {
     match rigger::claude_auth::auth_method(
         rigger::claude_auth::DEFAULT_BIN,
         Instant::now() + CLAUDE_LOGIN_BOUND,
     ) {
-        Some(method) => {
-            println!("claude login: {method}");
-            if method == rigger::claude_auth::SUBSCRIPTION_LOGIN {
-                eprintln!(
-                    "warning: claude login: {method} is an interactive subscription login, which \
-                     can expire under a long run; run `claude setup-token` and set the long-lived \
-                     token it prints as CLAUDE_CODE_OAUTH_TOKEN where rigger runs."
-                );
-            }
-        }
+        Some(method) => println!("claude login: {method}"),
         None => eprintln!(
             "warning: claude login: `claude auth status --json` gave no report within {} s \
              (claude is not on PATH, its status failed or gave no answer by the bound, or its \
