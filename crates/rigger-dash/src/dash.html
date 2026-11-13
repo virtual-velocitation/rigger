@@ -1497,14 +1497,12 @@ function kgSurface() {
   return svg ? svg.getBoundingClientRect() : null;
 }
 
-// The live drawing box: its surface's width, and the height the panel's content box leaves below
-// what the view puts above the drawing - its toolbar, wrapped to however many lines the width needs,
-// and any caption - measured off the drawing's slot, which kgDraw puts in place first. So the viz
-// fills whatever size the responsive shell and the docked panes leave it, is seen at a scale of 1 at
-// every width and never runs past the panel; a room under 200px keeps a 200px drawing, and the panel
-// scrolls. A surface with no width yet (a panel not laid out) draws at 800px, and the panel's size
-// observer redraws it once it has one.
-function kgDims() {
+// The drawing box the drawing's slot shows at the height it has now: its surface's width, and the
+// height the panel's content box leaves below what the view puts above the drawing - its toolbar,
+// wrapped to however many lines the width needs, and any caption. A room under 200px keeps a 200px
+// drawing, and the panel scrolls. A surface with no width yet (a panel not laid out) draws at 800px,
+// and the panel's size observer redraws it once it has one.
+function kgMeasure() {
   const p = el("kgpanel");
   const slot = kgSurface();
   const w = slot.width || 800;
@@ -1513,11 +1511,26 @@ function kgDims() {
   return { w: w, h: h };
 }
 
+// The live drawing box, measured with the drawing in place: the slot first takes the height kgMeasure
+// gives, so the panel holds what it will once drawn and shows its own scrollbar exactly when that runs
+// past its height (a drawing kept at its 200px floor, markup below the drawing); the box is measured
+// again there, and the slot keeps the height it gives. So the viz fills whatever size the responsive
+// shell, the docked panes and the panel's scrollbar leave it, is seen at a scale of 1 at every width
+// and never runs past the panel.
+function kgDims() {
+  const svg = el("kgpanel").querySelector(".kgsvg");
+  svg.setAttribute("height", kgMeasure().h);
+  const dims = kgMeasure();
+  svg.setAttribute("height", dims.h);
+  return dims;
+}
+
 // Draw a view into the panel: the markup `above` the drawing, then the drawing `draw` makes at the box
-// kgDims measures with that markup already in place, then the markup `below` it; the view opens fitted.
+// kgDims measures with that markup, the drawing's slot and the markup `below` it in place, then that
+// markup `below`; the view opens fitted.
 function kgDraw(above, draw, below) {
   const panel = el("kgpanel");
-  panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>';
+  panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
   panel.innerHTML = above + draw(kgDims()) + below;
   bindKgView();
 }
@@ -1541,9 +1554,7 @@ function kgRedrawResized() {
     rerenderCurrentView();
     return;
   }
-  const svg = panel.querySelector("svg.kgsvg");
-  svg.setAttribute("height", dims.h);
-  svg.setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
+  panel.querySelector("svg.kgsvg").setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
   kgDrawn.width = dims.w;
   kgDrawn.height = dims.h;
   if (kgLabelState) kgLabelState.width = dims.w;

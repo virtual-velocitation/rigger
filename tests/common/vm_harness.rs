@@ -45,8 +45,9 @@ pub struct DomShim {
     /// Whether the panel measures the drawing's slot: a `clientTop`, a `.kgsvg` slot at the top
     /// of the room under the panel's 10px top padding and a one-line 24px toolbar, 776px wide
     /// inside its 12px padding on each side (the drawing's surface, whose width the page draws
-    /// at), and the panel's 10px bottom padding through `getComputedStyle`. So a 300px panel
-    /// leaves the drawing 776 by 256px, and a 320px one 776 by 276px.
+    /// at, and which keeps no height the page sets on it while it measures), and the panel's 10px
+    /// bottom padding through `getComputedStyle`. So a 300px panel leaves the drawing 776 by
+    /// 256px, and a 320px one 776 by 276px.
     pub slot: bool,
     /// Whether `setInterval` exists (as an inert timer, like `setTimeout`).
     pub interval: bool,
@@ -192,7 +193,8 @@ __El.prototype.querySelectorAll = function(){ return []; };"#
         }
         if self.slot {
             js.push(
-                r#"const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
+                r#"const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; },
+  setAttribute: function(){} };
 const getComputedStyle = function(){ return { paddingBottom: "10px" }; };"#
                     .into(),
             );
