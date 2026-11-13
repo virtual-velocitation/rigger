@@ -17491,6 +17491,7 @@ fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
 }
 
 /// The JSON body of a whole HTTP `response`, asserted served `200` for `view`.
+#[cfg(feature = "symbols")]
 fn served_ok_json(view: &str, response: Option<String>) -> serde_json::Value {
     let response = response.unwrap_or_else(|| panic!("the dash never served {view}"));
     assert!(
