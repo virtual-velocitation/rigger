@@ -5228,12 +5228,28 @@ mod tests {
         );
     }
 
-    /// One element of the explorer section's markup: its id, its classes and the indices of its
-    /// ancestors within the section, outermost first.
+    /// One element of the explorer section's markup: its tag, id and classes, whether it carries
+    /// the `hidden` attribute, and the indices of its ancestors within the section, outermost
+    /// first.
     struct Element {
+        tag: String,
         id: String,
         classes: Vec<String>,
+        hidden: bool,
         ancestors: Vec<usize>,
+    }
+
+    impl Element {
+        /// An element outside the markup that carries only `class`, to read the rules naming it.
+        fn of_class(class: &str) -> Self {
+            Element {
+                tag: String::new(),
+                id: String::new(),
+                classes: vec![class.to_string()],
+                hidden: false,
+                ancestors: Vec::new(),
+            }
+        }
     }
 
     /// The explorer section's (`#kg`) elements in document order, read by a tag scan of the served
@@ -5270,10 +5286,18 @@ mod tests {
                 continue;
             }
             elements.push(Element {
+                tag: tag[1..]
+                    .split(|c: char| c.is_whitespace() || c == '>')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
                 id: attr(tag, "id").unwrap_or_default(),
                 classes: attr(tag, "class")
                     .map(|c| c.split_whitespace().map(str::to_string).collect())
                     .unwrap_or_default(),
+                hidden: tag
+                    .split_whitespace()
+                    .any(|word| word.trim_end_matches('>') == "hidden"),
                 ancestors: open.clone(),
             });
             open.push(elements.len() - 1);
@@ -5292,24 +5316,608 @@ mod tests {
         rules_selecting(page, |selector| names.iter().any(|name| selector == name))
     }
 
-    /// The CSS rules whose line opens with a selector list holding a selector `picks` accepts
-    /// (each selector trimmed), from the selector list to its closing `}`.
+    /// The top-level CSS rules whose selector list holds a selector `picks` accepts (each
+    /// selector trimmed), from the selector list to its closing `}`. A rule inside an at-rule
+    /// applies only under that rule's condition, so it is left to [`ExplorerLayout`], which
+    /// reads conditions.
     fn rules_selecting(page: &str, picks: impl Fn(&str) -> bool) -> Vec<&str> {
+        style_rules(page)
+            .into_iter()
+            .filter(|rule| rule.at.is_none() && rule.selectors.iter().any(|s| picks(s)))
+            .map(|rule| rule.text)
+            .collect()
+    }
+
+    /// One style rule of the served page's stylesheet: the prelude of the at-rule it sits in
+    /// (`None` at the top level), its selectors, its declarations in source order (comments
+    /// dropped) and its text from the selector list to its closing `}`.
+    struct StyleRule<'a> {
+        at: Option<&'a str>,
+        selectors: Vec<&'a str>,
+        declarations: Vec<(String, String)>,
+        text: &'a str,
+    }
+
+    /// The served page's style rules in source order, read from its `<style>` block. A rule
+    /// inside an at-rule carries that at-rule's prelude; a block nested any deeper panics, since
+    /// the pins reading the rules model one level.
+    fn style_rules(page: &str) -> Vec<StyleRule<'_>> {
+        let start = page.find("<style>").expect("the page has a stylesheet") + "<style>".len();
+        let end = start
+            + page[start..]
+                .find("</style>")
+                .expect("the stylesheet closes");
         let mut rules = Vec::new();
-        let mut at = 0;
-        for line in page.split_inclusive('\n') {
-            let trimmed = line.trim_start();
-            let named = trimmed.split_once('{').is_some_and(|(selectors, _)| {
-                selectors.split(',').any(|selector| picks(selector.trim()))
-            });
-            if named {
-                let open = at + line.len() - trimmed.len();
-                let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
-                rules.push(&page[open..close]);
+        let mut at = None;
+        let mut i = start;
+        loop {
+            let rest = &page[i..end];
+            let next = rest.trim_start();
+            i += rest.len() - next.len();
+            if next.is_empty() {
+                break;
             }
-            at += line.len();
+            if let Some(comment) = next.strip_prefix("/*") {
+                i += 2 + comment.find("*/").expect("the comment closes") + 2;
+            } else if next.starts_with('}') {
+                assert!(
+                    at.take().is_some(),
+                    "a `}}` closes no block: {:?}",
+                    &next[..40]
+                );
+                i += 1;
+            } else {
+                let open = i + next.find('{').expect("a rule opens its block");
+                let prelude = page[i..open].trim();
+                assert!(!prelude.contains("/*"), "a comment inside {prelude:?}");
+                if prelude.starts_with('@') {
+                    assert!(
+                        at.replace(prelude).is_none(),
+                        "{prelude:?} nests in an at-rule"
+                    );
+                    i = open + 1;
+                    continue;
+                }
+                let close = open + page[open..].find('}').expect("the rule closes");
+                let mut block = page[open + 1..close].to_string();
+                while let Some(from) = block.find("/*") {
+                    let to = from + block[from..].find("*/").expect("the comment closes") + 2;
+                    block.replace_range(from..to, "");
+                }
+                assert!(
+                    !block.contains('{'),
+                    "the rule {prelude:?} holds a nested block"
+                );
+                rules.push(StyleRule {
+                    at,
+                    selectors: split_top(prelude, ','),
+                    declarations: block
+                        .split(';')
+                        .filter_map(|declaration| declaration.split_once(':'))
+                        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+                        .collect(),
+                    text: &page[i..=close],
+                });
+                i = close + 1;
+            }
         }
+        assert!(at.is_none(), "an at-rule never closes");
         rules
+    }
+
+    /// `text` split at each `separator` outside parentheses and brackets, each piece trimmed and
+    /// empty pieces dropped.
+    fn split_top(text: &str, separator: char) -> Vec<&str> {
+        let mut pieces = Vec::new();
+        let (mut depth, mut from) = (0usize, 0);
+        for (i, c) in text.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                c if c == separator && depth == 0 => {
+                    pieces.push(text[from..i].trim());
+                    from = i + c.len_utf8();
+                }
+                _ => {}
+            }
+        }
+        pieces.push(text[from..].trim());
+        pieces.retain(|piece| !piece.is_empty());
+        pieces
+    }
+
+    /// The compound selectors of one complex selector, left to right, each with the combinator
+    /// before it (`' '` for a descendant, and for the first).
+    fn compounds(selector: &str) -> Vec<(char, &str)> {
+        let mut parts = Vec::new();
+        let (mut depth, mut from, mut combinator) = (0usize, 0, ' ');
+        for (i, c) in selector.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ' ' | '>' | '~' | '+' if depth == 0 => {
+                    if from < i {
+                        parts.push((combinator, &selector[from..i]));
+                        combinator = ' ';
+                    }
+                    if c != ' ' {
+                        combinator = c;
+                    }
+                    from = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if from < selector.len() {
+            parts.push((combinator, &selector[from..]));
+        }
+        parts
+    }
+
+    /// The simple selectors of one compound selector, each with its leading sigil (`#`, `.`,
+    /// `[`, `:` or `::`), `*`, or a type name.
+    fn simples(compound: &str) -> Vec<&str> {
+        let name_end = |from: usize| {
+            compound[from..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .map_or(compound.len(), |k| from + k)
+        };
+        let mut parts = Vec::new();
+        let mut i = 0;
+        while i < compound.len() {
+            let rest = &compound[i..];
+            let end = if rest.starts_with('[') {
+                i + rest.find(']').expect("an attribute selector closes") + 1
+            } else if rest.starts_with("::") {
+                name_end(i + 2)
+            } else if rest.starts_with(['#', '.', ':']) {
+                let name = name_end(i + 1);
+                if compound[name..].starts_with('(') {
+                    let mut depth = 0usize;
+                    let close = compound[name..]
+                        .char_indices()
+                        .find(|&(_, c)| {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            depth == 0
+                        })
+                        .expect("a pseudo-class's arguments close")
+                        .0;
+                    name + close + 1
+                } else {
+                    name
+                }
+            } else if rest.starts_with('*') {
+                i + 1
+            } else {
+                name_end(i)
+            };
+            assert!(
+                end > i,
+                "{compound:?} holds a part the layout model cannot split: {rest:?}"
+            );
+            parts.push(&compound[i..end]);
+            i = end;
+        }
+        parts
+    }
+
+    /// A selector's specificity: its id, class-like and type counts.
+    type Weight = (usize, usize, usize);
+
+    /// The specificity of a complex selector, a `:not()` or `:has()` counting as its argument.
+    fn specificity(selector: &str) -> Weight {
+        compounds(selector)
+            .iter()
+            .flat_map(|(_, compound)| simples(compound))
+            .map(|simple| match simple {
+                "*" => (0, 0, 0),
+                s if s.starts_with(":not(") || s.starts_with(":has(") => specificity(
+                    s[5..s.len() - 1]
+                        .trim()
+                        .trim_start_matches(['~', '>', '+'])
+                        .trim(),
+                ),
+                s if s.starts_with("::") => (0, 0, 1),
+                s if s.starts_with('#') => (1, 0, 0),
+                s if s.starts_with(['.', '[', ':']) => (0, 1, 0),
+                _ => (0, 0, 1),
+            })
+            .fold((0, 0, 0), |(a, b, c), (x, y, z)| (a + x, b + y, c + z))
+    }
+
+    /// The served stylesheet's rules and the explorer's markup, with, for each element, the rules
+    /// holding a selector whose last compound names nothing the element lacks (an id, a class, a
+    /// type): the only rules that can select it in any state.
+    struct ExplorerStyle<'a> {
+        rules: Vec<StyleRule<'a>>,
+        markup: Vec<Element>,
+        candidates: Vec<Vec<usize>>,
+    }
+
+    impl<'a> ExplorerStyle<'a> {
+        fn read(page: &'a str) -> Self {
+            let rules = style_rules(page);
+            let markup = explorer_markup(page);
+            let candidates = markup
+                .iter()
+                .map(|element| {
+                    let named = |simple: &str| match simple {
+                        s if s.starts_with('#') => element.id == s[1..],
+                        s if s.starts_with('.') => element.classes.iter().any(|c| *c == s[1..]),
+                        s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => element.tag == s,
+                        _ => true,
+                    };
+                    (0..rules.len())
+                        .filter(|&r| {
+                            rules[r].selectors.iter().any(|selector| {
+                                compounds(selector)
+                                    .last()
+                                    .is_some_and(|(_, last)| simples(last).into_iter().all(&named))
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            ExplorerStyle {
+                rules,
+                markup,
+                candidates,
+            }
+        }
+
+        /// The explorer laid out with the rail and the card shown or hidden as given, in a body
+        /// `body` px wide.
+        fn layout(&self, rail: bool, card: bool, body: f64) -> ExplorerLayout<'_, 'a> {
+            let hidden = self
+                .markup
+                .iter()
+                .map(|e| match e.id.as_str() {
+                    "kgrail" => !rail,
+                    "kgcard" => !card,
+                    _ => e.hidden,
+                })
+                .collect();
+            ExplorerLayout {
+                style: self,
+                hidden,
+                body,
+            }
+        }
+    }
+
+    /// The explorer laid out by the served stylesheet in one state - which panes show, and how
+    /// wide the body (`.kgbody`, the panes' and the panel's parent) is - reading only what places
+    /// the panes and the panel: the cascade of the rules selecting them (selectors, specificity,
+    /// source order, container queries) and the lengths those rules declare. Anything it would
+    /// have to read and cannot - a selector part, an at-rule, a length form - panics, so a pin
+    /// built on it fails loudly instead of reading past a rule it does not understand.
+    struct ExplorerLayout<'s, 'a> {
+        style: &'s ExplorerStyle<'a>,
+        hidden: Vec<bool>,
+        body: f64,
+    }
+
+    impl ExplorerLayout<'_, '_> {
+        fn index(&self, id: &str) -> usize {
+            explorer_index(&self.style.markup, id)
+        }
+
+        /// The elements after `at` sharing its parent, or before it when `before`.
+        fn siblings(&self, at: usize, before: bool) -> Vec<usize> {
+            let parent = &self.style.markup[at].ancestors;
+            let range = if before {
+                0..at
+            } else {
+                at + 1..self.style.markup.len()
+            };
+            range
+                .filter(|&j| self.style.markup[j].ancestors == *parent)
+                .collect()
+        }
+
+        fn selects(&self, selector: &str, at: usize) -> bool {
+            let parts = compounds(selector);
+            self.selects_from(&parts, parts.len() - 1, at)
+        }
+
+        fn selects_from(&self, parts: &[(char, &str)], k: usize, at: usize) -> bool {
+            if !self.compound_selects(parts[k].1, at) {
+                return false;
+            }
+            if k == 0 {
+                return true;
+            }
+            let ancestors = &self.style.markup[at].ancestors;
+            let candidates: Vec<usize> = match parts[k].0 {
+                ' ' => ancestors.clone(),
+                '>' => ancestors.last().copied().into_iter().collect(),
+                '~' => self.siblings(at, true),
+                '+' => self
+                    .siblings(at, true)
+                    .last()
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                other => panic!("the layout model reads no {other:?} combinator"),
+            };
+            candidates
+                .into_iter()
+                .any(|c| self.selects_from(parts, k - 1, c))
+        }
+
+        fn compound_selects(&self, compound: &str, at: usize) -> bool {
+            let element = &self.style.markup[at];
+            let mut unread = None;
+            for simple in simples(compound) {
+                let read = match simple {
+                    "*" => Some(true),
+                    "[hidden]" => Some(self.hidden[at]),
+                    ":root" | ":hover" | ":focus" | ":active" | ":visited" | ":focus-visible"
+                    | ":focus-within" => Some(false),
+                    s if s.starts_with("::") => Some(false),
+                    s if s.starts_with('#') => Some(element.id == s[1..]),
+                    s if s.starts_with('.') => Some(element.classes.iter().any(|c| *c == s[1..])),
+                    s if s.starts_with(":not(") => {
+                        Some(!self.compound_selects(&s[5..s.len() - 1], at))
+                    }
+                    s if s.starts_with(":has(") => {
+                        s[5..s.len() - 1].trim().strip_prefix('~').map(|later| {
+                            self.siblings(at, false)
+                                .into_iter()
+                                .any(|j| self.compound_selects(later.trim(), j))
+                        })
+                    }
+                    s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => Some(element.tag == s),
+                    _ => None,
+                };
+                match read {
+                    Some(false) => return false,
+                    Some(true) => {}
+                    None => unread = Some(simple),
+                }
+            }
+            if let Some(simple) = unread {
+                panic!(
+                    "the layout model cannot read {simple:?} in {compound:?}, which may select \
+                     #{} {:?}",
+                    element.id, element.classes
+                );
+            }
+            true
+        }
+
+        /// Whether `rule`'s at-rule holds for element `at`: always at the top level; under
+        /// `@container`, when the element's nearest query container of that name is the body and
+        /// the body's width meets every condition.
+        fn condition_holds(&self, rule: &StyleRule<'_>, at: usize) -> bool {
+            let Some(prelude) = rule.at else {
+                return true;
+            };
+            let element = &self.style.markup[at];
+            let query = prelude
+                .strip_prefix("@container")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the layout model reads no {prelude:?} rule, and one selects #{} {:?}",
+                        element.id, element.classes
+                    )
+                })
+                .trim();
+            let (name, condition) = match query.split_once(' ') {
+                Some((name, condition)) if !name.starts_with('(') => (Some(name), condition),
+                _ => (None, query),
+            };
+            let container = element.ancestors.iter().rev().copied().find(|&a| {
+                assert!(
+                    self.value(a, "container-type").is_none()
+                        && self.value(a, "container-name").is_none(),
+                    "the layout model reads the container shorthand only"
+                );
+                self.value(a, "container").is_some_and(|declared| {
+                    let (names, kind) = declared.split_once('/').unwrap_or(("", declared.as_str()));
+                    kind.trim() != "normal"
+                        && name.is_none_or(|n| names.split_whitespace().any(|m| m == n))
+                })
+            });
+            let Some(container) = container else {
+                return false;
+            };
+            assert!(
+                self.style.markup[container]
+                    .classes
+                    .iter()
+                    .any(|c| c == "kgbody"),
+                "the layout model knows only the explorer body's width"
+            );
+            assert!(
+                !condition.contains(" or ") && !condition.starts_with("not"),
+                "the layout model reads `and`-joined width conditions only: {condition:?}"
+            );
+            condition.split(" and ").all(|feature| {
+                let feature = feature
+                    .trim()
+                    .strip_prefix('(')
+                    .and_then(|f| f.strip_suffix(')'))
+                    .unwrap_or_else(|| panic!("a parenthesised feature: {feature:?}"));
+                let px = |v: &str| self.length(container, v);
+                if let Some(v) = feature.strip_prefix("min-width:") {
+                    return self.body >= px(v);
+                }
+                if let Some(v) = feature.strip_prefix("max-width:") {
+                    return self.body <= px(v);
+                }
+                let range = feature
+                    .strip_prefix("width")
+                    .unwrap_or_else(|| panic!("a width feature: {feature:?}"))
+                    .trim();
+                if let Some(v) = range.strip_prefix(">=") {
+                    self.body >= px(v)
+                } else if let Some(v) = range.strip_prefix("<=") {
+                    self.body <= px(v)
+                } else if let Some(v) = range.strip_prefix('>') {
+                    self.body > px(v)
+                } else if let Some(v) = range.strip_prefix('<') {
+                    self.body < px(v)
+                } else {
+                    panic!("the layout model cannot read the width feature {feature:?}")
+                }
+            })
+        }
+
+        /// The value the cascade gives `property` on element `at`: the latest declaration of the
+        /// most specific, then latest, rule selecting it whose at-rule holds. A `margin`
+        /// declaration counts toward each side.
+        fn value(&self, at: usize, property: &str) -> Option<String> {
+            let mut best: Option<(Weight, usize, usize, String)> = None;
+            for &r in &self.style.candidates[at] {
+                let rule = &self.style.rules[r];
+                let Some(weight) = rule
+                    .selectors
+                    .iter()
+                    .filter(|selector| self.selects(selector, at))
+                    .map(|selector| specificity(selector))
+                    .max()
+                else {
+                    continue;
+                };
+                if !self.condition_holds(rule, at) {
+                    continue;
+                }
+                for (d, (name, value)) in rule.declarations.iter().enumerate() {
+                    let side = property
+                        .strip_prefix("margin-")
+                        .filter(|_| name == "margin")
+                        .map(|side| {
+                            let values = split_top(value, ' ');
+                            let pick = match (values.len(), side) {
+                                (1, _) => 0,
+                                (2 | 3, "left" | "right") => 1,
+                                (4, "right") => 1,
+                                (4, "left") => 3,
+                                (_, "top") => 0,
+                                (2, "bottom") => 0,
+                                _ => 2,
+                            };
+                            values[pick].to_string()
+                        });
+                    let Some(value) = (name == property).then(|| value.to_string()).or(side) else {
+                        continue;
+                    };
+                    assert!(!value.contains("!important"), "an !important {name}");
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| (b.0, b.1, b.2) <= (weight, r, d))
+                    {
+                        best = Some((weight, r, d, value));
+                    }
+                }
+            }
+            best.map(|(.., value)| value)
+        }
+
+        /// The px a length declared on element `at` resolves to, a percentage of the body's
+        /// width (the containing block of every box the model places).
+        fn length(&self, at: usize, value: &str) -> f64 {
+            let value = value.trim();
+            let call = |name: &str| {
+                value
+                    .strip_prefix(name)
+                    .and_then(|v| v.strip_prefix('('))
+                    .and_then(|v| v.strip_suffix(')'))
+            };
+            if value == "0" {
+                0.0
+            } else if let Some(px) = value.strip_suffix("px").and_then(|n| n.parse::<f64>().ok()) {
+                px
+            } else if let Some(pc) = value.strip_suffix('%').and_then(|n| n.parse::<f64>().ok()) {
+                pc * self.body / 100.0
+            } else if let Some(args) = call("var") {
+                let (name, fallback) = args
+                    .split_once(',')
+                    .map_or((args, None), |(n, f)| (n.trim(), Some(f.trim())));
+                let found = std::iter::once(at)
+                    .chain(self.style.markup[at].ancestors.iter().rev().copied())
+                    .find_map(|a| self.value(a, name));
+                let declared = found.as_deref().or(fallback);
+                self.length(
+                    at,
+                    declared.unwrap_or_else(|| panic!("{name} is declared on no box it reads")),
+                )
+            } else if let Some(args) = call("min") {
+                split_top(args, ',')
+                    .into_iter()
+                    .map(|a| self.length(at, a))
+                    .fold(f64::INFINITY, f64::min)
+            } else if let Some(args) = call("max") {
+                split_top(args, ',')
+                    .into_iter()
+                    .map(|a| self.length(at, a))
+                    .fold(f64::NEG_INFINITY, f64::max)
+            } else if let Some(sum) = call("calc") {
+                let terms = split_top(sum, ' ');
+                terms[1..]
+                    .chunks(2)
+                    .fold(self.length(at, terms[0]), |total, pair| match pair {
+                        ["+", term] => total + self.length(at, term),
+                        ["-", term] => total - self.length(at, term),
+                        _ => panic!("the layout model reads sums only: {sum:?}"),
+                    })
+            } else {
+                panic!("the layout model cannot read the length {value:?}")
+            }
+        }
+
+        /// Where the pane `id` sits: `None` hidden (no box), `Some(Some(column))` docked beside
+        /// the panel - absolutely positioned, its column its width plus its inset on `side` - or
+        /// `Some(None)` stacked in the body's column at the body's full width.
+        fn pane(&self, id: &str, side: &str) -> Option<Option<f64>> {
+            let at = self.index(id);
+            assert!(
+                self.value(at, "order").is_none(),
+                "#{id} keeps its markup order"
+            );
+            if self.hidden[at] {
+                assert_eq!(
+                    self.value(at, "display").as_deref(),
+                    Some("none"),
+                    "#{id} hides"
+                );
+                return None;
+            }
+            let length = |property: &str| self.value(at, property).map(|v| self.length(at, &v));
+            match self.value(at, "position").as_deref().unwrap_or("static") {
+                "absolute" => Some(Some(
+                    length("width").expect("a docked pane declares its width")
+                        + length(side).unwrap_or(0.0),
+                )),
+                "static" | "relative" => {
+                    let width = self.value(at, "width");
+                    assert!(
+                        width.as_deref().is_none_or(|w| w == "auto"),
+                        "a stacked #{id} spans the body's column, not {width:?}"
+                    );
+                    Some(None)
+                }
+                other => panic!("the layout model places no {other:?} #{id}"),
+            }
+        }
+
+        /// The panel's margin on `side`.
+        fn panel_margin(&self, side: &str) -> f64 {
+            let at = self.index("kgpanel");
+            for sized in ["width", "min-width", "max-width"] {
+                assert!(
+                    self.value(at, sized).is_none(),
+                    "the panel's {sized} is its column's"
+                );
+            }
+            self.value(at, &format!("margin-{side}"))
+                .map_or(0.0, |margin| self.length(at, &margin))
+        }
     }
 
     /// The value `rules` last declare for `property`, as the cascade reads them.
@@ -5409,12 +6017,10 @@ mod tests {
             ["kgtoolbar", "kgseed", "kgcalls-offer", "kgtiers"]
                 .into_iter()
                 .map(|row| {
-                    let element = Element {
-                        id: String::new(),
-                        classes: vec![row.to_string()],
-                        ancestors: Vec::new(),
-                    };
-                    (row, declared(&rules_of(&page, &element), "anchor-name"))
+                    (
+                        row,
+                        declared(&rules_of(&page, &Element::of_class(row)), "anchor-name"),
+                    )
                 })
                 .collect();
         let anchor = row_anchors[0]
@@ -5452,14 +6058,7 @@ mod tests {
         let page = live_page();
         let markup = explorer_markup(&page);
         let dock = rules_of(&page, &markup[explorer_index(&markup, "kgcard")]);
-        let body = rules_of(
-            &page,
-            &Element {
-                id: String::new(),
-                classes: vec!["kgcard-body".to_string()],
-                ancestors: Vec::new(),
-            },
-        );
+        let body = rules_of(&page, &Element::of_class("kgcard-body"));
         let read = |rules: &[&str], property: &str| declared(rules, property).unwrap_or_default();
         assert_eq!(
             (
@@ -5486,51 +6085,111 @@ mod tests {
         );
     }
 
-    /// GIVEN the served page, WHEN the memory rail or the metadata card shows, THEN the panel
-    /// gives that pane's column up: a rule selecting `#kgpanel` while the pane is not hidden sets
-    /// the panel's margin on the pane's side to the pane's own width (one declaration, on the box
-    /// both dock in) plus its inset, so no drawn node, list row or panel control sits under either
-    /// pane, whether the pane's top is anchored below the control rows or, in a browser without
-    /// anchor positioning, the plain top. The rule is a sibling selector, so each pane precedes
-    /// the panel in the markup. Layout is outside what the page harness can run, so this pins the
-    /// column each pane takes from the panel.
+    /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
+    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps at least
+    /// the width `kgDims` draws at: shown panes dock beside the panel (absolutely positioned, each
+    /// taking exactly its own column and inset from the panel's margin on its side) wherever
+    /// their columns leave the panel that width, and everywhere else every shown pane stacks above
+    /// the panel at the body's full width and the panel reserves no margin. Layout is outside what
+    /// the page harness can run, so this lays the explorer out by the page's own stylesheet
+    /// (selectors, cascade, container queries and lengths) at each width from 280px to 1400px.
     #[test]
-    fn a_shown_rail_or_card_takes_its_column_from_the_panel() {
+    fn the_panel_keeps_the_drawing_width_beside_the_rail_and_the_card() {
         let page = live_page();
-        let markup = explorer_markup(&page);
-        let panel = explorer_index(&markup, "kgpanel");
-        let parent = &markup[*markup[panel]
+        let style = ExplorerStyle::read(&page);
+        let drawn: f64 = page[page
+            .find("function kgDims()")
+            .expect("the page sizes its drawing")..]
+            .split_once("Math.max(")
+            .and_then(|(_, rest)| rest.split_once(','))
+            .and_then(|(least, _)| least.trim().parse().ok())
+            .expect("kgDims draws at least a fixed width");
+        let panel = explorer_index(&style.markup, "kgpanel");
+        let body = *style.markup[panel]
             .ancestors
             .last()
-            .expect("the panel has a parent")];
-        for (docked, side) in [("kgrail", "right"), ("kgcard", "left")] {
-            let at = explorer_index(&markup, docked);
+            .expect("the panel has a parent");
+        for pane in ["kgrail", "kgcard"] {
+            let at = explorer_index(&style.markup, pane);
             assert!(
-                at < panel && markup[at].ancestors == markup[panel].ancestors,
-                "#{docked} precedes #kgpanel as its sibling"
+                at < panel && style.markup[at].ancestors == style.markup[panel].ancestors,
+                "#{pane} precedes #kgpanel as its sibling, so it stacks above the panel"
             );
-            let rules = rules_of(&page, &markup[at]);
-            let width = declared(&rules, "width").unwrap_or_default();
-            let name = width
-                .strip_prefix("var(")
-                .and_then(|rest| rest.strip_suffix(')'))
-                .unwrap_or_else(|| {
-                    panic!("#{docked} takes its width from one declaration: {width:?}")
-                });
-            assert!(
-                declared(&rules_of(&page, parent), name).is_some(),
-                "{name} is declared on the box both panes dock in, {:?}",
-                parent.classes
-            );
-            let reserve = rules_selecting(&page, |selector| {
-                selector == format!("#{docked}:not([hidden]) ~ #kgpanel")
-            });
-            let margin = declared(&reserve, &format!("margin-{side}")).unwrap_or_default();
-            let inset = declared(&rules, side).unwrap_or_default();
-            assert!(
-                margin.contains(&width) && (inset == "0" || margin.contains(&inset)),
-                "a shown #{docked} takes {width} and its {side} inset {inset:?} from the panel, \
-                 not {margin:?}: {reserve:?}"
+        }
+        assert_eq!(
+            declared(&rules_of(&page, &style.markup[body]), "flex-direction").as_deref(),
+            Some("column"),
+            "the body lays its children out top to bottom"
+        );
+        let states = [
+            ("neither pane", false, false),
+            ("the rail", true, false),
+            ("the card", false, true),
+            ("the rail and the card", true, true),
+        ];
+        let mut columns: HashMap<&str, f64> = HashMap::new();
+        let mut laid_out = Vec::new();
+        for width in 280..=1400 {
+            let width = f64::from(width);
+            for (shown, rail, card) in states {
+                let layout = style.layout(rail, card, width);
+                let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
+                let room = width - left - right;
+                let mut docked = Vec::new();
+                for (pane, side, margin) in [("kgcard", "left", left), ("kgrail", "right", right)] {
+                    match layout.pane(pane, side) {
+                        None => assert_eq!(margin, 0.0, "a hidden #{pane} reserves no margin"),
+                        Some(None) => {
+                            docked.push(false);
+                            assert_eq!(
+                                margin, 0.0,
+                                "a stacked #{pane} reserves no margin at a {width}px body"
+                            );
+                        }
+                        Some(Some(column)) => {
+                            docked.push(true);
+                            assert_eq!(
+                                margin, column,
+                                "a docked #{pane} takes exactly its column from the panel at a \
+                                 {width}px body"
+                            );
+                            let fixed = *columns.entry(pane).or_insert(column);
+                            assert_eq!(column, fixed, "a docked #{pane}'s column is fixed");
+                        }
+                    }
+                }
+                assert!(
+                    docked.iter().all(|&d| d) || docked.iter().all(|&d| !d),
+                    "with {shown} shown in a {width}px body every shown pane docks or every one \
+                     stacks: {docked:?}"
+                );
+                if docked.first() == Some(&true) {
+                    assert!(
+                        room >= drawn,
+                        "with {shown} shown in a {width}px body the panel keeps {room}px, less \
+                         than the {drawn}px kgDims draws at"
+                    );
+                }
+                laid_out.push((shown, rail, card, width, docked.first().copied()));
+            }
+        }
+        for (shown, rail, card, width, docked) in laid_out {
+            let Some(docked) = docked else { continue };
+            let column = |pane: &str, on: bool| {
+                if on {
+                    *columns
+                        .get(pane)
+                        .unwrap_or_else(|| panic!("#{pane} docks at some width"))
+                } else {
+                    0.0
+                }
+            };
+            let needs = drawn + column("kgrail", rail) + column("kgcard", card);
+            assert_eq!(
+                docked,
+                width >= needs,
+                "with {shown} shown in a {width}px body the panes dock exactly where their \
+                 columns leave the panel {drawn}px (from {needs}px)"
             );
         }
     }
