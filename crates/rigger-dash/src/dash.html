@@ -2725,9 +2725,10 @@ function wireSelectToSeed() {
     if (res) kgShown.grain = res.value;
   });
   // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
-  // draft in it holds the text its markup wrote, so the browser fires it no change of its own.
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. An Enter
+  // that ends an input method's composition is the composition's.
   el("kgpanel").addEventListener("keydown", ev => {
-    const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
+    const res = ev.key === "Enter" && !ev.isComposing && ev.target.closest("[data-lens-res]");
     if (res) grainCommitted(res);
   });
   el("kgpanel").addEventListener("focusout", ev => {
