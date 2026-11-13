@@ -75,8 +75,10 @@ library, honoring the dash charter):
   changed: a view not panned or zoomed since it opened re-fits by that rule, and a moved one keeps
   its transform and its marks where they are, only the drawing surface taking the new size. The
   redraw keeps everything the panel was showing: a frontier choice list, an opened rationale
-  disclosure, a grain being typed. Drag handlers live on `window` (installed once) so a drag that
-  leaves the svg still tracks.
+  disclosure, a grain being typed (which Enter or leaving its box commits). Every redraw of the view
+  the panel holds, for its size or for what the panel shows of it, keeps a moved view's transform
+  and marks. Drag handlers live on `window` (installed once) so a drag that leaves the svg still
+  tracks.
 - **Wiring that survives re-render.** The existing spec-30 delegated click listeners on the stable
   `tree` and `kgpanel` containers gain `data-cluster` (drill) and `data-kgback` (overview) handling
   alongside the existing `data-seed` (seed) - so select-to-drill and select-to-seed survive the
