@@ -590,9 +590,29 @@ const LIVE = EMBEDDED_STATE === null;
 // every POLL_MS and wholesale-replaces the decisions region's innerHTML, which destroys and
 // recreates the <details> subtree - so without re-applying `open` a reasoning body the operator
 // opened would snap shut under them within 1.5s. This set outlives the DOM the poll destroys and
-// is keyed by the stable decision id (mirrored onto each <details> as data-did), so every render
-// re-opens what the operator opened. The poll is untouched; the decisions render participates in it.
+// is keyed by the stable decision id (mirrored onto each <details> by disclosureAttrs), so every
+// render re-opens what the operator opened. The poll is untouched; the decisions render participates
+// in it.
 const expandedDecisions = new Set();
+
+// A <details> whose open state outlives the markup that draws it (a poll's or a redraw's innerHTML
+// swap): its attributes, ` open` while `set` holds its `key`, and the key as data-disclosure, which
+// rememberDisclosures reads back.
+function disclosureAttrs(set, key) {
+  return (set.has(key) ? " open" : "") + ' data-disclosure="' + esc(key) + '"';
+}
+
+// Record each <details> in `container` carrying data-disclosure into the set `setOf()` answers as it
+// opens or closes: one capture-phase listener (toggle does not bubble) on the stable container, bound
+// once, so it outlives every innerHTML swap inside it.
+function rememberDisclosures(container, setOf) {
+  container.addEventListener("toggle", ev => {
+    const key = ev.target.dataset && ev.target.dataset.disclosure;
+    if (key === undefined) return;
+    if (ev.target.open) setOf().add(key);
+    else setOf().delete(key);
+  }, true);
+}
 
 // ATTACH SELECTOR (spec 50 c3): which registered instance the run/graph views are showing. The
 // source of truth is the page's OWN `?instance=` query param, so a selection is shareable, survives
@@ -789,22 +809,13 @@ function render(state) {
   el("decisions").innerHTML = decisions.length ? decisions.map(d =>
     '<details class="decision' + (d.superseded ? " struck" : "") + '"'
     // Re-apply the operator's expansion: a tracked id renders open, so the body they opened
-    // stays open across this poll's re-render instead of collapsing. data-did carries the id
-    // back to the toggle listener below (the summary's <code> is display-only).
-    + (expandedDecisions.has(d.id) ? " open" : "") + ' data-did="' + esc(d.id) + '">'
+    // stays open across this poll's re-render instead of collapsing; the container's toggle
+    // recorder (rememberDisclosures) keeps the set current (the summary's <code> is display-only).
+    + disclosureAttrs(expandedDecisions, d.id) + '>'
     + '<summary><code class="did">' + esc(d.id) + '</code> ' + esc(preview(d.summary)) + '</summary>'
     + '<div class="reasoning">' + esc(d.summary) + '</div>'
     + '</details>'
   ).join("") : '<div class="empty">no decisions recorded</div>';
-  // Re-arm the toggle listeners after the innerHTML swap (the prior subtree, and its listeners,
-  // were just destroyed): expanding or collapsing a decision updates the tracked set so the
-  // choice SURVIVES the next poll's re-render. Without this the poll would wipe every expansion.
-  el("decisions").querySelectorAll("details.decision").forEach(d => {
-    d.addEventListener("toggle", () => {
-      if (d.open) expandedDecisions.add(d.dataset.did);
-      else expandedDecisions.delete(d.dataset.did);
-    });
-  });
 
   // FUTURE: ready frontier (structural - the same wave, no ETA).
   el("ready").innerHTML = table(["spawn", "unit", "stage"],
@@ -2729,6 +2740,9 @@ async function poll() {
 // Attach the select-to-seed / drill / back / instance-select listeners once, on the stable containers,
 // before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
+// Keep each disclosure the operator opens open across the innerHTML swaps that draw it again: the
+// decisions region's across the live poll.
+rememberDisclosures(el("decisions"), () => expandedDecisions);
 
 // Initialize the unified-inspector header (spec 55 c4): the subject-lens hidden (no subject yet) and
 // the rationale-overlay toggle reading "off", so the static controls are coherent before the first

@@ -72,8 +72,8 @@ fn the_served_root_page_ships_the_decisions_progressive_disclosure_region() {
 }
 
 /// The DOM the render-twice driver runs in, its own rather than a [`DomShim`]: each element parses the
-/// `<details>` blocks written to its `innerHTML` into children carrying their `open` and `data-did`
-/// state, which `querySelectorAll("details.decision")` answers with.
+/// `<details>` blocks written to its `innerHTML` into children carrying their `open` and
+/// `data-disclosure` state, and records the listeners bound on it.
 const RENDER_TWICE_DOM: &str = r#"
 const __els = {};
 function __El(id){ this.id=id; this._html=""; this._text=""; this._children=[]; this._listeners={}; this.open=false; this.dataset={}; }
@@ -85,9 +85,6 @@ Object.defineProperty(__El.prototype, "textContent", {
   get(){ return this._text; },
   set(v){ this._text = String(v); }
 });
-__El.prototype.querySelectorAll = function(sel){
-  return this._children.filter(function(c){ return /(^|\s)decision(\s|$)/.test(c.cls); });
-};
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 function __parseDecisions(html){
   const out = [];
@@ -96,11 +93,10 @@ function __parseDecisions(html){
     const open = /<details\b[^>]*\sopen(?=[\s>])/.test(blk);
     const clsM = blk.match(/<details\b[^>]*class="([^"]*)"/);
     const cls = clsM ? clsM[1] : "";
-    const didM = blk.match(/data-did="([^"]*)"/);
+    const keyM = blk.match(/data-disclosure="([^"]*)"/);
     const codeM = blk.match(/<code class="did">([^<]*)<\/code>/);
-    const did = didM ? didM[1] : (codeM ? codeM[1] : "");
-    out.push({ open: open, cls: cls, did: did, dataset: { did: didM ? didM[1] : undefined },
-      _listeners: {}, addEventListener: function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); } });
+    const did = codeM ? codeM[1] : "";
+    out.push({ open: open, cls: cls, did: did, dataset: { disclosure: keyM ? keyM[1] : undefined } });
   }
   return out;
 }
@@ -124,9 +120,10 @@ const setTimeout = function(){ return 0; };
 ///
 /// It shares the page script's lexical scope (appended after it), so it calls `render()`/`el()`
 /// directly. [`RENDER_TWICE_DOM`] covers exactly what the render path touches: `getElementById`,
-/// `innerHTML`, `querySelectorAll("details.decision")`, `addEventListener`, and each `<details>`
-/// `open`/`data-did` state. Mutation-proven: removing the render-side `open` re-application (or the
-/// whole tracking mechanism) re-collapses `d-alpha` and the driver throws.
+/// `innerHTML`, `addEventListener`, and each `<details>` `open`/`data-disclosure` state; the toggle
+/// the operator makes reaches the region's own listeners, as a browser's capture phase does.
+/// Mutation-proven: removing the render-side `open` re-application (or the whole tracking mechanism)
+/// re-collapses `d-alpha` and the driver throws.
 const RENDER_TWICE_DRIVER: &str = r#"
 ;(function(){
   const long = "d-alpha reasoning line one\nline two spans multiple lines and is long enough that the one-line preview truncates while the expandable body carries the whole thing so the operator can actually read it";
@@ -145,9 +142,9 @@ const RENDER_TWICE_DRIVER: &str = r#"
   const a1 = dec._children.find(function(c){ return c.did === "d-alpha"; });
   if(!a1) throw new Error("render#1 produced no <details> for d-alpha");
 
-  // The operator expands d-alpha (native <details> toggle).
+  // The operator expands d-alpha (native <details> toggle, its event seen by the region it sits in).
   a1.open = true;
-  (a1._listeners.toggle || []).forEach(function(fn){ fn({}); });
+  (dec._listeners.toggle || []).forEach(function(fn){ fn({ target: a1 }); });
 
   // Poll render #2: the live poll re-renders the region (wholesale innerHTML swap).
   render(state);
