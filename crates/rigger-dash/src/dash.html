@@ -946,9 +946,10 @@ let kgRationale = {};
 let kgViewData = null;
 // What the panel shows of the view it holds beyond that view's body, written by the view's one render
 // so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
-// view's frontier choice list, the candidates a clicked frontier node offers. A new view (holdKgView
-// given a new body) shows none of it.
-function kgShownNone() { return { choices: [] }; }
+// view's frontier choice list, the candidates a clicked frontier node offers; and the keys of the
+// rationale disclosures open in it (rememberDisclosures records them). A new view (holdKgView given
+// a new body) shows none of it.
+function kgShownNone() { return { choices: [], open: new Set() }; }
 let kgShown = kgShownNone();
 
 // Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
@@ -1268,18 +1269,19 @@ async function loadRationale(nodes) {
 
 // The per-node RATIONALE BADGE (spec 55 c4): a native <details> "why - N" that expands to the node's
 // leaves, each leaf its own native <details> (a one-line preview -> the full content, the disclosure
-// pattern the decisions region uses). Rendered ONLY when the overlay is ON and the node carries
-// rationale, so a node is BYTE-IDENTICAL with the overlay off (zero cost / zero clutter when off).
-// Machinery-free: only the leaf CONTENT (kind + summary) surfaces, never a builder persona.
+// pattern the decisions region uses, each kept open across a redraw of the view by kgShown.open).
+// Rendered ONLY when the overlay is ON and the node carries rationale, so a node is BYTE-IDENTICAL
+// with the overlay off (zero cost / zero clutter when off). Machinery-free: only the leaf CONTENT
+// (kind + summary) surfaces, never a builder persona.
 function rationaleBadge(id) {
   if (!kgOverlay) return "";
   const leaves = kgRationale[id];
   if (!leaves || !leaves.length) return "";
-  const body = leaves.map(lf =>
-    '<details class="kgleaf k-' + esc(lf.kind) + '">'
+  const body = leaves.map((lf, i) =>
+    '<details class="kgleaf k-' + esc(lf.kind) + '"' + disclosureAttrs(kgShown.open, "leaf:" + i + ":" + id) + '>'
     + '<summary>' + esc(lf.kind) + ' &middot; ' + esc(preview(lf.summary)) + '</summary>'
     + '<div class="kgleaf-body">' + esc(lf.summary) + '</div></details>').join("");
-  return '<details class="kgbadge" data-explain="' + esc(id) + '">'
+  return '<details class="kgbadge" data-explain="' + esc(id) + '"' + disclosureAttrs(kgShown.open, "why:" + id) + '>'
     + '<summary>why &middot; ' + leaves.length + '</summary>'
     + '<div class="kgleaves">' + body + '</div></details>';
 }
@@ -1298,14 +1300,15 @@ function overlayNotes(nodes) {
 }
 
 // Toggle the rationale overlay (spec 55 c4): flip the flag, reflect it on the toggle, (re)load the
-// current view's rationale when turning ON (clear it when OFF), then re-render the SAME view IN PLACE
-// so the badges appear / disappear without a re-fetch of the view itself.
+// current view's rationale when turning ON (clear it, and the disclosures open in it, when OFF), then
+// re-render the SAME view IN PLACE so the badges appear / disappear without a re-fetch of the view
+// itself.
 async function setOverlay(on) {
   kgOverlay = on;
   syncOverlayToggle();
   const nodes = (kgViewData && kgViewData.nodes) || [];
   if (on) await loadRationale(nodes);
-  else kgRationale = {};
+  else { kgRationale = {}; kgShown.open.clear(); }
   rerenderCurrentView();
 }
 
@@ -2741,8 +2744,9 @@ async function poll() {
 // before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
 // Keep each disclosure the operator opens open across the innerHTML swaps that draw it again: the
-// decisions region's across the live poll.
+// decisions region's across the live poll, the explorer panel's across a redraw of the view it holds.
 rememberDisclosures(el("decisions"), () => expandedDecisions);
+rememberDisclosures(el("kgpanel"), () => kgShown.open);
 
 // Initialize the unified-inspector header (spec 55 c4): the subject-lens hidden (no subject yet) and
 // the rationale-overlay toggle reading "off", so the static controls are coherent before the first
