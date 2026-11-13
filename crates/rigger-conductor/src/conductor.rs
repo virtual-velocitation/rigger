@@ -877,6 +877,24 @@ fn build_budget_of(cfg: &Config) -> BuildBudget {
     )
 }
 
+/// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`] paired
+/// with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir` has no unit
+/// sibling - a review-only worktree, `re_plan`'s planner's empty dir, a canary's. The ONE
+/// derivation both [`RunCtx::spawn_env`] and [`reviewer_carries_build_cache`] read, so a
+/// reviewer's prompt names a build cache exactly when its environment carries one.
+fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
+    crate::worktree::unit_sibling(dir, cache)
+        .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
+}
+
+/// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
+/// ([`build_cache_var`] over [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which
+/// its prompt carries [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]): the one predicate every
+/// review prompt's flag is read from, the live loop's and the canary's.
+pub(crate) fn reviewer_carries_build_cache(dir: &str) -> bool {
+    build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
+}
+
 /// The shared gate build cache's DIR and guard-lock PATH for the project at `repo` (spec 77
 /// criterion 5), both derived from one `scratch_root_from_env(repo, workdir)` call. The one
 /// resolution [`RunCtx::shared_build_cache_paths`] and [`gate_once`] share.
@@ -8891,7 +8909,7 @@ impl RunCtx<'_> {
         let prompt = format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            adjudicator_contract(Self::reviewer_carries_build_cache(dir)),
+            adjudicator_contract(reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -9264,7 +9282,7 @@ impl RunCtx<'_> {
                     ReviewerOutput::Findings,
                     &format!(
                         "{prompt}{}",
-                        review_protocol(ROLE_ADVERSARY, Self::reviewer_carries_build_cache(dir))
+                        review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
                     ),
                     None,
                     None,
@@ -9448,7 +9466,7 @@ impl RunCtx<'_> {
     /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
     /// LOCATION): `build_env`'s wrapper/cache/incremental/jobs vars (spec 65), PLUS - the
     /// biggest leak spec 77 exists to close - a per-unit [`crate::spawn::BUILD_CACHE_ENV`]
-    /// ([`build_cache_var`](Self::build_cache_var)) naming the
+    /// ([`build_cache_var`]) naming the
     /// SAME `cargo-target-<slug>` cache sibling [`run_gates`](Self::run_gates) already
     /// points a gate's OWN build at for this exact `dir` (Gap 19,
     /// [`worktree::unit_cache_sibling`]). Without this, an agent that runs its own `cargo
@@ -9487,32 +9505,13 @@ impl RunCtx<'_> {
         cache: &str,
     ) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        vars.extend(Self::build_cache_var(dir, cache));
+        vars.extend(build_cache_var(dir, cache));
         vars.extend(
             self.gate_address
                 .clone()
                 .map(|address| (GATE_SOCKET_ENV.to_string(), address)),
         );
         vars
-    }
-
-    /// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`]
-    /// paired with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir`
-    /// has no unit sibling - a review-only worktree, the planner's empty dir. The ONE
-    /// derivation both [`spawn_env`](Self::spawn_env) and
-    /// [`reviewer_carries_build_cache`](Self::reviewer_carries_build_cache) read, so a
-    /// reviewer's prompt names a build cache exactly when its environment carries one.
-    fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
-        crate::worktree::unit_sibling(dir, cache)
-            .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
-    }
-
-    /// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
-    /// ([`build_cache_var`](Self::build_cache_var) over
-    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which its prompt carries
-    /// [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]).
-    fn reviewer_carries_build_cache(dir: &str) -> bool {
-        Self::build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -12054,7 +12053,7 @@ impl RunCtx<'_> {
         Ok(format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            review_protocol(actor, Self::reviewer_carries_build_cache(dir)),
+            review_protocol(actor, reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
@@ -13710,7 +13709,7 @@ fn re_plan_lead(feedback: &str) -> String {
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
 ///
 /// `carries_cache` is whether the reviewer's spawn environment carries the unit's review
-/// cache ([`RunCtx::reviewer_carries_build_cache`]); the protocol ends with
+/// cache ([`reviewer_carries_build_cache`]); the protocol ends with
 /// [`reviewer_discipline`] of it, so the build cache sentence reaches only a reviewer that has
 /// one.
 pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
@@ -13723,7 +13722,7 @@ pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
 
 /// The reviewer contract a review-tier prompt ends with: [`REVIEWER_DISCIPLINE`], followed by
 /// [`REVIEWER_BUILD_CACHE`] when `carries_cache` - the spawn's environment carries the unit's
-/// review cache ([`RunCtx::reviewer_carries_build_cache`]).
+/// review cache ([`reviewer_carries_build_cache`]).
 ///
 /// It carries only what the harness enforces or provides, never a method of review. A REVIEW
 /// ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): [`REVIEWER_DISCIPLINE`]'s two
