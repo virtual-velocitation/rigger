@@ -1005,7 +1005,7 @@ const VIEW_STATE_DRIVER: &str = r##"
   // The grain "2." typed as the grain writer types it, kept as a draft in the box an untouched view's
   // redraw writes in its place, whose markup holds it, so the browser fires no change for it: then Enter
   // after a window resize, leaving the box after a scrollbar's, with nothing more typed, commits it,
-  // read once.
+  // read once. Before that Enter, one that ends an input method's composition commits nothing.
   WRITERS.draft = Object.assign({}, WRITERS.grain, {
     async answer(){
       const b = grainBox(), n = asked.length, how = ROW.resize === "window" ? "Enter" : "leaving the box";
@@ -1013,7 +1013,14 @@ const VIEW_STATE_DRIVER: &str = r##"
       if (b.value !== b.defaultValue)
         throw new Error(at + "the redraw must write the draft into the box's markup, the box holds " + JSON.stringify(b.value)
           + " over its markup's " + JSON.stringify(b.defaultValue));
-      if (ROW.resize === "window") enter(); else leave();
+      if (ROW.resize === "window") {
+        dispatch("keydown", b, { key: "Enter", isComposing: true });
+        await __flush();
+        if (asked.length !== n)
+          throw new Error("REGRESSION: " + at + "an Enter that ends a composition must commit nothing, the page asked "
+            + JSON.stringify(asked.slice(n)));
+        enter();
+      } else leave();
       await __flush();
       const reads = asked.slice(n).filter(function(u){ return u.indexOf("lens=code") !== -1; });
       if (reads.length !== 1 || !/[?&]resolution=2\.(&|$)/.test(reads[0]))
@@ -1226,8 +1233,9 @@ rigger::test_cases! {
     /// The same, the grain typed on an overview already panned.
     a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_before_it:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "before", "resize": "scrollbar"}"#);
-    /// A grain typed, kept as a draft in the box the untouched overview's redraw writes, then Enter
-    /// with nothing more typed: it commits the draft once.
+    /// A grain typed, kept as a draft in the box the untouched overview's redraw writes, then an Enter
+    /// that ends a composition, which commits nothing, and Enter with nothing more typed: it commits
+    /// the draft once.
     a_drafted_grain_commits_on_enter_after_a_window_resize:
         keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "window"}"#);
     /// The same draft committed once by leaving the box after the scrollbar's redraw.
