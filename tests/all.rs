@@ -237,6 +237,7 @@ mod store_config;
 mod store_content_identity_periphery;
 mod store_flag_precedence;
 mod store_precedence;
+mod store_readers_root_periphery;
 mod store_resolution;
 mod store_resolution_cli;
 mod store_secrets;
