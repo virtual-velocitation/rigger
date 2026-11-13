@@ -171,6 +171,8 @@ A `.rigger/gates/mutation.sh` an earlier `rigger init` wrote reads `$MUTANTS`, w
 
 Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/` with starter agents and workflow) or `rigger setup` (init plus the hooks, the skills and the `rigger mcp` lookup server). `rigger validate` checks the whole configuration - agents referenced by stages exist, gates referenced by name are declared, the DAG is acyclic.
 
+`rigger setup` installs each shipped skill into `.claude/skills/`, and a rerun rewrites a hand-edit there. To keep your own text for a skill, commit it as `.rigger/skills/<name>/SKILL.md`, `<name>` the shipped skill's exact name: setup then installs that file verbatim in the shipped skill's place, with no overlay, while `rigger docs` and the docs drift gate keep the shipped text. Every other entry under `.rigger/skills/` is a stray that installs nothing, and setup lists it on every run.
+
 ## Running Rigger on a new project: the checklist
 
 1. `rigger setup` in the repo root.
