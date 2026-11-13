@@ -40,7 +40,7 @@ use crate::common;
 use common::served::node_harness_claims;
 
 use crate::vm_harness;
-use vm_harness::vm_harness;
+use vm_harness::{vm_harness, EVENT_PHASES};
 
 /// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
 /// `__geom` holds, and each markup it is given gets a fresh `svg` (its height and viewBox read from
@@ -56,7 +56,8 @@ use vm_harness::vm_harness;
 /// it drew again. The grain box a markup writes (`[data-lens-res]`) is a text box as a browser makes
 /// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; a markup that
 /// replaces the box holding the focus takes the focus with it and sends the box `focusout`, as a
-/// browser may (Firefox sends none). `window` records its listeners, a size observer is recorded
+/// browser may (Firefox sends none). Its elements record their listeners, and the drivers deliver
+/// events to them, by [`EVENT_PHASES`]. `window` records its listeners, a size observer is recorded
 /// with what it watches for the driver to notify, and an animation frame waits in `__frames` until
 /// the driver runs it.
 /// Free of backticks and `${` so it embeds in the harness's `String.raw` template.
@@ -77,7 +78,7 @@ const __classList = { add: function(){}, remove: function(){}, toggle: function(
 function __Stub(){ this._attrs = {}; this._listeners = {}; this.dataset = {}; this.classList = __classList; }
 __Stub.prototype.setAttribute = function(k, v){ this._attrs[k] = String(v); };
 __Stub.prototype.getAttribute = function(k){ return k in this._attrs ? this._attrs[k] : null; };
-__Stub.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
+__Stub.prototype.addEventListener = function(t, f, o){ __listen(this, t, f, o); };
 __Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 0, height: 0 }; };
 function __viewOf(html){
   if (html.indexOf("data-kgclear") !== -1) return "reproject";
@@ -131,7 +132,7 @@ __Box.prototype.closest = function(sel){ return sel === "[data-lens-res]" ? this
 __Box.prototype.setSelectionRange = function(a, b){ this.selectionStart = a; this.selectionEnd = b; };
 __Box.prototype.focus = function(){
   document.activeElement = this;
-  (this._panel._listeners.focusin || []).forEach(function(f){ f({ type: "focusin", target: this }); }, this);
+  __reach(this._panel, { type: "focusin", target: this });
 };
 Object.defineProperty(__Box.prototype, "isConnected", { get(){ return this._panel._box === this; } });
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
@@ -159,7 +160,7 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   this._box = null;
   if (held && document.activeElement === held) {
     document.activeElement = null;
-    (this._listeners.focusout || []).forEach(function(f){ f({ type: "focusout", target: held }); });
+    __reach(this, { type: "focusout", target: held });
   }
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
@@ -172,7 +173,7 @@ __El.prototype.querySelector = function(sel){
   if (sel === "[data-lens-res]") return this._html.indexOf("data-lens-res") === -1 ? null : this._box || (this._box = new __Box(this));
   return new __Stub();
 };
-__El.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
+__El.prototype.addEventListener = function(t, f, o){ __listen(this, t, f, o); };
 // The frontier slot as an element: what the panel's markup holds in the slot, written in place there
 // with the drawing left as it is, as a browser does.
 function __Slot(panel){ this.id = "kgfrontier"; this._panel = panel; }
@@ -824,8 +825,7 @@ const VIEW_STATE_DRIVER: &str = r##"
   function dispatch(type, target, extra){
     const ev = Object.assign({ type: type, target: target, defaultPrevented: false,
       preventDefault: function(){ ev.defaultPrevented = true; } }, extra || {});
-    (panel._listeners[type] || []).forEach(function(f){ f(ev); });
-    return ev;
+    return __reach(panel, ev);
   }
   // What the browser keeps on the disclosure mark finds while the panel's markup is not replaced (the
   // same _gen): its open state; the disclosure a new markup makes takes it from its attributes.
@@ -1046,7 +1046,13 @@ const VIEW_STATE_DRIVER: &str = r##"
 fn drive(driver: &str, ok: &str, claim: &str) {
     node_harness_claims(
         &vm_harness(
-            &[PANEL_SHIM, OVERVIEWS_FETCH, PAGE_READERS, RESIZE_READERS],
+            &[
+                EVENT_PHASES,
+                PANEL_SHIM,
+                OVERVIEWS_FETCH,
+                PAGE_READERS,
+                RESIZE_READERS,
+            ],
             driver,
             HARNESS_FILE,
         ),

@@ -27,6 +27,28 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
         .replace("__HARNESS_DRIVER__", driver)
 }
 
+/// Event dispatch as a browser runs it, for every stand-in that records listeners: `__listen` keeps
+/// a listener under its type in the node's `_listeners` (an array of the bare functions) and, beside
+/// it, whether it listens in the capture phase (a third argument of `true`, or of `{capture: true}`);
+/// `__reach` delivers an event dispatched on a target inside the node to the node's listeners, its
+/// capture listeners first, then its others only when the event bubbles (`toggle`, `focus`, `blur`
+/// and `scroll` do not), and answers the event. Free of backticks and `${` so it embeds in the
+/// program's `String.raw` template.
+pub const EVENT_PHASES: &str = r##"
+const __NOT_BUBBLING = ["toggle", "focus", "blur", "scroll"];
+function __listen(node, type, f, opt){
+  const capture = node._capture || (node._capture = {});
+  (node._listeners[type] = node._listeners[type] || []).push(f);
+  (capture[type] = capture[type] || []).push(opt === true || !!(opt && opt.capture));
+}
+function __reach(node, ev){
+  const on = (node._listeners[ev.type] || []).slice(), capture = ((node._capture || {})[ev.type] || []).slice();
+  on.forEach(function(f, i){ if (capture[i]) f(ev); });
+  if (__NOT_BUBBLING.indexOf(ev.type) === -1) on.forEach(function(f, i){ if (!capture[i]) f(ev); });
+  return ev;
+}
+"##;
+
 /// The stand-in browser a suite's page script runs against: `document` with its memoised
 /// elements, `window`, the timers, and optionally `location` and `fetch`. Rendered with
 /// [`DomShim::render`] as the first shim part of a [`vm_harness`] program.
@@ -35,7 +57,7 @@ pub struct DomShim {
     /// What an element's `querySelector` answers.
     pub query: Query,
     /// Whether `addEventListener` records each listener on the element (which then carries
-    /// `_listeners` and `dataset`), or ignores it.
+    /// `_listeners` and `dataset`) by [`EVENT_PHASES`], or ignores it.
     pub listeners: bool,
     /// The state fields an element starts with.
     pub fields: Fields,
@@ -156,6 +178,9 @@ impl DomShim {
             "a panel that measures its drawing's slot needs a size and a querySelector"
         );
         let mut js: Vec<String> = vec!["const __els = {};".into()];
+        if self.listeners {
+            js.push(EVENT_PHASES.into());
+        }
         if self.fetch_log {
             js.push("const __fetched = [];".into());
         }
@@ -221,7 +246,7 @@ __El.prototype.getAttribute = function(){ return null; };"#
         }
         js.push(
             if self.listeners {
-                r#"__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };"#
+                r#"__El.prototype.addEventListener = function(t,f,o){ __listen(this, t, f, o); };"#
             } else {
                 r#"__El.prototype.addEventListener = function(){};"#
             }

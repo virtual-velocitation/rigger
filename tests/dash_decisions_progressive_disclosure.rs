@@ -22,7 +22,7 @@
 //! lane (none feature-gated), so this guards the served boundary in both lanes.
 
 use crate::common;
-use crate::vm_harness::{vm_harness, DomShim, Fetch};
+use crate::vm_harness::{vm_harness, DomShim, Fetch, EVENT_PHASES};
 
 use common::fixtures::assert_decisions_region_discloses_progressively;
 use common::served::node_harness_passes;
@@ -73,7 +73,7 @@ fn the_served_root_page_ships_the_decisions_progressive_disclosure_region() {
 
 /// The DOM the render-twice driver runs in, its own rather than a [`DomShim`]: each element parses the
 /// `<details>` blocks written to its `innerHTML` into children carrying their `open` and
-/// `data-disclosure` state, and records the listeners bound on it.
+/// `data-disclosure` state, and records the listeners bound on it by [`EVENT_PHASES`].
 const RENDER_TWICE_DOM: &str = r#"
 const __els = {};
 function __El(id){ this.id=id; this._html=""; this._text=""; this._children=[]; this._listeners={}; this.open=false; this.dataset={}; }
@@ -85,7 +85,7 @@ Object.defineProperty(__El.prototype, "textContent", {
   get(){ return this._text; },
   set(v){ this._text = String(v); }
 });
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
+__El.prototype.addEventListener = function(t,f,o){ __listen(this, t, f, o); };
 function __parseDecisions(html){
   const out = [];
   const blocks = html.match(/<details\b[\s\S]*?<\/details>/g) || [];
@@ -121,7 +121,7 @@ const setTimeout = function(){ return 0; };
 /// It shares the page script's lexical scope (appended after it), so it calls `render()`/`el()`
 /// directly. [`RENDER_TWICE_DOM`] covers exactly what the render path touches: `getElementById`,
 /// `innerHTML`, `addEventListener`, and each `<details>` `open`/`data-disclosure` state; the toggle
-/// the operator makes reaches the region's own listeners, as a browser's capture phase does.
+/// the operator makes reaches only the region's capture listeners, as in a browser.
 /// Mutation-proven: removing the render-side `open` re-application (or the whole tracking mechanism)
 /// re-collapses `d-alpha` and the driver throws.
 const RENDER_TWICE_DRIVER: &str = r#"
@@ -142,9 +142,10 @@ const RENDER_TWICE_DRIVER: &str = r#"
   const a1 = dec._children.find(function(c){ return c.did === "d-alpha"; });
   if(!a1) throw new Error("render#1 produced no <details> for d-alpha");
 
-  // The operator expands d-alpha (native <details> toggle, its event seen by the region it sits in).
+  // The operator expands d-alpha: the native <details> toggle, whose event does not bubble, so the
+  // region it sits in sees it only through a capture listener.
   a1.open = true;
-  (dec._listeners.toggle || []).forEach(function(fn){ fn({ target: a1 }); });
+  __reach(dec, { type: "toggle", target: a1 });
 
   // Poll render #2: the live poll re-renders the region (wholesale innerHTML swap).
   render(state);
@@ -168,7 +169,7 @@ rigger::test_cases! {
     /// `d-alpha` between the renders, and asserts it is still open after the second render while an
     /// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
     /// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
-    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(&vm_harness(&[RENDER_TWICE_DOM], RENDER_TWICE_DRIVER, "dash-render-harness.js"), "OK expanded-decision-survives-poll");
+    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(&vm_harness(&[EVENT_PHASES, RENDER_TWICE_DOM], RENDER_TWICE_DRIVER, "dash-render-harness.js"), "OK expanded-decision-survives-poll");
 }
 
 /// The DOM the preview runs in: just enough for the page script to LOAD and run its load-time
