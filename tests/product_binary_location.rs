@@ -20,53 +20,81 @@ use crate::common;
 use common::repo::{for_each_rs_file, repo_root};
 use std::path::{Path, PathBuf};
 
-/// The derivation, as a pure function of where the test executable sits: cargo runs an
-/// integration suite from `<target>/<profile>/deps/`, and uplifts the product binary one
-/// directory up at `<target>/<profile>/`. This is the whole rule, and it is deliberately
-/// expressed over a path rather than over the process so it can be pinned without moving a
+/// The derivation, as a pure function of where the test executable sits, over both layouts cargo
+/// runs an integration suite from: `<target>/<profile>/deps/<suite>-<hash>` before cargo 1.100,
+/// and `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` from 1.100 on. Either way
+/// cargo uplifts the product binary to `<target>/<profile>/`, so a moved target dir resolves to
+/// its own product, never to the one the suite was compiled beside. Any other path is not a
+/// cargo-run suite, and the derivation declines rather than invent a sibling path, which lets
+/// [`common::rigger_bin`] fall back honestly instead of returning a path nobody built. The rule
+/// is expressed over a path rather than over the process so it can be pinned without moving a
 /// 174 MiB binary around.
 #[test]
-fn the_product_binary_sits_one_directory_above_the_running_suite() {
-    let derived = common::product_binary_from(Path::new(
-        "/anywhere/target/debug/deps/change_path_revert_periphery-7183638cf17279b4",
-    ));
-    assert_eq!(
-        derived,
+fn the_product_binary_is_derived_from_either_cargo_layout_and_from_nothing_else() {
+    let product = |profile: &str| {
         Some(PathBuf::from(format!(
-            "/anywhere/target/debug/rigger{}",
-            std::env::consts::EXE_SUFFIX
-        ))),
-        "the product is the uplifted binary in the same profile dir as the suite's `deps/`"
-    );
-}
-
-/// The derivation follows a MOVED target dir, which is the whole point: the same suite name
-/// under a different target root resolves to that root's product, never to the one it was
-/// compiled beside. This is the assertion that would have caught the gate failure.
-#[test]
-fn a_moved_target_dir_resolves_to_its_own_product_not_the_compiled_beside_one() {
-    let before = common::product_binary_from(Path::new("/a/target/debug/deps/cli-1"));
-    let after = common::product_binary_from(Path::new("/b/other-target/debug/deps/cli-1"));
-    assert_ne!(before, after, "a moved target dir must resolve differently");
-    assert_eq!(
-        after,
-        Some(PathBuf::from(format!(
-            "/b/other-target/debug/rigger{}",
+            "{profile}/rigger{}",
             std::env::consts::EXE_SUFFIX
         )))
-    );
-}
-
-/// An executable that is not sitting in a `deps/` dir is not a cargo-run integration suite, so
-/// the derivation declines rather than inventing a sibling path. Declining is what lets
-/// [`common::rigger_bin`] fall back honestly instead of returning a path nobody built.
-#[test]
-fn an_executable_outside_a_deps_dir_yields_no_derivation() {
-    assert_eq!(
-        common::product_binary_from(Path::new("/usr/local/bin/whatever")),
-        None
-    );
-    assert_eq!(common::product_binary_from(Path::new("rigger")), None);
+    };
+    let rows = [
+        (
+            "the deps layout",
+            "/anywhere/target/debug/deps/change_path_revert_periphery-7183638cf17279b4",
+            product("/anywhere/target/debug"),
+        ),
+        (
+            "the deps layout in a moved target dir",
+            "/b/other-target/debug/deps/cli-1",
+            product("/b/other-target/debug"),
+        ),
+        (
+            "the deps layout under a target tuple",
+            "/t/target/x86_64-unknown-linux-gnu/release/deps/all-1",
+            product("/t/target/x86_64-unknown-linux-gnu/release"),
+        ),
+        (
+            "the build-unit layout",
+            "/anywhere/target/debug/build/rigger/92a7a7b308420ffa/out/\
+             product_binary_authority_periphery-92a7a7b308420ffa",
+            product("/anywhere/target/debug"),
+        ),
+        (
+            "the build-unit layout in a moved target dir",
+            "/b/other-target/debug/build/rigger/1ff6b22e8039aa84/out/all-1ff6b22e8039aa84",
+            product("/b/other-target/debug"),
+        ),
+        (
+            "the build-unit layout under a target tuple",
+            "/t/target/x86_64-unknown-linux-gnu/release/build/rigger/1ff6b22e8039aa84/out/all-1",
+            product("/t/target/x86_64-unknown-linux-gnu/release"),
+        ),
+        ("an installed binary", "/usr/local/bin/whatever", None),
+        ("a bare file name", "rigger", None),
+        ("a short relative path", "out/all-1", None),
+        (
+            "an out dir directly in the profile dir",
+            "/anywhere/target/debug/out/all-1",
+            None,
+        ),
+        (
+            "the deps layout's build-script out dir",
+            "/anywhere/target/debug/build/rigger-1ff6b22e8039aa84/out/all-1",
+            None,
+        ),
+        (
+            "an out dir three below a dir other than build",
+            "/anywhere/target/debug/examples/rigger/1ff6b22e8039aa84/out/all-1",
+            None,
+        ),
+    ];
+    for (layout, exe, expected) in rows {
+        assert_eq!(
+            common::product_binary_from(Path::new(exe)),
+            expected,
+            "{layout}: {exe}"
+        );
+    }
 }
 
 /// The live resolution, exercised the way every suite exercises it: the path this process
