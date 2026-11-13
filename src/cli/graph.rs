@@ -744,14 +744,8 @@ fn report_options(verb: &str, args: &[String]) -> Result<(f64, Tests), Box<dyn s
             "--resolution" => {
                 i += 1;
                 let raw = args.get(i).cloned().unwrap_or_default();
-                resolution = community::parse_resolution(&raw).map_err(|bad| match bad {
-                    community::BadResolution::NotANumber => {
-                        format!("graph {verb}: --resolution expects a number, got {raw:?}")
-                    }
-                    community::BadResolution::NotPositiveFinite(resolution) => format!(
-                        "graph {verb}: --resolution must be a positive finite number, got {resolution}"
-                    ),
-                })?;
+                resolution = community::parse_resolution(&raw)
+                    .map_err(|bad| format!("graph {verb}: {bad}"))?;
             }
             "--tests" => {
                 i += 1;

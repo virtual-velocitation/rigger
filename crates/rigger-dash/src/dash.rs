@@ -1232,9 +1232,11 @@ pub struct Reprojection {
     /// 4's purity is TOTAL - no own-kind fallback - so whenever this fires `clusters` is genuinely
     /// empty, the caption the ONLY explanation for the blank cell there, not merely additive), or
     /// [`REPROJECT_FILES_UNRESOLVED`] under [`Lens::Files`] (spec 63 c3, when every member is
-    /// unresolvable and `clusters` is genuinely empty). Absent (`None`, omitted from the JSON) whenever
-    /// any member DID fold into a bucket, and for an UNKNOWN subject (an empty member set) under every
-    /// lens - a different, already-documented degenerate-but-defined cell.
+    /// unresolvable and `clusters` is genuinely empty). Under a derived lens whose grain text names no
+    /// grain, [`rigger_domain::community::NotAGrain`]'s sentence, with no cluster, whatever the
+    /// subject. Otherwise absent (`None`, omitted from the JSON) whenever any member DID fold into a
+    /// bucket, and for an UNKNOWN subject (an empty member set) under every lens - a different,
+    /// already-documented degenerate-but-defined cell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
 }
@@ -1638,8 +1640,11 @@ fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
     let buckets = Buckets::new(graph, lens);
     let bucket_label = bucket_label_index(graph, &buckets);
+    // A grain text that names no grain folds no member; the empty state says why.
+    let not_a_grain = lens.not_a_grain();
+    let folded: &[&Node] = if not_a_grain.is_some() { &[] } else { members };
     let (mut clusters, edges) = fold_buckets(
-        members.iter().copied(),
+        folded.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
         // Every node of the subject's member set is a member of the bucket it folds to.
@@ -1655,17 +1660,20 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
     // under `Lens::Code`) contributes NO cluster at all, so its raw `buckets.membership` entry must not
     // count here either, or a sole purity-excluded realizer's genuine membership would wrongly read as
     // "full" while `clusters` stays empty - a blank, unexplained cell (round 2's own regression).
-    let has_derived_bucket = members.iter().any(|m| {
+    let has_derived_bucket = folded.iter().any(|m| {
         reprojection_lens_key(&buckets, m).is_some()
             && buckets.membership.contains_key(m.id.as_str())
     });
-    let empty_state = (!has_derived_bucket)
-        .then(|| buckets.derived_texts().map(|t| t.no_membership.to_string()))
-        .flatten();
+    let empty_state = match not_a_grain {
+        Some(bad) => Some(bad.to_string()),
+        None => (!has_derived_bucket)
+            .then(|| buckets.derived_texts().map(|t| t.no_membership.to_string()))
+            .flatten(),
+    };
     // Spec 55 c2, the SHARED member: a member realizing MORE THAN ONE concept folds under its PRIMARY
     // bucket above (appears once) and is flagged here. `members` is ascending-id ordered (member_set),
     // so the flagged list is sorted by construction; only the concepts lens ever populates it.
-    let shared: Vec<String> = members
+    let shared: Vec<String> = folded
         .iter()
         .filter(|m| buckets.is_shared(m.id.as_str()))
         .map(|m| m.id.clone())

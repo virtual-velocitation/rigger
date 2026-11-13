@@ -55,25 +55,29 @@ pub const DEFAULT_RESOLUTION: f64 = 1.0;
 /// What every community id begins with: `community/<resolution>/<number>`, minted by [`detect`].
 pub const COMMUNITY_ID_PREFIX: &str = "community/";
 
-/// Why a written resolution grain names no grain.
+/// A written resolution that names no grain: the text as written. Its display is the one sentence
+/// every reader of a written grain - the dash's lenses and the CLI's reports - says of it.
 #[derive(Debug, Clone, PartialEq)]
-pub enum BadResolution {
-    /// The text is not a number.
-    NotANumber,
-    /// A number, but not a positive, finite one.
-    NotPositiveFinite(f64),
+pub struct NotAGrain(pub String);
+
+impl std::fmt::Display for NotAGrain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "resolution {:?} is not a grain - a grain is a positive, finite number such as 1 or 1.5",
+            self.0
+        )
+    }
 }
 
 /// The resolution `raw` writes: a positive, finite number in any spelling a float reads, so `1`,
 /// `1.0`, `01`, `1e0` and `+1` all write resolution 1. The one parser every grain a user writes
 /// goes through.
-pub fn parse_resolution(raw: &str) -> Result<f64, BadResolution> {
-    let resolution = raw.parse::<f64>().map_err(|_| BadResolution::NotANumber)?;
-    if resolution.is_finite() && resolution > 0.0 {
-        Ok(resolution)
-    } else {
-        Err(BadResolution::NotPositiveFinite(resolution))
-    }
+pub fn parse_resolution(raw: &str) -> Result<f64, NotAGrain> {
+    raw.parse::<f64>()
+        .ok()
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .ok_or_else(|| NotAGrain(raw.to_string()))
 }
 
 /// The grain segment of the `community/<grain>/<n>` and `concept/<grain>/<n>` ids minted at
@@ -771,14 +775,32 @@ mod tests {
         a_large_exponent_reads_its_digits: reads_grain("2e3", 2000.0, "2000");
     }
 
+    /// `raw` names no grain, and is refused as written.
+    fn no_grain(raw: &str) {
+        assert_eq!(
+            parse_resolution(raw),
+            Err(NotAGrain(raw.to_string())),
+            "{raw:?} is no grain"
+        );
+    }
+
     crate::test_cases! {
-        /// A grain that is no number, or no positive, finite one, is refused with why.
-        a_word_is_no_resolution: assert_eq!(parse_resolution("abc"), Err(BadResolution::NotANumber));
-        an_empty_text_is_no_resolution: assert_eq!(parse_resolution(""), Err(BadResolution::NotANumber));
-        zero_is_no_resolution: assert_eq!(parse_resolution("0"), Err(BadResolution::NotPositiveFinite(0.0)));
-        a_negative_is_no_resolution: assert_eq!(parse_resolution("-1"), Err(BadResolution::NotPositiveFinite(-1.0)));
-        infinity_is_no_resolution: assert_eq!(parse_resolution("inf"), Err(BadResolution::NotPositiveFinite(f64::INFINITY)));
-        nan_is_no_resolution: assert!(matches!(parse_resolution("NaN"), Err(BadResolution::NotPositiveFinite(r)) if r.is_nan()));
+        /// A grain that is no number, or no positive, finite one, is refused as written.
+        a_word_is_no_resolution: no_grain("abc");
+        an_empty_text_is_no_resolution: no_grain("");
+        zero_is_no_resolution: no_grain("0");
+        a_negative_is_no_resolution: no_grain("-1");
+        infinity_is_no_resolution: no_grain("inf");
+        nan_is_no_resolution: no_grain("NaN");
+    }
+
+    /// The refusal says the text is not a grain and what a grain is.
+    #[test]
+    fn a_refusal_says_what_a_grain_is() {
+        assert_eq!(
+            NotAGrain("-1".to_string()).to_string(),
+            "resolution \"-1\" is not a grain - a grain is a positive, finite number such as 1 or 1.5"
+        );
     }
 
     #[test]
