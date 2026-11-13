@@ -336,9 +336,16 @@ pub const DAG_NO_RADIUS: &str = "(none grounded)";
 pub const DAG_OVERLAP_DISJOINT: &str = "\nBlast-radius overlap (informational): every proposed \
      unit has a DISJOINT blast radius.\n";
 
-/// FRAMING: the overlap header printed only when two units share a file.
+/// FRAMING: the overlap header printed when two units share a file and `partition:
+/// by-blast-radius` is in force for each unit of every overlapping pair.
 pub const DAG_OVERLAP_HEADER: &str = "\nBlast-radius overlap (informational - the partitioner \
      serializes these into sequential batches):\n";
+
+/// FRAMING: the overlap header printed instead of [`DAG_OVERLAP_HEADER`] when two units share a
+/// file and `partition: by-blast-radius` is not in force for each of them.
+pub const DAG_OVERLAP_UNSERIALIZED_HEADER: &str = "\nBlast-radius overlap (informational - \
+     `partition: by-blast-radius` is not in force for these units, so units sharing a file run \
+     side by side unless one `needs` the other):\n";
 
 /// FRAMING: one conflicting pair, units `{a}` and `{other}` and the files `{shared}` they both
 /// touch.
@@ -471,6 +478,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DAG_NO_RADIUS,
             DAG_OVERLAP_DISJOINT,
             DAG_OVERLAP_HEADER,
+            DAG_OVERLAP_UNSERIALIZED_HEADER,
             DAG_OVERLAP_ROW,
             DAG_CRITIQUE_CONTRACT,
             DAG_SIZE_CAP_CAUSE,
@@ -537,6 +545,7 @@ mod tests {
         ("DAG_OVERLAP_DISJOINT", "FRAMING"),
         ("DAG_OVERLAP_HEADER", "FRAMING"),
         ("DAG_OVERLAP_ROW", "FRAMING"),
+        ("DAG_OVERLAP_UNSERIALIZED_HEADER", "FRAMING"),
         ("DAG_PRIOR_REJECT", "FRAMING"),
         ("DAG_SIZE_CAP_CAUSE", "CONTRACT"),
         ("DAG_UNITS_HEADER", "FRAMING"),
