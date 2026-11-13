@@ -8361,7 +8361,8 @@ mod tests {
     /// its referenced-not-called sidecar, a re-projection's unresolved and shared members, and a
     /// card's subject, file and member chips - names the drawn nodes that are test code in its
     /// `test_nodes`, from the `test` attribute of the graph nodes its answer read, and omits it
-    /// when none is. Each row: the view, its body, and the ids it names.
+    /// when none is: a test node the answer read and does not draw is never named. Each row: the
+    /// view, its body, and the ids it names.
     #[test]
     fn each_drawn_view_names_its_test_nodes() {
         use crate::contextgraph::{CallGraph, CallNode};
@@ -8458,6 +8459,11 @@ mod tests {
             (
                 "a neighborhood with no test",
                 routed(&tiered_chain_graph(), "/api/graph?seed=a&depth=2"),
+                None,
+            ),
+            (
+                "a neighborhood whose answer read test nodes it does not draw",
+                routed(&members, "/api/graph?seed=src%2Fa.rs%3A%3Af&depth=1"),
                 None,
             ),
             (
