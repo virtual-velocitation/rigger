@@ -585,9 +585,9 @@ fn dash_open<T>(
         .parent()
         .and_then(Path::parent)
         .unwrap_or(Path::new(""));
-    let worktree =
-        tree_of(checkout).map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
-    let read_graph = ReadGraph::new(&records, worktree);
+    let site = Site::of(checkout);
+    let read_graph = ReadGraph::new(&records, &site)
+        .map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
     let graph = read_graph
         .open(ViewFilter { tests })
         .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
@@ -925,7 +925,8 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         let identity = loc.identity()?;
         let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
-        let context = ReadGraph::new(&graph, caller_tree()?);
+        let site = Site::here();
+        let context = ReadGraph::new(&graph, &site)?;
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -946,7 +947,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
+        let lookup = rigger::lookup::TreeLookup::new(site.tree()?);
         let mut server = mcpserver::Server::new(store, conductor::STREAM)
             .with_graph(&graph)
             .with_context(&context)

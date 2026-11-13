@@ -584,6 +584,8 @@ reference.
 
 ```
 open(caller worktree W, filter)
+  repo  <- discover(the caller's directory)                       (once per open: git's files,
+                                                                   else one rev-parse)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --raw + the
@@ -630,8 +632,15 @@ a git failure inside a repository is an error. Every reader names it by that one
 ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing
 files and its label names the top-level.
 
+A read asks where the repository lies once per open. The reader's site discovers it once, from
+git's files, else in one `rev-parse` where the files cannot answer, and every rule that names a
+root, a tree, a store or an identity from that site reads the one answer: the store walk, the
+store selection, the identity, W, `root` and the tree source. A long-lived reader (the MCP
+session, a run) holds one site, so it asks once per session; the head, the diff and the listing
+are still read per open.
+
 The check never writes W's index. Every git the source starts itself passes
-`--no-optional-locks` (discovery's `rev-parse`, which finds W's git dir, reads no index), and
+`--no-optional-locks` (discovery's `rev-parse`, where it is asked, reads no index), and
 since git still rewrites an index whose entries only a stat change has dirtied, the diff reads a
 private copy of W's index instead: the index in W's own git dir (a linked worktree's included),
 copied into a directory of its own in the OS temp directory with the index's mtime kept, so git
@@ -778,7 +787,7 @@ reached.
 
 | Query | Work | Budget (through the binary) |
 |---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls | inside the budgets below |
+| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git) | inside the budgets below |
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |
@@ -1347,7 +1356,7 @@ a reader holding one open (or mapped) never blocks a writer.
 - **Process-agnostic.** The store knows nothing of runs, units or gates. It describes a commit,
   and whoever moves HEAD calls `open_current`.
 - **No external systems.** Git is read through the existing worktree crate, and no new
-  dependency is added. Discovery (`rigger_worktree_git::discover::rev_parse`) alone decides that
+  dependency is added. Discovery (`rigger_worktree_git::discover::discover`) alone decides that
   no repository encloses a directory, which then uses `DirTreeSource`; git refusing inside a
   repository is an error wherever a repository is resolved, never a directory store.
 

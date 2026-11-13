@@ -11,6 +11,7 @@ use rigger_domain::code_view::{
 use rigger_domain::composed::Label;
 use rigger_grounder::facts::{open_store, read_head, store_fingerprint};
 use rigger_store::code::{DirTreeSource, Mode, Opened, Store};
+use rigger_worktree_git::discover::Repository;
 use rigger_worktree_git::tree_source::GitTreeSource;
 use std::path::{Path, PathBuf};
 
@@ -21,13 +22,13 @@ pub struct CodeStore {
 }
 
 impl CodeStore {
-    /// The store of the project whose root is `root`, read from the git repository there: its
-    /// head is `root`'s checked-out commit, so `root` must be the operator checkout, never a unit
-    /// worktree.
-    pub fn in_repository(root: &Path) -> Self {
+    /// The store of the git repository `checkout` was discovered in, rooted where every worktree
+    /// of it shares ([`Repository::main_root`]) and read at the main checkout's head, whichever
+    /// worktree it was discovered from.
+    pub fn in_repository(checkout: Repository) -> Self {
         Self {
-            root: root.to_path_buf(),
-            source: Box::new(GitTreeSource::new(root)),
+            root: checkout.main_root(),
+            source: Box::new(GitTreeSource::new(checkout)),
         }
     }
 

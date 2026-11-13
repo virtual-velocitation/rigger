@@ -40,17 +40,21 @@ const DISCOVERY_FLAGS: &[&str] = &[
 /// `rev_parse` and every function that resolves a repository from it, passing its refusal on.
 const DISCOVERY_CALLS: &[&str] = &[
     "rev_parse",
+    "discover",
     "git_repo",
     "git_repo_at",
-    "caller_tree",
-    "tree_of",
+    "repository",
+    "tree",
+    "toplevel",
+    "toplevel_of",
     "worktree_prefix",
     "project_root",
-    "main_repo_root",
+    "main_root",
     "owning_repo_root",
     "instruction_layer_root",
     "config_rigger_dir",
     "walk_stores_from",
+    "walk_stores_in",
     "find_store_dir_from",
     "server_store_location",
     "project_identity",
@@ -246,7 +250,7 @@ mod tests {
         );
         an_is_ok_on_a_discovery_call_is_caught: caught_as(
             "crates/c/src/lib.rs",
-            "fn f(r: &Path) -> bool { main_repo_root(r).is_ok() }\n",
+            "fn f(site: &Site) -> bool { site.main_root().is_ok() }\n",
             SWALLOWED,
         );
         an_option_dropped_after_the_question_mark_is_never_flagged: never_flagged(

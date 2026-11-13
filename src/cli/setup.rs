@@ -711,35 +711,35 @@ const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed
      pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
      rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
 
-/// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
-/// operator checkout git's common directory names, read from that checkout's HEAD whichever
-/// worktree `start` is in; at `start` itself only where discovery finds no enclosing repository.
-/// Git refusing inside a repository is an error, never a directory store.
+/// The code store of the project `site` lies in, rooted where the stamp rule puts it: at the
+/// root every worktree of its repository shares, read from the main checkout's HEAD whichever
+/// worktree `site` is in; at the site's directory itself only where discovery finds no enclosing
+/// repository. Git refusing inside a repository is an error, never a directory store.
 #[cfg(feature = "symbols")]
-pub(crate) fn project_code_store(start: &Path) -> Result<rigger::code_store::CodeStore, String> {
-    Ok(match main_repo_root(start)? {
-        Some(root) => rigger::code_store::CodeStore::in_repository(&root),
-        None => rigger::code_store::CodeStore::in_directory(start),
+pub(crate) fn project_code_store(site: &Site) -> Result<rigger::code_store::CodeStore, String> {
+    Ok(match site.repository()? {
+        Some(checkout) => rigger::code_store::CodeStore::in_repository(checkout.clone()),
+        None => rigger::code_store::CodeStore::in_directory(&site.dir),
     })
 }
 
-/// The code store the conductor advances after each merge a run on `repo` lands; `repo` is the
-/// operator checkout, since a run refuses a linked worktree. None for a project with no
-/// repository, where no merge lands, and in a build with no extractor.
+/// The code store the conductor advances after each merge a run at `site` lands; `site` is the
+/// operator checkout's, since a run refuses a linked worktree. None for a project with no
+/// repository, where no merge lands, and in a build with no extractor; an error when git refuses
+/// inside a repository.
 #[cfg(feature = "symbols")]
-pub(crate) fn run_code_store(repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
-    if repo.is_empty() {
-        return None;
-    }
-    Some(Box::new(rigger::code_store::CodeStore::in_repository(
-        Path::new(repo),
-    )))
+pub(crate) fn run_code_store(site: &Site) -> Result<Option<Box<dyn AdvanceCodeStore>>, String> {
+    Ok(site.repository()?.map(|checkout| {
+        Box::new(rigger::code_store::CodeStore::in_repository(
+            checkout.clone(),
+        )) as Box<dyn AdvanceCodeStore>
+    }))
 }
 
 /// Light-lane [`run_code_store`]: no extractor is compiled in, so there is no store to advance.
 #[cfg(not(feature = "symbols"))]
-pub(crate) fn run_code_store(_repo: &str) -> Option<Box<dyn AdvanceCodeStore>> {
-    None
+pub(crate) fn run_code_store(_site: &Site) -> Result<Option<Box<dyn AdvanceCodeStore>>, String> {
+    Ok(None)
 }
 
 /// What opening the project's code store from the caller's tree left.
@@ -774,8 +774,9 @@ pub(crate) fn open_project_code_store(
     mode: rigger_store::code::Mode,
 ) -> Result<Option<CodeStoreOpened>, String> {
     use rigger_domain::code_view::CodeView;
-    let store = project_code_store(&cwd())?;
-    let tree = caller_tree()?;
+    let site = Site::here();
+    let store = project_code_store(&site)?;
+    let tree = site.tree()?;
     let before = store.in_force()?;
     let opened = store.open(mode)?;
     Ok(Some(CodeStoreOpened {

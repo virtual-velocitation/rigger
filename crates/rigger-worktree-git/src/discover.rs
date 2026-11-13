@@ -42,7 +42,7 @@ pub struct Repository {
 
 /// How `git rev-parse --git-common-dir` shows a repository's common directory, which follows
 /// from how git set the repository up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum CommonShown {
     /// Relative to the directory asked from: git found a `.git` directory and works from the top
     /// of the checkout, where it names it `.git`.
@@ -54,6 +54,8 @@ enum CommonShown {
     /// Absolute: a `.git` file names the administrative directory, which git takes to its
     /// physical path.
     Absolute,
+    /// As git showed it when it set the repository up itself ([`discover`]).
+    Asked(String),
 }
 
 /// What `git rev-parse` answers about where a directory's repository lies.
@@ -88,7 +90,7 @@ impl Repository {
         let at_top = self.prefix.as_os_str().is_empty();
         match ask {
             Location::Toplevel => self.toplevel.to_string_lossy().into_owned(),
-            Location::CommonDir => match self.shown {
+            Location::CommonDir => match &self.shown {
                 CommonShown::Relative => {
                     format!("{}.git", "../".repeat(self.prefix.components().count()))
                 }
@@ -96,6 +98,7 @@ impl Repository {
                 CommonShown::RelativeAtTop | CommonShown::Absolute => {
                     self.common_dir.to_string_lossy().into_owned()
                 }
+                CommonShown::Asked(shown) => shown.clone(),
             },
             Location::Prefix => self
                 .prefix
@@ -106,9 +109,84 @@ impl Repository {
         }
     }
 
-    /// Whether a ref named `name` lies loose in the worktree's or the common directory.
-    fn has_loose_ref(&self, name: &str) -> bool {
-        self.git_dir.join(name).is_file() || self.common_dir.join(name).is_file()
+    /// The directory the repository's store and the tree it reads lie at, the one root every
+    /// worktree of the repository shares: the worktree's own top where its administrative
+    /// directory is the common directory, and otherwise the directory holding the common
+    /// directory, the main checkout's top.
+    pub fn main_root(&self) -> PathBuf {
+        if self.git_dir == self.common_dir {
+            return self.toplevel.clone();
+        }
+        self.common_dir
+            .parent()
+            .map_or_else(|| self.toplevel.clone(), Path::to_path_buf)
+    }
+
+    /// The branch and commit the common directory's `HEAD` names, the main checkout's, which
+    /// every worktree's store is read at ([`Repository::main_root`]), read from git's files
+    /// ([`Repository::head_with`]): None where they leave it to git.
+    pub fn main_head(&self) -> Option<(String, Option<String>)> {
+        self.head_with(&self.common_dir, &mut |path| std::fs::read_to_string(path))
+    }
+
+    /// The branch and commit the `HEAD` in `admin`, one of the repository's administrative
+    /// directories, names, each of git's files read through `read`: the short name of the branch
+    /// (`HEAD` when detached) and the commit it is at (none on a branch with no commit yet), as
+    /// `git symbolic-ref --short -q HEAD` and `git rev-parse --verify -q HEAD^{commit}` answer
+    /// them. None when the files leave it to git: refs in a reftable, a `HEAD` naming a ref
+    /// outside the branches, a branch name another ref also spells (which git would not shorten),
+    /// or a symbolic branch ref. A ref is read as git reads it: loose first, and only where it is
+    /// not loose from a `packed-refs` read after that. `git pack-refs` writes `packed-refs` before
+    /// it deletes the loose refs it packs, so a ref a pack moves between the two reads is in the
+    /// later one.
+    fn head_with(
+        &self,
+        admin: &Path,
+        read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+    ) -> Option<(String, Option<String>)> {
+        if self.common_dir.join("reftable").exists() {
+            return None;
+        }
+        let head = read(&admin.join("HEAD")).ok()?;
+        let head = head.trim_end_matches(['\n', '\r']);
+        let Some(full) = head.strip_prefix("ref: ") else {
+            return is_object_id(head).then(|| ("HEAD".to_owned(), Some(head.to_owned())));
+        };
+        let name = full.strip_prefix("refs/heads/")?;
+        let others = [
+            name.to_owned(),
+            format!("refs/{name}"),
+            format!("refs/tags/{name}"),
+            format!("refs/remotes/{name}"),
+            format!("refs/remotes/{name}/HEAD"),
+        ];
+        if others.iter().any(|other| self.has_loose_ref(admin, other)) {
+            return None;
+        }
+        let packed = self.packed_refs(read)?;
+        if others
+            .iter()
+            .any(|other| packed_ref(&packed, other).is_some())
+        {
+            return None;
+        }
+        let commit = match read(&self.common_dir.join(full)) {
+            Ok(loose) => {
+                let loose = loose.trim_end_matches(['\n', '\r']);
+                Some(is_object_id(loose).then(|| loose.to_owned())?)
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                packed_ref(&self.packed_refs(read)?, full).map(str::to_owned)
+            }
+            Err(_) => return None,
+        };
+        Some((name.to_owned(), commit))
+    }
+
+    /// Whether a ref named `name` lies loose in `admin`, the administrative directory whose
+    /// `HEAD` is read, or in the common directory.
+    fn has_loose_ref(&self, admin: &Path, name: &str) -> bool {
+        admin.join(name).is_file() || self.common_dir.join(name).is_file()
     }
 
     /// The text of the common directory's `packed-refs`, read through `read`: empty when there
@@ -719,92 +797,109 @@ pub fn rev_parse(start: &Path, ask: Location) -> Result<Option<String>, String> 
         return Ok(found.map(|repo| repo.answer(ask)));
     }
     let args = ["rev-parse", ask.flag()];
-    asked(
+    let out = asked(
         start,
         &args,
         git_output(start, &args, GitOutput::Stdout),
         || walk(start, &Reach::longest_from_env()),
-    )
+    )?;
+    Ok(out.map(|out| String::from_utf8_lossy(&out).trim().to_owned()))
 }
 
-/// What git's run of `args` from `start` answers ([`rev_parse`]): its trimmed output when it
-/// ran and succeeded; when it refused or could not start, none where a walk up from `start`
+/// The repository `start` lies in, discovered once for every answer a caller needs of it: read
+/// from git's files where they answer ([`read_repository`]), else asked of git in one `git
+/// rev-parse` naming the top, the administrative and the common directory and the prefix. None
+/// when `start` lies in no repository; a failure where git refuses inside one, as [`rev_parse`]
+/// fails, or answers a path its four lines cannot carry (one holding a line break, or not spelled
+/// in UTF-8).
+pub fn discover(start: &Path) -> Result<Option<Repository>, String> {
+    if let Some(found) = read_repository(start) {
+        return Ok(found);
+    }
+    let asks = [
+        Location::Toplevel,
+        Location::GitDir,
+        Location::CommonDir,
+        Location::Prefix,
+    ];
+    let args: Vec<&str> = std::iter::once("rev-parse")
+        .chain(asks.map(Location::flag))
+        .collect();
+    let Some(out) = asked(
+        start,
+        &args,
+        git_output(start, &args, GitOutput::Stdout),
+        || walk(start, &Reach::longest_from_env()),
+    )?
+    else {
+        return Ok(None);
+    };
+    repository_asked(start, &out).map(Some).ok_or_else(|| {
+        let said = String::from_utf8_lossy(&out);
+        git_failure(&args, start, &format!("answered no repository: {said:?}")).0
+    })
+}
+
+/// The repository git's answer `out` to [`discover`]'s `rev-parse` from `start` names: its four
+/// lines, each path taken to its physical path and the common directory, which git names relative
+/// to `start` where it names it relatively, joined onto `start`. None where the answer is not
+/// four lines of UTF-8 naming directories that exist.
+fn repository_asked(start: &Path, out: &[u8]) -> Option<Repository> {
+    let text = std::str::from_utf8(out).ok()?.strip_suffix('\n')?;
+    let [toplevel, git_dir, common, prefix] = text.split('\n').collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    // An empty `start` is the current directory, as `git -C ""` takes it.
+    let start = if start.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        start
+    };
+    Some(Repository {
+        toplevel: std::fs::canonicalize(toplevel).ok()?,
+        git_dir: std::fs::canonicalize(git_dir).ok()?,
+        common_dir: std::fs::canonicalize(start.join(common)).ok()?,
+        prefix: PathBuf::from(prefix.trim_end_matches('/')),
+        shown: CommonShown::Asked(common.to_owned()),
+    })
+}
+
+/// What git's run of `args` from `start` answers ([`rev_parse`], [`discover`]): its output when
+/// it ran and succeeded; when it refused or could not start, none where a walk up from `start`
 /// (`met`) meets nothing, else a failure naming the command, `start` and git's cause.
 fn asked(
     start: &Path,
     args: &[&str],
     ran: Result<Vec<u8>, Vec<u8>>,
     met: impl FnOnce() -> Met,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Vec<u8>>, String> {
     match ran {
-        Ok(out) => Ok(Some(String::from_utf8_lossy(&out).trim().to_owned())),
+        Ok(out) => Ok(Some(out)),
         Err(_) if met() == Met::Nothing => Ok(None),
         Err(why) => Err(git_failure(args, start, String::from_utf8_lossy(&why).trim()).0),
     }
-}
-
-/// The checkout `start` lies in, read from git's files: the short name of the branch its `HEAD`
-/// names (`HEAD` when detached) and the commit it is at (none on a branch with no commit yet), as
-/// `git symbolic-ref --short -q HEAD` and `git rev-parse --verify -q HEAD^{commit}` answer them.
-/// None when the files leave it to git: a repository they leave to git ([`read_repository`]), refs
-/// in a reftable, a `HEAD` naming a ref outside the branches, a branch name another ref also spells (which git
-/// would not shorten), or a symbolic branch ref.
-pub fn read_head(start: &Path) -> Option<(String, Option<String>)> {
-    read_head_with(start, &mut |path| std::fs::read_to_string(path))
-}
-
-/// [`read_head`], reading each of git's files through `read`. A ref is read as git reads it:
-/// loose first, and only where it is not loose from a `packed-refs` read after that. `git
-/// pack-refs` writes `packed-refs` before it deletes the loose refs it packs, so a ref a pack
-/// moves between the two reads is in the later one.
-fn read_head_with(
-    start: &Path,
-    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
-) -> Option<(String, Option<String>)> {
-    let repo = read_repository(start)??;
-    if repo.common_dir.join("reftable").exists() {
-        return None;
-    }
-    let head = read(&repo.git_dir.join("HEAD")).ok()?;
-    let head = head.trim_end_matches(['\n', '\r']);
-    let Some(full) = head.strip_prefix("ref: ") else {
-        return is_object_id(head).then(|| ("HEAD".to_owned(), Some(head.to_owned())));
-    };
-    let name = full.strip_prefix("refs/heads/")?;
-    let others = [
-        name.to_owned(),
-        format!("refs/{name}"),
-        format!("refs/tags/{name}"),
-        format!("refs/remotes/{name}"),
-        format!("refs/remotes/{name}/HEAD"),
-    ];
-    if others.iter().any(|other| repo.has_loose_ref(other)) {
-        return None;
-    }
-    let packed = repo.packed_refs(read)?;
-    if others
-        .iter()
-        .any(|other| packed_ref(&packed, other).is_some())
-    {
-        return None;
-    }
-    let commit = match read(&repo.common_dir.join(full)) {
-        Ok(loose) => {
-            let loose = loose.trim_end_matches(['\n', '\r']);
-            Some(is_object_id(loose).then(|| loose.to_owned())?)
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            packed_ref(&repo.packed_refs(read)?, full).map(str::to_owned)
-        }
-        Err(_) => return None,
-    };
-    Some((name.to_owned(), commit))
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::test_support::{git_ok, git_ok_with_identity, git_out, init_repo, run_git};
+
+    /// The branch and commit of the checkout `start` lies in, read from git's files through `read`
+    /// ([`Repository::head_with`]): None where they leave the repository ([`read_repository`]) or
+    /// its head to git.
+    fn read_head_with(
+        start: &Path,
+        read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+    ) -> Option<(String, Option<String>)> {
+        let repo = read_repository(start)??;
+        repo.head_with(&repo.git_dir, read)
+    }
+
+    /// [`read_head_with`], each file read as it stands.
+    fn read_head(start: &Path) -> Option<(String, Option<String>)> {
+        read_head_with(start, &mut |path| std::fs::read_to_string(path))
+    }
 
     /// git's own answer to `rev-parse <ask>` from `dir`, none when it refuses.
     fn git_says(dir: &Path, ask: Location) -> Option<String> {
@@ -892,8 +987,10 @@ mod tests {
     /// configuration including a file and naming worktrees in a remote (`configured`), a work
     /// tree configured where its `.git` lies (`selfwt`), a `bare` value written quoted beside a
     /// comment (`quoted`), a format version written in hex and a `bare` value as a number with a
-    /// unit (`suffixed`); and what git alone answers: a work tree configured elsewhere
-    /// (`elsewhere`) and a `.git` configured bare (`baremain`).
+    /// unit (`suffixed`); and what git alone sets up: a work tree configured elsewhere
+    /// (`elsewhere`), a `.git` configured bare (`baremain`), a configuration naming no format
+    /// version (`noversion`), a format 0 naming an extension git ignores there (`ext0`), and a
+    /// `.git` directory naming a common directory (`named`).
     fn layouts(root: &Path) {
         let main = root.join("main");
         git_ok(
@@ -988,6 +1085,23 @@ mod tests {
                 );
             std::fs::write(&config, text).unwrap();
         }
+        for (repo, args) in [
+            (
+                "noversion",
+                &["config", "--unset", "core.repositoryformatversion"][..],
+            ),
+            ("ext0", &["config", "extensions.unheardof", "true"][..]),
+        ] {
+            std::fs::create_dir_all(root.join(repo).join("d")).unwrap();
+            init_repo(root.join(repo));
+            git_ok(root.join(repo), args);
+        }
+        git_ok(&main, &["worktree", "add", "-q", "../named", "-b", "named"]);
+        std::fs::remove_file(root.join("named/.git")).unwrap();
+        std::fs::rename(main.join(".git/worktrees/named"), root.join("named/.git")).unwrap();
+        let common = format!("{}\n", main.join(".git").display());
+        std::fs::write(root.join("named/.git/commondir"), common).unwrap();
+        std::fs::create_dir_all(root.join("named/d")).unwrap();
     }
 
     /// [`rev_parse`]'s answer from `start` for `ask`, checked against git's: git's own answer
@@ -999,6 +1113,26 @@ mod tests {
             Some(answer) => assert_eq!(asked, Ok(Some(answer)), "{what}: {ask:?}"),
             None if inside => assert!(asked.is_err(), "{what}: {ask:?}: {asked:?}"),
             None => assert_eq!(asked, Ok(None), "{what}: {ask:?}"),
+        }
+    }
+
+    /// [`discover`]'s repository from `start`, checked against git: every answer git gives for
+    /// `asks` where it gives them all, and where it refuses one, a failure where a repository may
+    /// lie (`inside`) and none where none does.
+    fn assert_discovery_agrees(start: &Path, asks: &[Location], inside: bool, what: &str) {
+        let discovered = discover(start);
+        let said: Option<Vec<String>> = asks.iter().map(|ask| git_says(start, *ask)).collect();
+        match said {
+            Some(said) => {
+                let repo = discovered
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{what}: none found"));
+                for (ask, said) in asks.iter().zip(said) {
+                    assert_eq!(repo.answer(*ask), said, "{what}: discovered {ask:?}");
+                }
+            }
+            None if inside => assert!(discovered.is_err(), "{what}: {discovered:?}"),
+            None => assert_eq!(discovered, Ok(None), "{what}"),
         }
     }
 
@@ -1048,6 +1182,11 @@ mod tests {
             ("bare.git", false, true),
             ("elsewhere", false, true),
             ("baremain", false, true),
+            ("noversion", false, true),
+            ("noversion/d", false, true),
+            ("ext0/d", false, true),
+            ("named", false, true),
+            ("named/d", false, true),
         ];
         let asks = [
             Location::Toplevel,
@@ -1068,6 +1207,7 @@ mod tests {
                 }
                 assert_rev_parse_agrees(&start, ask, *inside, path);
             }
+            assert_discovery_agrees(&start, &asks, *inside, path);
         }
         // An empty start is the directory this process runs in, which git takes `-C ""` to mean.
         let (here, empty) = (
@@ -1110,9 +1250,13 @@ mod tests {
         };
         let failure = |why: &str| Err(format!("git rev-parse --git-common-dir in /r: {why}"));
         type Ran = Result<Vec<u8>, Vec<u8>>;
-        type Answer = Result<Option<String>, String>;
+        type Answer = Result<Option<Vec<u8>>, String>;
         let cases: [(Ran, Met, Answer); 5] = [
-            (Ok(b".git\n".to_vec()), Met::Unread, Ok(Some(".git".into()))),
+            (
+                Ok(b".git\n".to_vec()),
+                Met::Unread,
+                Ok(Some(b".git\n".to_vec())),
+            ),
             (
                 Err(b"fatal: not a git repository\n".to_vec()),
                 Met::Nothing,
@@ -1224,6 +1368,38 @@ mod tests {
         assert_eq!(empty, read_head(Path::new(".")), "an empty start");
         if let Some(head) = empty {
             assert_eq!(head, git_head(Path::new("")), "an empty start");
+        }
+    }
+
+    /// Each row: a directory under the shapes, the root its repository's store lies at, and the
+    /// directory whose `HEAD` git names the main checkout's head from. The repository discovered
+    /// from it, from git's files or of git, names that root and that head, whichever worktree it
+    /// is discovered from.
+    #[test]
+    fn the_main_root_and_head_are_the_ones_every_worktree_shares() {
+        let dir = shapes();
+        let cases: &[(&str, &str, &str)] = &[
+            ("main", "main", "main"),
+            ("main/a/b", "main", "main"),
+            ("main/.rigger/tmp/wt", "main", "main"),
+            ("linked/s/t", "main", "main"),
+            ("detached", "main", "main"),
+            ("relative", "main", "main"),
+            ("named/d", "main", "main"),
+            ("apart/x", "apart", "apart"),
+            ("outer/sub/x", "outer/sub", "outer/sub"),
+            ("wtc-linked", "wtc", "wtc"),
+            ("bare-wt", "", "bare.git"),
+            ("noversion/d", "noversion", "noversion"),
+            ("ext0/d", "ext0", "ext0"),
+            ("elsewhere", "plain", "elsewhere"),
+        ];
+        for (path, root, head_of) in cases {
+            let repo = discover(&dir.path().join(path)).unwrap().unwrap();
+            let root = std::fs::canonicalize(dir.path().join(root)).unwrap();
+            assert_eq!(repo.main_root(), root, "{path}: the main root");
+            let head = git_head(&dir.path().join(head_of));
+            assert_eq!(repo.main_head(), Some(head), "{path}: the main head");
         }
     }
 

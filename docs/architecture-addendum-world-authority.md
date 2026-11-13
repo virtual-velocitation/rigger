@@ -183,7 +183,7 @@ under the same disjointness test that governs every prune.
 
 **Singleton scope is the store, not the cwd.** The lock, socket, and epoch are resolved
 through the SAME bounded-walk authority the store already uses (outermost `.rigger`,
-`main_repo_root`, refuse-to-fabricate), keyed by the store's `(device, inode)` - so a
+the main root `Site::main_root`, refuse-to-fabricate), keyed by the store's `(device, inode)` - so a
 courier inside a worktree, a symlinked repo path, or a second mount namespace can never
 mint a second daemon by resolving a nearer socket.
 

@@ -968,13 +968,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
+    // and its site the one every read the run makes discovers its repository through.
+    let site = Site::of(Path::new(&repo));
+    let grounder = select_grounder(&site, &cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
-    // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at.
-    let code_store = run_code_store(&repo);
+    let code_store = run_code_store(&site)?;
     // The grounding reads compare with the operator checkout the run lands its merges on, named
     // as every reader names its worktree; a unit's read compares with the unit's own worktree.
-    let read_graph = ReadGraph::new(&graph, tree_of(Path::new(&repo))?);
+    let read_graph = ReadGraph::new(&graph, &site)?;
     let deps = Deps {
         store: &store,
         driver: &held,

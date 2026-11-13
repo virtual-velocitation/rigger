@@ -41,7 +41,7 @@ use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
-use rigger_worktree_git::discover::{rev_parse, Location};
+use rigger_worktree_git::discover::{discover, rev_parse, Location, Repository};
 
 use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
 use rigger::prompt_surface::GREP_GUARD_MESSAGE;
@@ -614,14 +614,14 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
 
 /// The `.rigger` directory whose committed config (`workflow.yml`) and per-machine secret file
 /// (`store.conn`) the store resolver reads for the lower-precedence rungs (§48 rungs 3-4). Anchored
-/// at the OWNING repo root (`main_repo_root`, whose `git-common-dir` resolves the main checkout even
-/// from a nested git worktree), so a courier's `rigger result` reads the SAME secret file and config
+/// at the OWNING repo root ([`Site::main_root`], whose common directory resolves the main checkout
+/// even from a nested git worktree), so a courier's `rigger result` reads the SAME secret file and config
 /// the conductor does - the gitignored `store.conn` lives only in the main checkout, never in a
 /// linked worktree, so a cwd-anchored read would miss it and fracture the store selection. Falls
 /// back to the cwd's `.rigger` outside any git context; git refusing inside a repository is an
-/// error ([`project_root`]).
-fn config_rigger_dir() -> Result<PathBuf, String> {
-    Ok(project_root(&cwd())?.join(RIGGER_DIR))
+/// error ([`Site::project_root`]).
+fn config_rigger_dir(site: &Site) -> Result<PathBuf, String> {
+    Ok(site.project_root()?.join(RIGGER_DIR))
 }
 
 /// The process's working directory, or `.` when it cannot be read.
@@ -769,12 +769,21 @@ fn store_selection_at(
 /// so every command - and every worker's bare `rigger result` - agrees on the store without a
 /// per-command flag. The precedence and its error surface live in the pure [`store_selection_at`];
 /// this wrapper supplies the two ambient inputs (the `KURRENTDB_CONN` environment value and the
-/// resolved `.rigger` directory).
+/// resolved `.rigger` directory), resolved from the cwd.
 fn store_selection(
     flag_store: Option<StoreKind>,
     flag_conn: Option<&str>,
 ) -> Result<StoreSelection, Box<dyn std::error::Error>> {
-    let rigger_dir = config_rigger_dir()?;
+    store_selection_in(&Site::here(), flag_store, flag_conn)
+}
+
+/// [`store_selection`], with the `.rigger` directory resolved from `site`.
+fn store_selection_in(
+    site: &Site,
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+) -> Result<StoreSelection, Box<dyn std::error::Error>> {
+    let rigger_dir = config_rigger_dir(site)?;
     store_selection_at(flag_store, flag_conn, env_conn(), &rigger_dir)
 }
 
@@ -945,16 +954,19 @@ fn project_identity() -> Result<String, String> {
 /// the write lands in the `proj-<repo>-run` stream the conductor reads - identical to the
 /// identity the conductor computed when it created that store from the same root.
 fn project_identity_at(root: &Path) -> Result<String, String> {
-    let toplevel = git_repo_at(root)?;
+    Ok(project_identity_from(&git_repo_at(root)?, root))
+}
+
+/// The project identity of `root` given the git `toplevel` containing it (empty outside a
+/// repository): the tracked id file under the top-level, else under `root` outside a repository,
+/// else the legacy basename identity ([`legacy_identity_from`]).
+fn project_identity_from(toplevel: &str, root: &Path) -> String {
     let base: &Path = if toplevel.is_empty() {
         root
     } else {
-        Path::new(&toplevel)
+        Path::new(toplevel)
     };
-    if let Some(id) = read_project_id(base) {
-        return Ok(id);
-    }
-    Ok(legacy_identity_from(&toplevel, root))
+    read_project_id(base).unwrap_or_else(|| legacy_identity_from(toplevel, root))
 }
 
 /// The LEGACY basename identity, anchored at an explicit `root`: the basename of the git
@@ -1295,7 +1307,7 @@ struct StoreWalk {
 /// to a PARENT project's store and write into a foreign run stream with exit-0 success
 /// (adversary finding adv9-walkup-cross-project, empirically proven). Outside any git
 /// context there is no sanctioned walk at all: only `start` itself counts. Git refusing inside a
-/// repository is an error, never that absence ([`main_repo_root`]).
+/// repository is an error, never that absence ([`Site::main_root`]).
 ///
 /// TWO shapes reach the boundary (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE
 /// TREE): `start` is a filesystem DESCENDANT of the boundary (the pre-relocation nested
@@ -1311,7 +1323,13 @@ struct StoreWalk {
 /// them are ever consulted, mirroring the "outside git context" case's own "only `start`
 /// counts" discipline for the part of the path this repo does not govern.
 fn walk_stores_from(start: &Path) -> Result<StoreWalk, String> {
-    let boundary = main_repo_root(start)?;
+    walk_stores_in(&Site::of(start))
+}
+
+/// [`walk_stores_from`] the directory of `site`, bounded at the main root its one discovery names.
+fn walk_stores_in(site: &Site) -> Result<StoreWalk, String> {
+    let start = site.dir.as_path();
+    let boundary = site.main_root()?;
     let mut found: Vec<PathBuf> = Vec::new();
     // Both the nested-vs-relocated classification and the climb's stop compare directories
     // physically: `start` and the boundary may each be spelled through a symbolic link or `..`
@@ -1376,7 +1394,14 @@ fn find_store_dir_from(start: &Path) -> Result<Option<PathBuf>, String> {
 /// ([`NoStoreFound`], a project set up before any run); every other resolution failure
 /// propagates.
 fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
-    match require_store_dir() {
+    store_if_any_in(&Site::here())
+}
+
+/// [`store_if_any`], resolved from `site`.
+fn store_if_any_in(
+    site: &Site,
+) -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
+    match require_store_dir_in(site) {
         Ok(found) => Ok(Some(found)),
         Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => Ok(None),
         Err(e) => Err(e),
@@ -1397,14 +1422,14 @@ fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn
 
 /// The directory whose instruction layer governs `start`: the nearest one holding a workflow
 /// definition ([`WORKFLOW_FILE`]), walking from `start`'s position mapped into the main checkout
-/// ([`worktree_prefix`] under [`project_root`]) up to the project root, else the project root. So
+/// ([`worktree_prefix`] under [`Site::project_root`]) up to the project root, else the project root. So
 /// a project set up below the repository root reports the layer `rigger validate` reports there,
 /// from that directory and from below it; a subdirectory holding no workflow definition reports
 /// the project's layer, never its own; and a linked or nested worktree reports the main checkout's
 /// layer, since the walk never reads the worktree's own files. Outside git it is `start`; git
 /// refusing inside a repository is an error.
 fn instruction_layer_root(start: &Path) -> Result<PathBuf, String> {
-    let root = project_root(start)?;
+    let root = Site::of(start).project_root()?;
     Ok(worktree_prefix(start)?
         .ancestors()
         .map(|prefix| root.join(prefix))
@@ -1420,34 +1445,113 @@ fn worktree_prefix(start: &Path) -> Result<PathBuf, String> {
         .unwrap_or_default())
 }
 
-/// The project root governing `start`: the main repo root ([`main_repo_root`]), else, outside any
-/// git repository, `start` itself; an error when git refuses inside a repository.
-fn project_root(start: &Path) -> Result<PathBuf, String> {
-    Ok(main_repo_root(start)?.unwrap_or_else(|| start.to_path_buf()))
+/// Where a command stands: a directory, and the repository it lies in, discovered once, on the
+/// first rule that needs it ([`discover`]: read from git's files, else asked of git in one
+/// `rev-parse`). Every rule that names a root, a tree or an identity from a directory reads its
+/// site's one discovery, so a read hands one site to each rule it applies and asks where the
+/// repository lies once per open. Discovery is deferred to the first rule that needs it, so a
+/// command that resolves no repository (a courier under the gate store fence) never walks above
+/// its directory.
+pub(crate) struct Site {
+    dir: PathBuf,
+    /// Why the cwd could not be read, for a site at an unreadable cwd, whose `dir` is then `.`.
+    unread: Option<String>,
+    repository: std::sync::OnceLock<Result<Option<Repository>, String>>,
 }
 
-/// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
-/// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
-/// this resolves to the main checkout's root - exactly the outermost directory the
-/// store walk-up is sanctioned to reach. A common dir git names absolutely that is `start`'s
-/// own administrative directory lies wherever the checkout keeps it (a git directory kept
-/// apart, a submodule's), so the root is `start`'s own top-level. `None` when discovery finds
-/// no repository enclosing `start`; an error when git refuses inside one.
-fn main_repo_root(start: &Path) -> Result<Option<PathBuf>, String> {
-    let Some(common) = rev_parse(start, Location::CommonDir)? else {
-        return Ok(None);
-    };
-    if common.is_empty() {
-        return Ok(None);
+impl Site {
+    /// The site at `dir`; an empty `dir` is the cwd, `.` when it cannot be read ([`cwd`]).
+    pub(crate) fn of(dir: &Path) -> Self {
+        let (dir, unread) = if dir.as_os_str().is_empty() {
+            match std::env::current_dir() {
+                Ok(here) => (here, None),
+                Err(e) => (PathBuf::from("."), Some(e.to_string())),
+            }
+        } else {
+            (dir.to_path_buf(), None)
+        };
+        Self {
+            dir,
+            unread,
+            repository: std::sync::OnceLock::new(),
+        }
     }
-    let common_path = Path::new(&common);
-    if !common_path.is_absolute() {
-        return Ok(start.join(common_path).parent().map(Path::to_path_buf));
+
+    /// The site at the cwd.
+    pub(crate) fn here() -> Self {
+        Self::of(Path::new(""))
     }
-    if rev_parse(start, Location::GitDir)?.as_deref() == Some(common.as_str()) {
-        return Ok(rev_parse(start, Location::Toplevel)?.map(PathBuf::from));
+
+    /// The site's directory, which a rule that finds a store from it needs read: an error naming
+    /// why for a site at a cwd that cannot be read.
+    fn located(&self) -> Result<&Path, String> {
+        match &self.unread {
+            Some(why) => Err(format!("the working directory cannot be read: {why}")),
+            None => Ok(&self.dir),
+        }
     }
-    Ok(common_path.parent().map(Path::to_path_buf))
+
+    /// The repository the site lies in: None outside any; an error when git refuses inside one.
+    fn repository(&self) -> Result<Option<&Repository>, String> {
+        match self.repository.get_or_init(|| discover(&self.dir)) {
+            Ok(found) => Ok(found.as_ref()),
+            Err(why) => Err(why.clone()),
+        }
+    }
+
+    /// The MAIN repo root governing the site: the root every worktree of its repository shares
+    /// ([`Repository::main_root`]). For a linked worktree that is the main checkout's root -
+    /// exactly the outermost directory the store walk-up is sanctioned to reach. `None` when the
+    /// site lies in no repository; an error when git refuses inside one.
+    fn main_root(&self) -> Result<Option<PathBuf>, String> {
+        Ok(self.repository()?.map(Repository::main_root))
+    }
+
+    /// The project root governing the site: its main root ([`Site::main_root`]), else, outside
+    /// any repository, the site's directory; an error when git refuses inside a repository.
+    fn project_root(&self) -> Result<PathBuf, String> {
+        Ok(self.main_root()?.unwrap_or_else(|| self.dir.clone()))
+    }
+
+    /// The git top-level of the worktree the site lies in, empty outside any repository; an error
+    /// when git refuses inside one.
+    fn toplevel(&self) -> Result<String, String> {
+        Ok(self
+            .repository()?
+            .map(|repo| repo.toplevel.to_string_lossy().into_owned())
+            .unwrap_or_default())
+    }
+
+    /// The working tree the site lies in, named by the one rule every reader names its worktree
+    /// by: its git top-level, else, outside any repository, the site's directory. A git failure
+    /// inside a repository is an error, never the directory. A reader at the cwd answers from the
+    /// caller's own tree, and a spawn's host starts the spawn's server in the spawn's worktree, so a
+    /// spawn's lookup answers from that worktree by the same rule.
+    pub(crate) fn tree(&self) -> Result<PathBuf, String> {
+        Ok(self
+            .repository()?
+            .map_or_else(|| self.dir.clone(), |repo| repo.toplevel.clone()))
+    }
+
+    /// The git top-level containing `dir`, a store root resolved from this site, read from the
+    /// site's own discovery wherever it answers: the main root is its own top-level (the store
+    /// every worktree of the repository shares lies at the main checkout's top), and a directory
+    /// between the site and the top of its worktree lies in that worktree. Any other directory
+    /// (a fenced scratch store's) is discovered where it lies.
+    fn toplevel_of(&self, dir: &Path) -> Result<String, String> {
+        let physical = |d: &Path| d.canonicalize().ok();
+        if let Some(at) = physical(dir) {
+            if self.main_root()?.as_ref() == Some(&at) {
+                return Ok(at.to_string_lossy().into_owned());
+            }
+            let below_top = physical(&self.tree()?).is_some_and(|top| at.starts_with(top));
+            let above_site = physical(&self.dir).is_some_and(|here| here.starts_with(&at));
+            if below_top && above_site {
+                return self.toplevel();
+            }
+        }
+        Site::of(dir).toplevel()
+    }
 }
 
 /// THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger run` and `rigger critique`
@@ -1458,18 +1562,19 @@ fn main_repo_root(start: &Path) -> Result<Option<PathBuf>, String> {
 /// there in the main tree). A command started with its cwd drifted into a unit worktree is the
 /// shape this refuses.
 ///
-/// Compares [`main_repo_root`] (the git-common-dir-derived main checkout, correct even from
+/// Compares [`Site::main_root`] (the common-dir-derived main checkout, correct even from
 /// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
 /// the LINKED tree when run from inside one): equal - `cwd` already IS the main tree, return it
 /// unchanged; a real repo where they differ - refuse; no repo reachable at all -
 /// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
 /// guards its own repo-only logic on; git refusing inside a repository - that refusal.
 fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
-    let toplevel = git_repo_at(cwd)?;
+    let site = Site::of(cwd);
+    let toplevel = site.toplevel()?;
     if toplevel.is_empty() {
         return Ok(String::new());
     }
-    let Some(main_root) = main_repo_root(cwd)? else {
+    let Some(main_root) = site.main_root()? else {
         return Ok(toplevel);
     };
     let main_canon = std::fs::canonicalize(&main_root).unwrap_or_else(|_| main_root.clone());
@@ -1547,8 +1652,14 @@ impl StoreLocation {
     /// the conductor reads, never a `proj-<worktree>-run` misfile (spec 05). An error when git
     /// refuses inside the repository holding the store ([`project_identity_at`]).
     fn identity(&self) -> Result<String, String> {
+        self.identity_in(&Site::of(self.dir.parent().unwrap_or(Path::new(""))))
+    }
+
+    /// [`identity`](Self::identity), with the owning root's git top-level read from the
+    /// discovery of `site`, the site the store was resolved from ([`Site::toplevel_of`]).
+    fn identity_in(&self, site: &Site) -> Result<String, String> {
         match self.dir.parent() {
-            Some(root) => project_identity_at(root),
+            Some(root) => Ok(project_identity_from(&site.toplevel_of(root)?, root)),
             // A `.rigger` with no parent is pathological (the resolved dir is always
             // `<root>/.rigger` from an absolute cwd); fall back to the cwd-anchored identity.
             None => project_identity(),
@@ -1603,7 +1714,7 @@ fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
     (d.workdir, d.max_retries)
 }
 
-/// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
+/// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `site`. The server
 /// holds ONE remote store, so there is no local `events.db` to walk to: identity binds to the
 /// OWNING root (the main repo root - correct even from a nested worktree, exactly as the sqlite
 /// walk's identity does), and [`resolve_store`] reaches the server by its connection string (the
@@ -1612,8 +1723,8 @@ fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
 /// ([`require_store_dir`]) that WRITE and the residue scan's run-liveness read ([`read_run_units`])
 /// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
 /// "one resolution authority"), never a second parallel mapping that could drift.
-fn server_store_location(cwd: &Path) -> Result<StoreLocation, String> {
-    let dir = project_root(cwd)?.join(RIGGER_DIR);
+fn server_store_location(site: &Site) -> Result<StoreLocation, String> {
+    let dir = site.project_root()?.join(RIGGER_DIR);
     Ok(StoreLocation { dir })
 }
 
@@ -1647,6 +1758,13 @@ struct NoStoreFound(String);
 /// deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the first
 /// run of a fresh project.
 fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    require_store_dir_in(&Site::here())
+}
+
+/// [`require_store_dir`], resolved from `site` rather than the cwd.
+fn require_store_dir_in(
+    site: &Site,
+) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     // The gate store fence (spec 70 criterion 3): the gate runner (`gate::ExecRunner::run`)
     // pins STORE_FENCE_ENV around a unit-worktree gate's spawned process so a store-opening
     // courier command IT runs (a test invoking `rigger emit`/`result`/`peers`)
@@ -1674,8 +1792,8 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
             return Ok((StoreLocation { dir }, StoreSelection::Sqlite));
         }
     }
-    let sel = store_selection(None, None)?;
-    let cwd = std::env::current_dir()?;
+    let sel = store_selection_in(site, None, None)?;
+    let cwd = site.located()?;
     // A server-backed project shares ONE remote store; there is no local `events.db` to walk to,
     // so a courier binds identity to the OWNING root (the main repo root, correct even from a
     // nested worktree, exactly as the sqlite walk's identity does) and lets `resolve_store` reach
@@ -1683,9 +1801,9 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     // sqlite while the run lived on the server. The same [`server_store_location`] the residue
     // scan's read resolves through, so write and read agree on the one server store.
     if !sel.is_sqlite() {
-        return Ok((server_store_location(&cwd)?, sel));
+        return Ok((server_store_location(site)?, sel));
     }
-    let walk = walk_stores_from(&cwd)?;
+    let walk = walk_stores_in(site)?;
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
         Box::new(NoStoreFound(format!(
             "no rigger store found: neither {} nor any parent directory has an initialized \
@@ -1751,33 +1869,42 @@ fn on_the_run(act: impl FnOnce(&StoreLocation, &dyn EventStore) -> Res) -> Res {
 }
 
 /// The context graph a read-only graph verb (`rigger graph --around`/`--show`) answers from: the
-/// `graph.db` of the store [`require_store_dir`] resolves, under that store's identity. A read run
+/// `graph.db` of the store [`require_store_dir`] resolves from `site`, under that store's identity. A read run
 /// from a linked worktree so answers from the owning repository's graph, and one run under the
 /// gate store fence from the fence - never from a `graph.db` opened in the working directory,
 /// which a worktree does not carry and which would answer every lookup empty. A project with no
 /// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
 /// its not-found note instead of refusing; every other resolution failure propagates.
-fn owning_graph_to_read() -> Result<Projector, Box<dyn std::error::Error>> {
-    let loc = match store_if_any()? {
+fn owning_graph_to_read(site: &Site) -> Result<Projector, Box<dyn std::error::Error>> {
+    let loc = match store_if_any_in(site)? {
         Some((loc, _selection)) => loc,
         None => StoreLocation {
-            dir: std::env::current_dir()?.join(RIGGER_DIR),
+            dir: site.located()?.join(RIGGER_DIR),
         },
     };
-    open_graph_to_read(&loc.file("graph.db"), &loc.identity()?)
+    open_graph_to_read(&loc.file("graph.db"), &loc.identity_in(site)?)
 }
 
 /// The context graph a reader reads (7.3): the record graph `records` composed with the code
-/// view of the operator checkout's head, compared with the caller's `worktree`. A reader in a
-/// unit worktree reads the operator checkout's store, which owns `.rigger/`.
+/// view of the operator checkout's head, compared with the caller's worktree, the tree its `site`
+/// lies in. A reader in a unit worktree reads the operator checkout's store, which owns
+/// `.rigger/`. The reader asks where the repository lies once, through its site, however many
+/// answers it opens.
 pub(crate) struct ReadGraph<'r> {
     records: &'r Projector,
+    site: &'r Site,
     worktree: PathBuf,
 }
 
 impl<'r> ReadGraph<'r> {
-    pub(crate) fn new(records: &'r Projector, worktree: PathBuf) -> Self {
-        Self { records, worktree }
+    /// The reader at `site`, comparing with the tree it lies in ([`Site::tree`]).
+    pub(crate) fn new(records: &'r Projector, site: &'r Site) -> Result<Self, String> {
+        let worktree = site.tree()?;
+        Ok(Self {
+            records,
+            site,
+            worktree,
+        })
     }
 }
 
@@ -1799,7 +1926,10 @@ impl OpenGraph for ReadGraph<'_> {
     }
 
     fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
-        open_head(worktree)
+        if worktree == self.worktree {
+            return open_head(self.site, worktree);
+        }
+        open_head(&Site::of(worktree), worktree)
     }
 
     fn open_on(
@@ -1834,23 +1964,25 @@ impl OpenGraph for ReadGraph<'_> {
     }
 }
 
-/// The code store's view of the head of the project `worktree` lies in, how `worktree` differs
-/// from it, and why it is behind the head when it is.
+/// The code store's view of the head of the project `site` lies in, how `worktree`, the tree of
+/// `site`, differs from it, and why it is behind the head when it is.
 #[cfg(feature = "symbols")]
-fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::OpenCodeView;
-    project_code_store(worktree)?.head(worktree)
+    project_code_store(site)?.head(worktree)
 }
 
 /// Light-lane [`open_head`]: no extractor is compiled in, so the head's tree is read with no code
 /// facts.
 #[cfg(not(feature = "symbols"))]
-fn open_head(worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::TreeSource;
     // The light lane shares the symbols lane's `Head` shape without a store: a view that holds no
     // fact, so none is overlaid, compared with the worktree as the symbols lane's is.
-    let source: Box<dyn TreeSource> = match main_repo_root(worktree)? {
-        Some(root) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(&root)),
+    let source: Box<dyn TreeSource> = match site.repository()? {
+        Some(checkout) => Box::new(rigger_worktree_git::tree_source::GitTreeSource::new(
+            checkout.clone(),
+        )),
         None => Box::new(rigger_store::code::DirTreeSource::new(worktree)),
     };
     let tip = source.head()?;
@@ -5359,13 +5491,16 @@ fn spec_lint_next_step(spec_path: &str) -> String {
 /// This is c2's mechanical default-resolution after turbovec's retirement; c1 is the
 /// authority that PROVES the accepted-name contract (the exact `symbols`/`grep`/`nop` set
 /// and the loud migration error for the retired `turbovec` / `hybrid` names).
-fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+fn select_grounder(
+    site: &Site,
+    name: &str,
+) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
     // feature is built (it reads the code store's view of the head, opened on every read); a build
     // WITHOUT the feature falls through to `grounder_for`, whose `symbols` arm is the loud
     // no-silent-degrade error.
-    // Every grounder reads the caller's worktree, named as every other read names it.
-    let worktree = caller_tree()?;
+    // Every grounder reads the worktree of `site`, named as every other read names it.
+    let worktree = site.tree()?;
     let worktree = worktree.to_string_lossy();
     #[cfg(feature = "symbols")]
     {
@@ -5374,7 +5509,7 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
             return Ok(Box::new(
                 rigger::grounder::symbols::grounder::Symbols::over(
                     &worktree,
-                    Box::new(project_code_store(&cwd())?),
+                    Box::new(project_code_store(site)?),
                 ),
             ));
         }
@@ -5382,40 +5517,19 @@ fn select_grounder(name: &str) -> Result<Box<dyn Grounder>, Box<dyn std::error::
     Ok(rigger::grounder::grounder_for(name, &worktree)?)
 }
 
-/// The grounder the caller's tree ([`caller_tree`]) configures: its workflow's
+/// The grounder the caller's tree (the cwd's [`Site::tree`]) configures: its workflow's
 /// `defaults.grounder` ([`select_grounder`]); a tree with no workflow yet grounds with the
 /// default, so an agent can ground before a workflow is authored.
 fn configured_grounder() -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
-    let name = config_store::load(&caller_tree()?.to_string_lossy())
+    let site = Site::here();
+    let name = config_store::load(&site.tree()?.to_string_lossy())
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    select_grounder(&name)
+    select_grounder(&site, &name)
 }
 
 fn git_repo() -> Result<String, String> {
     git_repo_at(&cwd())
-}
-
-/// The working tree a combined lookup answers from, the caller's own: the cwd's git top-level,
-/// else, outside any repository, the cwd. A spawn's host starts the spawn's server in the spawn's
-/// worktree, so a spawn's lookup answers from that worktree by the same rule.
-fn caller_tree() -> Result<PathBuf, String> {
-    tree_of(Path::new(""))
-}
-
-/// The working tree `dir` lies in, named by the one rule every reader names its worktree by: its
-/// git top-level, else, outside any repository, `dir` itself; an empty `dir` is the cwd. A git
-/// failure inside a repository is an error, never `dir`.
-fn tree_of(dir: &Path) -> Result<PathBuf, String> {
-    let dir = if dir.as_os_str().is_empty() {
-        cwd()
-    } else {
-        dir.to_path_buf()
-    };
-    Ok(match git_repo_at(&dir)? {
-        top if top.is_empty() => dir,
-        top => PathBuf::from(top),
-    })
 }
 
 /// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
@@ -5425,7 +5539,7 @@ fn tree_of(dir: &Path) -> Result<PathBuf, String> {
 /// root) instead of the cwd (which, inside a git-linked worktree, git reports as the
 /// worktree path) - see [`project_identity_at`].
 fn git_repo_at(root: &Path) -> Result<String, String> {
-    rev_parse(root, Location::Toplevel).map(Option::unwrap_or_default)
+    Site::of(root).toplevel()
 }
 
 #[cfg(test)]
@@ -5447,7 +5561,8 @@ mod tests {
     fn a_read_graph_composes_over_the_head_it_is_handed() {
         let records = Projector::open(":memory:", "test").unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let read = ReadGraph::new(&records, dir.path().to_path_buf());
+        let site = Site::of(dir.path());
+        let read = ReadGraph::new(&records, &site).unwrap();
         let tree =
             crate::test_support::planted_file("src/a.rs", &[("alpha", "function")], &[], &[]);
         let head = crate::test_support::matching_head(crate::test_support::facts_view(vec![tree]));
