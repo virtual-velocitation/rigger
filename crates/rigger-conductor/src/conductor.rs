@@ -42477,12 +42477,26 @@ mod tests {
         recorded: &[(&str, &[&str])],
         parked: &[&str],
     ) -> HashSet<String> {
+        let units: Vec<(&str, &str)> = names.iter().map(|n| (*n, "by-blast-radius")).collect();
+        probe_wave(width, &units, grounder, probe, recorded, parked).0
+    }
+
+    /// [`probe_one_wave`] over `units`, each `(name, partition)` declaring its own `partition`;
+    /// returns the stages the call integrated and the log the wave wrote.
+    fn probe_wave(
+        width: u32,
+        units: &[(&str, &str)],
+        grounder: &dyn Grounder,
+        probe: &OverlapProbe,
+        recorded: &[(&str, &[&str])],
+        parked: &[&str],
+    ) -> (HashSet<String>, Vec<Event>) {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = width;
         let scratch = tempfile::tempdir().unwrap();
         cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        for name in names {
+        for (name, partition) in units {
             cfg.agents.insert(name.to_string(), agent(name));
             cfg.workflow.stages.insert(
                 name.to_string(),
@@ -42491,7 +42505,7 @@ mod tests {
                     agent: name.to_string(),
                     coverage: name.to_string(),
                     gates: vec!["ok".into()],
-                    partition: "by-blast-radius".into(),
+                    partition: partition.to_string(),
                     ..Default::default()
                 },
             );
@@ -42503,8 +42517,10 @@ mod tests {
             ..stub_deps(&store, probe, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
-        let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-        drive_one_wave(&ctx, &cfg.workflow.stages, &ready, parked)
+        let ready: Vec<String> = units.iter().map(|(n, _)| n.to_string()).collect();
+        let integrated = drive_one_wave(&ctx, &cfg.workflow.stages, &ready, parked);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (integrated, events)
     }
 
     /// Append a `BlastRadiusComputed` to `store` for each `recorded` `(unit, safe files)`.
@@ -42756,6 +42772,180 @@ mod tests {
             HashSet::from(["u_b".to_string()]),
             "u_a shares x.rs with the parked unit and waits; the disjoint u_b runs"
         );
+    }
+
+    /// The partition holds two units apart only when it is in force for BOTH: units whose radii
+    /// share a file run one after the other when each declares `partition: by-blast-radius`, and
+    /// side by side when either does not - a unit that does not ask is never held back by the
+    /// rule and never holds another back, whichever of the two is in flight first.
+    #[test]
+    fn run_wave_holds_overlapping_units_apart_only_when_both_ask_for_the_partition() {
+        // (u_a's partition, u_b's partition, peak, why); u_a is admitted first.
+        let rows = [
+            (
+                "by-blast-radius",
+                "by-blast-radius",
+                1,
+                "two units that ask and share a file run one after the other",
+            ),
+            (
+                "by-blast-radius",
+                "",
+                2,
+                "a unit that does not ask starts beside an asker in flight sharing its file",
+            ),
+            (
+                "",
+                "by-blast-radius",
+                2,
+                "an asker starts beside a unit in flight that does not ask, sharing its file",
+            ),
+            (
+                "",
+                "",
+                2,
+                "units that do not ask run side by side whatever they share",
+            ),
+        ];
+        for (a, b, peak, why) in rows {
+            // Side-by-side units meet inside the probe, so their overlap never rests on timing.
+            let probe = if peak == 2 {
+                OverlapProbe::meeting(2)
+            } else {
+                OverlapProbe::new(&[])
+            };
+            let grounder = stub_radii(&[("u_a", &["x.rs"]), ("u_b", &["x.rs"])]);
+            let (integrated, _) =
+                probe_wave(2, &[("u_a", a), ("u_b", b)], &grounder, &probe, &[], &[]);
+            assert_eq!(integrated.len(), 2, "{why}: both integrate: {integrated:?}");
+            assert_eq!(probe.peak(), peak, "{why}");
+        }
+    }
+
+    /// A unit parked in an earlier wave holds back only a ready unit the rule is in force for:
+    /// the parked unit, no stage of this workflow and so held to the rule, shares `x.rs` with
+    /// both ready units; the one that asks for `partition: by-blast-radius` waits, and the one
+    /// that does not starts.
+    #[test]
+    fn run_wave_holds_only_an_asking_ready_unit_apart_from_an_overlapping_parked_unit() {
+        let probe = OverlapProbe::new(&[]);
+        let grounder = stub_radii(&[("u_a", &["x.rs"]), ("u_b", &["x.rs"])]);
+        let (integrated, _) = probe_wave(
+            3,
+            &[("u_a", "by-blast-radius"), ("u_b", "")],
+            &grounder,
+            &probe,
+            &[("parked", &["x.rs"])],
+            &["parked"],
+        );
+        assert_eq!(
+            integrated,
+            HashSet::from(["u_b".to_string()]),
+            "u_a asks and shares x.rs with the parked unit, so it waits; u_b does not ask and runs"
+        );
+    }
+
+    /// The radius a wave records before a unit starts says the rule is in force for that unit:
+    /// under a grounder that records radii, the unit that asks for `partition: by-blast-radius`
+    /// has its `BlastRadiusComputed` written before its `UnitStarted`, while the unit beside it
+    /// that does not ask gets no radius before it starts.
+    #[test]
+    fn run_wave_records_a_radius_before_start_only_for_a_unit_that_asks() {
+        let probe = OverlapProbe::new(&[("u_a", 50), ("u_b", 50)]);
+        let grounder = StructuralStubGrounder {
+            stamp: "idxhash/ts-tags-v1".to_string(),
+            ..stub_radii(&[("u_a", &["a.rs"]), ("u_b", &["b.rs"])])
+        };
+        let (integrated, events) = probe_wave(
+            2,
+            &[("u_a", "by-blast-radius"), ("u_b", "")],
+            &grounder,
+            &probe,
+            &[],
+            &[],
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        let first = |type_: &str, unit: &str| {
+            events.iter().position(|e| {
+                e.type_ == type_ && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+        };
+        for (unit, before_start, why) in [
+            (
+                "u_a",
+                true,
+                "u_a asks, so its radius is recorded before it starts",
+            ),
+            (
+                "u_b",
+                false,
+                "u_b does not ask, so no radius is recorded before it starts",
+            ),
+        ] {
+            let started = first(ledger::TYPE_UNIT_STARTED, unit).expect("the unit started");
+            assert_eq!(
+                first(TYPE_BLAST_RADIUS_COMPUTED, unit).is_some_and(|radius| radius < started),
+                before_start,
+                "{why}"
+            );
+        }
+    }
+
+    /// A stage a landing makes ready waits for an overlapping unit in flight only when the rule
+    /// is in force for both: `a` (fast) and `b` (slow, asking for `partition: by-blast-radius`)
+    /// start side by side, and `c` needs `a` and shares `b`'s file. When `c` does not ask, `a`
+    /// landing lets `c` start while `b` still runs; when `c` asks too, it waits for `b`. Driven
+    /// through `run`, the wave loop `rigger run` drives.
+    #[test]
+    fn a_stage_a_landing_makes_ready_waits_for_an_overlapping_unit_only_when_both_ask() {
+        // (c's partition, whether c starts before b ends)
+        for (c_partition, starts_before_b_ends) in [("", true), ("by-blast-radius", false)] {
+            let probe = OverlapProbe::new(&[("a", 50), ("b", 1500), ("c", 50)]);
+            let mut cfg = Config::default();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            for (name, needs, partition) in [
+                ("a", None, ""),
+                ("b", None, "by-blast-radius"),
+                ("c", Some("a"), c_partition),
+            ] {
+                cfg.agents.insert(name.into(), agent(name));
+                cfg.workflow.stages.insert(
+                    name.into(),
+                    Stage {
+                        name: name.into(),
+                        agent: name.into(),
+                        coverage: name.into(),
+                        needs: needs.into_iter().map(String::from).collect(),
+                        gates: vec!["ok".into()],
+                        partition: partition.into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            let grounder = stub_radii(&[("a", &["a.rs"]), ("b", &["x.rs"]), ("c", &["x.rs"])]);
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                grounder: Some(&grounder),
+                ..stub_deps(&store, &probe, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            for name in ["a", "b", "c"] {
+                assert_eq!(
+                    rs.units[name].status,
+                    ledger::Status::Integrated,
+                    "c's partition {c_partition:?}: {name} integrates"
+                );
+            }
+            let (_, b_end) = probe.window("b");
+            let (c_start, _) = probe.window("c");
+            assert_eq!(
+                c_start < b_end,
+                starts_before_b_ends,
+                "c's partition {c_partition:?}: c starts while b still runs exactly when c does \
+                 not ask"
+            );
+        }
     }
 
     /// A unit finishing frees its slot INSIDE the wave: at width 2, while the slow unit still
