@@ -1,16 +1,23 @@
-//! Periphery (integration) test for the explorer's OPENING VIEW: an overview opens FITTED to its
-//! panel - every mark it drew (each cluster's circle and label, each directory hull and its label)
-//! lies inside the panel at the opening pan/zoom, scaled down as far as that needs and never up past
-//! 1 - and the wheel zooms on from that scale. Spec 59 lets a dense layout spread past the panel, for
-//! what the user reaches by zooming in; the opening view still shows the whole drawing, at every
-//! lens, every viewport width and every redraw (a lens switch, a re-projection).
+//! Periphery (integration) test for the explorer's OPENING VIEW and the DRAWING'S HEIGHT.
+//!
+//! An overview opens FITTED to its panel: every mark it drew (each cluster's circle and label, each
+//! directory hull and its label) lies inside the panel at the opening pan/zoom, scaled down as far as
+//! that needs and never up past 1, and the wheel zooms on from that scale. Spec 59 lets a dense layout
+//! spread past the panel, for what the user reaches by zooming in; the opening view still shows the
+//! whole drawing, at every lens, every viewport width and every redraw (a lens switch, a
+//! re-projection).
+//!
+//! And every drawing (an overview, a re-projection, a drilled cluster, a call walk) fills the room
+//! its panel leaves below the toolbar that view shows, however many lines that toolbar wraps to on a
+//! narrow screen, so the panel's content never runs past its own height.
 //!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
-//! DOM shim that keeps the panel's geometry (its client box, padding and toolbar height, as a browser
-//! lays them out at each viewport width) and records the transform the page applies to `#kgzoom`.
-//! Each drawn mark's box is read back from the emitted markup with the page's own label-size model
-//! (`kgNodeBody`, and a hull label at its 10px monospace advance), so the check never trusts the
-//! extent the page computes for itself. `dash` compiles on both lanes, so this guards both.
+//! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
+//! browser lays them out at each viewport width) and records the transform the page applies to
+//! `#kgzoom`. Each drawn mark's box is read back from the emitted markup with the page's own
+//! label-size model (`kgNodeBody`, and a hull label at its 10px monospace advance), so the check
+//! never trusts the extent the page computes for itself. `dash` compiles on both lanes, so this guards
+//! both.
 
 use crate::common;
 
@@ -19,15 +26,15 @@ use common::served::node_harness_claims;
 use crate::vm_harness;
 use vm_harness::vm_harness;
 
-/// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and toolbar height `__geom`
-/// holds, and each markup it is given gets a fresh `svg` (recording its wheel listener, boxed where
-/// that markup's toolbar leaves it) and a fresh `#kgzoom` (recording its transform), as a browser
-/// replaces them; every other element is a bare stand-in. Free of backticks and `${` so it embeds in
-/// the harness's `String.raw` template.
+/// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
+/// `__geom` holds, and each markup it is given gets a fresh `svg` (recording its wheel listener, its
+/// slot boxed below that markup's toolbar) and a fresh `#kgzoom` (recording its transform), as a
+/// browser replaces them; every other element is a bare stand-in. Free of backticks and `${` so it
+/// embeds in the harness's `String.raw` template.
 const PANEL_SHIM: &str = r##"
 const __els = {};
 const __geom = { width: 800, height: 300, padTop: 10, padBottom: 10,
-  toolbar: { overview: 24, reproject: 24, drill: 24 } };
+  toolbar: { overview: 24, reproject: 24, drill: 24, calls: 24 } };
 const __classList = { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){ return false; } };
 function __Stub(){ this._attrs = {}; this._listeners = {}; this.dataset = {}; this.classList = __classList; }
 __Stub.prototype.setAttribute = function(k, v){ this._attrs[k] = String(v); };
@@ -36,6 +43,7 @@ __Stub.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._
 __Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 0, height: 0 }; };
 function __viewOf(html){
   if (html.indexOf("data-kgclear") !== -1) return "reproject";
+  if (html.indexOf("data-calls-down") !== -1) return "calls";
   if (html.indexOf("data-kgback") !== -1) return "drill";
   return "overview";
 }
@@ -73,8 +81,9 @@ const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", 
 
 /// A `fetch` serving deterministic overviews as dense as a real project's - the files lens's 158
 /// file clusters in 32 directories (one at the repo root), the code lens's 200 communities, the
-/// concepts lens's 98 concepts - and a subject's re-projection under each lens (40 files, a single
-/// community, 12 concepts); a card or rationale read finds nothing.
+/// concepts lens's 98 concepts - a subject's re-projection under each lens (40 files, a single
+/// community, 12 concepts), a drilled cluster's 12 members and a 4-layer call walk; a card or
+/// rationale read finds nothing.
 const OVERVIEWS_FETCH: &str = r##"
 function __chain(keys, step){
   const edges = [];
@@ -107,13 +116,28 @@ function __concepts(n){
   return __body(keys, function(k, i){ return { key: k, count: 1 + (i * 17) % 40, kind: "rationale",
     label: "concept about subsystem " + i }; }, 5);
 }
+// A drilled cluster's 12 members, the first its hub, and a call walk of 8 functions over 4 layers.
+function __members(n, layered){
+  const keys = []; for (let i = 0; i < n; i++) keys.push("crates/crate-1/src/module_1.rs::item_" + i);
+  const nodes = keys.map(function(k, i){ return { id: k, label: "item_" + i, kind: "code-entity",
+    degree: 1 + i % 5, god: i === 0, layer: layered ? Math.floor(i / 2) : undefined }; });
+  const edges = layered
+    ? keys.slice(2).map(function(k, i){ return { from: keys[i], to: k }; })
+    : __chain(keys, 3);
+  return { nodes: nodes, edges: edges };
+}
 const __SUBJECT = "crates/crate-1/src/module_1.rs::Thing";
+const __CLUSTER = "crates/crate-1/src";
+const __DRILL = __members(12, false);
+const __CALLS = __members(8, true);
 const __OVERVIEWS = { files: __files(158), code: __code(200), concepts: __concepts(98) };
 const __REPROJECTIONS = { files: __files(40), code: __code(1), concepts: __concepts(12) };
 function __graph(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return { nodes: [] };
   if (s.indexOf("card=") !== -1) return {};
+  if (s.indexOf("view=calls") !== -1) return { seed: __SUBJECT, dir: "down", nodes: __CALLS.nodes, edges: __CALLS.edges };
+  if (s.indexOf("cluster=") !== -1) return { seed: __CLUSTER, nodes: __DRILL.nodes, edges: __DRILL.edges };
   const lens = (s.match(/[?&]lens=([a-z]+)/) || [null, "files"])[1];
   if (s.indexOf("seed=") !== -1) {
     const rp = __REPROJECTIONS[lens];
@@ -127,6 +151,25 @@ const fetch = function(url){
 };
 "##;
 
+/// What both drivers read back from the page: settling its fetches, and the drawing the panel holds,
+/// refusing a message in its place and a drawing box that is not a finite, positive size.
+const PAGE_READERS: &str = r##"
+// Let every pending promise the page chained settle (its fetches resolve on the microtask queue).
+function __flush(){ return (async function(){ for (let k = 0; k < 80; k++) await Promise.resolve(); })(); }
+// The drawing the panel holds: its viewBox size and its svg's height attribute, refusing a panel that
+// holds no drawing (a message such as "unavailable" in its place) and a viewBox that is not a finite,
+// positive size.
+function __svgBox(what){
+  const html = el("kgpanel")._html;
+  const svg = html.match(/<svg class="kgsvg"[^>]* height="([^"]*)" viewBox="0 0 ([^ "]+) ([^ "]+)"/);
+  if (!svg) throw new Error(what + " drew no graph: " + html.slice(0, 300));
+  const height = Number(svg[1]), W = Number(svg[2]), H = Number(svg[3]);
+  if (!(isFinite(W) && isFinite(H) && W > 0 && H > 0 && height === H))
+    throw new Error(what + " drew a degenerate drawing box " + svg[0]);
+  return { html: html, W: W, H: H, height: height };
+}
+"##;
+
 /// The node `vm` program name this suite's harness runs under.
 const HARNESS_FILE: &str = "dash-opening-view-harness.js";
 
@@ -137,7 +180,6 @@ const HARNESS_FILE: &str = "dash-opening-view-harness.js";
 /// than it or 0.2, whichever is less; and the redrawn overview opens where the first one did.
 const OPENING_DRIVER: &str = r##"
 ;(async function(){
-  function flush(){ return (async function(){ for (let k = 0; k < 80; k++) await Promise.resolve(); })(); }
   const HULL_CHAR_W = 10 * (0.6 + 0.08);
   const TOL = 0.5;
   const unesc = function(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
@@ -145,11 +187,7 @@ const OPENING_DRIVER: &str = r##"
   const dirs = function(body){ return new Set(body.clusters.map(function(c){
     const i = c.key.lastIndexOf("/"); return i === -1 ? "(root)" : c.key.slice(0, i); })).size; };
   function drawn(what){
-    const html = el("kgpanel")._html;
-    const vb = html.match(/<svg class="kgsvg"[^>]* viewBox="0 0 ([^ "]+) ([^ "]+)"/);
-    if (!vb) throw new Error(what + " drew no graph: " + html.slice(0, 300));
-    const W = Number(vb[1]), H = Number(vb[2]);
-    if (!(isFinite(W) && isFinite(H) && W > 0 && H > 0)) throw new Error(what + " drew a degenerate viewBox " + vb[0]);
+    const svg = __svgBox(what), html = svg.html, W = svg.W, H = svg.H;
     const boxes = [];
     let m, nodes = 0, hulls = 0;
     const nodeRe = /<g class="kgn [^"]*"[^>]* transform="translate\(([-\d.]+),([-\d.]+)\)">(?:<title>[^<]*<\/title>)?<circle r="([\d.]+)"[^>]*\/><text class="kglabel" y="[-\d.]+">([^<]*)<\/text><\/g>/g;
@@ -204,12 +242,12 @@ const OPENING_DRIVER: &str = r##"
   __geom.toolbar = { overview: bar, reproject: bar, drill: bar };
   const at = vw + "px: ";
   const scales = [];
-  await flush();
+  await __flush();
   const opening = opensFitted(at + "the files overview on load", __OVERVIEWS.files, dirs(__OVERVIEWS.files));
   scales.push("files " + opening.k.toFixed(3));
   for (const lens of ["code", "concepts"]) {
     pick(lens);
-    await flush();
+    await __flush();
     if (kgMode !== "overview" || kgLens !== lens) throw new Error(at + "the " + lens + " tab must open the " + lens + " overview");
     const t = opensFitted(at + "the " + lens + " overview after a lens switch", __OVERVIEWS[lens], 0);
     scales.push(lens + " " + t.k.toFixed(3));
@@ -223,17 +261,17 @@ const OPENING_DRIVER: &str = r##"
   }
   wheel(-1);
   pick("files");
-  await flush();
+  await __flush();
   const again = opensFitted(at + "the files overview after a lens switch from a zoomed view", __OVERVIEWS.files, dirs(__OVERVIEWS.files));
   if (!near(again.k, opening.k) || !near(again.x, opening.x) || !near(again.y, opening.y))
     throw new Error("REGRESSION: " + at + "a redraw must open fitted again, not where the last zoom left it: " + JSON.stringify(again));
   reprojectSubject(__SUBJECT);
-  await flush();
+  await __flush();
   if (kgMode !== "reproject") throw new Error(at + "the subject must re-project");
   opensFitted(at + "the files re-projection", __REPROJECTIONS.files, dirs(__REPROJECTIONS.files));
   for (const lens of ["code", "concepts"]) {
     pick(lens);
-    await flush();
+    await __flush();
     if (kgMode !== "reproject" || kgLens !== lens) throw new Error(at + "the " + lens + " tab must re-project the subject");
     opensFitted(at + "the " + lens + " re-projection", __REPROJECTIONS[lens], 0);
   }
@@ -242,17 +280,85 @@ const OPENING_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver, in the panel `__PANEL__` names: the files overview the page loads, the subject's
+/// re-projection, a drilled cluster, a call walk and the overview again each draw a drawing that fills
+/// the room the panel leaves below that view's own toolbar and never runs past it, each after a view
+/// whose toolbar stood at another height; below 200px of room the drawing keeps its 200px floor.
+const PANEL_HEIGHT_DRIVER: &str = r##"
+;(async function(){
+  // The panel this case draws in, set before the page's own load draws (its fetch resolves after
+  // this line): [clientWidth, clientHeight, the height each view's toolbar takes above the drawing,
+  // its 6px margin included].
+  const [cw, ch, bar] = __PANEL__;
+  __geom.width = cw; __geom.height = ch; __geom.toolbar = bar;
+  const at = cw + "x" + ch + " " + JSON.stringify(bar) + ": ";
+  // The drawing fills the room the panel leaves below the toolbar it is drawn under, and never runs
+  // past it: the content (padding, toolbar, drawing, padding) stays inside the panel. Below 200px of
+  // room the drawing keeps its 200px floor and the panel scrolls.
+  function fillsItsRoom(what, mode){
+    if (kgMode !== mode) throw new Error(at + "the " + what + " must draw, not leave kgMode " + kgMode);
+    const d = __svgBox(at + "the " + what);
+    const room = ch - __geom.padTop - bar[mode] - __geom.padBottom;
+    const content = __geom.padTop + bar[mode] + d.height + __geom.padBottom;
+    if (room >= 200 && !(d.height <= room && d.height > room - 1))
+      throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall below its " + bar[mode]
+        + "px toolbar where the panel leaves " + room + "px, so its " + content + "px of content "
+        + (content > ch ? "runs " + (content - ch) + "px past" : "falls " + (ch - content) + "px short of") + " the " + ch + "px panel");
+    if (room < 200 && d.height !== 200)
+      throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall where the panel leaves "
+        + room + "px, below the drawing's 200px floor, which it must keep");
+  }
+  await __flush();
+  fillsItsRoom("files overview on load", "overview");
+  // Each view in turn, each drawn after one whose toolbar stood at another height.
+  reprojectSubject(__SUBJECT);
+  await __flush();
+  fillsItsRoom("subject's re-projection", "reproject");
+  drillCluster(__CLUSTER);
+  await __flush();
+  fillsItsRoom("drilled cluster", "drill");
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  fillsItsRoom("call walk", "calls");
+  loadKgOverview();
+  await __flush();
+  fillsItsRoom("files overview after the call walk", "overview");
+  console.log("OK every-drawing-fits-below-its-toolbar");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Runs `driver` in the panel `panel` describes, and claims it ends in `ok`.
+fn drive(driver: &str, panel: &str, ok: &str, claim: &str) {
+    node_harness_claims(
+        &vm_harness(
+            &[PANEL_SHIM, OVERVIEWS_FETCH, PAGE_READERS],
+            &driver.replace("__PANEL__", panel),
+            HARNESS_FILE,
+        ),
+        ok,
+        claim,
+    );
+}
+
 /// The opening view of every overview and re-projection, in the panel a `[viewport width, panel
 /// clientWidth, clientHeight, toolbar height]` row describes.
 fn opens_fitted(panel: &str) {
-    node_harness_claims(
-        &vm_harness(
-            &[PANEL_SHIM, OVERVIEWS_FETCH],
-            &OPENING_DRIVER.replace("__PANEL__", panel),
-            HARNESS_FILE,
-        ),
+    drive(
+        OPENING_DRIVER,
+        panel,
         "OK every-overview-opens-fitted-to-its-panel",
         "every overview must open fitted to its panel",
+    );
+}
+
+/// Every view's drawing height, in the panel a `[clientWidth, clientHeight, {view: the height its
+/// toolbar takes, 6px margin included}]` row describes.
+fn fits_below_its_toolbar(panel: &str) {
+    drive(
+        PANEL_HEIGHT_DRIVER,
+        panel,
+        "OK every-drawing-fits-below-its-toolbar",
+        "every drawing must fill the room its panel leaves below its toolbar, and no more",
     );
 }
 
@@ -265,4 +371,26 @@ rigger::test_cases! {
     the_overview_opens_fitted_at_800px: opens_fitted("[800, 758, 414, 44]");
     /// A phone's 390px viewport, where the toolbar wraps to three lines.
     the_overview_opens_fitted_at_390px: opens_fitted("[390, 348, 414, 62]");
+    /// 1400px: every toolbar on one line.
+    the_drawing_fits_below_a_one_line_toolbar_at_1400px:
+        fits_below_its_toolbar(r#"[1358, 294, {"overview": 24, "reproject": 24, "drill": 24, "calls": 24}]"#);
+    /// 1400px: one line, made 2px taller by the grain control the derived lenses show.
+    the_drawing_fits_below_the_grain_controls_line_at_1400px:
+        fits_below_its_toolbar(r#"[1358, 294, {"overview": 26, "reproject": 26, "drill": 26, "calls": 26}]"#);
+    /// 1000px: the re-projection's and the call walk's longer toolbars wrap to two lines.
+    the_drawing_fits_below_a_wrapped_toolbar_at_1000px:
+        fits_below_its_toolbar(r#"[958, 414, {"overview": 26, "reproject": 42, "drill": 26, "calls": 44}]"#);
+    /// 800px: two and three lines.
+    the_drawing_fits_below_a_wrapped_toolbar_at_800px:
+        fits_below_its_toolbar(r#"[758, 414, {"overview": 44, "reproject": 62, "drill": 42, "calls": 62}]"#);
+    /// A phone's 390px: three and four lines.
+    the_drawing_fits_below_a_wrapped_toolbar_at_390px:
+        fits_below_its_toolbar(r#"[348, 414, {"overview": 62, "reproject": 80, "drill": 60, "calls": 80}]"#);
+    /// A toolbar whose wrapped height falls between whole pixels.
+    the_drawing_fits_below_a_fractional_toolbar:
+        fits_below_its_toolbar(r#"[348, 414, {"overview": 42.5, "reproject": 60.5, "drill": 42.5, "calls": 60.5}]"#);
+    /// A phone held in a 640px-tall viewport: the 46vh panel is 294px, and below a four-line
+    /// toolbar it leaves 194px, under the drawing's 200px floor.
+    the_drawing_keeps_its_floor_below_a_tall_toolbar_in_a_short_panel:
+        fits_below_its_toolbar(r#"[348, 294, {"overview": 62, "reproject": 80, "drill": 60, "calls": 80}]"#);
 }
