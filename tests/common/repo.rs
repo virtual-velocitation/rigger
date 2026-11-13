@@ -64,13 +64,16 @@ const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
 
 /// The files the critique stub reads and writes beside its PATH symlink (`<work>/bin`): the
 /// transcript it replays on its first spawn, the one it replays on every later spawn, its spawn
-/// count, and its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
-/// named and the `KURRENTDB_CONN` it was started with.
+/// count, its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
+/// named and the `KURRENTDB_CONN` it was started with, the record of every spawn's launch, and
+/// the tree its first spawn copies into its working directory.
 const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
 const CRITIQUE_LATER_TRANSCRIPT: &str = "critique-later-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
+const CRITIQUE_LAUNCHES: &str = "critique-launches";
+const CRITIQUE_WRITES: &str = "critique-writes";
 /// The critique stub's record of the system prompt it was started with: the content of the file
 /// its `--system-prompt-file` named, copied at spawn time (the host removes that file once the
 /// spawn ends). Read with [`critique_stub_record`].
@@ -348,6 +351,18 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 /// The argv the critique stub under `work` was started with on its first spawn.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
+}
+
+/// Each launch of the critique stub under `work`, in spawn order: its spawn and the
+/// [`handed_helpers`] its argv carries ([`launch_helpers`]).
+pub fn critique_stub_launch_helpers(work: &Path) -> Vec<(String, serde_json::Value, String)> {
+    launch_helpers(&work.join("bin").join(CRITIQUE_LAUNCHES))
+}
+
+/// The directory whose tree the critique stub under `work` copies into its working directory on
+/// its first spawn, so a file a test writes under it lands in the checkout as the first pass runs.
+pub fn critique_stub_writes(work: &Path) -> PathBuf {
+    work.join("bin").join(CRITIQUE_WRITES)
 }
 
 /// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
