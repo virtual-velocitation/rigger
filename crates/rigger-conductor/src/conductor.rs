@@ -5129,19 +5129,23 @@ impl RunCtx<'_> {
         Ok(Some(radii))
     }
 
-    /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
-    /// ready stage sets `partition == "by-blast-radius"`, or `defaults.partition`
-    /// does (the stage value, when set, otherwise the default).
+    /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): some ready
+    /// stage [asks for it](Self::partitions_by_blast).
     fn partition_requested(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> bool {
-        let by_blast = |p: &str| p.eq_ignore_ascii_case("by-blast-radius");
-        ready.iter().any(|name| {
-            let st = &stages[name];
-            if !st.partition.is_empty() {
-                by_blast(&st.partition)
-            } else {
-                by_blast(&self.cfg.workflow.defaults.partition)
-            }
-        })
+        ready
+            .iter()
+            .any(|name| self.partitions_by_blast(&stages[name]))
+    }
+
+    /// Whether `st` asks for by-blast-radius partitioning: its own `partition` when set,
+    /// otherwise `defaults.partition`, is `by-blast-radius`.
+    fn partitions_by_blast(&self, st: &Stage) -> bool {
+        let partition = if st.partition.is_empty() {
+            &self.cfg.workflow.defaults.partition
+        } else {
+            &st.partition
+        };
+        partition.eq_ignore_ascii_case("by-blast-radius")
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
@@ -9249,18 +9253,23 @@ impl RunCtx<'_> {
             }
             // ...then the critique.
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
-            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
-            // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
-            // sequential batches, each off the prior's integrated tree) and reviewed under
+            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. Overlapping
+            // units run one after the other only when `partition: by-blast-radius` is in
+            // force for both, and the overlap header says whether it is; otherwise they run
+            // side by side unless one `needs` the other. Either way each is reviewed under
             // per-unit worktree isolation, so mechanical overlap is not a defect; the gate
-            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which the
-            // partitioner does not address and per-unit review cannot see.
+            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which
+            // per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
             let conflicts = blast_radius_conflicts(&radii);
+            let serialized = conflicts.iter().all(|(a, other, _)| {
+                self.partitions_by_blast(&stages[a]) && self.partitions_by_blast(&stages[other])
+            });
             let prompt = build_dag_critique_prompt(
                 stages,
                 &radii,
                 &conflicts,
+                serialized,
                 &prior_reason,
                 self.declared_unit_size_cap(),
             );
@@ -13587,7 +13596,9 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 /// output contract, never the method, which stands in each reviewer's persona. It names
 /// those decomposition rules, states the unit size cap the workflow declares, `cap`, if any
 /// ([`unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
-/// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
+/// blast-radius analysis, whose overlap header says the overlapping units are serialized only
+/// when `serialized` (the partition rule is in force for each of them) and otherwise that they
+/// run side by side unless one `needs` the other, and closes with the verdict paragraph, whose cause contract tells a
 /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
 /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
 /// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
@@ -13599,6 +13610,7 @@ fn build_dag_critique_prompt(
     stages: &BTreeMap<String, Stage>,
     radii: &[(String, Vec<String>)],
     conflicts: &[(String, String, Vec<String>)],
+    serialized: bool,
     prior_reason: &str,
     cap: Option<u32>,
 ) -> String {
@@ -13642,7 +13654,11 @@ fn build_dag_critique_prompt(
     if conflicts.is_empty() {
         b.push_str(DAG_OVERLAP_DISJOINT);
     } else {
-        b.push_str(DAG_OVERLAP_HEADER);
+        b.push_str(if serialized {
+            DAG_OVERLAP_HEADER
+        } else {
+            DAG_OVERLAP_UNSERIALIZED_HEADER
+        });
         for (a, other, shared) in conflicts {
             b.push_str(&fill(
                 DAG_OVERLAP_ROW,
@@ -48512,9 +48528,9 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // The planner splits the single criterion into TWO units - both citing it, so
         // both ground to feature.rs and SHARE the entire blast radius. This is NOT a
-        // defect: `partition: by-blast-radius` serializes them into sequential batches
-        // and per-unit worktree isolation keeps each reviewer on its own diff, so overlap
-        // integrates cleanly. The gate (no ownership/disposition defect here) APPROVES and
+        // defect: per-unit worktree isolation keeps each reviewer on its own diff, so
+        // overlap integrates cleanly (this workflow declares no partition, so the two run
+        // side by side). The gate (no ownership/disposition defect here) APPROVES and
         // the fan-out releases - the architecture-aligned behavior (overlap != reject).
         let driver = CritiqueDriver::new(vec![
             (
@@ -48539,10 +48555,9 @@ mod tests {
         assert_eq!(
             rs.units["plan-critique"].status,
             ledger::Status::Integrated,
-            "a shared blast radius alone must NOT reject - the partitioner serializes it"
+            "a shared blast radius alone must NOT reject"
         );
-        // The fan-out released: the overlapping units run (the partitioner serializes them
-        // into separate batches, so they integrate cleanly).
+        // The fan-out released: the overlapping units run.
         assert!(
             occurrences(&driver.calls, "worker") >= 1,
             "the fan-out must release on approve; worker ran {}x",
@@ -48694,8 +48709,8 @@ mod tests {
     fn the_gate_critiques_only_not_yet_run_units_and_approves() {
         // The critique excludes already-integrated and terminal units (`dag_unit_blast_radii`):
         // a settled unit is not a decomposition candidate, so it never clutters the critique
-        // context. Combined with the architecture alignment (overlap is not a defect - the
-        // partitioner serializes it), a run that adopts a prior wave's integrated unit and
+        // context. Combined with the architecture alignment (overlap is not a defect), a run
+        // that adopts a prior wave's integrated unit and
         // grounds a fresh pending unit to the SAME file approves cleanly and releases the
         // fan-out (the exact spec-10 resume scenario, now handled at the root).
         let dir = tempfile::tempdir().unwrap();
@@ -48763,10 +48778,11 @@ mod tests {
         );
     }
 
-    /// Run `critique_cfg`, its `defaults.max_unit_added_lines` set to `cap`, over proposed `units`,
-    /// each `(id, file, criterion)` grounding to its `file`; returns the driver, which recorded the
-    /// planner's and the adjudicator's prompts.
-    fn critique_over(units: &[(&str, &str, &str)], cap: u32) -> CritiqueDriver {
+    /// Run `critique_cfg`, its `defaults.max_unit_added_lines` set to `cap` and its fan-out
+    /// template's `partition` to `partition`, over proposed `units`, each `(id, file, criterion)`
+    /// grounding to its `file`; returns the driver, which recorded the planner's and the
+    /// adjudicator's prompts.
+    fn critique_over(units: &[(&str, &str, &str)], cap: u32, partition: &str) -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
         for (_, file, criterion) in units {
             let path = dir.path().join(file);
@@ -48775,6 +48791,7 @@ mod tests {
         }
         let mut cfg = critique_cfg();
         cfg.workflow.defaults.max_unit_added_lines = cap;
+        cfg.workflow.stages.get_mut("implement").unwrap().partition = partition.into();
         let st = Store::open(":memory:").unwrap();
         let driver = CritiqueDriver::new(
             units
@@ -48805,12 +48822,15 @@ mod tests {
     /// Run `critique_cfg`, which declares no unit size cap, over one proposed unit serving one
     /// criterion; returns the driver, which recorded the planner's and the adjudicator's prompts.
     fn one_unit_critique() -> CritiqueDriver {
-        critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], 0)
+        critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], 0, "")
     }
 
     /// The critique method is the persona's: over a disjoint DAG and an overlapping one of a
     /// workflow declaring no unit size cap, the DAG critique prompt is its opener, the unit and
-    /// overlap list and its verdict and cause paragraph, byte for byte and nothing else.
+    /// overlap list and its verdict and cause paragraph, byte for byte and nothing else. The
+    /// overlap header says the overlapping units are serialized only when their fan-out template
+    /// puts `partition: by-blast-radius` in force for them, and otherwise that they run side by
+    /// side unless one `needs` the other.
     #[test]
     fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
         const WIDGET: &str = "the widget renderer is implemented";
@@ -48818,16 +48838,25 @@ mod tests {
         let table = [
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "b.rs", GADGET)],
+                "",
                 DAG_DISJOINT_OVERLAP,
             ),
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                "",
+                "\nBlast-radius overlap (informational - `partition: by-blast-radius` is not in \
+                 force for these units, so units sharing a file run side by side unless one \
+                 `needs` the other):\n- units `u-a` and `u-b` both touch: a.rs\n",
+            ),
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                "by-blast-radius",
                 "\nBlast-radius overlap (informational - the partitioner serializes these into \
                  sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
             ),
         ];
-        for (units, overlap) in table {
-            let driver = critique_over(&units, 0);
+        for (units, partition, overlap) in table {
+            let driver = critique_over(&units, 0, partition);
             let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
             let rows = units.map(|(id, file, criterion)| [id, criterion, "plan-critique", file]);
             assert_eq!(prompt, dag_critique_prompt(&rows, overlap, 0));
@@ -48857,7 +48886,7 @@ mod tests {
         let id = criterion_stable_id(1, WIDGET_CRITERION);
         let criteria = format!("- [{id}] {WIDGET_CRITERION}");
         for (cap, sentence) in table {
-            let driver = critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], cap);
+            let driver = critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], cap, "");
             let planner = driver.planner_prompts.lock().unwrap()[0].clone();
             let critique = driver.adj_prompts.lock().unwrap()[0].clone();
             assert_eq!(
@@ -51214,9 +51243,10 @@ mod tests {
     /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
     /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
-    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, and a
-    /// re-plan under a cap whose unit holds each and overlaps another, its rows' lists filled into
-    /// their slots.
+    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, a
+    /// re-plan under a cap whose unit holds each and overlaps another under the partition rule, its
+    /// rows' lists filled into their slots, and a first plan whose overlap the rule does not
+    /// serialize.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -51227,6 +51257,7 @@ mod tests {
                         needs: &[&str],
                         radius: &[&str],
                         conflicts: &[(String, String, Vec<String>)],
+                        serialized: bool,
                         prior: &str,
                         cap: Option<u32>| {
             let stage = Stage {
@@ -51237,7 +51268,7 @@ mod tests {
             };
             let stages = BTreeMap::from([("{name}".to_string(), stage)]);
             let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, prior, cap)
+            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, cap)
         };
         let contract = |size_cap_cause: &str| {
             fill(
@@ -51256,7 +51287,7 @@ mod tests {
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], "  ", None),
+                critique("  ", &[], &[], &[], true, "  ", None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51274,7 +51305,7 @@ mod tests {
             ),
             (
                 "a first plan whose criterion holds a quote and a backslash",
-                critique(r#" keep "a\b" whole "#, &[], &[], &[], "", None),
+                critique(r#" keep "a\b" whole "#, &[], &[], &[], true, "", None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51297,6 +51328,7 @@ mod tests {
                     &["{x}", "{y}"],
                     &["{p}", "{q}"],
                     &overlap,
+                    true,
                     "{prior_reason}",
                     Some(7),
                 ),
@@ -51313,6 +51345,23 @@ mod tests {
                         &[("shared", "{s}, {t}")]
                     ),
                     contract(&dag(&["DAG_SIZE_CAP_CAUSE"]))
+                ),
+            ),
+            (
+                "a first plan whose overlap the partition rule does not serialize",
+                critique("{criterion}", &[], &["{p}"], &overlap, false, "", None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[("needs", &dag(&["DAG_NO_NEEDS"])), ("radius", "{p}")]
+                    ),
+                    fill(
+                        &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
+                        &[("shared", "{s}, {t}")]
+                    ),
+                    contract("")
                 ),
             ),
             (
