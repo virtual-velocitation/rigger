@@ -529,10 +529,12 @@ fn read_format(text: &[u8]) -> Option<Format> {
     Some(format)
 }
 
-/// Every entry of a configuration file's `text`, in order, as git's own reading of a file gives
-/// it: the name `section.key` or `section.subsection.key` (a key before any section stands
-/// alone), lowercased but for a subsection; the value none for a key written without `=`. None
-/// where git refuses the file.
+/// Every entry of a configuration file's `text`, in order, as the newest git reads a file, the
+/// rule git 2.45.0 set: the name `section.key` or `section.subsection.key` (a key before any
+/// section stands alone), lowercased but for a subsection; the value none for a key written
+/// without `=`, and white space inside it kept as written ([`Source::value`]). None where git
+/// refuses the file. An older git reads each tab or lone carriage return inside an unquoted
+/// value as a space.
 fn config_entries(text: &[u8]) -> Option<Vec<(String, Option<Vec<u8>>)>> {
     let mut source = Source {
         text: text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text),
@@ -653,21 +655,25 @@ impl Source<'_> {
 
     /// A value, read from after its `=` to the end of its line: quotes kept out, escapes and a
     /// line continued by `\` taken as git takes them, a comment outside quotes dropped, white
-    /// space outside quotes dropped at either end and each run inside taken as that many
-    /// spaces. None where git refuses it.
+    /// space outside quotes dropped at either end (before a comment too) and kept as written
+    /// inside, a run before a line continued included. None where git refuses it.
     fn value(&mut self) -> Option<Vec<u8>> {
-        let (mut value, mut quoted, mut comment, mut spaces) = (Vec::new(), false, false, 0);
+        let (mut value, mut quoted, mut comment, mut spaces) =
+            (Vec::new(), false, false, Vec::new());
         loop {
             let c = self.next();
             match c {
                 b'\n' if quoted => return None,
                 b'\n' => return Some(value),
                 _ if comment => {}
-                _ if is_space(c) && !quoted => spaces += usize::from(!value.is_empty()),
+                _ if is_space(c) && !quoted => {
+                    if !value.is_empty() {
+                        spaces.push(c);
+                    }
+                }
                 b'#' | b';' if !quoted => comment = true,
                 _ => {
-                    value.resize(value.len() + spaces, b' ');
-                    spaces = 0;
+                    value.append(&mut spaces);
                     match c {
                         b'\\' => value.push(match self.next() {
                             b'\n' => continue,
