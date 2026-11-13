@@ -6079,11 +6079,11 @@ mod tests {
     }
 
     /// GIVEN the served page, WHEN the metadata card carries more rows than the explorer's body
-    /// has room for below the panel's control rows, THEN the card scrolls inside the body and
-    /// never extends past its bottom: `#kgcard` is a dock inset at both ends, a column that lets
-    /// clicks through, and the visible card inside it keeps its content height up to the dock's
-    /// height and scrolls past that. Layout is outside what the page harness can run, so this pins
-    /// the box each declares and that `renderCard` writes the card inside the dock.
+    /// has room for, THEN the card scrolls inside the body and never extends past its bottom:
+    /// `#kgcard` is a dock inset at both ends, and the visible card inside it keeps its content
+    /// height up to the dock's height and scrolls past that. Layout is outside what the page
+    /// harness can run, so this pins the box each declares and that `renderCard` writes the card
+    /// inside the dock.
     #[test]
     fn a_card_taller_than_the_explorer_body_scrolls_inside_it() {
         let page = live_page();
@@ -6096,18 +6096,13 @@ mod tests {
                 read(&dock, "bottom").is_empty(),
                 read(&dock, "display"),
                 read(&dock, "flex-direction"),
-                read(&dock, "pointer-events"),
             ),
-            (false, "flex".into(), "column".into(), "none".into()),
-            "#kgcard is a column dock inset at its bottom that lets clicks through: {dock:?}"
+            (false, "flex".into(), "column".into()),
+            "#kgcard is a column dock inset at its bottom: {dock:?}"
         );
         assert_eq!(
-            (
-                read(&body, "min-height"),
-                read(&body, "overflow-y"),
-                read(&body, "pointer-events"),
-            ),
-            ("0".into(), "auto".into(), "auto".into()),
+            (read(&body, "min-height"), read(&body, "overflow-y")),
+            ("0".into(), "auto".into()),
             "the visible card shrinks to the dock and scrolls its rows: {body:?}"
         );
         assert!(

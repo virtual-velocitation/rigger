@@ -249,11 +249,6 @@
      PANS/ZOOMS within its own box (a #kgzoom group transforms) so the page body never scrolls. */
   .kgtoolbar { font-size: 12px; color: var(--muted); margin: 0 0 6px; overflow-wrap: anywhere; }
   .kgtoolbar b { color: var(--ink); }
-  /* The panel's control rows above its content - the toolbar (back link, lens controls) and, in a
-     neighbourhood, the heading, the directed-call links and the tier checkboxes - share one anchor
-     name, so the last one drawn is the anchor: the docked rail and card set their top against its
-     bottom edge, and however the rows wrap neither covers a panel control. */
-  .kgtoolbar, .kgseed, .kgcalls-offer, .kgtiers { anchor-name: --kgcontrols; }
   .kgback { color: var(--accent); text-decoration: none; cursor: pointer; }
   .kgback:hover { text-decoration: underline; }
   /* The overview LENS selector (spec 53 c4 / spec 54 c3): pick the bucket key - `files`
@@ -367,11 +362,9 @@
   /* The SUBJECT VIEW's MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, stacked above it or
      docked right in the column it takes from the panel (see .kgbody), so it never inserts a node
      and never covers one. Lists the focused subject's governing decisions/findings/concepts as
-     scrollable cards; hidden with no subject focused (mirrors .kgsubjectlens). Docked, its top is
-     the bottom edge of the panel's last control row (the box's top with none drawn), by an
-     explicit anchor() rather than a default anchor, so it stays put when the panel scrolls; the
-     plain top is for a browser without anchors. */
-  .kgrail { top: 0; top: anchor(--kgcontrols bottom, 0px); right: 0; bottom: 0;
+     scrollable cards; hidden with no subject focused (mirrors .kgsubjectlens). Docked, its column
+     runs the body's whole height. */
+  .kgrail { top: 0; right: 0; bottom: 0;
     overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
   .kgrail[hidden] { display: none; }
@@ -384,14 +377,12 @@
      so populating it never touches the panel's own rendered nodes/edges. Stacked, it sits first,
      above the rail; docked, it docks LEFT (the memory rail docks right) so a code subject's card
      and its rail can show together without overlapping, each in the column it takes from the
-     panel (see .kgbody), so the card never covers a node. Hidden with no subject carded. Docked,
-     its top sits just below the panel's last control row, anchored the same way as the rail's.
-     #kgcard is the DOCK: docked, it is inset at both ends, so it spans exactly the room left in
-     .kgbody, a column that lets clicks through. The visible card (.kgcard-body) inside keeps its
-     content height up to the dock's and scrolls past that, so a long card never runs past the
-     explorer's bottom over the sections below. */
-  .kgcard { top: 8px; top: calc(anchor(--kgcontrols bottom, 0px) + 8px); bottom: 8px; left: 8px;
-    display: flex; flex-direction: column; pointer-events: none; z-index: 2; }
+     panel (see .kgbody), so the card never covers a node. Hidden with no subject carded.
+     #kgcard is the DOCK: docked, its column runs the body's whole height, inset 8px at the top,
+     the bottom and the left. The visible card (.kgcard-body) inside keeps its content height up to
+     the dock's and scrolls past that, so a long card never runs past the explorer's bottom over
+     the sections below. */
+  .kgcard { top: 8px; bottom: 8px; left: 8px; display: flex; flex-direction: column; }
   .kgcard[hidden] { display: none; }
   /* DOCKING (see .kgbody): a lone rail docks from a 580px body (the 320px kgDims draws at plus
      the rail's 260px column), a lone card from 608px (320 plus its 8px inset and 280px width), the
@@ -409,7 +400,7 @@
     #kgcard:has(~ #kgrail:not([hidden])), #kgcard:not([hidden]) ~ #kgrail { position: static; width: auto; }
     #kgcard:not([hidden]) ~ #kgrail:not([hidden]) ~ #kgpanel { margin: 0; }
   }
-  .kgcard-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; pointer-events: auto;
+  .kgcard-body { flex: 0 1 auto; min-height: 0; overflow-y: auto;
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
   .kgcard-title { font-weight: 700; color: var(--ink); }
