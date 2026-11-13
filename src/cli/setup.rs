@@ -2095,7 +2095,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
@@ -2156,7 +2156,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
