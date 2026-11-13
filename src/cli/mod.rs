@@ -1508,10 +1508,11 @@ impl Site {
         }
     }
 
-    /// The MAIN repo root governing the site: the root every worktree of its repository shares
-    /// ([`Repository::main_root`]). For a linked worktree that is the main checkout's root -
-    /// exactly the outermost directory the store walk-up is sanctioned to reach. `None` when the
-    /// site lies in no repository; an error when git refuses inside one.
+    /// The MAIN repo root governing the site ([`Repository::main_root`]): the main checkout git
+    /// records for its repository, the root every worktree of it shares, and where git records
+    /// none, the site's own worktree top - exactly the outermost directory the store walk-up is
+    /// sanctioned to reach. `None` when the site lies in no repository; an error when git refuses
+    /// inside one.
     fn main_root(&self) -> Result<Option<PathBuf>, String> {
         Ok(self.repository()?.map(Repository::main_root))
     }

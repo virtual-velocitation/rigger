@@ -74,8 +74,8 @@ impl IndexCopy {
     }
 }
 
-/// The tree source of a git repository, read at the root every worktree of it shares
-/// ([`Repository::main_root`]): its head is the main checkout's.
+/// The tree source of a git repository, read at its root ([`Repository::main_root`]): its head
+/// is the head of the checkout at that root, the main checkout's where git records one.
 pub struct GitTreeSource {
     /// The repository as discovered from the reader's checkout, which a read of that checkout
     /// reads where it lies from.
@@ -205,8 +205,8 @@ impl TreeSource for GitTreeSource {
         })
     }
 
-    /// Read from git's files ([`Repository::main_head`]): the main checkout is at `tip` when its
-    /// branch and commit are `tip`'s, since a commit names one tree.
+    /// Read from git's files ([`Repository::main_head`]): the root's checkout is at `tip` when
+    /// its branch and commit are `tip`'s, since a commit names one tree.
     fn still_at(&self, tip: &Tip) -> bool {
         self.checkout
             .main_head()

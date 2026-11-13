@@ -462,10 +462,38 @@ code::open_current(root) -> CodeView
 | `rigger setup` | on install | advances from empty to HEAD |
 | any reader | when HEAD moved without the conductor (a hand commit, a pull) | advances before it answers |
 
-`root` is always the project root that owns `.rigger/`, which is the operator checkout. A caller
-inside a unit worktree resolves `root` through git's common directory to that main worktree. A
-checkout whose common directory is its own administrative directory kept apart from it, as a
-submodule's is, is its own root.
+`root` is always the project root that owns `.rigger/`: the main checkout git records for the
+repository, which every worktree of it shares, so a caller inside a unit worktree resolves `root`
+to the operator checkout. Git records a main checkout where, asked from the physical path of the
+repository's common directory (`git rev-parse --git-common-dir`), `git config --type=bool --get
+core.bare` does not answer `true` and either `git config --get core.worktree` answers (the main
+checkout is the directory it names, taken from the common directory) or the common directory is
+named `.git` (the main checkout is its parent). Anywhere else git records none, and
+`git worktree list --porcelain` names the common directory itself as the main worktree or marks
+it `bare`; there each worktree is its own root. Read per layout:
+
+| Layout | Main checkout git records | `root` |
+|---|---|---|
+| a clone | its top | its top |
+| a clone with every ref packed | its top | its top |
+| a clone whose remote path names worktrees | its top | its top |
+| a linked worktree naming its administrative directory relatively | the clone's top | the clone's top |
+| a sparse checkout | its top | its top |
+| a checkout whose git directory lies apart | none | its top |
+| a linked worktree of a checkout whose git directory lies apart | none | its own top |
+| a submodule | its top, which `core.worktree` names | its top |
+| a linked worktree of a submodule | the submodule's top | the submodule's top |
+| a checkout whose `.git` is a symlink | none | its top |
+| a linked worktree of a checkout whose `.git` is a symlink | none | its own top |
+| a linked worktree under per-worktree configuration | the main checkout's top | the main checkout's top |
+| a bare repository's linked worktree | none | its own top |
+| a linked worktree of a checkout configured bare | none | its own top |
+| a checkout whose configuration includes a file | its top | its top |
+| a clone read under a ceiling above it | its top | its top |
+| a clone whose configuration names no format version | its top | its top |
+| a clone of format 0 naming an extension git ignores there | its top | its top |
+| a checkout whose `.git` directory names a common directory | the top that common directory is the `.git` of | that top |
+
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.

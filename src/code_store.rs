@@ -22,9 +22,9 @@ pub struct CodeStore {
 }
 
 impl CodeStore {
-    /// The store of the git repository `checkout` was discovered in, rooted where every worktree
-    /// of it shares ([`Repository::main_root`]) and read at the main checkout's head, whichever
-    /// worktree it was discovered from.
+    /// The store of the git repository `checkout` was discovered in, rooted at its root
+    /// ([`Repository::main_root`]) and read at that root's head: the main checkout git records,
+    /// whichever worktree it was discovered from, and where git records none, the worktree's own.
     pub fn in_repository(checkout: Repository) -> Self {
         Self {
             root: checkout.main_root(),

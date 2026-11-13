@@ -38,6 +38,8 @@ pub struct Repository {
     prefix: PathBuf,
     /// How git shows `common_dir`.
     shown: CommonShown,
+    /// The main checkout git records for the repository ([`Format::main_checkout`]).
+    main: Option<PathBuf>,
 }
 
 /// How `git rev-parse --git-common-dir` shows a repository's common directory, which follows
@@ -109,24 +111,30 @@ impl Repository {
         }
     }
 
-    /// The directory the repository's store and the tree it reads lie at, the one root every
-    /// worktree of the repository shares: the worktree's own top where its administrative
-    /// directory is the common directory, and otherwise the directory holding the common
-    /// directory, the main checkout's top.
-    pub fn main_root(&self) -> PathBuf {
-        if self.git_dir == self.common_dir {
-            return self.toplevel.clone();
-        }
-        self.common_dir
-            .parent()
-            .map_or_else(|| self.toplevel.clone(), Path::to_path_buf)
+    /// The physical top of the main checkout git records for the repository: none where git
+    /// records none, as for a git directory kept apart, a bare repository or a `.git`
+    /// configured bare ([`Format::main_checkout`]).
+    pub fn main_checkout(&self) -> Option<&Path> {
+        self.main.as_deref()
     }
 
-    /// The branch and commit the common directory's `HEAD` names, the main checkout's, which
-    /// every worktree's store is read at ([`Repository::main_root`]), read from git's files
+    /// The directory the repository's store and the tree it reads lie at: the main checkout git
+    /// records ([`Repository::main_checkout`]), the one root every worktree of the repository
+    /// shares, and where git records none, the worktree's own top.
+    pub fn main_root(&self) -> PathBuf {
+        self.main.clone().unwrap_or_else(|| self.toplevel.clone())
+    }
+
+    /// The branch and commit the `HEAD` of the root's checkout names ([`Repository::main_root`]),
+    /// which the store is read at: the common directory's, the main checkout's, where git records
+    /// one, and otherwise the worktree's own. Read from git's files
     /// ([`Repository::head_with`]): None where they leave it to git.
     pub fn main_head(&self) -> Option<(String, Option<String>)> {
-        self.head_with(&self.common_dir, &mut |path| std::fs::read_to_string(path))
+        let admin = match self.main {
+            Some(_) => &self.common_dir,
+            None => &self.git_dir,
+        };
+        self.head_with(admin, &mut |path| std::fs::read_to_string(path))
     }
 
     /// The branch and commit the `HEAD` in `admin`, one of the repository's administrative
@@ -370,7 +378,8 @@ fn read_repository_within(start: &Path, reach: &Reach) -> Option<Option<Reposito
 /// other. The configuration git reads the format from is the common directory's, and its
 /// `core.bare` and `core.worktree` apply only where no `commondir` is named or per-worktree
 /// configuration is on, which the worktree's `config.worktree` then overrides. A checkout set up
-/// bare, or with a work tree other than `toplevel`, is left to git.
+/// bare, or with a work tree other than `toplevel`, is left to git. The main checkout is the one
+/// the common directory's configuration records ([`Format::main_checkout`]).
 fn checkout(toplevel: &Path, prefix: PathBuf, file: bool) -> Option<Repository> {
     let dot = toplevel.join(".git");
     let git_dir = if file {
@@ -396,18 +405,9 @@ fn checkout(toplevel: &Path, prefix: PathBuf, file: bool) -> Option<Repository> 
     if !repository {
         return None;
     }
-    let mut format = read_format(&std::fs::read(common_dir.join("config")).ok()?)?;
-    if format.worktree_config {
-        match std::fs::read(git_dir.join("config.worktree")) {
-            Ok(text) => {
-                for (name, value) in config_entries(&text)? {
-                    format.take(&name, value)?;
-                }
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => {}
-            Err(_) => return None,
-        }
-    }
+    let common = read_format(&std::fs::read(common_dir.join("config")).ok()?)?;
+    let main = common.clone().main_checkout(&common_dir)?;
+    let format = common.overlaid(&git_dir)?;
     let (bare, worktree) = if !shared || format.worktree_config {
         (format.bare, format.worktree)
     } else {
@@ -432,6 +432,7 @@ fn checkout(toplevel: &Path, prefix: PathBuf, file: bool) -> Option<Repository> 
         common_dir,
         prefix,
         shown,
+        main,
     })
 }
 
@@ -463,7 +464,7 @@ fn has_head(git_dir: &Path) -> bool {
 }
 
 /// What a repository's configuration tells git about where its checkout lies ([`read_format`]).
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Format {
     /// Whether `extensions.worktreeConfig` is on: the worktree's own `config.worktree` is read,
     /// and the `core.bare` and `core.worktree` it settles apply to it.
@@ -486,6 +487,62 @@ impl Format {
         }
         Some(())
     }
+
+    /// The format a configuration's `entries` give, whatever its version and extensions:
+    /// [`Format::take`] for each, and `extensions.worktreeConfig`. None where git refuses a value
+    /// it reads.
+    fn of(entries: Vec<(String, Option<Vec<u8>>)>) -> Option<Self> {
+        let mut format = Self::default();
+        for (name, value) in entries {
+            if name == "extensions.worktreeconfig" {
+                format.worktree_config = git_bool(value.as_deref())?;
+            } else {
+                format.take(&name, value)?;
+            }
+        }
+        Some(format)
+    }
+
+    /// This format, a common directory's, as the worktree whose administrative directory is
+    /// `admin` reads it: under per-worktree configuration with `admin`'s `config.worktree` read
+    /// after it. None where that file cannot be read or git refuses it.
+    fn overlaid(mut self, admin: &Path) -> Option<Self> {
+        if !self.worktree_config {
+            return Some(self);
+        }
+        match std::fs::read(admin.join("config.worktree")) {
+            Ok(text) => {
+                for (name, value) in config_entries(&text)? {
+                    self.take(&name, value)?;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+        Some(self)
+    }
+
+    /// The main checkout git records in this format, the physical common directory
+    /// `common_dir`'s, read as git answers `git config` asked from the common directory (with its
+    /// own `config.worktree`, [`Format::overlaid`]): none where `core.bare` is true; the physical
+    /// directory `core.worktree` names, taken from the common directory, where it is set; the
+    /// common directory's parent where the common directory is named `.git`; and none anywhere
+    /// else, as for a git directory kept apart, a bare repository or a `.git` that is a symlink to
+    /// a directory of another name, where `git worktree list` names the common directory itself
+    /// as the main worktree or marks it bare. None where the configuration cannot be read or the
+    /// directory `core.worktree` names does not resolve.
+    fn main_checkout(self, common_dir: &Path) -> Option<Option<PathBuf>> {
+        let format = self.overlaid(common_dir)?;
+        if format.bare == Some(true) {
+            return Some(None);
+        }
+        if let Some(worktree) = &format.worktree {
+            return Some(Some(std::fs::canonicalize(common_dir.join(worktree)).ok()?));
+        }
+        let dot_git = common_dir.file_name() == Some(".git".as_ref());
+        let main = common_dir.parent().filter(|_| dot_git);
+        Some(main.map(Path::to_path_buf))
+    }
 }
 
 /// The format a repository's configuration `text` gives, as git reads it to set the repository
@@ -493,16 +550,11 @@ impl Format {
 /// an extension that version cannot carry or git may not know, or where [`Format::take`] leaves
 /// a value to git.
 fn read_format(text: &[u8]) -> Option<Format> {
-    let mut format = Format::default();
+    let entries = config_entries(text)?;
     let mut version = None;
-    let mut extensions = Vec::new();
-    for (name, value) in config_entries(text)? {
+    for (name, value) in &entries {
         if name == "core.repositoryformatversion" {
             version = Some(git_int(value.as_deref()?)?);
-        } else if let Some(extension) = name.strip_prefix("extensions.") {
-            extensions.push((extension.to_owned(), value));
-        } else {
-            format.take(&name, value)?;
         }
     }
     let version_1 = match version? {
@@ -510,23 +562,25 @@ fn read_format(text: &[u8]) -> Option<Format> {
         1 => true,
         _ => return None,
     };
-    for (extension, value) in extensions {
-        match extension.as_str() {
+    for (name, value) in &entries {
+        let Some(extension) = name.strip_prefix("extensions.") else {
+            continue;
+        };
+        match extension {
             "noop" => {}
-            "preciousobjects" => {
+            "preciousobjects" | "worktreeconfig" => {
                 git_bool(value.as_deref())?;
             }
             "partialclone" => {
-                value?;
+                value.as_ref()?;
             }
-            "worktreeconfig" => format.worktree_config = git_bool(value.as_deref())?,
             "noop-v1" if version_1 => {}
             "objectformat" | "compatobjectformat"
                 if version_1 && matches!(value.as_deref(), Some(b"sha1" | b"sha256")) => {}
             _ => return None,
         }
     }
-    Some(format)
+    Format::of(entries)
 }
 
 /// Every entry of a configuration file's `text`, in order, as git's own reading of a file gives
@@ -834,20 +888,25 @@ pub fn discover(start: &Path) -> Result<Option<Repository>, String> {
     else {
         return Ok(None);
     };
-    repository_asked(start, &out).map(Some).ok_or_else(|| {
+    repository_asked(start, &out).map(Some).map_err(|why| {
         let said = String::from_utf8_lossy(&out);
-        git_failure(&args, start, &format!("answered no repository: {said:?}")).0
+        git_failure(&args, start, &format!("{why}: {said:?}")).0
     })
 }
 
 /// The repository git's answer `out` to [`discover`]'s `rev-parse` from `start` names: its four
 /// lines, each path taken to its physical path and the common directory, which git names relative
-/// to `start` where it names it relatively, joined onto `start`. None where the answer is not
-/// four lines of UTF-8 naming directories that exist.
-fn repository_asked(start: &Path, out: &[u8]) -> Option<Repository> {
-    let text = std::str::from_utf8(out).ok()?.strip_suffix('\n')?;
+/// to `start` where it names it relatively, joined onto `start`; and the main checkout its common
+/// directory's configuration records ([`Format::main_checkout`]). A failure where the answer is
+/// not four lines of UTF-8 naming directories that exist, or that configuration cannot be read.
+fn repository_asked(start: &Path, out: &[u8]) -> Result<Repository, &'static str> {
+    const NO_REPOSITORY: &str = "answered no repository";
+    let text = std::str::from_utf8(out)
+        .ok()
+        .and_then(|text| text.strip_suffix('\n'))
+        .ok_or(NO_REPOSITORY)?;
     let [toplevel, git_dir, common, prefix] = text.split('\n').collect::<Vec<_>>()[..] else {
-        return None;
+        return Err(NO_REPOSITORY);
     };
     // An empty `start` is the current directory, as `git -C ""` takes it.
     let start = if start.as_os_str().is_empty() {
@@ -855,12 +914,20 @@ fn repository_asked(start: &Path, out: &[u8]) -> Option<Repository> {
     } else {
         start
     };
-    Some(Repository {
-        toplevel: std::fs::canonicalize(toplevel).ok()?,
-        git_dir: std::fs::canonicalize(git_dir).ok()?,
-        common_dir: std::fs::canonicalize(start.join(common)).ok()?,
+    let physical = |path: &Path| std::fs::canonicalize(path).map_err(|_| NO_REPOSITORY);
+    let common_dir = physical(&start.join(common))?;
+    let main = std::fs::read(common_dir.join("config"))
+        .ok()
+        .and_then(|text| Format::of(config_entries(&text)?))
+        .and_then(|format| format.main_checkout(&common_dir))
+        .ok_or("answered a repository whose recorded main checkout cannot be read")?;
+    Ok(Repository {
+        toplevel: physical(Path::new(toplevel))?,
+        git_dir: physical(Path::new(git_dir))?,
+        common_dir,
         prefix: PathBuf::from(prefix.trim_end_matches('/')),
         shown: CommonShown::Asked(common.to_owned()),
+        main,
     })
 }
 
@@ -1422,7 +1489,7 @@ mod tests {
     /// where git records one ([`git_records_main`]), whichever worktree it is discovered from,
     /// and otherwise the worktree's own top and head.
     #[test]
-    fn the_main_root_and_head_are_the_ones_every_worktree_shares() {
+    fn the_main_root_and_head_are_the_main_checkout_git_records() {
         let dir = shapes();
         let cases: &[(&str, &str, &str)] = &[
             ("main", "main", "main"),
