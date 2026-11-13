@@ -1589,9 +1589,9 @@ function frComponent(ids, adj, w, h) {
 // kgSpread(nodes, ..., radiusOf, labelOf) - so it spreads with the node count AND the total label area
 // instead of compressing every density into the panel's centre. The larger canvas also lifts the FR
 // repulsion (k = sqrt(canvasArea / n) inside frComponent), so denser and wider-labelled graphs push
-// apart harder. The enlarged canvas is then CENTRED on the panel (a pure translation) so the reset
-// pan/zoom view opens on the MIDDLE of the drawing; the panel pans and zooms, so a canvas larger than
-// the viewport is fine - clarity beats fitting. `radiusOf`/`labelOf` are optional: absent them the
+// apart harder. The enlarged canvas is then CENTRED on the panel (a pure translation); the opening
+// view scales the whole drawing down to fit the panel (kgOpeningView), and zooming in reaches the
+// spread-out detail - so a canvas larger than the panel is fine. `radiusOf`/`labelOf` are optional: absent them the
 // factor is 1 and the layout is the panel-sized one as before (the layered layout never routes here).
 function forceLayout(nodes, edges, width, height, radiusOf, labelOf) {
   const ids = nodes.map(n => n.id);
@@ -1636,9 +1636,8 @@ function forceLayout(nodes, edges, width, height, radiusOf, labelOf) {
     // without distorting the circles. Applies to the whole-graph overview and to a disconnected drill.
     laid = fitToBox(out, ids, 0, 0, cw, ch);
   }
-  // Centre the enlarged canvas on the panel so the reset pan/zoom view opens on the MIDDLE of the
-  // drawing (pan/zoom reaches the rest). A pure translation, so the extent and every pairwise distance
-  // are unchanged; a no-op when f === 1 (the panel-sized layout, offsets zero).
+  // Centre the enlarged canvas on the panel it was laid out for. A pure translation, so the extent and
+  // every pairwise distance are unchanged; a no-op when f === 1 (the panel-sized layout, offsets zero).
   const offx = (width - cw) / 2, offy = (height - ch) / 2;
   if (offx !== 0 || offy !== 0) {
     ids.forEach(id => { laid[id].x += offx; laid[id].y += offy; });
@@ -1653,9 +1652,11 @@ function forceLayout(nodes, edges, width, height, radiusOf, labelOf) {
 // and enclose the circle and the label in one axis-aligned box. After the force pass a deterministic
 // separation pass displaces every overlapping pair apart - stable id order, accumulated per pass,
 // fixed iteration bound - until no two bodies intersect. It is pure arithmetic over the position map
-// (no randomness) and may push the drawing past the viewBox: a layout larger than the panel is fine
-// because the panel already pans and zooms, and clarity beats fitting.
+// (no randomness) and may push the drawing past the viewBox: the opening view scales the whole
+// drawing down to fit the panel (kgOpeningView), so a layout larger than the panel is fine.
 const KG_LABEL_CHAR_W = 6.2;   // advance width per glyph at the 10px .kglabel font (px)
+const KG_HULL_CHAR_W = 6.8;    // advance per glyph of the 10px monospace .kghull-l label: 0.6em plus
+                               // its 0.08em letter-spacing (px)
 const KG_LABEL_H = 13;         // the label line-box height (px)
 const KG_LABEL_GAP = 2;        // circle bottom to label-box top (the text baseline sits at y = r+11)
 const KG_BODY_PAD = 2;         // a hair of margin so separated bodies read as distinct, not tangent
@@ -1878,7 +1879,7 @@ function kgSvg(nodes, edges, width, height, opts) {
     : forceLayout(nodes, edges, width, height, opts.radius, opts.label);
   // SEPARATION pass (spec 59 c1): only the force-laid views. The label is part of the node, so
   // displace overlapping circle+label bodies apart until none intersect - deterministic, and it may
-  // push the drawing past the viewBox (pan/zoom handles it). The layered call-DAG (opts.layout) keeps
+  // push the drawing past the viewBox (the opening view fits it back). The layered call-DAG (opts.layout) keeps
   // its own layout, which already spaces nodes within a layer, so it is left untouched here.
   if (!opts.layout) kgSeparate(pos, nodes, opts.radius, opts.label);
   // ADAPTIVE LABELS (spec 59 c3): the force-laid views declutter their labels by importance and reveal
@@ -1895,12 +1896,21 @@ function kgSvg(nodes, edges, width, height, opts) {
   // `groupOf` is nullish (or whose position is missing, e.g. a budget-dropped drill member) joins no
   // hull. Absent `opts.groupOf`, this is a no-op and the emitter draws exactly as before.
   const hulls = kgGroupHulls(nodes, pos, opts.radius, opts.groupOf);
+  // The DRAWN EXTENT: the box holding every mark the svg draws - each hull's rect and label, each
+  // back arc's control point (the curve stays inside the triangle its ends and control point span),
+  // each node's circle and label body (kgNodeBody) - which the opening view fits to the panel.
+  const extent = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+  const hold = (x0, y0, x1, y1) => {
+    extent.x0 = Math.min(extent.x0, x0); extent.y0 = Math.min(extent.y0, y0);
+    extent.x1 = Math.max(extent.x1, x1); extent.y1 = Math.max(extent.y1, y1);
+  };
   const hullPad = 16;
   const hullMarkup = Object.keys(hulls).sort().map(key => {
     const b = hulls[key];
     const x = b.minX - hullPad, y = b.minY - hullPad;
     const w = (b.maxX - b.minX) + hullPad * 2, h = (b.maxY - b.minY) + hullPad * 2;
     const label = opts.groupLabel ? opts.groupLabel(key) : key;
+    hold(x, y, Math.max(x + w, x + 10 + label.length * KG_HULL_CHAR_W), y + h);
     return '<g class="kghull"><rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="'
       + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="14" ry="14"/><text class="kghull-l" x="'
       + (x + 10).toFixed(1) + '" y="' + (y + 17).toFixed(1) + '">' + esc(label) + '</text></g>';
@@ -1922,6 +1932,7 @@ function kgSvg(nodes, edges, width, height, opts) {
     // edge; every other edge stays the straight <line> the exploration views emit.
     if (opts.edgeBack && opts.edgeBack(e)) {
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 34;
+      hold(mx, my, mx, my);
       return '<path class="kgline back" d="M' + a.x.toFixed(1) + ',' + a.y.toFixed(1) + ' Q'
         + mx.toFixed(1) + ',' + my.toFixed(1) + ' ' + b.x.toFixed(1) + ',' + b.y.toFixed(1)
         + '" fill="none" stroke-width="' + sw.toFixed(2) + '"' + arrow + '/>';
@@ -1933,6 +1944,8 @@ function kgSvg(nodes, edges, width, height, opts) {
     const q = pos[n.id];
     if (!q) return "";
     const r = opts.radius(n);
+    const body = kgNodeBody(q.x, q.y, r, opts.label(n));
+    hold(body.x0, body.y0, body.x1, body.y1);
     const cls = opts.nodeClass ? opts.nodeClass(n) : "kgdot";
     const attrs = opts.nodeAttrs ? opts.nodeAttrs(n) : "";
     const fill = opts.fill ? ' fill="' + esc(opts.fill(n)) + '"' : "";
@@ -1955,6 +1968,7 @@ function kgSvg(nodes, edges, width, height, opts) {
       + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
+  kgDrawn = { width: width, height: height, box: extent };
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
     + '" preserveAspectRatio="xMidYMid meet">' + defs
     + '<g id="kgzoom">' + hullMarkup + lines + circles + '</g></svg>';
@@ -2007,10 +2021,15 @@ function layeredLayout(nodes, edges, width, height) {
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
 // the #kgzoom group (never re-laying-out). The wheel + mousedown bind to the FRESH svg each render (a
-// drill / back rebinds and RESETS the view); the drag move/up live on `window` (installed once, below)
-// so a drag that leaves the svg still tracks.
+// drill / back rebinds and opens the view FITTED again, kgOpeningView); the drag move/up live on
+// `window` (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
+// The last drawing's viewBox size and the box holding every mark it drew (set by kgSvg).
+let kgDrawn = null;
+// How far the wheel zooms out: 0.2, or the opening scale when the fit opens below that.
+let kgZoomFloor = 0.2;
+const KG_FIT_MARGIN = 8;       // the room the opening view leaves between the drawing and the panel's edge
 // The last force view's laid-out positions + accessors (set by kgSvg, null on a layered view): the
 // adaptive-label declutter (spec 59 c3) recomputes its visible set from this at the live zoom.
 let kgLabelState = null;
@@ -2043,8 +2062,18 @@ function kgApplyLabels() {
     else node.classList.add("kg-nolabel");
   });
 }
+// The OPENING VIEW of a fresh drawing: scaled down until every mark it drew sits inside the panel
+// with KG_FIT_MARGIN to spare - never scaled up past 1 - and centred, so an overview of any density
+// opens whole and zooming in reaches its detail.
+function kgOpeningView(drawn) {
+  if (!drawn || !(drawn.box.x1 >= drawn.box.x0)) return { k: 1, x: 0, y: 0 };
+  const b = drawn.box, bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+  const k = Math.min(1, (drawn.width - 2 * KG_FIT_MARGIN) / bw, (drawn.height - 2 * KG_FIT_MARGIN) / bh);
+  return { k: k, x: (drawn.width - bw * k) / 2 - b.x0 * k, y: (drawn.height - bh * k) / 2 - b.y0 * k };
+}
 function bindKgView() {
-  kgView = { k: 1, x: 0, y: 0 };               // a fresh render resets the view
+  kgView = kgOpeningView(kgDrawn);              // a fresh render opens fitted to the panel
+  kgZoomFloor = Math.min(0.2, kgView.k);
   const svg = el("kgpanel").querySelector("svg");
   if (!svg) return;
   applyKgView();
@@ -2053,7 +2082,7 @@ function bindKgView() {
     const rect = svg.getBoundingClientRect();
     const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
     const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
-    const nk = Math.max(0.2, Math.min(8, kgView.k * factor));
+    const nk = Math.max(kgZoomFloor, Math.min(8, kgView.k * factor));
     // Keep the graph point under the cursor fixed while scaling (zoom TOWARD the cursor).
     kgView.x = mx - (mx - kgView.x) * (nk / kgView.k);
     kgView.y = my - (my - kgView.y) * (nk / kgView.k);
