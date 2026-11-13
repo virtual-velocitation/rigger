@@ -2,8 +2,8 @@
 //! root through the one resolver, never from the directory it happens to run in. The resolver
 //! reads the working directory once, in `Site::of`, and resolves every root from that site; the
 //! writer resolver alone spells the root's store relative to the working directory, at the root
-//! itself. Two shapes in production code under `src/` and `crates/` fail the suite, naming file
-//! and line:
+//! itself, and discovery alone takes an empty start as the working directory, as git does. Two
+//! shapes in production code under `src/` and `crates/` fail the suite, naming file and line:
 //!
 //! 1. A WORKING DIRECTORY READ: a call to `current_dir` as a free function (`std::env::current_dir()`)
 //!    or to the `cwd()` helper, so a command anchors at the directory it runs in.
@@ -37,8 +37,16 @@ const RESOLVER: &[(&str, &str, &str)] = &[
     ),
     (
         "src/cli/mod.rs",
-        "store_to_write_in",
-        "the writer resolver spells the root's store relative to the working directory at the root",
+        "store_to_write_with",
+        "the writer resolver, run at the root it resolved, spells the root's store relative to \
+         the working directory, so the files of a root whose path is not UTF-8 are still named; \
+         the location it returns carries that root",
+    ),
+    (
+        "crates/rigger-worktree-git/src/discover.rs",
+        "as_git_takes",
+        "discovery takes an empty start as the working directory, as `git -C \"\"` does; every \
+         rigger command reaches it through Site::of, which hands it the directory it read",
     ),
 ];
 
@@ -277,13 +285,31 @@ mod tests {
         );
         the_store_spelled_at_the_root_by_the_writer_resolver_is_never_flagged: never_flagged(
             "src/cli/mod.rs",
-            "fn store_to_write_in() -> PathBuf {\n    let dir = PathBuf::from(RIGGER_DIR);\n    \
+            "fn store_to_write_with() -> PathBuf {\n    let dir = PathBuf::from(RIGGER_DIR);\n    \
              std::fs::create_dir_all(&dir).unwrap();\n    dir\n}\n",
+        );
+        the_empty_start_discovery_takes_as_git_does_is_never_flagged: never_flagged(
+            "crates/rigger-worktree-git/src/discover.rs",
+            "fn as_git_takes(start: &Path) -> &Path {\n    \
+             if start.as_os_str().is_empty() { Path::new(\".\") } else { start }\n}\n",
+        );
+        a_store_spelled_by_a_writer_outside_the_resolver_is_caught: caught_as(
+            "src/cli/mod.rs",
+            "fn store_to_write_in() -> PathBuf { PathBuf::from(RIGGER_DIR) }\n",
+            CWD_PATH,
         );
         a_resolver_name_in_another_file_is_caught: caught_as(
             "src/cli/x.rs",
             "fn of() -> PathBuf { std::env::current_dir().unwrap() }\n",
             CWD_READ,
         );
+        /// The real `src/` and `crates/` trees, resolved from `CARGO_MANIFEST_DIR`, read the
+        /// working directory and spell a path relative to it only in the resolver.
+        the_real_tree_reads_the_working_directory_only_in_the_resolver:
+            source_audit::assert_real_tree_clean(
+                scan_tree,
+                "the working directory audit",
+                "working-directory read(s) or relative path(s) outside the resolver",
+            );
     }
 }
