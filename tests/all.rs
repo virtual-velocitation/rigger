@@ -107,6 +107,7 @@ mod edge_side_binds_the_leaf_periphery;
 mod escalation_resume_periphery;
 mod event_classes_are_one_table;
 mod event_classes_periphery;
+mod explorer_test_marker_viz;
 mod extraction_bytes_forms_periphery;
 mod fanout_gate_inheritance_periphery;
 mod fanout_template_needs_and_stage_retries_periphery;

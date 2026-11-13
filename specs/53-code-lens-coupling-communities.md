@@ -46,10 +46,11 @@ result as events:
   member count and weighted inter-community edges - the SAME `clustered_overview`/`cluster_detail`
   folds, a different key. Nodes with NO membership (design docs, decisions, knowledge nodes - the
   detection runs over code) keep their kind buckets alongside, so the view stays whole-graph.
-- `resolution=<r>` selects which derived grain to read (default the default-resolution assignment);
-  a resolution with no derived assignments - or a graph where the pass has never run - renders the
-  documented "code lens not derived yet - run `rigger graph communities`" empty state, never an
-  error.
+- `resolution=<r>` selects which grain to read (default the default-resolution assignment the store
+  holds); any other grain is computed at read exactly as `rigger graph communities --resolution <r>`
+  computes it and is never stored, and the view states the grain it shows. A graph in which no grain
+  can be computed renders the documented "code lens not derived yet - no community can be computed
+  from this graph" empty state, never an error and never a command to run.
 - Drill and select-to-seed work identically under the lens (a community drills to its members; a
   member click seeds the neighborhood / call views), and the toolbar carries the lens selector with
   the resolution control visible under `lens=code`.

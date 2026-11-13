@@ -147,7 +147,7 @@ where
     // to bypass it (dispatch precedence) and a plain neighborhood request to use it.
     let graph_provider = {
         let consulted = graph_consulted.clone();
-        move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
+        move |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| -> Graph {
             consulted.store(true, Ordering::SeqCst);
             graph.clone()
         }

@@ -27,6 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::community::{self, COMMUNITY_ID_PREFIX};
+use crate::concepts::CONCEPT_ID_PREFIX;
 use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
@@ -316,33 +318,28 @@ pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
 // aggregations consume [`Buckets`], never a second parallel fold reconciled after the fact.
 // ---------------------------------------------------------------------------
 
-/// The default community-detection resolution grain, as its canonical string. The detection pass
-/// defaults to resolution `1.0`, whose `f64` display is `1`, so its communities are `community/1/<n>`
-/// (spec 53). The [`Lens::Code`] view reads THIS grain when a request omits `resolution=`.
-pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
+/// The documented empty-state message the [`Lens::Code`] overview carries when the graph it reads
+/// holds NO community assignment at the selected grain, which the read computes when the store
+/// holds another: a graph with no code to group, or one served without a code view to compute
+/// from. The groupings reports only read, so it names no command; why a graph holds nothing (none
+/// built) is the reply's graph header. The panel shows this instead of an error or a bare
+/// kind-bucket view (spec 53 c4).
+pub const CODE_LENS_UNDERIVED: &str =
+    "code lens not derived yet - no community can be computed from this graph";
 
-/// The documented empty-state message the [`Lens::Code`] overview carries when the selected
-/// resolution grain has NO derived community assignments (the offline detection pass never ran at
-/// that grain): the panel shows this instead of an error or a bare kind-bucket view, so an underived
-/// code lens degrades gracefully to a prompt to run the derivation (spec 53 c4).
-pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
-
-/// The default concept-derivation resolution grain, as its canonical string. The offline
-/// intent-derivation pass defaults to resolution `1.0`, whose `f64` display is `1`, so its concepts
-/// are `concept/1/<n>` (spec 54). The [`Lens::Concepts`] view reads THIS grain when a request omits
-/// `resolution=`.
-pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
-
-/// The documented empty-state message the [`Lens::Concepts`] overview carries when the selected
-/// resolution grain has NO derived concept assignments (the offline intent-derivation pass never ran
-/// at that grain): the panel shows this instead of an error or a bare kind-bucket view, so an
-/// underived concepts lens degrades gracefully to a prompt to run the derivation (spec 54 c3).
-pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
+/// The documented empty-state message the [`Lens::Concepts`] overview carries when the graph it
+/// reads holds NO concept assignment at the selected grain, which the read computes when the store
+/// holds another: a graph with nothing to derive concepts from, or one served without a code view
+/// to compute from. The groupings reports only read, so it names no command; why a graph holds
+/// nothing (none built) is the reply's graph header. The panel shows this instead of an error or a
+/// bare kind-bucket view (spec 54 c3).
+pub const CONCEPTS_LENS_UNDERIVED: &str =
+    "concepts not derived yet - no concept can be computed from this graph";
 
 /// The documented empty-CELL message a [`Lens::Code`] RE-PROJECTION (spec 55 c2) carries when the
 /// selected subject's member set folds into NO coupling community - the members exist, but none is
-/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole-graph
-/// "the offline pass never ran" prompt): a re-projection cell is empty when THIS subject's members
+/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole
+/// graph yields no community at all): a re-projection cell is empty when THIS subject's members
 /// carry no membership, whether or not the grain is derived elsewhere, so `dash.rs`'s
 /// `reproject_derived` captions the defined-but-empty cell rather than showing a bare kind-bucket
 /// fold with no explanation.
@@ -396,20 +393,24 @@ pub enum Lens {
     /// [`cluster_key`]. Byte-identical to a `lens`-absent request.
     Files,
     /// The CODE fold (spec 53): a node with a live `IN_COMMUNITY` membership at `resolution` buckets
-    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id); a membership-less node keeps
-    /// its KIND bucket (so the view stays whole-graph). The `resolution` grain string selects which
-    /// derived grain to read.
+    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id). The whole-graph overview and
+    /// drill fold code entities alone and leave a membership-less one out entirely (spec 63,
+    /// `whole_graph_lens_key`); a subject re-projection keeps a membership-less member in its KIND
+    /// bucket ([`Buckets::key`]). The `resolution` grain string selects which derived grain to read;
+    /// a grain with no derived assignments is the overview's empty state.
     Code {
         /// The resolution grain to read, as the community id's grain segment (e.g. `1`, `1.5`).
         resolution: String,
     },
     /// The CONCEPTS fold (spec 54): a node with a live `REALIZES` membership at `resolution` buckets
     /// by its intent CONCEPT (its `concept/<resolution>/<n>` id) - the idea the docs and code realize,
-    /// grouped across directory lines; a membership-less node keeps its KIND bucket (so the view stays
-    /// whole-graph). A node realizing MORE THAN ONE concept folds under its PRIMARY (the largest
-    /// concept by member count, ties by lexicographically-smallest id) and is flagged `shared` -
-    /// counted once, never silently duplicated. The `resolution` grain string selects which derived
-    /// grain to read.
+    /// grouped across directory lines. The whole-graph overview and drill leave a membership-less node
+    /// of any kind out entirely (spec 63, `whole_graph_lens_key`); a subject re-projection keeps a
+    /// membership-less member in its KIND bucket ([`Buckets::key`]). A node realizing MORE THAN ONE
+    /// concept folds under its PRIMARY (the largest concept by member count, ties by
+    /// lexicographically-smallest id) and is flagged `shared` - counted once, never silently
+    /// duplicated. The `resolution` grain string selects which derived grain to read; a grain with no
+    /// derived assignments is the overview's empty state.
     Concepts {
         /// The resolution grain to read, as the concept id's grain segment (e.g. `1`, `1.5`).
         resolution: String,
@@ -418,26 +419,58 @@ pub enum Lens {
 
 impl Lens {
     /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
-    /// `lens=concepts` the concepts fold, each at `resolution=` (defaulting to the derivation's
-    /// default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] / [`DEFAULT_CONCEPT_RESOLUTION`] - when absent
-    /// or empty); every other value - `lens=files`, an unknown lens, or an absent one - resolves to
-    /// [`Lens::Files`], the byte-identical default. Total and infallible, so a hostile selector can
-    /// never error the route; it just falls back to the files view.
+    /// `lens=concepts` the concepts fold, each at the grain `resolution=` selects (`selected_grain`:
+    /// the default grain, [`community::grain`] of [`community::DEFAULT_RESOLUTION`], which both
+    /// derivations share, when absent or empty); every other value - `lens=files`, an
+    /// unknown lens, or an absent one - resolves to [`Lens::Files`], the byte-identical default. Total
+    /// and infallible, so a hostile selector can never error the route; it just falls back to the
+    /// files view.
     pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
         match lens {
             Some("code") => Lens::Code {
-                resolution: resolution
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or(DEFAULT_COMMUNITY_RESOLUTION)
-                    .to_string(),
+                resolution: selected_grain(resolution),
             },
             Some("concepts") => Lens::Concepts {
-                resolution: resolution
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or(DEFAULT_CONCEPT_RESOLUTION)
-                    .to_string(),
+                resolution: selected_grain(resolution),
             },
             _ => Lens::Files,
+        }
+    }
+
+    /// The resolution this derived lens reads ([`community::parse_resolution`] of its grain text),
+    /// or the text as written when it names no grain; `None` under [`Lens::Files`], which reads no
+    /// grain.
+    pub fn resolution(&self) -> Option<Result<f64, community::NotAGrain>> {
+        match self {
+            Lens::Files => None,
+            Lens::Code { resolution } | Lens::Concepts { resolution } => {
+                Some(community::parse_resolution(resolution))
+            }
+        }
+    }
+
+    /// The text this derived lens's grain is written as, when it names no grain: the overview and
+    /// the re-projection fold nothing and say so ([`community::NotAGrain`]'s sentence).
+    pub fn not_a_grain(&self) -> Option<community::NotAGrain> {
+        self.resolution().and_then(Result::err)
+    }
+
+    /// The grain this derived lens displays, as its ids spell it ([`community::grain`]), so a view
+    /// states which grain it shows; `None` under [`Lens::Files`] and when the text names no grain.
+    pub fn grain(&self) -> Option<String> {
+        self.resolution().and_then(Result::ok).map(community::grain)
+    }
+}
+
+/// The grain a `resolution=` selects: the default resolution's when absent or empty; a resolution in
+/// any spelling ([`community::parse_resolution`]) as the grain segment derivation mints for it
+/// ([`community::grain`]), so `1.0` reads grain `1`; any other text as written, which names no
+/// grain ([`Lens::not_a_grain`]).
+fn selected_grain(raw: Option<&str>) -> String {
+    match raw.filter(|r| !r.is_empty()) {
+        None => community::grain(community::DEFAULT_RESOLUTION),
+        Some(raw) => {
+            community::parse_resolution(raw).map_or_else(|_| raw.to_string(), community::grain)
         }
     }
 }
@@ -486,7 +519,7 @@ impl<'g> Buckets<'g> {
                 defs_by_suffix = defs_by_entity_suffix(graph);
             }
             Lens::Code { resolution } => {
-                let prefix = format!("community/{resolution}/");
+                let prefix = format!("{COMMUNITY_ID_PREFIX}{resolution}/");
                 for e in &graph.edges {
                     if e.valid_to.is_none()
                         && e.rel == REL_IN_COMMUNITY
@@ -501,7 +534,7 @@ impl<'g> Buckets<'g> {
                 // member. The derivation records at most one membership per grain, but a later
                 // model-assisted refinement may realize a member under several concepts, so index them
                 // ALL and fold honestly rather than trust a single-membership assumption.
-                let prefix = format!("concept/{resolution}/");
+                let prefix = format!("{CONCEPT_ID_PREFIX}{resolution}/");
                 let mut realized: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
                 for e in &graph.edges {
                     if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to.starts_with(&prefix) {
@@ -579,10 +612,24 @@ impl<'g> Buckets<'g> {
         }
     }
 
-    /// A derived lens at the selected grain has NO assignments: the documented empty state (the
-    /// offline pass never ran at this resolution). Always `false` under [`Lens::Files`].
+    /// A derived lens at the selected grain has NO assignments: the documented empty state (no
+    /// grouping can be computed from this graph). Always `false` under [`Lens::Files`].
     pub(crate) fn underived(&self) -> bool {
         matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
+    }
+
+    /// Why a derived lens's whole-graph overview reads nothing: its grain text names no grain
+    /// ([`Lens::not_a_grain`]), or nothing is derived at its grain ([`Buckets::underived`], the
+    /// lens's underived text). `None` when the grain has assignments, and always under
+    /// [`Lens::Files`].
+    fn unread(&self) -> Option<String> {
+        match self.lens.not_a_grain() {
+            Some(bad) => Some(bad.to_string()),
+            None => self
+                .underived()
+                .then(|| self.derived_texts().map(|t| t.underived.to_string()))
+                .flatten(),
+        }
     }
 
     /// Whether `node` is a MEMBER of the bucket [`whole_graph_lens_key`] folds it to, rather than
@@ -622,17 +669,18 @@ impl<'g> Buckets<'g> {
 pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     let buckets = Buckets::new(graph, lens);
 
-    // The documented empty state (spec 53 c4 / spec 54 c3): a derived lens whose selected resolution
-    // grain has NO assignments AT ALL. Return an empty overview carrying the lens's derivation prompt,
-    // so the panel says "run `rigger graph communities`" / "run `rigger graph concepts`" instead of
-    // showing an error or a bare kind-bucket view. `total` still reports the whole graph size. This is
-    // NOT the only path to that same empty state below - see the post-fold re-check.
-    if buckets.underived() {
+    // The documented empty states (spec 53 c4 / spec 54 c3): a derived lens whose grain text names
+    // no grain, or whose selected grain has NO assignments AT ALL. Return an empty overview carrying
+    // why ([`Buckets::unread`]) instead of an error or a bare kind-bucket view. `total` still reports
+    // the whole graph size, and `grain` the grain asked for (none for a text that names none). This
+    // is NOT the only path to the underived empty state - see the post-fold re-check below.
+    if let Some(empty_state) = buckets.unread() {
         return ClusterOverview {
             clusters: Vec::new(),
             edges: Vec::new(),
             total: graph.nodes.len(),
-            empty_state: buckets.derived_texts().map(|t| t.underived.to_string()),
+            empty_state: Some(empty_state),
+            grain: lens.grain(),
             tests_hidden: 0,
         };
     }
@@ -684,6 +732,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         edges,
         total: graph.nodes.len(),
         empty_state,
+        grain: lens.grain(),
         tests_hidden: 0,
     }
 }
@@ -1017,6 +1066,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         path: Vec::new(),
         explain: None,
         truncated,
+        // A grain text that names no grain folds no member; the drill says why.
+        empty_state: lens.not_a_grain().map(|bad| bad.to_string()),
         // A cluster drill is not a directed-call view (spec 52 c4).
         dir: None,
         referenced_not_called: Vec::new(),
@@ -1266,6 +1317,8 @@ pub fn neighborhood_of(
         explain: None,
         // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
         truncated: None,
+        // A seeded neighborhood reads no grain, so no grain text can leave it empty.
+        empty_state: None,
         // A plain neighborhood is not a directed-call view (spec 52 c4): no direction, no
         // referenced-but-not-called sidecar. Absent, these keep the neighborhood byte-identical.
         dir: None,
@@ -1507,7 +1560,10 @@ pub fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
 /// Falls back to the community's own id when the derivation folded no explicit `label` attr for
 /// it, matching [`bucket_label_index`]'s own `filter(|l| !l.is_empty())` discipline.
 pub(crate) fn community_label(graph: &Graph, id: &str) -> Option<String> {
-    let prefix = format!("community/{DEFAULT_COMMUNITY_RESOLUTION}/");
+    let prefix = format!(
+        "{COMMUNITY_ID_PREFIX}{}/",
+        community::grain(community::DEFAULT_RESOLUTION)
+    );
     let community_id = graph.edges.iter().find_map(|e| {
         (e.valid_to.is_none()
             && e.rel == REL_IN_COMMUNITY
@@ -1736,6 +1792,11 @@ pub struct Neighborhood {
     /// COMPLETE node set - a plain [`neighborhood`] and a drill at/under the budget.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<usize>,
+    /// Why a drill draws nothing: [`community::NotAGrain`]'s sentence when [`cluster_detail`]'s
+    /// derived lens names no grain, as the overview and the re-projection say it. Omitted (`None`)
+    /// for every other drill and every other view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
     /// The DIRECTED-CALL view marker (spec 52 c4): the direction the `view=calls` walk ran -
     /// `"down"` (execution path / callees), `"up"` (call sites / callers), or `"both"` (the flow
     /// through a centered seed). Set ONLY on a call view; omitted (`None`) for every neighborhood /
@@ -1866,13 +1927,20 @@ pub struct ClusterOverview {
     pub edges: Vec<ClusterEdge>,
     /// The full graph node count (every node, folded or not), so the panel reports the whole size.
     pub total: usize,
-    /// The documented empty state under [`Lens::Code`] when the selected resolution grain has NO
-    /// derived community assignments (the offline detection pass never ran at that grain): carries
-    /// [`CODE_LENS_UNDERIVED`] so the panel prompts the operator to run the derivation instead of an
-    /// error or a bare kind-bucket view. Absent (skipped in JSON) under [`Lens::Files`] and under a
-    /// derived code grain, so the default files overview stays byte-identical.
+    /// The documented empty state of a derived lens that folds nothing: [`community::NotAGrain`]'s
+    /// sentence when its grain text names no grain, else [`CODE_LENS_UNDERIVED`] /
+    /// [`CONCEPTS_LENS_UNDERIVED`] when its grain has NO assignments, so the panel says why instead
+    /// of an error or a bare kind-bucket view; [`WHOLE_GRAPH_FILES_UNRESOLVED`] under [`Lens::Files`]
+    /// when a non-empty graph resolves no node to a file. Absent (skipped in JSON) whenever a cluster
+    /// folds and over an empty graph, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// The grain a derived lens displays ([`Lens::grain`]), read from the store or computed at
+    /// read when the store holds another, and stated beside an empty state when nothing can be
+    /// computed at it; absent under [`Lens::Files`] and when the lens's text names no grain, so the
+    /// files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grain: Option<String>,
     /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
     /// the opened graph's `hidden_tests()`, since the drawn graph holds none of them. Skipped in
     /// JSON when none is hidden.

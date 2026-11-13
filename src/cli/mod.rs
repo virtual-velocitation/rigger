@@ -2050,6 +2050,35 @@ impl<'r> ReadGraph<'r> {
 }
 
 impl ReadGraph<'_> {
+    /// The graph as it stands now under `filter`, with the groupings at `resolution` read beside
+    /// the stored ones ([`rigger_domain::composed::Composed::at`]), or why it cannot be read: the
+    /// open a reader of one grain makes.
+    pub(crate) fn open_at(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+        resolution: f64,
+    ) -> Result<Box<dyn ContextGraph + '_>, contextgraph::Error> {
+        let head = self.head().map_err(contextgraph::Error)?;
+        Ok(Box::new(self.composed_at(&head, filter, resolution)?))
+    }
+
+    /// The graph composed over `head` under `filter`, the groupings at `resolution` beside the
+    /// stored ones.
+    fn composed_at(
+        &self,
+        head: &rigger_domain::code_view::Head,
+        filter: rigger_domain::code_view::ViewFilter,
+        resolution: f64,
+    ) -> Result<rigger_domain::composed::Composed<'_>, contextgraph::Error> {
+        rigger_domain::composed::Composed::at(
+            self.records,
+            &*head.view,
+            filter,
+            Self::honesty(head),
+            resolution,
+        )
+    }
+
     /// How the worktree `head` was opened for compares with it, as the composed graph's label
     /// states it.
     fn honesty(head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
@@ -2078,12 +2107,7 @@ impl OpenGraph for ReadGraph<'_> {
         head: &rigger_domain::code_view::Head,
         filter: rigger_domain::code_view::ViewFilter,
     ) -> Result<Box<dyn ContextGraph + '_>, contextgraph::Error> {
-        let composed = rigger_domain::composed::Composed::new(
-            self.records,
-            &*head.view,
-            filter,
-            Self::honesty(head),
-        )?;
+        let composed = self.composed_at(head, filter, community::DEFAULT_RESOLUTION)?;
         Ok(Box::new(composed))
     }
 

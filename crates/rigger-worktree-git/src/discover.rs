@@ -583,10 +583,12 @@ fn read_format(text: &[u8]) -> Option<Format> {
     Format::of(entries)
 }
 
-/// Every entry of a configuration file's `text`, in order, as git's own reading of a file gives
-/// it: the name `section.key` or `section.subsection.key` (a key before any section stands
-/// alone), lowercased but for a subsection; the value none for a key written without `=`. None
-/// where git refuses the file.
+/// Every entry of a configuration file's `text`, in order, as the newest git reads a file, the
+/// rule git 2.45.0 set: the name `section.key` or `section.subsection.key` (a key before any
+/// section stands alone), lowercased but for a subsection; the value none for a key written
+/// without `=`, and white space inside it kept as written ([`Source::value`]). None where git
+/// refuses the file. An older git reads each tab or lone carriage return inside an unquoted
+/// value as a space.
 fn config_entries(text: &[u8]) -> Option<Vec<(String, Option<Vec<u8>>)>> {
     let mut source = Source {
         text: text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text),
@@ -707,21 +709,25 @@ impl Source<'_> {
 
     /// A value, read from after its `=` to the end of its line: quotes kept out, escapes and a
     /// line continued by `\` taken as git takes them, a comment outside quotes dropped, white
-    /// space outside quotes dropped at either end and each run inside taken as that many
-    /// spaces. None where git refuses it.
+    /// space outside quotes dropped at either end (before a comment too) and kept as written
+    /// inside, a run before a line continued included. None where git refuses it.
     fn value(&mut self) -> Option<Vec<u8>> {
-        let (mut value, mut quoted, mut comment, mut spaces) = (Vec::new(), false, false, 0);
+        let (mut value, mut quoted, mut comment, mut spaces) =
+            (Vec::new(), false, false, Vec::new());
         loop {
             let c = self.next();
             match c {
                 b'\n' if quoted => return None,
                 b'\n' => return Some(value),
                 _ if comment => {}
-                _ if is_space(c) && !quoted => spaces += usize::from(!value.is_empty()),
+                _ if is_space(c) && !quoted => {
+                    if !value.is_empty() {
+                        spaces.push(c);
+                    }
+                }
                 b'#' | b';' if !quoted => comment = true,
                 _ => {
-                    value.resize(value.len() + spaces, b' ');
-                    spaces = 0;
+                    value.append(&mut spaces);
                     match c {
                         b'\\' => value.push(match self.next() {
                             b'\n' => continue,
@@ -764,10 +770,12 @@ fn git_bool(value: Option<&[u8]>) -> Option<bool> {
     }
 }
 
-/// `value` read as git reads an integer: after any white space and an optional sign, digits in
-/// hex after `0x`, in octal after a leading `0`, else in decimal, then optionally a unit `k`,
-/// `m` or `g` in any case, multiplying by 1024 for each step, the whole within plus or minus
-/// `i32::MAX`. None for any other value, which git refuses.
+/// `value` read as the newest git reads an integer, the rule git 2.50.0 set: after any white
+/// space and an optional sign, digits in hex after `0x`, in octal after a leading `0`, else in
+/// decimal, then optionally a unit `k`, `m` or `g` in any case, multiplying by 1024 for each
+/// step, the whole within `i32::MIN..=i32::MAX`. None for any other value, which git refuses.
+/// An older git refuses `i32::MIN` too, however it is written (`-2147483648`, `-2097152k`,
+/// `-2048m`, `-2g`).
 fn git_int(value: &[u8]) -> Option<i32> {
     let start = value
         .iter()
@@ -807,11 +815,8 @@ fn git_int(value: &[u8]) -> Option<i32> {
         b"g" => 1 << 30,
         _ => return None,
     };
-    if magnitude > i64::from(i32::MAX) / factor {
-        return None;
-    }
-    let value = i32::try_from(magnitude * factor).ok()?;
-    Some(if negative { -value } else { value })
+    let signed = if negative { -magnitude } else { magnitude };
+    i32::try_from(signed.checked_mul(factor)?).ok()
 }
 
 /// Whether this user owns every one of `paths`, as git requires before it trusts a repository.
@@ -1549,8 +1554,8 @@ mod tests {
         out.status.success().then(|| entries.collect())
     }
 
-    /// Each row: a configuration file's text. Its entries are read as git reads them, and a
-    /// file git refuses is refused.
+    /// Each row: a configuration file's text that every git release from 2.43 on reads alike.
+    /// Its entries are read as the installed git reads them, and a file git refuses is refused.
     #[test]
     fn a_configuration_is_read_as_git_reads_it() {
         let cases = [
@@ -1559,7 +1564,8 @@ mod tests {
             "k = v\n",
             "[ \"x\"]\nk=1\n",
             "[remote \"o\\\"r]i\\gin\"]\n\turl = a ; b\n\tfetch = x # y\n",
-            "[a.B]\nk = \"t\\tx\" y  z \nl = \"\" m\t n\n",
+            "[a.B]\nk = \"t\\tx\" y  z \nl = \"\" m  n\n",
+            "[s]\nk = a\t \t# c\nl = b \t\r\n",
             "[core]\r\n\tworktree = /a\\\n/b\r\n",
             "\u{feff}[core]\nbare = \"false\"\n",
             "# c\n; d\n\n[core] ; e\n  bare = no\n",
@@ -1577,11 +1583,36 @@ mod tests {
         }
     }
 
-    /// Each row: a configuration value, and how git reads it as a boolean, none where git refuses
-    /// it: a word, or an integer in any base git reads, with any unit, within git's range.
+    /// Each row: a configuration file's text that git releases read differently, and its entries
+    /// as the newest release reads them, which this reader follows. From git 2.45.0 white space
+    /// inside an unquoted value (a tab or a lone carriage return, a run of them before a line
+    /// continued) is kept as written; an older git reads each such character as a space.
+    #[test]
+    fn a_configuration_read_differently_by_release_is_read_as_the_newest_git_reads_it() {
+        type Entries = &'static [(&'static str, &'static [u8])];
+        let cases: &[(&str, Entries)] = &[
+            (
+                "[a.B]\nk = \"t\\tx\" y  z \nl = \"\" m\t n\n",
+                &[("a.b.k", b"t\tx y  z"), ("a.b.l", b"m\t n")],
+            ),
+            ("[s]\nk = a\rb\n", &[("s.k", b"a\rb")]),
+            ("[s]\nk = a\t\\\n\tb\n", &[("s.k", b"a\t\tb")]),
+        ];
+        for (text, entries) in cases {
+            let entries = entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), Some(value.to_vec())))
+                .collect();
+            assert_eq!(config_entries(text.as_bytes()), Some(entries), "{text:?}");
+        }
+    }
+
+    /// Each row: a configuration value that every git release from 2.43 on reads alike as a
+    /// boolean, and how git reads it, none where git refuses it: a word, or an integer in any base
+    /// git reads, with any unit, within git's range at either end. The installed git reads it so.
     #[test]
     fn a_boolean_is_read_as_git_reads_it() {
-        let cases: [(Option<&str>, Option<bool>); 24] = [
+        let cases: &[(Option<&str>, Option<bool>)] = &[
             (None, Some(true)),
             (Some(""), Some(false)),
             (Some("TRUE"), Some(true)),
@@ -1601,13 +1632,23 @@ mod tests {
             (Some("2147483647"), Some(true)),
             (Some("-2147483647"), Some(true)),
             (Some("2147483648"), None),
-            (Some("-2147483648"), None),
+            (Some("-2147483649"), None),
+            (Some("2097151k"), Some(true)),
+            (Some("-2097151k"), Some(true)),
+            (Some("2097152k"), None),
+            (Some("-2097153k"), None),
+            (Some("2047m"), Some(true)),
+            (Some("-2047m"), Some(true)),
+            (Some("2048m"), None),
+            (Some("-2049m"), None),
             (Some("1g"), Some(true)),
+            (Some("-1g"), Some(true)),
             (Some("2g"), None),
+            (Some("-3g"), None),
             (Some("+"), None),
             (Some("maybe"), None),
         ];
-        for (value, read) in cases {
+        for &(value, read) in cases {
             assert_eq!(git_bool(value.map(str::as_bytes)), read, "{value:?}");
             let dir = tempfile::tempdir().unwrap();
             let line = value.map_or("k".to_owned(), |value| format!("k = {value}"));
@@ -1618,6 +1659,28 @@ mod tests {
                 .success()
                 .then(|| String::from_utf8_lossy(&out.stdout).trim() == "true");
             assert_eq!(git, read, "git: {value:?}");
+        }
+    }
+
+    /// Each row: a value git releases read differently as an integer, and so as a boolean, and
+    /// the integer the newest release reads, which this reader follows. From git 2.50.0 an
+    /// integer reaches down to `i32::MIN`, however it is written; an older git refuses it.
+    #[test]
+    fn a_boolean_read_differently_by_release_is_read_as_the_newest_git_reads_it() {
+        let cases: &[(&str, i32)] = &[
+            ("-2147483648", i32::MIN),
+            ("-0x80000000", i32::MIN),
+            ("-2097152k", i32::MIN),
+            ("-2048M", i32::MIN),
+            ("-2g", i32::MIN),
+        ];
+        for &(value, read) in cases {
+            assert_eq!(git_int(value.as_bytes()), Some(read), "{value:?}");
+            assert_eq!(
+                git_bool(Some(value.as_bytes())),
+                Some(read != 0),
+                "{value:?}"
+            );
         }
     }
 

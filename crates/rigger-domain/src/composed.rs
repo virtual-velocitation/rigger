@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::code_facts::Tip;
 use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
+use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
@@ -28,6 +29,7 @@ use crate::contextgraph::{
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
 };
+use crate::groupings::computed_at;
 use crate::resolve::{ProofCall, INTENT_KINDS};
 use crate::test_view::{join_tests, TestAttachment};
 
@@ -470,9 +472,10 @@ pub struct Whole {
     concept_members: BTreeMap<String, Vec<String>>,
     concepts_of: BTreeMap<String, Vec<String>>,
     hidden_tests: Vec<Node>,
-    /// The view's groupings and, per arm, the tests attached to them.
+    /// The view's stored groupings with those of the grain read beside them, and, per grain and
+    /// arm, the tests attached to them.
     groupings: Groupings,
-    attachments: [TestAttachment; 2],
+    attachments: Vec<TestAttachment>,
     /// The proof calls read to attach the tests, kept while the filter hides tests.
     proofs: Vec<ProofCall>,
     /// The callers of the test calls to each leaf that land on a placeholder, in order, kept
@@ -481,16 +484,30 @@ pub struct Whole {
 }
 
 impl Whole {
-    /// `view` resolved whole under `filter`.
+    /// `view` resolved whole under `filter`, its stored groupings joined on.
+    #[cfg(test)]
     pub(crate) fn new(view: &dyn CodeView, filter: ViewFilter) -> Self {
-        let groupings = view.groupings();
+        Self::at(view, filter, DEFAULT_RESOLUTION)
+    }
+
+    /// `view` resolved whole under `filter`, its stored groupings joined on and, beside them, the
+    /// groupings at `resolution` when that is not the stored grain: computed from this view as
+    /// the grouping reports compute them ([`computed_at`]), and never stored.
+    pub(crate) fn at(view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Self {
+        let computed = computed_at(view, resolution);
+        let grains: Vec<&Groupings> = std::iter::once(view.groupings())
+            .chain(computed.as_ref())
+            .collect();
         let code_graph = CodeGraph::new(view, filter);
         let resolved = code_graph.resolved();
-        let attachments = attachments(code_graph.resolver().proof_calls(), groupings);
-        let code = Indexed::new(
-            joined(resolved.graph, groupings, &attachments, filter.tests),
-            Vec::new(),
-        );
+        let mut graph = resolved.graph;
+        let mut attached = Vec::new();
+        for grain in &grains {
+            let grain_attachments = attachments(code_graph.resolver().proof_calls(), grain);
+            graph = joined(graph, grain, &grain_attachments, filter.tests);
+            attached.extend(grain_attachments);
+        }
+        let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (leaf, caller) in resolved.placeholder_calls {
             placeholder_callers.entry(leaf).or_default().push(caller);
@@ -503,6 +520,13 @@ impl Whole {
             Tests::Exclude => code_graph.into_proof_calls(),
             Tests::Include | Tests::Only => Vec::new(),
         };
+        let mut groupings = Groupings::default();
+        for grain in grains {
+            groupings
+                .communities
+                .extend(grain.communities.iter().cloned());
+            groupings.concepts.extend(grain.concepts.iter().cloned());
+        }
         let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for c in &groupings.concepts {
@@ -519,8 +543,8 @@ impl Whole {
             concept_members,
             concepts_of,
             hidden_tests: resolved.hidden_tests,
-            groupings: groupings.clone(),
-            attachments,
+            groupings,
+            attachments: attached,
             proofs,
             placeholder_callers,
         }
@@ -689,9 +713,21 @@ impl<'r> Composed<'r> {
         filter: ViewFilter,
         honesty: Honesty,
     ) -> Result<Self, Error> {
+        Self::at(records, view, filter, honesty, DEFAULT_RESOLUTION)
+    }
+
+    /// [`Self::new`] with the groupings at `resolution` joined on beside the stored ones
+    /// ([`Whole::at`]): the graph a reader of one grain reads.
+    pub fn at(
+        records: &'r dyn Neighbors,
+        view: &dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+        resolution: f64,
+    ) -> Result<Self, Error> {
         Self::over(
             records,
-            Whole::new(view, filter),
+            Whole::at(view, filter, resolution),
             &view.stamp().tip,
             honesty,
         )

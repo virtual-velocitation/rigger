@@ -8,7 +8,7 @@ use crate::common::fixtures::two_subsystem_sources;
 use crate::layer_cli::LayerCli;
 
 /// The subcommand under test, grouping the two-subsystem sources.
-const COMMUNITIES: LayerCli = LayerCli {
+pub(crate) const COMMUNITIES: LayerCli = LayerCli {
     subcommand: "communities",
     empty_summary: "graph communities: 0 communities over 0 node(s) at resolution 1",
     #[cfg(feature = "symbols")]
