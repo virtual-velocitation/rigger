@@ -27328,6 +27328,29 @@ fn grep_guard_is_inert_outside_a_rigger_project_and_degrades_to_allow_on_malform
     );
 }
 
+/// `rigger grep-guard` judges a command from a subdirectory of a rigger project as it judges it
+/// at the project's root: the project governing the directory it runs in is the root's, so a bare
+/// source grep bounced at the root is bounced below it too.
+#[test]
+fn grep_guard_judges_a_command_below_the_project_root_as_at_the_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let sub = root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let payload = r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO ."}}"#;
+    let at_root = run_grep_guard(root, payload);
+    assert_eq!(
+        at_root["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a bare source grep is bounced at the root; got:\n{at_root}"
+    );
+    assert_eq!(
+        run_grep_guard(&sub, payload),
+        at_root,
+        "below the root the grep is judged as at the root"
+    );
+}
+
 /// `rigger grep-guard` denies the built-in `Grep` TOOL call for EVERY `path`
 /// (d-spec92-hook-no-target-axis: no target axis survives) end to end through the compiled
 /// binary - a tree the old rule guarded (`src/`), one it never covered (`docs/`), an omitted
