@@ -64,12 +64,12 @@ pub struct DomShim {
     /// The panel's `clientHeight`, beside a `clientWidth` of 800 and an 800x300 bounding box;
     /// `None` gives elements no size at all.
     pub panel_height: Option<u32>,
-    /// Whether the panel measures the drawing's slot: a `clientTop`, a `.kgsvg` slot at the top
-    /// of the room under the panel's 10px top padding and a one-line 24px toolbar, 776px wide
-    /// inside its 12px padding on each side (the drawing's surface, whose width the page draws
-    /// at, and which keeps no height the page sets on it while it measures), and the panel's 10px
-    /// bottom padding through `getComputedStyle`. So a 300px panel leaves the drawing 776 by
-    /// 256px, and a 320px one 776 by 276px.
+    /// Whether the panel measures the drawing's slot: a `clientTop`, a `scrollTop` of 0, a
+    /// `.kgsvg` slot at the top of the room under the panel's 10px top padding and a one-line 24px
+    /// toolbar, 776px wide inside its 12px padding on each side (the drawing's surface, whose width
+    /// the page draws at, and which keeps no height the page sets on it while it measures), and the
+    /// panel's 10px bottom padding through `getComputedStyle`. So a 300px panel leaves the drawing
+    /// 776 by 256px, and a 320px one 776 by 276px.
     pub slot: bool,
     /// Whether `setInterval` exists (as an inert timer, like `setTimeout`).
     pub interval: bool,
@@ -303,7 +303,7 @@ const setTimeout = function(){ return 0; };"#
             );
         }
         if self.slot {
-            el.push_str(" this.clientTop = 0;");
+            el.push_str(" this.clientTop = 0; this.scrollTop = 0;");
         }
         el.push_str(" }");
         el
