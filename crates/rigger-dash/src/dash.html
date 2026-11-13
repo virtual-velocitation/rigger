@@ -959,8 +959,8 @@ let kgViewData = null;
 // so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
 // view's frontier choice list, the candidates a clicked frontier node offers; the keys of the
 // rationale disclosures open in it (rememberDisclosures records them); and the grain being typed in
-// the derived lens's resolution box, until a change commits it (null while none is). A new view
-// (holdKgView given a new body) shows none of it.
+// the derived lens's resolution box, until a commit takes it (null while none is). A new view
+// (holdKgView given a new body) shows none of it but the grain being typed in a box holding the focus.
 function kgShownNone() { return { choices: [], open: new Set(), grain: null }; }
 let kgShown = kgShownNone();
 
@@ -1506,12 +1506,16 @@ let kgMode = "overview";
 
 // Record the view the panel now holds and its body (so a toggle re-renders it in place), drop what
 // the panel showed of a view it no longer holds and where the user moved it (a new view opens fitted),
-// and bring the header's tests state up to that view. Answers whether the body is a new one (a fresh
-// read) rather than the held one drawn again.
+// and bring the header's tests state up to that view. The text the user is typing in the grain box
+// holding the focus is the user's, not the view's: it stays in the box, and the view the reply
+// draws reads the grain last committed. Answers whether the body is a new one (a fresh read) rather
+// than the held one drawn again.
 function holdKgView(mode, body) {
   const fresh = body !== kgViewData;
   if (fresh) {
+    const typing = kgShown.grain !== null && kgGrainBoxFocused() ? kgShown.grain : null;
     kgShown = kgShownNone();
+    kgShown.grain = typing;
     kgViewMoved = false;
   }
   kgMode = mode;
@@ -1596,13 +1600,19 @@ function kgDraw(above, draw, below) {
 // in it, as a box the browser never replaced keeps them: the box the new markup writes takes them back.
 // The focus anywhere else, or a markup holding no grain box, is left as the write leaves it.
 function kgKeepingFocus(write) {
-  const panel = el("kgpanel"), held = panel.querySelector("[data-lens-res]");
-  const caret = held && held === document.activeElement ? [held.selectionStart, held.selectionEnd] : null;
+  const panel = el("kgpanel"), held = kgGrainBoxFocused();
+  const caret = held ? [held.selectionStart, held.selectionEnd] : null;
   write(panel);
   const box = caret && panel.querySelector("[data-lens-res]");
   if (!box) return;
   box.focus({ preventScroll: true });
   box.setSelectionRange(caret[0], caret[1]);
+}
+
+// The panel's grain box while it holds the focus, else null.
+function kgGrainBoxFocused() {
+  const box = el("kgpanel").querySelector("[data-lens-res]");
+  return box && box === document.activeElement ? box : null;
 }
 
 // Give the drawing's surface the box `dims` with its marks left where they were laid out: the svg takes
@@ -2311,9 +2321,11 @@ function renderKgOverview(ov) {
 // Commit the code-lens RESOLUTION grain (spec 53 c4) the grain box holds: a grain other than the one
 // the view reads re-loads the overview at it, and an empty text names no grain, so the server reads
 // its default and the reply names it. A text equal to the grain the view reads commits nothing, so
-// Enter and the change the browser fires with it read once.
+// Enter and the change the browser fires with it read once. Either way the text is no longer a draft:
+// the box shows the grain the view reads until more is typed.
 function commitGrain(text) {
   const grain = (text || "").trim();
+  kgShown.grain = null;
   if (grain === kgResolution) return;
   kgResolution = grain;
   loadKgOverview();
