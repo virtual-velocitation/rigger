@@ -271,16 +271,16 @@ fn init_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when `root` holds no workflow), returning the file names it
-/// newly wrote. An existing file is kept silently ([`write_if_absent`]), so a rerun writes
-/// nothing new and an operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent),
+/// returning the file names it newly wrote. An existing file is kept silently
+/// ([`write_if_absent`]), so a rerun writes nothing new and an operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // Load the workflow to determine which agents are referenced, then only scaffold those
     // agents. This allows setup to skip scaffolding when the workflow's referenced agents
-    // already exist (§05 setup hygiene). A genuine parse failure (most importantly an
+    // already exist (spec 05 setup hygiene). A genuine parse failure (most importantly an
     // unrecognized key) escalates as a real `Err` here - never `.unwrap_or_default()` -
     // because folding it into the empty set would treat a broken PRESENT workflow.yml the same
     // as a genuinely ABSENT one, below, and silently re-scaffold the full default fleet over
@@ -301,16 +301,16 @@ fn write_seed_agents(
 
     // If the workflow references agents, scaffold only those; a candidate whose id cannot be
     // parsed is skipped, never scaffolded invalid. If it references nothing, scaffold every
-    // candidate for backward compatibility (empty repo case) - reached only when
+    // candidate for backward compatibility (empty repo case) - reached when
     // `get_referenced_agent_ids` returned the empty set because workflow.yml is genuinely
-    // ABSENT, never because a present one failed to parse.
+    // ABSENT or names no agent, never because a present one failed to parse.
     let agents_dir = root.join(RIGGER_DIR).join("agents");
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
         let referenced = referenced_agents.is_empty()
             || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
-        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
         if referenced && write_if_absent(&agents_dir.join(&file), content)? {
             new_agents.push(file);
@@ -420,8 +420,9 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 }
 
 /// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
-/// empty set ONLY when the file is genuinely ABSENT (the legitimate empty-repo signal
-/// `init_project` seeds the full default fleet on); a PRESENT-but-unparseable file - most
+/// empty set when the file is genuinely ABSENT (the legitimate empty-repo signal
+/// `init_project` seeds the full default fleet on) or parses but names no agent (its stages
+/// and `defaults.review` are optional); a PRESENT-but-unparseable file - most
 /// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
 /// same empty set. Routed through [`config_store::load_workflow`], the one canonical
 /// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
@@ -3486,7 +3487,7 @@ mod tests {
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id a scaffolded workflow references, identical for every rendering.
+        // Every agent id a scaffolded workflow references.
         let referenced_by = |workflow: &str| -> BTreeSet<String> {
             let wf: config::Workflow =
                 serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
