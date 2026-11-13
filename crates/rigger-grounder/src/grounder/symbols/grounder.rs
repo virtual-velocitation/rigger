@@ -735,7 +735,7 @@ impl Grounder for Symbols {
     /// whole `safe` ordering reproducible across processes, which is what unit 3 needs to hash the
     /// seed-file list into a stable `BlastRadiusComputed` audit event. A query naming no code -
     /// empty, prose only, a single character (ASCII or multibyte) or all punctuation - returns
-    /// empty views (the empty-radius fail-safe the scheduler runs alone and unit 3 routes to the
+    /// empty views (the empty-radius fail-safe the partition runs alone and unit 3 routes to the
     /// full panel) WITHOUT running a whole-repo grep, never a partial or a panic. It is
     /// [`Self::blast_radius_stamped`]'s radius: one read gives both. A query WITH code
     /// terms that simply matches nothing is ALSO empty, but that case does run the uncapped search
@@ -772,7 +772,7 @@ impl Grounder for Symbols {
             let seed = self.seed_in(sight, worktree, query, k);
             // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
             // (an empty query, prose only, a single character, all punctuation) grounds to the
-            // empty radius - empty precise and empty safe - which the scheduler runs alone and
+            // empty radius - empty precise and empty safe - which the partition runs alone and
             // unit 3 routes to the full, unpartitioned panel.
             let radius = if terms.is_empty() {
                 BlastRadius::default()

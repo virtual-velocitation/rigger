@@ -2099,12 +2099,13 @@ graph - is a reject.\n\
 re-litigate; an undecided disposition is a reject.\n\
 \n\
 NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
-`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
-the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
-on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
-merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
-a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
-concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+Overlapping units run in SEPARATE sequential batches (each branches off the prior batch's\n\
+integrated tree) only where the workflow declares `partition: by-blast-radius` for both;\n\
+otherwise they run side by side unless one `needs` the other. Either way per-unit worktree\n\
+isolation keeps every reviewer on its own diff, so overlap reviews independently. Do NOT\n\
+reject merely because two units touch the same file. Reject a shared-file split ONLY when\n\
+it is a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap.\n\
 \n\
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
@@ -2160,12 +2161,13 @@ graph - is a reject.\n\
 re-litigate; an undecided disposition is a reject.\n\
 \n\
 NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
-`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
-the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
-on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
-merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
-a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
-concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+Overlapping units run in SEPARATE sequential batches (each branches off the prior batch's\n\
+integrated tree) only where the workflow declares `partition: by-blast-radius` for both;\n\
+otherwise they run side by side unless one `needs` the other. Either way per-unit worktree\n\
+isolation keeps every reviewer on its own diff, so overlap reviews independently. Do NOT\n\
+reject merely because two units touch the same file. Reject a shared-file split ONLY when\n\
+it is a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap.\n\
 \n\
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\

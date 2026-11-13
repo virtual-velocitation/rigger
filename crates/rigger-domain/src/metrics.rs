@@ -326,7 +326,8 @@ pub struct Metrics {
     /// (each unit's latest recorded radius), so a reading states its own denominator.
     pub grounded_units: u64,
     /// How many of those [`grounded_units`](Metrics::grounded_units) have an EMPTY radius - a
-    /// criterion naming no code, which runs alone and so lowers the retention by construction.
+    /// criterion naming no code, which the partition runs alone, so it lowers the retention by
+    /// construction.
     pub empty_radii: u64,
     /// Per-agent wall-clock duration aggregates (spec 61, SPAWN TIMING), keyed by the spawn's
     /// ROLE token ([`spawn_role`], e.g. `"implementer"`, `"adversary"`, `"lens:sdet"`) - the SAME

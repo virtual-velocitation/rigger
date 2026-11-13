@@ -48,8 +48,8 @@ use rigger_domain::review::{
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
-    fan_out_lenses, first_stage_named, is_check_in, is_fan_out, is_fan_out_template, is_producer,
-    wave_ready,
+    fan_out_lenses, first_stage_named, inherited_shape, is_check_in, is_fan_out,
+    is_fan_out_template, is_producer, wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
@@ -4870,10 +4870,10 @@ impl RunCtx<'_> {
     /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
     /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
     /// at run start (see `run`'s own seed), so a crash-resumed process counts a spawn still in
-    /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): when a
-    /// grounder is present and `partition: by-blast-radius` is requested, a stage is admitted
-    /// only while its safe radius conflicts with no unit in flight ([`radii_conflict`]: a
-    /// shared file, or an empty radius), so two overlapping units never run at once.
+    /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): a stage
+    /// is admitted only while its safe radius conflicts with no unit in flight that the partition
+    /// [holds it apart from](Self::partition_holds_apart) ([`radii_conflict`]: a shared file, or
+    /// an empty radius), so two overlapping units the rule is in force for never run at once.
     fn run_wave(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -4894,7 +4894,9 @@ impl RunCtx<'_> {
         std::thread::scope(|s| loop {
             let mut i = 0;
             while i < waiting.len() {
-                if !admissible(&waiting[i], width, &running, in_flight, radii.as_ref()) {
+                if !admissible(&waiting[i], width, &running, in_flight, &radii, |a, b| {
+                    self.partition_holds_apart(stages, a, b)
+                }) {
                     i += 1;
                     continue;
                 }
@@ -5086,9 +5088,9 @@ impl RunCtx<'_> {
 
     /// The SAFE-SUPERSET radius (spec 16 unit 3) of each ready stage AND each unit already in
     /// flight - one parked in an earlier wave still runs off-process, so a ready unit is compared
-    /// with it too - for the wave's co-scheduling rule, or `None` when the rule does not apply - no
-    /// grounder, or no ready stage requests `partition: by-blast-radius` - so every stage is free
-    /// to pair. The radius is the RECORDED
+    /// with it too - that the wave's co-scheduling rule is [in force for](Self::partition_applies).
+    /// A unit the rule is not in force for gets no radius here, so a radius recorded before a
+    /// unit starts says the rule holds for that unit. The radius is the RECORDED
     /// one: the unit's latest `BlastRadiusComputed` in this run, the same radius the retention
     /// metric reads and a crash-resumed driver re-reads, so the live decision and the log agree.
     /// A unit with no recorded radius yet has its [`grounded_blast_radius`](Self::grounded_blast_radius)
@@ -5102,8 +5104,13 @@ impl RunCtx<'_> {
         ready: &[String],
         in_flight: &HashSet<String>,
     ) -> Result<WaveRadii, Error> {
-        if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
-            return Ok(None);
+        let mut held = ready
+            .iter()
+            .chain(in_flight)
+            .filter(|name| self.partition_applies(stages, name))
+            .peekable();
+        if held.peek().is_none() {
+            return Ok(HashMap::new());
         }
         let mut recorded: HashMap<String, Vec<String>> = self
             .read_current_run()?
@@ -5111,7 +5118,7 @@ impl RunCtx<'_> {
             .filter_map(crate::metrics::recorded_radius)
             .collect();
         let mut radii = HashMap::new();
-        for name in ready.iter().chain(in_flight) {
+        for name in held {
             if radii.contains_key(name) {
                 continue;
             }
@@ -5126,22 +5133,36 @@ impl RunCtx<'_> {
             };
             radii.insert(name.clone(), safe);
         }
-        Ok(Some(radii))
+        Ok(radii)
     }
 
-    /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): a
-    /// ready stage sets `partition == "by-blast-radius"`, or `defaults.partition`
-    /// does (the stage value, when set, otherwise the default).
-    fn partition_requested(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> bool {
-        let by_blast = |p: &str| p.eq_ignore_ascii_case("by-blast-radius");
-        ready.iter().any(|name| {
-            let st = &stages[name];
-            if !st.partition.is_empty() {
-                by_blast(&st.partition)
-            } else {
-                by_blast(&self.cfg.workflow.defaults.partition)
-            }
-        })
+    /// Whether the co-scheduling rule holds units `a` and `b` apart when their radii conflict
+    /// (§3.2, §8): it is [in force](Self::partition_applies) for both. Admission, a landing's
+    /// joiners and the plan critique's overlap header all ask this one question, so a unit the
+    /// rule is not in force for is never held back by it and never holds another back.
+    fn partition_holds_apart(&self, stages: &BTreeMap<String, Stage>, a: &str, b: &str) -> bool {
+        self.partition_applies(stages, a) && self.partition_applies(stages, b)
+    }
+
+    /// Whether the co-scheduling rule is in force for unit `name`: a grounder computes radii,
+    /// and its stage [asks for it](Self::partitions_by_blast). A unit in flight that is no stage
+    /// of this workflow is held to the rule, since nothing says it does not ask (fail-safe).
+    fn partition_applies(&self, stages: &BTreeMap<String, Stage>, name: &str) -> bool {
+        self.deps.grounder.is_some()
+            && stages
+                .get(name)
+                .is_none_or(|st| self.partitions_by_blast(st))
+    }
+
+    /// Whether `st` asks for by-blast-radius partitioning: its own `partition` when set,
+    /// otherwise `defaults.partition`, is `by-blast-radius`.
+    fn partitions_by_blast(&self, st: &Stage) -> bool {
+        let partition = if st.partition.is_empty() {
+            &self.cfg.workflow.defaults.partition
+        } else {
+            &st.partition
+        };
+        partition.eq_ignore_ascii_case("by-blast-radius")
     }
 
     fn start_and_run_stage(&self, name: &str, st: &Stage) -> Result<bool, Error> {
@@ -9249,18 +9270,23 @@ impl RunCtx<'_> {
             }
             // ...then the critique.
             // Ground each not-yet-run unit and surface the pairs that share a blast radius
-            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. A shared
-            // blast radius is safely serialized by `partition: by-blast-radius` (disjoint
-            // sequential batches, each off the prior's integrated tree) and reviewed under
+            // as INFORMATIONAL context for the reviewers - NOT a reject trigger. Overlapping
+            // units run one after the other only when `partition: by-blast-radius` is in
+            // force for both, and the overlap header says whether it is; otherwise they run
+            // side by side unless one `needs` the other. Either way each is reviewed under
             // per-unit worktree isolation, so mechanical overlap is not a defect; the gate
-            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which the
-            // partitioner does not address and per-unit review cannot see.
+            // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which
+            // per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
             let conflicts = blast_radius_conflicts(&radii);
+            let serialized = conflicts
+                .iter()
+                .all(|(a, other, _)| self.partition_holds_apart(stages, a, other));
             let prompt = build_dag_critique_prompt(
                 stages,
                 &radii,
                 &conflicts,
+                serialized,
                 &prior_reason,
                 self.declared_unit_size_cap(),
             );
@@ -11797,15 +11823,7 @@ impl RunCtx<'_> {
     /// is removed from the live `stages` once expanded). The planner is told this id so
     /// its refinements assign the same implementer. Empty when there is no template.
     fn implementer_agent(&self) -> String {
-        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
-            .and_then(|name| {
-                self.cfg
-                    .workflow
-                    .stages
-                    .get(&name)
-                    .map(|st| st.agent.clone())
-            })
-            .unwrap_or_default()
+        self.template_shape().agent
     }
 
     /// The planner's refine protocol, with the run's acceptance criteria, the implementer agent id
@@ -12854,20 +12872,19 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
-    /// The fan-out implement template's gate list, read from the ORIGINAL workflow
-    /// definition (`self.cfg.workflow.stages`, mirroring [`implementer_agent`]'s
-    /// rationale: the template itself is removed from the live runtime `stages` once
-    /// expanded into per-criterion baseline units, so the pinned static definition is
-    /// the only place left carrying it). GATE INHERITANCE (spec 103, decided): this is
-    /// THE base list [`harvest_proposed`] unions every proposal's own named gates onto,
-    /// never the reverse. Re-derived fresh from `self.cfg` on every call (never cached
-    /// on `self` or on a `Stage`), so a resumed window's fresh `RunCtx` reaches the
-    /// identical list a live window already recorded. Empty when the workflow has no
-    /// fan-out template.
-    fn template_gates(&self) -> Vec<String> {
+    /// The fan-out implement template's [`inherited_shape`], read from the ORIGINAL workflow
+    /// definition (`self.cfg.workflow.stages`): the template itself is removed from the live
+    /// runtime `stages` once expanded into per-criterion baseline units, so the pinned static
+    /// definition is the only place left carrying it. Every unit [`harvest_proposed`] adds starts
+    /// from it, as every baseline does; GATE INHERITANCE (spec 103, decided) makes its gate list
+    /// THE base a proposal's own named gates are unioned onto, never the reverse. Re-derived
+    /// fresh from `self.cfg` on every call (never cached on `self` or on a `Stage`), so a resumed
+    /// window's fresh `RunCtx` reaches the identical shape a live window already recorded. The
+    /// empty stage when the workflow has no fan-out template.
+    fn template_shape(&self) -> Stage {
         first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| self.cfg.workflow.stages.get(&name))
-            .map(|st| st.gates.clone())
+            .map(inherited_shape)
             .unwrap_or_default()
     }
 
@@ -12882,13 +12899,13 @@ impl RunCtx<'_> {
         // Every run's lifecycle events, read once, at the first added stage that serves a
         // criterion ([`RunCtx::land_if_landed`]).
         let mut lifecycle = None;
-        // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
-        // base every proposed unit's stage carries below - a proposal's own `gates`
-        // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
-        // proposal can ADD a gate but never remove one the template already runs.
-        // Computed once per call (like `gate` just below): a proposal's coverage never
-        // changes which fan-out it belongs to within one harvest pass.
-        let template_gates = self.template_gates();
+        // The fan-out template's inherited shape, the base every proposed unit's stage
+        // carries below, as every baseline does. GATE INHERITANCE (spec 103, decided): a
+        // proposal's own `gates` field is accepted for compatibility and UNIONED in
+        // ([`union_gates`]), so a proposal can ADD a gate but never remove one the template
+        // already runs. Computed once per call (like `gate` just below): a proposal's
+        // coverage never changes which fan-out it belongs to within one harvest pass.
+        let template = self.template_shape();
         // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
         // releases, if the workflow wires one. Computed once over the static gate stage
         // (always present) so it is stable as the loop mutates `stages`; None when no
@@ -13056,7 +13073,7 @@ impl RunCtx<'_> {
                         // never overwritten, never dropped. `existing.gates` already
                         // carries the template's list (stamped by the add path below on
                         // this unit's FIRST proposal), so unioning onto IT rather than
-                        // a freshly-read `template_gates` preserves every earlier
+                        // a freshly-read template gate list preserves every earlier
                         // proposal's additions as well - monotonic growth only.
                         existing.gates = union_gates(&existing.gates, &u.gates);
                         // spec 72 round-2 REJECT fix (sdet-c1-refine-branch-never-
@@ -13291,14 +13308,16 @@ impl RunCtx<'_> {
                     // that supersedes a baseline (`resolved_criterion_id` set above)
                     // and a genuinely-new unmatched sub-unit (left empty) - unioned
                     // with any the proposal itself names, never overwritten by them.
-                    gates: union_gates(&template_gates, &u.gates),
+                    gates: union_gates(&template.gates, &u.gates),
                     criterion_id: resolved_criterion_id,
                     // Record the episode that proposed this stage (spec 72), so a LATER
                     // episode's own supersede scan can compare against it - the read half
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
                     unmatched_fanout_proposal,
-                    ..Default::default()
+                    // The rest of the template's inherited shape (its `on_pass` and
+                    // `partition`), on both branches, as a baseline carries it.
+                    ..template.clone()
                 },
             );
             // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of
@@ -13596,7 +13615,9 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 /// output contract, never the method, which stands in each reviewer's persona. It names
 /// those decomposition rules, states the unit size cap the workflow declares, `cap`, if any
 /// ([`unit_size_cap_then`]), lists the proposed unit DAG and the deterministic rule-6
-/// blast-radius analysis, and closes with the verdict paragraph, whose cause contract tells a
+/// blast-radius analysis, whose overlap header says the overlapping units are serialized only
+/// when `serialized` (the partition rule is in force for each of them) and otherwise that they
+/// run side by side unless one `needs` the other, and closes with the verdict paragraph, whose cause contract tells a
 /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
 /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
 /// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
@@ -13608,6 +13629,7 @@ fn build_dag_critique_prompt(
     stages: &BTreeMap<String, Stage>,
     radii: &[(String, Vec<String>)],
     conflicts: &[(String, String, Vec<String>)],
+    serialized: bool,
     prior_reason: &str,
     cap: Option<u32>,
 ) -> String {
@@ -13651,7 +13673,11 @@ fn build_dag_critique_prompt(
     if conflicts.is_empty() {
         b.push_str(DAG_OVERLAP_DISJOINT);
     } else {
-        b.push_str(DAG_OVERLAP_HEADER);
+        b.push_str(if serialized {
+            DAG_OVERLAP_HEADER
+        } else {
+            DAG_OVERLAP_UNSERIALIZED_HEADER
+        });
         for (a, other, shared) in conflicts {
             b.push_str(&fill(
                 DAG_OVERLAP_ROW,
@@ -15387,9 +15413,9 @@ pub use crate::metrics::partition_by_blast_radius;
 
 pub use crate::metrics::radii_conflict;
 
-/// Each stage's safe radius for a wave's co-scheduling rule, or `None` when the rule does not
-/// apply ([`RunCtx::wave_radii`]).
-type WaveRadii = Option<HashMap<String, Vec<String>>>;
+/// The safe radius of each unit a wave's co-scheduling rule is in force for
+/// ([`RunCtx::wave_radii`]).
+type WaveRadii = HashMap<String, Vec<String>>;
 
 /// The rule that says which stages may run next: the plan-critique gate no wave schedules and
 /// the fan-out tables [`wave_ready`] and [`assert_no_ungated_fanout_unit`] read. The run loop
@@ -15432,16 +15458,18 @@ impl Frontier<'_> {
 /// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
 /// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
 /// (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
-/// under `width` (`0` = unbounded) AND, when `radii` is present, its radius conflicts with no
-/// unit in flight - every one, including a unit parked in an earlier wave, and one with no
-/// radius counts as conflicting. An in-flight unit that already holds its slot is admitted
-/// without the check, since it started under it.
+/// under `width` (`0` = unbounded) AND its radius conflicts with no unit in flight that
+/// `holds_apart` says the partition holds it apart from - every such one, including a unit
+/// parked in an earlier wave, and one with no radius in `radii` counts as conflicting. An
+/// in-flight unit that already holds its slot is admitted without the check, since it started
+/// under it.
 fn admissible(
     name: &str,
     width: usize,
     running: &HashSet<String>,
     in_flight: &HashSet<String>,
-    radii: Option<&HashMap<String, Vec<String>>>,
+    radii: &WaveRadii,
+    holds_apart: impl Fn(&str, &str) -> bool,
 ) -> bool {
     if running.len() >= MAX_CONCURRENCY {
         return false;
@@ -15452,12 +15480,11 @@ fn admissible(
     if width != 0 && in_flight.len() >= width {
         return false;
     }
-    radii.is_none_or(|radii| {
-        in_flight.iter().all(|other| {
-            radii
+    in_flight.iter().all(|other| {
+        !holds_apart(name, other)
+            || radii
                 .get(other)
                 .is_some_and(|other| !radii_conflict(&radii[name], other))
-        })
     })
 }
 
@@ -20784,6 +20811,49 @@ mod tests {
              unioned with its own named gate; got {:?}",
             stages["u-new"].gates
         );
+    }
+
+    /// Every proposed unit takes its fan-out template's `partition` and `on_pass`, as the baseline
+    /// it supersedes does, on each path a proposal reaches the DAG: superseding a baseline (u-a),
+    /// a same-id refine (u-a re-emitted) and a genuinely-new unmatched sub-unit (u-new).
+    #[test]
+    fn harvest_proposed_gives_every_proposed_unit_its_templates_partition_and_on_pass() {
+        let crit_a = "criterion A: the alpha module is implemented";
+        let mut cfg = supersede_cfg(); // template "implement" carries on_pass: merge
+        cfg.workflow.stages.get_mut("implement").unwrap().partition = "by-blast-radius".into();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+        // (proposals appended before the harvest, as (id, matched), the units then checked)
+        type Step<'a> = (&'a [(&'a str, bool)], &'a [&'a str]);
+        let steps: &[Step] = &[
+            (&[("u-a", true)], &["u-a"]),
+            (&[("u-a", true), ("u-new", false)], &["u-a", "u-new"]),
+        ];
+        for (proposals, checked) in steps {
+            for &(id, matched) in *proposals {
+                let (criterion, cid) = if matched {
+                    (crit_a, Some(criterion_stable_id(1, crit_a)))
+                } else {
+                    ("an entirely separate concern the spec never lists", None)
+                };
+                append_gated_proposal(&st, id, criterion, cid, "ok");
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+                .unwrap();
+            for id in *checked {
+                let unit = &stages[*id];
+                assert_eq!(
+                    (unit.partition.as_str(), unit.on_pass.as_str()),
+                    ("by-blast-radius", "merge"),
+                    "{id} must carry its template's partition and on_pass after {proposals:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -42427,12 +42497,26 @@ mod tests {
         recorded: &[(&str, &[&str])],
         parked: &[&str],
     ) -> HashSet<String> {
+        let units: Vec<(&str, &str)> = names.iter().map(|n| (*n, "by-blast-radius")).collect();
+        probe_wave(width, &units, grounder, probe, recorded, parked).0
+    }
+
+    /// [`probe_one_wave`] over `units`, each `(name, partition)` declaring its own `partition`;
+    /// returns the stages the call integrated and the log the wave wrote.
+    fn probe_wave(
+        width: u32,
+        units: &[(&str, &str)],
+        grounder: &dyn Grounder,
+        probe: &OverlapProbe,
+        recorded: &[(&str, &[&str])],
+        parked: &[&str],
+    ) -> (HashSet<String>, Vec<Event>) {
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = width;
         let scratch = tempfile::tempdir().unwrap();
         cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        for name in names {
+        for (name, partition) in units {
             cfg.agents.insert(name.to_string(), agent(name));
             cfg.workflow.stages.insert(
                 name.to_string(),
@@ -42441,12 +42525,26 @@ mod tests {
                     agent: name.to_string(),
                     coverage: name.to_string(),
                     gates: vec!["ok".into()],
-                    partition: "by-blast-radius".into(),
+                    partition: partition.to_string(),
                     ..Default::default()
                 },
             );
         }
         let store = Store::open(":memory:").unwrap();
+        record_radii(&store, recorded);
+        let deps = Deps {
+            grounder: Some(grounder),
+            ..stub_deps(&store, probe, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let ready: Vec<String> = units.iter().map(|(n, _)| n.to_string()).collect();
+        let integrated = drive_one_wave(&ctx, &cfg.workflow.stages, &ready, parked);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        (integrated, events)
+    }
+
+    /// Append a `BlastRadiusComputed` to `store` for each `recorded` `(unit, safe files)`.
+    fn record_radii(store: &Store, recorded: &[(&str, &[&str])]) {
         for (unit, safe) in recorded {
             let payload = json!({ "id": unit, "unit": unit, "precise": [], "safe": safe });
             let e = Event::new(
@@ -42455,18 +42553,21 @@ mod tests {
             );
             store.append(STREAM, ExpectedRevision::Any, &[e]).unwrap();
         }
-        let deps = Deps {
-            grounder: Some(grounder),
-            ..stub_deps(&store, probe, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let stages = cfg.workflow.stages.clone();
-        let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    }
+
+    /// Drive ONE `run_wave` call under `ctx` over the `ready` units of `stages`, with the units
+    /// `parked` already in flight from an earlier wave; returns the stages the call integrated.
+    fn drive_one_wave(
+        ctx: &RunCtx<'_>,
+        stages: &BTreeMap<String, Stage>,
+        ready: &[String],
+        parked: &[&str],
+    ) -> HashSet<String> {
         let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
         let mut in_flight: HashSet<String> = parked.iter().map(|p| p.to_string()).collect();
         ctx.run_wave(
-            &stages,
-            &ready,
+            stages,
+            ready,
             None,
             &mut integrated,
             &mut terminal,
@@ -42474,6 +42575,97 @@ mod tests {
         )
         .unwrap();
         integrated
+    }
+
+    /// A planner-proposed unit is scheduled under the partition its fan-out template declares,
+    /// as the baseline it supersedes would be: over a wave of proposed units only, whose recorded
+    /// radii share a file, the rule is in force exactly when the template's partition (else
+    /// `defaults.partition`) is `by-blast-radius`, and then the two units never run side by side.
+    #[test]
+    fn run_wave_schedules_proposed_units_under_their_templates_partition() {
+        let (crit_a, crit_b) = (
+            "criterion A: the alpha module is implemented",
+            "criterion B: the beta module is implemented",
+        );
+        // (template partition, defaults.partition, rule in force, peak, why)
+        let rows: &[(&str, &str, bool, usize, &str)] = &[
+            (
+                "by-blast-radius",
+                "",
+                true,
+                1,
+                "a template asking for the rule keeps overlapping proposed units apart",
+            ),
+            (
+                "",
+                "",
+                false,
+                2,
+                "with no partition anywhere, overlapping proposed units run side by side",
+            ),
+            (
+                "",
+                "by-blast-radius",
+                true,
+                1,
+                "a template naming no partition leaves its proposed units under the default",
+            ),
+            (
+                "none",
+                "by-blast-radius",
+                false,
+                2,
+                "the template's own partition overrides the default for its proposed units",
+            ),
+        ];
+        for &(template_partition, default_partition, in_force, peak, why) in rows {
+            let mut cfg = supersede_cfg();
+            let scratch = tempfile::tempdir().unwrap();
+            cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.defaults.partition = default_partition.into();
+            cfg.workflow.stages.get_mut("implement").unwrap().partition = template_partition.into();
+            let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+            let mut stages = cfg.workflow.stages.clone();
+            let template = stages.remove("implement").unwrap();
+            stages.extend(baseline_units(&template, &criteria, Some("plan")));
+            let store = Store::open(":memory:").unwrap();
+            append_proposal(&store, "u-a", crit_a, &criterion_stable_id(1, crit_a), None);
+            append_proposal(&store, "u-b", crit_b, &criterion_stable_id(2, crit_b), None);
+            record_radii(&store, &[("u-a", &["shared.rs"]), ("u-b", &["shared.rs"])]);
+            // Side-by-side units meet inside the probe, so their overlap never rests on timing.
+            let probe = if peak == 2 {
+                OverlapProbe::meeting(2)
+            } else {
+                OverlapProbe::new(&[])
+            };
+            let grounder = stub_radii(&[]);
+            let deps = Deps {
+                grounder: Some(&grounder),
+                ..stub_deps(&store, &probe, criteria)
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.harvest_proposed(
+                &mut stages,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            )
+            .unwrap();
+            let ready = vec!["u-a".to_string(), "u-b".to_string()];
+            assert!(
+                !stages.values().any(|st| st.baseline),
+                "both proposals supersede their baselines, so the wave is proposed units only"
+            );
+            assert_eq!(
+                ctx.partition_holds_apart(&stages, "u-a", "u-b"),
+                in_force,
+                "{why}"
+            );
+            let integrated = drive_one_wave(&ctx, &stages, &ready, &[]);
+            assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+            assert_eq!(probe.peak(), peak, "{why}");
+        }
     }
 
     /// Units whose criteria each name a HUB symbol - a name referenced across many files - still
@@ -42604,6 +42796,249 @@ mod tests {
             HashSet::from(["u_b".to_string()]),
             "u_a shares x.rs with the parked unit and waits; the disjoint u_b runs"
         );
+    }
+
+    /// The one question admission, a landing's joiners and the plan critique's overlap header
+    /// ask: the partition holds two units apart only when it is in force for both - a grounder
+    /// computes radii, and each unit's stage asks for `partition: by-blast-radius`, a unit that is
+    /// no stage of the workflow being held to the rule.
+    #[test]
+    fn the_partition_holds_two_units_apart_only_when_it_is_in_force_for_both() {
+        // (grounder present, a's partition, b's partition or None for no stage, held, why)
+        let rows = [
+            (
+                true,
+                "by-blast-radius",
+                Some("by-blast-radius"),
+                true,
+                "both ask",
+            ),
+            (true, "by-blast-radius", Some(""), false, "b does not ask"),
+            (true, "", Some("by-blast-radius"), false, "a does not ask"),
+            (
+                true,
+                "by-blast-radius",
+                None,
+                true,
+                "b is no stage, so it is held to the rule",
+            ),
+            (
+                true,
+                "",
+                None,
+                false,
+                "a does not ask beside a unit that is no stage",
+            ),
+            (
+                false,
+                "by-blast-radius",
+                Some("by-blast-radius"),
+                false,
+                "with no grounder the rule is in force for neither",
+            ),
+        ];
+        let grounder = stub_radii(&[]);
+        for (grounded, a, b, held, why) in rows {
+            let mut cfg = Config::default();
+            for (name, partition) in [("a", Some(a)), ("b", b)] {
+                if let Some(partition) = partition {
+                    cfg.workflow.stages.insert(
+                        name.into(),
+                        Stage {
+                            name: name.into(),
+                            partition: partition.into(),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                grounder: grounded.then_some(&grounder as &dyn Grounder),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            assert_eq!(
+                ctx.partition_holds_apart(&cfg.workflow.stages, "a", "b"),
+                held,
+                "{why}"
+            );
+        }
+    }
+
+    /// The partition holds two units apart only when it is in force for BOTH: units whose radii
+    /// share a file run one after the other when each declares `partition: by-blast-radius`, and
+    /// side by side when either does not - a unit that does not ask is never held back by the
+    /// rule and never holds another back, whichever of the two is in flight first.
+    #[test]
+    fn run_wave_holds_overlapping_units_apart_only_when_both_ask_for_the_partition() {
+        // (u_a's partition, u_b's partition, peak, why); u_a is admitted first.
+        let rows = [
+            (
+                "by-blast-radius",
+                "by-blast-radius",
+                1,
+                "two units that ask and share a file run one after the other",
+            ),
+            (
+                "by-blast-radius",
+                "",
+                2,
+                "a unit that does not ask starts beside an asker in flight sharing its file",
+            ),
+            (
+                "",
+                "by-blast-radius",
+                2,
+                "an asker starts beside a unit in flight that does not ask, sharing its file",
+            ),
+            (
+                "",
+                "",
+                2,
+                "units that do not ask run side by side whatever they share",
+            ),
+        ];
+        for (a, b, peak, why) in rows {
+            // Side-by-side units meet inside the probe, so their overlap never rests on timing.
+            let probe = if peak == 2 {
+                OverlapProbe::meeting(2)
+            } else {
+                OverlapProbe::new(&[])
+            };
+            let grounder = stub_radii(&[("u_a", &["x.rs"]), ("u_b", &["x.rs"])]);
+            let (integrated, _) =
+                probe_wave(2, &[("u_a", a), ("u_b", b)], &grounder, &probe, &[], &[]);
+            assert_eq!(integrated.len(), 2, "{why}: both integrate: {integrated:?}");
+            assert_eq!(probe.peak(), peak, "{why}");
+        }
+    }
+
+    /// A unit parked in an earlier wave holds back only a ready unit the rule is in force for:
+    /// the parked unit, no stage of this workflow and so held to the rule, shares `x.rs` with
+    /// both ready units; the one that asks for `partition: by-blast-radius` waits, and the one
+    /// that does not starts.
+    #[test]
+    fn run_wave_holds_only_an_asking_ready_unit_apart_from_an_overlapping_parked_unit() {
+        let probe = OverlapProbe::new(&[]);
+        let grounder = stub_radii(&[("u_a", &["x.rs"]), ("u_b", &["x.rs"])]);
+        let (integrated, _) = probe_wave(
+            3,
+            &[("u_a", "by-blast-radius"), ("u_b", "")],
+            &grounder,
+            &probe,
+            &[("parked", &["x.rs"])],
+            &["parked"],
+        );
+        assert_eq!(
+            integrated,
+            HashSet::from(["u_b".to_string()]),
+            "u_a asks and shares x.rs with the parked unit, so it waits; u_b does not ask and runs"
+        );
+    }
+
+    /// The radius a wave records before a unit starts says the rule is in force for that unit:
+    /// under a grounder that records radii, the unit that asks for `partition: by-blast-radius`
+    /// has its `BlastRadiusComputed` written before its `UnitStarted`, while the unit beside it
+    /// that does not ask gets no radius before it starts.
+    #[test]
+    fn run_wave_records_a_radius_before_start_only_for_a_unit_that_asks() {
+        let probe = OverlapProbe::new(&[("u_a", 50), ("u_b", 50)]);
+        let grounder = StructuralStubGrounder {
+            stamp: "idxhash/ts-tags-v1".to_string(),
+            ..stub_radii(&[("u_a", &["a.rs"]), ("u_b", &["b.rs"])])
+        };
+        let (integrated, events) = probe_wave(
+            2,
+            &[("u_a", "by-blast-radius"), ("u_b", "")],
+            &grounder,
+            &probe,
+            &[],
+            &[],
+        );
+        assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+        let first = |type_: &str, unit: &str| {
+            events.iter().position(|e| {
+                e.type_ == type_ && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+        };
+        for (unit, before_start, why) in [
+            (
+                "u_a",
+                true,
+                "u_a asks, so its radius is recorded before it starts",
+            ),
+            (
+                "u_b",
+                false,
+                "u_b does not ask, so no radius is recorded before it starts",
+            ),
+        ] {
+            let started = first(ledger::TYPE_UNIT_STARTED, unit).expect("the unit started");
+            assert_eq!(
+                first(TYPE_BLAST_RADIUS_COMPUTED, unit).is_some_and(|radius| radius < started),
+                before_start,
+                "{why}"
+            );
+        }
+    }
+
+    /// A stage a landing makes ready waits for an overlapping unit in flight only when the rule
+    /// is in force for both: `a` (fast) and `b` (slow, asking for `partition: by-blast-radius`)
+    /// start side by side, and `c` needs `a` and shares `b`'s file. When `c` does not ask, `a`
+    /// landing lets `c` start while `b` still runs; when `c` asks too, it waits for `b`. Driven
+    /// through `run`, the wave loop `rigger run` drives.
+    #[test]
+    fn a_stage_a_landing_makes_ready_waits_for_an_overlapping_unit_only_when_both_ask() {
+        // (c's partition, whether c starts before b ends)
+        for (c_partition, starts_before_b_ends) in [("", true), ("by-blast-radius", false)] {
+            let probe = OverlapProbe::new(&[("a", 50), ("b", 1500), ("c", 50)]);
+            let mut cfg = Config::default();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+            for (name, needs, partition) in [
+                ("a", None, ""),
+                ("b", None, "by-blast-radius"),
+                ("c", Some("a"), c_partition),
+            ] {
+                cfg.agents.insert(name.into(), agent(name));
+                cfg.workflow.stages.insert(
+                    name.into(),
+                    Stage {
+                        name: name.into(),
+                        agent: name.into(),
+                        coverage: name.into(),
+                        needs: needs.into_iter().map(String::from).collect(),
+                        gates: vec!["ok".into()],
+                        partition: partition.into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            let grounder = stub_radii(&[("a", &["a.rs"]), ("b", &["x.rs"]), ("c", &["x.rs"])]);
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                grounder: Some(&grounder),
+                ..stub_deps(&store, &probe, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            for name in ["a", "b", "c"] {
+                assert_eq!(
+                    rs.units[name].status,
+                    ledger::Status::Integrated,
+                    "c's partition {c_partition:?}: {name} integrates"
+                );
+            }
+            let (_, b_end) = probe.window("b");
+            let (c_start, _) = probe.window("c");
+            assert_eq!(
+                c_start < b_end,
+                starts_before_b_ends,
+                "c's partition {c_partition:?}: c starts while b still runs exactly when c does \
+                 not ask"
+            );
+        }
     }
 
     /// A unit finishing frees its slot INSIDE the wave: at width 2, while the slow unit still
@@ -48376,9 +48811,9 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // The planner splits the single criterion into TWO units - both citing it, so
         // both ground to feature.rs and SHARE the entire blast radius. This is NOT a
-        // defect: `partition: by-blast-radius` serializes them into sequential batches
-        // and per-unit worktree isolation keeps each reviewer on its own diff, so overlap
-        // integrates cleanly. The gate (no ownership/disposition defect here) APPROVES and
+        // defect: per-unit worktree isolation keeps each reviewer on its own diff, so
+        // overlap integrates cleanly (this workflow declares no partition, so the two run
+        // side by side). The gate (no ownership/disposition defect here) APPROVES and
         // the fan-out releases - the architecture-aligned behavior (overlap != reject).
         let driver = CritiqueDriver::new(vec![
             (
@@ -48403,10 +48838,9 @@ mod tests {
         assert_eq!(
             rs.units["plan-critique"].status,
             ledger::Status::Integrated,
-            "a shared blast radius alone must NOT reject - the partitioner serializes it"
+            "a shared blast radius alone must NOT reject"
         );
-        // The fan-out released: the overlapping units run (the partitioner serializes them
-        // into separate batches, so they integrate cleanly).
+        // The fan-out released: the overlapping units run.
         assert!(
             occurrences(&driver.calls, "worker") >= 1,
             "the fan-out must release on approve; worker ran {}x",
@@ -48558,8 +48992,8 @@ mod tests {
     fn the_gate_critiques_only_not_yet_run_units_and_approves() {
         // The critique excludes already-integrated and terminal units (`dag_unit_blast_radii`):
         // a settled unit is not a decomposition candidate, so it never clutters the critique
-        // context. Combined with the architecture alignment (overlap is not a defect - the
-        // partitioner serializes it), a run that adopts a prior wave's integrated unit and
+        // context. Combined with the architecture alignment (overlap is not a defect), a run
+        // that adopts a prior wave's integrated unit and
         // grounds a fresh pending unit to the SAME file approves cleanly and releases the
         // fan-out (the exact spec-10 resume scenario, now handled at the root).
         let dir = tempfile::tempdir().unwrap();
@@ -48627,10 +49061,11 @@ mod tests {
         );
     }
 
-    /// Run `critique_cfg`, its `defaults.max_unit_added_lines` set to `cap`, over proposed `units`,
-    /// each `(id, file, criterion)` grounding to its `file`; returns the driver, which recorded the
-    /// planner's and the adjudicator's prompts.
-    fn critique_over(units: &[(&str, &str, &str)], cap: u32) -> CritiqueDriver {
+    /// Run `critique_cfg`, its `defaults.max_unit_added_lines` set to `cap` and its fan-out
+    /// template's `partition` to `partition`, over proposed `units`, each `(id, file, criterion)`
+    /// grounding to its `file`; returns the driver, which recorded the planner's and the
+    /// adjudicator's prompts.
+    fn critique_over(units: &[(&str, &str, &str)], cap: u32, partition: &str) -> CritiqueDriver {
         let dir = tempfile::tempdir().unwrap();
         for (_, file, criterion) in units {
             let path = dir.path().join(file);
@@ -48639,6 +49074,7 @@ mod tests {
         }
         let mut cfg = critique_cfg();
         cfg.workflow.defaults.max_unit_added_lines = cap;
+        cfg.workflow.stages.get_mut("implement").unwrap().partition = partition.into();
         let st = Store::open(":memory:").unwrap();
         let driver = CritiqueDriver::new(
             units
@@ -48669,12 +49105,15 @@ mod tests {
     /// Run `critique_cfg`, which declares no unit size cap, over one proposed unit serving one
     /// criterion; returns the driver, which recorded the planner's and the adjudicator's prompts.
     fn one_unit_critique() -> CritiqueDriver {
-        critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], 0)
+        critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], 0, "")
     }
 
     /// The critique method is the persona's: over a disjoint DAG and an overlapping one of a
     /// workflow declaring no unit size cap, the DAG critique prompt is its opener, the unit and
-    /// overlap list and its verdict and cause paragraph, byte for byte and nothing else.
+    /// overlap list and its verdict and cause paragraph, byte for byte and nothing else. The
+    /// overlap header says the overlapping units are serialized only when their fan-out template
+    /// puts `partition: by-blast-radius` in force for them, and otherwise that they run side by
+    /// side unless one `needs` the other.
     #[test]
     fn the_dag_critique_prompt_is_only_its_framing_and_its_verdict_contract() {
         const WIDGET: &str = "the widget renderer is implemented";
@@ -48682,16 +49121,25 @@ mod tests {
         let table = [
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "b.rs", GADGET)],
+                "",
                 DAG_DISJOINT_OVERLAP,
             ),
             (
                 [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                "",
+                "\nBlast-radius overlap (informational - `partition: by-blast-radius` is not in \
+                 force for these units, so units sharing a file run side by side unless one \
+                 `needs` the other):\n- units `u-a` and `u-b` both touch: a.rs\n",
+            ),
+            (
+                [("u-a", "a.rs", WIDGET), ("u-b", "a.rs", GADGET)],
+                "by-blast-radius",
                 "\nBlast-radius overlap (informational - the partitioner serializes these into \
                  sequential batches):\n- units `u-a` and `u-b` both touch: a.rs\n",
             ),
         ];
-        for (units, overlap) in table {
-            let driver = critique_over(&units, 0);
+        for (units, partition, overlap) in table {
+            let driver = critique_over(&units, 0, partition);
             let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
             let rows = units.map(|(id, file, criterion)| [id, criterion, "plan-critique", file]);
             assert_eq!(prompt, dag_critique_prompt(&rows, overlap, 0));
@@ -48721,7 +49169,7 @@ mod tests {
         let id = criterion_stable_id(1, WIDGET_CRITERION);
         let criteria = format!("- [{id}] {WIDGET_CRITERION}");
         for (cap, sentence) in table {
-            let driver = critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], cap);
+            let driver = critique_over(&[("u-a", "feature.rs", WIDGET_CRITERION)], cap, "");
             let planner = driver.planner_prompts.lock().unwrap()[0].clone();
             let critique = driver.adj_prompts.lock().unwrap()[0].clone();
             assert_eq!(
@@ -51078,9 +51526,10 @@ mod tests {
     /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
     /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
-    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, and a
-    /// re-plan under a cap whose unit holds each and overlaps another, its rows' lists filled into
-    /// their slots.
+    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, a
+    /// re-plan under a cap whose unit holds each and overlaps another under the partition rule, its
+    /// rows' lists filled into their slots, and a first plan whose overlap the rule does not
+    /// serialize.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -51091,6 +51540,7 @@ mod tests {
                         needs: &[&str],
                         radius: &[&str],
                         conflicts: &[(String, String, Vec<String>)],
+                        serialized: bool,
                         prior: &str,
                         cap: Option<u32>| {
             let stage = Stage {
@@ -51101,7 +51551,7 @@ mod tests {
             };
             let stages = BTreeMap::from([("{name}".to_string(), stage)]);
             let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, prior, cap)
+            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, cap)
         };
         let contract = |size_cap_cause: &str| {
             fill(
@@ -51120,7 +51570,7 @@ mod tests {
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], "  ", None),
+                critique("  ", &[], &[], &[], true, "  ", None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51138,7 +51588,7 @@ mod tests {
             ),
             (
                 "a first plan whose criterion holds a quote and a backslash",
-                critique(r#" keep "a\b" whole "#, &[], &[], &[], "", None),
+                critique(r#" keep "a\b" whole "#, &[], &[], &[], true, "", None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51161,6 +51611,7 @@ mod tests {
                     &["{x}", "{y}"],
                     &["{p}", "{q}"],
                     &overlap,
+                    true,
                     "{prior_reason}",
                     Some(7),
                 ),
@@ -51177,6 +51628,23 @@ mod tests {
                         &[("shared", "{s}, {t}")]
                     ),
                     contract(&dag(&["DAG_SIZE_CAP_CAUSE"]))
+                ),
+            ),
+            (
+                "a first plan whose overlap the partition rule does not serialize",
+                critique("{criterion}", &[], &["{p}"], &overlap, false, "", None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[("needs", &dag(&["DAG_NO_NEEDS"])), ("radius", "{p}")]
+                    ),
+                    fill(
+                        &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
+                        &[("shared", "{s}, {t}")]
+                    ),
+                    contract("")
                 ),
             ),
             (
