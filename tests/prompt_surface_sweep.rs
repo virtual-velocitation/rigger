@@ -449,6 +449,11 @@ fn a_string_literal_token_decodes_to_its_value() {
         ("single quote", r#""a\'b""#, Some("a'b")),
         ("hex", r#""a\x41b""#, Some("aAb")),
         ("unicode", r#""a\u{e9}b""#, Some("a\u{e9}b")),
+        (
+            "unicode with an underscore",
+            r#""a\u{0_e9}b""#,
+            Some("a\u{e9}b"),
+        ),
         ("continuation", "\"one \\\n      two\"", Some("one two")),
         (
             "crlf continuation",
