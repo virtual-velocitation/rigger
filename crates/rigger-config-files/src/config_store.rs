@@ -2275,47 +2275,27 @@ agent: worker\n";
         );
     }
 
-    /// `defaults.grep_guard` reads as written, and a workflow that does not write it declares
-    /// no guard.
+    /// `defaults.grep_guard` and `defaults.max_unit_added_lines` each read as written, and a
+    /// workflow that does not write one declares no guard or no unit size cap, the same 0 a
+    /// declared 0 cap reads as; a row writing one key leaves the other at its absent value.
     #[test]
-    fn grep_guard_parses_and_is_off_when_absent() {
+    fn the_guard_and_cap_defaults_parse_and_are_off_when_absent() {
         let rows = [
-            ("defaults:\n  grep_guard: true\n", true),
-            ("defaults:\n  grep_guard: false\n", false),
-            ("defaults:\n  budget: 10\n", false),
+            ("defaults:\n  grep_guard: true\n", (true, 0)),
+            ("defaults:\n  grep_guard: false\n", (false, 0)),
+            ("defaults:\n  max_unit_added_lines: 3000\n", (false, 3000)),
+            ("defaults:\n  max_unit_added_lines: 1\n", (false, 1)),
+            ("defaults:\n  max_unit_added_lines: 0\n", (false, 0)),
+            ("defaults:\n  budget: 10\n", (false, 0)),
         ];
-        let parsed: Vec<bool> = rows
+        let parsed: Vec<(bool, u32)> = rows
             .iter()
             .map(|(yaml, _)| {
-                serde_yaml::from_str::<Workflow>(yaml)
-                    .unwrap()
-                    .defaults
-                    .grep_guard
+                let defaults = serde_yaml::from_str::<Workflow>(yaml).unwrap().defaults;
+                (defaults.grep_guard, defaults.max_unit_added_lines)
             })
             .collect();
-        assert_eq!(parsed, rows.map(|(_, grep_guard)| grep_guard));
-    }
-
-    /// `defaults.max_unit_added_lines` reads as written, and a workflow that does not write it
-    /// declares no unit size cap, the same 0 a declared 0 reads as.
-    #[test]
-    fn max_unit_added_lines_parses_and_is_no_cap_when_absent() {
-        let rows = [
-            ("defaults:\n  max_unit_added_lines: 3000\n", 3000),
-            ("defaults:\n  max_unit_added_lines: 1\n", 1),
-            ("defaults:\n  max_unit_added_lines: 0\n", 0),
-            ("defaults:\n  budget: 10\n", 0),
-        ];
-        let parsed: Vec<u32> = rows
-            .iter()
-            .map(|(yaml, _)| {
-                serde_yaml::from_str::<Workflow>(yaml)
-                    .unwrap()
-                    .defaults
-                    .max_unit_added_lines
-            })
-            .collect();
-        assert_eq!(parsed, rows.map(|(_, cap)| cap));
+        assert_eq!(parsed, rows.map(|(_, declared)| declared));
     }
 
     /// Spec 121's THE TEST AUTHOR IS DECLARED, at load: `defaults.test_author` reads as written and
