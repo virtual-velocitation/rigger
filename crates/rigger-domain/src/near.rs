@@ -1757,6 +1757,47 @@ mod tests {
         }
     }
 
+    /// Each row, with tests shown: an id, a file holding a test call of one of its leaves, and
+    /// whether a read of the id's node and edges reads that file's facts. A test call lands on a
+    /// definition in another file only where the proof rule credits it with the call, so a file
+    /// whose test call the rule credits elsewhere, or to none, is never read for the id.
+    #[test]
+    fn a_test_call_is_read_for_the_definition_its_proof_credits_alone() {
+        let cases = [
+            (
+                "a test call credited to none",
+                "src/b.rs::compute",
+                "tests/it.rs",
+                false,
+            ),
+            (
+                "a test call credited to the id",
+                "src/a.rs::run",
+                "tests/it.rs",
+                true,
+            ),
+        ];
+        for (name, id, file, want) in cases {
+            let view = Counting {
+                view: view(),
+                reads: Mutex::new(Vec::new()),
+                settles: None,
+            };
+            let near = Near::new(
+                &view,
+                ViewFilter {
+                    tests: Tests::Include,
+                },
+            );
+            view.taken();
+            near.node(id).unwrap();
+            near.out(id).unwrap();
+            near.incoming(id).unwrap();
+            let read = view.taken().contains(&format!("file {file}"));
+            assert_eq!(read, want, "{name}: {id} reads {file}");
+        }
+    }
+
     /// An id whose reaches fold the same files is resolved once: `run` is tagged nowhere and is no
     /// file a module declaration reaches, so its edges in fold the files its node and edges out
     /// fold, and reading them reads no file's assertions again.
