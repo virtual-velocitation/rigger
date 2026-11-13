@@ -83,8 +83,8 @@ pub mod worktree;
 /// Parameterised tests: one shared case helper, one generated `#[test]` per named case.
 mod test_cases;
 
-/// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests: the event,
-/// graph, critique and spawn fixtures of `tests/common/fixtures/`, compiled here from the same files. They name the
+/// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests: the files of
+/// `tests/common/fixtures/` this crate's tests read, compiled here from the same files. They name the
 /// crate as `rigger::...`, which `extern crate self as rigger` makes resolve to this crate, whose
 /// modules sit at the same paths the root facade re-exports them under.
 #[cfg(test)]
@@ -119,6 +119,10 @@ mod ingest_fixtures;
 mod instructions_fixtures;
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/panic_message.rs"]
+mod panic_message_fixtures;
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/prompt_surface.rs"]
 mod prompt_surface_fixtures;
 #[cfg(test)]
@@ -132,5 +136,6 @@ mod test_support {
     #[cfg(any(feature = "store", not(feature = "core")))]
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
+    pub use crate::panic_message_fixtures::*;
     pub use crate::spawn_fixtures::*;
 }

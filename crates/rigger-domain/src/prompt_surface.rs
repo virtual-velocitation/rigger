@@ -126,7 +126,10 @@ pub fn prompt_groups() -> &'static [Group] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::registry_test;
+    use crate::prompt_surface_fixtures::{
+        assert_groups_name_the_consts, const_classes, registry_test,
+    };
+    use crate::test_support::failure_message;
 
     /// THE CLASS TABLE's domain rows: each const and the class its doc comment opens with.
     const CLASS_TABLE: &[(&str, &str)] = &[
@@ -141,6 +144,67 @@ mod tests {
         every_domain_prompt_text_is_a_group_of_its_class_table_class,
         CLASS_TABLE
     );
+
+    /// The registry oracle refuses a `pub const` whose doc comment does not open with a class
+    /// word and its colon, naming the const and the doc's first line: a const with no doc, a
+    /// wrong word, a class word no colon follows, and a doc a blank line parts from its const.
+    #[test]
+    fn the_registry_oracle_refuses_a_const_whose_doc_opens_with_no_class_word() {
+        // (the case, the module source, the refusal)
+        let cases = [
+            (
+                "no doc",
+                "pub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"\"",
+            ),
+            (
+                "a wrong word",
+                "/// NOTE: a\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"NOTE: a\"",
+            ),
+            (
+                "a class word no colon follows",
+                "/// CONTRACTS: a\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"CONTRACTS: a\"",
+            ),
+            (
+                "a doc a blank line parts from its const",
+                "/// FRAMING: a\n\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"\"",
+            ),
+        ];
+        for (case, source, refusal) in cases {
+            assert_eq!(failure_message(|| const_classes(source)), refusal, "{case}");
+        }
+    }
+
+    /// An attribute line between a doc comment and its const keeps the doc, where a blank line
+    /// parts them.
+    #[test]
+    fn the_registry_oracle_reads_a_doc_across_an_attribute_line() {
+        assert_eq!(
+            const_classes("/// FRAMING: a\n#[doc(hidden)]\npub const A: &str = \"a\";\n"),
+            [("A".to_string(), "FRAMING".to_string())]
+        );
+    }
+
+    /// The registry oracle refuses groups that list one (surface, name) pair twice and names the
+    /// pair, while one const under two surfaces is two groups and passes.
+    #[test]
+    fn the_registry_oracle_refuses_a_surface_that_lists_a_const_twice() {
+        let source = "/// FRAMING: a\npub const A: &str = \"a\";\n";
+        let group = |surface| Group {
+            surface,
+            name: "A",
+            text: "a",
+        };
+        assert_groups_name_the_consts(source, &[group("s"), group("t")]);
+        assert_eq!(
+            failure_message(|| assert_groups_name_the_consts(source, &[group("s"), group("s")])),
+            "assertion `left == right` failed: no two groups share a surface and a name\n  \
+             left: [(\"s\", \"A\")]\n right: []"
+        );
+    }
 
     /// One `fill` case: its name, the template, the slots passed and the filled text.
     type FillCase<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a str);
