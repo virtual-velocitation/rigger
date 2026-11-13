@@ -22,6 +22,21 @@ defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: symbols         # symbols | grep | nop
 
+  # The grep guard: every spawn's settings, and `rigger setup` in the operator's checkout, carry
+  # the PreToolUse hook that denies a grep not marked literal, so an agent asks the graph lookup
+  # first and a literal search is a deliberate, reported fallback.
+  grep_guard: true
+
+  # The unit size cap: the planner's protocol and every DAG critique round state that a unit
+  # expected to add more than this many lines is too large, so each unit stays one reviewable
+  # change.
+  max_unit_added_lines: 3000
+
+  # The agent that writes each unit's periphery tests at the build seam, after its implementer
+  # is green and before the gates (.rigger/agents/sdet-author.md). Absent, no test author runs
+  # and a unit's tests are only those its implementer wrote.
+  test_author: sdet-author
+
   # The spawn-budget circuit-breaker (§4.4, §8): the hard cap on agent spawns a
   # single unattended run may make. When spawns reach it the breaker records
   # BudgetExhausted and aborts the run, so a runaway loop (e.g. a unit a reviewer
