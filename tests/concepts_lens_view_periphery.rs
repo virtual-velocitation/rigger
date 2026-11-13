@@ -27,10 +27,10 @@
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the concepts-lens BEHAVIOUR but never that
 //!    `Lens::Concepts`, `Lens::from_query`, the concepts arms of `clustered_overview` /
-//!    `cluster_detail`, the new `NeighborhoodNode.shared` field, and the `DEFAULT_CONCEPT_RESOLUTION`
-//!    / `CONCEPTS_LENS_UNDERIVED` consts are all `pub` and reachable as `rigger::dash::...`. If any
-//!    were accidentally crate-private, only a crate-external test fails to COMPILE - the inside-out
-//!    test would stay green.
+//!    `cluster_detail`, the new `NeighborhoodNode.shared` field, the default grain
+//!    (`community::grain(DEFAULT_RESOLUTION)`) and `CONCEPTS_LENS_UNDERIVED` are all `pub` and
+//!    reachable as `rigger::...`. If any were accidentally crate-private, only a crate-external test
+//!    fails to COMPILE - the inside-out test would stay green.
 //!  - THE SERVED ROUTE END-TO-END. The unit test calls `clustered_overview` / `cluster_detail`
 //!    directly and NEVER through `route`'s `lens=` / `resolution=` query parsing (`from_query` wired
 //!    to `query_param` + `percent_decode`). A regression that forgot to thread the concepts lens into
@@ -60,13 +60,13 @@ use common::lens::{
 use common::served::node_harness_passes;
 use common::served::served;
 use common::served::served_json;
+use rigger::community::{grain, DEFAULT_RESOLUTION};
 use rigger::contextgraph::{
     Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS, REL_REALIZES,
     REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
-    DEFAULT_CONCEPT_RESOLUTION,
 };
 
 // The two default-grain concept ids (`concept/<resolution>/<n>`) the fixture derives.
@@ -122,21 +122,21 @@ fn lens_graph() -> Graph {
     }
 }
 
-/// The default concepts lens (`resolution = DEFAULT_CONCEPT_RESOLUTION`), reachable as a public type.
+/// The default concepts lens (the grain of `DEFAULT_RESOLUTION`), reachable as a public type.
 fn concepts_default() -> Lens {
     Lens::Concepts {
-        resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+        resolution: grain(DEFAULT_RESOLUTION),
     }
 }
 
 /// THE PUBLIC SELECTOR PARSER (`Lens::from_query`) at the crate boundary, for the concepts arm. The
 /// route relies on it being TOTAL and INFALLIBLE: `lens=concepts` selects the concepts fold at
-/// `resolution=` (defaulting to `DEFAULT_CONCEPT_RESOLUTION` when absent OR empty), an explicit grain
+/// `resolution=` (defaulting to the grain of `DEFAULT_RESOLUTION` when absent OR empty), an explicit grain
 /// is honoured verbatim, and every other value - an unknown lens or an absent one - still falls back
 /// to the byte-identical `Lens::Files`, so a hostile selector can never error the route. The
 /// inside-out test asserts the same table via `super::`; this pins that `Lens::Concepts`, `from_query`,
-/// and the default-grain const are reachable as `rigger::dash::...` - a boundary a same-crate test
-/// cannot prove.
+/// and the default grain are reachable as `rigger::...` - a boundary a same-crate test cannot
+/// prove.
 #[test]
 fn lens_from_query_is_a_public_total_selector_including_concepts() {
     assert_eq!(

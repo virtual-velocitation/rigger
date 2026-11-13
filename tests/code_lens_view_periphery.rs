@@ -17,15 +17,15 @@
 //! subject keeps its kind bucket) still holds, pinned by `tests/subject_lens_reprojection_contract.rs`.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
-//! clustered_overview, cluster_detail, route, ...}` + the two lens consts), so they guard the exact
+//! clustered_overview, cluster_detail, route, ...}` + the default grain), so they guard the exact
 //! boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`, which reaches the same functions via
 //! `super::` and calls the folds in-process) is structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the code-lens BEHAVIOUR but never that `Lens`, its
 //!    variants, `Lens::from_query`, the changed-signature `clustered_overview` / `cluster_detail`,
-//!    and the `DEFAULT_COMMUNITY_RESOLUTION` / `CODE_LENS_UNDERIVED` consts are all `pub` and
-//!    reachable as `rigger::dash::...`. If any were accidentally crate-private, only a crate-external
-//!    test fails to COMPILE - the inside-out test would stay green.
+//!    the default grain (`community::grain(DEFAULT_RESOLUTION)`) and `CODE_LENS_UNDERIVED` are all
+//!    `pub` and reachable as `rigger::...`. If any were accidentally crate-private, only a
+//!    crate-external test fails to COMPILE - the inside-out test would stay green.
 //!  - THE SERVED ROUTE END-TO-END. The unit test calls `clustered_overview` / `cluster_detail`
 //!    directly and NEVER through `route`'s `lens=` / `resolution=` query parsing (`from_query` wired
 //!    to `query_param` + `percent_decode`). A regression that forgot to thread the lens into the
@@ -53,13 +53,14 @@ use common::lens::{
 };
 use common::served::served;
 use common::served::served_json;
+use rigger::community::{grain, DEFAULT_RESOLUTION};
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CODE_LENS_UNDERIVED,
-    DEFAULT_COMMUNITY_RESOLUTION, WHOLE_GRAPH_FILES_UNRESOLVED,
+    WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
 // The two default-grain community ids (`community/<resolution>/<n>`) the fixture derives.
@@ -110,20 +111,20 @@ fn lens_graph() -> Graph {
     }
 }
 
-/// The default code lens (`resolution = DEFAULT_COMMUNITY_RESOLUTION`), reachable as a public type.
+/// The default code lens (the grain of `DEFAULT_RESOLUTION`), reachable as a public type.
 fn code_default() -> Lens {
     Lens::Code {
-        resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        resolution: grain(DEFAULT_RESOLUTION),
     }
 }
 
 /// THE PUBLIC SELECTOR PARSER (`Lens::from_query`) at the crate boundary. An external caller (the
 /// route) relies on it being TOTAL and INFALLIBLE: `lens=code` selects the code fold at `resolution=`
-/// (defaulting to `DEFAULT_COMMUNITY_RESOLUTION` when absent OR empty), and every other value - an
+/// (defaulting to the grain of `DEFAULT_RESOLUTION` when absent OR empty), and every other value - an
 /// explicit `files`, an unknown lens, or an absent one - falls back to the byte-identical
 /// `Lens::Files`, so a hostile selector can never error the route. The inside-out test asserts the
-/// same table via `super::`; this pins that `Lens`, its variants, `from_query`, and the default-grain
-/// const are all reachable as `rigger::dash::...` - a boundary a same-crate test cannot prove.
+/// same table via `super::`; this pins that `Lens`, its variants, `from_query`, and the default
+/// grain are all reachable as `rigger::...` - a boundary a same-crate test cannot prove.
 #[test]
 fn lens_from_query_is_a_public_total_selector_that_falls_back_to_files() {
     assert_eq!(

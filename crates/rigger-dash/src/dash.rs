@@ -60,9 +60,8 @@ pub use crate::contextgraph::query::{
     node_rationale, path, Card, CardRef, Cluster, ClusterEdge, ClusterOverview, ConceptRef,
     Explanation, Lens, MemoryRail, Neighborhood, NeighborhoodEdge, NeighborhoodNode,
     ProvenanceEdge, RationaleLeaf, CLUSTER_RENDER_BUDGET, CLUSTER_ROOT, CODE_LENS_UNDERIVED,
-    CONCEPTS_LENS_UNDERIVED, DEFAULT_COMMUNITY_RESOLUTION, DEFAULT_CONCEPT_RESOLUTION,
-    DEFAULT_GRAPH_DEPTH, GOD_NODE_DEGREE_THRESHOLD, MAX_GRAPH_DEPTH, REPROJECT_NO_COMMUNITY,
-    REPROJECT_NO_CONCEPT, WHOLE_GRAPH_FILES_UNRESOLVED,
+    CONCEPTS_LENS_UNDERIVED, DEFAULT_GRAPH_DEPTH, GOD_NODE_DEGREE_THRESHOLD, MAX_GRAPH_DEPTH,
+    REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT, WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -4198,6 +4197,7 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
+    use rigger_domain::community::{grain, DEFAULT_RESOLUTION};
 
     /// The writes a stream took, each as the bytes it carried.
     #[derive(Default)]
@@ -7743,7 +7743,7 @@ mod tests {
             graph
         };
         let code = Lens::Code {
-            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
         // Three tests are hidden when none is drawn: the two attached to community 0 and one that
         // proves nothing grouped. The opened graph counts them; the drawn graph holds none.
@@ -7872,7 +7872,7 @@ mod tests {
 
         // --- CODE LENS OVERVIEW at the default grain (resolution "1") ---
         let code = Lens::Code {
-            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
         let overview = clustered_overview(&graph, &code);
         assert_eq!(
@@ -7991,7 +7991,7 @@ mod tests {
         assert_eq!(
             Lens::from_query(Some("code"), None),
             Lens::Code {
-                resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             }
         );
         assert_eq!(
@@ -8087,7 +8087,7 @@ mod tests {
         };
 
         let concepts = Lens::Concepts {
-            resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
 
         // --- OVERVIEW: buckets by concept, shared member counted ONCE under its primary ---
@@ -8236,14 +8236,14 @@ mod tests {
         assert_eq!(
             Lens::from_query(Some("concepts"), None),
             Lens::Concepts {
-                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             },
             "lens=concepts with no resolution selects the default concept grain"
         );
         assert_eq!(
             Lens::from_query(Some("concepts"), Some("")),
             Lens::Concepts {
-                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             },
             "an empty resolution still defaults to the default concept grain"
         );

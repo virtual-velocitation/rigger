@@ -318,22 +318,11 @@ pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
 // aggregations consume [`Buckets`], never a second parallel fold reconciled after the fact.
 // ---------------------------------------------------------------------------
 
-/// The default community-detection resolution grain, as its canonical string. The detection pass
-/// defaults to resolution `1.0`, whose `f64` display is `1`, so its communities are `community/1/<n>`
-/// (spec 53). The [`Lens::Code`] view reads THIS grain when a request omits `resolution=`.
-pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
-
 /// The documented empty-state message the [`Lens::Code`] overview carries when the graph it reads
 /// holds NO community assignment at the selected grain, which the read computes when the store
 /// holds another: a graph with no code to group, or one served without a code view to compute
 /// from. The panel shows this instead of an error or a bare kind-bucket view (spec 53 c4).
 pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
-
-/// The default concept-derivation resolution grain, as its canonical string. The offline
-/// intent-derivation pass defaults to resolution `1.0`, whose `f64` display is `1`, so its concepts
-/// are `concept/1/<n>` (spec 54). The [`Lens::Concepts`] view reads THIS grain when a request omits
-/// `resolution=`.
-pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
 
 /// The documented empty-state message the [`Lens::Concepts`] overview carries when the graph it
 /// reads holds NO concept assignment at the selected grain, which the read computes when the store
@@ -426,18 +415,18 @@ pub enum Lens {
 impl Lens {
     /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
     /// `lens=concepts` the concepts fold, each at the grain `resolution=` selects (`selected_grain`:
-    /// the derivation's default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] /
-    /// [`DEFAULT_CONCEPT_RESOLUTION`] - when absent or empty); every other value - `lens=files`, an
+    /// the default grain, [`community::grain`] of [`community::DEFAULT_RESOLUTION`], which both
+    /// derivations share, when absent or empty); every other value - `lens=files`, an
     /// unknown lens, or an absent one - resolves to [`Lens::Files`], the byte-identical default. Total
     /// and infallible, so a hostile selector can never error the route; it just falls back to the
     /// files view.
     pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
         match lens {
             Some("code") => Lens::Code {
-                resolution: selected_grain(resolution, DEFAULT_COMMUNITY_RESOLUTION),
+                resolution: selected_grain(resolution),
             },
             Some("concepts") => Lens::Concepts {
-                resolution: selected_grain(resolution, DEFAULT_CONCEPT_RESOLUTION),
+                resolution: selected_grain(resolution),
             },
             _ => Lens::Files,
         }
@@ -468,13 +457,13 @@ impl Lens {
     }
 }
 
-/// The grain a `resolution=` selects: `default` when absent or empty; a resolution in any spelling
-/// ([`community::parse_resolution`]) as the grain segment derivation mints for it
+/// The grain a `resolution=` selects: the default resolution's when absent or empty; a resolution in
+/// any spelling ([`community::parse_resolution`]) as the grain segment derivation mints for it
 /// ([`community::grain`]), so `1.0` reads grain `1`; any other text as written, which names no
 /// grain ([`Lens::not_a_grain`]).
-fn selected_grain(raw: Option<&str>, default: &str) -> String {
+fn selected_grain(raw: Option<&str>) -> String {
     match raw.filter(|r| !r.is_empty()) {
-        None => default.to_string(),
+        None => community::grain(community::DEFAULT_RESOLUTION),
         Some(raw) => {
             community::parse_resolution(raw).map_or_else(|_| raw.to_string(), community::grain)
         }
@@ -1562,7 +1551,10 @@ pub fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
 /// Falls back to the community's own id when the derivation folded no explicit `label` attr for
 /// it, matching [`bucket_label_index`]'s own `filter(|l| !l.is_empty())` discipline.
 pub(crate) fn community_label(graph: &Graph, id: &str) -> Option<String> {
-    let prefix = format!("{COMMUNITY_ID_PREFIX}{DEFAULT_COMMUNITY_RESOLUTION}/");
+    let prefix = format!(
+        "{COMMUNITY_ID_PREFIX}{}/",
+        community::grain(community::DEFAULT_RESOLUTION)
+    );
     let community_id = graph.edges.iter().find_map(|e| {
         (e.valid_to.is_none()
             && e.rel == REL_IN_COMMUNITY
