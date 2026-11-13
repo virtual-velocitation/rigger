@@ -309,10 +309,15 @@ each per hold from the run's `RunHeld` and `RunReleased` events and keyed by the
 `RunHeld`, not diffed between endpoints in `compute_attention`
 (`crates/rigger-conductor/src/conductor.rs:2779`), which carries neither; spec 106's `rigger
 attention --follow` delivers them, so neither a step nor `rigger run` prints them. `rigger
-validate` reports the auth method from `claude auth status --json` and warns when `authMethod`
-is the value an interactive subscription login reports, pinned by a fixture recorded from the
-installed `claude auth status --json`, naming the subscription's long-lived token; with `claude`
+validate` reports the auth method from `claude auth status --json` and never warns of a login,
+the interactive subscription login (a fixture recorded from the installed `claude auth status
+--json`) included, since the long-lived token is supported and never nagged about; with `claude`
 absent or its status failing it prints one advisory and exits as before.
+When `RIGGER_CLAUDE_CODE_OAUTH_TOKEN` is set non-empty in rigger's environment, every launch of
+`claude` (a spawn, the canary, the login read validate and the probe make) sets
+`CLAUDE_CODE_OAUTH_TOKEN` to its value on that command alone and passes the rigger-named variable
+on to nothing, so the operator's own sessions keep their login and validate reports the method the
+spawns use; the value is recorded nowhere.
 
 KEEP-AWAKE, decided: an OS facility is a port with one adapter per OS family on that OS's
 native API, never one OS's tool. The port is `SleepHold`, a new module in
@@ -483,8 +488,8 @@ beat gap and the resume carry the run.
   beat in the last 90 s; the dock lists `held` first for a hold whose latest `RunHeld` carries
   `needs_person` and omits it otherwise; the statusline reads `held` when no other dock entry
   stands; the page's console stream carries the hold; the attention fold yields one `held` and
-  one `released` per hold; and `rigger validate` reports the auth method, the expiring-login
-  warning on the recorded subscription-login fixture, and one advisory when `claude` is absent.
+  one `released` per hold; and `rigger validate` reports the auth method, no warning
+  on the recorded subscription-login fixture, and one advisory when `claude` is absent.
   This criterion OWNS the surfaces only.
 - [ ] a test proves THE MACHINE STAYS AWAKE WHILE A RUN DRIVES: with a fake adapter, `rigger
   run` and `rigger serve` acquire the hold when they start driving a run, keep it while the run
