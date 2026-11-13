@@ -164,6 +164,19 @@ rigger::test_cases! {
     /// `replay` from a subdirectory of a worktree that is its own root reads that root's stream.
     replay_from_below_a_worktree_that_is_its_own_root_reads_its_store:
         assert_reads_as_at_the_root(UnrecordedMainSubdirectory, &["replay", "nosuch", "--against", "HEAD"]);
+    /// `status`, which reads only the store the walk finds, from a subdirectory reports the root's
+    /// run.
+    status_from_a_subdirectory_reads_the_roots_store:
+        assert_reads_as_at_the_root(Subdirectory, &["status"]);
+    /// `status` from a linked worktree reports the root's run.
+    status_from_a_linked_worktree_reads_the_roots_store:
+        assert_reads_as_at_the_root(LinkedWorktree, &["status"]);
+    /// `status` from a subdirectory of a worktree that is its own root reports that root's run.
+    status_from_below_a_worktree_that_is_its_own_root_reads_its_store:
+        assert_reads_as_at_the_root(UnrecordedMainSubdirectory, &["status"]);
+    /// `status` below a root that holds no store says so, naming `rigger setup` at the root.
+    status_below_a_root_with_no_store_names_setup_there:
+        assert_refuses_naming_setup_at_the_root(&["status"]);
     /// `stats` below a root that holds no store says so, naming `rigger setup` at the root.
     stats_below_a_root_with_no_store_names_setup_there:
         assert_refuses_naming_setup_at_the_root(&["stats"]);
