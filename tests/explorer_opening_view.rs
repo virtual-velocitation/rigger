@@ -543,14 +543,18 @@ function __notify(){
 function __resize(p){ __size(p); __notify(); }
 // Run the animation frames the page queued; answers how many ran.
 function __frame(){ const run = __frames.splice(0); run.forEach(function(f){ f(0); }); return run.length; }
-// Press on the drawing, move the pointer by (dx, dy) when given, and release: a drag, or a click.
-function __press(dx, dy){
+// Press on the drawing, move the pointer to each [dx, dy] from the press in turn, and release.
+function __drag(moves){
   const down = el("kgpanel")._svg._listeners.mousedown || [];
   if (down.length !== 1) throw new Error("the drawn graph must carry one mousedown listener, not " + down.length);
   down[0]({ clientX: 100, clientY: 100 });
-  if (dx !== undefined) (__winListeners.mousemove || []).forEach(function(f){ f({ clientX: 100 + dx, clientY: 100 + dy }); });
+  moves.forEach(function(m){
+    (__winListeners.mousemove || []).forEach(function(f){ f({ clientX: 100 + m[0], clientY: 100 + m[1] }); });
+  });
   (__winListeners.mouseup || []).forEach(function(f){ f({}); });
 }
+// Press on the drawing, move the pointer by (dx, dy) when given, and release: a drag, or a click.
+function __press(dx, dy){ __drag(dx === undefined ? [] : [[dx, dy]]); }
 // The overview the panel holds, drawn at the size the panel now has: filling the room below its
 // toolbar, at its surface's own size. Answers its markup and its transform.
 function __overviewAt(at, what){
@@ -584,9 +588,12 @@ const FIRST_DRAW_RESIZE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// Driver: an overview no one has panned or zoomed (a click on it does neither) redraws on each
-/// resize from a 1400px viewport to 800px and back, with no new request: at 800px as the drawing and
-/// opening view a fresh draw there gives, and back at 1400px as the one it first opened as.
+/// Driver: an overview no one has panned or zoomed (a click on it does neither, nor one whose pointer
+/// wobbles under 3px between press and release) redraws on each resize from a 1400px viewport to
+/// 800px and back, with no new request: at 800px as the drawing and opening view a fresh draw there
+/// gives, and back at 1400px as the one it first opened as. A press travelling the page's
+/// `KG_PAN_THRESHOLD` still clicks; a drag that passes it and comes back within it pans to where
+/// the pointer ends.
 const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 ;(async function(){
   const at = "1400px to 800px and back, untouched: ";
@@ -595,6 +602,8 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
   const wide = __overviewAt(at, "files overview on load");
   const fetches = __fetches;
   __press();
+  __press(1, 0);
+  __press(-2, 2);
   __resize(__NARROW);
   __frame();
   const narrow = __overviewAt(at, "files overview resized to 800px");
@@ -613,6 +622,14 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
   if (narrow.html !== fresh.html || narrow.t !== fresh.t)
     throw new Error("REGRESSION: " + at + "at 800px the untouched overview must re-fit as a fresh draw there does, "
       + narrow.t + " against " + fresh.t);
+  __press(KG_PAN_THRESHOLD, 0);
+  if (kgViewMoved)
+    throw new Error("REGRESSION: " + at + "a press whose pointer travels the " + KG_PAN_THRESHOLD + "px a click may wobble must pan nothing");
+  const from = kgView.x;
+  __drag([[30, 0], [1, 0]]);
+  if (kgView.x !== from + 1 || !kgViewMoved)
+    throw new Error("REGRESSION: " + at + "a drag past the distance a click may wobble, back within it, must pan to where the pointer "
+      + "ends, 1px, it panned " + (kgView.x - from) + "px");
   console.log("OK an-untouched-view-refits-on-every-resize");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
@@ -1397,11 +1414,11 @@ rigger::test_cases! {
         "OK the-first-draw-refits-to-the-panel-the-strip-leaves",
         "the first drawing must redraw to the room the panel leaves once the strip above it grows",
     );
-    /// A window resize from 1400px to 800px and back.
+    /// A window resize from 1400px to 800px and back, after clicks whose pointer wobbles.
     an_untouched_view_refits_on_a_resize_and_back: drive(
         UNTOUCHED_RESIZE_DRIVER,
         "OK an-untouched-view-refits-on-every-resize",
-        "an untouched view must redraw and re-fit on every resize",
+        "an untouched view, clicked with a wobble, must redraw and re-fit on every resize",
     );
     /// The same resize after a pan, on an overview and a call walk, and after a zoom.
     a_moved_view_keeps_its_transform_on_a_resize_and_back: drive(
