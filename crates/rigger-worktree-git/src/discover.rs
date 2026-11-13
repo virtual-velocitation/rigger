@@ -6,10 +6,9 @@
 //! tree configured where the `.git` lies, and the ceilings and device rule the environment sets
 //! for git's walk. What the files cannot answer as git does is left to git, so every answer is
 //! the one git gives: a bare repository, a work tree configured elsewhere, a configuration git
-//! refuses or reads in a form not read here (a number with a unit or a base), a repository
-//! format or extension git may refuse, a `.git` directory naming a common directory, a
-//! repository this user does not own, an OS whose ownership is not read here, or refs held in a
-//! reftable. A directory lies in no repository only when a walk up from it, stopping where git's
+//! refuses, a path not spelled in UTF-8, a repository format or extension git may refuse, a
+//! `.git` directory naming a common directory, a repository this user does not own, an OS whose
+//! ownership is not read here, or refs held in a reftable. A directory lies in no repository only when a walk up from it, stopping where git's
 //! own walk stops, meets neither a `.git` entry nor a bare repository; git refusing anywhere else
 //! is a failure, never that none is there.
 
@@ -139,7 +138,7 @@ struct Reach {
 
 impl Reach {
     /// The reach this process's environment sets, as git reads it: None when git refuses its
-    /// [`ACROSS_DEVICES`] value or reads it in a form not read here ([`git_bool`]).
+    /// [`ACROSS_DEVICES`] value ([`git_bool`]).
     fn from_env() -> Option<Self> {
         let across_devices = match std::env::var_os(ACROSS_DEVICES) {
             Some(value) => git_bool(Some(value.to_str()?.as_bytes()))?,
@@ -399,8 +398,8 @@ struct Format {
 
 impl Format {
     /// Take the entry `name`, a lowercased configuration name, set to `value`, where it is
-    /// `core.bare` or `core.worktree`: None where git refuses its value or reads it in a form
-    /// not read here.
+    /// `core.bare` or `core.worktree`: None where git refuses its value or it names a path not
+    /// spelled in UTF-8.
     fn take(&mut self, name: &str, value: Option<Vec<u8>>) -> Option<()> {
         match name {
             "core.bare" => self.bare = Some(git_bool(value.as_deref())?),
@@ -413,15 +412,15 @@ impl Format {
 
 /// The format a repository's configuration `text` gives, as git reads it to set the repository
 /// up: None where git may refuse it, as for a format version other than 0 or 1, none at all, or
-/// an extension that version cannot carry or git may not know, or where a value it reads is in a
-/// form not read here.
+/// an extension that version cannot carry or git may not know, or where [`Format::take`] leaves
+/// a value to git.
 fn read_format(text: &[u8]) -> Option<Format> {
     let mut format = Format::default();
     let mut version = None;
     let mut extensions = Vec::new();
     for (name, value) in config_entries(text)? {
         if name == "core.repositoryformatversion" {
-            version = Some(decimal(value.as_deref()?)?);
+            version = Some(git_int(value.as_deref()?)?);
         } else if let Some(extension) = name.strip_prefix("extensions.") {
             extensions.push((extension.to_owned(), value));
         } else {
@@ -620,8 +619,8 @@ fn is_key_char(c: u8) -> bool {
 }
 
 /// A value read as git reads a boolean: true for a key written without one, a word git takes
-/// for true or false in any case, or a decimal integer, true unless zero ([`decimal`]). None for
-/// any other value, which git refuses or reads in a form not read here.
+/// for true or false in any case, or an integer, true unless zero ([`git_int`]). None for any
+/// other value, which git refuses.
 fn git_bool(value: Option<&[u8]>) -> Option<bool> {
     let Some(value) = value else {
         return Some(true);
@@ -629,25 +628,58 @@ fn git_bool(value: Option<&[u8]>) -> Option<bool> {
     match value.to_ascii_lowercase().as_slice() {
         b"true" | b"yes" | b"on" => Some(true),
         b"" | b"false" | b"no" | b"off" => Some(false),
-        _ => decimal(value).map(|n| n != 0),
+        _ => git_int(value).map(|n| n != 0),
     }
 }
 
-/// `value` read as git reads an integer, where it is a decimal integer within git's range with
-/// an optional sign and no leading zero. None for any other value, which git refuses or reads
-/// in a form not read here (a unit after it, or a base: a leading `0x` or `0`).
-fn decimal(value: &[u8]) -> Option<i32> {
-    let digits = value
-        .strip_prefix(b"-")
-        .or_else(|| value.strip_prefix(b"+"))
-        .unwrap_or(value);
-    let plain = !digits.is_empty()
-        && digits.iter().all(u8::is_ascii_digit)
-        && (digits.len() == 1 || digits[0] != b'0');
-    if !plain {
+/// `value` read as git reads an integer: after any white space and an optional sign, digits in
+/// hex after `0x`, in octal after a leading `0`, else in decimal, then optionally a unit `k`,
+/// `m` or `g` in any case, multiplying by 1024 for each step, the whole within plus or minus
+/// `i32::MAX`. None for any other value, which git refuses.
+fn git_int(value: &[u8]) -> Option<i32> {
+    let start = value
+        .iter()
+        .position(|c| !matches!(c, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))?;
+    let mut rest = &value[start..];
+    let negative = rest.first() == Some(&b'-');
+    if matches!(rest.first(), Some(b'-' | b'+')) {
+        rest = &rest[1..];
+    }
+    let hex = rest.len() > 2
+        && rest[0] == b'0'
+        && matches!(rest[1], b'x' | b'X')
+        && rest[2].is_ascii_hexdigit();
+    let (radix, digits) = match rest {
+        _ if hex => (16, &rest[2..]),
+        [b'0', ..] => (8, rest),
+        _ => (10, rest),
+    };
+    let count = digits
+        .iter()
+        .take_while(|c| char::from(**c).is_digit(radix))
+        .count();
+    if count == 0 {
         return None;
     }
-    std::str::from_utf8(value).ok()?.parse().ok()
+    let mut magnitude: i64 = 0;
+    for c in &digits[..count] {
+        let digit = char::from(*c).to_digit(radix)?;
+        magnitude = magnitude
+            .checked_mul(i64::from(radix))?
+            .checked_add(i64::from(digit))?;
+    }
+    let factor: i64 = match digits[count..].to_ascii_lowercase().as_slice() {
+        b"" => 1,
+        b"k" => 1 << 10,
+        b"m" => 1 << 20,
+        b"g" => 1 << 30,
+        _ => return None,
+    };
+    if magnitude > i64::from(i32::MAX) / factor {
+        return None;
+    }
+    let value = i32::try_from(magnitude * factor).ok()?;
+    Some(if negative { -value } else { value })
 }
 
 /// Whether this user owns every one of `paths`, as git requires before it trusts a repository.
