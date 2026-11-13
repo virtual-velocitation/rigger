@@ -520,8 +520,8 @@ def overlap(spans, a, b):
 
 # One unit's agent sessions and gate batteries, in seconds, from its events in time order (log
 # order on a tie). A gate battery runs from a writer's result to the last fresh (not cache-hit)
-# verdict before the unit's next spawn request; a battery whose last verdict is post-merge is
-# post-merge.
+# verdict before the unit's next spawn request; a battery is post-merge when the last of its
+# verdicts that ran a gate (not skipped) is.
 def unit_work(events):
     events = sorted(events, key=lambda event: event[0])
     spans, requested = [], {}
@@ -536,8 +536,11 @@ def unit_work(events):
         opened, opener, verdicts = current
         fresh = [v for v in verdicts if not v[1]["cache"]]
         if fresh:
-            last, info, _ = fresh[-1]
-            batteries.append(Battery(opened, last, info["post"], opener,
+            last = fresh[-1][0]
+            # A skipped verdict ran no gate, and the driver's closing settle marker carries no
+            # merge side in its key, so the last verdict that ran a gate says which side it gated.
+            ran = [info for _, info, _ in fresh if not info["skipped"]] or [fresh[-1][1]]
+            batteries.append(Battery(opened, last, ran[-1]["post"], opener,
                                      [v for v in verdicts if v[0] <= last]))
 
     current = None
