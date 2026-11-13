@@ -29,7 +29,7 @@ use crate::contextgraph::{
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{def_leaves, ProofCall, INTENT_KINDS};
+use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, ProofCall, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -42,7 +42,7 @@ const ARMS: [(&str, &str); 2] = [
 /// The concepts' arm.
 const CONCEPTS: usize = 1;
 
-/// One assertion a file makes.
+/// One assertion a code file makes.
 enum Said {
     Node {
         id: String,
@@ -59,15 +59,39 @@ enum Said {
     },
 }
 
+/// One assertion a design or workflow file writes, as written: whether it is test code is
+/// settled as it is replayed ([`CodeGraph::intent_node`], [`CodeGraph::intent_link`]).
+enum Written {
+    Node(IntentNode),
+    Link(IntentLink),
+}
+
 /// What one file asserts, in the order asserted, with the assertions touching each id.
-#[derive(Default)]
-struct Fragment {
-    said: Vec<Said>,
+struct Fragment<S = Said> {
+    said: Vec<S>,
     touching: FxHashMap<String, Vec<u32>>,
 }
 
-impl Fragment {
-    /// The last assertion said touches `id`.
+impl<S> Default for Fragment<S> {
+    fn default() -> Self {
+        Self {
+            said: Vec::new(),
+            touching: FxHashMap::default(),
+        }
+    }
+}
+
+impl<S> Fragment<S> {
+    /// Holds `said`, which touches `from` and `to`.
+    fn hold(&mut self, said: S, from: &str, to: &str) {
+        self.said.push(said);
+        self.touch(from);
+        if to != from {
+            self.touch(to);
+        }
+    }
+
+    /// The last assertion held touches `id`.
     fn touch(&mut self, id: &str) {
         let at = self.said.len() as u32 - 1;
         match self.touching.get_mut(id) {
@@ -78,10 +102,18 @@ impl Fragment {
         }
     }
 
+    /// The assertions touching `id`, in the order held.
+    fn said_touching(&self, id: &str) -> impl Iterator<Item = &S> {
+        let places = self.touching.get(id).into_iter().flatten();
+        places.map(|&at| &self.said[at as usize])
+    }
+}
+
+impl Fragment {
     /// The assertions touching `id`, folded into `b` in the order said.
     fn replay(&self, id: &str, b: &mut Builder) {
-        for &at in self.touching.get(id).into_iter().flatten() {
-            match &self.said[at as usize] {
+        for said in self.said_touching(id) {
+            match said {
                 Said::Node {
                     id,
                     kind,
@@ -100,6 +132,33 @@ impl Fragment {
     }
 }
 
+impl Fragment<Written> {
+    /// What the design or workflow file `facts` writes ([`Resolver::intent`]).
+    fn written(graph: &CodeGraph, facts: &FileFacts) -> Self {
+        let (nodes, links) = graph.resolver().intent(facts);
+        let mut fragment = Self::default();
+        for n in nodes {
+            let id = n.id.clone();
+            fragment.hold(Written::Node(n), &id, &id);
+        }
+        for l in links {
+            let (from, to) = (l.from.clone(), l.to.clone());
+            fragment.hold(Written::Link(l), &from, &to);
+        }
+        fragment
+    }
+
+    /// The assertions touching `id`, settled and folded into `b` in the order written.
+    fn replay(&self, id: &str, graph: &CodeGraph, b: &mut Builder) {
+        for written in self.said_touching(id) {
+            match written {
+                Written::Node(n) => graph.intent_node(n, b),
+                Written::Link(l) => graph.intent_link(l, b),
+            }
+        }
+    }
+}
+
 impl Asserts for Fragment {
     fn node(
         &mut self,
@@ -108,26 +167,23 @@ impl Asserts for Fragment {
         attrs: impl IntoIterator<Item = (&'static str, String)>,
         test: bool,
     ) {
-        self.said.push(Said::Node {
+        let said = Said::Node {
             id: id.to_string(),
             kind,
             attrs: attrs.into_iter().collect(),
             test,
-        });
-        self.touch(id);
+        };
+        self.hold(said, id, id);
     }
     fn link(&mut self, from: &str, rel: &'static str, to: &str, tier: &'static str, test: bool) {
-        self.said.push(Said::Link {
+        let said = Said::Link {
             from: from.to_string(),
             rel,
             to: to.to_string(),
             tier,
             test,
-        });
-        self.touch(from);
-        if to != from {
-            self.touch(to);
-        }
+        };
+        self.hold(said, from, to);
     }
 }
 
@@ -231,8 +287,8 @@ impl<'v> Clusters<'v> {
 /// The design and workflow assertions of the view, read when the first id is resolved: few files
 /// hold them, and any of them may name any id.
 struct Intent {
-    /// Each intent-holding file's place and assertions, in file order.
-    fragments: FxHashMap<u32, Fragment>,
+    /// Each intent-holding file's place and what it writes, in file order.
+    fragments: FxHashMap<u32, Fragment<Written>>,
     /// The places whose intent assertions touch each id.
     at: FxHashMap<String, Vec<u32>>,
     /// The ids those assertions touch that bind each leaf.
@@ -371,8 +427,7 @@ impl<'v> State<'v> {
                 let Some(facts) = self.view.intent_facts(f.path) else {
                     continue;
                 };
-                let mut fragment = Fragment::default();
-                self.graph.intent(&facts, &mut fragment);
+                let fragment = Fragment::written(&self.graph, &facts);
                 for id in fragment.touching.keys() {
                     at.entry(id.clone()).or_default().push(place as u32);
                     if let Some(rest) = split_id(id).1 {
@@ -564,7 +619,7 @@ impl<'v> State<'v> {
                 Part::Code => self.code(place, id, &named, &mut b),
                 Part::Intent => {
                     let intent = self.intent.as_ref().expect("read above");
-                    intent.fragments[&place].replay(id, &mut b);
+                    intent.fragments[&place].replay(id, &self.graph, &mut b);
                 }
             }
         }
@@ -872,10 +927,7 @@ impl<'v> State<'v> {
         // its `::` suffixes.
         let sigiled = format!("{PLACEHOLDER_SIGIL}{leaf}");
         for local in [leaf, sigiled.as_str()] {
-            let suffixes = local
-                .match_indices("::")
-                .map(|(at, sep)| &local[at + sep.len()..]);
-            for name in std::iter::once(local).chain(suffixes) {
+            for name in local_leaves(local) {
                 for d in self.view.defs_named(name) {
                     if d.file.half == Half::Code && d.local == local {
                         ids.insert(entity_id(d.file.path, d.local));

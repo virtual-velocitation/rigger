@@ -719,7 +719,7 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
 | test-ness | an entity | section 8.1 | `test` attribute; drives the filter |
-| design link | DocLink as written | the existing design-target rule, moved | SPECIFIES / CONSTRAINS / GOVERNS / explains / references |
+| design link | DocLink as written | the existing design-target rule, moved | SPECIFIES / CONSTRAINS / GOVERNS / explains / references, marked `test` when an end is test code: an id in a test file or a test entity (section 8.1) |
 | workflow relation | WfRelation as written | the existing workflow rule, moved | RUNS / NEEDS / REVIEWS |
 
 Which facts live where:
@@ -754,7 +754,10 @@ edge has no log position, and readers only ever skip closed edges. The history o
 ```
 
 A neighbourhood's test files are each FILES row's test flag, so opening one reads no
-declaration and grows no closure (section 5.4).
+declaration and grows no closure (section 5.4). Its design links and workflow relations are read
+as written from every file holding them, and whether one is test code (section 6.2) is settled
+only for those touching a node it resolves, so a link to a node the neighbourhood never reaches
+reads no definition.
 
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.

@@ -23,7 +23,7 @@ pub struct ProductionGroupings;
 /// than before; the store's fingerprint folds it in, so a snapshot grouped under an older one is
 /// computed anew. A golden test pins it beside a digest of the groupings over a fixture, so a
 /// change that is not bumped fails there.
-const GROUPINGS_GENERATION: u64 = 1;
+const GROUPINGS_GENERATION: u64 = 2;
 
 /// The coupling layer of `graph`, which `code` built: each coupling edge with its placeholder ends
 /// taken to the one product definition they resolve to.
@@ -188,7 +188,7 @@ mod tests {
     /// until `GROUPINGS_GENERATION` is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_groupings_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (1, "c06a7962f403c7a6");
+        const PINNED: (u64, &str) = (2, "c06a7962f403c7a6");
         let groupings = ProductionGroupings.group(&fixture());
         assert!(
             !groupings.communities.is_empty() && !groupings.concepts.is_empty(),

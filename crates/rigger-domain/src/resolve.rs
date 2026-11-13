@@ -184,8 +184,14 @@ pub struct IntentNode {
     pub title: String,
     /// The file it is read from.
     pub doc: String,
-    /// Whether its path is test code.
-    pub test: bool,
+}
+
+/// One edge a design or workflow file writes, its ends as written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentLink {
+    pub from: String,
+    pub rel: &'static str,
+    pub to: String,
 }
 
 /// The one of `defs` sharing an id that gives the id its kind and line: the first by
@@ -256,6 +262,15 @@ fn grow<'v>(
             }
         }
     }
+}
+
+/// The names a definition whose local path is `local` may carry as its leaf: the path itself,
+/// then each text after one of its `::`, the shortest last.
+pub(crate) fn local_leaves(local: &str) -> impl Iterator<Item = &str> {
+    let suffixes = local
+        .match_indices("::")
+        .map(move |(at, sep)| &local[at + sep.len()..]);
+    std::iter::once(local).chain(suffixes)
 }
 
 /// The leaves of the definitions in `facts` whose local is `local`, each once, in source order:
@@ -373,9 +388,22 @@ impl<'v> Resolver<'v> {
         files
     }
 
-    /// Whether the node `id` is test code: it lies in a test file, whatever fact names it.
+    /// Whether the node `id` is test code, whatever fact names it: it lies in a test file, or it
+    /// is a test entity of a code file (section 8.1), as [`Self::candidates`] settles the id.
     pub fn is_test_id(&self, id: &str) -> bool {
-        file_of(id).is_some_and(|file| self.is_test_file(file))
+        if file_of(id).is_some_and(|file| self.is_test_file(file)) {
+            return true;
+        }
+        let Some(local) = split_id(id).1 else {
+            return false;
+        };
+        local_leaves(local).any(|leaf| (self.candidates(leaf).iter()).any(|c| c.id == id && c.test))
+    }
+
+    /// Whether the design or workflow edge `from` -> `to` is test code: an end of it is
+    /// ([`Self::is_test_id`]).
+    pub fn is_test_link(&self, from: &str, to: &str) -> bool {
+        self.is_test_id(from) || self.is_test_id(to)
     }
 
     /// Whether `path` is a code-half file of the view.
@@ -952,8 +980,9 @@ impl<'v> Resolver<'v> {
     }
 
     /// The design and workflow nodes and edges of `facts`, of the kinds and relations they may
-    /// name; a link's ends are as written, and a node or link is test code by its paths.
-    pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<Link>) {
+    /// name, as written: whether one is test code is settled by its ids where it is asserted
+    /// ([`Self::is_test_id`], [`Self::is_test_link`]).
+    pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<IntentLink>) {
         let kind_of = |k: &str| INTENT_KINDS.into_iter().find(|known| *known == k);
         let rel_of = |r: &str| INTENT_RELS.into_iter().find(|known| *known == r);
         let concepts = facts
@@ -968,7 +997,6 @@ impl<'v> Resolver<'v> {
                     kind: kind_of(kind)?,
                     title: title.clone(),
                     doc: facts.path.clone(),
-                    test: self.is_test_id(id),
                 })
             })
             .collect();
@@ -979,12 +1007,10 @@ impl<'v> Resolver<'v> {
             .chain(facts.wf_relations.iter().map(|r| (&r.from, &r.rel, &r.to)));
         let links = relations
             .filter_map(|(from, rel, to)| {
-                Some(Link {
+                Some(IntentLink {
                     from: from.clone(),
                     rel: rel_of(rel)?,
                     to: to.clone(),
-                    tier: TIER_EXTRACTED,
-                    test: self.is_test_id(from) || self.is_test_id(to),
                 })
             })
             .collect();
@@ -1374,12 +1400,13 @@ pub(crate) mod tests {
                 let (nodes, links) = r.intent(&view.file(path).unwrap());
                 let mark = |test: bool| if test { " test" } else { "" };
                 let nodes = nodes.iter().map(|n| {
-                    let test = mark(n.test);
+                    let test = mark(r.is_test_id(&n.id));
                     format!("node {} [{}] {} {}{test}", n.id, n.kind, n.title, n.doc)
                 });
-                let links = links
-                    .iter()
-                    .map(|l| format!("{}{}", render_link(l), mark(l.test)));
+                let links = links.iter().map(|l| {
+                    let test = mark(r.is_test_link(&l.from, &l.to));
+                    format!("{} -{}/{TIER_EXTRACTED}-> {}{test}", l.from, l.rel, l.to)
+                });
                 nodes.chain(links).collect()
             }
         }
