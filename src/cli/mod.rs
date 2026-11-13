@@ -6418,6 +6418,110 @@ mod tests {
         );
     }
 
+    /// The candidate builds the managed block derives where git runs it, at the top of the
+    /// worktree `top` with the cache home at `cache`: the unit-derived debug build, its relocated
+    /// copy and the shared build cache's, each resolved where it lies, or named missing, and empty
+    /// where the block derives none.
+    fn precommit_candidates(top: &Path, cache: &Path) -> Vec<String> {
+        let hook = compose_precommit(None);
+        let derived = &hook[..hook
+            .find("\nrigger_bin=\n")
+            .expect("the block derives its candidates before it resolves a binary")];
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "{derived}\nprintf '%s\\n' \"$unit_debug\" \"$relocated_debug\" \"$shared_debug\""
+            ))
+            .current_dir(top)
+            .env("XDG_CACHE_HOME", cache)
+            .output()
+            .expect("sh runs the block's derivation");
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|candidate| match candidate {
+                "" => String::new(),
+                c => std::fs::canonicalize(top.join(c))
+                    .map_or_else(|_| format!("{c} (missing)"), |p| p.display().to_string()),
+            })
+            .collect()
+    }
+
+    /// The managed block looks for the run's build caches at the root rigger resolves for the
+    /// worktree git runs it in ([`Site::main_root`]): the main checkout git records, from that
+    /// checkout and from a unit worktree linked to it, and where git records none (a git
+    /// directory kept apart, a bare repository) the worktree's own top.
+    #[test]
+    fn the_precommit_block_looks_for_the_build_caches_at_the_root_rigger_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = std::fs::canonicalize(dir.path()).unwrap();
+        let main = at.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_committed_repo(&main, "README.md", "seed\n");
+        let origin = main.to_str().unwrap();
+        for (dir, args) in [
+            (
+                "main",
+                &["worktree", "add", "-q", "../rigger-wt-u", "-b", "u"][..],
+            ),
+            (
+                "",
+                &[
+                    "clone",
+                    "-q",
+                    "--separate-git-dir",
+                    "apart.git",
+                    origin,
+                    "apart",
+                ][..],
+            ),
+            (
+                "apart",
+                &["worktree", "add", "-q", "../rigger-wt-v", "-b", "v"][..],
+            ),
+            ("", &["clone", "-q", "--bare", origin, "bare.git"][..]),
+            (
+                "bare.git",
+                &["worktree", "add", "-q", "../rigger-wt-b", "-b", "b"][..],
+            ),
+        ] {
+            git_ok(at.join(dir), args);
+        }
+        let cache = at.join("cache");
+        for (top, unit) in [
+            ("main", None),
+            ("rigger-wt-u", Some("u")),
+            ("apart", None),
+            ("rigger-wt-v", Some("v")),
+            ("rigger-wt-b", Some("b")),
+        ] {
+            let top = at.join(top);
+            let root = Site::of(&top).main_root().unwrap().unwrap();
+            let built = |dir: PathBuf| {
+                let file = dir.join("debug").join("rigger");
+                write_file(&file, b"");
+                file.display().to_string()
+            };
+            let scratch = root.join(".rigger").join("tmp");
+            let unit_built = |at: &Path| {
+                unit.map_or_else(String::new, |u| built(at.join(format!("cargo-target-{u}"))))
+            };
+            let encoded = rigger::liveness::marker_filename(root.to_str().unwrap()).unwrap();
+            let expected = vec![
+                unit_built(&scratch),
+                unit_built(&cache.join("rigger").join(encoded)),
+                built(scratch.join("cargo-target")),
+            ];
+            assert_eq!(
+                precommit_candidates(&top, &cache),
+                expected,
+                "from {}, the block looks under the root {}",
+                top.display(),
+                root.display()
+            );
+        }
+    }
+
     /// spec 24, crit 1 (idempotency, pure): re-composing an already-installed hook is a
     /// fixed point - the sentinel-marked block appears exactly once, so a `rigger setup`
     /// rerun never duplicates it (the property `install_precommit_hook` reports as
