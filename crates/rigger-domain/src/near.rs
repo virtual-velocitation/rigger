@@ -565,20 +565,20 @@ impl<'v> State<'v> {
         def_leaves(&facts, local)
     }
 
-    /// The places of the code files whose mentions of one of `leaves` can land on a definition in
-    /// another file: those holding a tagged reference to one, and, with tests shown, a test call of
-    /// one, which lands on the definition its proof credits.
-    fn landing(&self, leaves: &[String]) -> Vec<u32> {
-        let tests = self.tests != Tests::Exclude;
-        let resolver = self.graph.resolver();
+    /// The places of the code files whose mentions of one of `leaves`, the leaves of `id`, can land
+    /// on a definition in another file: those holding a tagged reference to one, and, with tests
+    /// shown, a test call of one the proof rule credits to `id`, the one definition such a call
+    /// lands on in another file ([`crate::resolve::Resolver::proving_calls`]).
+    fn landing(&self, id: &str, leaves: &[String]) -> Vec<u32> {
         let mut places = Vec::new();
         for leaf in leaves {
             for m in self.view.mentions_named(leaf) {
-                let lands = match m.kind {
-                    MentionKind::Tagged(_) => true,
-                    MentionKind::Call => tests && resolver.is_test(m.test, m.file.path),
-                };
-                if m.file.half == Half::Code && lands {
+                if m.file.half == Half::Code && matches!(m.kind, MentionKind::Tagged(_)) {
+                    places.extend(self.code_place(m.file.path));
+                }
+            }
+            if self.tests != Tests::Exclude {
+                for m in self.graph.resolver().proving_calls(id, leaf) {
                     places.extend(self.code_place(m.file.path));
                 }
             }
@@ -595,7 +595,7 @@ impl<'v> State<'v> {
         sources.extend(own.map(|at| (at, Part::Code)));
         let leaves = self.leaves_of(id);
         if reach.landing {
-            let landing = self.landing(&leaves);
+            let landing = self.landing(id, &leaves);
             sources.extend(landing.into_iter().map(|at| (at, Part::Code)));
         }
         if reach.modules && rest.is_none() && own.is_some() {

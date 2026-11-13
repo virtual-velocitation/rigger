@@ -859,12 +859,10 @@ impl<'v> Resolver<'v> {
         let mut proving = Vec::new();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for leaf in leaves.iter().map(String::as_str) {
-            for m in self.test_calls_named(leaf) {
+            for m in self.proving_calls(id, leaf) {
                 let path = m.file.path;
-                if self.proof(path, leaf).as_deref() == Some(id) {
-                    enclosing.entry(path).or_default().insert(m.enclosing);
-                    proving.push((path, m.enclosing, m.line));
-                }
+                enclosing.entry(path).or_default().insert(m.enclosing);
+                proving.push((path, m.enclosing, m.line));
             }
         }
         let entities = self.test_entities_at(enclosing);
@@ -876,6 +874,21 @@ impl<'v> Resolver<'v> {
             })
             .collect();
         proof_order(calls)
+    }
+
+    /// The test calls to `leaf` in code files that the proof rule credits to `id`, read from the
+    /// mentions of `leaf` alone. The rule credits a call by its file and leaf, so each file is
+    /// asked once.
+    pub(crate) fn proving_calls<'s>(
+        &'s self,
+        id: &'s str,
+        leaf: &'s str,
+    ) -> impl Iterator<Item = MentionRef<'v>> + 's {
+        let mut credits: FxHashMap<&'v str, bool> = FxHashMap::default();
+        self.test_calls_named(leaf).filter(move |m| {
+            *(credits.entry(m.file.path))
+                .or_insert_with(|| self.proof(m.file.path, leaf).as_deref() == Some(id))
+        })
     }
 
     /// The test calls to `leaf` in code files, read from the mentions of `leaf` alone.
