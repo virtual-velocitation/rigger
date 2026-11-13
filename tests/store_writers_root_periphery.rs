@@ -51,7 +51,13 @@ enum Answer {
     /// It fails or succeeds by what the fake agent answers its spawns, which is not this suite's
     /// subject.
     EitherWay,
+    /// It reads the root's configuration, failing reading none, and then fails or succeeds by what
+    /// the fake agent answers its spawns.
+    ReadsTheRootsConfiguration,
 }
+
+/// What a configuration that cannot be read fails with.
+const CONFIGURATION_FAILURE: &str = "rigger: config: ";
 
 /// A checkout at `<at>/main` holding what `root` says at its root, with a canary corpus, a spec, a
 /// subdirectory and, unless `root` is [`Root::Bare`], a subdirectory `own` holding a copy of the
@@ -178,6 +184,10 @@ fn assert_no_store_outside_the_root(place: Place, root: Root, args: &[&str], ans
             );
         }
         Answer::EitherWay => {}
+        Answer::ReadsTheRootsConfiguration => assert!(
+            !err.contains(CONFIGURATION_FAILURE),
+            "reads the root's configuration; {said}"
+        ),
     }
     let gained: Vec<PathBuf> = rigger_listing(&cwd)
         .into_iter()
@@ -230,7 +240,7 @@ fn assert_the_refusal_names_what_clears_it(place: Place, args: &[&str]) {
     );
 }
 
-use Answer::{EitherWay, Refuses, Scaffolds, Succeeds};
+use Answer::{EitherWay, ReadsTheRootsConfiguration, Refuses, Scaffolds, Succeeds};
 use Place::{LinkedWorktree, ScaffoldedSubdirectory, Subdirectory};
 use Root::{Bare, Built, Scaffolded};
 
@@ -265,6 +275,9 @@ rigger::test_cases! {
     /// `canary` from a linked worktree makes no store there.
     canary_from_a_linked_worktree_makes_no_store_there:
         assert_no_store_outside_the_root(LinkedWorktree, Built, &["canary", "--corpus", "{main}/corpus"], EitherWay);
+    /// `canary` from a subdirectory reads the root's configuration, as at the root.
+    canary_from_a_subdirectory_reads_the_roots_configuration:
+        assert_no_store_outside_the_root(Subdirectory, Built, &["canary", "--corpus", "{main}/corpus"], ReadsTheRootsConfiguration);
     /// `playbooks --rebuild` from a subdirectory rebuilds the root's pool.
     playbooks_from_a_subdirectory_rebuild_the_roots_pool:
         assert_no_store_outside_the_root(Subdirectory, Built, &["playbooks", "--rebuild"], Succeeds);
@@ -274,19 +287,20 @@ rigger::test_cases! {
     /// `playbooks --rebuild` from a linked worktree rebuilds the root's pool.
     playbooks_from_a_linked_worktree_rebuild_the_roots_pool:
         assert_no_store_outside_the_root(LinkedWorktree, Built, &["playbooks", "--rebuild"], Succeeds);
-    /// `critique` from a subdirectory fails reading its configuration there, before it opens a
-    /// store.
+    /// `critique` from a subdirectory reads the root's configuration and refuses: it and the root
+    /// disagree on their root.
     critique_from_a_subdirectory_refuses:
-        assert_no_store_outside_the_root(Subdirectory, Built, &["critique", "{main}/specs/s.md"], Refuses("read agents dir"));
+        assert_no_store_outside_the_root(Subdirectory, Built, &["critique", "{main}/specs/s.md"], Refuses("disagree on their root"));
     /// `critique` from a scaffolded subdirectory refuses: it and the root disagree on their root.
     critique_from_a_scaffolded_subdirectory_refuses:
         assert_no_store_outside_the_root(ScaffoldedSubdirectory, Built, &["critique", "{main}/specs/s.md"], Refuses("disagree on their root"));
     /// `critique` from a linked worktree refuses.
     critique_from_a_linked_worktree_refuses:
         assert_no_store_outside_the_root(LinkedWorktree, Built, &["critique", "{main}/specs/s.md"], Refuses("linked worktree"));
-    /// `run` from a subdirectory refuses before it opens a store.
+    /// `run` from a subdirectory reads the root's configuration and refuses before it opens a
+    /// store: it and the root disagree on their root.
     run_from_a_subdirectory_refuses:
-        assert_no_store_outside_the_root(Subdirectory, Built, &["run", "{main}/specs/s.md"], Refuses("rigger run"));
+        assert_no_store_outside_the_root(Subdirectory, Built, &["run", "{main}/specs/s.md"], Refuses("disagree on their root"));
     /// `run` from a scaffolded subdirectory refuses: it and the root disagree on their root.
     run_from_a_scaffolded_subdirectory_refuses:
         assert_no_store_outside_the_root(ScaffoldedSubdirectory, Built, &["run", "{main}/specs/s.md"], Refuses("disagree on their root"));
