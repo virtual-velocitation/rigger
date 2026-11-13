@@ -1224,9 +1224,11 @@ function renderReprojection(rp) {
       + shared.map(s => '<span class="kgsharedmember' + marks.cls({ id: s }) + '">' + esc(s)
         + marks.tag({ id: s }) + '</span>').join(", ") + '</div>' : '';
   if (!clusters.length) {
-    el("kgpanel").innerHTML = toolbar
-      + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
-      + unresolvedSection + sharedSection;
+    kgKeepingFocus(panel => {
+      panel.innerHTML = toolbar
+        + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+        + unresolvedSection + sharedSection;
+    });
     return;
   }
   const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
@@ -1577,15 +1579,30 @@ function kgDims() {
 // markup `below`. A view the user has not moved opens fitted. A moved one drawn again (the held body,
 // with what the panel shows of it now) keeps where the user moved it: its marks are laid out at the
 // size they were laid out at, so each lands where it was under the kept transform, and only its
-// surface takes the box measured now (kgResurface).
+// surface takes the box measured now (kgResurface). The grain box keeps the focus and the caret the
+// user holds in it (kgKeepingFocus).
 function kgDraw(above, draw, below) {
-  const panel = el("kgpanel");
-  panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
-  const dims = kgDims();
-  const laid = kgViewMoved ? kgDrawn.laid : null;
-  panel.innerHTML = above + draw(laid || dims) + below;
-  if (laid) kgResurface(dims);
+  kgKeepingFocus(panel => {
+    panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
+    const dims = kgDims();
+    const laid = kgViewMoved ? kgDrawn.laid : null;
+    panel.innerHTML = above + draw(laid || dims) + below;
+    if (laid) kgResurface(dims);
+  });
   bindKgView();
+}
+
+// Replace the panel's markup with `write`, the grain box keeping the focus and the caret the user holds
+// in it, as a box the browser never replaced keeps them: the box the new markup writes takes them back.
+// The focus anywhere else, or a markup holding no grain box, is left as the write leaves it.
+function kgKeepingFocus(write) {
+  const panel = el("kgpanel"), held = panel.querySelector("[data-lens-res]");
+  const caret = held && held === document.activeElement ? [held.selectionStart, held.selectionEnd] : null;
+  write(panel);
+  const box = caret && panel.querySelector("[data-lens-res]");
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  box.setSelectionRange(caret[0], caret[1]);
 }
 
 // Give the drawing's surface the box `dims` with its marks left where they were laid out: the svg takes
@@ -2251,13 +2268,17 @@ function renderKgOverview(ov) {
   // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
   // and keep the lens selector so the operator can switch back to files or another grain.
   if (ov && ov.empty_state) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
+    kgKeepingFocus(panel => {
+      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+        + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
+    });
     return;
   }
   if (!clusters.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
+    kgKeepingFocus(panel => {
+      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+        + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
+    });
     return;
   }
   // A code-lens community super-node carries its deterministic display `label` (its highest-degree
@@ -2302,7 +2323,8 @@ function commitGrain(text) {
 // `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
 // kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
 // grain, each re-loading the overview; the active lens is marked. The box shows the grain being typed
-// (kgShown.grain) over the one the view reads, so a redraw keeps the draft.
+// (kgShown.grain) over the one the view reads, so a redraw keeps the draft, and every markup holding the
+// box is written keeping its focus and caret (kgKeepingFocus).
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
@@ -2695,14 +2717,17 @@ function wireSelectToSeed() {
     if (res) kgShown.grain = res.value;
   });
   // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
-  // draft in it holds the text its markup wrote, so the browser fires it no change of its own.
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. A box the
+  // panel's markup replaced was not left: a browser may send it focusout as it goes, while it is still
+  // in the page, and its draft and focus pass to the box written in its place (kgKeepingFocus), so it is
+  // asked once that write is done and commits only while still in the page.
   el("kgpanel").addEventListener("keydown", ev => {
     const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
     if (res) commitGrain(res.value);
   });
   el("kgpanel").addEventListener("focusout", ev => {
     const res = ev.target.closest("[data-lens-res]");
-    if (res) commitGrain(res.value);
+    if (res) Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
