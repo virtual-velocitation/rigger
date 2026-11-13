@@ -73,8 +73,10 @@ library, honoring the dash charter):
   panel's size changes (a window resize, the strip above it growing), the page redraws the view it
   holds at the new size with no new request, at most once a frame and only when the measured size
   changed: a view not panned or zoomed since it opened re-fits by that rule, and a moved one keeps
-  its transform and its marks where they are, only the drawing surface taking the new size. Drag
-  handlers live on `window` (installed once) so a drag that leaves the svg still tracks.
+  its transform and its marks where they are, only the drawing surface taking the new size. The
+  redraw keeps everything the panel was showing: a frontier choice list, an opened rationale
+  disclosure, a grain being typed. Drag handlers live on `window` (installed once) so a drag that
+  leaves the svg still tracks.
 - **Wiring that survives re-render.** The existing spec-30 delegated click listeners on the stable
   `tree` and `kgpanel` containers gain `data-cluster` (drill) and `data-kgback` (overview) handling
   alongside the existing `data-seed` (seed) - so select-to-drill and select-to-seed survive the

@@ -23,6 +23,10 @@
 //! with the drawing in place, beside the scrollbar the panel shows when what it holds runs past its
 //! height (a drawing kept at its 200px floor, notes below the drawing).
 //!
+//! And a redraw keeps everything the panel was showing of the view it holds (the call view's
+//! frontier choice list), shown and answering, whether the panel's size changes with the window or
+//! by the scrollbar what it shows makes it take.
+//!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
 //! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
 //! browser lays them out at each viewport width) and records the transform the page applies to
@@ -41,14 +45,17 @@ use vm_harness::vm_harness;
 /// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
 /// `__geom` holds, and each markup it is given gets a fresh `svg` (its height and viewBox read from
 /// that markup and kept as attributes the page may set again, its listeners recorded, its slot boxed
-/// below that markup's toolbar as tall as its height) and a fresh `#kgzoom` (recording its
-/// transform), as a browser replaces them; every other element is a bare stand-in. The panel shows a
-/// 12px scrollbar of its own, narrowing its client box and the svg's slot, while what it holds - its
-/// padding, the toolbar, the svg at the height it has now and any markup below the svg, 40px of it -
-/// runs past its height, as a classic scrollbar does. `window` records its listeners, a
-/// size observer is recorded with what it watches for the driver to notify, and an animation frame
-/// waits in `__frames` until the driver runs it. Free of backticks and `${` so it embeds in the
-/// harness's `String.raw` template.
+/// below that markup's toolbar and frontier list as tall as its height) and a fresh `#kgzoom`
+/// (recording its transform), as a browser replaces them; every other element is a bare stand-in.
+/// The panel shows a 12px scrollbar of its own, narrowing its client box and the svg's slot, while
+/// what it holds - its padding, the toolbar, the frontier list, the svg at the height it has now and
+/// any markup below the svg, 40px of it - runs past its height, as a classic scrollbar does. The call
+/// view's frontier slot (`#kgfrontier`) is a view onto the panel's markup, written in place there
+/// with the drawing left as it is, and takes an 18px line for its head and each candidate it lists;
+/// `_gen` counts the markups the panel is given, so a driver can tell what the page wrote from what
+/// it drew again. `window` records its listeners, a size observer is recorded with what it watches
+/// for the driver to notify, and an animation frame waits in `__frames` until the driver runs it.
+/// Free of backticks and `${` so it embeds in the harness's `String.raw` template.
 const PANEL_SHIM: &str = r##"
 const __els = {};
 const __observers = [];
@@ -74,7 +81,29 @@ function __viewOf(html){
   if (html.indexOf("data-kgback") !== -1) return "drill";
   return "overview";
 }
-function __slotTop(html){ return __geom.padTop + __geom.toolbar[__viewOf(html)]; }
+// The call view's frontier slot in a panel's markup: the span of its content, from its opening tag to
+// the </div> that closes it, or null when the markup holds no slot.
+const __SLOT_OPEN = '<div id="kgfrontier" class="kgfrontier">';
+function __slotSpan(html){
+  const at = html.indexOf(__SLOT_OPEN);
+  if (at === -1) return null;
+  const from = at + __SLOT_OPEN.length, re = /<div\b|<\/div>/g;
+  re.lastIndex = from;
+  let depth = 1, m;
+  while ((m = re.exec(html)) !== null) {
+    depth += m[0] === "</div>" ? -1 : 1;
+    if (depth === 0) return [from, m.index];
+  }
+  return null;
+}
+// The height the frontier slot takes: none while empty, else its 6px padding above and below and an
+// 18px line for its head and for each candidate it lists.
+function __listHeight(html){
+  const span = __slotSpan(html);
+  const n = span ? (html.slice(span[0], span[1]).match(/class="kgfr-cand"/g) || []).length : 0;
+  return n ? 12 + 18 * (1 + n) : 0;
+}
+function __slotTop(html){ return __geom.padTop + __geom.toolbar[__viewOf(html)] + __listHeight(html); }
 // The width of the scrollbar the panel shows now: what it holds - its padding, the toolbar, the svg at
 // the height it has now and the markup below the svg - runs past its height, or it shows none.
 function __scrollbar(panel){
@@ -86,13 +115,14 @@ function __scrollbar(panel){
 }
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
   this.hidden = false; this.className = ""; this.checked = false; this.classList = __classList;
-  this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); }
+  this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); this._gen = 0; }
 Object.defineProperty(__El.prototype, "clientWidth", { get(){
   return __geom.width - (this.id === "kgpanel" ? __scrollbar(this) : 0); } });
 Object.defineProperty(__El.prototype, "clientHeight", { get(){ return __geom.height; } });
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){
   const html = String(v), panel = this;
   this._html = html;
+  this._gen++;
   this._zoom = new __Stub();
   const svg = this._svg = new __Stub();
   const tag = html.match(/<svg class="kgsvg"[^>]*>/);
@@ -100,7 +130,7 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   if (high) svg.setAttribute("height", high[1]);
   if (box) svg.setAttribute("viewBox", box[1]);
   svg.getBoundingClientRect = function(){
-    return { left: __geom.padSide, top: __slotTop(html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
+    return { left: __geom.padSide, top: __slotTop(panel._html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
       height: Number(svg.getAttribute("height") || 0) };
   };
 } });
@@ -114,7 +144,22 @@ __El.prototype.querySelector = function(sel){
   return new __Stub();
 };
 __El.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
+// The frontier slot as an element: what the panel's markup holds in the slot, written in place there
+// with the drawing left as it is, as a browser does.
+function __Slot(panel){ this.id = "kgfrontier"; this._panel = panel; }
+Object.defineProperty(__Slot.prototype, "innerHTML", { get(){
+  const html = this._panel._html, span = __slotSpan(html);
+  return span ? html.slice(span[0], span[1]) : "";
+}, set(v){
+  const html = this._panel._html, span = __slotSpan(html);
+  this._panel._html = html.slice(0, span[0]) + String(v) + html.slice(span[1]);
+} });
+function __element(id){ return __els[id] || (__els[id] = new __El(id)); }
+const document = { getElementById: function(id){
+  if (id !== "kgfrontier") return __element(id);
+  const panel = __element("kgpanel");
+  return __slotSpan(panel._html) ? new __Slot(panel) : null;
+} };
 const window = { addEventListener: function(t, f){ (__winListeners[t] = __winListeners[t] || []).push(f); } };
 const setTimeout = function(){ return 0; };
 const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", paddingBottom: __geom.padBottom + "px" }; };
@@ -687,6 +732,163 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver, for the row `__ROW__` (`{writer, moved, resize}`): what the panel shows of the view it
+/// holds beyond the view's body - the `writer` row of `WRITERS` - is shown, still shown once the panel
+/// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
+/// makes it overflow), and still shown and answering after the panel is resized from a 1400px
+/// viewport to 800px (`window`) or narrowed by the 12px a scrollbar takes (`scrollbar`), the drawing
+/// filling the room below the toolbar and what it shows above the drawing. An untouched view redraws
+/// once from its held body; a `moved` one (panned after it was shown) redraws nothing and keeps its
+/// transform and its marks.
+const VIEW_STATE_DRIVER: &str = r##"
+;(async function(){
+  const ROW = __ROW__;
+  const at = ROW.writer + " on " + (ROW.moved ? "a moved" : "an untouched") + " view, "
+    + (ROW.resize === "window" ? "resized from 1400px to 800px" : "narrowed by the 12px a scrollbar takes") + ": ";
+  const A = "crates/crate-2/src/module_2.rs::Thing", B = "crates/crate-3/src/module_3.rs::Thing";
+  __CALLS.nodes[5].frontier = [A, B];
+  // Every request the page makes, a call walk answered for the seed and direction it asks for.
+  const asked = [];
+  const served = __graph;
+  __graph = function(url){
+    const s = String(url);
+    asked.push(s);
+    if (s.indexOf("view=calls") === -1) return served(url);
+    const seed = decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]);
+    const dir = (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1];
+    return { seed: seed, dir: dir, nodes: __CALLS.nodes, edges: __CALLS.edges };
+  };
+  // The redraws of the held view the page makes.
+  let redraws = 0;
+  const redraw = rerenderCurrentView;
+  rerenderCurrentView = function(){ redraws++; return redraw(); };
+  const panel = el("kgpanel");
+  const unesc = function(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); };
+  const camel = function(s){ return s.replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); };
+  // The element whose opening tag in the panel's markup carries mark, as the target of an event: its
+  // attributes, its data-* attributes as its dataset, whether it is open, and closest() answering
+  // itself for a [data-*] selector it carries. Null when no tag carries mark.
+  function element(mark){
+    const html = panel._html, i = html.indexOf(mark);
+    if (i === -1) return null;
+    const tag = html.slice(html.lastIndexOf("<", i), html.indexOf(">", i) + 1);
+    const attrs = {}, dataset = {}, re = /\s([\w-]+)(?:="([^"]*)")?/g;
+    let m;
+    while ((m = re.exec(tag)) !== null) {
+      attrs[m[1]] = m[2] === undefined ? "" : unesc(m[2]);
+      if (m[1].indexOf("data-") === 0) dataset[camel(m[1].slice(5))] = attrs[m[1]];
+    }
+    const node = { tag: tag, attrs: attrs, dataset: dataset, open: "open" in attrs, value: attrs.value };
+    node.closest = function(sel){
+      const want = sel.match(/^\[data-([\w-]+)\]$/);
+      return want && camel(want[1]) in dataset ? node : null;
+    };
+    return node;
+  }
+  // Dispatch an event of type to the panel's listeners, as from target; answers the event.
+  function dispatch(type, target){
+    const ev = { type: type, target: target, defaultPrevented: false,
+      preventDefault: function(){ ev.defaultPrevented = true; } };
+    (panel._listeners[type] || []).forEach(function(f){ f(ev); });
+    return ev;
+  }
+  // Let the panel settle as a browser does: while its client box differs from the one its size
+  // observer was last told of, tell it, and run the frames the page queued. A panel still changing
+  // after 8 rounds redraws in a loop. Answers the redraws the settling made.
+  let told = "";
+  const box = function(){ return panel.clientWidth + "x" + panel.clientHeight; };
+  function settle(what){
+    const before = redraws;
+    for (let round = 0; round < 8; round++) {
+      const now = box();
+      if (now === told && !__frames.length) return redraws - before;
+      if (now !== told) { told = now; __notify(); }
+      __frame();
+    }
+    throw new Error("REGRESSION: " + at + what + ", the panel never settles: it redrew " + (redraws - before) + " times in 8 frames");
+  }
+  // The drawing fills the room the panel leaves below its toolbar and what it shows above the
+  // drawing, at its surface's own size.
+  function placed(what){
+    const d = __atItsSurface(at + what);
+    const room = Math.max(200, Math.floor(__geom.height - __geom.padBottom - __slotTop(panel._html)));
+    if (d.height !== room)
+      throw new Error("REGRESSION: " + at + what + ", the drawing is " + d.height + "px tall where the panel leaves it "
+        + room + "px below its toolbar and what it shows above the drawing");
+  }
+  // What each writer shows: the view it shows it on, the act that shows it, what it shows now (to
+  // equal expect), and the click it answers.
+  const WRITERS = {
+    frontier: {
+      async open(){ seedCalls(__SUBJECT, "down"); await __flush(); },
+      async show(){
+        const node = element('data-frontier="1"');
+        if (!node) throw new Error(at + "the call walk must draw a frontier node to click");
+        dispatch("click", node);
+        await __flush();
+      },
+      shown(){
+        const span = __slotSpan(panel._html);
+        const listed = span ? panel._html.slice(span[0], span[1]).match(/data-candidate="[^"]*"/g) || [] : [];
+        return listed.map(function(a){ return unesc(a.slice('data-candidate="'.length, -1)); }).join("|");
+      },
+      expect: A + "|" + B,
+      async answer(){
+        const cand = element('data-candidate="' + A + '"');
+        if (!cand) throw new Error("REGRESSION: " + at + "the list must still offer " + A + " to choose");
+        const n = asked.length;
+        dispatch("click", cand);
+        await __flush();
+        const walk = asked.slice(n).filter(function(u){ return u.indexOf("view=calls") !== -1; })[0] || "";
+        if (walk.indexOf("seed=" + encodeURIComponent(A)) === -1 || walk.indexOf("dir=down") === -1)
+          throw new Error("REGRESSION: " + at + "choosing " + A + " must walk down from it (spec 52 c5), the page asked "
+            + JSON.stringify(asked.slice(n)));
+        if (kgMode !== "calls" || panel._html.indexOf("<b>" + A + "</b>") === -1)
+          throw new Error("REGRESSION: " + at + "choosing " + A + " must draw its walk, the panel holds " + panel._html.slice(0, 300));
+        if (this.shown() !== "")
+          throw new Error("REGRESSION: " + at + "the choice made must dismiss the list, it still lists " + this.shown());
+      }
+    }
+  };
+  const W = WRITERS[ROW.writer];
+  __size(__WIDE);
+  await __flush();
+  await W.open();
+  told = box();
+  settle("the view drawn");
+  await W.show();
+  if (W.shown() !== W.expect)
+    throw new Error(at + "showing it must show " + W.expect + ", it shows " + JSON.stringify(W.shown()));
+  settle("showing it");
+  if (W.shown() !== W.expect)
+    throw new Error("REGRESSION: " + at + "it must stay shown once the panel settles after showing it, it shows "
+      + JSON.stringify(W.shown()));
+  placed("showing it");
+  let kept = null, marks = null;
+  if (ROW.moved) {
+    __press(-30, 15);
+    kept = JSON.stringify(__view(at + "the pan"));
+    marks = __marks();
+  }
+  __size(ROW.resize === "window" ? __NARROW : [__WIDE[0] - __geom.scrollbar, __WIDE[1], __WIDE[2]]);
+  const made = settle("the resize");
+  if (W.shown() !== W.expect)
+    throw new Error("REGRESSION: " + at + "it must stay shown through the redraw, it shows " + JSON.stringify(W.shown()));
+  placed("the resize");
+  if (ROW.moved) {
+    const now = JSON.stringify(__view(at + "the resize"));
+    if (now !== kept || __marks() !== marks || made !== 0)
+      throw new Error("REGRESSION: " + at + "the moved view must keep its transform and its marks with no redraw, "
+        + now + " against " + kept + " after " + made + " redraws");
+  } else if (made !== 1) {
+    throw new Error("REGRESSION: " + at + "the untouched view must redraw once, not " + made + " times");
+  }
+  await W.answer();
+  console.log("OK the-redraw-keeps-what-the-panel-shows");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Runs `driver`, and claims it ends in `ok`.
 fn drive(driver: &str, ok: &str, claim: &str) {
     node_harness_claims(
@@ -780,5 +982,27 @@ rigger::test_cases! {
         RESIZE_DISCIPLINE_DRIVER,
         "OK the-panel-redraws-once-a-frame-and-only-on-a-new-size",
         "the panel must redraw at most once a frame, only on a new size, and never over a message or an empty slot",
+    );
+    /// The call view's frontier choice list, the view untouched, through a window resize.
+    the_frontier_list_stays_through_a_window_resize_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "frontier", "moved": false, "resize": "window"}"#);
+    /// The same list, the view panned after it was shown.
+    the_frontier_list_stays_through_a_window_resize_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "frontier", "moved": true, "resize": "window"}"#);
+    /// The same list, the panel narrowed by the 12px a scrollbar takes.
+    the_frontier_list_stays_through_a_scrollbar_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "frontier", "moved": false, "resize": "scrollbar"}"#);
+    /// The same, the view panned after the list was shown.
+    the_frontier_list_stays_through_a_scrollbar_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "frontier", "moved": true, "resize": "scrollbar"}"#);
+}
+
+/// What the panel shows of the view it holds, in the `{writer, moved, resize}` row `VIEW_STATE_DRIVER`
+/// reads, kept through the panel settling and a resize, and still answering.
+fn keeps_what_it_shows(row: &str) {
+    drive(
+        &VIEW_STATE_DRIVER.replace("__ROW__", row),
+        "OK the-redraw-keeps-what-the-panel-shows",
+        "a redraw must keep what the panel was showing, still answering",
     );
 }
