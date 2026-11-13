@@ -722,7 +722,8 @@ const MOVED_RESIZE_DRIVER: &str = r##"
 /// Driver: the page binds one size observer, on the panel, however many views it draws; a
 /// notification at the size the drawing was drawn at redraws nothing, while a change of width alone
 /// redraws; three size changes within a frame queue one redraw; and a panel holding a message, or the
-/// empty slot a draw that threw left, rather than a drawing keeps what it holds.
+/// empty slot a draw that threw left, rather than a drawing keeps what it holds. The message also
+/// stays through the overlay toggle and any other redraw of the held view, as it replaced that view.
 const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 ;(async function(){
   const at = "1400px: ";
@@ -757,6 +758,15 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
   __frame();
   if (panel._html !== message)
     throw new Error("REGRESSION: " + at + "a panel holding a message must keep it through a resize, not " + panel._html.slice(0, 200));
+  await setOverlay(true);
+  if (panel._html !== message)
+    throw new Error("REGRESSION: " + at + "a message must keep the panel through the overlay toggle, not the view it replaced: "
+      + panel._html.slice(0, 200));
+  rerenderCurrentView();
+  if (panel._html !== message)
+    throw new Error("REGRESSION: " + at + "a message must keep the panel through a redraw of the held view (the card docking, a"
+      + " frontier choice), as it replaced that view: " + panel._html.slice(0, 200));
+  await setOverlay(false);
   loadKgOverview();
   await __flush();
   __overviewAt(at, "overview drawn before a draw that throws");
@@ -1172,7 +1182,8 @@ rigger::test_cases! {
         "OK a-moved-view-keeps-its-transform-and-marks-through-a-resize",
         "a panned or zoomed view must keep its transform and marks through a resize, only its surface resized",
     );
-    /// One observer, one redraw a frame, none at an unchanged size or over a message or an empty slot.
+    /// One observer, one redraw a frame, none at an unchanged size or over a message or an empty slot,
+    /// and a message keeping the panel through the overlay toggle.
     the_panel_redraws_once_a_frame_and_only_on_a_new_size: drive(
         RESIZE_DISCIPLINE_DRIVER,
         "OK the-panel-redraws-once-a-frame-and-only-on-a-new-size",
