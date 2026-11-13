@@ -6653,16 +6653,18 @@ mod tests {
         );
     }
 
-    /// GIVEN the served page, WHEN the card or the rail shows a name with no break opportunity in
-    /// it (a long path, an id), THEN the name wraps inside the pane and never scrolls it sideways:
-    /// each pane wraps anywhere (`overflow-wrap: anywhere`, which every row and chip its renderer
-    /// writes inside it inherits, and which, unlike `break-word`, lets an inline-block chip shrink
-    /// to the pane's width), docked or stacked, and no rule styling a part a pane's renderer
-    /// writes (a `kgcard-` or `kgrail-` class) wraps it otherwise or keeps it on one line. Layout
-    /// is outside what the page harness can run, so this reads the panes' rules through the
-    /// page's own stylesheet.
+    /// GIVEN the served page, WHEN the card, the rail or the call view's frontier list shows a
+    /// name with no break opportunity in it (a long path, an id), THEN the name wraps inside it and
+    /// never scrolls it, or the panel holding it, sideways: each wraps anywhere (`overflow-wrap:
+    /// anywhere`, which every row, chip and candidate its renderer writes inside it inherits, and
+    /// which, unlike `break-word`, lets an inline-block chip shrink to the pane's width), docked or
+    /// stacked, and no rule styling a part one's renderer writes (a `kgcard-`, `kgrail-` or `kgfr`
+    /// class) wraps it otherwise or keeps it on one line. The frontier list is a slot the page's
+    /// script writes into the panel, so the rule wrapping it is read where it selects the slot's
+    /// class, at the top level of the stylesheet. Layout is outside what the page harness can run,
+    /// so this reads these rules through the page's own stylesheet.
     #[test]
-    fn a_long_name_wraps_inside_the_card_and_the_rail() {
+    fn a_long_name_wraps_inside_the_card_the_rail_and_the_frontier_list() {
         let page = live_page();
         let style = ExplorerStyle::read(&page);
         for body in [400.0, 1400.0] {
@@ -6676,12 +6678,25 @@ mod tests {
                 );
             }
         }
+        let wraps_the_list = style_rules(&page).iter().any(|rule| {
+            rule.at.is_none()
+                && rule.selectors.contains(&".kgfrontier")
+                && rule
+                    .declarations
+                    .iter()
+                    .any(|(name, value)| name == "overflow-wrap" && value == "anywhere")
+        });
+        assert!(
+            wraps_the_list,
+            "the frontier list (.kgfrontier) wraps a long name anywhere, so every candidate its \
+             renderer writes inside it wraps inside the panel"
+        );
         let mut parts = 0;
         for rule in style_rules(&page) {
             let styles_a_part = rule
                 .selectors
                 .iter()
-                .any(|s| s.contains(".kgcard-") || s.contains(".kgrail-"));
+                .any(|s| s.contains(".kgcard-") || s.contains(".kgrail-") || s.contains(".kgfr"));
             if !styles_a_part {
                 continue;
             }
