@@ -4278,8 +4278,8 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
 /// a liveness guard claims).
 ///
-/// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`],
-/// acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
+/// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`] of
+/// `scratch_root`, acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
 /// ([`rigger::gate`]'s `ExecRunner::run`, via an exec-replacing `flock -s -F` wrapper around
 /// the gate command itself) holds the SAME guard SHARED for as long as its cargo/rustc
 /// process tree is alive, so this can only succeed when no such build is in flight - on
@@ -4316,12 +4316,8 @@ fn reclaim_shared_build_cache(
     cache: &Path,
     scratch_root: &Path,
 ) -> std::io::Result<BuildCacheReclaim> {
-    let guard_path = rigger::worktree::shared_build_cache_guard_path(
-        &cache
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_string_lossy(),
-    );
+    let guard_path =
+        rigger::worktree::shared_build_cache_guard_path(&scratch_root.to_string_lossy());
     let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
     // Fully-qualified, matching `gate::probe_build_cache_guard`'s own reasoning: std's
     // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
