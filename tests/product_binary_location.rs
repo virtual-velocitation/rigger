@@ -23,13 +23,13 @@ use std::path::{Path, PathBuf};
 
 /// The derivation, as a pure function of where the test executable sits, over both layouts cargo
 /// runs an integration suite from: `<target>/<profile>/deps/<suite>-<hash>` before cargo 1.100,
-/// and `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` from 1.100 on. Either way
-/// cargo uplifts the product binary to `<target>/<profile>/`, so a moved target dir resolves to
-/// its own product, never to the one the suite was compiled beside. Any other path is not a
-/// cargo-run suite, and the derivation declines rather than invent a sibling path, which lets
-/// [`common::rigger_bin`] fall back honestly instead of returning a path nobody built. The rule
-/// is expressed over a path rather than over the process so it can be pinned without moving a
-/// 174 MiB binary around.
+/// and `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` by default from 1.100 on.
+/// Either way cargo uplifts the product binary to `<target>/<profile>/`, so a moved target dir
+/// resolves to its own product, never to the one the suite was compiled beside. Any other path is
+/// not a cargo-run suite, and the derivation declines rather than invent a sibling path, which
+/// lets [`common::rigger_bin`] fall back honestly instead of returning a path nobody built. The
+/// rule is expressed over a path rather than over the process so it can be pinned without moving
+/// a 174 MiB binary around.
 #[test]
 fn the_product_binary_is_derived_from_either_cargo_layout_and_from_nothing_else() {
     let product = |profile: &str| {

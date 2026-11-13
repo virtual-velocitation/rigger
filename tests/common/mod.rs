@@ -50,9 +50,10 @@ pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
 /// integration suite from.
 ///
 /// Cargo before 1.100 runs a suite from `<target>/<profile>/deps/<suite>-<hash>`. Cargo 1.100
-/// made its build-unit layout the only one: a suite runs from its own unit's output dir,
-/// `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>`. Each shape is matched whole,
-/// by structure; nothing is searched for upward, and anything else is declined.
+/// made its build-unit layout the default: a suite runs from its own unit's output dir,
+/// `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` (cargo's private opt-out still
+/// gives the old shape). Each shape is matched whole, by structure; nothing is searched for
+/// upward, and anything else is declined.
 pub fn suite_profile_dir(test_exe: &Path) -> Option<&Path> {
     let dir = test_exe.parent()?;
     let name = dir.file_name()?;
