@@ -11,9 +11,10 @@
 //! exactly that error.
 //!
 //! [`common::product_binary_from`] removes the coupling: it derives the product path from the
-//! RUNNING test executable, which cargo places at `<target>/<profile>/deps/<suite>-<hash>`, so
-//! the answer always names the target dir the test is actually running out of. These tests pin
-//! that derivation and pin that every suite goes through the one authority.
+//! RUNNING test executable, which cargo places under `<target>/<profile>/` in one of two layouts
+//! (see [`common::suite_profile_dir`]), so the answer always names the target dir the test is
+//! actually running out of. These tests pin that derivation and pin that every suite goes through
+//! the one authority.
 
 use crate::common;
 
@@ -108,10 +109,12 @@ fn the_resolved_product_binary_exists_in_the_target_dir_this_suite_runs_from() {
         bin.display()
     );
     let exe = std::env::current_exe().expect("the running test executable");
-    let profile_dir = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("<target>/<profile>/deps/<suite>");
+    let profile_dir = common::suite_profile_dir(&exe).unwrap_or_else(|| {
+        panic!(
+            "cargo ran this suite from {}, a layout the derivation does not recognise",
+            exe.display()
+        )
+    });
     assert_eq!(
         bin.parent(),
         Some(profile_dir),
