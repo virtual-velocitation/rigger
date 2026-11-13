@@ -397,20 +397,24 @@ pub enum Lens {
     /// [`cluster_key`]. Byte-identical to a `lens`-absent request.
     Files,
     /// The CODE fold (spec 53): a node with a live `IN_COMMUNITY` membership at `resolution` buckets
-    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id); a membership-less node keeps
-    /// its KIND bucket (so the view stays whole-graph). The `resolution` grain string selects which
-    /// derived grain to read.
+    /// by its coupling COMMUNITY (its `community/<resolution>/<n>` id). The whole-graph overview and
+    /// drill fold code entities alone and leave a membership-less one out entirely (spec 63,
+    /// `whole_graph_lens_key`); a subject re-projection keeps a membership-less member in its KIND
+    /// bucket ([`Buckets::key`]). The `resolution` grain string selects which derived grain to read;
+    /// a grain with no derived assignments is the overview's empty state.
     Code {
         /// The resolution grain to read, as the community id's grain segment (e.g. `1`, `1.5`).
         resolution: String,
     },
     /// The CONCEPTS fold (spec 54): a node with a live `REALIZES` membership at `resolution` buckets
     /// by its intent CONCEPT (its `concept/<resolution>/<n>` id) - the idea the docs and code realize,
-    /// grouped across directory lines; a membership-less node keeps its KIND bucket (so the view stays
-    /// whole-graph). A node realizing MORE THAN ONE concept folds under its PRIMARY (the largest
-    /// concept by member count, ties by lexicographically-smallest id) and is flagged `shared` -
-    /// counted once, never silently duplicated. The `resolution` grain string selects which derived
-    /// grain to read.
+    /// grouped across directory lines. The whole-graph overview and drill leave a membership-less node
+    /// of any kind out entirely (spec 63, `whole_graph_lens_key`); a subject re-projection keeps a
+    /// membership-less member in its KIND bucket ([`Buckets::key`]). A node realizing MORE THAN ONE
+    /// concept folds under its PRIMARY (the largest concept by member count, ties by
+    /// lexicographically-smallest id) and is flagged `shared` - counted once, never silently
+    /// duplicated. The `resolution` grain string selects which derived grain to read; a grain with no
+    /// derived assignments is the overview's empty state.
     Concepts {
         /// The resolution grain to read, as the concept id's grain segment (e.g. `1`, `1.5`).
         resolution: String,
@@ -419,7 +423,7 @@ pub enum Lens {
 
 impl Lens {
     /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
-    /// `lens=concepts` the concepts fold, each at the grain `resolution=` selects ([`selected_grain`]:
+    /// `lens=concepts` the concepts fold, each at the grain `resolution=` selects (`selected_grain`:
     /// the derivation's default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] /
     /// [`DEFAULT_CONCEPT_RESOLUTION`] - when absent or empty); every other value - `lens=files`, an
     /// unknown lens, or an absent one - resolves to [`Lens::Files`], the byte-identical default. Total
