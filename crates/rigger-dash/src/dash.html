@@ -11,6 +11,11 @@
     --bad: #f87171; --dim: #3a4150;
   }
   * { box-sizing: border-box; }
+  /* The page's scrolling root keeps its scrollbar's gutter whether or not the page overflows, so
+     the body's width is one function of the viewport's and never of how much the page holds: what
+     the explorer docks at a width (see .kgbody) does not depend on whether its stacked panes made
+     the page scroll. An overlay scrollbar takes no gutter. */
+  html { scrollbar-gutter: stable; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
