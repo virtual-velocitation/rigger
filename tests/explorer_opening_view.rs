@@ -914,6 +914,101 @@ const STALE_REPLY_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver, at 1400px: the code lens's grain box clicked into, its text selected, "2" typed over it and
+/// Enter pressed, then ".5" typed while the read at 2 is in flight. The reply landing while the box
+/// holds the focus leaves the box reading "2.5" with the focus and the caret after it, the view
+/// reading the grain committed, and Enter then commits 2.5. The box emptied and Enter pressed with
+/// nothing more typed shows the grain the reply names, the server's default. A text typed and never
+/// committed while a drill read is in flight goes with the box the drill replaces: the overview
+/// asked for next shows the grain it reads.
+const DRAFT_REPLY_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px, a grain typed on while the read of the one committed is in flight: ";
+  const panel = el("kgpanel");
+  const urls = function(){ return JSON.stringify(__held.map(function(h){ return h.url; })); };
+  // A code-lens reply is a new body every read, as a parsed reply is, naming the grain it displays:
+  // the grain asked for, or the server's default "1" for a read that names none.
+  const served = __graph;
+  __graph = function(url){
+    const s = String(url), body = served(url);
+    if (s.indexOf("lens=code") === -1) return body;
+    return Object.assign({}, body, { grain: decodeURIComponent((s.match(/[?&]resolution=([^&]*)/) || [null, ""])[1]) || "1" });
+  };
+  const box = function(){ return panel.querySelector("[data-lens-res]"); };
+  // Text typed over the box's selection, and the input event it fires.
+  function keys(text){
+    const b = box(), from = b.selectionStart;
+    b.value = b.value.slice(0, from) + text + b.value.slice(b.selectionEnd);
+    b.setSelectionRange(from + text.length, from + text.length);
+    __reach(panel, { type: "input", target: b });
+  }
+  // Enter: the box's keydown, then the change it commits.
+  function enter(){
+    const b = box();
+    __reach(panel, { type: "keydown", target: b, key: "Enter" });
+    b._commit();
+  }
+  function shows(){
+    const b = box();
+    return JSON.stringify(b.value)
+      + (document.activeElement === b ? " focused, caret " + b.selectionStart + "-" + b.selectionEnd : " unfocused");
+  }
+  __size(__WIDE);
+  await __flush();
+  kgLens = "code";
+  loadKgOverview();
+  await __flush();
+  __held = [];
+  box().focus();
+  box().setSelectionRange(0, box().value.length);
+  keys("2");
+  enter();
+  await __flush();
+  if (__held.length !== 1 || !/[?&]resolution=2(&|$)/.test(__held[0].url))
+    throw new Error(at + "Enter must read the code lens once at 2, the page read " + urls());
+  keys(".5");
+  __held[0].land();
+  await __flush();
+  if (shows() !== '"2.5" focused, caret 3-3')
+    throw new Error("REGRESSION: " + at + "the reply must leave the box holding the text typed after Enter, with the focus and "
+      + "the caret after it, the box shows " + shows());
+  if (kgResolution !== "2") throw new Error(at + "the view must read the grain committed, 2, it reads " + kgResolution);
+  enter();
+  await __flush();
+  if (__held.length !== 2 || !/[?&]resolution=2\.5(&|$)/.test(__held[1].url))
+    throw new Error("REGRESSION: " + at + "Enter must then commit the text kept, reading the code lens at 2.5, the page read " + urls());
+  __held[1].land();
+  await __flush();
+  box().setSelectionRange(0, box().value.length);
+  keys("");
+  enter();
+  await __flush();
+  if (__held.length !== 3 || /[?&]resolution=[^&]/.test(__held[2].url))
+    throw new Error(at + "Enter on the emptied box must read the code lens at no grain, the page read " + urls());
+  __held[2].land();
+  await __flush();
+  if (shows() !== '"1" focused, caret 0-0')
+    throw new Error("REGRESSION: " + at + "the box emptied and committed with nothing more typed must show the grain the reply names, "
+      + "with the focus, it shows " + shows());
+  drillCluster(__CLUSTER);
+  await __flush();
+  box().focus();
+  box().setSelectionRange(0, box().value.length);
+  keys("3");
+  __held[3].land();
+  await __flush();
+  if (kgMode !== "drill" || box()) throw new Error(at + "the drill must draw in place of the overview, the panel holds " + panel._html.slice(0, 300));
+  loadKgOverview();
+  await __flush();
+  __held[4].land();
+  await __flush();
+  if (shows() !== '"1" unfocused')
+    throw new Error("REGRESSION: " + at + "a text never committed must go with the box a drill replaced, the overview asked for next "
+      + "showing the grain it reads, 1, it shows " + shows());
+  console.log("OK a-draft-outlives-the-reply");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Driver, for the row `__ROW__` (`{writer, pan, resize}`): what the panel shows of the view it
 /// holds beyond the view's body - the `writer` row of `WRITERS` - is shown, still shown once the panel
 /// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
@@ -1327,6 +1422,12 @@ rigger::test_cases! {
         STALE_REPLY_DRIVER,
         "OK a-stale-reply-is-dropped",
         "a reply that lands after a read asked after it must change nothing the panel shows",
+    );
+    /// The text typed in the grain box after a commit outlives the reply to that commit.
+    a_draft_outlives_the_reply_to_the_grain_committed: drive(
+        DRAFT_REPLY_DRIVER,
+        "OK a-draft-outlives-the-reply",
+        "the text typed in a focused grain box must outlive a reply landing, the view reading the grain committed",
     );
     /// The call view's frontier choice list, the view untouched, through a window resize.
     the_frontier_list_stays_through_a_window_resize_of_an_untouched_view:
