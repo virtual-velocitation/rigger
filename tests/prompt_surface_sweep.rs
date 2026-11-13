@@ -233,7 +233,7 @@ const ALLOW_LIST: &[Allowed] = &[
         OperatorMessage,
         &[
             "graph build: this build keeps no code store",
-            "graph {verb}: {} over {members} node(s) at resolution {resol",
+            "graph {verb}: {} over {members} node(s) at resolution {}",
             "graph {verb}: unknown argument {other:?}",
         ],
     ),
