@@ -882,6 +882,13 @@ pub struct Defaults {
     pub max_unit_added_lines: u32,
 }
 
+impl Defaults {
+    /// The declared test author's id: `test_author` when it is non-empty, else `None`.
+    pub fn declared_test_author(&self) -> Option<&str> {
+        Some(self.test_author.as_str()).filter(|id| !id.is_empty())
+    }
+}
+
 /// Stage is one node of the workflow DAG.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1844,6 +1851,22 @@ mod tests {
             Gate::default().post_merge,
             "a defaulted gate runs post-merge, as a parsed one without the key does"
         );
+    }
+
+    /// A test author is declared exactly when `defaults.test_author` is non-empty: the key's
+    /// own text is the declared id, a blank one included, and an absent or empty key declares none.
+    #[test]
+    fn the_declared_test_author_is_the_key_unless_it_is_empty() {
+        for (yaml, declared) in [
+            ("{}", None),
+            ("{ test_author: '' }", None),
+            ("{ test_author: ' ' }", Some(" ")),
+            ("{ test_author: test-writer }", Some("test-writer")),
+        ] {
+            let defaults: Defaults = parse_yaml_naming_unknown_keys(yaml)
+                .unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
+            assert_eq!(defaults.declared_test_author(), declared, "{yaml}");
+        }
     }
 
     #[test]

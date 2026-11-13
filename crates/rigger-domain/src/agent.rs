@@ -163,9 +163,9 @@ pub struct SpawnOpts {
     /// invocations hit the same wrapper cache under the same settings a gate build
     /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit
     /// [`BUILD_CACHE_ENV`](crate::spawn::BUILD_CACHE_ENV) (absent when this spawn's `dir`
-    /// has no unit sibling, so a review-only, planner or canary spawn carries none), so those SAME
-    /// invocations land in the one per-unit cache a gate build for that `dir` gets,
-    /// never an embedded `target/` dir inside the worktree. The blocking cli driver
+    /// has no unit sibling, so a standalone review spawn, `re_plan`'s planner or a canary spawn
+    /// carries none), so those SAME invocations land in the one per-unit cache a gate build
+    /// for that `dir` gets, never an embedded `target/` dir inside the worktree. The blocking cli driver
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
     /// own (a test double) may ignore it.
     pub env: Vec<(String, String)>,

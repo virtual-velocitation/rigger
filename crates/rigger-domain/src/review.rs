@@ -323,11 +323,12 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     step_roster(&steps, steps.len(), review_step_role)
 }
 
-/// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
-/// output contract, and the spec text verbatim as its tail - in that order. With `recorded`
+/// The spec critique prompt (spec 112): the task framing with the voided-duties clause
+/// ([`CRITIQUE_FRAMING`]), the output contract ([`CRITIQUE_OUTPUT_CONTRACT`]), and the spec path
+/// and its text verbatim as the tail ([`CRITIQUE_SPEC_TAIL`]) - in that order. With `recorded`
 /// findings (spec 123), the [`CRITIQUE_RECORDED_FINDINGS`] clause and one line per finding, its
 /// [`summary`](CritiqueFinding::summary), in the order given, then a blank line, stand between
-/// the output contract and the spec text; with none, the prompt is the spec path and text alone.
+/// the output contract and the tail; with none, the output contract runs straight into the tail.
 /// The method stands in the critic's persona; a persona without it still critiques under the
 /// output contract.
 pub fn spec_critique_prompt<'a>(
@@ -1445,10 +1446,9 @@ mod tests {
     #[test]
     fn the_spec_critique_prompt_is_its_groups_concatenated_on_each_branch() {
         use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups = |names: &[&str]| {
-            rendered_groups(prompt_groups(), "review::spec_critique_prompt", names)
-        };
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(prompt_groups());
+        let groups = |names: &[&str]| picks.rendered("review::spec_critique_prompt", names);
         let recorded = finding(
             "{id}",
             true,
