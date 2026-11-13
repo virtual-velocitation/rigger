@@ -19014,6 +19014,38 @@ rigger::test_cases! {
         );
 }
 
+/// `rigger docs --check` and `rigger docs` from a subdirectory of a repository check and render
+/// the docs of the project in the caller's worktree, as at its root: the check reports every
+/// output the root holds, the render names the root's outputs, and nothing is written in the
+/// subdirectory.
+#[test]
+fn docs_from_a_subdirectory_check_and_render_the_project_at_its_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let sub = root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let at_root = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    let (out, err, ok) = run_rigger(&sub, &["docs", "--check"]);
+    let every_fresh: String = at_root.iter().map(|rel| format!("fresh {rel}\n")).collect();
+    assert!(
+        ok && out == every_fresh,
+        "below the root the check reports the root's outputs fresh; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        rendered_outputs(&run_rigger_ok(&sub, &["docs"])),
+        at_root,
+        "below the root `rigger docs` renders the root's outputs"
+    );
+    let written: Vec<_> = std::fs::read_dir(&sub)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "nothing is written in the subdirectory; it holds {written:?}"
+    );
+}
+
 /// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
 /// end): `rigger docs` renders EVERY entry in the binary's handbook-page list - not only the
 /// pre-existing `using-rigger.md` discipline chapter, but the second, generalized entry
