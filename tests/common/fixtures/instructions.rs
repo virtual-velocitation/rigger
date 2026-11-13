@@ -290,6 +290,23 @@ pub const PROGRESS_CADENCE: [&str; 3] = [
     "Keep it flowing WHILE you work; do not batch it at the end.",
 ];
 
+/// The words every wording of the progress cadence has carried, the bullet above and the frame
+/// and tool texts it replaced, in lower case: a text holding none of them, whatever their case,
+/// states no cadence in any wording, not only not the bullet's.
+pub const PROGRESS_CADENCE_MARKS: [&str; 2] = ["each significant step", "keep it flowing"];
+
+/// `text`, which `what` names, states no progress cadence in any wording: it holds none of
+/// [`PROGRESS_CADENCE_MARKS`], whatever their case, each of which the bullet itself holds once.
+pub fn assert_states_no_progress_cadence(what: &str, text: &str) {
+    assert_carries_each(
+        "the progress bullet",
+        &PROGRESS_CADENCE.join(" ").to_lowercase(),
+        &PROGRESS_CADENCE_MARKS,
+        1,
+    );
+    assert_carries_each(what, &text.to_lowercase(), &PROGRESS_CADENCE_MARKS, 0);
+}
+
 /// The heading line the communication built-in opens in a composed system prompt.
 pub const COMMUNICATION_SECTION: &str = "\n## communication\n";
 

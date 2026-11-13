@@ -50,8 +50,8 @@ use common::cli::{
 };
 use common::fixtures::file_len;
 use common::fixtures::{
-    api_retry_lines, recorded_argv, recorded_task, stand_in_launches, ERROR_RESULT,
-    GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
+    api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
+    ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
 };
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
@@ -4418,8 +4418,10 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 session,
                 recorded_task(&fake.path().join("bin/first-message-at-the-second-launch"))
             )),
-            case.note
-                .map(|note| (first_session, format!("{note}{LIVE_PROGRESS_FRAME}"))),
+            case.note.map(|note| (
+                first_session,
+                format!("{note}{}", headless_progress_frame())
+            )),
             "{name}: the second launch resumes the first launch's session with the note, or \
              launches fresh; argv: {argv:?}"
         );
@@ -6796,11 +6798,6 @@ fn cut_a_run_branch_tracking(root: &Path, copies: &[common::fixtures::HelperFile
     git_ok(root, &["checkout", "-q", "-"]);
 }
 
-/// The live-progress frame closing a launch's first user message: the progress verb and its
-/// argument only, since when to report is the communication built-in's.
-const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
-     line by calling the mcp__rigger__rigger_progress tool with that line as its activity.";
-
 /// The last spawn `rigger canary` launches over the one-item canary panel project: the
 /// adjudicator's natural-order probe, its only one while the panel raises no finding.
 #[cfg(unix)]
@@ -6837,18 +6834,21 @@ fn cli_launch() -> (String, String) {
 /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME, end to end, with spec 105's live-progress frame:
 /// given a project, when the operator launches a spawn through each host - `rigger run` through
 /// the headless host and `rigger canary` through the cli host - then the spawn's system prompt
-/// carries each sentence of the communication built-in's progress bullet once and its task none,
-/// and its task closes, once, with that host's frame naming its progress verb and the verb's
-/// arguments.
+/// carries each sentence of the communication built-in's progress bullet once, its task states
+/// the cadence in no wording, and its task closes, once, with that host's frame naming its
+/// progress verb and the verb's arguments.
 #[cfg(unix)]
 #[test]
 fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_prompt() {
-    use common::fixtures::{assert_carries_each, cli_progress_frame, PROGRESS_CADENCE};
+    use common::fixtures::{
+        assert_carries_each, assert_states_no_progress_cadence, cli_progress_frame,
+        DRIVER_SEPARATOR, PROGRESS_CADENCE,
+    };
     let hosts: [(&str, HostLaunch, String); 2] = [
         (
             "the headless host",
             headless_launch,
-            LIVE_PROGRESS_FRAME.to_string(),
+            headless_progress_frame(),
         ),
         (
             "the cli host",
@@ -6864,13 +6864,13 @@ fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_promp
             &PROGRESS_CADENCE,
             1,
         );
-        assert_carries_each(&format!("{host}'s task"), &task, &PROGRESS_CADENCE, 0);
+        assert_states_no_progress_cadence(&format!("{host}'s task"), &task);
         assert!(
             task.ends_with(frame.as_str()),
             "{host}: the frame closes the task: {task:?}"
         );
         assert_eq!(
-            task.matches("--- rigger driver ---").count(),
+            task.matches(DRIVER_SEPARATOR).count(),
             1,
             "{host}: the task is framed once: {task:?}"
         );
@@ -6905,17 +6905,16 @@ rigger::test_cases! {
     /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a
     /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
     /// `rigger_progress` entry names what the tool records and its argument only, and no tool of
-    /// the list carries a sentence of the progress cadence, which the spawn's system prompt states.
+    /// the list states the progress cadence in any wording, which the spawn's system prompt
+    /// states.
     a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence:
-        common::fixtures::assert_carries_each(
+        common::fixtures::assert_states_no_progress_cadence(
             "the spawn's tool list",
             &assert_a_spawns_server_lists(
                 "rigger_progress",
                 common::fixtures::progress_tool_entry(),
             )
             .to_string(),
-            &common::fixtures::PROGRESS_CADENCE,
-            0,
         );
     /// Spec 121's THE SCRATCH TOOL NAMES NO TOOLCHAIN at a spawn's own MCP server: given a
     /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
@@ -7749,7 +7748,7 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     assert_eq!(flag_value(&argv, "--resume"), session);
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{RED_GATE_RETRY_TASK}{LIVE_PROGRESS_FRAME}"),
+        format!("{RED_GATE_RETRY_TASK}{}", headless_progress_frame()),
         "the resumed launch's first message is the retry task, framed once"
     );
 }
@@ -8240,7 +8239,8 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
-             {LIVE_PROGRESS_FRAME}"
+             {}",
+            headless_progress_frame()
         ),
         "the fallback's launch carries the whole prompt, not the resumed session's short task"
     );
@@ -8502,12 +8502,13 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{LIVE_PROGRESS_FRAME}"
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}",
+                        headless_progress_frame()
                     ),
                     "{at}: the resumed session's whole task"
                 );
             } else {
-                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{LIVE_PROGRESS_FRAME}");
+                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{}", headless_progress_frame());
                 assert_eq!(
                     (
                         closing.matches(DOC_ONLY_ROUND_FACT).count(),
@@ -11340,7 +11341,8 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             forked.as_str(),
             format!(
                 "This session was interrupted: rigger's supervisor restarted. Continue where you \
-                 left off.{LIVE_PROGRESS_FRAME}"
+                 left off.{}",
+                headless_progress_frame()
             ),
             cwd,
         ),

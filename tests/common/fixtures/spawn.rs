@@ -166,12 +166,29 @@ pub fn first_message_task(line: &str) -> String {
         .to_string()
 }
 
-/// The frame the cli host closes spawn `id`'s task with: the driver's separator, then the line
-/// naming the `rigger progress` command and its arguments only.
+/// The separator a process host's frame opens with, between a spawn's task and its progress line.
+pub const DRIVER_SEPARATOR: &str = "\n\n--- rigger driver ---\n";
+
+/// The frame a process host closes a spawn's task with: the [`DRIVER_SEPARATOR`], then the line
+/// naming how the spawn records a progress line on that host, `report` its verb and that verb's
+/// arguments only, since when to report is the communication built-in's.
+pub fn progress_frame(report: &str) -> String {
+    format!("{DRIVER_SEPARATOR}LIVE PROGRESS: record a progress line {report}.")
+}
+
+/// The [`progress_frame`] the cli host closes spawn `id`'s task with: the `rigger progress`
+/// command and its arguments.
 pub fn cli_progress_frame(id: &str) -> String {
-    format!(
-        "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running (Bash): \
-         rigger progress '{id}' '<one line: what you just did>'."
+    progress_frame(&format!(
+        "by running (Bash): rigger progress '{id}' '<one line: what you just did>'"
+    ))
+}
+
+/// The [`progress_frame`] the headless host closes a launch's first user message with: the
+/// progress tool and its one argument.
+pub fn headless_progress_frame() -> String {
+    progress_frame(
+        "by calling the mcp__rigger__rigger_progress tool with that line as its activity",
     )
 }
 
