@@ -53,8 +53,12 @@ use vm_harness::vm_harness;
 /// view's frontier slot (`#kgfrontier`) is a view onto the panel's markup, written in place there
 /// with the drawing left as it is, and takes an 18px line for its head and each candidate it lists;
 /// `_gen` counts the markups the panel is given, so a driver can tell what the page wrote from what
-/// it drew again. `window` records its listeners, a size observer is recorded with what it watches
-/// for the driver to notify, and an animation frame waits in `__frames` until the driver runs it.
+/// it drew again. The grain box a markup writes (`[data-lens-res]`) is a text box as a browser makes
+/// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; a markup that
+/// replaces the box holding the focus takes the focus with it and sends the box `focusout`, as a
+/// browser may (Firefox sends none). `window` records its listeners, a size observer is recorded
+/// with what it watches for the driver to notify, and an animation frame waits in `__frames` until
+/// the driver runs it.
 /// Free of backticks and `${` so it embeds in the harness's `String.raw` template.
 const PANEL_SHIM: &str = r##"
 const __els = {};
@@ -113,9 +117,27 @@ function __scrollbar(panel){
   const holds = __slotTop(html) + Number(panel._svg.getAttribute("height") || 0) + below + __geom.padBottom;
   return holds > __geom.height ? __geom.scrollbar : 0;
 }
+function __unesc(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+  .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); }
+// The grain box the panel's markup writes: its value and default the value the markup wrote, its
+// caret at its end, connected while it is the box the panel hands out.
+function __Box(panel){
+  const tag = panel._html.match(/<input [^>]*data-lens-res[^>]*>/), v = tag && tag[0].match(/ value="([^"]*)"/);
+  this._panel = panel;
+  this.value = this.defaultValue = v ? __unesc(v[1]) : "";
+  this.selectionStart = this.selectionEnd = this.value.length;
+}
+__Box.prototype.closest = function(sel){ return sel === "[data-lens-res]" ? this : null; };
+__Box.prototype.setSelectionRange = function(a, b){ this.selectionStart = a; this.selectionEnd = b; };
+__Box.prototype.focus = function(){
+  document.activeElement = this;
+  (this._panel._listeners.focusin || []).forEach(function(f){ f({ type: "focusin", target: this }); }, this);
+};
+Object.defineProperty(__Box.prototype, "isConnected", { get(){ return this._panel._box === this; } });
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
   this.hidden = false; this.className = ""; this.checked = false; this.classList = __classList;
-  this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); this._gen = 0; }
+  this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); this._gen = 0;
+  this._box = null; }
 Object.defineProperty(__El.prototype, "clientWidth", { get(){
   return __geom.width - (this.id === "kgpanel" ? __scrollbar(this) : 0); } });
 Object.defineProperty(__El.prototype, "clientHeight", { get(){ return __geom.height; } });
@@ -133,6 +155,12 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
     return { left: __geom.padSide, top: __slotTop(panel._html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
       height: Number(svg.getAttribute("height") || 0) };
   };
+  const held = this._box;
+  this._box = null;
+  if (held && document.activeElement === held) {
+    document.activeElement = null;
+    (this._listeners.focusout || []).forEach(function(f){ f({ type: "focusout", target: held }); });
+  }
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: __geom.width, height: __geom.height }; };
@@ -141,6 +169,7 @@ __El.prototype.querySelector = function(sel){
   if (this.id !== "kgpanel") return new __Stub();
   if (sel === "#kgzoom") return this._html.indexOf('id="kgzoom"') === -1 ? null : this._zoom;
   if (sel === "svg" || sel === ".kgsvg" || sel === "svg.kgsvg") return this._html.indexOf("<svg") === -1 ? null : this._svg;
+  if (sel === "[data-lens-res]") return this._html.indexOf("data-lens-res") === -1 ? null : this._box || (this._box = new __Box(this));
   return new __Stub();
 };
 __El.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
@@ -155,7 +184,7 @@ Object.defineProperty(__Slot.prototype, "innerHTML", { get(){
   this._panel._html = html.slice(0, span[0]) + String(v) + html.slice(span[1]);
 } });
 function __element(id){ return __els[id] || (__els[id] = new __El(id)); }
-const document = { getElementById: function(id){
+const document = { activeElement: null, getElementById: function(id){
   if (id !== "kgfrontier") return __element(id);
   const panel = __element("kgpanel");
   return __slotSpan(panel._html) ? new __Slot(panel) : null;
@@ -339,8 +368,6 @@ const OPENING_DRIVER: &str = r##"
 ;(async function(){
   const HULL_CHAR_W = 10 * (0.6 + 0.08);
   const TOL = 0.5;
-  const unesc = function(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); };
   const dirs = function(body){ return new Set(body.clusters.map(function(c){
     const i = c.key.lastIndexOf("/"); return i === -1 ? "(root)" : c.key.slice(0, i); })).size; };
   function drawn(what){
@@ -350,12 +377,12 @@ const OPENING_DRIVER: &str = r##"
     const nodeRe = /<g class="kgn [^"]*"[^>]* transform="translate\(([-\d.]+),([-\d.]+)\)">(?:<title>[^<]*<\/title>)?<circle r="([\d.]+)"[^>]*\/><text class="kglabel" y="[-\d.]+">([^<]*)<\/text><\/g>/g;
     while ((m = nodeRe.exec(html)) !== null) {
       nodes++;
-      boxes.push({ what: "the node " + unesc(m[4]), b: kgNodeBody(Number(m[1]), Number(m[2]), Number(m[3]), unesc(m[4])) });
+      boxes.push({ what: "the node " + __unesc(m[4]), b: kgNodeBody(Number(m[1]), Number(m[2]), Number(m[3]), __unesc(m[4])) });
     }
     const hullRe = /<g class="kghull"><rect x="([-\d.]+)" y="([-\d.]+)" width="([\d.]+)" height="([\d.]+)"[^>]*\/><text class="kghull-l" x="([-\d.]+)" y="([-\d.]+)">([^<]*)<\/text><\/g>/g;
     while ((m = hullRe.exec(html)) !== null) {
       hulls++;
-      const x = Number(m[1]), y = Number(m[2]), lx = Number(m[5]), ly = Number(m[6]), text = unesc(m[7]);
+      const x = Number(m[1]), y = Number(m[2]), lx = Number(m[5]), ly = Number(m[6]), text = __unesc(m[7]);
       boxes.push({ what: "the hull " + text, b: { x0: Math.min(x, lx), x1: Math.max(x + Number(m[3]), lx + text.length * HULL_CHAR_W),
         y0: Math.min(y, ly - 10), y1: Math.max(y + Number(m[4]), ly + 3) } });
     }
@@ -738,13 +765,13 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 /// makes it overflow), and still shown and answering after the panel is resized from a 1400px
 /// viewport to 800px (`window`) or narrowed by the 12px a scrollbar takes (`scrollbar`), the drawing
 /// filling the room below the toolbar and what it shows above the drawing. An untouched view (`pan`
-/// `none`) redraws once from its held body on the resize. A moved one, panned `after` it was shown or
-/// `before`, keeps its transform and its marks through showing it, the panel settling and the resize,
-/// the resize redrawing nothing.
+/// `none`) redraws once from its held body on the resize. A moved one, panned or zoomed `after` it was
+/// shown or `before`, keeps its transform and its marks through showing it, the panel settling and
+/// the resize, the resize redrawing nothing.
 const VIEW_STATE_DRIVER: &str = r##"
 ;(async function(){
   const ROW = __ROW__;
-  const on = { none: "an untouched view", after: "a view panned after it was shown", before: "a view panned before it was shown" };
+  const on = { none: "an untouched view", after: "a view moved after it was shown", before: "a view moved before it was shown" };
   if (!(ROW.pan in on)) throw new Error("a row pans none, after or before, not " + ROW.pan);
   const at = ROW.writer + " on " + on[ROW.pan] + ", "
     + (ROW.resize === "window" ? "resized from 1400px to 800px" : "narrowed by the 12px a scrollbar takes") + ": ";
@@ -771,8 +798,6 @@ const VIEW_STATE_DRIVER: &str = r##"
   const redraw = rerenderCurrentView;
   rerenderCurrentView = function(){ redraws++; return redraw(); };
   const panel = el("kgpanel");
-  const unesc = function(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); };
   const camel = function(s){ return s.replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); };
   // The element whose opening tag in the panel's markup carries mark, as the target of an event: its
   // attributes, its data-* attributes as its dataset, whether it is open, and closest() answering
@@ -784,7 +809,7 @@ const VIEW_STATE_DRIVER: &str = r##"
     const attrs = {}, dataset = {}, re = /\s([\w-]+)(?:="([^"]*)")?/g;
     let m;
     while ((m = re.exec(tag)) !== null) {
-      attrs[m[1]] = m[2] === undefined ? "" : unesc(m[2]);
+      attrs[m[1]] = m[2] === undefined ? "" : __unesc(m[2]);
       if (m[1].indexOf("data-") === 0) dataset[camel(m[1].slice(5))] = attrs[m[1]];
     }
     const node = { tag: tag, attrs: attrs, dataset: dataset, open: "open" in attrs, value: attrs.value };
@@ -802,9 +827,8 @@ const VIEW_STATE_DRIVER: &str = r##"
     (panel._listeners[type] || []).forEach(function(f){ f(ev); });
     return ev;
   }
-  // What the browser keeps on the element mark finds while the panel's markup is not replaced (the
-  // same _gen): a disclosure's open state, a text box's value; the element a new markup makes takes
-  // them from its attributes.
+  // What the browser keeps on the disclosure mark finds while the panel's markup is not replaced (the
+  // same _gen): its open state; the disclosure a new markup makes takes it from its attributes.
   const native = {};
   function live(mark){ const s = native[mark]; return s && s.gen === panel._gen ? s : null; }
   function target(mark){
@@ -820,30 +844,40 @@ const VIEW_STATE_DRIVER: &str = r##"
     dispatch("toggle", node);
   }
   function isOpen(mark){ const s = live(mark), node = element(mark); return s ? s.open : !!node && node.open; }
-  // Typing value into the text box mark finds, and the input event it fires.
-  function type(mark, value){
-    const node = target(mark);
-    native[mark] = { gen: panel._gen, value: value };
-    node.value = value;
-    dispatch("input", node);
+  // The grain box the panel's markup writes now.
+  function grainBox(){ return panel.querySelector("[data-lens-res]"); }
+  // A click into the grain box, then every character in it selected.
+  function clickInto(b){
+    b.focus();
+    b.setSelectionRange(0, b.value.length);
   }
-  function valueOf(mark){ const s = live(mark), node = element(mark); return s ? s.value : node ? node.value : null; }
-  // The change the browser fires when the user commits the text box node: only when the text it holds
-  // differs from the value its markup wrote, which a box the markup wrote again holds until typed in.
-  function committed(node){ if (node.value !== node.attrs.value) dispatch("change", node); }
-  // Enter pressed in the text box mark finds: its keydown, then the change it commits.
-  function enter(mark){
-    const node = target(mark);
-    node.value = valueOf(mark);
-    dispatch("keydown", node, { key: "Enter" });
-    committed(node);
+  // Text typed where the focus is: into the grain box at its caret, and the input event it fires,
+  // while the box the panel holds has the focus; anywhere else it lands nowhere on the panel.
+  function keys(text){
+    const b = document.activeElement;
+    if (!b || b !== grainBox()) return;
+    const at = b.selectionStart;
+    b.value = b.value.slice(0, at) + text + b.value.slice(b.selectionEnd);
+    b.setSelectionRange(at + text.length, at + text.length);
+    dispatch("input", b);
   }
-  // Leaving the text box mark finds: the change it commits, then its focusout.
-  function leave(mark){
-    const node = target(mark);
-    node.value = valueOf(mark);
-    committed(node);
-    dispatch("focusout", node);
+  // The change the browser fires when the user commits the box b: only when the text it holds differs
+  // from the value its markup wrote, which a box the markup wrote again holds until typed in.
+  function committed(b){ if (b.value !== b.defaultValue) dispatch("change", b); }
+  // Enter pressed where the focus is: the grain box's keydown, then the change it commits.
+  function enter(){
+    const b = document.activeElement;
+    if (!b || b !== grainBox()) return;
+    dispatch("keydown", b, { key: "Enter" });
+    committed(b);
+  }
+  // Leaving the grain box that holds the focus: the change it commits, then its focusout.
+  function leave(){
+    const b = document.activeElement;
+    if (!b || b !== grainBox()) return;
+    committed(b);
+    document.activeElement = null;
+    dispatch("focusout", b);
   }
   // Let the panel settle as a browser does: while its client box differs from the one its size
   // observer was last told of, tell it, and run the frames the page queued. A panel still changing
@@ -883,7 +917,7 @@ const VIEW_STATE_DRIVER: &str = r##"
       shown(){
         const span = __slotSpan(panel._html);
         const listed = span ? panel._html.slice(span[0], span[1]).match(/data-candidate="[^"]*"/g) || [] : [];
-        return listed.map(function(a){ return unesc(a.slice('data-candidate="'.length, -1)); }).join("|");
+        return listed.map(function(a){ return __unesc(a.slice('data-candidate="'.length, -1)); }).join("|");
       },
       expect: A + "|" + B,
       async answer(){
@@ -934,29 +968,41 @@ const VIEW_STATE_DRIVER: &str = r##"
             + "it shows " + this.shown());
       }
     },
-    // A grain being typed into the code lens's resolution box above the overview.
+    // A grain being typed into the code lens's resolution box above the overview: the box clicked into,
+    // its text selected and "2." typed over it, the box keeping the focus and the caret after the "2.".
     grain: {
-      BOX: 'data-lens-res="1"',
       async open(){ kgLens = "code"; loadKgOverview(); await __flush(); },
-      async show(){ type(this.BOX, "2.5"); },
-      shown(){ return valueOf(this.BOX); },
-      expect: "2.5",
-      // Enter after a window resize, leaving the box after a scrollbar's: either commits the grain
-      // typed, read once, the change the browser fires with it reading nothing more.
+      async show(){ clickInto(grainBox()); keys("2."); },
+      shown(){
+        const b = grainBox();
+        if (!b) return "no grain box";
+        const focus = document.activeElement === b ? " focused, caret " + b.selectionStart + "-" + b.selectionEnd : " unfocused";
+        return JSON.stringify(b.value) + focus;
+      },
+      expect: '"2." focused, caret 2-2',
+      // The "5" typed next lands in the box, then Enter after a window resize, leaving the box after a
+      // scrollbar's: either commits the grain typed, read once, the change the browser fires with it
+      // reading nothing more.
       async answer(){
         const n = asked.length, how = ROW.resize === "window" ? "Enter" : "leaving the box";
-        if (ROW.resize === "window") enter(this.BOX); else leave(this.BOX);
+        keys("5");
+        if (ROW.resize === "window") enter(); else leave();
         await __flush();
         const reads = asked.slice(n).filter(function(u){ return u.indexOf("lens=code") !== -1; });
         if (reads.length !== 1 || reads[0].indexOf("resolution=2.5") === -1)
-          throw new Error("REGRESSION: " + at + how + " must commit the grain typed, reading the code lens once at 2.5, "
-            + "the page asked " + JSON.stringify(asked.slice(n)));
+          throw new Error("REGRESSION: " + at + "the \"5\" typed must land in the box and " + how + " commit the grain "
+            + "typed, reading the code lens once at 2.5, the page asked " + JSON.stringify(asked.slice(n)));
       }
     }
   };
-  // The pan, and the transform and marks it leaves, which a moved view keeps from then on.
+  // The move, and the transform and marks it leaves, which a moved view keeps from then on: a drag on
+  // the drawing, or a wheel notch while the grain box holds the focus, which a press on the drawing
+  // would take from it (leaving the box, which commits the grain).
   let kept = null, marks = null;
-  function pan(){ __press(-30, 15); kept = JSON.stringify(__view(at + "the pan")); marks = __marks(); }
+  function pan(){
+    if (document.activeElement) __wheel(-1); else __press(-30, 15);
+    kept = JSON.stringify(__view(at + "the move")); marks = __marks();
+  }
   function keeps(what){
     const now = JSON.stringify(__view(at + what));
     if (now !== kept || __marks() !== marks)
@@ -1126,12 +1172,12 @@ rigger::test_cases! {
     /// The same, the disclosure opened on a view already panned.
     an_open_disclosure_stays_through_a_scrollbar_of_a_view_panned_before_it:
         keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "before", "resize": "scrollbar"}"#);
-    /// A grain typed into the code lens's resolution box, the overview untouched, through a window
-    /// resize.
+    /// A grain typed into the code lens's resolution box, the box keeping the focus and the caret, the
+    /// overview untouched, through a window resize.
     a_typed_grain_stays_through_a_window_resize_of_an_untouched_view:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "none", "resize": "window"}"#);
-    /// The same grain, the overview panned after it was typed.
-    a_typed_grain_stays_through_a_window_resize_of_a_view_panned_after_it:
+    /// The same grain, the overview zoomed by the wheel after it was typed, the box keeping the focus.
+    a_typed_grain_stays_through_a_window_resize_of_a_view_zoomed_after_it:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "after", "resize": "window"}"#);
     /// The same grain typed on an overview already panned.
     a_typed_grain_stays_through_a_window_resize_of_a_view_panned_before_it:
@@ -1139,8 +1185,8 @@ rigger::test_cases! {
     /// The same grain, the panel narrowed by the 12px a scrollbar takes.
     a_typed_grain_stays_through_a_scrollbar_of_an_untouched_view:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "none", "resize": "scrollbar"}"#);
-    /// The same, the overview panned after the grain was typed.
-    a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_after_it:
+    /// The same, the overview zoomed by the wheel after the grain was typed.
+    a_typed_grain_stays_through_a_scrollbar_of_a_view_zoomed_after_it:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "after", "resize": "scrollbar"}"#);
     /// The same, the grain typed on an overview already panned.
     a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_before_it:
