@@ -93,12 +93,17 @@
      panel keeps a height of its own there, as the one-screen layout gives it a share of the
      screen: the page grows by what the explorer stacks above the panel (a shown card or rail),
      never by what the panel holds, which scrolls inside it, so kgDims reads the panel's height
-     and never the length of the list or drawing the last view put in it. */
+     and never the length of the list or drawing the last view put in it. That height,
+     --kgpanel-h, is the one a docked pane spans (the body holds only the panel then), and it caps
+     a pane stacked above the panel too, which scrolls the rest inside it; panes stack only here,
+     since a wider screen gives the body room to dock both. */
   @media (max-width: 1000px) {
     body { height: auto; overflow: auto; }
     main { overflow: visible; }
     #kg { flex-basis: auto; }
-    .kgbody > .kg { flex: none; height: 46vh; }
+    .kgbody { --kgpanel-h: 46vh; }
+    .kgbody > .kg { flex: none; height: var(--kgpanel-h); }
+    .kgrail, .kgcard { max-height: var(--kgpanel-h); }
     .columns { flex-direction: column; }
   }
   /* min-width:0 lets the section honor the shrinkable track instead of refusing to go below
