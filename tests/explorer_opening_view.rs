@@ -54,9 +54,11 @@ use vm_harness::{vm_harness, EVENT_PHASES};
 /// with the drawing left as it is, and takes an 18px line for its head and each candidate it lists;
 /// `_gen` counts the markups the panel is given, so a driver can tell what the page wrote from what
 /// it drew again. The grain box a markup writes (`[data-lens-res]`) is a text box as a browser makes
-/// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; a markup that
-/// replaces the box holding the focus takes the focus with it and sends the box `focusout`, as a
-/// browser may (Firefox sends none). Its elements record their listeners, and the drivers deliver
+/// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; committed (by
+/// Enter, by leaving it, or by a markup replacing it while it holds the focus) it sends `change` when
+/// its text differs from the text it held when it took the focus or last sent `change`, and left it
+/// gives up the focus and sends `focusout`. A markup that replaces the box holding the focus leaves
+/// it while it is still in the panel, `change` then `focusout`, as Chromium does (Firefox sends none). Its elements record their listeners, and the drivers deliver
 /// events to them, by [`EVENT_PHASES`]. `window` records its listeners, a size observer is recorded
 /// with what it watches for the driver to notify, and an animation frame waits in `__frames` until
 /// the driver runs it.
@@ -121,18 +123,31 @@ function __scrollbar(panel){
 function __unesc(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
   .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); }
 // The grain box the panel's markup writes: its value and default the value the markup wrote, its
-// caret at its end, connected while it is the box the panel hands out.
+// caret at its end, connected while it is the box the panel hands out. It keeps the text it held when
+// it took the focus or last sent change (_from): committed, it sends change when its text differs
+// from that; left, it commits, gives up the focus and sends focusout.
 function __Box(panel){
   const tag = panel._html.match(/<input [^>]*data-lens-res[^>]*>/), v = tag && tag[0].match(/ value="([^"]*)"/);
   this._panel = panel;
-  this.value = this.defaultValue = v ? __unesc(v[1]) : "";
+  this.value = this.defaultValue = this._from = v ? __unesc(v[1]) : "";
   this.selectionStart = this.selectionEnd = this.value.length;
 }
 __Box.prototype.closest = function(sel){ return sel === "[data-lens-res]" ? this : null; };
 __Box.prototype.setSelectionRange = function(a, b){ this.selectionStart = a; this.selectionEnd = b; };
 __Box.prototype.focus = function(){
   document.activeElement = this;
+  this._from = this.value;
   __reach(this._panel, { type: "focusin", target: this });
+};
+__Box.prototype._commit = function(){
+  if (this.value === this._from) return;
+  this._from = this.value;
+  __reach(this._panel, { type: "change", target: this });
+};
+__Box.prototype._leave = function(){
+  this._commit();
+  document.activeElement = null;
+  __reach(this._panel, { type: "focusout", target: this });
 };
 Object.defineProperty(__Box.prototype, "isConnected", { get(){ return this._panel._box === this; } });
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
@@ -143,7 +158,9 @@ Object.defineProperty(__El.prototype, "clientWidth", { get(){
   return __geom.width - (this.id === "kgpanel" ? __scrollbar(this) : 0); } });
 Object.defineProperty(__El.prototype, "clientHeight", { get(){ return __geom.height; } });
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){
-  const html = String(v), panel = this;
+  const html = String(v), panel = this, held = this._box;
+  // The box holding the focus is left while it is still in the panel, then replaced.
+  if (held && document.activeElement === held) held._leave();
   this._html = html;
   this._gen++;
   this._zoom = new __Stub();
@@ -156,12 +173,7 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
     return { left: __geom.padSide, top: __slotTop(panel._html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
       height: Number(svg.getAttribute("height") || 0) };
   };
-  const held = this._box;
   this._box = null;
-  if (held && document.activeElement === held) {
-    document.activeElement = null;
-    __reach(this, { type: "focusout", target: held });
-  }
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: __geom.width, height: __geom.height }; };
@@ -765,7 +777,8 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 /// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
 /// makes it overflow), and still shown and answering after the panel is resized from a 1400px
 /// viewport to 800px (`window`) or narrowed by the 12px a scrollbar takes (`scrollbar`), the drawing
-/// filling the room below the toolbar and what it shows above the drawing. An untouched view (`pan`
+/// filling the room below the toolbar and what it shows above the drawing, and the settling and the
+/// resize making no request (a grain box a redraw replaces commits nothing). An untouched view (`pan`
 /// `none`) redraws once from its held body on the resize. A moved one, panned or zoomed `after` it was
 /// shown or `before`, keeps its transform and its marks through showing it, the panel settling and
 /// the resize, the resize redrawing nothing.
@@ -861,23 +874,17 @@ const VIEW_STATE_DRIVER: &str = r##"
     b.setSelectionRange(at + text.length, at + text.length);
     dispatch("input", b);
   }
-  // The change the browser fires when the user commits the box b: only when the text it holds differs
-  // from the value its markup wrote, which a box the markup wrote again holds until typed in.
-  function committed(b){ if (b.value !== b.defaultValue) dispatch("change", b); }
   // Enter pressed where the focus is: the grain box's keydown, then the change it commits.
   function enter(){
     const b = document.activeElement;
     if (!b || b !== grainBox()) return;
     dispatch("keydown", b, { key: "Enter" });
-    committed(b);
+    b._commit();
   }
   // Leaving the grain box that holds the focus: the change it commits, then its focusout.
   function leave(){
     const b = document.activeElement;
-    if (!b || b !== grainBox()) return;
-    committed(b);
-    document.activeElement = null;
-    dispatch("focusout", b);
+    if (b && b === grainBox()) b._leave();
   }
   // Let the panel settle as a browser does: while its client box differs from the one its size
   // observer was last told of, tell it, and run the frames the page queued. A panel still changing
@@ -1019,6 +1026,7 @@ const VIEW_STATE_DRIVER: &str = r##"
   await W.show();
   if (W.shown() !== W.expect)
     throw new Error(at + "showing it must show " + W.expect + ", it shows " + JSON.stringify(W.shown()));
+  const fetches = __fetches;
   settle("showing it");
   if (W.shown() !== W.expect)
     throw new Error("REGRESSION: " + at + "it must stay shown once the panel settles after showing it, it shows "
@@ -1028,6 +1036,8 @@ const VIEW_STATE_DRIVER: &str = r##"
   if (ROW.pan === "after") pan();
   __size(ROW.resize === "window" ? __NARROW : [__WIDE[0] - __geom.scrollbar, __WIDE[1], __WIDE[2]]);
   const made = settle("the resize");
+  if (__fetches !== fetches)
+    throw new Error("REGRESSION: " + at + "the panel settling and the redraw must make no request, they made " + (__fetches - fetches));
   if (W.shown() !== W.expect)
     throw new Error("REGRESSION: " + at + "it must stay shown through the redraw, it shows " + JSON.stringify(W.shown()));
   placed("the resize");
