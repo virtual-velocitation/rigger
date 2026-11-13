@@ -24,8 +24,8 @@
 //! height (a drawing kept at its 200px floor, notes below the drawing).
 //!
 //! And a redraw keeps everything the panel was showing of the view it holds (the call view's
-//! frontier choice list), shown and answering, whether the panel's size changes with the window or
-//! by the scrollbar what it shows makes it take.
+//! frontier choice list, an opened rationale disclosure, a grain being typed), shown and answering,
+//! whether the panel's size changes with the window or by the scrollbar what it shows makes it take.
 //!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
 //! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
@@ -747,12 +747,17 @@ const VIEW_STATE_DRIVER: &str = r##"
     + (ROW.resize === "window" ? "resized from 1400px to 800px" : "narrowed by the 12px a scrollbar takes") + ": ";
   const A = "crates/crate-2/src/module_2.rs::Thing", B = "crates/crate-3/src/module_3.rs::Thing";
   __CALLS.nodes[5].frontier = [A, B];
-  // Every request the page makes, a call walk answered for the seed and direction it asks for.
+  // The call node the rationale overlay finds a decision for.
+  const WHY = __CALLS.nodes[3].id;
+  // Every request the page makes, a call walk answered for the seed and direction it asks for, and a
+  // rationale read answered with WHY's decision.
   const asked = [];
   const served = __graph;
   __graph = function(url){
     const s = String(url);
     asked.push(s);
+    if (s.indexOf("explain=") !== -1)
+      return { nodes: [{ node: WHY, leaves: [{ kind: "decision", summary: "it calls on the next layer" }] }] };
     if (s.indexOf("view=calls") === -1) return served(url);
     const seed = decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]);
     const dir = (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1];
@@ -793,6 +798,32 @@ const VIEW_STATE_DRIVER: &str = r##"
     (panel._listeners[type] || []).forEach(function(f){ f(ev); });
     return ev;
   }
+  // What the browser keeps on the element mark finds while the panel's markup is not replaced (the
+  // same _gen): a disclosure's open state, a text box's value; the element a new markup makes takes
+  // them from its attributes.
+  const native = {};
+  function live(mark){ const s = native[mark]; return s && s.gen === panel._gen ? s : null; }
+  function target(mark){
+    const node = element(mark);
+    if (!node) throw new Error(at + "the panel must hold " + mark + ", it holds " + panel._html.slice(0, 300));
+    return node;
+  }
+  // The browser's own <details> toggle on the disclosure mark finds, and the toggle event it fires.
+  function toggle(mark, open){
+    const node = target(mark);
+    native[mark] = { gen: panel._gen, open: open };
+    node.open = open;
+    dispatch("toggle", node);
+  }
+  function isOpen(mark){ const s = live(mark), node = element(mark); return s ? s.open : !!node && node.open; }
+  // Typing value into the text box mark finds, and the input event it fires.
+  function type(mark, value){
+    const node = target(mark);
+    native[mark] = { gen: panel._gen, value: value };
+    node.value = value;
+    dispatch("input", node);
+  }
+  function valueOf(mark){ const s = live(mark), node = element(mark); return s ? s.value : node ? node.value : null; }
   // Let the panel settle as a browser does: while its client box differs from the one its size
   // observer was last told of, tell it, and run the frames the page queued. A panel still changing
   // after 8 rounds redraws in a loop. Answers the redraws the settling made.
@@ -848,6 +879,58 @@ const VIEW_STATE_DRIVER: &str = r##"
           throw new Error("REGRESSION: " + at + "choosing " + A + " must draw its walk, the panel holds " + panel._html.slice(0, 300));
         if (this.shown() !== "")
           throw new Error("REGRESSION: " + at + "the choice made must dismiss the list, it still lists " + this.shown());
+      }
+    },
+    // The rationale overlay's "why" badge below the call walk and the decision inside it, each
+    // opened by the browser's own <details> toggle.
+    disclosure: {
+      BADGE: 'data-explain="' + WHY + '"',
+      LEAF: 'class="kgleaf k-',
+      async open(){
+        seedCalls(__SUBJECT, "down");
+        await __flush();
+        await setOverlay(true);
+        await __flush();
+      },
+      // A click on the badge is left to its own disclosure: nothing prevented, requested or redrawn.
+      async click(){
+        const n = asked.length, gen = panel._gen, ev = dispatch("click", target(this.BADGE));
+        await __flush();
+        if (ev.defaultPrevented || asked.length !== n || panel._gen !== gen)
+          throw new Error("REGRESSION: " + at + "a click on the why badge must be left to its disclosure, it "
+            + (ev.defaultPrevented ? "was prevented" : asked.length !== n ? "requested " + asked.slice(n) : "redrew the panel"));
+      },
+      async show(){
+        await this.click();
+        toggle(this.BADGE, true);
+        toggle(this.LEAF, true);
+      },
+      shown(){ return [this.BADGE, this.LEAF].map(function(m){ return isOpen(m) ? "open" : "closed"; }).join(" "); },
+      expect: "open open",
+      async answer(){
+        await this.click();
+        toggle(this.BADGE, false);
+        redraw();
+        if (this.shown() !== "closed open")
+          throw new Error("REGRESSION: " + at + "the badge closed must stay closed through a redraw, its decision kept open, "
+            + "it shows " + this.shown());
+      }
+    },
+    // A grain being typed into the code lens's resolution box above the overview.
+    grain: {
+      BOX: 'data-lens-res="1"',
+      async open(){ kgLens = "code"; loadKgOverview(); await __flush(); },
+      async show(){ type(this.BOX, "2.5"); },
+      shown(){ return valueOf(this.BOX); },
+      expect: "2.5",
+      async answer(){
+        const box = target(this.BOX), n = asked.length;
+        box.value = this.shown();
+        dispatch("change", box);
+        await __flush();
+        if (!asked.slice(n).some(function(u){ return u.indexOf("lens=code") !== -1 && u.indexOf("resolution=2.5") !== -1; }))
+          throw new Error("REGRESSION: " + at + "the grain committed must read the code lens at 2.5, the page asked "
+            + JSON.stringify(asked.slice(n)));
       }
     }
   };
@@ -995,6 +1078,31 @@ rigger::test_cases! {
     /// The same, the view panned after the list was shown.
     the_frontier_list_stays_through_a_scrollbar_of_a_moved_view:
         keeps_what_it_shows(r#"{"writer": "frontier", "moved": true, "resize": "scrollbar"}"#);
+    /// A rationale disclosure opened below the call walk, the view untouched, through a window resize.
+    an_open_disclosure_stays_through_a_window_resize_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": false, "resize": "window"}"#);
+    /// The same disclosure, the view panned after it was opened.
+    an_open_disclosure_stays_through_a_window_resize_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": true, "resize": "window"}"#);
+    /// The same disclosure, the panel narrowed by the 12px a scrollbar takes.
+    an_open_disclosure_stays_through_a_scrollbar_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": false, "resize": "scrollbar"}"#);
+    /// The same, the view panned after the disclosure was opened.
+    an_open_disclosure_stays_through_a_scrollbar_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": true, "resize": "scrollbar"}"#);
+    /// A grain typed into the code lens's resolution box, the overview untouched, through a window
+    /// resize.
+    a_typed_grain_stays_through_a_window_resize_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "grain", "moved": false, "resize": "window"}"#);
+    /// The same grain, the overview panned after it was typed.
+    a_typed_grain_stays_through_a_window_resize_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "grain", "moved": true, "resize": "window"}"#);
+    /// The same grain, the panel narrowed by the 12px a scrollbar takes.
+    a_typed_grain_stays_through_a_scrollbar_of_an_untouched_view:
+        keeps_what_it_shows(r#"{"writer": "grain", "moved": false, "resize": "scrollbar"}"#);
+    /// The same, the overview panned after the grain was typed.
+    a_typed_grain_stays_through_a_scrollbar_of_a_moved_view:
+        keeps_what_it_shows(r#"{"writer": "grain", "moved": true, "resize": "scrollbar"}"#);
 }
 
 /// What the panel shows of the view it holds, in the `{writer, moved, resize}` row `VIEW_STATE_DRIVER`
