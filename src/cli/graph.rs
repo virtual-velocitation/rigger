@@ -642,12 +642,7 @@ fn cmd_graph_build(_args: &[String]) -> Res {
     let site = Site::here();
     let (loc, selection) = store_to_write_in(&site)?;
     resolve_store(&selection, &loc.file("events.db"))?;
-    open_graph(
-        &loc.file("graph.db"),
-        &loc.identity_in(&site)?,
-        &selection,
-        "graph build",
-    )?;
+    open_graph(&loc, &loc.identity_in(&site)?, &selection, "graph build")?;
     match open_project_code_store(rigger_store::code::Mode::Write)? {
         Some(opened) => {
             println!("graph build: {}", opened.line());

@@ -119,7 +119,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let identity = loc.identity_in(&site)?;
     let store = Namespaced::new(backend.as_ref(), &identity);
-    let graph = open_graph(&loc.file("graph.db"), &identity, &selection, "critique")?;
+    let graph = open_graph(&loc, &identity, &selection, "critique")?;
     let critiques = critique_store(backend.as_ref(), &identity);
     let ceiling = Ceiling {
         spec: &spec,

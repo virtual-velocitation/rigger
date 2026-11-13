@@ -1108,7 +1108,7 @@ fn rebuild_owed_graph(
     };
     // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
     // rebuilds and catches up, with the catch-up's log installed.
-    let graph = open_graph_for_write(held.path(), &project, selection)?;
+    let graph = open_graph_for_write(loc, &project, selection)?;
     match selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it

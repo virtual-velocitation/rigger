@@ -528,7 +528,7 @@ fn reset_derived(loc: &StoreLocation) -> Res {
     // the records-only fold has proven it loses nothing before a derived row goes.
     if Path::new(&graph_db).exists() {
         open_graph(
-            &graph_db,
+            loc,
             &loc.identity()?,
             &StoreSelection::Sqlite,
             "reset --derived",
@@ -941,7 +941,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // with no run) reclaims no edge, so LIVE and recent history are both untouched.
         let boundary = superseded_edge_boundary(&events);
 
-        let graph = open_graph(&graph_db, &loc.identity()?, selection, "reset --runs")?;
+        let graph = open_graph(loc, &loc.identity()?, selection, "reset --runs")?;
         // The probe's step lock is held until the close returns, so no `rigger run` starts against
         // a run this reset is closing; the graph prune below takes no part in
         // it.
@@ -1783,7 +1783,7 @@ mod tests {
             registry_dir: None,
             now_ms: rigger::registry::now_ms(),
         };
-        (StoreLocation { dir: rigger_dir }, env)
+        (StoreLocation::at(rigger_dir), env)
     }
 
     /// The live-run refusal names every live reason at once, in the order the probe lists them
@@ -1880,7 +1880,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let dir =
             Path::new(std::ffi::OsStr::from_bytes(b"/nonexistent-\xff-root")).join(RIGGER_DIR);
-        let loc = StoreLocation { dir: dir.clone() };
+        let loc = StoreLocation::at(dir.clone());
         let Err(err) = ResetEnv::resolve(&loc) else {
             panic!("an owning root with no UTF-8 path must refuse, never resolve a scratch root");
         };

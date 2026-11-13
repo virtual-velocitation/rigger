@@ -390,7 +390,7 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
     Ok(Store::open(path)?)
 }
 
-/// Open the `graph.db` at `graph_db` for write, under `project` (spec 124, WIRING): the one open
+/// Open the `graph.db` of `store` for write, under `project` (spec 124, WIRING): the one open
 /// that may write to a graph file, making it where none stands ([`Projector::open`]), with the
 /// catch-up wiring installed. Its log ([`Projector::with_log`]) is the store `selection` resolves
 /// for the `events.db` beside the file ([`resolve_store`]), scoped to `project`
@@ -400,15 +400,15 @@ fn open_sqlite_store(path: &str) -> Result<Store, Box<dyn std::error::Error>> {
 /// log ([`Projector::with_store_identity`]) is the store's own ([`store_identity`]), the embedded
 /// log's path or a digest of the server's endpoint.
 fn open_graph_for_write(
-    graph_db: &str,
+    store: &StoreLocation,
     project: &str,
     selection: &StoreSelection,
 ) -> Result<Projector, contextgraph::Error> {
-    let store_dir = cwd()
-        .join(graph_db)
-        .parent()
-        .map_or_else(cwd, Path::to_path_buf);
-    let (selection, events_db) = (selection.clone(), store_file(&store_dir, "events.db"));
+    let graph_db = store.file("graph.db");
+    let (selection, events_db) = (
+        selection.clone(),
+        store_file(&store.absolute_dir(), "events.db"),
+    );
     let store = store_identity(&selection, events_db.clone()).log_identity();
     let scope = project.to_string();
     let log = move || {
@@ -419,24 +419,24 @@ fn open_graph_for_write(
             })
             .map_err(|e| contextgraph::Error(e.to_string()))
     };
-    Ok(Projector::open(graph_db, project)?
+    Ok(Projector::open(&graph_db, project)?
         .with_log(log)
         .with_store_identity(store))
 }
 
-/// Open this project's `graph.db` for write ([`open_graph_for_write`], under `selection`) for
+/// Open the `graph.db` of `store` for write ([`open_graph_for_write`], under `selection`) for
 /// `command`, whose answer depends on the fold (spec 101): a file that says it owes its rebuild -
 /// folded under an older fold rule, never for the mark an older binary's lost fold left beside it
 /// (spec 124, THE MARK) - is refused at once, naming `rigger setup` - the one command that
 /// rebuilds it - never waited on, rebuilt or folded into here. The open itself writes nothing to
 /// such a file.
 fn open_graph(
-    graph_db: &str,
+    store: &StoreLocation,
     project: &str,
     selection: &StoreSelection,
     command: &str,
 ) -> Result<Projector, Box<dyn std::error::Error>> {
-    let graph = open_graph_for_write(graph_db, project, selection)?;
+    let graph = open_graph_for_write(store, project, selection)?;
     if graph.rebuild_owed()? {
         return Err(contextgraph::rebuild_owed_refusal(command).into());
     }
@@ -622,11 +622,6 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
 /// error ([`Site::project_root`]).
 fn config_rigger_dir(site: &Site) -> Result<PathBuf, String> {
     Ok(site.project_root()?.join(RIGGER_DIR))
-}
-
-/// The process's working directory, or `.` when it cannot be read.
-fn cwd() -> PathBuf {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Interpret the committed config's `store.backend` (§48 rung 4): an empty value is "no opinion"
@@ -1220,7 +1215,7 @@ fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
         return Ok(()); // no minted identity distinct from the basename
     }
     let backend = open_sqlite_store(&store_path)?;
-    let graph = open_graph_for_write(&loc.file("graph.db"), &minted, &StoreSelection::Sqlite)?;
+    let graph = open_graph_for_write(loc, &minted, &StoreSelection::Sqlite)?;
     let graph = graph.with_rebuild_lock(held);
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
@@ -1421,7 +1416,7 @@ pub(crate) struct Site {
 }
 
 impl Site {
-    /// The site at `dir`; an empty `dir` is the cwd, `.` when it cannot be read ([`cwd`]).
+    /// The site at `dir`; an empty `dir` is the cwd, `.` when it cannot be read.
     pub(crate) fn of(dir: &Path) -> Self {
         let (dir, unread) = if dir.as_os_str().is_empty() {
             match std::env::current_dir() {
@@ -1613,13 +1608,21 @@ fn run_stream_of(identity: &str) -> String {
 /// stays parked (spec 05's charter defect). [`identity`](Self::identity) anchors identity
 /// at the resolved root instead, so the write lands in the stream the conductor reads.
 struct StoreLocation {
-    /// The `.rigger` store directory (`<root>/.rigger`) resolved by walking up the cwd, or
-    /// `.rigger` relative to the cwd where a writer at the project root resolved it
-    /// ([`store_to_write_in`]).
+    /// The `.rigger` store directory (`<root>/.rigger`) as the resolver found it, or `.rigger`
+    /// relative to the working directory where a writer at the project root resolved it
+    /// ([`store_to_write_in`]), so the files of a root whose path is not UTF-8 are still named.
     dir: PathBuf,
+    /// The store's OWNING ROOT as the resolver found it, the directory `dir` lies in.
+    owner: PathBuf,
 }
 
 impl StoreLocation {
+    /// The store at `dir`, as a resolver found it, owned by the directory it lies in.
+    fn at(dir: PathBuf) -> Self {
+        let owner = dir.parent().map_or_else(|| dir.clone(), Path::to_path_buf);
+        Self { dir, owner }
+    }
+
     /// This store's context graph, opened for one fold: the one opener every command that appends
     /// and then folds hands [`contextgraph::Fold::of`] (directly or through
     /// [`mcpserver::emit_event`]), so each folds into the `graph.db` its store owns, under the
@@ -1630,8 +1633,7 @@ impl StoreLocation {
         selection: &StoreSelection,
     ) -> Result<Box<dyn RecordFold>, contextgraph::Error> {
         let identity = self.identity().map_err(contextgraph::Error)?;
-        open_graph_for_write(&self.file("graph.db"), &identity, selection)
-            .map(|g| Box::new(g) as Box<dyn RecordFold>)
+        open_graph_for_write(self, &identity, selection).map(|g| Box::new(g) as Box<dyn RecordFold>)
     }
 
     /// A store file path (`events.db` / `graph.db`) under the resolved `.rigger/`, as the
@@ -1662,23 +1664,21 @@ impl StoreLocation {
         Ok(project_identity_from(&site.toplevel_of(&root)?, &root))
     }
 
-    /// This store's directory as an absolute path: `dir` itself, or `dir` under the cwd where it
-    /// is spelled relative to it, as a writer at the project root spells it
-    /// ([`store_to_write_in`]).
+    /// This store's directory under its owning root ([`owner`](Self::owner)), whichever way the
+    /// resolver spelled `dir`, so a writer at the project root names the same files as a reader
+    /// below it.
     fn absolute_dir(&self) -> PathBuf {
-        cwd().join(&self.dir)
+        self.dir
+            .file_name()
+            .map_or_else(|| self.dir.clone(), |name| self.owner.join(name))
     }
 
-    /// The store's OWNING ROOT: the directory its `.rigger/` lies in ([`absolute_dir`]'s
-    /// parent), or the cwd for a directory with none, which no resolution yields. Every reading of
-    /// the owning root - [`identity`](Self::identity), [`repo_root`](Self::repo_root), the
-    /// identity migration ([`migrate_identity_at`]) and the registry refresh - is this one.
-    ///
-    /// [`absolute_dir`]: Self::absolute_dir
+    /// The store's OWNING ROOT: the directory its `.rigger/` lies in, as the resolver found it.
+    /// Every reading of the owning root - [`identity`](Self::identity),
+    /// [`repo_root`](Self::repo_root), the identity migration ([`migrate_identity_at`]) and the
+    /// registry refresh - is this one.
     fn owner(&self) -> PathBuf {
-        self.absolute_dir()
-            .parent()
-            .map_or_else(cwd, Path::to_path_buf)
+        self.owner.clone()
     }
 
     /// The repo root this store lives under (spec 83, criterion 2): the SAME OWNING root
@@ -1734,8 +1734,7 @@ fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
 /// that READS - so a server-configured project resolves the SAME store from every path (spec 48,
 /// "one resolution authority"), never a second parallel mapping that could drift.
 fn server_store_location(site: &Site) -> Result<StoreLocation, String> {
-    let dir = site.project_root()?.join(RIGGER_DIR);
-    Ok(StoreLocation { dir })
+    Ok(StoreLocation::at(site.project_root()?.join(RIGGER_DIR)))
 }
 
 /// Marker error: [`require_store_dir`] found no `.rigger/events.db` at or above the cwd (spec
@@ -1789,7 +1788,7 @@ fn require_store_dir_in(
     // backend config or touches the ambient filesystem above `cwd` - a fenced gate sees strictly
     // less ambient state, never more. Unset (every caller that is not a gate's own spawned
     // process), resolution is byte-identical to before this fence existed.
-    if let Some(fenced) = fenced_store()? {
+    if let Some(fenced) = fenced_store(site)? {
         return Ok(fenced);
     }
     let sel = store_selection_in(site, None, None)?;
@@ -1841,7 +1840,7 @@ fn require_store_dir_in(
             dir.display()
         ));
     }
-    Ok((StoreLocation { dir }, sel))
+    Ok((StoreLocation::at(dir), sel))
 }
 
 /// The directory the gate store fence names (spec 70 criterion 3), when [`STORE_FENCE_ENV`] is set
@@ -1862,12 +1861,15 @@ fn store_fence() -> Option<PathBuf> {
 /// exist, so an uncreated fence would fail every fenced command outright instead of landing it in
 /// an isolated EMPTY store. Creating it here, in the one helper every store resolution that honours
 /// the fence funnels through, covers every caller of the variable alike.
-fn fenced_store() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
-    let Some(dir) = store_fence() else {
+fn fenced_store(
+    site: &Site,
+) -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
+    let Some(fence) = store_fence() else {
         return Ok(None);
     };
+    let dir = site.dir.join(fence);
     std::fs::create_dir_all(&dir)?;
-    Ok(Some((StoreLocation { dir }, StoreSelection::Sqlite)))
+    Ok(Some((StoreLocation::at(dir), StoreSelection::Sqlite)))
 }
 
 /// The store a command that WRITES it (`graph build`, `canary`, `playbooks --rebuild`, `setup`)
@@ -1893,23 +1895,23 @@ fn store_to_write_with(
 ) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     let here = site.located()?;
     let root = site.project_root()?;
-    let dir = if at_the_root(here, &root) {
+    let loc = if at_the_root(here, &root) {
         let dir = PathBuf::from(RIGGER_DIR);
         std::fs::create_dir_all(&dir)?;
-        dir
-    } else if let Some(fenced) = fenced_store()? {
+        StoreLocation {
+            dir,
+            owner: here.to_path_buf(),
+        }
+    } else if let Some(fenced) = fenced_store(site)? {
         return Ok(fenced);
     } else {
         let dir = root.join(RIGGER_DIR);
         if !dir.is_dir() {
             return Err(no_store_at_the_root(here, &root).into());
         }
-        dir
+        StoreLocation::at(dir)
     };
-    Ok((
-        StoreLocation { dir },
-        store_selection_in(site, flag_store, flag_conn)?,
-    ))
+    Ok((loc, store_selection_in(site, flag_store, flag_conn)?))
 }
 
 /// The store a command that only READS it opens, resolved from `site`: the store
@@ -1925,7 +1927,10 @@ fn store_to_read_in(
             .downcast_ref::<NoStoreFound>()
             .and_then(|n| n.root_store.clone())
         {
-            Some(dir) => Ok((StoreLocation { dir }, store_selection_in(site, None, None)?)),
+            Some(dir) => Ok((
+                StoreLocation::at(dir),
+                store_selection_in(site, None, None)?,
+            )),
             None => Err(e),
         },
         found => found,
@@ -8507,7 +8512,7 @@ mod tests {
 
         let dir = walk_stores_in(&Site::of(&deep)).unwrap().dir.unwrap();
         assert_eq!(
-            StoreLocation { dir }.repo_root(),
+            StoreLocation::at(dir).repo_root(),
             child.to_string_lossy().into_owned(),
             "must resolve to the store's own root (child), not the outer git toplevel \
              (grandparent) - proving the store-root branch actually wins over the fallback"
@@ -11999,9 +12004,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rigger_dir = dir.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation {
-            dir: rigger_dir.clone(),
-        };
+        let loc = StoreLocation::at(rigger_dir.clone());
         let identity = loc.identity().unwrap();
         (dir, loc, identity)
     }
@@ -12266,7 +12269,7 @@ mod tests {
         let owning_root = tempfile::tempdir().unwrap();
         let rigger_dir = owning_root.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger_dir).unwrap();
-        let loc = StoreLocation { dir: rigger_dir };
+        let loc = StoreLocation::at(rigger_dir);
 
         // The REAL writer computation - byte-identical to the marker path the `rigger run` host
         // touches for a spawn ([`project_scratch_root`], then the host's `marker_path` call):
@@ -12327,7 +12330,7 @@ mod tests {
              discriminate the lightweight resolver from the full one"
         );
 
-        let loc = StoreLocation { dir: rigger_dir };
+        let loc = StoreLocation::at(rigger_dir);
         let (workdir, max_retries) = scratch_defaults(&loc);
         assert_eq!(
             workdir, "/configured/scratch",

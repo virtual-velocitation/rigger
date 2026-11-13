@@ -942,7 +942,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         // fold refuses while it does), and the graph and grounding tools, which depend on the fold,
         // refuse naming `rigger setup` until it is paid (spec 101).
         let identity = loc.identity()?;
-        let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
+        let graph = open_graph_for_write(loc, &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
         let site = Site::here();
         let context = ReadGraph::held(&graph, &site)?;

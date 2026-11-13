@@ -923,7 +923,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // outlive the `conductor::run` call below.
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &identity);
-    let graph = open_graph(&loc.file("graph.db"), &identity, &selection, "run")?;
+    let graph = open_graph(&loc, &identity, &selection, "run")?;
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
