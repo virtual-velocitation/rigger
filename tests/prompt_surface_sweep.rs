@@ -525,6 +525,16 @@ fn a_literal_qualifies_at_forty_characters_with_a_space() {
             vec![(1, spaced(40))],
         ),
         (
+            "a raw literal's CRLF line break read as LF",
+            format!("f(r\"{}\r\nend\");\r\n", spaced(40)),
+            vec![(1, format!("{}\nend", spaced(40)))],
+        ),
+        (
+            "an escaped literal's CRLF line break read as LF",
+            format!("f(\"{}\r\nend\");\r\n", spaced(40)),
+            vec![(1, format!("{}\nend", spaced(40)))],
+        ),
+        (
             "a line comment",
             format!("// f(\"{}\");", spaced(40)),
             vec![],
