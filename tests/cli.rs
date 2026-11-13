@@ -6630,7 +6630,8 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
 #[test]
 fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
     use common::fixtures::{
-        write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS,
+        helper_copies_in, helper_files, write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES,
+        OPERATOR_HELPER_TOOLS,
     };
     use common::repo::{
         handed_helpers_agents_json, launch_helpers, BOUND_TOOLS, EMBEDDED_HELPER_TOOLS,
@@ -6681,24 +6682,9 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
             !fake.path().join("bin/worktree-holds-copies").exists(),
             "{name}: no launch's worktree holds a helper copy"
         );
-        let mut on_disk: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                let path = entry.unwrap().path();
-                let file = path.file_name().unwrap().to_string_lossy().into_owned();
-                (file, std::fs::read_to_string(&path).unwrap())
-            })
-            .collect();
-        on_disk.sort();
-        let mut held: Vec<(String, String)> = copies
-            .iter()
-            .chain(mid_run)
-            .map(|(file, text)| (file.to_string(), text.to_string()))
-            .collect();
-        held.sort();
         assert_eq!(
-            on_disk, held,
+            helper_copies_in(root),
+            helper_files(&[copies, mid_run]),
             "{name}: the checkout holds the copies it started with and those written mid-run"
         );
 

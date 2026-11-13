@@ -93,6 +93,34 @@ pub fn write_helper_copies(root: &std::path::Path, copies: &[HelperFile]) {
     }
 }
 
+/// Each file `root`'s `.claude/agents/` holds, as its name and its text, sorted; none when that
+/// directory is absent.
+pub fn helper_copies_in(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut held: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            (file, std::fs::read_to_string(&path).unwrap())
+        })
+        .collect();
+    held.sort();
+    held
+}
+
+/// Every helper copy of `groups`, as its name and its text, sorted: what [`helper_copies_in`]
+/// reads from a checkout each group was written into.
+pub fn helper_files(groups: &[&[HelperFile]]) -> Vec<(String, String)> {
+    let mut held: Vec<(String, String)> = groups
+        .iter()
+        .flat_map(|group| group.iter())
+        .map(|(file, text)| (file.to_string(), text.to_string()))
+        .collect();
+    held.sort();
+    held
+}
+
 /// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
 /// other frontmatter fields with `tools` as a list, and its body as the prompt.
 pub fn operator_helpers_agents_json() -> serde_json::Value {
