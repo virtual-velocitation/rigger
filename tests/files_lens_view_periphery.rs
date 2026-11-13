@@ -2,8 +2,8 @@
 //! default `Lens::Files` whole-graph fold, purified the same shape as the already-merged code lens
 //! (criterion 1). Only [`KIND_CODE_ENTITY`] nodes fold, each keyed by its OWN FILE ([`node_file`]) -
 //! never its directory, never its kind - so a cluster IS a file, sized by its CONTAINED-ENTITY count;
-//! weighted cross-file coupling edges connect files that reference each other; and drilling ANY
-//! cluster is unconditionally empty, because a file is this lens's atomic LEAF subject. Handoff
+//! weighted cross-file coupling edges connect files that reference each other; and drilling a file
+//! shows its entities, its members by spec 119's member rule, as a community drill shows its. Handoff
 //! MECHANICS (a file's card, its listed top entities) are criterion 2's, not this one's - this
 //! criterion owns only the purity of what renders as a NODE, HUB, or GROUP LABEL in this lens, at any
 //! zoom: no code-entity node and no per-type storage-schema bucket ever does.
@@ -23,8 +23,8 @@
 //!    invisible in-process; here it reddens, because this drives the exact body-builder `serve` ships.
 //!  - THE SERIALIZED WIRE-SHAPE back-compat: `Cluster.label` / `ClusterOverview.empty_state` /
 //!    `Neighborhood.truncated` are all `skip_serializing_if`, so the files overview an external JS
-//!    panel reads carries NO `label`, NO `empty_state`, and a files drill carries NO `truncated` (it
-//!    is always complete - trivially, vacuously - since it is always empty). The unit test asserts
+//!    panel reads carries NO `label`, NO `empty_state`, and a files drill under the render budget
+//!    carries NO `truncated` (it is complete). The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!  - THE CARD HANDOFF SEAM surviving this criterion's purity: [`neighborhood`] is LENS-AGNOSTIC (a
 //!    generic BFS over every currently-valid edge, regardless of relation, and the file-member
@@ -50,7 +50,7 @@ use rigger::contextgraph::{
     REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, neighborhood, Cluster, ClusterEdge, Lens,
+    cluster_detail, clustered_overview, neighborhood, reproject, Cluster, ClusterEdge, Lens,
     WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
@@ -348,19 +348,21 @@ fn files_lens_merges_same_file_entities_and_keeps_different_files_apart() {
 /// definitions - the SAME resolution [`reproject`] already performs for the re-projection surface -
 /// rather than folding it to the wrong (referencing) file. Three shapes in one graph: a name with
 /// EXACTLY ONE definition resolves to that definition's file (and its coupling edge crosses files
-/// correctly); a name with NO definition and a name with TWO definitions both cannot be honestly
+/// correctly) while that file's count stays its member count, the one its drill and its files
+/// re-projection show; a name with NO definition and a name with TWO definitions both cannot be honestly
 /// attributed to any one file, so the whole-graph fold EXCLUDES them entirely (there is no
 /// `unresolved` sidecar at this altitude, unlike the re-projection surface) - never mis-attributed to
 /// the referencing file their own id encodes.
 #[test]
 fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
     // `helper`: ONE definition (target.rs) - the bare placeholder in caller.rs's namespace resolves
-    // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's count rises to
-    // 2 (its real definition plus the resolved reference), and the foo->helper coupling now crosses
-    // files instead of collapsing to an intra-cluster edge.
+    // to target.rs, so caller.rs's own cluster count stays at just `foo`, target.rs's at just its
+    // real `helper` (the resolved reference stands in for it, never a second member), and the
+    // foo->helper coupling now crosses files instead of collapsing to an intra-cluster edge.
     const CALLER_FOO: &str = "src/caller.rs::foo";
     const HELPER_BARE: &str = "src/caller.rs::%helper";
     const HELPER_DEF: &str = "src/target.rs::helper";
+    const TARGET: &str = "src/target.rs";
     // `ghost`: ZERO definitions anywhere - excluded entirely (never attributed to its own referencing
     // file `src/caller.rs`).
     const GHOST_BARE: &str = "src/caller.rs::%ghost";
@@ -404,7 +406,7 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
             },
             Cluster {
                 key: "src/target.rs".to_string(),
-                count: 2,
+                count: 1,
                 kind: KIND_CODE_ENTITY.to_string(),
                 label: None,
                 tests: 0,
@@ -424,9 +426,10 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
                 tests: 0,
             },
         ],
-        "caller.rs keeps only its real `foo` (the resolved `helper` reference moves to target.rs, \
-         raising ITS count to 2); the ghost and ambiguous placeholders fold to no cluster at all - \
-         never to caller.rs, never to x.rs/y.rs: {overview:?}"
+        "caller.rs keeps only its real `foo` and target.rs only its real `helper` (the resolved \
+         `helper` reference stands in for it, carrying its edge); the ghost and ambiguous \
+         placeholders fold to no cluster at all - never to caller.rs, never to x.rs/y.rs: \
+         {overview:?}"
     );
     assert_eq!(
         overview.edges,
@@ -439,13 +442,31 @@ fn clustered_overview_resolves_bare_cross_file_placeholders_by_unique_leaf() {
          not caller.rs (the referencing file the bare id encodes); the ghost and ambiguous edges add \
          no cluster edge since their far endpoint folds to nothing: {overview:?}"
     );
+    // A file re-projects as a subject through its `file` node, which the files lens folds nowhere.
+    let mut with_file = graph.clone();
+    with_file.nodes.push(plain(TARGET, KIND_FILE));
+    let target_count = (clustered_overview(&with_file, &Lens::Files).clusters)
+        .into_iter()
+        .find(|c| c.key == TARGET)
+        .map(|c| c.count);
+    let drilled = cluster_detail(&with_file, TARGET, &Lens::Files).nodes.len();
+    assert_eq!(
+        [
+            target_count,
+            Some(drilled),
+            Some(reproject(&with_file, TARGET, &Lens::Files).total),
+        ],
+        [Some(1); 3],
+        "a file's overview count is the member count its drill and its files re-projection show"
+    );
 }
 
-/// THE FILES-LENS DRILL over the public boundary is UNCONDITIONALLY EMPTY (spec 63 c3): a file is
-/// this lens's atomic LEAF subject, so drilling it - a REAL, populated file cluster, an unknown key,
-/// or any key over an empty graph - never yields members, never an error.
+/// THE FILES-LENS DRILL over the public boundary shows the file's entities (spec 63 c3): drilling a
+/// file yields its members and the edges among them, its file node, the decision and the
+/// design-doc never; an unknown key or any key over an empty graph yields an empty drill, never an
+/// error.
 #[test]
-fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
+fn files_lens_drill_shows_the_files_entities_at_the_public_boundary() {
     let graph = lens_graph();
 
     let real = cluster_detail(&graph, FILE_A, &Lens::Files);
@@ -454,9 +475,23 @@ fn files_lens_drill_is_unconditionally_empty_at_the_public_boundary() {
         "the drill echoes the drilled key as its seed"
     );
     assert_eq!(real.depth, 0, "a cluster drill is not a hop-bounded walk");
+    let ids: Vec<&str> = real.nodes.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [BAR, FOO],
+        "a file drills to its own entities: {real:?}"
+    );
+    let edges: Vec<(&str, &str)> = (real.edges.iter())
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(
+        edges,
+        [(FOO, BAR)],
+        "only the intra-file edge renders, never one to another file or a non-member: {real:?}"
+    );
     assert!(
-        real.nodes.is_empty() && real.edges.is_empty() && real.truncated.is_none(),
-        "a REAL, populated file cluster still drills to nothing under files-lens purity: {real:?}"
+        real.truncated.is_none(),
+        "a file under the budget renders whole"
     );
 
     let unknown = cluster_detail(&graph, "no/such/file.rs", &Lens::Files);
@@ -528,20 +563,23 @@ fn the_served_graph_route_defaults_to_the_purified_files_lens() {
         "an explicit lens=files is byte-identical to the lens-absent default"
     );
 
-    // The served drill is unconditionally empty too, over the same live graph.
+    // The served drill shows the file's entities, over the same live graph.
     let drill = served_json(&format!(
         "/api/graph?cluster={}",
         FILE_A.replace('/', "%2F")
     ));
     assert_eq!(drill["seed"].as_str(), Some(FILE_A));
+    let ids: Vec<&str> = (drill["nodes"].as_array().expect("drill nodes array").iter())
+        .map(|n| n["id"].as_str().expect("a drill node id is a string"))
+        .collect();
     assert_eq!(
-        drill["nodes"].as_array().expect("drill nodes array").len(),
-        0,
-        "the served files-lens drill is unconditionally empty: {drill}"
+        ids,
+        [BAR, FOO],
+        "the served files-lens drill shows the file's entities: {drill}"
     );
     assert!(
         drill.get("truncated").is_none(),
-        "an always-empty drill is always complete, so truncated never serializes: {drill}"
+        "a drill under the budget is complete, so truncated never serializes: {drill}"
     );
 }
 

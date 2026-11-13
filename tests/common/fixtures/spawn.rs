@@ -42,6 +42,16 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     }
 }
 
+/// One hook block running `command` under `matcher`, as the settings installers write it.
+pub fn hook_block(matcher: &str, command: &str) -> serde_json::Value {
+    serde_json::json!({"matcher": matcher, "hooks": [hook(command)]})
+}
+
+/// One inner hook running `command`, as the settings installers write it.
+pub fn hook(command: &str) -> serde_json::Value {
+    serde_json::json!({"type": "command", "command": command})
+}
+
 /// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
 pub type HelperFile<'a> = (&'a str, &'a str);
 
@@ -81,6 +91,34 @@ pub fn write_helper_copies(root: &std::path::Path, copies: &[HelperFile]) {
     for (file, text) in copies {
         write_helper_copy(root, file, text);
     }
+}
+
+/// Each file `root`'s `.claude/agents/` holds, as its name and its text, sorted; none when that
+/// directory is absent.
+pub fn helper_copies_in(root: &std::path::Path) -> Vec<(String, String)> {
+    let mut held: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            (file, std::fs::read_to_string(&path).unwrap())
+        })
+        .collect();
+    held.sort();
+    held
+}
+
+/// Every helper copy of `groups`, as its name and its text, sorted: what [`helper_copies_in`]
+/// reads from a checkout each group was written into.
+pub fn helper_files(groups: &[&[HelperFile]]) -> Vec<(String, String)> {
+    let mut held: Vec<(String, String)> = groups
+        .iter()
+        .flat_map(|group| group.iter())
+        .map(|(file, text)| (file.to_string(), text.to_string()))
+        .collect();
+    held.sort();
+    held
 }
 
 /// The `--agents` value [`OPERATOR_HELPER_COPIES`] define: each helper keyed by its name, its
@@ -156,12 +194,29 @@ pub fn first_message_task(line: &str) -> String {
         .to_string()
 }
 
-/// The frame the cli host closes spawn `id`'s task with: the driver's separator, then the line
-/// naming the `rigger progress` command and its arguments only.
+/// The separator a process host's frame opens with, between a spawn's task and its progress line.
+pub const DRIVER_SEPARATOR: &str = "\n\n--- rigger driver ---\n";
+
+/// The frame a process host closes a spawn's task with: the [`DRIVER_SEPARATOR`], then the line
+/// naming how the spawn records a progress line on that host, `report` its verb and that verb's
+/// arguments only, since when to report is the communication built-in's.
+pub fn progress_frame(report: &str) -> String {
+    format!("{DRIVER_SEPARATOR}LIVE PROGRESS: record a progress line {report}.")
+}
+
+/// The [`progress_frame`] the cli host closes spawn `id`'s task with: the `rigger progress`
+/// command and its arguments.
 pub fn cli_progress_frame(id: &str) -> String {
-    format!(
-        "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress line by running (Bash): \
-         rigger progress '{id}' '<one line: what you just did>'."
+    progress_frame(&format!(
+        "by running (Bash): rigger progress '{id}' '<one line: what you just did>'"
+    ))
+}
+
+/// The [`progress_frame`] the headless host closes a launch's first user message with: the
+/// progress tool and its one argument.
+pub fn headless_progress_frame() -> String {
+    progress_frame(
+        "by calling the mcp__rigger__rigger_progress tool with that line as its activity",
     )
 }
 
@@ -198,6 +253,23 @@ pub fn scratch_tool_entry() -> serde_json::Value {
                         records.",
         "inputSchema": {"type": "object", "properties": {}}
     })
+}
+
+/// Each text the MCP tool list `tools` advertises beside its stem under spec 121's THE NAMING
+/// RULE, in document order: a tool's description under `<TOOL>`, then each `inputSchema` property
+/// description under `<TOOL>_<ARG>`.
+pub fn stemmed_texts(tools: &serde_json::Value) -> Vec<(String, &str)> {
+    let mut texts = Vec::new();
+    for tool in tools.as_array().unwrap() {
+        let stem = tool["name"].as_str().unwrap().to_uppercase();
+        texts.push((stem.clone(), tool["description"].as_str().unwrap()));
+        for (arg, property) in tool["inputSchema"]["properties"].as_object().unwrap() {
+            if let Some(text) = property["description"].as_str() {
+                texts.push((format!("{stem}_{}", arg.to_uppercase()), text));
+            }
+        }
+    }
+    texts
 }
 
 /// The argv a stand-in `claude` saved at `path`, one NUL-terminated field per argument.

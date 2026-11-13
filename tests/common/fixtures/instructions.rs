@@ -205,6 +205,10 @@ pub const DOC_ONLY_ROUND_RULE: &str = "Extend the existing owner test's needle f
 /// that changed documentation only.
 pub const DOC_ONLY_ROUND_FACT: &str = "This round changed documentation only.";
 
+/// The sentence a resumed sdet-author session's task closes its later-attempt line with, ahead of
+/// the round's fact.
+pub const LATER_ATTEMPT_CLOSE: &str = "Bring the periphery tests in line with that change.";
+
 /// The section of `text` that `heading` opens, up to the next `## ` heading or the end of `text`.
 pub fn markdown_section<'a>(text: &'a str, heading: &str) -> &'a str {
     let from = text.find(heading).expect("the text carries the heading");
@@ -286,6 +290,23 @@ pub const PROGRESS_CADENCE: [&str; 3] = [
     "Keep it flowing WHILE you work; do not batch it at the end.",
 ];
 
+/// The words every wording of the progress cadence has carried, the bullet above and the frame
+/// and tool texts it replaced, in lower case: a text holding none of them, whatever their case,
+/// states no cadence in any wording, not only not the bullet's.
+pub const PROGRESS_CADENCE_MARKS: [&str; 2] = ["each significant step", "keep it flowing"];
+
+/// `text`, which `what` names, states no progress cadence in any wording: it holds none of
+/// [`PROGRESS_CADENCE_MARKS`], whatever their case, each of which the bullet itself holds once.
+pub fn assert_states_no_progress_cadence(what: &str, text: &str) {
+    assert_carries_each(
+        "the progress bullet",
+        &PROGRESS_CADENCE.join(" ").to_lowercase(),
+        &PROGRESS_CADENCE_MARKS,
+        1,
+    );
+    assert_carries_each(what, &text.to_lowercase(), &PROGRESS_CADENCE_MARKS, 0);
+}
+
 /// The heading line the communication built-in opens in a composed system prompt.
 pub const COMMUNICATION_SECTION: &str = "\n## communication\n";
 
@@ -348,7 +369,10 @@ pub fn composed_system_prompt(agent_file: &str) -> String {
 /// persona, the bare heading, then each named section in order, its body with trailing
 /// whitespace trimmed.
 pub fn expected_composed_prompt(persona: &str, sections: &[(&str, &str)]) -> String {
-    let mut out = format!("{persona}\n\n{}\n", rigger::instructions::HEADING);
+    let mut out = format!(
+        "{persona}\n\n{}\n",
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
+    );
     for (name, body) in sections {
         out.push_str(&format!("\n## {name}\n{}\n", body.trim_end()));
     }
@@ -451,7 +475,7 @@ fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> Str
         "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
-        rigger::instructions::HEADING,
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING,
         builtin_body("engineering-principles").trim_end()
     )
 }
@@ -473,7 +497,7 @@ pub fn rendered_built_ins_only_layer() -> String {
     .concat();
     format!(
         "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
-        rigger::instructions::HEADING
+        rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
     )
 }
 

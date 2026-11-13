@@ -159,7 +159,7 @@ fn serving<'a>(rs: &'a RunState, criterion: &str) -> Vec<&'a str> {
 /// DIFFERENT unit id for the SAME criterion on each of its spawns: the initial wave spawn is
 /// one planning EPISODE, and each critique-driven re-plan is a LATER episode over the exact
 /// same criterion - `rejects` rejections mint `rejects + 1` episodes. The emitted
-/// `UnitProposed` JSON carries NO `episode` field at all - exactly the PLAN_PROTOCOL shape a
+/// `UnitProposed` JSON carries NO `episode` field at all - exactly the `render_plan_protocol` shape a
 /// real planner emits, which never asks for one - so the episode identity can ONLY reach
 /// `harvest_proposed` through the `emit` callback THIS test receives (the real `RunCtx`-owned
 /// closure `run_single_stage` / `re_plan` builds, unchanged from what a live run wires), never
@@ -234,7 +234,7 @@ impl AgentDriver for ReplanDriver {
             self.planner_spawns.lock().unwrap().push(opts.id.clone());
             let unit_id = unit_id_for_spawn(&opts.id);
             self.proposed_ids.lock().unwrap().push(unit_id.clone());
-            // No `episode` key here - PLAN_PROTOCOL never asks the planner to emit one
+            // No `episode` key here - `render_plan_protocol` never asks the planner to emit one
             // (see the module doc). The episode identity must reach `harvest_proposed`
             // through `emit`'s own META_SPAWN stamp, or not at all.
             emit(
@@ -449,7 +449,7 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
 
 /// Drives the plan-critique reject-then-replan cycle where the RE-PLAN spawn (episode 2)
 /// does two things in ONE spawn: re-emits the FIRST episode's unit under its EXACT id (a
-/// refine - PLAN_PROTOCOL's own vocabulary for revising a unit, never a fresh id) AND
+/// refine - `render_plan_protocol`'s own vocabulary for revising a unit, never a fresh id) AND
 /// proposes a genuinely-new sibling unit for the IDENTICAL criterion (a real split
 /// introduced mid-replan, spec 31's guarantee). This is the shape round-2's REJECT fix
 /// (sdet-c1-refine-branch-never-restamps-episode / adv-u72c1-refine-staleness-order-
@@ -535,7 +535,7 @@ impl AgentDriver for RefineWithSiblingDriver {
             let spawn_number = self.planner_spawns.lock().unwrap().len();
             if spawn_number == 1 {
                 // Episode 1: the initial proposal, exactly like the other two drivers'
-                // first spawn. No `episode` key - PLAN_PROTOCOL never asks for one.
+                // first spawn. No `episode` key - `render_plan_protocol` never asks for one.
                 let unit_id = unit_id_for_spawn(&opts.id);
                 *self.orig_id.lock().unwrap() = Some(unit_id.clone());
                 emit(
@@ -549,7 +549,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                 )?;
             } else {
                 // Episode 2 (the re-plan): re-emit episode 1's EXACT id (a refine - no
-                // `criterion`/`coverage` re-echoed, matching PLAN_PROTOCOL's fold-needs-
+                // `criterion`/`coverage` re-echoed, matching `render_plan_protocol`'s fold-needs-
                 // only shape for a revision) AND, in this SAME spawn, propose a
                 // genuinely-new sibling for the IDENTICAL criterion. Both emits share
                 // this spawn's own META_SPAWN stamp (the real `emit` closure `re_plan`
@@ -782,7 +782,7 @@ fn resume_seam_cfg() -> Config {
 
 /// A single planning episode's driver: the planner's ONE spawn proposes ONE new unit for
 /// the given criterion, exactly like `ReplanDriver`'s spawn (no `episode` key in the
-/// JSON `data` at all - PLAN_PROTOCOL never asks for one; the identity must come from
+/// JSON `data` at all - `render_plan_protocol` never asks for one; the identity must come from
 /// `emit`'s own `META_SPAWN` stamp, which only a REAL spawn through `run` provides).
 struct SinglePlannerDriver {
     planner: String,

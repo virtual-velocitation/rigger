@@ -26,14 +26,16 @@ use common::cli::{
     write_spec_project,
 };
 use common::fixtures::{
-    composed_system_prompt, git_ok, held_event, sorted_dir_names, temp_git_project_with_commit,
-    write_helper_copies, HelperFile, ADVISORY, CLEAN_CRITIQUE, NO_VERDICT, OPERATOR_HELPER_COPIES,
+    composed_system_prompt, git_ok, held_event, helper_copies_in, helper_files, sorted_dir_names,
+    temp_git_project_with_commit, write_helper_copies, HelperFile, ADVISORY, CLEAN_CRITIQUE,
+    NO_VERDICT, OPERATOR_HELPER_COPIES,
 };
 use common::repo::{
-    assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_record,
-    critique_stub_spawns, critique_stub_task, flag_value, handed_helpers_agents_json,
-    hold_critique_stub, hook_words, stub_path, write_critique_stub_reporting,
-    write_critique_stub_then, CRITIQUE_CONN, CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
+    assert_carries_spawn_hooks, collect_files, critique_stub_argv, critique_stub_launch_helpers,
+    critique_stub_record, critique_stub_spawns, critique_stub_task, critique_stub_writes,
+    flag_value, handed_helpers_agents_json, hold_critique_stub, hook_words, stub_path,
+    write_critique_stub_reporting, write_critique_stub_then, BOUND_TOOLS, CRITIQUE_CONN,
+    CRITIQUE_SYSTEM_PROMPT, SILENT_PAST_THE_POLL,
 };
 use rigger::driver::claude_code::{framed, AGENT_STREAM_SUBDIR};
 use rigger::driver::replay::spawn_scratch_path;
@@ -44,10 +46,10 @@ use rigger::liveness::{marker_path, scratch_subpath};
 use rigger::progress::{RunStamped, SpawnLaunched, StopFailure};
 use rigger::review::{
     critique_hash, critique_spawn_id, critique_unit, spec_critique_prompt, CRITIC_DENIED_TOOLS,
-    CRITIQUE_RECORDED_FINDINGS,
 };
 use rigger::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT};
 use rigger::wave::NO_CRITIC_CLAUSE;
+use rigger_domain::prompt_surface::CRITIQUE_RECORDED_FINDINGS;
 use serde_json::{json, Value};
 
 /// A workflow whose plan-critique gate names the `critic` persona as its adversary.
@@ -68,9 +70,12 @@ const JUDGE: &str = "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: no
 
 /// The critic's `--allowed-tools`: its replacement tools, which already hold every rigger tool
 /// the embedded helpers and the operator's copies declare, then the host's own grant.
-const CRITIC_PRE_APPROVAL: &str =
-    "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
-     mcp__rigger__rigger_emit,mcp__rigger__rigger_progress,mcp__rigger__rigger_scratch";
+fn critic_pre_approval() -> String {
+    format!(
+        "Read,Glob,mcp__rigger__rigger_graph,mcp__rigger__rigger_ground,mcp__rigger__rigger_peers,\
+         {BOUND_TOOLS}"
+    )
+}
 
 const SPEC_REL: &str = "specs/9-demo.md";
 const SPEC: &str = "# 9 - A demo spec\n\n## Design\n\nThe widget renders.\n\n## Done when\n\n\
@@ -234,32 +239,54 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
     }
 }
 
-/// Given a project holding the operator's own copies of both fan-out helpers, or of neither, when
-/// its critic launches, then the launch defines the helpers from those copies, else from the
-/// embedded text, and its pre-approval holds the rigger tools they declare once each among the
-/// critic's own: the operator's copy is the definition, resolved at the critique's root.
+/// Given a project holding the operator's own copies of both fan-out helpers, or of neither, or
+/// gaining a lookup copy as its first pass runs, when its critic launches pass after pass (a
+/// rejecting pass, then a clean one), then each launch defines the helpers from the copies the
+/// checkout held as the critique started, else from the embedded text, and its pre-approval holds
+/// the rigger tools they declare once each among the critic's own: the operator's copy is the
+/// definition, resolved once at the critique's root, so a copy the first pass writes changes no
+/// later pass's launch.
 #[test]
 fn a_critique_launch_defines_the_helpers_from_the_operators_copies() {
-    let rows: [(&str, &[HelperFile]); 2] =
-        [("no copy", &[]), ("both copies", &OPERATOR_HELPER_COPIES)];
-    for (name, copies) in rows {
+    let [lookup, _] = OPERATOR_HELPER_COPIES;
+    // Each row: the copies the checkout holds as the critique starts, and those its first pass
+    // writes into the checkout as it runs.
+    let rows: [(&str, &[HelperFile], &[HelperFile]); 3] = [
+        ("no copy", &[], &[]),
+        ("both copies", &OPERATOR_HELPER_COPIES, &[]),
+        ("a lookup copy written mid-run", &[], &[lookup]),
+    ];
+    for (name, copies, mid_run) in rows {
         let dir = temp_project();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         scaffold(&root, CRITIC_WORKFLOW);
         write_helper_copies(&root, copies);
         let (work, path) = stub(REJECT);
+        write_helper_copies(&critique_stub_writes(work.path()), mid_run);
         let (_, err, ok) = critique(&root, SPEC_REL, &path, &root.join("scratch"));
         assert!(ok, "{name}: the critique is recorded; stderr:\n{err}");
-
-        let argv = critique_stub_argv(work.path());
         assert_eq!(
-            (
-                serde_json::from_str::<Value>(flag_value(&argv, "--agents")).unwrap(),
-                flag_value(&argv, "--allowed-tools"),
-            ),
-            (handed_helpers_agents_json(copies), CRITIC_PRE_APPROVAL),
-            "{name}: the critic's helpers are the copies the checkout holds, else the embedded \
-             ones, and its tools already hold the rigger tools either declares, so the \
+            helper_copies_in(&root),
+            helper_files(&[copies, mid_run]),
+            "{name}: the checkout holds the copies it started with and those written mid-run"
+        );
+
+        let hash = critique_hash(SPEC);
+        let expected: Vec<(String, Value, String)> = [0, 1]
+            .into_iter()
+            .map(|attempt| {
+                (
+                    critique_spawn_id(&hash, attempt),
+                    handed_helpers_agents_json(copies),
+                    critic_pre_approval(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            critique_stub_launch_helpers(work.path()),
+            expected,
+            "{name}: each pass's helpers are the copies the checkout held at the start, else the \
+             embedded ones, and its tools already hold the rigger tools either declares, so the \
              pre-approval adds only the host's own"
         );
     }
@@ -347,7 +374,7 @@ fn a_spec_is_critiqued_once_per_text_and_answered_from_the_store_after() {
     let argv = critique_stub_argv(first.path());
     assert_eq!(
         flag_value(&argv, "--allowed-tools"),
-        CRITIC_PRE_APPROVAL,
+        critic_pre_approval(),
         "the critic's tools are replaced: no Bash, Agent or Grep, and the host's own grant, which \
          the deny below wins over"
     );

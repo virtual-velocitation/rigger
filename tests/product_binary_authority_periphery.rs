@@ -3,7 +3,7 @@
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO. `tests/product_binary_location.rs` pins
 //! the pure derivation (`common::product_binary_from` over a path), pins that the derivation
-//! declines outside a `deps/` dir, pins that the resolved binary exists in the target dir this
+//! declines outside cargo's two suite layouts, pins that the resolved binary exists in the target dir this
 //! process runs from, and pins that no other suite bakes the compile-time path. None of those can
 //! see the two properties the authority is actually built around, because both are properties of a
 //! CHOICE BETWEEN CANDIDATES that only one process can observe: its RESOLUTION ORDER, and the
@@ -94,20 +94,21 @@ fn stage(src: &Path, dst: &Path) {
 /// This test executable and the `<target>/<profile>` dir it is running out of.
 ///
 /// Both observations stage a target dir AROUND the running suite, so both need that suite to be a
-/// cargo-run integration binary sitting in a `deps/` dir. A runner that stages test executables
-/// somewhere else is told so HERE, in one sentence naming the path, rather than through a confusing
-/// failure three steps later in a child process.
+/// cargo-run integration binary sitting where the authority's own [`common::suite_profile_dir`]
+/// recognises it. A runner that stages test executables somewhere else is told so HERE, in one
+/// sentence naming the path, rather than through a confusing failure three steps later in a child
+/// process.
 fn running_suite() -> (PathBuf, PathBuf) {
     let exe = std::env::current_exe().expect("the running test executable");
-    let deps = exe.parent().expect("<target>/<profile>/deps").to_path_buf();
-    assert_eq!(
-        deps.file_name().and_then(|n| n.to_str()),
-        Some("deps"),
-        "this proof stages a target dir around the running suite, so the suite must be running \
-         from a cargo `deps/` dir; it is at {}",
-        exe.display()
-    );
-    let profile = deps.parent().expect("<target>/<profile>").to_path_buf();
+    let profile = common::suite_profile_dir(&exe)
+        .unwrap_or_else(|| {
+            panic!(
+                "this proof stages a target dir around the running suite, so the suite must be \
+                 running from a layout cargo runs integration suites from; it is at {}",
+                exe.display()
+            )
+        })
+        .to_path_buf();
     (exe, profile)
 }
 
@@ -118,7 +119,8 @@ struct StagedSuite {
     root: PathBuf,
     /// `<probe>/<profile>` - where the staged suite's DERIVED product would sit.
     profile: PathBuf,
-    /// `<probe>/<profile>/deps/<suite>` - the staged executable to run.
+    /// The staged executable to run, at the same place under `<probe>/<profile>` the running suite
+    /// sits under its own profile dir, so the child runs from the layout cargo actually used.
     exe: PathBuf,
 }
 
@@ -132,10 +134,13 @@ fn stage_this_suite(tag: &str, exe: &Path, profile: &Path) -> StagedSuite {
     let root = target.join(format!("periphery-{tag}-target-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let staged_profile = root.join(profile.file_name().expect("<profile>"));
-    let staged_deps = staged_profile.join("deps");
-    std::fs::create_dir_all(&staged_deps)
-        .unwrap_or_else(|e| panic!("could not stage {}: {e}", staged_deps.display()));
-    let staged_exe = staged_deps.join(exe.file_name().expect("the suite's file name"));
+    let staged_exe = staged_profile.join(
+        exe.strip_prefix(profile)
+            .expect("the running suite sits under its profile dir"),
+    );
+    let staged_dir = staged_exe.parent().expect("the staged suite's dir");
+    std::fs::create_dir_all(staged_dir)
+        .unwrap_or_else(|e| panic!("could not stage {}: {e}", staged_dir.display()));
     stage(exe, &staged_exe);
     StagedSuite {
         root,
@@ -295,8 +300,7 @@ fn the_resolver_refuses_a_derived_product_that_is_not_there() {
 /// exists, so a resolver that dropped the `exists` guard - or one that never reached the
 /// compiled-beside fallback at all - returns exactly the same answer as a correct one and leaves
 /// every assertion in the tree green. Both were measured: with either change in place, this file's
-/// order proof and the whole of `tests/product_binary_location.rs` still report 6 passed / 0
-/// failed.
+/// order proof and every test in `tests/product_binary_location.rs` still pass.
 ///
 /// HOW A MISSING FALLBACK IS TOLD APART FROM A REFUSED ONE, because these are opposite verdicts on
 /// the same exit code. When neither candidate exists the authority is DOCUMENTED to refuse, naming

@@ -6,10 +6,12 @@
 //! snapshot is published before the pointer to it, each by an atomic rename, so a reader sees the
 //! old snapshot or the new one, never a part; a crash between the two leaves the old one current.
 //! The reaper keeps the pointers of the two most recently advanced fingerprints and their
-//! snapshots, so two binaries sharing a store each keep theirs.
+//! snapshots, so two binaries sharing a store each keep theirs, and reaps the overlay's facts
+//! memo (`memo/`) to the entries of those same fingerprints within its cap.
 
+use crate::code::disk_memo::{self, MemoCap};
 use crate::code::snapshot::{encode, stamp_unchecked, Snapshot};
-use crate::format::{write_atomic, WriteLock};
+use crate::format::{write_atomic, WriteLock, TEMP};
 use crate::published::Published;
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
 use rigger_domain::code_view::{
@@ -21,6 +23,7 @@ use rigger_domain::resolve::SETTLED_GENERATION;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The prefix of a pointer file: `CURRENT-<fingerprint>` names the snapshot in force under that
 /// fingerprint, in sixteen lowercase hex digits.
@@ -28,11 +31,13 @@ const CURRENT: &str = "CURRENT-";
 /// The lock file every writer holds.
 pub const LOCK: &str = "LOCK";
 const SNAP: &str = ".snap";
-const TMP: &str = ".tmp";
 /// How many times a reader re-reads its pointer when the snapshot it named was reaped first.
 const READ_ATTEMPTS: usize = 3;
 /// How many fingerprints' snapshots the store keeps: the two most recently advanced.
 const KEPT_FINGERPRINTS: usize = 2;
+
+/// A pointer file's name, with the sequence number of the snapshot it names, if it names one.
+type Pointer = (String, Option<u64>);
 
 /// Publishes a file's bytes; the default is [`AtomicPublish`].
 pub trait Publish: Send + Sync {
@@ -86,8 +91,13 @@ fn readable<B>(path: &Path, bytes: std::io::Result<B>) -> Result<Option<B>, Stri
 
 /// Whether `name` is a pointer file's.
 fn is_pointer(name: &str) -> bool {
-    name.strip_prefix(CURRENT)
-        .is_some_and(|hex| hex.len() == 16 && u64::from_str_radix(hex, 16).is_ok())
+    pointed_fingerprint(name).is_some()
+}
+
+/// The fingerprint a pointer file's name carries; none for any other name.
+fn pointed_fingerprint(name: &str) -> Option<u64> {
+    let hex = name.strip_prefix(CURRENT).filter(|hex| hex.len() == 16)?;
+    u64::from_str_radix(hex, 16).ok()
 }
 
 /// The sequence number a snapshot file name carries; none for any other name.
@@ -125,6 +135,11 @@ impl Store {
 
     pub fn lock_path(&self) -> PathBuf {
         self.dir.join(LOCK)
+    }
+
+    /// The directory of the facts memo on disk.
+    pub fn memo_dir(&self) -> PathBuf {
+        self.dir.join(crate::code::disk_memo::DIR)
     }
 
     /// The snapshot `fingerprint`'s pointer names, when it reads whole and was extracted under
@@ -257,7 +272,7 @@ impl Store {
 
     /// Every pointer file that reads, with the sequence number of the snapshot it names; none for
     /// a pointer that names no snapshot. A pointer that cannot be read is not listed.
-    fn pointers(&self) -> impl Iterator<Item = (String, Option<u64>)> + '_ {
+    fn pointers(&self) -> impl Iterator<Item = Pointer> + '_ {
         self.names().filter(|n| is_pointer(n)).filter_map(|name| {
             let pointer = std::fs::read(self.dir.join(&name)).ok()?;
             let seq = seq_of(String::from_utf8_lossy(&pointer).trim());
@@ -273,29 +288,51 @@ impl Store {
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
     }
 
-    /// Keeps the pointers of the [`KEPT_FINGERPRINTS`] most recently advanced fingerprints and
-    /// the snapshots they name, and removes every other pointer, snapshot and temp. Recency is the
-    /// order the pointers were written in, which is the order of the sequence numbers they name,
-    /// since every pointer is written holding the lock with the next number. A pointer is removed
-    /// before its snapshot, so a crash between leaves an unnamed snapshot the next reap removes,
-    /// never a pointer naming nothing. A pointer that cannot be read is left for the next advance,
-    /// though the snapshot it names is not kept, since which one it names is unknown; so is a
-    /// failed delete (a reader holding the file open on an OS that refuses it).
-    fn reap(&self) {
-        let mut ranked: Vec<(String, Option<u64>)> = self.pointers().collect();
+    /// The pointers the store keeps, those of the [`KEPT_FINGERPRINTS`] most recently advanced
+    /// fingerprints, and the stale rest. Recency is the order the pointers were written in, which
+    /// is the order of the sequence numbers they name, since every pointer is written holding the
+    /// lock with the next number.
+    fn ranked_pointers(&self) -> (Vec<Pointer>, Vec<Pointer>) {
+        let mut ranked: Vec<Pointer> = self.pointers().collect();
         ranked.sort_by_key(|(_, seq)| std::cmp::Reverse(*seq));
         let stale = ranked.split_off(KEPT_FINGERPRINTS.min(ranked.len()));
-        let kept: Vec<String> = ranked
+        (ranked, stale)
+    }
+
+    /// Keeps the pointers the store keeps ([`Self::ranked_pointers`]) and the snapshots they name,
+    /// and removes every other pointer, snapshot and temp. A pointer is removed before its
+    /// snapshot, so a crash between leaves an unnamed snapshot the next reap removes, never a
+    /// pointer naming nothing. A pointer that cannot be read is left for the next advance, though
+    /// the snapshot it names is not kept, since which one it names is unknown; so is a failed
+    /// delete (a reader holding the file open on an OS that refuses it). The facts memo is reaped
+    /// with them, within [`MemoCap::STATED`] ([`Self::reap_memo`]).
+    fn reap(&self) {
+        let (kept, stale) = self.ranked_pointers();
+        let kept: Vec<String> = kept
             .iter()
             .filter_map(|(_, seq)| seq.map(snap_name))
             .collect();
         let unnamed: Vec<String> = self
             .names()
-            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TMP))
+            .filter(|name| (seq_of(name).is_some() && !kept.contains(name)) || name.ends_with(TEMP))
             .collect();
         for name in stale.into_iter().map(|(name, _)| name).chain(unnamed) {
             let _ = std::fs::remove_file(self.dir.join(name));
         }
+        self.reap_memo(MemoCap::STATED, SystemTime::now());
+    }
+
+    /// Reaps the facts memo to the entries of the fingerprints whose pointers the store keeps
+    /// ([`Self::ranked_pointers`]), within `cap` ([`disk_memo::reap`]): two binaries sharing a
+    /// store keep each other's entries as they keep each other's snapshots, and a fingerprint's
+    /// entries go with its snapshot. Run by every reap of the store, under its lock, and by an
+    /// overlay open that extracts a file, without it.
+    pub(crate) fn reap_memo(&self, cap: MemoCap, now: SystemTime) {
+        let (kept, _) = self.ranked_pointers();
+        let kept: Vec<u64> = (kept.iter())
+            .filter_map(|(name, _)| pointed_fingerprint(name))
+            .collect();
+        disk_memo::reap(&self.memo_dir(), &kept, cap, now);
     }
 }
 
@@ -516,6 +553,7 @@ mod tests {
     use rigger_domain::code_view::{CodeView, Groupings};
     use std::collections::BTreeSet;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     const FP: u64 = 1;
 
@@ -1000,6 +1038,91 @@ mod tests {
                     "{name}, {mode:?}: nothing published or reaped"
                 );
             }
+        }
+    }
+
+    /// An entry seeded in the memo: the extractor of the fingerprint it is kept under, its name,
+    /// and how many seconds it is unread.
+    type MemoEntry = (u64, &'static str, u64);
+
+    /// A row: what it shows, the fingerprints advanced in turn, the entries seeded before the
+    /// last advance, and the entries left after it.
+    type MemoCase<'a> = (&'a str, &'a [u64], &'a [MemoEntry], &'a [MemoEntry]);
+
+    /// Each row: the fingerprints the store advances under in turn, the entries the memo holds
+    /// before the last of them advances, and the entries left after it. An advance reaps the
+    /// memo to the fingerprints the store keeps the snapshots of, the two most recently advanced,
+    /// and to entries read within the stated age across them; a fingerprint's entries go with its
+    /// snapshot.
+    #[test]
+    fn an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps() {
+        let old = MemoCap::STATED.age.as_secs() + 60;
+        let (b, c, d) = (FP + 1, FP + 2, FP + 5);
+        let cases: [MemoCase<'_>; 4] = [
+            (
+                "a fresh entry of the advanced fingerprint stays",
+                &[FP],
+                &[(FP, "fresh", 0), (FP, "old", old), (d, "no pointer", 0)],
+                &[(FP, "fresh", 0)],
+            ),
+            (
+                "the other kept fingerprint's entries stay",
+                &[b, FP],
+                &[(FP, "a", 0), (b, "b", 0), (d, "no pointer", 0)],
+                &[(FP, "a", 0), (b, "b", 0)],
+            ),
+            (
+                "the age holds across the kept fingerprints",
+                &[b, FP],
+                &[(FP, "a", old), (b, "b", old), (b, "c", 0)],
+                &[(b, "c", 0)],
+            ),
+            (
+                "a third fingerprint's advance removes the least recent one's entries",
+                &[FP, b, c],
+                &[(FP, "a", 0), (b, "b", 0)],
+                &[(b, "b", 0)],
+            ),
+        ];
+        let entry = |(fp, name, _): &MemoEntry| format!("{:016x}-{name}.facts", stamped(*fp));
+        for (case, advanced, seeded, left) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path());
+            let (source, group) = (MemSource::default(), CountingGroup::default());
+            let tip = source.commit("c1", A);
+            let advance = |fp: u64| store.advance(&source, &ToyExtract::new(fp), &group, &tip);
+            let (last, first) = advanced.split_last().unwrap();
+            for fp in first {
+                advance(*fp).unwrap();
+            }
+            let memo = store.memo_dir();
+            std::fs::create_dir_all(&memo).unwrap();
+            for seed in seeded {
+                std::fs::write(memo.join(entry(seed)), b"an entry").unwrap();
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(memo.join(entry(seed)));
+                let unread = Duration::from_secs(seed.2);
+                file.unwrap()
+                    .set_modified(SystemTime::now() - unread)
+                    .unwrap();
+            }
+            advance(*last).unwrap();
+            let listed = std::fs::read_dir(&memo).unwrap().flatten();
+            let entries: BTreeSet<String> = listed
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(entries, left.iter().map(entry).collect(), "{case}: entries");
+            let kept = &advanced[advanced.len().saturating_sub(KEPT_FINGERPRINTS)..];
+            let held = |fp: &u64| store.current(stamped(*fp)).unwrap().is_some();
+            let holds: Vec<bool> = advanced.iter().map(held).collect();
+            let want: Vec<bool> = advanced.iter().map(|fp| kept.contains(fp)).collect();
+            assert_eq!(holds, want, "{case}: which fingerprints hold a snapshot");
+            let snapshots = snap_names(&store)
+                .iter()
+                .filter(|n| seq_of(n).is_some())
+                .count();
+            assert_eq!(snapshots, kept.len(), "{case}: snapshot files");
         }
     }
 

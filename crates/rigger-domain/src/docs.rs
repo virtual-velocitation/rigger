@@ -18,10 +18,11 @@
 //!
 //! The composition root (the binary) populates the context from the real code
 //! definitions and calls [`render_using_rigger_skill`] and
-//! [`render_handbook_discipline`]. Both outputs render from the SAME context, so a
-//! project overlay that overrides a field (unit 3) flows into both through this one
-//! pipeline. The render is byte-stable on unchanged inputs (no map iteration, fixed
-//! collection order), so the drift check (unit 2) has no false positives.
+//! [`render_handbook_discipline`] on it, so both outputs render from the SAME code-derived
+//! context. A project overlay that overrides a field (unit 3) merges onto that context only
+//! for the skills `rigger setup` installs into a project; `rigger docs` and the handbook
+//! render from the bare context. The render is byte-stable on unchanged inputs (no map
+//! iteration, fixed collection order), so the drift check (unit 2) has no false positives.
 
 use std::fmt::Write as _;
 
@@ -927,7 +928,9 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              delete once the graph it rebuilds is in place. Every other event - every decision, \
              finding, lesson, gate verdict, the whole run history - survives byte-for-byte. The \
              delete runs on the embedded sqlite backend only, and it refuses (unless overridden \
-             with `--force-live`) while a run is live against the store.",
+             with `--force-live`) while a run is live against the store. Once the delete has run \
+             it removes the code store's facts memo (a cache reads refill); a refused \
+             `--derived` removes nothing.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
              per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
@@ -2597,7 +2600,7 @@ mod tests {
         /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): with
         /// no project constraints in the context, step 6 is the generic step alone - its title,
         /// then the one sentence every spec carries - and no project list follows it.
-        planning_a_spec_step_6_carries_the_projects_own_global_constraints:
+        planning_a_spec_step_6_is_the_generic_step_alone:
             assert_planning_a_spec_reads(
                 "**6. ",
                 "**7. ",

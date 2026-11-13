@@ -585,6 +585,15 @@ impl<'g> Buckets<'g> {
         matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
     }
 
+    /// Whether `node` is a MEMBER of the bucket [`whole_graph_lens_key`] folds it to, rather than
+    /// only standing in for that bucket on its coupling edges. Under [`Lens::Files`] a file's members
+    /// are spec 119's, the nodes [`member_file`] gives it, so a bare placeholder the fold resolves
+    /// by its leaf attributes its edges to its definition's file but is none of that file's
+    /// members; every node a derived lens folds is a member of its bucket.
+    pub(crate) fn is_member(&self, node: &Node) -> bool {
+        !matches!(self.lens, Lens::Files) || member_file(node).is_some()
+    }
+
     /// The derived lens's own documented texts ([`CODE_LENS_TEXTS`] under [`Lens::Code`],
     /// [`CONCEPTS_LENS_TEXTS`] under [`Lens::Concepts`]), or `None` under [`Lens::Files`], which
     /// is never underived, never reaches a derived re-projection (`dash.rs`'s `reproject_files`
@@ -630,13 +639,16 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 
     // Fold the WHOLE graph through the shared bucket fold: every node folds by
     // [`whole_graph_lens_key`] (the code lens's purity-gated wrapper over [`Buckets::key`]; byte-
-    // identical to it under Files / Concepts), and cross-bucket edges weight the super-edges. `total`
-    // reports the whole node count.
+    // identical to it under Files / Concepts), a cluster counts its members ([`Buckets::is_member`],
+    // so a file's count is its member count and a placeholder resolved by its leaf only carries its
+    // definition file's edges), and cross-bucket edges weight the super-edges. `total` reports the
+    // whole node count.
     let bucket_label = bucket_label_index(graph, &buckets);
     let (mut clusters, edges) = fold_buckets(
         graph.nodes.iter(),
         &graph.edges,
         |n| whole_graph_lens_key(&buckets, n),
+        |n| buckets.is_member(n),
         &bucket_label,
     );
     count_tests(&mut clusters, graph, &buckets);
@@ -777,34 +789,44 @@ pub fn count_tests(clusters: &mut [Cluster], graph: &Graph, buckets: &Buckets) {
 /// attach the bucket's display `label` when `bucket_label` names one, and weight the SYMMETRIC
 /// cross-bucket [`ClusterEdge`]s over `edges`.
 ///
-/// A node `key_of` maps to `None` is EXCLUDED. An edge is followed only when currently valid and
-/// BOTH endpoints fall in the folded set; an intra-bucket edge (or self-loop) adds no weight; the
-/// pair is canonicalized (smaller key first) so an `a -> b` and a `b -> a` graph edge fold into one
-/// weighted super-edge. Deterministic by construction (`BTreeMap` folds).
+/// A node `key_of` maps to `None` is EXCLUDED. A keyed node `is_member` rejects is a STAND-IN: it
+/// carries its bucket's coupling edges but is none of its members, so it adds nothing to the
+/// bucket's count or kind and makes no bucket of its own. An edge is followed only when currently
+/// valid and BOTH endpoints fall in the folded set; an intra-bucket edge (or self-loop) adds no
+/// weight; the pair is canonicalized (smaller key first) so an `a -> b` and a `b -> a` graph edge
+/// fold into one weighted super-edge. Deterministic by construction (`BTreeMap` folds).
 pub fn fold_buckets<'g>(
     nodes: impl Iterator<Item = &'g Node>,
     edges: &[Edge],
     key_of: impl Fn(&Node) -> Option<String>,
+    is_member: impl Fn(&Node) -> bool,
     bucket_label: &BTreeMap<&str, &str>,
 ) -> (Vec<Cluster>, Vec<ClusterEdge>) {
-    // Each folded node with its bucket key, then each distinct key once in order: a bucket is
-    // named by its key's RANK, so ranks order as the keys do and the fold below allocates nothing
-    // per node or edge.
-    let keyed: Vec<(&'g Node, String)> = nodes
-        .filter_map(|n| key_of(n).map(|key| (n, key))) // `None` excluded: a super-node / an unresolvable member
+    // Each folded node with its bucket key and whether it is a member, then each distinct
+    // members' key once in order: a bucket is named by its key's RANK, so ranks order as the keys
+    // do and the fold below allocates nothing per node or edge.
+    let keyed: Vec<(&'g Node, String, bool)> = nodes
+        .filter_map(|n| key_of(n).map(|key| (n, key, is_member(n)))) // `None` excluded: a super-node / an unresolvable member
         .collect();
-    let mut keys: Vec<&str> = keyed.iter().map(|(_, key)| key.as_str()).collect();
+    let mut keys: Vec<&str> = (keyed.iter())
+        .filter(|(_, _, member)| *member)
+        .map(|(_, key, _)| key.as_str())
+        .collect();
     keys.sort_unstable();
     keys.dedup();
-    let rank = |key: &str| keys.binary_search(&key).unwrap_or_default();
     let mut node_cluster: FxHashMap<&str, usize> = FxHashMap::default();
     let mut counts = vec![0usize; keys.len()];
     let mut kind_hist: Vec<BTreeMap<&'g str, usize>> = vec![BTreeMap::new(); keys.len()];
-    for (n, key) in &keyed {
-        let at = rank(key);
+    for (n, key, member) in &keyed {
+        // A stand-in for a bucket no member makes carries no edge.
+        let Ok(at) = keys.binary_search(&key.as_str()) else {
+            continue;
+        };
         node_cluster.insert(n.id.as_str(), at);
-        counts[at] += 1;
-        *kind_hist[at].entry(n.kind.as_str()).or_default() += 1;
+        if *member {
+            counts[at] += 1;
+            *kind_hist[at].entry(n.kind.as_str()).or_default() += 1;
+        }
     }
 
     // Each bucket becomes a Cluster whose kind is its DOMINANT member kind: the highest-count kind,
@@ -869,7 +891,8 @@ pub fn fold_buckets<'g>(
 /// a thousand nodes.
 pub const CLUSTER_RENDER_BUDGET: usize = 60;
 
-/// Drill a cluster to its members (spec 42 c3): the nodes whose [`cluster_key`] equals `key`, the
+/// Drill a cluster to its members (spec 42 c3): the nodes the lens folds to `key`
+/// (`whole_graph_lens_key`) that are members of it (`Buckets::is_member`), the
 /// currently-valid edges AMONG them, each returned node carrying its degree WITHIN the returned set
 /// and its god-node flag - reusing spec 30's [`Neighborhood`] shape so the SAME renderer draws it.
 ///
@@ -877,33 +900,21 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// stays `None`). A bigger one keeps only its [`CLUSTER_RENDER_BUDGET`] highest-degree members ranked
 /// by INTRA-CLUSTER degree with an ID tie-break, and sets `truncated = Some(total)`. Every returned
 /// edge has BOTH endpoints in the rendered set. An unknown / empty `key` yields an empty drill, never
-/// an error. Under [`Lens::Files`] (spec 63 c3), a file cluster is the atomic LEAF subject - drilling
-/// ANY key here is unconditionally EMPTY.
+/// an error. Under [`Lens::Files`] (spec 63 c3) a file drills to its entities, its members by spec
+/// 119's member rule ([`member_file`]), through this same budget, truncation and ordering.
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
-    if matches!(lens, Lens::Files) {
-        return Neighborhood {
-            seed: key.to_string(),
-            depth: 0,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            path: Vec::new(),
-            explain: None,
-            truncated: None,
-            dir: None,
-            referenced_not_called: Vec::new(),
-            memory: None,
-        };
-    }
     let buckets = Buckets::new(graph, lens);
-    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` (the code/concepts
-    // lenses' purity-gated wrapper over [`Buckets::key`]; byte-identical to it under Files), keyed
-    // by id for a deterministic, deduped set. A node the lens EXCLUDES (a super-node under the code or
-    // concepts lens, or - spec 63 c1/c4 - a non-code-entity / membership-less node there) is never a
-    // member of any bucket.
+    // The cluster's members: every node [`whole_graph_lens_key`] folds to `key` that is a member of
+    // it ([`Buckets::is_member`]), keyed by id for a deterministic, deduped set. A node the lens
+    // EXCLUDES (a super-node under the code or concepts lens, or - spec 63 c1/c3/c4 - a
+    // non-code-entity / membership-less node there) is never a member of any bucket, and a
+    // placeholder the files lens resolves by its leaf is none of its definition file's members.
     let members: BTreeSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| whole_graph_lens_key(&buckets, n).as_deref() == Some(key))
+        .filter(|n| {
+            buckets.is_member(n) && whole_graph_lens_key(&buckets, n).as_deref() == Some(key)
+        })
         .map(|n| n.id.as_str())
         .collect();
     let total = members.len();
@@ -2907,5 +2918,60 @@ mod line_citation_tests {
             "docs/x.md#sec:12",
         ];
         assert_eq!(kept.map(referenced_id), kept);
+    }
+}
+
+/// [`fold_buckets`]' STAND-IN: a keyed node `is_member` rejects carries the coupling edges of the
+/// bucket its key names and adds nothing to that bucket's count or kind, and a stand-in whose key
+/// no member names makes no bucket, so it carries no edge.
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::contextgraph::{REL_CALLS, TIER_EXTRACTED};
+    use crate::test_support::{edge, plain};
+
+    #[test]
+    fn a_stand_in_carries_its_buckets_edges_and_is_none_of_its_members() {
+        let nodes = [
+            plain("a", KIND_CODE_ENTITY),
+            plain("b", KIND_CODE_ENTITY),
+            plain("b-stand-in", KIND_ARTIFACT),
+            plain("lone-stand-in", KIND_CODE_ENTITY),
+        ];
+        let key = |n: &Node| {
+            let key = match n.id.as_str() {
+                "a" => "A",
+                "lone-stand-in" => "C",
+                _ => "B",
+            };
+            Some(key.to_string())
+        };
+        let calls = [
+            edge("a", "b-stand-in", REL_CALLS, TIER_EXTRACTED),
+            edge("a", "lone-stand-in", REL_CALLS, TIER_EXTRACTED),
+        ];
+        let (clusters, edges) = fold_buckets(
+            nodes.iter(),
+            &calls,
+            key,
+            |n| !n.id.ends_with("stand-in"),
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            (clusters.iter())
+                .map(|c| (c.key.as_str(), c.count, c.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("A", 1, KIND_CODE_ENTITY), ("B", 1, KIND_CODE_ENTITY)],
+            "a stand-in is none of its bucket's members and makes no bucket of its own"
+        );
+        assert_eq!(
+            edges,
+            [ClusterEdge {
+                from: "A".to_string(),
+                to: "B".to_string(),
+                weight: 1,
+            }],
+            "a stand-in carries the edges of the bucket a member makes, and of no other"
+        );
     }
 }

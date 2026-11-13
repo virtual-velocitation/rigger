@@ -206,7 +206,7 @@ impl AgentDriver for WritesFileDriver {
 }
 
 /// A three-role driver for the FRESH run: `planner` proposes ONE unit under `proposed_id`
-/// citing `criterion` (the PLAN_PROTOCOL `criterion` key - `UnitProposed::coverage`'s alias,
+/// citing `criterion` (the `render_plan_protocol` `criterion` key - `UnitProposed::coverage`'s alias,
 /// resolved against `deps.criteria` by `resolve_served_criterion`'s real production code,
 /// never a hand-set `criterion_id`) and `gates` (`UnitProposed::gates` - a planner-proposed
 /// unit's own gate list is read from THIS field, never inherited from the fan-out

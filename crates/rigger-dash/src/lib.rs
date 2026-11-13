@@ -8,6 +8,9 @@
 pub mod dash;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod mcpserver;
+/// The dash's prompt texts (spec 121): every tool and `inputSchema` property description the MCP
+/// server advertises, each one const whose doc comment opens with its class.
+pub mod prompt_surface;
 
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -84,6 +87,10 @@ mod graph_fixtures;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/page.rs"]
 mod page_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/prompt_surface.rs"]
+mod prompt_surface_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/shown.rs"]

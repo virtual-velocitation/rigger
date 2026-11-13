@@ -24,6 +24,10 @@ use cli::*;
 #[allow(dead_code)]
 mod gitsemver;
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
+#[path = "../tests/common/fixtures/prompt_surface.rs"]
+mod prompt_surface_fixtures;
+#[cfg(test)]
 #[path = "../tests/common/fixtures/mod.rs"]
 mod test_support;
 
@@ -301,6 +305,9 @@ rigger reset --derived      delete every derived event of the EVENT LOG in one\n
 transaction (`rigger setup` runs the same delete once\n                              \
 its rebuilt graph is in place), and vacuum so the file\n                              \
 shrinks on disk.\n                              \
+Once the delete has run it removes the code store's\n                              \
+facts memo (a cache reads refill); a refused --derived\n                              \
+removes nothing.\n                              \
 Every other event survives;\n                              \
 composes with --runs (each sheds its own accumulation).\n                              \
 Refuses while the run is live (a held step lock, an\n                              \
@@ -450,4 +457,35 @@ fn help(rest: &[String]) {
         Some(entry) if !entry.is_empty() => eprint!("{entry}"),
         _ => usage(),
     }
+}
+
+/// The binary crate's registry test (spec 121, criterion 16), invoked here because this file
+/// sits beside `src/prompt_surface.rs`, the module the test reads by `include_str!`.
+#[cfg(test)]
+mod prompt_surface_registry {
+    use crate::prompt_surface_fixtures::registry_test;
+    use rigger::prompt_surface::prompt_groups;
+
+    /// THE CLASS TABLE's binary rows: each const and the class its doc comment opens with.
+    const CLASS_TABLE: &[(&str, &str)] = &[
+        ("GREP_GUARD_MESSAGE", "CONTRACT"),
+        ("GUARD_WRITE_DENY", "FRAMING"),
+        ("GUARD_WRITE_STDERR_PREFIX", "FRAMING"),
+        ("GUARD_WRITE_ROOT_MISSING", "FRAMING"),
+        ("GUARD_WRITE_ROOT_EMPTY", "FRAMING"),
+        ("GUARD_WRITE_ROOT_RELATIVE", "FRAMING"),
+        ("GUARD_WRITE_UNKNOWN_ARG", "FRAMING"),
+        ("GUARD_WRITE_NO_ROOT", "FRAMING"),
+        ("GUARD_WRITE_PAYLOAD_UNREADABLE", "FRAMING"),
+        ("PRIME_IN_FORCE", "FRAMING"),
+        ("PRIME_OPERATOR_FILES", "FRAMING"),
+        ("PRIME_NO_STORE", "FRAMING"),
+        ("PRIME_DECISIONS_HEADER", "FRAMING"),
+        ("PRIME_NONE_YET", "FRAMING"),
+    ];
+
+    registry_test!(
+        every_binary_prompt_text_is_a_group_of_its_class_table_class,
+        CLASS_TABLE
+    );
 }

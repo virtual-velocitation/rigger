@@ -84,10 +84,11 @@ fn node_file_names_the_file_of_every_graph_kind_by_its_kind_table() {
 /// `Makefile::build`, the placeholder `src/b.rs::%all` of the first's leaf, the definition
 /// `src/aaa.rs::g` and a dotted decision `v1.2-choice`, WHEN the files lens folds the whole graph
 /// and re-grains the community, the card shows `Makefile::all` and the console map builds its
-/// districts, THEN the files lens and the re-grain fold the two definitions and the placeholder
-/// under `Makefile` and leave the decision under no file, the card gives `Makefile::all` the file
-/// `Makefile`, and the map counts its definitions in `Makefile`'s district, which their two
-/// members win over the one `aaa` member, so the one district holds all three named members.
+/// districts, THEN the files lens counts the two definitions under `Makefile`, the re-grain the
+/// two with the placeholder standing in for `Makefile::all`, and both leave the decision under
+/// no file, the card gives `Makefile::all` the file `Makefile`, and the map counts its
+/// definitions in `Makefile`'s district, which their two members win over the one `aaa` member,
+/// so the one district holds all three named members.
 #[test]
 fn every_file_reader_folds_an_extensionless_files_entity_under_its_file() {
     let g = one_community_graph(
@@ -103,9 +104,9 @@ fn every_file_reader_folds_an_extensionless_files_entity_under_its_file() {
     assert_eq!(
         files_lens_rows(&g, ONE_COMMUNITY, 5),
         [
-            "whole Makefile 3",
+            "whole Makefile 2",
             "whole src/aaa.rs 1",
-            "concept Makefile 3",
+            "concept Makefile 2",
             "concept src/aaa.rs 1",
             "concept v1.2-choice <- []",
         ],

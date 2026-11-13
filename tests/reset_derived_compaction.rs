@@ -3,19 +3,24 @@
 //! The delete removes rows of the embedded `.rigger/events.db` and vacuums the file, which no
 //! server-backed store offers. This test drives the COMPILED binary against a project configured
 //! for the server-backed store and holds the refusal to its wording and to leaving the local log
-//! as it stands, then the same project without that configuration to deleting.
+//! and the code facts memo as they stand, then the same project without that configuration to
+//! deleting.
 
 use crate::common;
 
+use common::cli::code_facts_memo_bytes;
 use common::cli::deleted_line;
 use common::cli::log_and_graph_files;
 use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::seed_code_facts_memo;
 use common::cli::seed_derived_duplicates;
 use common::cli::stream_shape;
 use common::cli::temp_rigger_project;
-use common::cli::{server_backed_derived_refusal, LOG_LEFT_AS_IT_STANDS_LINE};
+use common::cli::{
+    server_backed_derived_refusal, LOG_LEFT_AS_IT_STANDS_LINE, SEEDED_MEMO_REMOVED_LINE,
+};
 
 #[test]
 fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backend_it_needs() {
@@ -79,5 +84,47 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
             vec![],
         ),
         "on the sqlite backend the same log's derived rows are deleted; its stderr: {err}"
+    );
+}
+
+/// `rigger reset --derived` clears the code store's facts memo only once the delete may run: GIVEN
+/// a project whose memo holds two entries, WHEN `--derived` runs configured for the server-backed
+/// store, alone or composed with `--runs`, THEN it is refused before any pruning, says nothing of
+/// the memo and leaves it as it stands; and WHEN it runs on the sqlite backend, THEN it deletes
+/// the derived rows and then names the bytes of the memo it removed.
+#[test]
+fn reset_derived_clears_the_code_facts_memo_only_once_the_delete_may_run() {
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    seed_derived_duplicates(root);
+    seed_code_facts_memo(root);
+
+    for args in [
+        &["reset", "--derived"][..],
+        &["reset", "--runs", "--derived"],
+    ] {
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            args,
+            &[("KURRENTDB_CONN", "esdb://127.0.0.1:2113?tls=false")],
+        );
+        assert_eq!(
+            (ok, out.as_str(), code_facts_memo_bytes(root)),
+            (false, "", Some(30)),
+            "{args:?} is refused before any pruning and leaves the memo as it stands; stderr: {err}"
+        );
+    }
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
+    assert_eq!(
+        (ok, out, code_facts_memo_bytes(root)),
+        (
+            true,
+            deleted_line(common::cli::DUP_ROUNDS)
+                + LOG_LEFT_AS_IT_STANDS_LINE
+                + SEEDED_MEMO_REMOVED_LINE,
+            None
+        ),
+        "on the sqlite backend the delete runs, then the memo goes and is named; stderr: {err}"
     );
 }

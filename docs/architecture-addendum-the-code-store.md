@@ -211,6 +211,8 @@ Any design that holds test code fully has to keep product views the size they ar
                                  CURRENT-<fp> -> "000042.snap"  (one per fingerprint)
                                  000042.snap   (immutable, crc-checked)
                                  LOCK
+                                 memo/<fp>-<path hash>-<content id>.facts
+                                               (the overlay's facts memo, section 13)
                                          |
                                          | read whole, verify crc
                                          v
@@ -401,7 +403,8 @@ advance(store, source: TreeSource, extract: Extract, group: Group, target: Tip) 
   write   CURRENT-<fp>.tmp ; fsync ; rename to CURRENT-<fp>  ; sync_dir
   reap    keep the two CURRENT-* naming the highest seqs; remove every other CURRENT-*, then
           every *.snap neither names, and every *.tmp (a failed delete is left for the next
-          advance)
+          advance); then reap the facts memo to the entries of the fingerprints of the two
+          kept CURRENT-*, within its cap across them (section 13)
   release LOCK
 ```
 
@@ -433,6 +436,11 @@ What is *not* done, and why:
   reaper keeps the two most recently advanced fingerprints and removes every older one's pointer
   and snapshot. Recency is the order the pointers were written in, which is the order of the
   sequence numbers they name, since every pointer is written under LOCK with the next number.
+- **No unbounded memo.** The overlay's facts memo (section 13) is reaped with the snapshots, to
+  the entries of the fingerprints whose pointers the store keeps, so two binaries sharing a store
+  keep each other's entries and a fingerprint's entries go with its snapshot. Across those, it
+  keeps the entries read within three days, the most recently read first up to 64 MiB, and an
+  overlay open that extracts a file reaps it too.
 
 ### 5.2 What advances the stamp
 
@@ -769,6 +777,11 @@ reached.
 
 The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
 does it in less, so no cache is kept: each view open resolves what its query needs.
+
+The one exception is the overlay's facts memo (section 13), which keeps the facts extracted from a
+worktree file by the file's content. It cannot be stale, because its key is the content: an
+entry answers only for the bytes it was extracted from. It is bounded at 64 MiB of entries, none
+unread for more than three days, and reaped with the store (section 5.1).
 
 The budgets assume the stamp is current. If HEAD moved without the conductor, the first reader
 afterwards pays one advance first (<= 3 s for a small change, section 5.5).
@@ -1107,6 +1120,9 @@ is idempotent.
 | a torn or corrupt snapshot | a crc check fails on open | treated as absent: `open_current` advances from empty (<= 8 s) |
 | an older OS loses the directory entry of a rename | the pointer names the old snapshot | the old stamp is a true statement about an older commit; the next open sees HEAD ahead and advances |
 | a reader races the reaper | the snapshot named by a just-read pointer is gone | the reader re-reads the pointer and retries, at most 3 times |
+| while writing a facts memo entry | a `memo/*.tmp` orphan | readers miss the entry and extract the file; the reaper removes a temp older than a minute |
+| a torn or corrupt facts memo entry | it fails to decode, or holds other bytes' facts | treated as absent and removed; the file is extracted again |
+| a reader races the memo reaper | the entry the reader was about to read is gone | the reader extracts the file again; a read never re-creates a reaped entry |
 | two advancers | the second waits on LOCK | it re-reads its pointer under the lock: no-op if it is already at the target, otherwise it advances from the new stamp |
 | a crash during migration | steps 1-5 write only new files until the swap; step 6 is one transaction | a rerun resumes at the first step that is not yet done |
 
@@ -1138,12 +1154,56 @@ Overlay { base: Box<dyn CodeView>, changed: FactsView, hidden: set of paths }
   settled              = re-settled over the merged view on first read (below)
 ```
 
-The facts extracted from a worktree file are kept in a process memo (`Memo::process`) by the
-extractor's fingerprint, the file's path and its content id, so a reader that re-reads a file
-for the same bytes does not extract it again. It is the one cache between opens: it is never
-written anywhere, and it holds at most 256 files' facts (`Memo::BOUND`), evicting the least
-recently read beyond that, so a change set larger than that re-extracts the rest at each open;
-at tens of kilobytes of facts a file it stays within a few megabytes.
+The facts extracted from a worktree file are kept in a memo (`Memo::process`) by the store's
+fingerprint, the file's path and its content id, so a reader that re-reads a file for the same
+bytes does not extract it again. It is the one cache between opens, and it cannot be stale,
+because its key is the content. It has two tiers:
+
+- **In the process,** at most 256 files' facts (`Memo::BOUND`), evicting the least recently read
+  beyond that; at tens of kilobytes of facts a file it stays within a few megabytes.
+- **On disk,** under the code store at `memo/<fp>-<path hash>-<content id>.facts`, so a one-shot
+  read (a CLI call) extracts each content once across processes. An entry is a one-file snapshot
+  whose stamp holds the store's fingerprint and the content's identity (content id, crc32 and
+  length); the content itself is not kept. It is written through the store's atomic publish
+  unsynced (`write_atomic_as`, `Durability::Unsynced`: temp and rename, with no fsync of the
+  temp or the directory) once it reads back as the facts it holds, its directory made before it
+  is encoded so a store that cannot be written costs no encode. The entry is not durable, and
+  need not be: every read validates it, so an entry a crash loses or leaves short is a miss that
+  extraction answers, while a sync per entry is a wait the reader pays for every file it
+  extracts. A read takes an entry only when it decodes whole with that stamp and holds that one
+  path's facts; any other entry reads as absent and is removed. Two processes writing one entry
+  write the same bytes, and the rename keeps one whole. A disk error is never an answer's error:
+  the file is extracted as without a memo.
+
+The memo on disk is bounded and reaped (`Store::reap_memo`, `MemoCap::STATED`):
+
+- **Bound:** 64 MiB of entries across every kept fingerprint, none unread for more than three
+  days. The bytes are allocated bytes at a 4 KiB block: an entry counts its length rounded up to
+  4 KiB, the allocation unit of the common file systems and so what it takes on disk, and many
+  small entries cannot hold more of the disk than the cap.
+  `rigger validate`'s footprint keeps its own measure, the files' lengths.
+- **Recency:** an entry's modification time, which a read sets (`File::set_modified`, section 15).
+  The least recently read go first once the bytes pass the cap.
+- **Fingerprint:** the entries of every fingerprint the store keeps a pointer for (at most two,
+  section 5.1) stay, and every other fingerprint's go. Two binaries sharing a store then read
+  their own entries on alternate reads and extract nothing again, which is the thrash the
+  store's two kept pointers exist to stop; a third fingerprint's advance drops the least recent
+  fingerprint's entries with its snapshot. A binary only ever reads entries of its own
+  fingerprint.
+- **Temps:** a temp older than a minute is a crashed writer's, and goes.
+- **When:** with the store's reaper on every advance, under LOCK, and after every overlay open
+  that extracts a file, whether or not its entry was written, since a write that fails part way
+  can still leave bytes behind.
+- **Hygiene:** `rigger reset --derived` removes the memo once its delete has run, so a
+  `--derived` refused on its backend or on a live run removes nothing, and `rigger validate`
+  reports its size as the footprint's `code facts memo` category. A clear a reader's write
+  leaves partial is no error, since the delete has already run: the line names the bytes left,
+  which the reaper bounds, and never says the memo was removed. Setup's `.rigger/store` ignore
+  line covers it.
+
+A reader that races the reaper fails closed: an entry gone before its read is a miss, and the
+file is extracted again. A read marks an entry without creating it, so it never re-creates an
+entry the reaper removed.
 
 The resolver runs over the merged view, so tiers, proofs and test-ness describe W exactly.
 A reader takes a view's test files and proof calls as the store settled them at advance
@@ -1185,7 +1245,8 @@ rigger's own segment log (109), a resolved graph held in memory and loaded from 
   - the magic plus version header;
   - the crc32 check;
   - the section table;
-  - the atomic publish (temp, fsync, rename, `sync_dir`);
+  - the atomic publish (temp, fsync, rename, `sync_dir`; unsynced for a file every read
+    validates);
   - the lock (`with_write_lock`, on std `File::lock`).
 
   109 and 110 add their modules (`segments`, `graph`) to the same crate.
@@ -1250,6 +1311,7 @@ The code store lands first for three reasons:
 | atomic replace | `rename` (std) | `rename(2)` | `MoveFileExW` replace-existing (std) | `rename(2)` |
 | make a rename durable | `sync_dir(dir)`; a filesystem that cannot sync a directory (InvalidInput, Unsupported) leaves the rename standing and is not an error, as in SQLite | open the directory + `fsync` | no-op: a directory handle cannot be flushed portably; a lost rename leaves the pointer at the old, still-true stamp (section 12) | open the directory + `fsync` |
 | delete a file another process has open | reaper | unlink | std opens with share-delete, so the delete succeeds; a mapped file's delete fails and is retried at the next advance | unlink |
+| mark a memo entry read | `File::set_modified` (std), on a handle opened to write without creating | `futimens` | `SetFileTime` | `futimens` |
 | read the tree | `TreeSource` | git or the directory | git or the directory | git or the directory |
 
 Snapshots are immutable files named by sequence number, never replaced in place. On every OS,
@@ -1304,6 +1366,19 @@ a reader holding one open (or mapped) never blocks a writer.
   `overlay_adds_untracked_files`, `overlay_memoises_by_content_hash`,
   `resolution_over_the_overlay_describes_the_worktree` and
   `groupings_under_the_overlay_are_labelled_with_the_stamp`.
+- The facts memo on disk: `a_one_shot_read_extracts_each_content_once_and_answers_the_worktree`
+  (a file edited back and forth, each answer compared with a fresh extraction),
+  `a_damaged_entry_reads_as_absent_and_is_replaced`, `an_unwritable_memo_leaves_the_answer_alone`,
+  `an_unwritable_memo_fails_before_it_encodes`, `writers_of_one_entry_leave_it_whole`,
+  `a_reap_keeps_the_recently_read_entries_of_the_kept_fingerprints_within_the_cap`,
+  `a_read_entry_outlives_one_read_before_it`,
+  `an_advance_reaps_the_memo_to_the_fingerprints_the_store_keeps`,
+  `two_fingerprints_alternating_reads_extract_once_each`,
+  `an_open_that_extracts_reaps_the_memo`, `a_reaper_racing_reads_fails_closed_to_extraction`,
+  `reset_derived_clears_the_code_facts_memo_only_once_the_delete_may_run`,
+  `a_writer_racing_the_memo_clear_leaves_a_line_naming_what_is_left`,
+  `validate_reports_footprint_by_category_and_flags_a_dead_share_breach` and
+  `init_project_ignores_the_code_facts_memo_by_the_code_store_line`.
 - `a_units_blast_radius_describes_the_units_own_worktree`: a file the unit's first attempt added
   to its worktree is in the second attempt's recorded seed, read from that worktree.
 - `a_grammars_tags_query_compiles_once_per_process`: every lookup of a grammar and query pair

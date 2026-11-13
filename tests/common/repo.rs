@@ -64,13 +64,16 @@ const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";
 
 /// The files the critique stub reads and writes beside its PATH symlink (`<work>/bin`): the
 /// transcript it replays on its first spawn, the one it replays on every later spawn, its spawn
-/// count, and its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
-/// named and the `KURRENTDB_CONN` it was started with.
+/// count, its first spawn's stdin line, argv, the system prompt its `--system-prompt-file`
+/// named and the `KURRENTDB_CONN` it was started with, the record of every spawn's launch, and
+/// the tree its first spawn copies into its working directory.
 const CRITIQUE_TRANSCRIPT: &str = "critique-transcript.jsonl";
 const CRITIQUE_LATER_TRANSCRIPT: &str = "critique-later-transcript.jsonl";
 const CRITIQUE_SPAWNS: &str = "critique-spawns";
 const CRITIQUE_TASK: &str = "critique-task.jsonl";
 const CRITIQUE_ARGV: &str = "critique-argv";
+const CRITIQUE_LAUNCHES: &str = "critique-launches";
+const CRITIQUE_WRITES: &str = "critique-writes";
 /// The critique stub's record of the system prompt it was started with: the content of the file
 /// its `--system-prompt-file` named, copied at spawn time (the host removes that file once the
 /// spawn ends). Read with [`critique_stub_record`].
@@ -313,15 +316,20 @@ pub fn flag_value<'a>(argv: &'a [String], flag: &str) -> &'a str {
     &argv[at + 1]
 }
 
-/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn, the helpers its
-/// `--agents` defines and the tools its `--allowed-tools` pre-approves.
+/// The helpers a launch's `argv` defines in its `--agents` and the tools its `--allowed-tools`
+/// pre-approves.
+pub fn handed_helpers(argv: &[String]) -> (serde_json::Value, String) {
+    let agents = serde_json::from_str(flag_value(argv, "--agents")).expect("the helpers are JSON");
+    (agents, flag_value(argv, "--allowed-tools").to_string())
+}
+
+/// Each launch the stand-in recorded under `launches`, in spawn order: its spawn and the
+/// [`handed_helpers`] its argv carries.
 pub fn launch_helpers(launches: &Path) -> Vec<(String, serde_json::Value, String)> {
     super::fixtures::stand_in_launches(launches)
         .into_iter()
         .map(|launch| {
-            let agents = serde_json::from_str(flag_value(&launch.argv, "--agents"))
-                .expect("the helpers are JSON");
-            let tools = flag_value(&launch.argv, "--allowed-tools").to_string();
+            let (agents, tools) = handed_helpers(&launch.argv);
             (launch.spawn, agents, tools)
         })
         .collect()
@@ -343,6 +351,18 @@ pub fn critique_stub_record(work: &Path, record: &str) -> String {
 /// The argv the critique stub under `work` was started with on its first spawn.
 pub fn critique_stub_argv(work: &Path) -> Vec<String> {
     recorded_argv(&work.join("bin").join(CRITIQUE_ARGV))
+}
+
+/// Each launch of the critique stub under `work`, in spawn order: its spawn and the
+/// [`handed_helpers`] its argv carries ([`launch_helpers`]).
+pub fn critique_stub_launch_helpers(work: &Path) -> Vec<(String, serde_json::Value, String)> {
+    launch_helpers(&work.join("bin").join(CRITIQUE_LAUNCHES))
+}
+
+/// The directory whose tree the critique stub under `work` copies into its working directory on
+/// its first spawn, so a file a test writes under it lands in the checkout as the first pass runs.
+pub fn critique_stub_writes(work: &Path) -> PathBuf {
+    work.join("bin").join(CRITIQUE_WRITES)
 }
 
 /// The committed text file `rel`, compared lowercase, carries none of `phrasings`; the failure
@@ -375,23 +395,30 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
 /// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
 /// `(repo-relative path, text)`.
 pub fn production_sources(root: &Path) -> Vec<(String, String)> {
-    let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-    collect_rs_files(&root.join("crates"), &mut files);
-    files
+    rs_files_under(root, &["src", "crates"])
         .into_iter()
-        .map(|p| {
-            let rel = p
-                .strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            (rel, p)
-        })
-        .filter(|(rel, _)| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
-        .map(|(rel, p)| {
-            let text = super::fixtures::read_text(&p);
+        .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
+        .map(|rel| {
+            let text = super::fixtures::read_text(&root.join(&rel));
             (rel, text)
+        })
+        .collect()
+}
+
+/// Every `.rs` file strictly under each of `root`'s `dirs`, in `dirs` order and sorted within
+/// each, as a repo-relative `/`-separated path.
+pub fn rs_files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
+    let mut files = Vec::new();
+    for dir in dirs {
+        collect_rs_files(&root.join(dir), &mut files);
+    }
+    files
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
         })
         .collect()
 }

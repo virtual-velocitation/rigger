@@ -44,6 +44,7 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, su
 use rigger_worktree_git::discover::{rev_parse, Location};
 
 use rigger::config::{INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE};
+use rigger::prompt_surface::GREP_GUARD_MESSAGE;
 
 mod critique;
 mod dashboard;
@@ -54,6 +55,7 @@ mod guard;
 mod hold;
 mod hygiene;
 mod observe;
+mod prime;
 mod run;
 mod setup;
 mod validate;
@@ -66,6 +68,7 @@ pub(crate) use guard::*;
 pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
+pub(crate) use prime::*;
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -1031,7 +1034,7 @@ fn definition_hash(
     push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
     // Every agent definition, folded in sorted-filename order so the hash is independent of
     // directory iteration order.
-    let agents_dir = base.join("agents");
+    let agents_dir = project_agents_dir(Path::new(dir));
     let mut agents: Vec<(String, String)> = Vec::new();
     for entry in std::fs::read_dir(&agents_dir)
         .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
@@ -4102,6 +4105,11 @@ const FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT: u64 = 50;
 const FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED: &str =
     "reclaimed automatically by the next `rigger run`, or remove the listed dirs directly";
 
+/// Reclaim hint for the code store's facts memo: the store reaps it within its cap by itself,
+/// and `rigger reset --derived` clears it whole.
+const FOOTPRINT_RECLAIM_HINT_CODE_FACTS_MEMO: &str =
+    "reaped by the code store within its cap, or cleared by `rigger reset --derived`";
+
 /// Reclaim hint for dead per-unit caches (gap 96): `rigger reset --build-cache` reclaims them
 /// now, and the next `rigger run`'s orphan backstop ([`reclaim_orphan_scratch`]) would too - an
 /// operator with no run to start needs the verb, not a run that may never come.
@@ -4380,7 +4388,9 @@ fn classify_agent_scratch(
 /// top-level ad-hoc dir directly under `agent-scratch` with no run/spawn owner is reported
 /// separately here, never folded into "registered scratch roots"'s dead-run-keyed tally
 /// ([`classify_agent_scratch`]). The registered scratch roots category is `agent-scratch`
-/// alone.
+/// alone. An eighth, "code facts memo", is the code store's facts memo under the project's
+/// `.rigger/store/code/`, which the store reaps within its cap and `rigger reset --derived`
+/// clears; none of it is dead.
 ///
 /// Pure over its filesystem reads (every call is a plain `read_dir`/`metadata` walk with
 /// no side effect), so a fixture tree with seeded files/dirs drives this directly in a
@@ -4421,6 +4431,9 @@ fn footprint_report(
     let ad_hoc_bytes: u64 = ad_hoc_entries.iter().map(|(_, bytes)| bytes).sum();
     let agent_scratch_well_formed_total =
         dir_size_bytes(&agent_scratch_root).saturating_sub(ad_hoc_bytes);
+    let code_facts_memo = (rigger_dir.parent())
+        .map(|root| rigger_store::code::Store::new(root).memo_dir())
+        .unwrap_or_default();
     vec![
         FootprintCategory {
             name: "store",
@@ -4467,6 +4480,15 @@ fn footprint_report(
                     root: scratch_root.to_path_buf(),
                 })
                 .collect(),
+        },
+        FootprintCategory {
+            name: "code facts memo",
+            total_bytes: dir_size_bytes(&code_facts_memo),
+            // Every entry is one a read may take, and the store reaps the memo itself within its
+            // cap on each advance and each overlay read that writes it, so none is dead.
+            dead_bytes: 0,
+            reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_CODE_FACTS_MEMO),
+            reclaimable: Vec::new(),
         },
     ]
 }
@@ -4607,6 +4629,13 @@ fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join(entry)
 }
 
+/// The project's agent directory, `<root>/.rigger/agents/`: where `rigger init` seeds its
+/// starter agents, `rigger setup --agents` imports a fleet, and a run's definition hash reads
+/// every agent definition.
+fn project_agents_dir(root: &Path) -> std::path::PathBuf {
+    rigger_path(root, "agents")
+}
+
 /// What an install step did to a file it manages under the project root (a registry skill, the docs pre-commit hook, or an `.mcp.json` or
 /// `.claude/settings.json` entry), so `rigger setup` can REPORT a refresh but stay a silent
 /// no-op when nothing drifted (spec 05, criterion 4: setup is re-runnable - it detects and
@@ -4628,6 +4657,15 @@ enum InstallOutcome {
     /// 121, criterion 14). A state, not a write: `rigger setup` reads it as
     /// [`AlreadyCurrent`](Self::AlreadyCurrent) and reports nothing for it.
     ProjectCopy,
+}
+
+impl InstallOutcome {
+    /// Whether `rigger setup` reports this outcome as a change: only a fresh install or a
+    /// refresh is one, so a rerun whose every step is [`AlreadyCurrent`](Self::AlreadyCurrent)
+    /// or [`ProjectCopy`](Self::ProjectCopy) stays a silent no-op.
+    fn is_change(self) -> bool {
+        matches!(self, Self::Installed | Self::Refreshed)
+    }
 }
 
 /// Write `contents` to `path` ONLY when it is absent or differs, returning [what it
@@ -4765,7 +4803,7 @@ fn setup_read_error(path: &Path, e: std::io::Error) -> Box<dyn std::error::Error
 /// What [`install_skills`] did: each registry entry's `(name, outcome)` in registry order, and
 /// each stray under `.rigger/skills/` - an entry that is not a directory named by a registry
 /// entry and holding a `SKILL.md`, so it shadows no shipped skill - by its root-relative path,
-/// sorted.
+/// spelled with `/` on every OS, sorted.
 struct SkillInstall {
     outcomes: Vec<(&'static str, InstallOutcome)>,
     strays: Vec<String>,
@@ -4802,14 +4840,7 @@ fn read_project_skill(
     let path = project_skill_path(root, name);
     match std::fs::read(&path) {
         Ok(bytes) => Ok(Some(bytes)),
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
+        Err(e) if hooks::is_absent(&e) => Ok(None),
         Err(e) => Err(setup_read_error(&path, e)),
     }
 }
@@ -4818,35 +4849,41 @@ fn read_project_skill(
 /// criterion 1: generalizes the single-skill `install_skill` seam over the whole registry),
 /// returning each entry's outcome and the strays ([`SkillInstall`]). ONE code-derived context
 /// is built and this repo's [overlay](read_docs_overlay) merged onto it ONCE, then EVERY entry
-/// renders against that same context and installs via [`install_file_if_changed`] - so a
-/// downstream repo's base branch, specs location and Global constraints reach every rendered
-/// skill that carries them without anyone editing the shared discipline source, and adding an
-/// entry to the registry is the ONLY step needed to make a new skill install; this loop needs
-/// no per-skill edit.
+/// no project copy shadows (below) renders against that same context and installs via
+/// [`install_file_if_changed`] - so a downstream repo's base branch, specs location and Global
+/// constraints reach every rendered skill that carries them without anyone editing the shared
+/// discipline source, and adding an entry to the registry is the ONLY step needed to make a new
+/// skill install; this loop needs no per-skill edit.
 ///
 /// A project copy shadows the shipped skill of its exact name (spec 121, criterion 14): an
 /// entry of `.rigger/skills/` whose name equals a registry entry's byte for byte
 /// (case-sensitive, never trimmed) and that holds a `SKILL.md` installs that file's bytes
 /// verbatim in place of the render, with no overlay, reported as
 /// [`ProjectCopy`](InstallOutcome::ProjectCopy). Every other entry there is a stray, which
-/// installs nothing. A `.rigger/skills` or a copy that cannot be read fails setup naming it,
-/// installing no render in place of that copy. Through [`install_file_if_changed`], each entry writes
-/// ONLY when its file is absent or differs, so a `rigger setup` rerun on an up-to-date repo is
-/// a true no-op that does not even move a file's mtime.
+/// installs nothing. The loop is the one place the exact-name rule is read: an entry a copy
+/// claims leaves the unclaimed entries, and the strays are what is left. A `.rigger/skills` or
+/// a copy that cannot be read fails setup naming it, installing no render in place of that
+/// copy. Through [`install_file_if_changed`], each entry writes ONLY when its file is absent or
+/// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
+/// move a file's mtime.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
-    let entries = project_skill_entries(root)?;
+    // Every entry no project copy has claimed yet; what is left after the loop is the strays.
+    let mut unclaimed = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
     for entry in rigger::docs::skill_registry() {
         let installed = skill_install_path(root, entry.name);
-        let copy = if entries.iter().any(|name| name.as_os_str() == entry.name) {
-            read_project_skill(root, entry.name)?
-        } else {
-            None
+        let copy = match unclaimed
+            .iter()
+            .position(|name| name.as_os_str() == entry.name)
+        {
+            Some(at) => read_project_skill(root, entry.name)?.map(|bytes| (at, bytes)),
+            None => None,
         };
         let outcome = match copy {
-            Some(bytes) => {
+            Some((at, bytes)) => {
+                unclaimed.swap_remove(at);
                 install_file_if_changed(&installed, &bytes)?;
                 InstallOutcome::ProjectCopy
             }
@@ -4854,15 +4891,9 @@ fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error
         };
         outcomes.push((entry.name, outcome));
     }
-    let dir = rigger_path(Path::new(""), SKILLS_DIR);
-    let mut strays: Vec<String> = entries
+    let mut strays: Vec<String> = unclaimed
         .iter()
-        .filter(|name| {
-            !outcomes.iter().any(|(skill, outcome)| {
-                *outcome == InstallOutcome::ProjectCopy && name.as_os_str() == *skill
-            })
-        })
-        .map(|name| dir.join(name).display().to_string())
+        .map(|name| format!("{RIGGER_DIR}/{SKILLS_DIR}/{}", name.to_string_lossy()))
         .collect();
     strays.sort();
     Ok(SkillInstall { outcomes, strays })
@@ -4936,8 +4967,8 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// must abort the whole hook (including anything chained after it), because a commit that is
 /// about to be refused should not go on to run further gates.
 fn precommit_block() -> String {
-    // A raw-string template so the shell indentation is exact and readable; the sentinels
-    // are injected from their single-source consts.
+    // A raw-string template so the shell indentation is exact and readable; the sentinels and
+    // the build cache variable are injected from their single-source consts.
     const TEMPLATE: &str = r#"__BEGIN__
 # Check rigger's code-derived docs before THIS commit lands: run `rigger docs --check`, which
 # renders every docs output in memory, writes nothing, and prints `fresh <path>` or
@@ -5020,7 +5051,7 @@ newest_of_tier() {
         fi
     done
 }
-newest_of_tier "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}"
+newest_of_tier "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/release/rigger}" "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/debug/rigger}"
 [ -n "$rigger_bin" ] || newest_of_tier "./target/release/rigger" "./target/debug/rigger"
 [ -n "$rigger_bin" ] || newest_of_tier "$relocated_release" "$relocated_debug"
 [ -n "$rigger_bin" ] || newest_of_tier "$unit_release" "$unit_debug"
@@ -5101,6 +5132,7 @@ __END__
     TEMPLATE
         .replace("__BEGIN__", PRECOMMIT_BEGIN)
         .replace("__END__", PRECOMMIT_END)
+        .replace("__BUILD_CACHE_ENV__", rigger_domain::spawn::BUILD_CACHE_ENV)
 }
 
 /// Find the byte offset of the first occurrence of `needle` in `haystack`, or `None`. Lets the
@@ -5399,20 +5431,6 @@ fn tree_of(dir: &Path) -> Result<PathBuf, String> {
 fn git_repo_at(root: &Path) -> Result<String, String> {
     rev_parse(root, Location::Toplevel).map(Option::unwrap_or_default)
 }
-
-/// The graph-first lookup hook's stated bounce message: first the combined lookup, which answers a
-/// name, path or word from the graph, the caller's tree and the project's prose in one call, then
-/// the graph calls that answer the narrower name lookups (who calls a name, where a name is
-/// defined), with a
-/// `<name>` placeholder so it names no language, then the guard's rule and its escape hatch. The
-/// hatch is named in the one spelling that survives a sibling PreToolUse hook's rewrite:
-/// `--literal` inside a trailing shell comment, which the shell discards before the command runs
-/// (lesson-u101c2r3-grep-guard-literal-not-stripped).
-const GREP_GUARD_MESSAGE: &str = "A name lookup is a graph call: rigger_graph `lookup` <term>... \
-     answers a name, path or word from the graph, your working tree and the project's prose in one \
-     call; who calls <name> is rigger_graph `around` <name>, and where <name> is defined is \
-     rigger_graph `show` <name>. A grep, or a sed or awk pattern search, is for literal text - end \
-     the command with a `# --literal` comment to proceed";
 
 #[cfg(test)]
 mod tests {
@@ -6151,6 +6169,19 @@ mod tests {
         assert!(
             line.contains(BUILD_PROVENANCE),
             "version line must report the build-provenance id; got: {line}"
+        );
+    }
+
+    /// The discipline docs' grep-guard message is its one group, `cli::docs_context`'s
+    /// `GREP_GUARD_MESSAGE` (spec 121, criterion 16): `docs_context` renders it on its one branch.
+    #[test]
+    fn the_docs_context_grep_guard_message_is_its_group() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        assert_renders(
+            "the docs context's grep-guard message",
+            &docs_context().grep_guard_message,
+            &GroupPicks::new(rigger::prompt_surface::prompt_groups())
+                .rendered("cli::docs_context", &["GREP_GUARD_MESSAGE"]),
         );
     }
 
@@ -7479,6 +7510,8 @@ mod tests {
         let rigger_dir = root.path().join(".rigger");
         write_file(&rigger_dir.join("events.db"), &[0u8; 100]);
         write_file(&rigger_dir.join("events.db.bak-1"), &[0u8; 30]);
+        let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+        write_file(&memo.join("a.facts"), &[0u8; 25]);
 
         let scratch = root.path().join("scratch");
         write_file(&scratch.join("rigger-wt-unit-dead").join("x"), &[0u8; 40]);
@@ -7511,11 +7544,14 @@ mod tests {
 
         assert_eq!(
             categories.len(),
-            7,
-            "the six Design-named categories plus 'unowned agent scratch', no more no less"
+            8,
+            "the six Design-named categories plus 'unowned agent scratch' and 'code facts memo', \
+             no more no less"
         );
         let by_name = |n: &str| categories.iter().find(|c| c.name == n).unwrap().clone();
         assert_eq!(by_name("store").total_bytes, 100);
+        assert_eq!(by_name("code facts memo").total_bytes, 25);
+        assert_eq!(by_name("code facts memo").dead_bytes, 0);
         assert_eq!(by_name("backups").total_bytes, 30);
         assert_eq!(by_name("shared build cache").total_bytes, 900);
         assert_eq!(by_name("worktrees").total_bytes, 40);
@@ -8982,6 +9018,77 @@ mod tests {
         }
     }
 
+    /// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, at a replay: the candidate
+    /// [`materialize_config_at_rev`] reads at `--against <rev>` hashes the helper copies that rev
+    /// tracks, exactly as a run's pin over the tree at that rev does, never the copies the head
+    /// holds.
+    #[test]
+    fn a_replay_hashes_the_helper_copies_its_rev_tracks() {
+        use crate::test_support::{git_ok, git_ok_with_identity, git_out, write_helper_copy};
+        let [(file, lookup), _] = crate::test_support::OPERATOR_HELPER_COPIES;
+        let edited = lookup.replace("model: sonnet", "model: opus");
+        let remove = |root: &Path| std::fs::remove_file(root.join(".claude/agents").join(file));
+        // A step over the project's root, writing or removing its copy.
+        type Step<'a> = &'a dyn Fn(&Path);
+        // Each row: the step to the rev, then the step to the head.
+        let rows: [(&str, Step, Step); 3] = [
+            (
+                "the head edits the copy the rev tracks",
+                &|root| write_helper_copy(root, file, lookup),
+                &|root| write_helper_copy(root, file, &edited),
+            ),
+            ("the head adds a copy the rev lacks", &|_| {}, &|root| {
+                write_helper_copy(root, file, lookup)
+            }),
+            (
+                "the head removes the copy the rev tracks",
+                &|root| write_helper_copy(root, file, lookup),
+                &|root| remove(root).unwrap(),
+            ),
+        ];
+        for (name, at_rev, at_head) in rows {
+            let dir = crate::test_support::temp_git_project_with_commit();
+            let root = dir.path();
+            let repo = root.to_str().unwrap();
+            std::fs::create_dir_all(root.join(RIGGER_DIR).join("agents")).unwrap();
+            std::fs::write(
+                root.join(RIGGER_DIR).join(WORKFLOW_FILE),
+                "stages:\n  s:\n    agent: worker\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(RIGGER_DIR).join("agents/worker.md"),
+                "---\nid: worker\n---\nDo the unit.\n",
+            )
+            .unwrap();
+            let pinned = || {
+                let cfg = config_store::load(repo).unwrap();
+                let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, root).unwrap();
+                definition_hash(repo, &host.helpers).unwrap()
+            };
+            at_rev(root);
+            git_ok(root, &["add", "-A"]);
+            git_ok_with_identity(root, &["commit", "-q", "-m", "the rev"]);
+            let rev = git_out(root, &["rev-parse", "HEAD"]);
+            let at_the_rev = pinned();
+            at_head(root);
+            git_ok(root, &["add", "-A"]);
+            git_ok_with_identity(root, &["commit", "-q", "-m", "the head"]);
+            let at_the_head = pinned();
+            assert_ne!(
+                at_the_rev, at_the_head,
+                "{name}: the head's definition differs"
+            );
+            let scratch = tempfile::tempdir().unwrap();
+            let (_, candidate, _) =
+                materialize_config_at_rev(repo, &rev, scratch.path().to_str().unwrap()).unwrap();
+            assert_eq!(
+                candidate, at_the_rev,
+                "{name}: the replay's candidate is the definition a run at the rev pins"
+            );
+        }
+    }
+
     /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every
     /// build, not gated behind a cargo feature. Selecting it WITHOUT a connection
     /// string fails with the missing-`--conn` error - proving the real adapter is
@@ -9885,7 +9992,7 @@ mod tests {
         let shipped = registry_entry("planning-a-spec").render(&docs_context());
         assert_eq!(
             std::fs::read_to_string(skill_install_path(root, "planning-a-spec")).unwrap(),
-            shipped.replacen("**7. ", &format!("{list}**7. "), 1),
+            crate::test_support::planning_skill_carrying(&shipped, list),
             "the installed planning-a-spec must carry the overlay's constraints under step 6"
         );
         write_docs(root).expect("write_docs must render every registry entry");
@@ -9976,6 +10083,21 @@ mod tests {
             err.to_string().contains("docs-overlay.yml"),
             "the error must name the overlay file; got: {err}"
         );
+    }
+
+    /// Spec 05, criterion 4 and spec 121, criterion 14: `rigger setup` reports an install step's
+    /// outcome as a change only when the step installed or refreshed its file; an already-current
+    /// file and a project copy installed in place of a skill are states it reports nothing for.
+    #[test]
+    fn an_install_outcome_is_a_change_only_when_it_installs_or_refreshes() {
+        for (outcome, change) in [
+            (InstallOutcome::Installed, true),
+            (InstallOutcome::Refreshed, true),
+            (InstallOutcome::AlreadyCurrent, false),
+            (InstallOutcome::ProjectCopy, false),
+        ] {
+            assert_eq!(outcome.is_change(), change, "{outcome:?} is a change");
+        }
     }
 
     /// The bytes a project copy under `.rigger/skills/` holds in the shadow tests below: no
@@ -10181,20 +10303,20 @@ mod tests {
         );
     }
 
-    /// Spec 121, criterion 14 (an unreadable project copy): with `seed` under the root,
-    /// [`install_skills`] fails naming the path `unread` returns with the error reading it gives,
-    /// and installs no shipped `using-rigger` in place of a copy it could not read.
-    fn assert_install_skills_refuses(
-        seed: fn(&Path),
-        unread: fn(&Path) -> (std::path::PathBuf, std::io::Error),
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed(root);
-        let (path, error) = unread(root);
+    /// Spec 121, criterion 14 (an unreadable project copy): with the root-relative `seeded` made
+    /// a directory where a file is read (`dir`) or a file where a directory is listed,
+    /// [`install_skills`] fails naming that path with the error reading it gives, and installs no
+    /// shipped `using-rigger` in place of a copy it could not read.
+    fn assert_install_skills_refuses(seeded: &str, dir: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let error = crate::test_support::seed_unreadable_project_skill(root, seeded, dir);
         assert_eq!(
             install_skills(root).err().map(|e| e.to_string()),
-            Some(format!("setup: reading {}: {error}", path.display())),
+            Some(format!(
+                "setup: reading {}: {error}",
+                root.join(seeded).display()
+            )),
             "setup fails naming the path it could not read"
         );
         assert!(
@@ -10206,27 +10328,10 @@ mod tests {
     rigger::test_cases! {
         /// A `SKILL.md` that is a directory cannot be read as a project copy.
         a_project_copy_that_is_a_directory_fails_setup_naming_it:
-            assert_install_skills_refuses(
-                |root| {
-                    std::fs::create_dir_all(root.join(".rigger/skills/using-rigger/SKILL.md"))
-                        .unwrap()
-                },
-                |root| {
-                    let path = root.join(".rigger/skills/using-rigger/SKILL.md");
-                    let error = std::fs::read(&path).unwrap_err();
-                    (path, error)
-                },
-            );
+            assert_install_skills_refuses(".rigger/skills/using-rigger/SKILL.md", true);
         /// A `.rigger/skills` that is a plain file cannot be read as the project's skill home.
         a_project_skill_home_that_is_a_file_fails_setup_naming_it:
-            assert_install_skills_refuses(
-                |root| write_file(&root.join(".rigger/skills"), b"not a directory\n"),
-                |root| {
-                    let path = root.join(".rigger/skills");
-                    let error = std::fs::read_dir(&path).unwrap_err();
-                    (path, error)
-                },
-            );
+            assert_install_skills_refuses(".rigger/skills", false);
     }
 
     /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file

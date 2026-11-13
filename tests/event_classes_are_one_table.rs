@@ -7,6 +7,7 @@
 
 use crate::common;
 
+use common::fixtures::failure_message;
 use common::repo::{collect_rs_files, repo_root};
 use rigger::contextgraph::{
     TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
@@ -368,22 +369,11 @@ fn a_string_literal_declares_its_type_and_an_alias_declares_none() {
     ] {
         let text = format!("const TYPE_A: &str = \"Alpha\";\n    {line}\n");
         assert_eq!(
-            scan_failure(|| type_const_statements(&text)),
+            failure_message(|| type_const_statements(&text)),
             format!("`{line}`: a TYPE_ item is a constant, never a static"),
             "a static TYPE_ item fails the scan naming its line, behind any visibility"
         );
     }
-}
-
-/// The message the scan fails with when `scan` runs.
-fn scan_failure<T>(scan: impl FnOnce() -> T + std::panic::UnwindSafe) -> String {
-    let failure = std::panic::catch_unwind(scan)
-        .err()
-        .expect("the scan reads the input instead of failing");
-    failure
-        .downcast_ref::<String>()
-        .cloned()
-        .expect("the scan fails with a formatted message")
 }
 
 #[test]
@@ -395,7 +385,7 @@ fn a_right_side_that_is_neither_a_literal_nor_a_type_alias_fails_the_scan_naming
         "const TYPE_X: &str",
     ] {
         assert_eq!(
-            scan_failure(|| declared_type(statement)),
+            failure_message(|| declared_type(statement)),
             format!("`{statement}`: the right side is neither a string literal nor a TYPE_ alias"),
             "a macro call, an alias of a constant not named TYPE_, an unclosed literal and a \
              statement with no right side each fail the scan"

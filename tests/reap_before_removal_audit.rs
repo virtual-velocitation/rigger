@@ -1323,20 +1323,26 @@ fn g(dir: &str) {
     /// reap-wired) - re-ground the expected files/count here if it fails after a legitimate
     /// change, never silence it.
     #[test]
-    fn the_real_trees_claimed_exemptions_are_exactly_the_three_u79c1_recorded() {
+    fn the_real_trees_claimed_exemptions_are_exactly_the_four_recorded() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let hits = find_exemption_markers(&root);
         let files: Vec<&str> = hits.iter().map(|(f, _)| f.as_str()).collect();
         assert_eq!(
             hits.len(),
-            3,
-            "expected exactly the 3 exemptions u79c1-rewiring-complete-and-exemption-marker \
-             recorded (heal_corrupt_worktree_admin, cmd_replay's replay_dir, \
-             materialize_config_at_rev's checkout); got {hits:?}"
+            4,
+            "expected exactly the 4 exemptions: the 3 \
+             u79c1-rewiring-complete-and-exemption-marker recorded (heal_corrupt_worktree_admin, \
+             cmd_replay's replay_dir, materialize_config_at_rev's checkout) and \
+             clear_code_facts_memo's memo; got {hits:?}"
         );
         assert_eq!(
             files.iter().filter(|f| **f == "src/cli/mod.rs").count(),
             2,
+            "{hits:?}"
+        );
+        assert_eq!(
+            files.iter().filter(|f| **f == "src/cli/hygiene.rs").count(),
+            1,
             "{hits:?}"
         );
         assert_eq!(

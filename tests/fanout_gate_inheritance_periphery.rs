@@ -51,7 +51,7 @@
 //! all three of `harvest_proposed`'s insertion/mutation sites, all non-pub, exhaustively
 //! covered by the implementer's own colocated tests - including resumed-window
 //! re-derivation, a pure-function determinism claim with no new I/O boundary of its own);
-//! `PLAN_PROTOCOL`'s prose content (a private string constant, proven by the implementer's
+//! `render_plan_protocol`'s prose content (a private renderer, proven by the implementer's
 //! own test - its only observable effect on a REAL boundary is exactly the same
 //! proposal-to-evidence path this file already drives); the runtime NO-UNGATED-FAN-OUT-UNIT
 //! guard (spec 103 criterion 2, not this unit's scope) and the integration re-gate (spec 103

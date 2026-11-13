@@ -36,12 +36,16 @@ use crate::hooks;
 use crate::liveness;
 use crate::progress::{self, ApiRetry, SpawnLaunched};
 use crate::progress_store;
+use crate::prompt_surface::{
+    RESUME_CLASS, RESUME_HELD, RESUME_NOTE, RESUME_RESTARTED, STREAM_PROGRESS_VERB,
+};
 use crate::run;
 use crate::run::read::{read_current_hold_at_head, read_current_run, released_past};
 use crate::run::STREAM;
 use crate::run_store;
 use crate::spawn::SpawnResult;
 use crate::spawn_store;
+use rigger_domain::prompt_surface::fill;
 
 /// How often [`Driver::read_stream`]'s loop wakes when `max_wall_clock` is 0 (unbounded): a
 /// "wake up occasionally" budget, never itself a wall-clock bound - the wake-up never stops
@@ -475,24 +479,25 @@ impl Driver<'_> {
     /// when the close is unstamped, the host has no hold sink or no such release ended a hold.
     fn interruption_note(&self, interrupted: &SpawnLaunched) -> Result<String, Error> {
         let why = match &interrupted.class {
-            None => ": rigger's supervisor restarted".to_string(),
+            None => RESUME_RESTARTED.to_string(),
             Some(class) => {
                 let released = match self.hold_sink.zip(interrupted.revision) {
                     Some((sink, stamp)) => released_past(sink, STREAM, stamp)?,
                     None => None,
                 };
                 match released {
-                    Some((hold, held_for_s)) => format!(
-                        ": the run was held {held_for_s}s ({}) and is released now",
-                        hold.reason()
+                    Some((hold, held_for_s)) => fill(
+                        RESUME_HELD,
+                        &[
+                            ("held_for_s", &held_for_s.to_string()),
+                            ("reason", &hold.reason()),
+                        ],
                     ),
-                    None => format!(" by {class}"),
+                    None => fill(RESUME_CLASS, &[("class", class)]),
                 }
             }
         };
-        Ok(format!(
-            "This session was interrupted{why}. Continue where you left off."
-        ))
+        Ok(fill(RESUME_NOTE, &[("why", &why)]))
     }
 
     /// THE STREAM (spec 104 criterion 2): read `launch`'s child stdout line by line to
@@ -2112,8 +2117,7 @@ fn rigger_server_fault(init: &Value) -> Option<String> {
 /// `task` framed with the progress verb ([`progress_framed`]), a call of the progress tool every
 /// launch of this host pre-approves ([`SPAWN_BOUND_TOOLS`]).
 pub fn framed(task: &str) -> String {
-    let report =
-        format!("by calling the {SPAWN_PROGRESS_TOOL} tool with that line as its activity");
+    let report = fill(STREAM_PROGRESS_VERB, &[("tool", SPAWN_PROGRESS_TOOL)]);
     progress_framed(task, &report)
 }
 
@@ -3386,6 +3390,76 @@ mod tests {
             std::path::Path::new(&path).starts_with(scratch.path()),
             "the file lives under the spawn's scratch, which the spawn's terminus reclaims: {path}"
         );
+    }
+
+    /// This host's two surfaces over the placeholder fixture, one row per branch: `framed` is the
+    /// progress frame's groups with `STREAM_PROGRESS_VERB` filled into their `{report}` slot, its
+    /// `{tool}` slot holding the progress tool, and the resume note is `RESUME_NOTE` with the
+    /// branch's clause filled into its `{why}` slot: the restart with no class, the released hold
+    /// (standing the fixture's 42 seconds) after a hold, the class alone otherwise.
+    #[test]
+    fn the_headless_host_texts_are_their_groups_on_each_branch() {
+        use crate::driver::tests::framed_groups;
+        use crate::eventstore::ExpectedRevision;
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        use crate::test_support::{held_event, released_event};
+        use rigger_domain::prompt_surface::fill;
+        let picks = GroupPicks::new(prompt_groups());
+        let group = |surface: &str, name: &str| picks.rendered(surface, &[name]);
+        let note = |clause: &str, slots: &[(&str, &str)]| {
+            let surface = "driver::claude_code::interruption_note";
+            let why = fill(&group(surface, clause), slots);
+            fill(&group(surface, "RESUME_NOTE"), &[("why", &why)])
+        };
+        let hold_sink = Store::open(":memory:").unwrap();
+        run_store::ensure_started(&hold_sink, &["c".to_string()]).unwrap();
+        let hold = [
+            held_event("{reason}", run::HOLD_BY_HOST),
+            released_event(run::HOLD_BY_HOST, 42),
+        ];
+        hold_sink
+            .append(STREAM, ExpectedRevision::Any, &hold)
+            .unwrap();
+        let held = Driver {
+            hold_sink: Some(&hold_sink),
+            ..Driver::default()
+        };
+        let classed = SpawnLaunched {
+            class: Some("{class}".to_string()),
+            revision: Some(0),
+            ..SpawnLaunched::default()
+        };
+        let verb = fill(
+            &group("driver::claude_code::framed", "STREAM_PROGRESS_VERB"),
+            &[("tool", SPAWN_PROGRESS_TOOL)],
+        );
+        let cases = [
+            ("the frame", framed("{task}"), framed_groups(&verb)),
+            (
+                "a supervisor restart",
+                Driver::default()
+                    .interruption_note(&SpawnLaunched::default())
+                    .unwrap(),
+                note("RESUME_RESTARTED", &[]),
+            ),
+            (
+                "a released hold",
+                held.interruption_note(&classed).unwrap(),
+                note(
+                    "RESUME_HELD",
+                    &[("held_for_s", "42"), ("reason", "{reason}")],
+                ),
+            ),
+            (
+                "a class with no release",
+                Driver::default().interruption_note(&classed).unwrap(),
+                note("RESUME_CLASS", &[("class", "{class}")]),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
     }
 
     #[test]

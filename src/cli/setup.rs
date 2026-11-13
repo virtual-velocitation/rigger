@@ -152,8 +152,7 @@ fn init_project(
 
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
-    let agents_dir = rigger_dir.join("agents");
-    std::fs::create_dir_all(&agents_dir)?;
+    std::fs::create_dir_all(&rigger_dir)?;
     let wrote_workflow = write_if_absent(
         &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
@@ -225,7 +224,8 @@ fn init_project(
     // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
     // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
     // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
-    // that every graph read rewrites, so left untracked it would read as a dirty tree.
+    // that every graph read rewrites, and its facts memo, so left untracked they would read as a
+    // dirty tree.
     // Record WHICH patterns were appended so the summary reports the real gitignore change and
     // nothing it did not do.
     let mut gitignore_added = Vec::new();
@@ -271,16 +271,17 @@ fn init_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when `root` holds no workflow), returning the file names it
-/// newly wrote. An existing file is kept silently ([`write_if_absent`]), so a rerun writes
-/// nothing new and an operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent),
+/// returning the file names it newly wrote. It creates `.rigger/agents/` when absent. An
+/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
+/// operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // Load the workflow to determine which agents are referenced, then only scaffold those
     // agents. This allows setup to skip scaffolding when the workflow's referenced agents
-    // already exist (§05 setup hygiene). A genuine parse failure (most importantly an
+    // already exist (spec 05 setup hygiene). A genuine parse failure (most importantly an
     // unrecognized key) escalates as a real `Err` here - never `.unwrap_or_default()` -
     // because folding it into the empty set would treat a broken PRESENT workflow.yml the same
     // as a genuinely ABSENT one, below, and silently re-scaffold the full default fleet over
@@ -301,16 +302,17 @@ fn write_seed_agents(
 
     // If the workflow references agents, scaffold only those; a candidate whose id cannot be
     // parsed is skipped, never scaffolded invalid. If it references nothing, scaffold every
-    // candidate for backward compatibility (empty repo case) - reached only when
+    // candidate for backward compatibility (empty repo case) - reached when
     // `get_referenced_agent_ids` returned the empty set because workflow.yml is genuinely
-    // ABSENT, never because a present one failed to parse.
-    let agents_dir = root.join(RIGGER_DIR).join("agents");
+    // ABSENT or names no agent, never because a present one failed to parse.
+    let agents_dir = project_agents_dir(root);
+    std::fs::create_dir_all(&agents_dir)?;
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
         let referenced = referenced_agents.is_empty()
             || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
-        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
         if referenced && write_if_absent(&agents_dir.join(&file), content)? {
             new_agents.push(file);
@@ -420,8 +422,9 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 }
 
 /// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
-/// empty set ONLY when the file is genuinely ABSENT (the legitimate empty-repo signal
-/// `init_project` seeds the full default fleet on); a PRESENT-but-unparseable file - most
+/// empty set when the file is genuinely ABSENT (the legitimate empty-repo signal
+/// `init_project` seeds the full default fleet on) or parses but names no agent (its stages
+/// and `defaults.review` are optional); a PRESENT-but-unparseable file - most
 /// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
 /// same empty set. Routed through [`config_store::load_workflow`], the one canonical
 /// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
@@ -707,8 +710,8 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
 /// What setup's report of an installed lookup hook says the hook does: the searches it bounces
 /// and the combined lookup it bounces them toward, then its escape hatch.
 const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
-     pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
-     rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+     pattern search, anywhere, now bounces toward the combined lookup, rigger_graph `lookup` \
+     (end the command with a `# --literal` comment to proceed anyway)";
 
 /// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
 /// operator checkout git's common directory names, read from that checkout's HEAD whichever
@@ -827,8 +830,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door, with this repo's project overlay (base branch, specs location,
-    // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
-    // repo changes nothing.
+    // Global constraints) merged into the render, or, for a skill the project keeps its own
+    // copy of under `.rigger/skills/`, that copy verbatim with no overlay (spec 121, criterion
+    // 14); every other entry there is a stray, listed below. Drift-aware, so a rerun on an
+    // up-to-date repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
@@ -874,25 +879,24 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Each entry under `.rigger/skills/` that shadows no shipped skill is listed on EVERY setup,
     // so it prints before the silent-no-op check below (spec 121, criterion 14). A project copy
     // installed in place of a skill (`ProjectCopy`) is a state, not a change: it reads as
-    // `AlreadyCurrent` at that check and in the report.
+    // `AlreadyCurrent` at that check and in the report. Both paths in the line are root-relative
+    // and spelled with `/` on every OS, like the report's `.claude/skills/` install lines.
     for stray in &skills.strays {
         println!(
-            "{stray} shadows no shipped skill and installs nothing: a project copy is {}, <name> \
-             a shipped skill's exact name",
-            project_skill_path(Path::new(""), "<name>").display()
+            "{stray} shadows no shipped skill and installs nothing: a project copy is \
+             {RIGGER_DIR}/{}, <name> a shipped skill's exact name",
+            skill_source_rel("<name>")
         );
     }
 
-    let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
-        !matches!(
-            outcome,
-            InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
-        )
-    });
-    let hook_changed = hook.is_some_and(|hook| hook != InstallOutcome::AlreadyCurrent);
-    let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
-    let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
-    let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
+    let skill_changed = skills
+        .outcomes
+        .iter()
+        .any(|(_, outcome)| outcome.is_change());
+    let hook_changed = hook.is_some_and(InstallOutcome::is_change);
+    let mcp_changed = mcp_registered.is_change();
+    let lookup_hook_changed = lookup_hook.is_change();
+    let status_line_changed = status_line.is_change();
     let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
     if !scaffold.changed()
         && !graph_rebuilt
@@ -1425,9 +1429,9 @@ fn rebuild_progress_line(
 /// The same three-state contract every other `rigger setup` install artifact has:
 /// absent settings.json -> `Installed` (a fresh file, our block its first content),
 /// an existing settings.json the install or the removal changes -> `Refreshed` (the FILE
-/// existed even though our own array entry did not, mirroring [`install_operator_mcp`]'s
-/// `existed` distinction), a file the edit leaves as it is, or no file with the guard
-/// undeclared -> `AlreadyCurrent` (a silent no-op).
+/// existed, mirroring [`install_operator_mcp`]'s `existed` distinction: the install added or
+/// re-matched our entry, or the removal stripped it), a file the edit leaves as it is, or no
+/// file with the guard undeclared -> `AlreadyCurrent` (a silent no-op).
 fn install_lookup_hook(
     root: &Path,
     grep_guard: bool,
@@ -1554,7 +1558,7 @@ struct ImportSummary {
 /// being written and breaking a later load. Rooted at `root` so it is testable against
 /// a temp dir.
 fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::error::Error>> {
-    let dest = root.join(RIGGER_DIR).join("agents");
+    let dest = project_agents_dir(root);
     std::fs::create_dir_all(&dest)?;
 
     // Collect the source `.md` files, SURFACING (never silently dropping) any directory
@@ -1694,95 +1698,6 @@ fn top_level_key(line: &str) -> Option<&str> {
     }
     let (key, _rest) = line.split_once(':')?;
     Some(key.trim_end())
-}
-
-/// The first line `rigger prime` prints: the instruction layers in force for this project, read
-/// from `instructions::resolve_layers` over its `operator` files, so a session starts knowing
-/// which law its agents are held to. It lists the built-ins in force in `BUILTIN` order, a
-/// replaced one as `<name> (replaced)` and a switched-off one not at all (`none` when no built-in
-/// is in force), and counts only the operator files that shadow no built-in.
-fn instructions_in_force_line(operator: &[instructions::Instruction]) -> String {
-    let layers = instructions::resolve_layers(operator);
-    let in_force = layers
-        .builtins
-        .iter()
-        .filter_map(|layer| {
-            layer
-                .state
-                .in_force()
-                .map(|_| match layer.state.shadow_verb() {
-                    Some(verb) => format!("{} ({verb})", layer.name),
-                    None => layer.name.to_string(),
-                })
-        })
-        .collect::<Vec<_>>();
-    let builtin = if in_force.is_empty() {
-        "none".to_string()
-    } else {
-        in_force.join(", ")
-    };
-    let extra = match layers.operator.len() {
-        0 => String::new(),
-        operator => format!(" (+{operator} operator files)"),
-    };
-    format!(
-        "{} in force: {builtin}{extra} - see rigger instructions",
-        instructions::HEADING
-    )
-}
-
-/// `rigger prime [<spec>]` - print recent decisions (what the SessionStart hook runs), and,
-/// when a spec path is given, the DISCOVERABILITY next step naming the spec lint (spec 66,
-/// criterion 5) so an operator or agent about to drive `rigger run <spec>` finds `rigger
-/// validate <spec>` instead of stumbling onto it by accident. `args.first()` is the spec
-/// path; the bare `rigger prime` the installed hook actually runs carries none, and stays
-/// exactly as it was - no lint mention.
-pub(crate) fn cmd_prime(args: &[String]) -> Res {
-    let spec_path = args.first();
-    // A session started in a subdirectory or a unit worktree of a git repository reads the
-    // instruction layer of the project at or above its place in the main checkout, never a
-    // worktree's own, and outside git the layer at the cwd, with or without a store and inside a
-    // gate's store fence alike ([`project_instruction_layer`]); its store and identity come from
-    // the one store-location authority every courier resolves through.
-    println!(
-        "{}",
-        instructions_in_force_line(&project_instruction_layer()?)
-    );
-    let found = store_if_any()?;
-    let Some((loc, selection)) = found else {
-        println!("# Rigger: no decisions recorded yet (run `rigger run` to start).");
-        if let Some(spec) = spec_path {
-            println!("{}", spec_lint_next_step(spec));
-        }
-        return Ok(());
-    };
-    // Every run's decisions BY TYPE on this project's run stream (spec 101): a session start
-    // reads the decisions it prints and nothing else - no derived event, no other project's.
-    let decisions = over_the_run_store_at(&loc, &selection, |store| {
-        Ok(store.read_stream_typed(
-            conductor::STREAM,
-            0,
-            rigger::eventstore::TypeSelection::Only(&[contextgraph::TYPE_DECISION_MADE]),
-        )?)
-    })?;
-    println!("# Rigger: recent decisions");
-    let mut shown = 0;
-    for e in decisions.iter().rev() {
-        if let Ok(d) = serde_json::from_slice::<PeerDecision>(&e.data) {
-            println!("- {}: {}", d.id, d.summary);
-            shown += 1;
-            if shown >= 10 {
-                break;
-            }
-        }
-    }
-    if shown == 0 {
-        println!("(none yet)");
-    }
-    if let Some(spec) = spec_path {
-        println!("{}", spec_lint_next_step(spec));
-    }
-    Ok(())
 }
 
 /// Write `content` to `path` only when it does not already exist, returning `Ok(true)`
@@ -2184,7 +2099,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
@@ -2245,7 +2160,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
@@ -2268,6 +2183,7 @@ mod tests {
     use crate::test_support::read_text;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
+    use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
@@ -2646,7 +2562,7 @@ mod tests {
     fn load_scaffold(set: Option<&SetSpec>, workflow: &str) -> config::Config {
         let dir = tempfile::tempdir().unwrap();
         let rigger = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(rigger.join("agents")).unwrap();
+        std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
         write_seed_agents(dir.path(), set).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
@@ -3156,15 +3072,6 @@ mod tests {
         );
     }
 
-    /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-    const ROLE_SEED_FILES: [&str; 5] = [
-        "adjudicator.md",
-        "adversary.md",
-        "architecture-reviewer.md",
-        "planner.md",
-        "sdet.md",
-    ];
-
     /// `init_project` over `sets` on a fresh project holding the root file `marker`, if any,
     /// writes the role seeds and `<id>.md` holding `persona` byte for byte and nothing else under
     /// `.rigger/agents`, reports exactly those as new, and writes a workflow whose implement and
@@ -3181,9 +3088,7 @@ mod tests {
             std::fs::write(root.join(marker), "").unwrap();
         }
         let report = init_project(root, sets).expect("init must scaffold");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push(format!("{id}.md"));
-        want.sort();
+        let want = agents_beside(&format!("{id}.md"));
         assert_eq!(
             sorted_dir_names(&root.join(RIGGER_DIR).join("agents")),
             want,
@@ -3203,10 +3108,7 @@ mod tests {
         );
         let cfg = config_store::load(root.to_str().unwrap()).expect("the scaffold loads");
         assert_eq!(
-            [
-                cfg.workflow.stages["implement"].agent.as_str(),
-                cfg.workflow.stages["checkin"].agent.as_str()
-            ],
+            stage_agents(&cfg),
             [id, id],
             "the implement and checkin stages run the implementer"
         );
@@ -3278,10 +3180,11 @@ mod tests {
         let mut reported = report.new_agents.clone();
         reported.sort();
         assert_eq!(reported, ROLE_SEED_FILES, "the agents reported new");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push("rust-engineer.md".to_string());
-        want.sort();
-        assert_eq!(sorted_dir_names(&agents), want, "the agents on disk");
+        assert_eq!(
+            sorted_dir_names(&agents),
+            agents_beside("rust-engineer.md"),
+            "the agents on disk"
+        );
     }
 
     rigger::test_cases! {
@@ -3504,6 +3407,34 @@ mod tests {
             assert_init_gitignores_idempotently(&[".rigger/store"]);
     }
 
+    /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
+    /// the project's own `.gitignore` ignores it by the code store's line: a memo entry never
+    /// reads as a dirty tree nor rides a commit.
+    #[test]
+    fn init_project_ignores_the_code_facts_memo_by_the_code_store_line() {
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        init_project(dir.path(), TEMPLATE_SETS).expect("init must scaffold");
+        let memo = rigger_store::code::Store::new(dir.path()).memo_dir();
+        let entry = memo.join("entry.facts");
+        let relative = entry.strip_prefix(dir.path()).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["check-ignore", "-v"])
+            .arg(relative)
+            .current_dir(dir.path())
+            .output()
+            .expect("git runs");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let source = stdout.split('\t').next().unwrap_or_default();
+        let mut fields = source.splitn(3, ':');
+        let (file, pattern) = (fields.next(), fields.nth(1));
+        assert_eq!(
+            (out.status.success(), file, pattern),
+            (true, Some(".gitignore"), Some(".rigger/store")),
+            "the memo is ignored by the project's .rigger/store line; git said: {stdout}"
+        );
+    }
+
     /// Spec 46, criterion 1 (CONSUMER GITIGNORE), the broad-rule corner: even when a
     /// consumer's OWN committed `.gitignore` already covers both dash breadcrumbs through a
     /// broader rule (`.rigger/`), setup STILL appends the explicit `.rigger/dash.url` and
@@ -3574,7 +3505,7 @@ mod tests {
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id a scaffolded workflow references, identical for every rendering.
+        // Every agent id a scaffolded workflow references.
         let referenced_by = |workflow: &str| -> BTreeSet<String> {
             let wf: config::Workflow =
                 serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
@@ -4299,7 +4230,7 @@ mod tests {
     /// drifted matcher is replaced.
     #[test]
     fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
-        let block = |matcher: &str, command: &str| serde_json::json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+        use crate::test_support::hook_block as block;
         let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
         let foreign = block("Write", "prettier --write");
         let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});
@@ -4447,6 +4378,18 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// The committed personas carrying `heading` are exactly `owners`, each once: the persona
+    /// section it opens belongs to them and to no other persona.
+    fn assert_section_belongs_to(heading: &str, owners: &[&str]) {
+        for (file, text) in committed_personas() {
+            assert_eq!(
+                text.matches(heading).count(),
+                usize::from(owners.contains(&file.as_str())),
+                "{file}: {heading:?} belongs to {owners:?} alone"
+            );
+        }
+    }
+
     /// The tracked files under `paths`, repo-relative, as `git ls-files` lists them.
     fn tracked_files(paths: &[&str]) -> Vec<String> {
         let out = std::process::Command::new("git")
@@ -4463,21 +4406,18 @@ mod tests {
             .collect()
     }
 
-    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, the
-    /// fan-out helpers, the built-in instruction entries, the discipline every review-tier
-    /// prompt carries and the build-cache sentence a review tier whose spawn carries a cache reads.
+    /// Every agent text rigger ships, labelled: the committed personas and scaffold seeds, every
+    /// prompt-surface registry group `rigger::prompt_surface::all_groups()` returns (labelled
+    /// `REGISTRY <surface>::<name>`, the reviewer discipline and its build-cache sentence on each
+    /// review-tier surface among them), the fan-out helpers and the built-in instruction entries.
     fn every_shipped_agent_text() -> Vec<(String, String)> {
         let mut all = every_shipped_persona();
-        all.extend([
+        all.extend(rigger::prompt_surface::all_groups().into_iter().map(|g| {
             (
-                "REVIEWER_DISCIPLINE".to_string(),
-                conductor::REVIEWER_DISCIPLINE.to_string(),
-            ),
-            (
-                "REVIEWER_BUILD_CACHE".to_string(),
-                conductor::REVIEWER_BUILD_CACHE.to_string(),
-            ),
-        ]);
+                format!("REGISTRY {}::{}", g.surface, g.name),
+                g.text.to_string(),
+            )
+        }));
         all.extend(
             hooks::HELPER_AGENTS
                 .iter()
@@ -4489,6 +4429,17 @@ mod tests {
                 .map(|(name, body)| (format!("BUILTIN {name}"), (*body).to_string())),
         );
         all
+    }
+
+    /// The body of the built-in instruction entry `name`, read through
+    /// [`every_shipped_agent_text`]'s `BUILTIN <name>` label; fails when no such entry is shipped.
+    fn shipped_builtin(name: &str) -> String {
+        let label = format!("BUILTIN {name}");
+        every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| *at == label)
+            .map(|(_, text)| text)
+            .unwrap_or_else(|| panic!("the {name} body is shipped"))
     }
 
     /// The MARKERS rule itself: a word marker hits as a token, as its plural or as a part of a
@@ -4533,32 +4484,145 @@ mod tests {
     }
 
     /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline with its build-cache sentence, read through the shipped-text helper, spell no
-    /// marker of the MARKERS rule.
+    /// discipline with its build-cache sentence on both review-tier surfaces, read through the
+    /// shipped-text helper, spell no marker of the MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
+        let reviewer = [
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::adjudicator_contract::REVIEWER_BUILD_CACHE",
+            "REGISTRY conductor::review_protocol::REVIEWER_DISCIPLINE",
+            "REGISTRY conductor::review_protocol::REVIEWER_BUILD_CACHE",
+        ];
         let texts: Vec<(String, String)> = every_shipped_agent_text()
             .into_iter()
-            .filter(|(at, _)| {
-                at.starts_with("BUILTIN ")
-                    || at == "REVIEWER_DISCIPLINE"
-                    || at == "REVIEWER_BUILD_CACHE"
-            })
+            .filter(|(at, _)| at.starts_with("BUILTIN ") || reviewer.contains(&at.as_str()))
             .collect();
         assert_eq!(
             texts.len(),
-            instructions::BUILTIN.len() + 2,
-            "every built-in body, the reviewer discipline and its build-cache sentence are read"
+            instructions::BUILTIN.len() + reviewer.len(),
+            "every built-in body, and the reviewer discipline and its build-cache sentence on \
+             each review-tier surface, are read"
         );
-        let hits: Vec<(&str, Vec<&str>)> = texts
-            .iter()
-            .map(|(at, text)| (at.as_str(), language_marker_hits(text)))
-            .filter(|(_, markers)| !markers.is_empty())
-            .collect();
         assert_eq!(
-            hits,
+            texts_hit_by(&texts, language_marker_hits),
             Vec::<(&str, Vec<&str>)>::new(),
             "the built-in layer and the reviewer discipline name no language"
+        );
+    }
+
+    /// Spec 121's cadence and method phrase list: each phrase is the tell of a prescription,
+    /// matched as a lowercase substring of a text.
+    const PRESCRIPTION_PHRASES: &[&str] = &[
+        "the moment",
+        "never batch",
+        "do not batch",
+        "keep it flowing",
+        "between your actions",
+        "between your own actions",
+        "do not contradict",
+        "supersede explicitly",
+        "default to skepticism",
+        "reject only",
+        "not by grepping",
+        "never a new test",
+        "audit the whole tree",
+        "do not write code",
+        "scope creep",
+        "for code lookups",
+        "read first",
+        "honor them",
+        "do not repeat",
+        "address or refute",
+    ];
+
+    /// Every phrase of [`PRESCRIPTION_PHRASES`] the lower-cased `text` holds, in list order.
+    fn prescription_phrase_hits(text: &str) -> Vec<&'static str> {
+        let text = text.to_lowercase();
+        PRESCRIPTION_PHRASES
+            .iter()
+            .copied()
+            .filter(|phrase| text.contains(phrase))
+            .collect()
+    }
+
+    /// Each labelled text of `texts` that `check` finds a hit in, with its hits, in `texts`
+    /// order.
+    fn texts_hit_by<T: AsRef<str>>(
+        texts: &[(String, T)],
+        check: fn(&str) -> Vec<&'static str>,
+    ) -> Vec<(&str, Vec<&'static str>)> {
+        texts
+            .iter()
+            .map(|(at, text)| (at.as_str(), check(text.as_ref())))
+            .filter(|(_, hits)| !hits.is_empty())
+            .collect()
+    }
+
+    /// The conductor's `EMIT_PROTOCOL` as it read before spec 121 cut its cadence clause.
+    const PRE_MOVE_EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit \
+        tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\
+        \"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\n\
+        This writes it to the shared event log live, so other agents see it immediately.";
+
+    /// Spec 121's NO REGISTERED TEXT PRESCRIBES: no group `rigger::prompt_surface::all_groups()`
+    /// returns spells a phrase of the cadence and method list or a marker of the MARKERS rule.
+    /// The two checks first run over held texts, so each is shown to flag what it must: the
+    /// pre-move `EMIT_PROTOCOL` by its cadence clause alone, a capitalised phrase by the
+    /// lowercase match, each phrase once in list order, and a toolchain word by the MARKERS rule,
+    /// while a contract sentence passes both.
+    #[test]
+    fn no_registered_text_spells_a_prescription_phrase_or_a_language_marker() {
+        let held: Vec<(String, &str)> = [
+            ("the pre-move EMIT_PROTOCOL", PRE_MOVE_EMIT_PROTOCOL),
+            (
+                "a capitalised phrase",
+                "Keep It Flowing, and Do Not Batch it, do not batch.",
+            ),
+            (
+                "a toolchain word",
+                "Export CARGO_TARGET_DIR before the build.",
+            ),
+            (
+                "a contract sentence",
+                "This writes it to the shared event log live, so other agents see it immediately.",
+            ),
+        ]
+        .into_iter()
+        .map(|(at, text)| (at.to_string(), text))
+        .collect();
+        assert_eq!(
+            (
+                texts_hit_by(&held, prescription_phrase_hits),
+                texts_hit_by(&held, language_marker_hits)
+            ),
+            (
+                vec![
+                    ("the pre-move EMIT_PROTOCOL", vec!["the moment"]),
+                    (
+                        "a capitalised phrase",
+                        vec!["do not batch", "keep it flowing"]
+                    ),
+                ],
+                vec![("a toolchain word", vec!["cargo"])]
+            ),
+            "the phrase check flags the pre-move EMIT_PROTOCOL and the capitalised phrases, the \
+             MARKERS rule the toolchain word, and neither the contract sentence"
+        );
+
+        let registry: Vec<(String, &str)> = rigger::prompt_surface::all_groups()
+            .into_iter()
+            .map(|g| (format!("{}::{}", g.surface, g.name), g.text))
+            .collect();
+        assert_eq!(
+            texts_hit_by(&registry, prescription_phrase_hits),
+            Vec::<(&str, Vec<&str>)>::new(),
+            "no registry group spells a phrase of the cadence and method list"
+        );
+        assert_eq!(
+            texts_hit_by(&registry, language_marker_hits),
+            Vec::<(&str, Vec<&str>)>::new(),
+            "no registry group names a language under the MARKERS rule"
         );
     }
 
@@ -4571,11 +4635,7 @@ mod tests {
     /// longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         let section = format!(
             "{WHEN_YOU_REVIEW_HEADING} {} {FAN_OUT_HEADING}",
@@ -4611,11 +4671,7 @@ mod tests {
     /// second paragraph, right after the corners sentence and before the success one.
     #[test]
     fn the_working_discipline_holds_each_moved_method_in_its_slot() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         for (heading, method, before, after) in [
             (
@@ -4655,11 +4711,7 @@ mod tests {
     /// nothing else.
     #[test]
     fn the_hand_over_section_holds_the_bounded_audit_bullet_verbatim() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let section = markdown_section(&body, HAND_OVER_HEADING);
         let bullet = format!(
             "- **{}** {} {}",
@@ -4784,8 +4836,8 @@ mod tests {
     fn every_persona_and_scaffold_seed_runs_on_opus_and_may_fan_out() {
         assert_eq!(
             committed_personas().len(),
-            8,
-            "the committed fleet is eight personas"
+            9,
+            "the committed fleet is nine personas"
         );
         for (at, text) in every_shipped_persona() {
             let def = config::parse_agent(text.as_bytes())
@@ -4878,13 +4930,11 @@ mod tests {
     #[test]
     fn the_planner_persona_and_its_seed_state_the_planning_policy() {
         for (at, text) in shipped_planners() {
-            for sentence in crate::test_support::PLANNING_POLICY {
-                assert_eq!(
-                    text.matches(sentence).count(),
-                    1,
-                    "{at} states the planning policy sentence {sentence:?} once"
-                );
-            }
+            assert_eq!(
+                crate::test_support::policy_counts(&text),
+                [1; 6],
+                "{at} states each planning policy sentence once"
+            );
         }
     }
 
@@ -4913,45 +4963,39 @@ mod tests {
     #[test]
     fn the_test_roles_carry_the_exact_assertion_block_exactly_once() {
         const HEADING: &str = "## Every test asserts exactly";
-        for (file, text) in committed_personas() {
-            let want = usize::from(matches!(
-                file.as_str(),
-                "rust-engineer.md" | "sdet-author.md" | "sdet.md"
-            ));
-            assert_eq!(
-                text.matches(HEADING).count(),
-                want,
-                "{file}: the test block appears {want} time(s)"
-            );
-            if want == 1 {
-                let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
-                for wanted in [
-                    "- Assert exact values, never existence:",
-                    "- Pin every boundary from both sides:",
-                    "- Exercise both arms of every condition and every early return,",
-                    "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
-                ] {
-                    assert!(
-                        block.contains(wanted),
-                        "{file}: the test block says {wanted:?}"
-                    );
-                }
+        const OWNERS: [&str; 3] = ["rust-engineer.md", "sdet-author.md", "sdet.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        for file in OWNERS {
+            let text = committed_persona(file);
+            let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
+            for wanted in [
+                "- Assert exact values, never existence:",
+                "- Pin every boundary from both sides:",
+                "- Exercise both arms of every condition and every early return,",
+                "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
+            ] {
                 assert!(
-                    !block.to_lowercase().contains("mutant"),
-                    "{file}: the test block names no mutant and no tool that makes one"
+                    block.contains(wanted),
+                    "{file}: the test block says {wanted:?}"
                 );
             }
+            assert!(
+                !block.to_lowercase().contains("mutant"),
+                "{file}: the test block names no mutant and no tool that makes one"
+            );
         }
     }
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
-    /// block, byte-identical in both and in no other persona: the implement gate set by name, the
+    /// block, byte-identical in both and in no other persona: the implement gate set by name, as
+    /// the workflow lists it, where the no-default lane is linted and where its suite runs, the
     /// statement that the workflow's gates run the full battery and are the authority (a gate
     /// failure is the next round's finding), the only commands the author runs before it reports
     /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
     /// feature-gated code), the root test filter by module on `all` or by executable name, the
     /// declaration of a new test file and how a suite reaches the shared helpers, the test homes
-    /// with the tool that searches them, the counted check - the roots a retired spelling is counted over
+    /// with the lookup's tests filter that finds the test code in them, the counted check - the
+    /// roots a retired spelling is counted over
     /// with the command that counts it - and the foreground wait for the long runs (the
     /// touched tests and a lane script), polled to its exit line when the host
     /// backgrounds one, and this project's anchor for the gate verb, whose verdict the driver
@@ -4960,31 +5004,29 @@ mod tests {
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
-        let mut blocks = Vec::new();
-        for (file, text) in committed_personas() {
-            let author = matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md");
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(author),
-                "{file}: the hand-over block belongs to the author roles alone"
-            );
-            if author {
-                blocks.push(markdown_section(&text, HEADING).to_string());
-            }
-        }
-        assert_eq!(blocks.len(), 2, "both author roles carry the block");
+        const OWNERS: [&str; 2] = ["rust-engineer.md", "sdet-author.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        let blocks =
+            OWNERS.map(|file| markdown_section(&committed_persona(file), HEADING).to_string());
         assert_eq!(
             blocks[0], blocks[1],
             "the block is byte-identical in both author roles"
         );
         let block = rigger::wave::normalize_ws(&blocks[0]);
+        let cfg = config_store::load(repo().to_str().unwrap()).expect("the workflow loads");
+        let (last, rest) = cfg.workflow.stages["implement"]
+            .gates
+            .split_last()
+            .expect("the implement stage names its gates");
+        let implement_gates = format!("{} and {last}", rest.join(", "));
         for wanted in [
-            "fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary \
-             and red-before-green",
+            implement_gates.as_str(),
             "The workflow's gates run that full battery on your committed result and are the \
              authority: you do not run the whole suite, the other lanes, the boundary suite, the \
              content gates or red-before-green by hand, and a gate failure comes back as the \
              next round's finding.",
+            "The no-default lane is linted at every unit and its whole suite runs once, at the \
+             check-in, on the merged tree.",
             "these and nothing else",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
@@ -4999,7 +5041,8 @@ mod tests {
              `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`",
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
-            "search all three with Read, awk or python3",
+            "The graph holds the test code of all three, and a lookup hides it unless asked: \
+             set the lookup's tests filter to include (or only, for test code alone)",
             "`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`",
             "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
              included",
@@ -5110,13 +5153,7 @@ mod tests {
     #[test]
     fn the_sdet_lens_blocks_on_a_missing_criterion_test_and_notes_shape_and_sentences() {
         const HEADING: &str = "## Review the tests against the criteria";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet.md"),
-                "{file}: the criterion-test review belongs to the sdet lens alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
             "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
@@ -5522,13 +5559,7 @@ mod tests {
     #[test]
     fn the_sdet_author_persona_ends_with_the_documentation_only_round_rule() {
         const HEADING: &str = "## A documentation-only round";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet-author.md"),
-                "{file}: the documentation-only round rule belongs to the sdet-author persona alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet-author.md"]);
         let text = committed_persona("sdet-author.md");
         let headings: Vec<&str> = text
             .lines()
@@ -5543,6 +5574,38 @@ mod tests {
             rigger::wave::normalize_ws(markdown_section(&text, HEADING)),
             format!("{HEADING} {DOC_ONLY_ROUND_RULE}"),
             "sdet-author.md's last section holds the rule's sentence verbatim and nothing else"
+        );
+    }
+
+    /// Spec 121's EXISTING DATA row for the moved sentences: the handbook's upgrade note, from its
+    /// persona lead-in to the next heading, quotes each sentence a prompt no longer carries
+    /// verbatim and once, the same text the persona pins hold - the sdet-author's
+    /// documentation-only round rule, the planner's planning policy and the unit size cap's scope.
+    #[test]
+    fn the_handbook_upgrade_note_quotes_each_moved_sentence_once() {
+        const LEAD: &str = "Some guidance an agent's prompt once carried now lives in a persona";
+        let page = read_text(&repo().join("docs/handbook/authoring-loops.md"));
+        let from = page
+            .find(LEAD)
+            .expect("authoring-loops.md holds the upgrade note's persona lead-in");
+        let note = &page[from..];
+        let note = rigger::wave::normalize_ws(note.split("\n#").next().unwrap_or(note));
+        let moved: Vec<&str> = [DOC_ONLY_ROUND_RULE]
+            .into_iter()
+            .chain(crate::test_support::PLANNING_POLICY)
+            .chain([crate::test_support::UNIT_SIZE_CAP_SCOPE])
+            .collect();
+        let quoted: Vec<(&str, usize)> = moved
+            .iter()
+            .map(|sentence| (*sentence, note.matches(&format!("\"{sentence}\"")).count()))
+            .collect();
+        assert_eq!(
+            quoted,
+            moved
+                .iter()
+                .map(|sentence| (*sentence, 1))
+                .collect::<Vec<_>>(),
+            "the upgrade note quotes each moved sentence once; it reads:\n{note}"
         );
     }
 
@@ -5634,41 +5697,6 @@ mod tests {
             hits.is_empty(),
             "size-limit sentences ship:\n{}",
             hits.join("\n")
-        );
-    }
-
-    /// `rigger prime`'s first line lists the built-ins in force over the named-entry fixture, a
-    /// replaced one marked and a switched-off one left out, and counts only the operator files
-    /// that shadow no built-in: one, then none once the unshadowed file is dropped.
-    #[test]
-    fn the_in_force_line_names_each_built_in_s_state_and_counts_only_unshadowed_files() {
-        use crate::test_support::{shadowing_operator_layer, SHADOWING_LAYER_IN_FORCE_LINE};
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()),
-            SHADOWING_LAYER_IN_FORCE_LINE,
-            "the replaced built-in is marked, the switched-off one omitted, one file counted"
-        );
-        assert_eq!(
-            instructions_in_force_line(&shadowing_operator_layer()[1..]),
-            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
-             see rigger instructions",
-            "a file that shadows a built-in is never counted as an operator file"
-        );
-    }
-
-    /// With every built-in switched off, `rigger prime`'s first line says none is in force.
-    #[test]
-    fn the_in_force_line_says_none_when_every_built_in_is_switched_off() {
-        use crate::test_support::op;
-        let off = |name| op(name, Default::default());
-        assert_eq!(
-            instructions_in_force_line(&[
-                off("communication"),
-                off("engineering-principles"),
-                off("working-discipline"),
-            ]),
-            "# Rigger instructions in force: none - see rigger instructions",
-            "no built-in is in force and no operator file remains"
         );
     }
 }

@@ -7,7 +7,9 @@ use runscope::{superseded_edge_boundary, superseded_graph_nodes};
 /// invocation.
 ///
 ///   - `--runs` (spec 21, unit 2) prunes the CONTEXT GRAPH: see [`reset_runs`].
-///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`].
+///   - `--derived` deletes the EVENT LOG's derived events: see [`reset_derived`]. Once the delete
+///     has run it clears the code store's facts memo ([`clear_code_facts_memo`]), so a refused
+///     `--derived` removes nothing.
 ///
 /// A BARE `rigger reset` (no flags at all) is a MENU, not an error (spec 68, "the reset
 /// surface"): see [`reset_menu`]. Only a TRULY empty `args` takes that path - any non-empty
@@ -115,6 +117,11 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
             refuse_derived_reset_if_live(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?
         };
         reset_derived(&loc)?;
+        // The code store's facts memo last, once every refusal above has passed: a refused
+        // `--derived` removes nothing.
+        if let Some(line) = clear_code_facts_memo(Path::new(&loc.repo_root())) {
+            println!("{line}");
+        }
     }
     Ok(())
 }
@@ -450,6 +457,36 @@ fn build_cache_reclaim_report(outcome: BuildCacheReclaim) -> Result<String, Stri
              idle"
                 .to_string(),
         ),
+    }
+}
+
+/// `rigger reset --derived`'s clear of the code store's facts memo
+/// ([`rigger_store::code::Store::memo_dir`]) in the project at `root`: the whole directory goes,
+/// since a read extracts again any file whose entry it needs, and a reader racing it extracts its
+/// files again. It runs last in `--derived`, once the delete has run, so a `--derived` refused on
+/// its backend, on a live run or on a rebuild leaves the memo as it stands. Answers the line that
+/// says what it removed, or none when there was no memo. A clear left partial is no error, since
+/// the delete before it has already run: a reader writing an entry while the directory goes can
+/// keep it from going, and the line then names the bytes left, which the memo's reaper bounds,
+/// never saying the memo was removed.
+///
+/// reap-exempt (spec 79, criterion 2): the memo is a flat directory of entry files the code store
+/// writes and reads from within rigger's own process, never a working directory: no process
+/// rigger runs is ever started with its cwd inside it, so nothing can be rooted there to reap.
+fn clear_code_facts_memo(root: &Path) -> Option<String> {
+    let memo = rigger_store::code::Store::new(root).memo_dir();
+    let bytes = dir_size_bytes(&memo);
+    match std::fs::remove_dir_all(&memo) {
+        Ok(()) => Some(format!(
+            "reset --derived: removed the code facts memo ({})",
+            human_size(bytes)
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(format!(
+            "reset --derived: could not remove the whole code facts memo ({e}); {} left, which \
+             its reaper bounds",
+            human_size(dir_size_bytes(&memo))
+        )),
     }
 }
 
@@ -1496,6 +1533,56 @@ mod tests {
         );
     }
 
+    /// A writer racing `reset --derived`'s clear of the code facts memo can leave it partial, and
+    /// that is no error: GIVEN a memo of many entries and a writer adding entries until the clear
+    /// returns, WHEN the clear runs, THEN it answers one line, and a clear the writer left partial
+    /// names the bytes it left, measured after the delete and so not the memo's size before it,
+    /// rather than saying it removed the memo. Rounds repeat until one races.
+    #[test]
+    fn a_writer_racing_the_memo_clear_leaves_a_line_naming_what_is_left() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        // Seeds whose size dwarfs anything the writer adds while one clear runs.
+        const SEEDS: usize = 500;
+        const SEED: usize = 4096;
+        let before = human_size((SEEDS * SEED) as u64);
+        let mut raced = false;
+        for round in 0..50 {
+            let root = tempfile::tempdir().unwrap();
+            let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+            std::fs::create_dir_all(&memo).unwrap();
+            for n in 0..SEEDS {
+                std::fs::write(memo.join(format!("seeded-{n}.facts")), [b'x'; SEED]).unwrap();
+            }
+            let clearing = AtomicBool::new(true);
+            let answer = std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for n in 0u64.. {
+                        if !clearing.load(SeqCst) {
+                            break;
+                        }
+                        let _ = std::fs::create_dir_all(&memo);
+                        let _ = std::fs::write(memo.join(format!("written-{n}.facts")), b"entry");
+                    }
+                });
+                let answer = clear_code_facts_memo(root.path());
+                clearing.store(false, SeqCst);
+                answer
+            });
+            let line = answer.unwrap_or_else(|| panic!("round {round}: a memo was there"));
+            if line.starts_with("reset --derived: could not remove the whole code facts memo (") {
+                assert!(line.ends_with(" left, which its reaper bounds"), "{line}");
+                assert!(!line.contains("removed"), "{line}");
+                assert!(!line.contains(&format!(" {before} left")), "{line}");
+                assert!(memo.is_dir(), "round {round}: {line}");
+                raced = true;
+                break;
+            }
+            let removed = "reset --derived: removed the code facts memo (";
+            assert!(line.starts_with(removed), "round {round}: {line}");
+        }
+        assert!(raced, "no round's writer raced the clear");
+    }
+
     // --- Spec 71, criterion 2: COMPACTION REFUSES LIVE WRITERS (spec 101: it reads liveness) ---
 
     /// A live spawn `id`, its marker touched `ago` seconds back, bounded at `bound` seconds.
@@ -1958,6 +2045,39 @@ mod tests {
                 Some("7 derived event(s)".to_string()),
             ]
         );
+    }
+
+    /// Each row: what the project's facts memo holds, and the line clearing it answers. Every
+    /// row leaves no memo.
+    #[test]
+    fn clearing_the_code_facts_memo_removes_it_and_names_its_bytes() {
+        type Case = (&'static str, Option<&'static [usize]>, Option<&'static str>);
+        let cases: [Case; 3] = [
+            ("no memo", None, None),
+            (
+                "an empty memo",
+                Some(&[]),
+                Some("reset --derived: removed the code facts memo (0B)"),
+            ),
+            (
+                "a memo of two entries",
+                Some(&[10, 20]),
+                Some("reset --derived: removed the code facts memo (30B)"),
+            ),
+        ];
+        for (case, entries, want) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let memo = rigger_store::code::Store::new(root.path()).memo_dir();
+            if let Some(entries) = entries {
+                std::fs::create_dir_all(&memo).unwrap();
+                for (at, len) in entries.iter().enumerate() {
+                    std::fs::write(memo.join(format!("{at}.facts")), vec![0u8; *len]).unwrap();
+                }
+            }
+            let line = clear_code_facts_memo(root.path());
+            assert_eq!(line.as_deref(), want, "{case}");
+            assert!(!memo.exists(), "{case}: the memo is left");
+        }
     }
 
     #[test]

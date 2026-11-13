@@ -20,6 +20,8 @@ use crate::driver::{
     allowed_tools_args, bin_or_path_default, harness_env, progress_framed, spawn_config_args,
     system_prompt_file, LaunchSession, SystemPromptFile, MISSING_SESSION,
 };
+use crate::prompt_surface::CLI_PROGRESS_VERB;
+use rigger_domain::prompt_surface::fill;
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
@@ -143,11 +145,7 @@ fn session_missing(out: &Output) -> bool {
 /// parked frontier entry, so the current consolidator does not surface it - the emit is recorded
 /// and future-proof.)
 fn framed(task: &str, opts: &SpawnOpts) -> String {
-    let report = format!(
-        "by running (Bash): rigger progress '{}' '<one line: what you just did>'",
-        opts.id
-    );
-    progress_framed(task, &report)
+    progress_framed(task, &fill(CLI_PROGRESS_VERB, &[("id", &opts.id)]))
 }
 
 impl AgentDriver for Driver {
@@ -315,6 +313,26 @@ mod tests {
         assert_eq!(
             framed("the task", &opts),
             format!("the task{}", cli_progress_frame("u/implementer#0"))
+        );
+    }
+
+    /// This host's `framed` over the placeholder fixture is the progress frame's groups with
+    /// `CLI_PROGRESS_VERB` filled into their `{report}` slot.
+    #[test]
+    fn framed_is_the_progress_groups_with_the_bash_verb_in_their_report_slot() {
+        use crate::driver::tests::framed_groups;
+        use crate::prompt_surface::prompt_groups;
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let opts = SpawnOpts {
+            id: "{id}".to_string(),
+            ..SpawnOpts::new(test_spawn_host())
+        };
+        let verb = GroupPicks::new(prompt_groups())
+            .rendered("driver::cli::framed", &["CLI_PROGRESS_VERB"]);
+        assert_renders(
+            "the cli host's frame",
+            &framed("{task}", &opts),
+            &framed_groups(&verb),
         );
     }
     use crate::test_support::cli_progress_frame;
