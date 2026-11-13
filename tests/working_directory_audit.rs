@@ -45,8 +45,9 @@ const RESOLVER: &[(&str, &str, &str)] = &[
     (
         "crates/rigger-worktree-git/src/discover.rs",
         "as_git_takes",
-        "discovery takes an empty start as the working directory, as `git -C \"\"` does; every \
-         rigger command reaches it through Site::of, which hands it the directory it read",
+        "discovery's own contract takes an empty start as the working directory, as `git -C \"\"` \
+         does, pinned beside git by its parity rows; no rigger command hands it one, since \
+         Site::of resolves an empty directory itself",
     ),
 ];
 

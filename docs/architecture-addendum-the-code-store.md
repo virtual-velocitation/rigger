@@ -523,8 +523,9 @@ workflow definition, from the caller's position mapped under `root` up to `root`
 is made before it lands. The docs pre-commit block asks git for `root`, the directory the run's
 build caches lie under: the main worktree `git worktree list` names, or the caller's own top where
 that entry is bare or names the common directory itself. Every command finds its store, its
-configuration and `root` through the one resolver, which reads the directory the command runs in
-once; the suite fails on any other reading of that directory.
+configuration and `root` through the one resolver, which alone reads the directory the command
+runs in; the suite fails on any other read of it, and on any store, configuration or root path
+spelled relative to it, outside the resolver.
 
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
