@@ -377,11 +377,13 @@ impl Driver<'_> {
 
         let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
+        crate::claude_auth::apply_agent_credential(&mut cmd);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top
         // of the inherited ambient environment (`Command` never clears it) - so the
-        // operator's own credential rides through untouched and unread. The harness
+        // operator's own credential rides through untouched and unread (the one exception is
+        // a rigger-named token, [`crate::claude_auth::apply_agent_credential`]). The harness
         // environment every headless worker gets ([`harness_env`]) goes first, so the build
         // environment overrides it under the same key.
         for (k, v) in harness_env(&opts.id) {
@@ -1810,7 +1812,9 @@ impl HoldProbe for Driver<'_> {
         }
         let mut category = None;
         let mut passed = false;
-        let spawned = crate::subprocess::command_in(bin, root)
+        let mut canary_cmd = crate::subprocess::command_in(bin, root);
+        crate::claude_auth::apply_agent_credential(&mut canary_cmd);
+        let spawned = canary_cmd
             .args(canary_args(&owed.held.model))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

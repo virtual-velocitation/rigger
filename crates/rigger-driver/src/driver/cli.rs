@@ -69,6 +69,7 @@ impl Driver {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
         let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
+        crate::claude_auth::apply_agent_credential(&mut cmd);
         cmd.args(build_args(
             agent,
             &persona,

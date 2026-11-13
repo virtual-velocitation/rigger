@@ -313,6 +313,11 @@ validate` reports the auth method from `claude auth status --json` and never war
 the interactive subscription login (a fixture recorded from the installed `claude auth status
 --json`) included, since the long-lived token is supported and never nagged about; with `claude`
 absent or its status failing it prints one advisory and exits as before.
+When `RIGGER_CLAUDE_CODE_OAUTH_TOKEN` is set non-empty in rigger's environment, every launch of
+`claude` (a spawn, the canary, the login read validate and the probe make) sets
+`CLAUDE_CODE_OAUTH_TOKEN` to its value on that command alone and passes the rigger-named variable
+on to nothing, so the operator's own sessions keep their login and validate reports the method the
+spawns use; the value is recorded nowhere.
 
 KEEP-AWAKE, decided: an OS facility is a port with one adapter per OS family on that OS's
 native API, never one OS's tool. The port is `SleepHold`, a new module in

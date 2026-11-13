@@ -13,6 +13,26 @@ use serde::Deserialize;
 
 use crate::reaped_child::ReapedChild;
 
+/// The long-lived agent token's variable, the one the agent CLI reads.
+const AGENT_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The variable an operator sets in rigger's environment to give the long-lived token to spawned
+/// agents only: the agent CLI ignores it, so the operator's own sessions keep their login.
+const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The ONE credential rule every launch of the agent binary applies (unit spawns of both hosts,
+/// the hold probe's canary and the login reads `claude auth status` that the probe and `rigger
+/// validate` make): a non-empty [`RIGGER_AGENT_TOKEN_VAR`] becomes [`AGENT_TOKEN_VAR`] on `cmd`
+/// alone, and is not passed on itself. Unset or empty, the inherited environment rides through
+/// untouched, an ambient [`AGENT_TOKEN_VAR`] included. The value is set on the command and held
+/// nowhere else: no field, no record, no message.
+pub(crate) fn apply_agent_credential(cmd: &mut std::process::Command) {
+    if let Some(token) = std::env::var_os(RIGGER_AGENT_TOKEN_VAR).filter(|v| !v.is_empty()) {
+        cmd.env(AGENT_TOKEN_VAR, token);
+        cmd.env_remove(RIGGER_AGENT_TOKEN_VAR);
+    }
+}
+
 /// The agent binary a driver launches from `PATH` when it is given none, and so the one whose
 /// login `rigger validate` reads.
 pub const DEFAULT_BIN: &str = "claude";
@@ -49,7 +69,9 @@ pub fn auth_method(bin: &str, deadline: Instant) -> Option<String> {
 /// and its stderr and exit status go unread, and a binary that does not start reports nothing at
 /// once.
 fn report(bin: &str, deadline: Instant) -> String {
-    let Ok(child) = crate::subprocess::command(bin)
+    let mut cmd = crate::subprocess::command(bin);
+    apply_agent_credential(&mut cmd);
+    let Ok(child) = cmd
         .args(["auth", "status", "--json"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
