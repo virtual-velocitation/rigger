@@ -39,7 +39,21 @@ fn committed_project() -> (tempfile::TempDir, tempfile::TempDir) {
     std::fs::write(root.path().join("README"), "fixture\n").unwrap();
     git_ok(root.path(), &["add", "-A"]);
     git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
-    (root, tempfile::tempdir().expect("a scratch dir"))
+    (root, short_scratch())
+}
+
+/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
+/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
+/// only about a hundred bytes, which a long `TMPDIR` would exceed.
+fn short_scratch() -> tempfile::TempDir {
+    #[cfg(unix)]
+    let base = Path::new("/tmp");
+    #[cfg(not(unix))]
+    let base = std::env::temp_dir();
+    tempfile::Builder::new()
+        .prefix("rg")
+        .tempdir_in(base)
+        .expect("a scratch dir")
 }
 
 /// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
