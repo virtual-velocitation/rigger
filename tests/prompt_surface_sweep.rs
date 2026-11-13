@@ -24,7 +24,8 @@ enum Category {
     /// An error, a status line, a help text, a log line the operator reads, or a command line
     /// the host runs.
     OperatorMessage,
-    /// A tool result or error an agent reads back as data, never as instruction.
+    /// A tool result or error, or the summary of a recorded decision or lesson, that an agent
+    /// reads back as data, never as instruction.
     ToolOutput,
 }
 
@@ -69,22 +70,16 @@ const ALLOW_LIST: &[Allowed] = &[
             "{role} {agent_id:?} would run directly in the main repo chec",
             "stage {:?} references unknown {role} {agent_id:?}",
             "spawn {}: session {} to resume is gone; it ran as a fresh se",
-            "For the operator: review of unit {unit:?} at attempt {attemp",
-            "a review round left unit {unit:?}'s worktree as residue afte",
             "{} (guard_review_round_tree also failed to restore residue:",
             "stage {:?} references unknown agent {:?}",
             "a plan-stage commit touched paths outside specs/: {}",
             "the plan amendment conflicts with a concurrent specs/ change",
-            "unit {:?} escalated after {attempts} attempts; {why}",
             "stage {:?} references unknown agent {:?}",
-            "unit {:?} escalated: all {width} speculation candidates fail",
             "speculation winner {lane} implemented by {}",
             "candidate {lane} rejected by the adjudicator",
-            "review stage {:?} escalated after {attempts} attempts; {why}",
             "stage {:?} references unknown {tier} {agent_id:?}",
             "plan-critique re-plan references unknown planner {:?}",
             "the adjudicator did not approve the decomposition",
-            "plan-critique {gate_name:?} escalated after {attempts} attem",
             "plan-critique {gate:?} stopped the run: its {} reject at att",
             "rigger: branch-gc: removing branch {branch:?} - {}",
             "rigger: branch-gc: kept branch {branch:?} - {}",
@@ -99,7 +94,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "landing {unit:?} was refused: local content at {} would be o",
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for loca",
             "same-id refine resolves to a criterion its unit does not ser",
-            "unmatched-proposal: proposed unit {} maps to no baseline cri",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
         ],
@@ -118,6 +112,13 @@ const ALLOW_LIST: &[Allowed] = &[
             "skipped: gate {gid:?} inputs {:?} do not intersect the unit'",
             "skipped: gate {gid:?} declares post_merge: false, so it judg",
             "{why_rerun}cache-hit: gate {gid:?} was proven green at log p",
+            "For the operator: review of unit {unit:?} at attempt {attemp",
+            "a review round left unit {unit:?}'s worktree as residue afte",
+            "unit {:?} escalated after {attempts} attempts; {why}",
+            "unit {:?} escalated: all {width} speculation candidates fail",
+            "review stage {:?} escalated after {attempts} attempts; {why}",
+            "plan-critique {gate_name:?} escalated after {attempts} attem",
+            "unmatched-proposal: proposed unit {} maps to no baseline cri",
         ],
     ),
     (
