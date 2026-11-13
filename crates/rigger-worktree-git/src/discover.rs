@@ -1057,8 +1057,9 @@ mod tests {
     /// (`outer/sub`, `sub-linked`), a checkout whose `.git` is a symlink and a linked worktree of
     /// it (`dotlink`, `dotlink-linked`), a sparse checkout (`sparse`), a main checkout and a
     /// linked worktree under per-worktree configuration (`wtc`, `wtc-linked`), a bare
-    /// repository's linked worktree (`bare-wt`), a configuration including a file and naming
-    /// worktrees in a remote (`configured`), a work tree configured where its `.git` lies
+    /// repository's linked worktree (`bare-wt`), a configuration including a file that sets
+    /// `core.bare`, which git's `config` follows, and naming worktrees in a remote, and a linked
+    /// worktree of it (`configured`, `configured-linked`), a work tree configured where its `.git` lies
     /// (`selfwt`), a `bare` value written quoted beside a comment (`quoted`), a format version
     /// written in hex and a `bare` value as a number with a unit (`suffixed`), a linked worktree
     /// of a `.git` configured bare (`baremain-wt`); and what git alone sets up: a work tree
@@ -1131,12 +1132,23 @@ mod tests {
             root.join("bare.git"),
             &["worktree", "add", "-q", "../bare-wt", "-b", "bwt"],
         );
+        let configured = root.join("configured");
+        git_ok(
+            &configured,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "../configured-linked",
+                "-b",
+                "cfgl",
+            ],
+        );
         std::fs::write(
             root.join("configured/.git/extra"),
-            "[core]\n\tautocrlf = false\n",
+            "[core]\n\tbare = true\n",
         )
         .unwrap();
-        let configured = root.join("configured");
         git_ok(&configured, &["config", "include.path", "extra"]);
         git_ok(
             &configured,
@@ -1263,7 +1275,6 @@ mod tests {
             ("wtc-linked", true, true),
             ("bare-wt", true, true),
             ("baremain-wt", true, true),
-            ("configured/d", true, true),
             ("selfwt", true, true),
             ("selfwt/d", true, true),
             ("quoted", true, true),
@@ -1281,6 +1292,8 @@ mod tests {
             ("ext0/d", false, true),
             ("named", false, true),
             ("named/d", false, true),
+            ("configured/d", false, true),
+            ("configured-linked", false, true),
         ];
         let asks = [
             Location::Toplevel,
@@ -1438,9 +1451,9 @@ mod tests {
             ("sparse/d", true),
             ("wtc-linked", true),
             ("bare-wt", true),
-            ("configured/d", true),
             ("selfwt/d", true),
             ("main/.git", false),
+            ("configured/d", false),
         ];
         for (path, read) in cases {
             let start = dir.path().join(path);
@@ -1516,6 +1529,12 @@ mod tests {
             ("noversion/d", "noversion", "noversion"),
             ("ext0/d", "ext0", "ext0"),
             ("elsewhere", "plain", "elsewhere"),
+            ("configured/d", "configured", "configured"),
+            (
+                "configured-linked",
+                "configured-linked",
+                "configured-linked",
+            ),
         ];
         for (path, root, head_of) in cases {
             let start = dir.path().join(path);
