@@ -51,7 +51,9 @@ use vm_harness::{vm_harness, EVENT_PHASES};
 /// (recording its transform), as a browser replaces them; every other element is a bare stand-in.
 /// The panel shows a 12px scrollbar of its own, narrowing its client box and the svg's slot, while
 /// what it holds - its padding, the toolbar, the frontier list, the svg at the height it has now and
-/// any markup below the svg, 40px of it - runs past its height, as a classic scrollbar does. The call
+/// any markup below the svg, 40px of it, or for a markup that draws none (the seeded neighborhood's
+/// lists, a message) its padding and an 18px line for each block it opens - runs past its height, as a
+/// classic scrollbar does. The call
 /// view's frontier slot (`#kgfrontier`) is a view onto the panel's markup, written in place there
 /// with the drawing left as it is, and takes an 18px line for its head and each candidate it lists;
 /// `_gen` counts the markups the panel is given, so a driver can tell what the page wrote from what
@@ -113,11 +115,13 @@ function __listHeight(html){
   return n ? 12 + 18 * (1 + n) : 0;
 }
 function __slotTop(html){ return __geom.padTop + __geom.toolbar[__viewOf(html)] + __listHeight(html); }
-// The height of what a panel drawing a view holds - its padding, the toolbar, the svg at the height it
-// has now and the markup below the svg - or 0 for a markup that draws none.
+// The height of what the panel holds: for a markup drawing a view, its padding, the toolbar, the svg at
+// the height it has now and the markup below the svg; for one that draws none (the seeded
+// neighborhood's lists, a message), its padding and an 18px line for each block it opens.
 function __holds(panel){
   const html = panel._html, end = html.lastIndexOf("</svg>");
-  if (html.indexOf('<svg class="kgsvg"') === -1) return 0;
+  if (html.indexOf('<svg class="kgsvg"') === -1)
+    return __geom.padTop + 18 * (html.match(/<div\b/g) || []).length + __geom.padBottom;
   const below = html.slice(end + "</svg>".length).trim() === "" ? 0 : __geom.below;
   return __slotTop(html) + Number(panel._svg.getAttribute("height") || 0) + below + __geom.padBottom;
 }
@@ -273,7 +277,9 @@ const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", 
 /// A `fetch` serving deterministic overviews as dense as a real project's - the files lens's 158
 /// file clusters in 32 directories (one at the repo root), the code lens's 200 communities, the
 /// concepts lens's 98 concepts - a subject's re-projection under each lens (40 files, a single
-/// community, 12 concepts), a drilled cluster's 12 members and a 4-layer call walk; a card or
+/// community, 12 concepts), a drilled cluster's 12 members, a seeded neighborhood of those members, its
+/// edges in every confidence tier, and a 4-layer call walk for the seed and direction a read asks for;
+/// a card or
 /// rationale read finds nothing. `__fetches` counts every request the page makes. While `__held` is
 /// a list, each graph read waits in it until the driver lands its reply, which then names the read in
 /// the graph header, or fails it.
@@ -330,8 +336,11 @@ function __graph(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return { nodes: [] };
   if (s.indexOf("card=") !== -1) return {};
-  if (s.indexOf("view=calls") !== -1) return { seed: __SUBJECT, dir: "down", nodes: __CALLS.nodes, edges: __CALLS.edges };
+  if (s.indexOf("view=calls") !== -1) return { seed: decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]),
+    dir: (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1], nodes: __CALLS.nodes, edges: __CALLS.edges };
   if (s.indexOf("cluster=") !== -1) return { seed: __CLUSTER, nodes: __DRILL.nodes, edges: __DRILL.edges };
+  if (s.indexOf("depth=2") !== -1) return { seed: __SUBJECT, depth: 2, nodes: __DRILL.nodes, edges: __DRILL.edges.map(function(e, i){
+    return { from: e.from, to: e.to, rel: "calls", tier: KG_TIERS[i % KG_TIERS.length] }; }) };
   const lens = (s.match(/[?&]lens=([a-z]+)/) || [null, "files"])[1];
   if (s.indexOf("seed=") !== -1) {
     const rp = __REPROJECTIONS[lens];
@@ -1099,13 +1108,6 @@ const CONTROL_FOCUS_DRIVER: &str = r##"
 ;(async function(){
   const at = "a control holding the keyboard focus: ";
   const panel = el("kgpanel");
-  // A neighborhood read answers the drilled cluster's members, its edges in every confidence tier.
-  const served = __graph;
-  __graph = function(url){
-    if (String(url).indexOf("depth=2") === -1) return served(url);
-    return { seed: __SUBJECT, depth: 2, nodes: __DRILL.nodes, edges: __DRILL.edges.map(function(e, i){
-      return { from: e.from, to: e.to, rel: "calls", tier: KG_TIERS[i % KG_TIERS.length] }; }) };
-  };
   // The control sel finds in the panel, holding the focus after what.
   function holds(sel, what){
     const c = panel.querySelector(sel), on = document.activeElement;
@@ -1175,8 +1177,7 @@ const VIEW_STATE_DRIVER: &str = r##"
   __CALLS.nodes[5].frontier = [A, B];
   // The call node the rationale overlay finds a decision for.
   const WHY = __CALLS.nodes[3].id;
-  // Every request the page makes, a call walk answered for the seed and direction it asks for, and a
-  // rationale read answered with WHY's decision.
+  // Every request the page makes, and a rationale read answered with WHY's decision.
   const asked = [];
   const served = __graph;
   __graph = function(url){
@@ -1184,10 +1185,7 @@ const VIEW_STATE_DRIVER: &str = r##"
     asked.push(s);
     if (s.indexOf("explain=") !== -1)
       return { nodes: [{ node: WHY, leaves: [{ kind: "decision", summary: "it calls on the next layer" }] }] };
-    if (s.indexOf("view=calls") === -1) return served(url);
-    const seed = decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]);
-    const dir = (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1];
-    return { seed: seed, dir: dir, nodes: __CALLS.nodes, edges: __CALLS.edges };
+    return served(url);
   };
   // The redraws of the held view the page makes.
   let redraws = 0;
@@ -1467,6 +1465,70 @@ const VIEW_STATE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver, for the view kind `__VIEW__`: in a phone's 294px panel below a four-line toolbar, where
+/// every drawing keeps its 200px floor and so runs past the panel, a call walk shows its frontier
+/// list and is scrolled to its end; the view of that kind then opened - the files overview, a drilled
+/// cluster, the call walk of the candidate chosen from the list, the subject's neighborhood or its
+/// re-projection - runs past the panel too, and opens at its top, its toolbar in sight. Scrolled to
+/// its end, that view keeps its scroll through a redraw of it (the overlay toggle's, the card
+/// docking's).
+const FRESH_VIEW_DRIVER: &str = r##"
+;(async function(){
+  const VIEW = "__VIEW__";
+  const A = "crates/crate-2/src/module_2.rs::Thing", B = "crates/crate-3/src/module_3.rs::Thing";
+  __CALLS.nodes[5].frontier = [A, B];
+  const panel = el("kgpanel");
+  // A click on the element whose opening tag in the panel's markup carries mark.
+  function click(mark){
+    const i = panel._html.indexOf(mark);
+    if (i === -1) throw new Error(at + "the panel must hold " + mark + ", it holds " + panel._html.slice(0, 300));
+    const ev = { type: "click", target: new __Control(panel, panel._html.lastIndexOf("<", i)), defaultPrevented: false,
+      preventDefault: function(){ ev.defaultPrevented = true; } };
+    __reach(panel, ev);
+  }
+  // Each view kind: what it is, the act that opens it, the mode it draws in, and what its markup holds.
+  const OPEN = {
+    overview: { name: "the files overview", mode: "overview", open: function(){ loadKgOverview(); }, holds: "data-cluster=" },
+    drill: { name: "a drilled cluster", mode: "drill", open: function(){ drillCluster(__CLUSTER); }, holds: "data-kgback=" },
+    calls: { name: "the call walk of a candidate chosen", mode: "calls", open: function(){ click('data-candidate="' + A + '"'); },
+      holds: "<b>" + A + "</b>" },
+    seed: { name: "the subject's neighborhood", mode: "seed", open: function(){ seedGraph(__SUBJECT); },
+      holds: "neighborhood of <b>" + __SUBJECT + "</b>" },
+    reproject: { name: "the subject's re-projection", mode: "reproject", open: function(){ reprojectSubject(__SUBJECT); },
+      holds: "data-kgclear=" }
+  };
+  const V = OPEN[VIEW];
+  if (!V) throw new Error("a row opens the overview, drill, calls, seed or reproject view, not " + VIEW);
+  const at = V.name + " opened from a call walk scrolled to its end: ";
+  __size([348, 294, 80]);
+  await __flush();
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  click('data-frontier="1"');
+  await __flush();
+  panel.scrollTop = 1e6;
+  const end = panel.scrollTop;
+  if (!(end > 0) || panel._html.indexOf('data-candidate="' + A + '"') === -1)
+    throw new Error(at + "the call walk must show its frontier list and scroll, it is scrolled " + end + "px");
+  V.open();
+  await __flush();
+  if (kgMode !== V.mode || panel._html.indexOf(V.holds) === -1)
+    throw new Error(at + "it must draw, kgMode " + kgMode + ", the panel holds " + panel._html.slice(0, 300));
+  if (!(__scrollMax(panel) > 0))
+    throw new Error(at + "it must run past the panel, so a scroll kept would show, it holds " + __holds(panel) + "px");
+  if (panel.scrollTop !== 0)
+    throw new Error("REGRESSION: " + at + "it must open at its top, its toolbar in sight, it is scrolled "
+      + panel.scrollTop + "px of the " + __scrollMax(panel) + "px it scrolls");
+  panel.scrollTop = 1e6;
+  const kept = panel.scrollTop;
+  rerenderCurrentView();
+  await __flush();
+  if (panel.scrollTop !== Math.min(kept, __scrollMax(panel)))
+    throw new Error("REGRESSION: " + at + "a redraw of it must keep its scroll, " + kept + "px, it is scrolled " + panel.scrollTop + "px");
+  console.log("OK a-new-view-opens-at-its-top");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Runs `driver`, and claims it ends in `ok`.
 fn drive(driver: &str, ok: &str, claim: &str) {
     node_harness_claims(
@@ -1650,6 +1712,16 @@ rigger::test_cases! {
     /// The same draft committed once by leaving the box after the scrollbar's redraw.
     a_drafted_grain_commits_on_leaving_the_box_after_a_scrollbar:
         keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "scrollbar"}"#);
+    /// The files overview, opened from a call walk scrolled to its end, opens at its top.
+    a_new_overview_opens_at_its_top: opens_at_its_top("overview");
+    /// A drilled cluster, opened the same way, opens at its top.
+    a_new_drill_opens_at_its_top: opens_at_its_top("drill");
+    /// The call walk of a frontier candidate chosen from the list opens at its top.
+    a_new_call_walk_opens_at_its_top: opens_at_its_top("calls");
+    /// The subject's neighborhood opens at its top.
+    a_new_neighborhood_opens_at_its_top: opens_at_its_top("seed");
+    /// The subject's re-projection opens at its top.
+    a_new_reprojection_opens_at_its_top: opens_at_its_top("reproject");
 }
 
 /// The page writes the panel's markup only through the wrapper that keeps what the user holds in it
@@ -1705,6 +1777,16 @@ fn the_panel_markup_is_written_only_through_the_keeping_wrapper() {
             );
         }
     }
+}
+
+/// The view of the kind `view` names, opened from a panel scrolled to its end, opening at its top and
+/// keeping its scroll through a redraw.
+fn opens_at_its_top(view: &str) {
+    drive(
+        &FRESH_VIEW_DRIVER.replace("__VIEW__", view),
+        "OK a-new-view-opens-at-its-top",
+        "a new view must open at its top, and a redraw of it keep its scroll",
+    );
 }
 
 /// What the panel shows of the view it holds, in the `{writer, pan, resize}` row `VIEW_STATE_DRIVER`
