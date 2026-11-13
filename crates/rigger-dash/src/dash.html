@@ -863,9 +863,11 @@ let kgSeed = null;
 // (byte-identical to the server's `lens`-absent view); `code` buckets by coupling community and
 // `concepts` by derived intent concept, each at `kgResolution` (the grain the server reads). Persist
 // across overview/drill so a "<- overview" back link returns to the chosen lens. The panel survives
-// the 1.5s poll like every KG view (render() never touches kgpanel).
+// the 1.5s poll like every KG view (render() never touches kgpanel). The grain starts empty: a read
+// that names none gets the server's default grain, which only the server defines, and its reply's
+// grain fills the box (showGrain).
 let kgLens = "files";
-let kgResolution = "1";
+let kgResolution = "";
 
 // The grain a derived view's reply says it displays becomes the grain the toolbar shows, so the
 // input names what is drawn (`2` for a typed `2.0`); a reply displaying no grain (a text that names
@@ -2494,9 +2496,9 @@ function wireSelectToSeed() {
       return;
     }
     // The code-lens RESOLUTION grain (spec 53 c4): a changed grain re-loads the overview at it; an
-    // empty value falls back to the default grain (never an empty request).
+    // empty value names no grain, so the server reads its default and the reply names it.
     const res = ev.target.closest("[data-lens-res]");
-    if (res) { kgResolution = (res.value || "").trim() || "1"; loadKgOverview(); }
+    if (res) { kgResolution = (res.value || "").trim(); loadKgOverview(); }
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
