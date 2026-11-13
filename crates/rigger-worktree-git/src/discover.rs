@@ -448,7 +448,7 @@ fn read_head_with(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::test_support::{git_ok, git_out, init_repo, run_git};
+    use crate::test_support::{git_ok, git_ok_with_identity, git_out, init_repo, run_git};
 
     /// git's own answer to `rev-parse <ask>` from `dir`, none when it refuses.
     fn git_says(dir: &Path, ask: Location) -> Option<String> {
@@ -475,7 +475,8 @@ mod tests {
     /// A main checkout `main` with a nested and an outside linked worktree, a branch with no
     /// commit, a detached worktree, packed refs, symlinks into each, a linked worktree whose
     /// administrative directory is gone (`pruned`) and a `.git` directory holding nothing
-    /// (`headless`); every path the tables below name lies under the returned directory.
+    /// (`headless`), and every other layout git finds a checkout in ([`layouts`]); every path
+    /// the tables below name lies under the returned directory.
     fn shapes() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -523,7 +524,102 @@ mod tests {
         ] {
             std::os::unix::fs::symlink(root.join(target), root.join(link)).unwrap();
         }
+        layouts(root);
         dir
+    }
+
+    /// Beside `main` under `root`: a linked worktree whose `.git` names its administrative
+    /// directory relatively (`relative`), a checkout whose git directory lies apart (`apart`), a
+    /// submodule (`outer/sub`), a checkout whose `.git` is a symlink (`dotlink`), a sparse
+    /// checkout (`sparse`), a main checkout and a linked worktree under per-worktree
+    /// configuration (`wtc`, `wtc-linked`), a bare repository's linked worktree (`bare-wt`), a
+    /// configuration including a file and naming worktrees in a remote (`configured`), a work
+    /// tree configured where its `.git` lies (`selfwt`); and what git alone answers: a work tree
+    /// configured elsewhere (`elsewhere`), a `.git` configured bare (`baremain`) and a `bare`
+    /// value written quoted (`quoted`).
+    fn layouts(root: &Path) {
+        let main = root.join("main");
+        git_ok(
+            &main,
+            &["worktree", "add", "-q", "../relative", "-b", "relative"],
+        );
+        std::fs::write(
+            root.join("relative/.git"),
+            "gitdir: ../main/.git/worktrees/relative\n",
+        )
+        .unwrap();
+        git_ok(
+            root,
+            &["init", "-q", "--separate-git-dir", "apart.git", "apart"],
+        );
+        git_ok_with_identity(root.join("apart"), &["commit", "--allow-empty", "-qm", "i"]);
+        std::fs::create_dir_all(root.join("apart/x")).unwrap();
+        let outer = root.join("outer");
+        std::fs::create_dir_all(&outer).unwrap();
+        init_repo(&outer);
+        let add = ["submodule", "add", "-q", main.to_str().unwrap(), "sub"];
+        git_ok(
+            &outer,
+            &[&["-c", "protocol.file.allow=always"][..], &add].concat(),
+        );
+        std::fs::create_dir_all(outer.join("sub/x")).unwrap();
+        for repo in ["dotlink", "sparse", "wtc", "configured", "selfwt"] {
+            std::fs::create_dir_all(root.join(repo).join("d")).unwrap();
+            init_repo(root.join(repo));
+        }
+        std::fs::rename(root.join("dotlink/.git"), root.join("dotlink.git")).unwrap();
+        std::os::unix::fs::symlink(root.join("dotlink.git"), root.join("dotlink/.git")).unwrap();
+        git_ok(
+            root.join("sparse"),
+            &["sparse-checkout", "set", "--no-cone", "/*"],
+        );
+        git_ok(
+            root.join("wtc"),
+            &["config", "extensions.worktreeConfig", "true"],
+        );
+        std::fs::write(
+            root.join("wtc/.git/config.worktree"),
+            "[core]\n\tbare = false\n",
+        )
+        .unwrap();
+        git_ok(
+            root.join("wtc"),
+            &["worktree", "add", "-q", "../wtc-linked", "-b", "wtcl"],
+        );
+        git_ok(root, &["clone", "-q", "--bare", "main", "bare.git"]);
+        git_ok(
+            root.join("bare.git"),
+            &["worktree", "add", "-q", "../bare-wt", "-b", "bwt"],
+        );
+        std::fs::write(
+            root.join("configured/.git/extra"),
+            "[core]\n\tautocrlf = false\n",
+        )
+        .unwrap();
+        let configured = root.join("configured");
+        git_ok(&configured, &["config", "include.path", "extra"]);
+        git_ok(
+            &configured,
+            &["config", "remote.origin.url", "/up/worktrees/origin"],
+        );
+        let selfwt = root.join("selfwt");
+        git_ok(
+            &selfwt,
+            &["config", "core.worktree", selfwt.to_str().unwrap()],
+        );
+        for (repo, key, value) in [
+            ("elsewhere", "core.worktree", root.join("plain")),
+            ("baremain", "core.bare", PathBuf::from("true")),
+        ] {
+            std::fs::create_dir_all(root.join(repo)).unwrap();
+            init_repo(root.join(repo));
+            git_ok(root.join(repo), &["config", key, value.to_str().unwrap()]);
+        }
+        std::fs::create_dir_all(root.join("quoted")).unwrap();
+        init_repo(root.join("quoted"));
+        let config = root.join("quoted/.git/config");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, text.replace("bare = false", "bare = \"false\"")).unwrap();
     }
 
     /// [`rev_parse`]'s answer from `start` for `ask`, checked against git's: git's own answer
@@ -559,11 +655,30 @@ mod tests {
             ("link-ls", true, true),
             ("mainlink/a", true, true),
             ("mainlink/.rigger/tmp/wt", true, true),
+            ("relative", true, true),
+            ("apart", true, true),
+            ("apart/x", true, true),
+            ("outer", true, true),
+            ("outer/sub", true, true),
+            ("outer/sub/x", true, true),
+            ("dotlink", true, true),
+            ("dotlink/d", true, true),
+            ("sparse/d", true, true),
+            ("wtc/d", true, true),
+            ("wtc-linked", true, true),
+            ("bare-wt", true, true),
+            ("configured/d", true, true),
+            ("selfwt", true, true),
+            ("selfwt/d", true, true),
             ("main/.git", false, true),
             ("main/.git/refs", false, true),
             ("missing", true, false),
             ("pruned", false, true),
             ("headless", false, true),
+            ("bare.git", false, true),
+            ("elsewhere", false, true),
+            ("baremain", false, true),
+            ("quoted", false, true),
         ];
         let asks = [
             Location::Toplevel,
@@ -702,6 +817,15 @@ mod tests {
             ("detached", true),
             ("on-packed", true),
             ("unborn", true),
+            ("relative", true),
+            ("apart/x", true),
+            ("outer/sub/x", true),
+            ("dotlink/d", true),
+            ("sparse/d", true),
+            ("wtc-linked", true),
+            ("bare-wt", true),
+            ("configured/d", true),
+            ("selfwt/d", true),
             ("main/.git", false),
         ];
         for (path, read) in cases {
