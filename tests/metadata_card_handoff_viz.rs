@@ -275,6 +275,12 @@ rigger::test_cases! {
     /// had a card.
     a_subject_with_no_card_never_narrows_the_drawing:
         node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], NO_CARD_DRIVER, HARNESS_FILE), "OK a-subject-with-no-card-never-narrows-the-drawing");
+    /// RUNTIME guard that each view sets or clears both panes for its own subject before it
+    /// draws: a call walk or re-projection of the seed keeps the seed's rail and card; a call
+    /// walk, drill or re-projection of another subject is drawn with neither and cards its own
+    /// subject; and a view that cannot be read shows its message with both panes hidden.
+    each_view_sets_both_panes_for_its_own_subject_before_it_draws:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH, DRAW_RECORDER], OWN_PANES_DRIVER, HARNESS_FILE), "OK each-view-sets-both-panes-for-its-own-subject");
 }
 
 /// A recorder of the drawings: from the call on, every write of `#kgpanel` records whether the
@@ -441,6 +447,95 @@ const NO_CARD_DRIVER: &str = r#"
     throw new Error("REGRESSION: a subject with no card was drawn beside the last subject's card: " + JSON.stringify(draws.slice(from)));
 
   console.log("OK a-subject-with-no-card-never-narrows-the-drawing");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// Driver for each view's own panes, recorded at each drawing of the panel: the seed of `fire`
+/// (its rail and card shown), then a call walk of `fire` and one of `reload`; the seed of
+/// `reload` and a call walk of `fire`; a files-lens and a code-lens drill; a re-projection of
+/// another subject and one of the seed; then every view whose read fails, each after the seed of
+/// `fire` again.
+const OWN_PANES_DRIVER: &str = r#"
+;(async function(){
+  await flush();
+  const draws = __recordDraws();
+  const at = () => JSON.stringify(draws[draws.length - 1]);
+  const both = JSON.stringify({ card: true, rail: true });
+  const neither = JSON.stringify({ card: false, rail: false });
+  const card = () => (el("kgcard").hidden ? "" : el("kgcard")._html);
+  const MEMORY = { decisions: [], findings: [], concepts: [] };
+  const seed = async id => {
+    renderGraph({ seed: id, nodes: [], edges: [], memory: MEMORY });
+    await flush();
+    if (el("kgrail").hidden) throw new Error("setup: the seed of " + id + " must show its rail");
+  };
+
+  await seed("combat.rs::fire");
+  await seedCalls("combat.rs::fire", "down");
+  if (at() !== both || card().indexOf("combat.rs:42") === -1)
+    throw new Error("REGRESSION: the call walk of the seed was drawn without the seed's rail or card: " + at());
+  await seedCalls("combat.rs::reload", "up");
+  if (at() !== neither)
+    throw new Error("REGRESSION: the call walk of another subject was drawn beside the seed's panes: " + at());
+  await flush();
+  if (!el("kgcard").hidden || !el("kgrail").hidden)
+    throw new Error("REGRESSION: the call walk of a subject with no card kept the seed's panes open");
+
+  await seed("combat.rs::reload");
+  await seedCalls("combat.rs::fire", "down");
+  if (at() !== neither)
+    throw new Error("REGRESSION: the call walk of another subject was drawn beside the last seed's rail: " + at());
+  await flush();
+  if (card().indexOf("combat.rs:42") === -1 || !el("kgrail").hidden)
+    throw new Error("REGRESSION: the call walk must card its own seed and show no other subject's rail: " + card());
+
+  await seed("combat.rs::fire");
+  kgLens = "files";
+  await drillCluster("combat.rs");
+  if (at() !== neither)
+    throw new Error("REGRESSION: a files-lens drill was drawn beside the seed's rail or card: " + at());
+  await seed("combat.rs::fire");
+  kgLens = "code";
+  await drillCluster("community/1/0");
+  if (at() !== neither)
+    throw new Error("REGRESSION: a code-lens drill was drawn beside the seed's rail or card: " + at());
+  await flush();
+
+  await seed("combat.rs::fire");
+  renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
+  if (at() !== neither)
+    throw new Error("REGRESSION: a re-projection of another subject was drawn beside the seed's rail or card: " + at());
+  await flush();
+  await seed("combat.rs::fire");
+  renderReprojection({ subject: "combat.rs::fire", clusters: [], edges: [], total: 0 });
+  if (at() !== both)
+    throw new Error("REGRESSION: a re-projection of the seed was drawn without the seed's rail or card: " + at());
+  await flush();
+
+  const answered = __view;
+  let failing = false;
+  __view = function(url){ if (failing) throw new Error("unreadable"); return answered(url); };
+  const unreadable = [
+    ["the neighborhood", () => seedGraph("combat.rs")],
+    ["the path", () => { kgSeed = "combat.rs::fire"; return pathTo("combat.rs"); }],
+    ["the files-lens drill", () => { kgLens = "files"; return drillCluster("combat.rs"); }],
+    ["the call walk", () => seedCalls("combat.rs::fire", "down")],
+    ["the re-projection", () => reprojectSubject("combat.rs::fire")],
+    ["the overview", () => loadKgOverview()]
+  ];
+  for (const [name, show] of unreadable) {
+    failing = false;
+    await seed("combat.rs::fire");
+    failing = true;
+    await show();
+    if (at() !== neither)
+      throw new Error("REGRESSION: " + name + ", unreadable, showed its message beside the last subject's panes: " + at());
+    await flush();
+    if (!el("kgcard").hidden || !el("kgrail").hidden)
+      throw new Error("REGRESSION: a pane opened over the message of " + name);
+  }
+
+  console.log("OK each-view-sets-both-panes-for-its-own-subject");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
