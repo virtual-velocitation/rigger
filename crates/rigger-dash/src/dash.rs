@@ -6039,49 +6039,43 @@ mod tests {
         );
     }
 
-    /// GIVEN the served page, WHEN a view draws the panel's control rows above its content (the
-    /// toolbar with the back link and the lens controls; in a neighbourhood the heading, the
-    /// directed-call links and the tier checkboxes) and the memory rail or the metadata card docks
-    /// over the panel, THEN each docks against the bottom edge of the last of those rows, so a
-    /// wrapped row pushes it down and neither covers a panel control; neither takes the rows as
-    /// its default anchor, so scrolling the panel never carries either up over the header. Layout
-    /// is outside what the page harness can run, so this pins the anchoring each declares.
+    /// GIVEN the served page, WHEN the memory rail or the metadata card docks beside the panel
+    /// (alone or together, at every body width that docks it), THEN the pane's column runs the
+    /// body's whole height: its top and its bottom are its own inset on its side, so it starts at
+    /// the top of the body, leaves no band above it and moves with no control row the panel
+    /// draws. Layout is outside what the page harness can run, so this reads each docked pane's
+    /// top and bottom through the page's own stylesheet.
     #[test]
-    fn the_rail_and_the_card_dock_below_the_panel_toolbar() {
+    fn a_docked_pane_s_column_runs_the_body_s_whole_height() {
         let page = live_page();
-        let markup = explorer_markup(&page);
-        let row_anchors: Vec<(&str, Option<String>)> =
-            ["kgtoolbar", "kgseed", "kgcalls-offer", "kgtiers"]
-                .into_iter()
-                .map(|row| {
-                    (
-                        row,
-                        declared(&rules_of(&page, &Element::of_class(row)), "anchor-name"),
-                    )
-                })
-                .collect();
-        let anchor = row_anchors[0]
-            .1
-            .clone()
-            .expect("the panel toolbar names itself as an anchor");
-        assert!(
-            row_anchors
-                .iter()
-                .all(|(_, name)| name.as_deref() == Some(anchor.as_str())),
-            "every control row above the panel's content names the one anchor: {row_anchors:?}"
-        );
-        for docked in ["kgrail", "kgcard"] {
-            let rules = rules_of(&page, &markup[explorer_index(&markup, docked)]);
-            let top = declared(&rules, "top").unwrap_or_default();
-            assert!(
-                top.contains(&format!("anchor({anchor} bottom")),
-                "#{docked} docks its top against the toolbar's bottom ({anchor}), not at {top:?}"
-            );
-            assert!(
-                declared(&rules, "position-anchor").is_none(),
-                "#{docked} does not follow the panel's scroll: {rules:?}"
-            );
+        let style = ExplorerStyle::read(&page);
+        let mut docked = 0;
+        for width in 280..=1400 {
+            let width = f64::from(width);
+            for (rail, card) in [(true, false), (false, true), (true, true)] {
+                let layout = style.layout(rail, card, width);
+                for (pane, side) in [("kgrail", "right"), ("kgcard", "left")] {
+                    if !matches!(layout.pane(pane, side), Some(Some(_))) {
+                        continue;
+                    }
+                    docked += 1;
+                    let at = layout.index(pane);
+                    let inset = |property: &str| {
+                        layout
+                            .value(at, property)
+                            .map(|value| layout.length(at, &value))
+                    };
+                    let edge = inset(side).unwrap_or(0.0);
+                    assert_eq!(
+                        (inset("top"), inset("bottom")),
+                        (Some(edge), Some(edge)),
+                        "a docked #{pane} in a {width}px body starts at the body's top and ends \
+                         at its bottom, inset as on its {side}"
+                    );
+                }
+            }
         }
+        assert!(docked > 0, "some body width docks a pane");
     }
 
     /// GIVEN the served page, WHEN the metadata card carries more rows than the explorer's body
