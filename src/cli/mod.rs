@@ -10045,6 +10045,21 @@ mod tests {
         );
     }
 
+    /// Spec 05, criterion 4 and spec 121, criterion 14: `rigger setup` reports an install step's
+    /// outcome as a change only when the step installed or refreshed its file; an already-current
+    /// file and a project copy installed in place of a skill are states it reports nothing for.
+    #[test]
+    fn an_install_outcome_is_a_change_only_when_it_installs_or_refreshes() {
+        for (outcome, change) in [
+            (InstallOutcome::Installed, true),
+            (InstallOutcome::Refreshed, true),
+            (InstallOutcome::AlreadyCurrent, false),
+            (InstallOutcome::ProjectCopy, false),
+        ] {
+            assert_eq!(outcome.is_change(), change, "{outcome:?} is a change");
+        }
+    }
+
     /// The bytes a project copy under `.rigger/skills/` holds in the shadow tests below: no
     /// overlay fact, no stamped prohibition, and one byte that is not UTF-8, so only a verbatim
     /// byte copy installs them.
