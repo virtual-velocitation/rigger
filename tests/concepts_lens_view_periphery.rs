@@ -599,11 +599,12 @@ fn every_spelling_of_grain_one_reads_the_derived_concept_grain() {
     assert_each_spelling_of_one_reads_grain_one(&lens_graph(), "concepts", C0, C0);
 }
 
-/// A `resolution=` that names no grain empties the served concepts overview and re-projection with
-/// the one sentence saying so, never the underived prompt to run a command that cannot change it.
+/// A `resolution=` that names no grain empties the served concepts overview, drill and re-projection
+/// with the one sentence saying so, never the underived prompt to run a command that cannot change
+/// it.
 #[test]
 fn a_resolution_that_is_not_a_grain_is_said_to_be_none() {
-    assert_not_a_grain_is_said(&lens_graph(), "concepts", C0);
+    assert_not_a_grain_is_said(&lens_graph(), "concepts", C0, C0);
 }
 
 // ---------------------------------------------------------------------------------------------------

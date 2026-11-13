@@ -144,21 +144,28 @@ pub fn not_a_grain(raw: &str) -> String {
     format!("resolution \"{raw}\" is not a grain - a grain is a positive, finite number such as 1 or 1.5")
 }
 
-/// Lens `name` at each `resolution=` of [`NOT_A_GRAIN`] answers 200 with an empty overview and an
-/// empty re-projection of `subject`, each saying the text is not a grain and what a grain is, never
-/// a command to run.
-pub fn assert_not_a_grain_is_said(graph: &Graph, name: &str, subject: &str) {
+/// Lens `name` at each `resolution=` of [`NOT_A_GRAIN`] answers 200 with an empty overview, an
+/// empty drill of `cluster` and an empty re-projection of `subject`, each saying the text is not a
+/// grain and what a grain is, never a command to run.
+pub fn assert_not_a_grain_is_said(graph: &Graph, name: &str, cluster: &str, subject: &str) {
     for raw in NOT_A_GRAIN {
         let at = format!("/api/graph?lens={name}&resolution={raw}");
-        for view in [
-            at.clone(),
-            format!("{at}&seed={}", subject.replace('/', "%2F")),
+        for (view, drawn) in [
+            (at.clone(), "clusters"),
+            (
+                format!("{at}&cluster={}", cluster.replace('/', "%2F")),
+                "nodes",
+            ),
+            (
+                format!("{at}&seed={}", subject.replace('/', "%2F")),
+                "clusters",
+            ),
         ] {
             let body = served_json(graph, &view);
             assert!(
-                body["clusters"].as_array().is_some_and(Vec::is_empty)
+                body[drawn].as_array().is_some_and(Vec::is_empty)
                     && body["edges"].as_array().is_some_and(Vec::is_empty),
-                "{view} folds nothing at a text that is not a grain: {body}"
+                "{view} draws nothing at a text that is not a grain: {body}"
             );
             assert_eq!(
                 body["empty_state"].as_str(),
