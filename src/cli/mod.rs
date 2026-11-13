@@ -1482,6 +1482,15 @@ impl Site {
         Self::of(Path::new(""))
     }
 
+    /// A site at the same directory that has not yet asked where its repository lies.
+    fn anew(&self) -> Self {
+        Self {
+            dir: self.dir.clone(),
+            unread: self.unread.clone(),
+            repository: std::sync::OnceLock::new(),
+        }
+    }
+
     /// The site's directory, which a rule that finds a store from it needs read: an error naming
     /// why for a site at a cwd that cannot be read.
     fn located(&self) -> Result<&Path, String> {
@@ -1885,25 +1894,54 @@ fn owning_graph_to_read(site: &Site) -> Result<Projector, Box<dyn std::error::Er
     open_graph_to_read(&loc.file("graph.db"), &loc.identity_in(site)?)
 }
 
+/// The site a reader that answers many opens (the MCP session, a run) reads each open through:
+/// its own site, whose one discovery serves the first open as it serves the rules that found the
+/// reader's store, then a site at the same directory that asks anew for each later open, so the
+/// reader holds no discovery between opens.
+pub(crate) struct SiteOpens<S> {
+    site: S,
+    served: std::sync::atomic::AtomicBool,
+}
+
+impl<S: std::borrow::Borrow<Site>> SiteOpens<S> {
+    pub(crate) fn new(site: S) -> Self {
+        Self {
+            site,
+            served: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The reader's own site.
+    fn site(&self) -> &Site {
+        self.site.borrow()
+    }
+
+    /// `open` run over the site this open reads ([`SiteOpens`]).
+    pub(crate) fn open<T>(&self, open: impl FnOnce(&Site) -> T) -> T {
+        if self.served.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            open(&self.site().anew())
+        } else {
+            open(self.site())
+        }
+    }
+}
+
 /// The context graph a reader reads (7.3): the record graph `records` composed with the code
 /// view of the operator checkout's head, compared with the caller's worktree, the tree its `site`
 /// lies in. A reader in a unit worktree reads the operator checkout's store, which owns
-/// `.rigger/`. The reader asks where the repository lies once, through its site, however many
-/// answers it opens.
+/// `.rigger/`. Each open asks where the repository lies once ([`SiteOpens`]).
 pub(crate) struct ReadGraph<'r> {
     records: &'r Projector,
-    site: &'r Site,
-    worktree: PathBuf,
+    opens: SiteOpens<&'r Site>,
 }
 
 impl<'r> ReadGraph<'r> {
     /// The reader at `site`, comparing with the tree it lies in ([`Site::tree`]).
     pub(crate) fn new(records: &'r Projector, site: &'r Site) -> Result<Self, String> {
-        let worktree = site.tree()?;
+        site.tree()?;
         Ok(Self {
             records,
-            site,
-            worktree,
+            opens: SiteOpens::new(site),
         })
     }
 }
@@ -1922,12 +1960,12 @@ impl ReadGraph<'_> {
 
 impl OpenGraph for ReadGraph<'_> {
     fn head(&self) -> Result<rigger_domain::code_view::Head, String> {
-        self.head_in(&self.worktree)
+        self.opens.open(|site| open_head(site, &site.tree()?))
     }
 
     fn head_in(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
-        if worktree == self.worktree {
-            return open_head(self.site, worktree);
+        if worktree == self.opens.site().tree()? {
+            return self.head();
         }
         open_head(&Site::of(worktree), worktree)
     }
@@ -5492,7 +5530,7 @@ fn spec_lint_next_step(spec_path: &str) -> String {
 /// authority that PROVES the accepted-name contract (the exact `symbols`/`grep`/`nop` set
 /// and the loud migration error for the retired `turbovec` / `hybrid` names).
 fn select_grounder(
-    site: &Site,
+    site: Site,
     name: &str,
 ) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
@@ -5509,7 +5547,7 @@ fn select_grounder(
             return Ok(Box::new(
                 rigger::grounder::symbols::grounder::Symbols::over(
                     &worktree,
-                    Box::new(project_code_store(site)?),
+                    Box::new(SiteOpens::new(site)),
                 ),
             ));
         }
@@ -5525,7 +5563,7 @@ fn configured_grounder() -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>
     let name = config_store::load(&site.tree()?.to_string_lossy())
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    select_grounder(&site, &name)
+    select_grounder(site, &name)
 }
 
 fn git_repo() -> Result<String, String> {
@@ -5580,7 +5618,6 @@ mod tests {
     /// an open after the directory it stands in became a repository reads that repository's head.
     #[test]
     fn a_reader_asks_where_its_repository_lies_anew_for_each_later_open() {
-        use rigger_domain::code_view::CodeView;
         let records = Projector::open(":memory:", "test").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let site = Site::of(dir.path());

@@ -723,6 +723,15 @@ pub(crate) fn project_code_store(site: &Site) -> Result<rigger::code_store::Code
     })
 }
 
+/// A grounder's heads: the code store of the project its site lies in, found for each open
+/// through the site that open reads ([`SiteOpens`]).
+#[cfg(feature = "symbols")]
+impl rigger_domain::code_view::OpenCodeView for SiteOpens<Site> {
+    fn head(&self, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
+        self.open(|site| project_code_store(site)?.head(worktree))
+    }
+}
+
 /// The code store the conductor advances after each merge a run at `site` lands; `site` is the
 /// operator checkout's, since a run refuses a linked worktree. None for a project with no
 /// repository, where no merge lands, and in a build with no extractor; an error when git refuses

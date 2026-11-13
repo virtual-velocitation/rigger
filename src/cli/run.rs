@@ -969,9 +969,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // records results on, so the graph folds them as it folds the host's.
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
-    // and its site the one every read the run makes discovers its repository through.
+    // and its site the one the run's reads find their repository from, anew for each open.
     let site = Site::of(Path::new(&repo));
-    let grounder = select_grounder(&site, &cfg.workflow.defaults.grounder)?;
+    let grounder = select_grounder(site.anew(), &cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
     let code_store = run_code_store(&site)?;
     // The grounding reads compare with the operator checkout the run lands its merges on, named
