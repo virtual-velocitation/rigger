@@ -500,8 +500,9 @@ layout:
 | a clone of format 0 naming an extension git ignores there | its top | its top |
 | a checkout whose `.git` directory names a common directory | the top that common directory is the `.git` of | that top |
 
-Every command that writes the store (`graph build`, `canary`, `playbooks --rebuild`, `setup`)
-resolves it from `root` too. Run at `root`, it writes `root`'s `.rigger/`, created when absent:
+Every command that writes the store (`run`, `critique`, `graph build`, `canary`,
+`playbooks --rebuild`, `setup`) resolves it from `root` too; `run` and `critique` refuse anywhere
+but `root` before they open it. Run at `root`, it writes `root`'s `.rigger/`, created when absent:
 the one place a store is made. Run from a subdirectory or a linked worktree, it writes the
 `.rigger/` at `root` that `rigger init` or `rigger setup` made there, and where `root` holds none
 it refuses, naming `root` and `rigger setup` as what makes one. No command leaves a store file in
@@ -514,6 +515,16 @@ advisories of `validate`) reads `root`'s `.rigger/` from a subdirectory or a lin
 answering as it answers at `root`. Below a `root` that holds no `.rigger/` it refuses in the
 writers' one sentence; a command that answers without a store (`prime`, `status --line`,
 `validate`) reads that as no store yet.
+
+Configuration is found by the same rule. `run`, `critique`, `canary` and the grep guard read the
+definition of the project governing the caller under `root`: the nearest directory holding a
+workflow definition, from the caller's position mapped under `root` up to `root`. `validate` and
+`docs` judge and render the project governing the caller in its own worktree, where an edit to it
+is made before it lands. The docs pre-commit block asks git for `root`, the directory the run's
+build caches lie under: the main worktree `git worktree list` names, or the caller's own top where
+that entry is bare or names the common directory itself. Every command finds its store, its
+configuration and `root` through the one resolver, which reads the directory the command runs in
+once; the suite fails on any other reading of that directory.
 
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
