@@ -237,24 +237,26 @@ stages:
   #    a per-unit review cannot see: ambiguous mitigation OWNERSHIP (rule 7 - one demanded
   #    fix owned by two units with no exclusion named) and open DISPOSITIONS (rule 8 - a
   #    criterion a reviewer can re-litigate). A shared blast radius is NOT one of them: it
-  #    is surfaced as INFORMATIONAL context only, because `partition: by-blast-radius`
-  #    never runs two overlapping units at the same time and worktree
-  #    isolation keeps every reviewer on its own diff, so overlap integrates cleanly (see
-  #    handbook rule 6). A reject feeds back to the planner (bounded by max_retries); only
-  #    an approve RELEASES the fan-out. It is review-only (no `agent`) - it critiques the
-  #    plan, it does not implement - and it needs `plan`, so the conductor runs it between
-  #    planning and the fan-out. The informational blast-radius context excludes
-  #    already-integrated and terminal units (`dag_unit_blast_radii`), so a settled unit
-  #    is never presented as a live overlap the planner cannot resolve. Owns: pre-fan-out
-  #    decomposition review. Per-unit review is untouched.
+  #    is surfaced as INFORMATIONAL context only. This workflow declares no partition, so
+  #    overlapping units run side by side up to the width bound unless one `needs` the
+  #    other, and worktree isolation keeps every reviewer on its own diff. A reject feeds
+  #    back to the planner (bounded by max_retries); only an approve RELEASES the fan-out.
+  #    It is review-only (no `agent`) - it critiques the plan, it does not implement - and
+  #    it needs `plan`, so the conductor runs it between planning and the fan-out. The
+  #    informational blast-radius context excludes already-integrated and terminal units
+  #    (`dag_unit_blast_radii`), so a settled unit is never presented as a live overlap the
+  #    planner cannot resolve. Owns: pre-fan-out decomposition review. Per-unit review is
+  #    untouched.
   plan-critique:
     needs: [plan]
     adversary: adversary        # tier 2: reviews the DAG and refutes it
     adjudicator: adjudicator    # tier 3: its approve/reject gates the fan-out
 
   # 2. Implement, review, and integrate PER UNIT. One Rust implementer per ready
-  #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
-  #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
+  #    unit, each in an isolated worktree. Units run side by side up to
+  #    `defaults.max_parallel_units`, and a blast-radius overlap is not serialized: every
+  #    pair of this repo's unit radii overlaps, so `partition: by-blast-radius` would run
+  #    every unit alone. Each unit's complete lifecycle runs inside this one stage:
   #    red -> green is enforced around the change, the full gate set
   #    (fmt + clippy with and without the default features + build + test + the core lane +
   #    style) must pass, THEN
@@ -267,7 +269,6 @@ stages:
     needs: [plan-critique]
     agent: rust-engineer
     strategy: fan-out
-    partition: by-blast-radius
     gates: [fmt, clippy, clippy-no-default, build, test, lane-core, style, no-os-kill, boundary,
              red-before-green]
     on_pass: merge
