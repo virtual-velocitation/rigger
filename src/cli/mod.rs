@@ -1416,6 +1416,13 @@ fn instruction_layer_root(site: &Site) -> Result<PathBuf, String> {
     project_under(site, site.project_root()?)
 }
 
+/// The project governing `site` in its own worktree ([`project_under`] [`Site::tree`]): from a
+/// subdirectory the project above it, from a linked worktree the worktree's own, where an edit to
+/// the project's committed files is made before it lands.
+fn project_in_tree(site: &Site) -> Result<PathBuf, String> {
+    project_under(site, site.tree()?)
+}
+
 /// The project governing `site` under `root`: the nearest directory holding a workflow definition
 /// ([`WORKFLOW_FILE`]), walking from the site's position mapped under `root` ([`worktree_prefix`])
 /// up to `root`, else `root`. The one rule a project is found by, whichever tree `root` tops.

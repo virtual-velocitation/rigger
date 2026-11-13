@@ -149,11 +149,10 @@ fn read_order_signatures(
 
 pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // The configuration judged is the project governing the caller in its own worktree
-    // ([`project_under`] [`Site::tree`]): from a subdirectory that project, from a linked worktree
-    // the worktree's own, where an edit to the configuration is made before it lands. The run
+    // ([`project_in_tree`]), where an edit to the configuration is made before it lands. The run
     // store every advisory below reads is the one every reader reads ([`store_to_read_in`]).
     let site = Site::here();
-    let project = project_under(&site, site.tree()?)?;
+    let project = project_in_tree(&site)?;
     let root = project.as_path();
     // Optional `<spec>` path (spec 18, Unit 4; spec 66, unit c3): emit heuristic spec-lint
     // advisories - shape (multi-behavior / sub-bullet-as-unit / over-long), ownership
@@ -927,15 +926,21 @@ const DOCS_USAGE_EXIT_CODE: i32 = 2;
 /// `fresh <path>` or `drifted <path>` for each output on disk ([`docs_freshness`]) and exits
 /// 1 when any drifted - the check the docs pre-commit hook runs. Any other argument is
 /// refused with [`DOCS_USAGE_EXIT_CODE`] before anything is rendered.
+///
+/// Both answer for the project governing the caller in its own worktree ([`project_in_tree`]), so
+/// from a subdirectory they render and check that project's outputs as at its root, and each
+/// output is named relative to that root.
 pub(crate) fn cmd_docs(args: &[String]) -> Res {
     match args {
         [] => {
-            for path in write_docs(Path::new("."))? {
-                println!("rendered {}", path.display());
+            let root = project_in_tree(&Site::here())?;
+            for path in write_docs(&root)? {
+                let rel = path.strip_prefix(&root).unwrap_or(&path);
+                println!("rendered ./{}", rel.display());
             }
             Ok(())
         }
-        [flag] if flag == "--check" => check_docs(Path::new(".")),
+        [flag] if flag == "--check" => check_docs(&project_in_tree(&Site::here())?),
         _ => {
             eprintln!(
                 "rigger: docs does not take {}; {DOCS_USAGE}",
