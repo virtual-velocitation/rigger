@@ -6576,14 +6576,59 @@ mod tests {
         );
     }
 
+    /// GIVEN the served page, WHEN the explorer draws, THEN no rule that may select the drawing's
+    /// svg (`<svg class="kgsvg">`, which the page's script writes into the panel) gives it a border
+    /// or padding, so its box is the drawing's surface: `kgDims` draws at that box's width, the
+    /// drawing is seen at a scale of 1, and the page harnesses' DOM shims hold the svg's box as
+    /// its surface. A rule may select it unless its last compound names another id, class or tag,
+    /// or a pseudo-element.
+    #[test]
+    fn the_drawing_svg_takes_no_border_or_padding() {
+        let page = live_page();
+        let may_select = |simple: &str| match simple {
+            s if s.starts_with('#') || s.starts_with("::") => false,
+            s if s.starts_with('.') => s == ".kgsvg",
+            s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => s == "svg",
+            _ => true,
+        };
+        let mut styled = 0;
+        for rule in style_rules(&page) {
+            let selects = rule.selectors.iter().any(|selector| {
+                compounds(selector)
+                    .last()
+                    .is_some_and(|(_, last)| simples(last).into_iter().all(may_select))
+            });
+            if !selects {
+                continue;
+            }
+            styled += 1;
+            for side in ["top", "right", "bottom", "left"] {
+                for property in [format!("border-{side}-width"), format!("padding-{side}")] {
+                    for (name, value) in &rule.declarations {
+                        if let Some(set) = longhand(name, value, &property) {
+                            assert!(
+                                matches!(set.as_str(), "0" | "0px"),
+                                "{:?} gives the drawing's svg {property} {set}, so its box is \
+                                 larger than the surface the drawing shows on",
+                                rule.text
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(styled > 0, "some rule styles the drawing's svg");
+    }
+
     /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
-    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps at least
-    /// the width `kgDims` draws at: shown panes dock beside the panel (absolutely positioned, each
-    /// taking exactly its own column and inset from the panel's margin on its side) wherever
-    /// their columns leave the panel that width, and everywhere else every shown pane stacks above
-    /// the panel at the body's full width and the panel reserves no margin. Layout is outside what
-    /// the page harness can run, so this lays the explorer out by the page's own stylesheet
-    /// (selectors, cascade, container queries and lengths) at each width from 280px to 1400px.
+    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps its
+    /// content box, the drawing's surface, at least the width `kgDims` draws at: shown panes dock
+    /// beside the panel (absolutely positioned, each taking exactly its own column and inset from
+    /// the panel's margin on its side) wherever their columns leave the panel's content box that
+    /// width, and everywhere else every shown pane stacks above the panel at the body's full width
+    /// and the panel reserves no margin. Layout is outside what the page harness can run, so this
+    /// lays the explorer out by the page's own stylesheet (selectors, cascade, container queries
+    /// and lengths) at each width from 280px to 1400px.
     #[test]
     fn the_panel_keeps_the_drawing_width_beside_the_rail_and_the_card() {
         let page = live_page();
@@ -6619,7 +6664,10 @@ mod tests {
             for (shown, rail, card) in PANE_STATES {
                 let layout = style.layout(rail, card, width);
                 let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
-                let room = width - left - right;
+                // The panel's content box, the drawing's surface: its width less its margins, and
+                // its own border and padding on each side.
+                let edges = layout.edge(panel, "left") + layout.edge(panel, "right");
+                let surface = width - left - right - edges;
                 let mut docked = Vec::new();
                 for (pane, side, margin) in [("kgcard", "left", left), ("kgrail", "right", right)] {
                     match layout.pane(pane, side) {
@@ -6650,15 +6698,15 @@ mod tests {
                 );
                 if docked.first() == Some(&true) {
                     assert!(
-                        room >= drawn,
-                        "with {shown} shown in a {width}px body the panel keeps {room}px, less \
-                         than the {drawn}px kgDims draws at"
+                        surface >= drawn,
+                        "with {shown} shown in a {width}px body the panel's content box keeps \
+                         {surface}px, less than the {drawn}px kgDims draws at"
                     );
                 }
-                laid_out.push((shown, rail, card, width, docked.first().copied()));
+                laid_out.push((shown, rail, card, width, edges, docked.first().copied()));
             }
         }
-        for (shown, rail, card, width, docked) in laid_out {
+        for (shown, rail, card, width, edges, docked) in laid_out {
             let Some(docked) = docked else { continue };
             let column = |pane: &str, on: bool| {
                 if on {
@@ -6669,12 +6717,12 @@ mod tests {
                     0.0
                 }
             };
-            let needs = drawn + column("kgrail", rail) + column("kgcard", card);
+            let needs = drawn + edges + column("kgrail", rail) + column("kgcard", card);
             assert_eq!(
                 docked,
                 width >= needs,
                 "with {shown} shown in a {width}px body the panes dock exactly where their \
-                 columns leave the panel {drawn}px (from {needs}px)"
+                 columns leave the panel's content box {drawn}px (from {needs}px)"
             );
         }
     }

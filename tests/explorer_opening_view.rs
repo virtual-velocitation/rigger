@@ -17,6 +17,10 @@
 //! keeping its transform and its marks while only its drawing surface takes the new size. One size
 //! observer drives it, redrawing at most once a frame and only when the measured size changed.
 //!
+//! Every drawing is made at its surface's own size (the svg's box, which takes no border and no
+//! padding), so it is seen at a scale of 1 on both axes: an opened view shows at its fit, and a moved
+//! view's nodes keep their places on screen through a resize.
+//!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
 //! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
 //! browser lays them out at each viewport width) and records the transform the page applies to
@@ -203,6 +207,24 @@ function __view(what){
   if (!m) throw new Error(what + " applied no opening transform: " + t);
   return { x: Number(m[1]), y: Number(m[2]), k: Number(m[3]) };
 }
+// The scale the drawing is seen at on each axis: its svg's box, which is the drawing's surface (the
+// stylesheet gives the svg no border and no padding), over the viewBox the drawing was made at.
+function __seenAt(what){
+  const d = __svgBox(what), r = el("kgpanel")._svg.getBoundingClientRect();
+  return { x: r.width / d.W, y: r.height / d.H };
+}
+// Where each node the drawing holds shows on screen, relative to the top-left corner of its surface:
+// the viewBox shows in the svg's box at the larger scale that fits it whole, centred on the axis it
+// leaves room on (preserveAspectRatio xMidYMid meet), under the transform on #kgzoom.
+function __onSurface(what){
+  const d = __svgBox(what), t = __view(what), seen = __seenAt(what), s = Math.min(seen.x, seen.y);
+  const r = el("kgpanel")._svg.getBoundingClientRect(), ox = (r.width - d.W * s) / 2, oy = (r.height - d.H * s) / 2;
+  const re = /<g class="kgn [^"]*"[^>]* transform="translate\(([-\d.]+),([-\d.]+)\)"/g, marks = __marks(), at = [];
+  let m;
+  while ((m = re.exec(marks)) !== null) at.push([ox + s * (t.x + t.k * Number(m[1])), oy + s * (t.y + t.k * Number(m[2]))]);
+  if (!at.length) throw new Error(what + " holds no node to place on screen");
+  return at;
+}
 // One wheel notch over the middle of the drawing (a negative deltaY zooms in); answers the scale.
 function __wheel(deltaY){
   const svg = el("kgpanel")._svg, r = svg.getBoundingClientRect(), on = svg._listeners.wheel || [];
@@ -235,8 +257,9 @@ const HARNESS_FILE: &str = "dash-opening-view-harness.js";
 
 /// Driver, in the panel `__PANEL__` names: the files overview the page loads, the code and concepts
 /// overviews a lens tab opens, the files overview a lens tab redraws after a zoom, and the subject's
-/// re-projection under each lens each open with every drawn box inside the panel at a scale of at
-/// most 1; on each overview the wheel zooms in and back from the opening scale, and out no further
+/// re-projection under each lens are each drawn at their surface's own size, so seen at a scale of 1
+/// on both axes, and open with every drawn box inside the panel at a scale of at most 1; on each
+/// overview the wheel zooms in and back from the opening scale, and out no further
 /// than it or 0.2, whichever is less; and the redrawn overview opens where the first one did.
 const OPENING_DRIVER: &str = r##"
 ;(async function(){
@@ -268,6 +291,10 @@ const OPENING_DRIVER: &str = r##"
     const d = drawn(what);
     if (d.nodes !== body.clusters.length || d.hulls !== hulls)
       throw new Error(what + " drew " + d.nodes + " clusters and " + d.hulls + " hulls, not " + body.clusters.length + " and " + hulls);
+    const seen = __seenAt(what);
+    if (seen.x !== 1 || seen.y !== 1)
+      throw new Error("REGRESSION: " + what + " is drawn at " + d.W + "x" + d.H + " and seen at " + JSON.stringify(seen)
+        + " on its surface, not at 1");
     const t = __view(what);
     if (!(t.k > 0 && t.k <= 1)) throw new Error("REGRESSION: " + what + " opens at scale " + t.k + ", never past 1");
     const out = d.boxes.filter(function(o){ const b = o.b;
@@ -454,10 +481,10 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// Driver: an overview the user has panned keeps its transform and its marks through a resize from
-/// a 1400px viewport to 800px and back, and through a change of its width alone and of its height
-/// alone and back, with no new request: only its drawing surface takes each new size, and its labels
-/// follow the scale it is then seen at. A panned call walk does the same. A
+/// Driver: an overview the user has panned keeps its transform and its marks, each node where it
+/// shows on screen, through a resize from a 1400px viewport to 800px and back, and through a change
+/// of its width alone and of its height alone and back, with no new request: only its drawing
+/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call walk does the same. A
 /// fresh view after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px
 /// keeps its zoom through a resize to 1400px, where the fitted scale is larger, and the wheel zooms on
 /// from the kept scale, in and back, never jumping above it.
@@ -473,10 +500,12 @@ const MOVED_RESIZE_DRIVER: &str = r##"
   };
   const near = function(a, b){ return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)); };
   // A moved view, once the panel is resized to the row p and the frame has run: its transform as t
-  // was, its marks as they were, its surface filling the room the panel leaves; on a force view, the
-  // labels chosen at the scale the surface is now seen at. Answers the drawing.
+  // was, its marks as they were and each node where it showed on screen, relative to the surface's
+  // top-left corner; its surface filling the room the panel leaves; on a force view, the labels
+  // chosen at the scale the surface is now seen at. Answers the drawing.
   function keptThrough(p, what, mode, t, marks){
     labelScale = null;
+    const shown = __onSurface(at + "the " + what + " before the resize");
     __resize(p);
     __frame();
     const d = __fillsItsRoom(at, what, mode);
@@ -487,7 +516,12 @@ const MOVED_RESIZE_DRIVER: &str = r##"
       throw new Error("REGRESSION: " + at + "the " + what + " must keep its transform, " + now + " against " + t);
     if (__marks() !== marks)
       throw new Error("REGRESSION: " + at + "the " + what + " must keep its marks where they were, not draw them again");
-    const seen = (__geom.width - 24) / d.W * JSON.parse(t).k;
+    const moved = __onSurface(at + "the " + what).map(function(q, i){ return [q[0] - shown[i][0], q[1] - shown[i][1]]; })
+      .filter(function(dv){ return Math.abs(dv[0]) > 1e-6 || Math.abs(dv[1]) > 1e-6; });
+    if (moved.length)
+      throw new Error("REGRESSION: " + at + "the " + what + " must keep its marks where they are on screen, but " + moved.length
+        + " of " + shown.length + " nodes moved, the first by " + moved[0].map(function(v){ return v.toFixed(1); }).join(", "));
+    const seen = __seenAt(at + "the " + what).x * JSON.parse(t).k;
     if (mode !== "calls" && !(labelScale !== null && near(labelScale, seen)))
       throw new Error("REGRESSION: " + at + "the " + what + " must show the labels for the scale it is now seen at, "
         + seen + ", not " + labelScale);
