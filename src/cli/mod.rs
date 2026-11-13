@@ -1034,7 +1034,7 @@ fn definition_hash(
     push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
     // Every agent definition, folded in sorted-filename order so the hash is independent of
     // directory iteration order.
-    let agents_dir = base.join("agents");
+    let agents_dir = project_agents_dir(Path::new(dir));
     let mut agents: Vec<(String, String)> = Vec::new();
     for entry in std::fs::read_dir(&agents_dir)
         .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
@@ -4608,6 +4608,13 @@ fn owning_repo_root(cwd: &Path) -> Result<String, String> {
 /// `entry` under the project's `.rigger/` directory: `<root>/.rigger/<entry>`.
 fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join(entry)
+}
+
+/// The project's agent directory, `<root>/.rigger/agents/`: where `rigger init` seeds its
+/// starter agents, `rigger setup --agents` imports a fleet, and a run's definition hash reads
+/// every agent definition.
+fn project_agents_dir(root: &Path) -> std::path::PathBuf {
+    rigger_path(root, "agents")
 }
 
 /// What an install step did to a file it manages under the project root (a registry skill, the docs pre-commit hook, or an `.mcp.json` or

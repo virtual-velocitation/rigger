@@ -152,8 +152,7 @@ fn init_project(
 
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
-    let agents_dir = rigger_dir.join("agents");
-    std::fs::create_dir_all(&agents_dir)?;
+    std::fs::create_dir_all(&rigger_dir)?;
     let wrote_workflow = write_if_absent(
         &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
@@ -272,8 +271,9 @@ fn init_project(
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
 /// references (every candidate when the workflow at `root` is absent or names no agent),
-/// returning the file names it newly wrote. An existing file is kept silently
-/// ([`write_if_absent`]), so a rerun writes nothing new and an operator's curated agent stays.
+/// returning the file names it newly wrote. It creates `.rigger/agents/` when absent. An
+/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
+/// operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
@@ -304,7 +304,8 @@ fn write_seed_agents(
     // candidate for backward compatibility (empty repo case) - reached when
     // `get_referenced_agent_ids` returned the empty set because workflow.yml is genuinely
     // ABSENT or names no agent, never because a present one failed to parse.
-    let agents_dir = root.join(RIGGER_DIR).join("agents");
+    let agents_dir = project_agents_dir(root);
+    std::fs::create_dir_all(&agents_dir)?;
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
         let referenced = referenced_agents.is_empty()
@@ -1556,7 +1557,7 @@ struct ImportSummary {
 /// being written and breaking a later load. Rooted at `root` so it is testable against
 /// a temp dir.
 fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::error::Error>> {
-    let dest = root.join(RIGGER_DIR).join("agents");
+    let dest = project_agents_dir(root);
     std::fs::create_dir_all(&dest)?;
 
     // Collect the source `.md` files, SURFACING (never silently dropping) any directory
@@ -2559,7 +2560,7 @@ mod tests {
     fn load_scaffold(set: Option<&SetSpec>, workflow: &str) -> config::Config {
         let dir = tempfile::tempdir().unwrap();
         let rigger = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(rigger.join("agents")).unwrap();
+        std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
         write_seed_agents(dir.path(), set).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
