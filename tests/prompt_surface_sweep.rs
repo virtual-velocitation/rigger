@@ -894,9 +894,10 @@ fn prompt_bearing(text: &str) -> bool {
 }
 
 /// Each string literal of `text` of at least [`MIN_CHARS`] characters holding a space, as the
-/// 1-based line it opens on and its decoded value, in source order. Comments hold none.
+/// 1-based line it opens on and its decoded value, in source order. Comments hold none. A CRLF
+/// line break reads as LF, as rustc reads it before lexing.
 fn qualifying_literals(text: &str) -> Vec<Literal> {
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<char> = text.replace("\r\n", "\n").chars().collect();
     tokenize(&chars)
         .into_iter()
         .filter(|token| token.kind == RawKind::Lit)
