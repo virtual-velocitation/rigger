@@ -859,9 +859,9 @@ mod tests {
     /// configuration (`wtc`, `wtc-linked`), a bare repository's linked worktree (`bare-wt`), a
     /// configuration including a file and naming worktrees in a remote (`configured`), a work
     /// tree configured where its `.git` lies (`selfwt`), a `bare` value written quoted beside a
-    /// comment (`quoted`); and what git alone answers: a work tree configured elsewhere
-    /// (`elsewhere`), a `.git` configured bare (`baremain`) and a `bare` value written as a
-    /// number with a unit (`suffixed`).
+    /// comment (`quoted`), a format version written in hex and a `bare` value as a number with a
+    /// unit (`suffixed`); and what git alone answers: a work tree configured elsewhere
+    /// (`elsewhere`) and a `.git` configured bare (`baremain`).
     fn layouts(root: &Path) {
         let main = root.join("main");
         git_ok(
@@ -940,12 +940,20 @@ mod tests {
             init_repo(root.join(repo));
             git_ok(root.join(repo), &["config", key, value.to_str().unwrap()]);
         }
-        for (repo, bare) in [("quoted", "\"false\" ; quoted"), ("suffixed", "0k")] {
+        for (repo, bare, version) in [
+            ("quoted", "\"false\" ; quoted", "0"),
+            ("suffixed", "0k", "0x0"),
+        ] {
             std::fs::create_dir_all(root.join(repo)).unwrap();
             init_repo(root.join(repo));
             let config = root.join(repo).join(".git/config");
             let text = std::fs::read_to_string(&config).unwrap();
-            let text = text.replace("bare = false", &format!("bare = {bare}"));
+            let text = text
+                .replace("bare = false", &format!("bare = {bare}"))
+                .replace(
+                    "repositoryformatversion = 0",
+                    &format!("repositoryformatversion = {version}"),
+                );
             std::fs::write(&config, text).unwrap();
         }
     }
@@ -999,6 +1007,7 @@ mod tests {
             ("selfwt", true, true),
             ("selfwt/d", true, true),
             ("quoted", true, true),
+            ("suffixed", true, true),
             ("main/.git", false, true),
             ("main/.git/refs", false, true),
             ("missing", true, false),
@@ -1007,7 +1016,6 @@ mod tests {
             ("bare.git", false, true),
             ("elsewhere", false, true),
             ("baremain", false, true),
-            ("suffixed", false, true),
         ];
         let asks = [
             Location::Toplevel,
@@ -1236,11 +1244,11 @@ mod tests {
         }
     }
 
-    /// Each row: a configuration value, and how git reads it as a boolean where it reads it in
-    /// a form read here: a value read here is the one git gives, and one it refuses is refused.
+    /// Each row: a configuration value, and how git reads it as a boolean, none where git refuses
+    /// it: a word, or an integer in any base git reads, with any unit, within git's range.
     #[test]
     fn a_boolean_is_read_as_git_reads_it() {
-        let cases: [(Option<&str>, Option<bool>); 12] = [
+        let cases: [(Option<&str>, Option<bool>); 24] = [
             (None, Some(true)),
             (Some(""), Some(false)),
             (Some("TRUE"), Some(true)),
@@ -1249,20 +1257,34 @@ mod tests {
             (Some("0"), Some(false)),
             (Some("-2"), Some(true)),
             (Some("+0"), Some(false)),
-            (Some("0k"), None),
-            (Some("0x1"), None),
-            (Some("010"), None),
+            (Some("0k"), Some(false)),
+            (Some("1K"), Some(true)),
+            (Some("0x1"), Some(true)),
+            (Some("-0x10"), Some(true)),
+            (Some("010"), Some(true)),
+            (Some("08"), None),
+            (Some("0x"), None),
+            (Some("1 k"), None),
+            (Some("2147483647"), Some(true)),
+            (Some("-2147483647"), Some(true)),
+            (Some("2147483648"), None),
+            (Some("-2147483648"), None),
+            (Some("1g"), Some(true)),
+            (Some("2g"), None),
+            (Some("+"), None),
             (Some("maybe"), None),
         ];
         for (value, read) in cases {
             assert_eq!(git_bool(value.map(str::as_bytes)), read, "{value:?}");
-            if let Some(read) = read {
-                let dir = tempfile::tempdir().unwrap();
-                let line = value.map_or("k".to_owned(), |value| format!("k = {value}"));
-                std::fs::write(dir.path().join("config"), format!("[s]\n{line}\n")).unwrap();
-                let git = git_out(dir.path(), &["config", "-f", "config", "--bool", "s.k"]);
-                assert_eq!(git, read.to_string(), "{value:?}");
-            }
+            let dir = tempfile::tempdir().unwrap();
+            let line = value.map_or("k".to_owned(), |value| format!("k = {value}"));
+            std::fs::write(dir.path().join("config"), format!("[s]\n{line}\n")).unwrap();
+            let out = run_git(dir.path(), &["config", "-f", "config", "--bool", "s.k"]);
+            let git = out
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim() == "true");
+            assert_eq!(git, read, "git: {value:?}");
         }
     }
 
