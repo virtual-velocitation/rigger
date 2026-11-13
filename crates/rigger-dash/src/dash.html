@@ -2319,6 +2319,14 @@ function commitGrain(text) {
   loadKgOverview();
 }
 
+// The grain box `res` committed, by its change, by Enter or by leaving it: asked once the event is
+// done, and only while the box is still in the page. A box the panel's markup replaces was not
+// committed by the user: a browser may send it change and focusout as it goes, while it is still in
+// the page, and its draft and focus pass to the box written in its place (kgKeepingFocus).
+function grainCommitted(res) {
+  Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
+}
+
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
 // `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
 // kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
@@ -2708,7 +2716,7 @@ function wireSelectToSeed() {
       return;
     }
     const res = ev.target.closest("[data-lens-res]");
-    if (res) commitGrain(res.value);
+    if (res) grainCommitted(res);
   });
   // The grain being typed is view state: held on the view so a redraw before it is committed writes
   // the box with the draft rather than the grain the view reads.
@@ -2717,17 +2725,14 @@ function wireSelectToSeed() {
     if (res) kgShown.grain = res.value;
   });
   // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
-  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. A box the
-  // panel's markup replaced was not left: a browser may send it focusout as it goes, while it is still
-  // in the page, and its draft and focus pass to the box written in its place (kgKeepingFocus), so it is
-  // asked once that write is done and commits only while still in the page.
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own.
   el("kgpanel").addEventListener("keydown", ev => {
     const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
-    if (res) commitGrain(res.value);
+    if (res) grainCommitted(res);
   });
   el("kgpanel").addEventListener("focusout", ev => {
     const res = ev.target.closest("[data-lens-res]");
-    if (res) Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
+    if (res) grainCommitted(res);
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML

@@ -1720,7 +1720,7 @@ const DEFAULT_GRAIN_DRIVER: &str = r#"
   };
   const emptied = async function(){
     kgLens = "code";
-    const box = { value: "", dataset: {}, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
+    const box = { value: "", dataset: {}, isConnected: true, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
     el("kgpanel")._listeners.change.forEach(function(fn){ fn({ target: box }); });
     await flush();
   };
