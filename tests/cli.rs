@@ -19010,7 +19010,7 @@ fn assert_setup_installs_the_planning_skill_carrying(overlay: &str, list: &str) 
     let committed = repo_text("skills/planning-a-spec/SKILL.md");
     assert_eq!(
         std::fs::read_to_string(root.join(".claude/skills/planning-a-spec/SKILL.md")).unwrap(),
-        committed.replacen("**7. ", &format!("{list}**7. "), 1),
+        common::fixtures::planning_skill_carrying(&committed, list),
         "rigger setup must install the committed planning-a-spec with the overlay's \
          constraints under step 6"
     );

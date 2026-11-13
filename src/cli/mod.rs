@@ -9952,7 +9952,7 @@ mod tests {
         let shipped = registry_entry("planning-a-spec").render(&docs_context());
         assert_eq!(
             std::fs::read_to_string(skill_install_path(root, "planning-a-spec")).unwrap(),
-            shipped.replacen("**7. ", &format!("{list}**7. "), 1),
+            crate::test_support::planning_skill_carrying(&shipped, list),
             "the installed planning-a-spec must carry the overlay's constraints under step 6"
         );
         write_docs(root).expect("write_docs must render every registry entry");
