@@ -24,6 +24,7 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -54,41 +55,10 @@ fn the_served_page_ships_the_collision_separation_pass() {
     );
 }
 
-/// The node harness: prepend a minimal DOM shim (the page runs some top-level wiring on load), then
-/// the served page script, then a driver that exercises the layout over synthetic overviews and
-/// asserts NO collision-body overlap, finite positions, and determinism.
-const SEPARATION_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-// Minimal DOM shim so the page's top-level wiring (el(...).addEventListener, loadKgOverview()) does
-// not throw. Everything is inert; the driver calls the page's PURE layout functions directly.
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
+/// The driver: run after the served page script over an inert DOM (the page runs some top-level
+/// wiring on load), it exercises the layout over synthetic overviews and asserts NO collision-body
+/// overlap, finite positions, and determinism.
+const SEPARATION_DRIVER: &str = r#"
 ;(function(){
   function isFin(p){ return p && isFinite(p.x) && isFinite(p.y); }
   function bodiesOverlap(A, B){
@@ -170,17 +140,12 @@ const DRIVER = String.raw`
 
   console.log("OK separation-no-overlap-at-density");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-separation-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME proof of the done-when: over synthetic overviews at the real densities (60 and 160 nodes
     /// with realistic labels) the served page's own layout (force + separation) yields positions with NO
     /// two collision bodies (circle + label box) intersecting, deterministically across two runs. The
     /// harness also proves the density is genuinely crowded without the pass, so the proof is not vacuous.
-    the_layout_leaves_no_collision_body_overlap_at_density: node_harness_passes(SEPARATION_HARNESS, "OK separation-no-overlap-at-density");
+    the_layout_leaves_no_collision_body_overlap_at_density: node_harness_passes(&vm_harness(&[&DomShim::INERT.render()], SEPARATION_DRIVER, "dash-separation-harness.js"), "OK separation-no-overlap-at-density");
 }

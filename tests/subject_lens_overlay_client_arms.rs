@@ -26,39 +26,17 @@ use crate::common;
 
 use common::served::node_harness_passes;
 
-use crate::vm_harness;
-use vm_harness::vm_harness;
+use crate::vm_harness::{vm_harness, DomShim, Fields};
 
-/// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
-/// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
-/// addEventListener, a stubbed querySelector so bindKgView's lookups resolve without throwing). Kept
-/// free of backticks / `${` so it embeds verbatim inside a `String.raw` template. Each driver appends
-/// its OWN `fetch` + fixtures (they differ: one resolves every view, one FAILS the re-projection).
-const DOM_SHIM: &str = r#"
-const __els = {};
-const __fetched = [];
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-"#;
+/// The DOM every driver in this file runs under (node `vm`, no npm): the element surfaces the client
+/// seam touches (innerHTML, textContent, dataset, .hidden, .className, addEventListener, a stubbed
+/// querySelector so bindKgView's lookups resolve without throwing), and the `__fetched` list each
+/// driver's own `fetch` records its URLs in.
+const DOM: DomShim = DomShim {
+    fields: Fields::Form,
+    fetch_log: true,
+    ..DomShim::PANEL
+};
 
 /// The node `vm` program name this suite's harness runs under.
 const HARNESS_FILE: &str = "dash-client-arm-harness.js";
@@ -225,11 +203,11 @@ rigger::test_cases! {
     /// subject-sticky rule, which the served-page runtime (always flipping the lens WITH a subject) never
     /// drives. Dropping the `else loadKgOverview()` branch reddens it.
     a_lens_flip_with_no_subject_reloads_the_whole_graph_overview:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], NO_SUBJECT_LENS_DRIVER, HARNESS_FILE), "OK no-subject-lens-flip-reloads-overview");
+        node_harness_passes(&vm_harness(&[&DOM.render(), RESOLVING_FETCH], NO_SUBJECT_LENS_DRIVER, HARNESS_FILE), "OK no-subject-lens-flip-reloads-overview");
     /// RUNTIME guard (spec 55 c4, degrade arm): a FAILED live subject-re-projection fetch degrades the panel
     /// to the documented "unavailable" message (the panel-never-throws contract on the NEW re-request path),
     /// the LIVE `catch` neither the served-page test (fetch always resolves) nor the serving-seam test
     /// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
     a_failed_live_reprojection_fetch_degrades_to_a_message:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, REPROJECT_FAILS_FETCH], REPROJECT_FAILURE_DRIVER, HARNESS_FILE), "OK reprojection-fetch-failure-degrades");
+        node_harness_passes(&vm_harness(&[&DOM.render(), REPROJECT_FAILS_FETCH], REPROJECT_FAILURE_DRIVER, HARNESS_FILE), "OK reprojection-fetch-failure-degrades");
 }

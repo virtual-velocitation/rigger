@@ -39,6 +39,7 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -76,41 +77,10 @@ fn the_served_page_ships_the_adaptive_label_declutter() {
     );
 }
 
-/// The node harness: prepend a minimal DOM shim (the page runs some top-level wiring on load), then the
-/// served page script, then a driver that exercises the declutter over a synthetic real-density overview
-/// and asserts the done-when.
-const ADAPTIVE_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-// Minimal DOM shim so the page's top-level wiring (el(...).addEventListener, loadKgOverview()) does not
-// throw. Everything is inert; the driver calls the page's PURE declutter/render functions directly.
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
+/// The driver: run after the served page script over an inert DOM (the page runs some top-level
+/// wiring on load), it exercises the declutter over a synthetic real-density overview and asserts the
+/// done-when.
+const ADAPTIVE_DRIVER: &str = r##"
 ;(function(){
   // A synthetic clustered overview of N nodes, mirroring the real overview: radius scales as
   // 7 + 22*sqrt(count)/sqrt(maxCount) and the label is the cluster key plus its count. One connected
@@ -221,11 +191,6 @@ const DRIVER = String.raw`
 
   console.log("OK adaptive-labels");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-adaptive-labels-harness.js" });
 "##;
 
 rigger::test_cases! {
@@ -233,5 +198,5 @@ rigger::test_cases! {
     /// a non-empty strict subset with pairwise-disjoint label boxes that keeps the most-important node; a
     /// deeper zoom reveals strictly more labels, monotonically; the selection is deterministic; and the
     /// rendered force view carries a hover `<title>` for every node's label.
-    adaptive_labels_declutter_by_importance_and_reveal_on_zoom: node_harness_passes(ADAPTIVE_HARNESS, "OK adaptive-labels");
+    adaptive_labels_declutter_by_importance_and_reveal_on_zoom: node_harness_passes(&vm_harness(&[&DomShim::INERT.render()], ADAPTIVE_DRIVER, "dash-adaptive-labels-harness.js"), "OK adaptive-labels");
 }

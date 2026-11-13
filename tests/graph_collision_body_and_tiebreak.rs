@@ -24,51 +24,20 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_claims;
 
-/// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
-/// (`el(...).addEventListener`, `loadKgOverview()`) does not throw, then the opening of the driver's
-/// `String.raw` template. The served page script and the driver body are spliced in by `run_driver`.
-const HARNESS_HEAD: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
-"##;
-
-/// The tail: close the driver template, then run the shim, the served page, and the driver together in
-/// one sandbox that only exposes `console`, so the driver drives the page's real layout code.
-const HARNESS_TAIL: &str = r##"
-`;
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-collision-harness.js" });
-"##;
+/// A node `vm` program running `driver` after the served page script over an inert DOM, so the page's
+/// top-level wiring (`el(...).addEventListener`, `loadKgOverview()`) does not throw and the driver
+/// drives the page's real layout code.
+fn harness(driver: &str) -> String {
+    vm_harness(
+        &[&DomShim::INERT.render()],
+        driver,
+        "dash-collision-harness.js",
+    )
+}
 
 /// The collision body (`kgNodeBody`, built from `kgLabelDims`) encloses the circle PLUS the label box:
 /// a long label widens the body horizontally beyond the bare circle, the label box hangs BELOW the
@@ -166,7 +135,7 @@ rigger::test_cases! {
     /// the padded circle. Guards `kgNodeBody` / `kgLabelDims` directly (the density proof exercises them
     /// only indirectly).
     the_collision_body_encloses_the_circle_and_its_label: node_harness_claims(
-        &format!("{HARNESS_HEAD}{DRIVER_COLLISION_BODY}{HARNESS_TAIL}"),
+        &harness(DRIVER_COLLISION_BODY),
         "OK collision-body-encloses-circle-and-label",
         "the collision body must enclose the circle plus its label box",
     );
@@ -177,7 +146,7 @@ rigger::test_cases! {
     /// exactly-coincident pair to disjoint bodies deterministically (the id tie-break fixes the direction).
     /// Guards the degenerate branches the clustered-density proof never places.
     the_separation_pass_resolves_coincident_nodes_deterministically: node_harness_claims(
-        &format!("{HARNESS_HEAD}{DRIVER_TIEBREAK}{HARNESS_TAIL}"),
+        &harness(DRIVER_TIEBREAK),
         "OK coincident-separation-deterministic",
         "the separation pass must resolve coincident nodes deterministically and no-op below two \
          nodes",

@@ -12,36 +12,14 @@ use crate::common;
 
 use common::served::node_harness_passes;
 
-use crate::vm_harness;
-use vm_harness::vm_harness;
+use crate::vm_harness::{vm_harness, DomShim, Fields};
 
-/// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
-/// dataset / .hidden / addEventListener). Mirrors `metadata_card_handoff_viz.rs::DOM_SHIM` verbatim
-/// - the same handful of surfaces every dash client-seam harness in this repo needs.
-const DOM_SHIM: &str = r#"
-const __els = {};
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-"#;
+/// The DOM the client seam touches (node `vm`, no npm): the element surfaces innerHTML, dataset,
+/// .hidden and addEventListener, in the explorer panel the card is drawn beside.
+const DOM: DomShim = DomShim {
+    fields: Fields::Form,
+    ..DomShim::PANEL
+};
 
 /// A `fetch` shim answering a `card=` request from the driver's `__cardBodies` (keyed by the
 /// decoded subject id); every other request rejects, as every other view is drawn from a fixture
@@ -167,5 +145,5 @@ rigger::test_cases! {
     /// and a card's subject and node chips each mark the nodes their answer names as test code apart
     /// from product code, and draw no marker when the answer names none.
     every_drawn_test_node_is_marked_apart_from_product_code:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FETCH], MARKER_DRIVER, HARNESS_FILE), "OK every-drawn-test-node-is-marked");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FETCH], MARKER_DRIVER, HARNESS_FILE), "OK every-drawn-test-node-is-marked");
 }

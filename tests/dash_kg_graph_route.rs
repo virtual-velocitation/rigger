@@ -25,6 +25,7 @@
 //! feature-gated), so this guards the served boundary in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim, Fetch, Fields, Query};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
@@ -228,29 +229,19 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
     assert_render_never_touches_the_kg_panel(page);
 }
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it
-/// dispatches a click carrying `data-seed` through the tree's delegated listener, lets `seedGraph`
-/// fetch a fixture neighborhood, and asserts (a) the click SET the seed and fetched `/api/graph` for
-/// it, (b) the panel rendered the tier-tagged neighborhood, and (c) a subsequent live-poll `render()`
-/// leaves the KG panel UNTOUCHED (the operator's selection survives the poll).
-///
-/// The template-grep test above proves the wiring TOKENS ship; it is blind to the RUNTIME behavior -
-/// that a click actually reaches `seedGraph`, that `seedGraph` fetches the right seed, and that
-/// `render()` does not clobber the panel. This harness executes the real page script under node's
-/// built-in `vm` (no npm, hermetic - `fetch` is a fixture and `setTimeout` is inert so the live tail
-/// never touches the network). Mutation-proven: dropping the delegated listener (or letting
-/// `render()` write `el("kgpanel")`) makes the driver throw.
-const SELECT_TO_SEED_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
+/// The DOM the select-to-seed, god-node and tier-filter drivers run in: elements that hold markup and
+/// record their listeners, so a driver dispatches a click through the page's delegated listener. No
+/// size and no `querySelector`: these drivers only load and dispatch, and `window` takes the page's
+/// drag-pan handlers without keeping them.
+const DISPATCH_DOM: DomShim = DomShim {
+    listeners: true,
+    ..DomShim::MARKUP
+};
 
-// Minimal DOM shim (vm-realm, prepended to the page script). A fixture neighborhood stands in for the
-// /api/graph body; fetch resolves it for the graph route and rejects everything else (the load-time
-// poll's /api/state fetch), recording the graph URL so the driver can assert the seed was carried.
-const SHIM = String.raw`
-const __els = {};
+/// A fixture neighborhood standing in for the /api/graph body: `fetch` resolves it for the graph route
+/// and rejects everything else (the load-time poll's /api/state fetch), recording the graph URL so the
+/// driver can assert the seed was carried.
+const SELECT_TO_SEED_FIXTURE: &str = r#"
 // Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
 // card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
 // last-writer-wins string: asserting "the seed URL is IN the fetched set" survives that additive
@@ -259,15 +250,6 @@ const __fetchedGraphUrls = [];
 const __NB = { seed: "u1", depth: 2,
   nodes: [ { id: "u1", kind: "unit", label: "u1" }, { id: "d1", kind: "decision", label: "the d1 decision" } ],
   edges: [ { from: "d1", to: "u1", rel: "DECIDED", tier: "extracted" } ] };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={}; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
-// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
-const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrls.push(String(url));
@@ -278,12 +260,21 @@ const fetch = function(url){
   }
   return Promise.reject(new Error("no network for " + url));
 };
-const setTimeout = function(){ return 0; };
-`;
+"#;
 
-// Test driver (vm-realm, appended after the page script - shares its scope, so it calls el()/render()
-// and reads kgSeed/__fetchedGraphUrls directly).
-const DRIVER = String.raw`
+/// A test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it
+/// dispatches a click carrying `data-seed` through the tree's delegated listener, lets `seedGraph`
+/// fetch a fixture neighborhood, and asserts (a) the click SET the seed and fetched `/api/graph` for
+/// it, (b) the panel rendered the tier-tagged neighborhood, and (c) a subsequent live-poll `render()`
+/// leaves the KG panel UNTOUCHED (the operator's selection survives the poll).
+///
+/// The template-grep test above proves the wiring TOKENS ship; it is blind to the RUNTIME behavior -
+/// that a click actually reaches `seedGraph`, that `seedGraph` fetches the right seed, and that
+/// `render()` does not clobber the panel. This driver executes the real page script under node's
+/// built-in `vm` (no npm, hermetic - `fetch` is a fixture and `setTimeout` is inert so the live tail
+/// never touches the network). Mutation-proven: dropping the delegated listener (or letting
+/// `render()` write `el("kgpanel")`) makes the driver throw.
+const SELECT_TO_SEED_DRIVER: &str = r#"
 ;(async function(){
   // A click on a run-tree node carrying data-seed="u1" (what treeNode() emits), dispatched through
   // the tree container's delegated listener that wireSelectToSeed() attached at load.
@@ -313,12 +304,7 @@ const DRIVER = String.raw`
 
   console.log("OK select-to-seed-and-survives-poll");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); throw e; });
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 30 c5's select-to-seed charter: selecting a node (a click on a `data-seed`
@@ -326,7 +312,7 @@ rigger::test_cases! {
     /// selection SURVIVES the 1.5s live poll. This drives the SERVED page's real listener + `seedGraph` +
     /// `render()` under a DOM shim (via node's `vm`); it is the runtime check the grep test cannot make -
     /// dropping the delegated listener, or letting `render()` clobber the panel, makes it go red.
-    selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: node_harness_passes(SELECT_TO_SEED_HARNESS, "OK select-to-seed-and-survives-poll");
+    selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: node_harness_passes(&vm_harness(&[&DISPATCH_DOM.render(), SELECT_TO_SEED_FIXTURE], SELECT_TO_SEED_DRIVER, "dash-kg-harness.js"), "OK select-to-seed-and-survives-poll");
 }
 
 /// The served `/api/graph` route's DEPTH query-param edges (spec 30 c5): the panel's `depth=` is
@@ -590,22 +576,10 @@ rigger::test_cases! {
         ]));
 }
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN c6 rendering: (A) it calls
-/// `renderGraph` with a neighborhood carrying a `god` node and a `path`, and asserts the panel shows
-/// the god-node badge (with the degree) and highlights the path; (B) it seeds a node, then dispatches
-/// a SHIFT-click on a second node through the KG panel's delegated listener, and asserts `pathTo`
-/// fetched `/api/graph` with `from=&to=` and the panel highlighted the returned path. The
-/// template-grep test above proves the TOKENS ship; this proves the RUNTIME behavior. Hermetic under
-/// node's built-in `vm` (no npm; `fetch` is a fixture, `setTimeout` inert). Mutation-proven: dropping
-/// the god badge (or the onpath highlight, or the shift-click branch) makes the driver throw.
-const GOD_PATH_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
+/// The god-node and query-path neighborhoods standing in for the /api/graph body: `fetch` resolves the
+/// path for a `from=` URL and the seeded neighborhood otherwise, recording every graph URL, and
+/// rejects everything else.
+const GOD_PATH_FIXTURE: &str = r#"
 // Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
 // card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
 // last-writer-wins string: asserting "the query-path URL is IN the fetched set" survives that
@@ -622,15 +596,6 @@ const __NB_SEED = { seed: "a", depth: 2,
   nodes: [ { id: "a", kind: "unit", label: "a", degree: 1, god: false },
            { id: "b", kind: "unit", label: "b", degree: 1, god: false } ],
   edges: [ { from: "a", to: "b", rel: "REFERENCES", tier: "extracted" } ] };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={}; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
-// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
-const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
     __fetchedGraphUrls.push(String(url));
@@ -642,10 +607,17 @@ const fetch = function(url){
   }
   return Promise.reject(new Error("no network for " + url));
 };
-const setTimeout = function(){ return 0; };
-`;
+"#;
 
-const DRIVER = String.raw`
+/// A test driver (JavaScript) that RUNS the served page's OWN c6 rendering: (A) it calls
+/// `renderGraph` with a neighborhood carrying a `god` node and a `path`, and asserts the panel shows
+/// the god-node badge (with the degree) and highlights the path; (B) it seeds a node, then dispatches
+/// a SHIFT-click on a second node through the KG panel's delegated listener, and asserts `pathTo`
+/// fetched `/api/graph` with `from=&to=` and the panel highlighted the returned path. The
+/// template-grep test above proves the TOKENS ship; this proves the RUNTIME behavior. Hermetic under
+/// node's built-in `vm` (no npm; `fetch` is a fixture, `setTimeout` inert). Mutation-proven: dropping
+/// the god badge (or the onpath highlight, or the shift-click branch) makes the driver throw.
+const GOD_PATH_DRIVER: &str = r#"
 ;(async function(){
   // (A) Direct render of a neighborhood carrying a god node + a query path: the badge + highlight show.
   renderGraph(__NB_PATH);
@@ -675,12 +647,7 @@ const DRIVER = String.raw`
 
   console.log("OK god-node-and-query-path");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); throw e; });
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-c6-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 30 c6's client rendering: a GOD-NODE flagged by the server renders a badge
@@ -688,7 +655,7 @@ rigger::test_cases! {
     /// second node fetches the `from=&to=` path and highlights it. Drives the SERVED page's real
     /// `renderGraph` + `pathTo` + delegated listener under a DOM shim (node's `vm`) - the runtime check
     /// the grep test cannot make.
-    a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: node_harness_passes(GOD_PATH_HARNESS, "OK god-node-and-query-path");
+    a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: node_harness_passes(&vm_harness(&[&DISPATCH_DOM.render(), GOD_PATH_FIXTURE], GOD_PATH_DRIVER, "dash-kg-c6-harness.js"), "OK god-node-and-query-path");
 }
 
 /// The served `/api/graph` percent-decodes the c6 `from=`/`to=` PATH ENDPOINTS that crossed the REAL
@@ -982,7 +949,26 @@ fn the_served_graph_route_omits_explain_for_an_unknown_seed_and_is_empty_for_an_
     );
 }
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN c7 rendering: it calls
+/// [`DISPATCH_DOM`] with every fetch refused: the tier-filter driver renders its neighborhood directly.
+const TIER_FILTER_DOM: DomShim = DomShim {
+    fetch: Fetch::Refused(r#""no network for " + url"#),
+    ..DISPATCH_DOM
+};
+
+/// The tier-tagged neighborhood the driver renders, carrying a c6 god node, a c6 query path and the c7
+/// `explain` provenance.
+const TIER_FILTER_FIXTURE: &str = r#"
+const __NB = { seed: "u1", depth: 2,
+  nodes: [ { id: "u1", kind: "unit", label: "u1", degree: 6, god: true },
+           { id: "d1", kind: "decision", label: "the d1 decision", degree: 2, god: false },
+           { id: "c1", kind: "code-entity", label: "c1", degree: 1, god: false } ],
+  edges: [ { from: "d1", to: "u1", rel: "DECIDED", tier: "extracted" },
+           { from: "d1", to: "c1", rel: "REFERENCES", tier: "inferred" } ],
+  path: [ "u1", "d1" ],
+  explain: { node: "u1", sources: [ { rel: "DECIDED", from: "d1", to: "u1", tier: "extracted", source: 42 } ] } };
+"#;
+
+/// A test driver (JavaScript) that RUNS the served page's OWN c7 rendering: it calls
 /// `renderGraph` with a tier-tagged neighborhood that ALSO carries a c6 god node, a c6 query path,
 /// and the c7 `explain` provenance, then (A) asserts both tier edges draw and the god badge, path
 /// highlight, and provenance section all render; (B) toggles the INFERRED tier OFF through the KG
@@ -992,36 +978,7 @@ fn the_served_graph_route_omits_explain_for_an_unknown_seed_and_is_empty_for_an_
 /// asserts a live-poll `render()` leaves the panel untouched, so the tier filter/selection survive
 /// the poll. Hermetic under node's built-in `vm` (no npm; `fetch` unused here, `setTimeout` inert).
 /// Mutation-proven: dropping the tier filter (or the explain render) in `renderGraph` makes it throw.
-const TIER_FILTER_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
-const __NB = { seed: "u1", depth: 2,
-  nodes: [ { id: "u1", kind: "unit", label: "u1", degree: 6, god: true },
-           { id: "d1", kind: "decision", label: "the d1 decision", degree: 2, god: false },
-           { id: "c1", kind: "code-entity", label: "c1", degree: 1, god: false } ],
-  edges: [ { from: "d1", to: "u1", rel: "DECIDED", tier: "extracted" },
-           { from: "d1", to: "c1", rel: "REFERENCES", tier: "inferred" } ],
-  path: [ "u1", "d1" ],
-  explain: { node: "u1", sources: [ { rel: "DECIDED", from: "d1", to: "u1", tier: "extracted", source: 42 } ] } };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={}; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
-// browser shim provides it (a no-op addEventListener; this harness only loads-and-dispatches).
-const window = { addEventListener: function(){} };
-const fetch = function(url){ return Promise.reject(new Error("no network for " + url)); };
-const setTimeout = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
+const TIER_FILTER_DRIVER: &str = r#"
 ;(async function(){
   const panel = function(){ return el("kgpanel")._html; };
   const edgeCount = function(){ return (panel().match(/class="kgedge/g) || []).length; };
@@ -1063,12 +1020,7 @@ const DRIVER = String.raw`
 
   console.log("OK tier-filter-and-explain");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); throw e; });
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-c7-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 30 c7's client rendering: the confidence-TIER FILTER is a client-side
@@ -1077,7 +1029,7 @@ rigger::test_cases! {
     /// badge + path highlight and SURVIVING the live poll. Drives the SERVED page's real `renderGraph` +
     /// the delegated tier-toggle listener under a DOM shim (node's `vm`) - the runtime check the grep
     /// test cannot make.
-    toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: node_harness_passes(TIER_FILTER_HARNESS, "OK tier-filter-and-explain");
+    toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: node_harness_passes(&vm_harness(&[&TIER_FILTER_DOM.render(), TIER_FILTER_FIXTURE], TIER_FILTER_DRIVER, "dash-kg-c7-harness.js"), "OK tier-filter-and-explain");
 }
 
 rigger::test_cases! {
@@ -1563,30 +1515,19 @@ fn the_graph_routes_give_a_file_its_members_and_a_member_its_file_with_no_contai
     );
 }
 
-/// The DOM shim the graph header's harness touches: elements with text, `hidden` and a class list.
-const LABEL_SHIM: &str = r#"
-function __El(id){ this.id=id; this._html=""; this._text=""; this.hidden=true; this._classes={};
-  this._listeners={}; this.dataset={}; this.clientWidth=800; this.clientHeight=320; this.clientTop=0; const self=this;
-  this.classList = { toggle: function(c,on){ if (on) self._classes[c]=true; else delete self._classes[c]; },
-    add: function(c){ self._classes[c]=true; }, remove: function(c){ delete self._classes[c]; },
-    contains: function(c){ return !!self._classes[c]; } }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 320px panel leaves the drawing 276px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __El(""); };
-__El.prototype.setAttribute = function(){};
-__El.prototype.getAttribute = function(){ return null; };
-__El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const __els = {};
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
+/// The DOM the graph header's harnesses touch: elements with text, `hidden` and a class list, in a
+/// 320px panel that measures its drawing's slot, so the drawing gets 276px.
+const LABEL_DOM: DomShim = DomShim {
+    query: Query::Element,
+    fields: Fields::Classed,
+    panel_height: Some(320),
+    interval: true,
+    ..DomShim::PANEL
+};
+
+/// The graph reads the header's drivers answer: every fetch resolves to the reply and headers the
+/// driver sets, plus the headers its URL names.
+const LABEL_FETCH: &str = r#"
 // A driver answers graph reads itself by replacing __reply(url); by default a read is an empty overview.
 let __reply = function(){ return { clusters: [], edges: [], total: 0 }; };
 // Each graph reply carries the headers a driver sets in __headers, plus those its URL names: label=
@@ -1604,6 +1545,11 @@ const fetch = function(url){
   });
 };
 "#;
+
+/// [`LABEL_DOM`] and [`LABEL_FETCH`], the stand-ins every graph header driver runs over.
+fn label_shim() -> String {
+    [LABEL_DOM.render().as_str(), LABEL_FETCH].join("\n")
+}
 
 /// Driver: three graph replies in turn, one carrying a percent-encoded label, one an error, one
 /// neither, each read through the page's one graph fetch; the header shows the decoded label, then
@@ -1631,7 +1577,7 @@ rigger::test_cases! {
     /// RUNTIME guard (spec 6.1): every graph read goes through `graphFetch`, which shows the reply's
     /// label in the explorer's header, decoded, or the reason no graph could be read, marked as an
     /// error; a reply stating neither leaves the header as it was.
-    the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
+    the_graph_header_shows_what_each_read_describes: node_harness_passes(&vm_harness(&[&label_shim()], LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
 }
 
 /// Driver: each graph view loads through its own loader over a read that answers an empty body,
@@ -1688,7 +1634,7 @@ rigger::test_cases! {
     /// graph states the reason the header states in its panel, never the view's empty caption or the
     /// body's `empty_state`, so an unread graph never reads as an empty one; a read graph that draws
     /// nothing keeps each view's own caption.
-    a_view_over_a_graph_that_could_not_be_read_states_why_never_an_empty_graph: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, UNREAD_DRIVER, "dash-graph-unread-harness.js"), "OK a-view-over-an-unread-graph-states-why");
+    a_view_over_a_graph_that_could_not_be_read_states_why_never_an_empty_graph: node_harness_passes(&vm_harness(&[&label_shim()], UNREAD_DRIVER, "dash-graph-unread-harness.js"), "OK a-view-over-an-unread-graph-states-why");
 }
 
 /// Driver: the overview and a re-projection under each derived lens, asked for a grain in a
@@ -1745,7 +1691,7 @@ rigger::test_cases! {
     /// RUNTIME guard: the explorer shows the grain a derived view displays, as the reply states it,
     /// never only the text the operator typed; a text naming no grain stays as typed beside the
     /// reply's empty state.
-    the_grain_input_shows_the_grain_the_view_displays: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, GRAIN_DRIVER, "dash-grain-shown-harness.js"), "OK the-grain-input-shows-the-grain-displayed");
+    the_grain_input_shows_the_grain_the_view_displays: node_harness_passes(&vm_harness(&[&label_shim()], GRAIN_DRIVER, "dash-grain-shown-harness.js"), "OK the-grain-input-shows-the-grain-displayed");
 }
 
 /// Driver: on a fresh page, the derived read `__FIRST__` names comes first, then the operator
@@ -1799,8 +1745,8 @@ const DEFAULT_GRAIN_DRIVER: &str = r#"
 /// The [`DEFAULT_GRAIN_DRIVER`] harness whose first derived read is `first`, a `[step, act, box]`
 /// row whose `box` is the grain the box then shows, or `null` for a view that draws no box.
 fn default_grain_harness(first: &str) -> String {
-    common::served::vm_harness(
-        LABEL_SHIM,
+    vm_harness(
+        &[&label_shim()],
         &DEFAULT_GRAIN_DRIVER.replace("__FIRST__", first),
         "dash-default-grain-harness.js",
     )
@@ -1897,7 +1843,7 @@ rigger::test_cases! {
     /// RUNTIME guard: the explorer remembers its tests choice per browser, so a reload keeps it, and
     /// starts at exclude when nothing is kept, the kept value is not a choice, or the browser's store
     /// cannot be read or written, the toggle still cycling within the page.
-    the_explorer_remembers_its_tests_choice_across_a_reload: node_harness_passes(&TESTS_CHOICE_HARNESS.replace("__SHIM__", LABEL_SHIM), "OK the-explorer-remembers-its-tests-choice");
+    the_explorer_remembers_its_tests_choice_across_a_reload: node_harness_passes(&TESTS_CHOICE_HARNESS.replace("__SHIM__", &label_shim()), "OK the-explorer-remembers-its-tests-choice");
 }
 
 /// Driver: under each tests filter in turn, the explorer opens every graph view through its own
@@ -1957,7 +1903,7 @@ rigger::test_cases! {
     /// keeps its own count of the hidden tests; every other view (a seeded neighbourhood and its
     /// card, a cluster drill, a re-projection, a call walk) says "tests hidden" beside the toggle,
     /// and says nothing while tests are shown.
-    every_graph_view_says_when_tests_are_hidden: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, TESTS_STATE_DRIVER, "dash-tests-state-harness.js"), "OK every-view-says-when-tests-are-hidden");
+    every_graph_view_says_when_tests_are_hidden: node_harness_passes(&vm_harness(&[&label_shim()], TESTS_STATE_DRIVER, "dash-tests-state-harness.js"), "OK every-view-says-when-tests-are-hidden");
 }
 
 /// A product tree and its tests, one per way a test calls product code: a same-file test module, a
@@ -2222,7 +2168,7 @@ fn the_explorer_draws_the_tests_that_call_a_product_entity() {
     let driver =
         PROOF_DRAWN_DRIVER.replace("__SERVED__", &serde_json::Value::Object(served).to_string());
     node_harness_passes(
-        &common::served::vm_harness(LABEL_SHIM, &driver, "dash-proof-drawn-harness.js"),
+        &vm_harness(&[&label_shim()], &driver, "dash-proof-drawn-harness.js"),
         "OK the-explorer-draws-the-tests-that-call-an-entity",
     );
 }

@@ -30,52 +30,21 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_claims;
 use rigger::dash;
 
-/// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
-/// (`el(...).addEventListener`, `loadKgOverview()`) does not throw, then the opening of the driver's
-/// `String.raw` template. The served page script and the driver body are spliced in by `run_driver`.
-const HARNESS_HEAD: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
-"##;
-
-/// The tail: close the driver template, then run the shim, the served page, and the driver together in
-/// one sandbox that only exposes `console`, so the driver drives the page's real layout code.
-const HARNESS_TAIL: &str = r##"
-`;
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-density-spread-harness.js" });
-"##;
+/// A node `vm` program running `driver` after the served page script over an inert DOM, so the page's
+/// top-level wiring (`el(...).addEventListener`, `loadKgOverview()`) does not throw and the driver
+/// drives the page's real layout code.
+fn harness(driver: &str) -> String {
+    vm_harness(
+        &[&DomShim::INERT.render()],
+        driver,
+        "dash-density-spread-harness.js",
+    )
+}
 
 /// STRUCTURAL: the served page wires the LAYERED call-DAG path (`opts.layout`) with the BARE 4-arg
 /// `forceLayout` signature - no radius/label accessors - so that path never density-scales. This is the
@@ -136,7 +105,7 @@ rigger::test_cases! {
     /// Proof of the floor + degenerate branches (see `DRIVER_SPREAD_FLOOR`): `kgSpread` is exactly 1 off
     /// the dense-with-accessors path, so a sparse or accessor-less caller keeps the panel unchanged.
     the_spread_factor_floors_at_one_off_the_dense_path: node_harness_claims(
-        &format!("{HARNESS_HEAD}{DRIVER_SPREAD_FLOOR}{HARNESS_TAIL}"),
+        &harness(DRIVER_SPREAD_FLOOR),
         "OK spread-floor",
         "kgSpread must floor at 1 off the dense path",
     );
@@ -201,7 +170,7 @@ rigger::test_cases! {
     /// Proof that the bare 4-arg `forceLayout` preserves the pre-c2 panel-sized layout while the 6-arg
     /// accessor path scales past it (see `DRIVER_BACKCOMPAT_PANEL`).
     the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: node_harness_claims(
-        &format!("{HARNESS_HEAD}{DRIVER_BACKCOMPAT_PANEL}{HARNESS_TAIL}"),
+        &harness(DRIVER_BACKCOMPAT_PANEL),
         "OK backcompat-panel",
         "the bare 4-arg layout must stay panel-sized while the accessor path grows past it",
     );
@@ -254,7 +223,7 @@ rigger::test_cases! {
     /// Proof that the enlarged canvas is centred on the panel middle (see `DRIVER_CENTRED_CANVAS`) - the
     /// reset view opens on the drawing's centre, a claim the extent-only done-when proof is blind to.
     the_enlarged_canvas_is_centred_on_the_panel_middle: node_harness_claims(
-        &format!("{HARNESS_HEAD}{DRIVER_CENTRED_CANVAS}{HARNESS_TAIL}"),
+        &harness(DRIVER_CENTRED_CANVAS),
         "OK centred-canvas",
         "the enlarged canvas must be centred on the panel middle",
     );
