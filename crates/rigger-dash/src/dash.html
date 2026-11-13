@@ -946,10 +946,11 @@ let kgRationale = {};
 let kgViewData = null;
 // What the panel shows of the view it holds beyond that view's body, written by the view's one render
 // so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
-// view's frontier choice list, the candidates a clicked frontier node offers; and the keys of the
-// rationale disclosures open in it (rememberDisclosures records them). A new view (holdKgView given
-// a new body) shows none of it.
-function kgShownNone() { return { choices: [], open: new Set() }; }
+// view's frontier choice list, the candidates a clicked frontier node offers; the keys of the
+// rationale disclosures open in it (rememberDisclosures records them); and the grain being typed in
+// the derived lens's resolution box, until a change commits it (null while none is). A new view
+// (holdKgView given a new body) shows none of it.
+function kgShownNone() { return { choices: [], open: new Set(), grain: null }; }
 let kgShown = kgShownNone();
 
 // Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
@@ -2263,14 +2264,16 @@ function renderKgOverview(ov) {
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
 // `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
 // kgpanel click routes `data-lens` (switch lens) and the delegated change routes `data-lens-res`
-// (switch grain), each re-loading the overview; the active lens is marked.
+// (switch grain), each re-loading the overview; the active lens is marked. The box shows the grain
+// being typed (kgShown.grain) over the one the view reads, so a redraw keeps the draft.
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
   let res = "";
   if (kgLens === "code" || kgLens === "concepts") {
     res = ' &middot; resolution <input class="kgres" type="text" spellcheck="false" '
-      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the derived grain to read">';
+      + 'value="' + esc(kgShown.grain !== null ? kgShown.grain : kgResolution)
+      + '" data-lens-res="1" title="the derived grain to read">';
   }
   return 'lens: ' + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts") + res;
 }
@@ -2649,6 +2652,12 @@ function wireSelectToSeed() {
     // empty value names no grain, so the server reads its default and the reply names it.
     const res = ev.target.closest("[data-lens-res]");
     if (res) { kgResolution = (res.value || "").trim(); loadKgOverview(); }
+  });
+  // The grain being typed is view state: held on the view so a redraw before the change commits it
+  // writes the box with the draft rather than the grain the view reads.
+  el("kgpanel").addEventListener("input", ev => {
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) kgShown.grain = res.value;
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
