@@ -732,18 +732,21 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// Driver, for the row `__ROW__` (`{writer, moved, resize}`): what the panel shows of the view it
+/// Driver, for the row `__ROW__` (`{writer, pan, resize}`): what the panel shows of the view it
 /// holds beyond the view's body - the `writer` row of `WRITERS` - is shown, still shown once the panel
 /// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
 /// makes it overflow), and still shown and answering after the panel is resized from a 1400px
 /// viewport to 800px (`window`) or narrowed by the 12px a scrollbar takes (`scrollbar`), the drawing
-/// filling the room below the toolbar and what it shows above the drawing. An untouched view redraws
-/// once from its held body; a `moved` one (panned after it was shown) redraws nothing and keeps its
-/// transform and its marks.
+/// filling the room below the toolbar and what it shows above the drawing. An untouched view (`pan`
+/// `none`) redraws once from its held body on the resize. A moved one, panned `after` it was shown or
+/// `before`, keeps its transform and its marks through showing it, the panel settling and the resize,
+/// the resize redrawing nothing.
 const VIEW_STATE_DRIVER: &str = r##"
 ;(async function(){
   const ROW = __ROW__;
-  const at = ROW.writer + " on " + (ROW.moved ? "a moved" : "an untouched") + " view, "
+  const on = { none: "an untouched view", after: "a view panned after it was shown", before: "a view panned before it was shown" };
+  if (!(ROW.pan in on)) throw new Error("a row pans none, after or before, not " + ROW.pan);
+  const at = ROW.writer + " on " + on[ROW.pan] + ", "
     + (ROW.resize === "window" ? "resized from 1400px to 800px" : "narrowed by the 12px a scrollbar takes") + ": ";
   const A = "crates/crate-2/src/module_2.rs::Thing", B = "crates/crate-3/src/module_3.rs::Thing";
   __CALLS.nodes[5].frontier = [A, B];
@@ -881,17 +884,12 @@ const VIEW_STATE_DRIVER: &str = r##"
           throw new Error("REGRESSION: " + at + "the choice made must dismiss the list, it still lists " + this.shown());
       }
     },
-    // The rationale overlay's "why" badge below the call walk and the decision inside it, each
-    // opened by the browser's own <details> toggle.
+    // The rationale overlay's "why" badge below the call walk and the decision inside it: the overlay
+    // turned on, then each opened by the browser's own <details> toggle.
     disclosure: {
       BADGE: 'data-explain="' + WHY + '"',
       LEAF: 'class="kgleaf k-',
-      async open(){
-        seedCalls(__SUBJECT, "down");
-        await __flush();
-        await setOverlay(true);
-        await __flush();
-      },
+      async open(){ seedCalls(__SUBJECT, "down"); await __flush(); },
       // A click on the badge is left to its own disclosure: nothing prevented, requested or redrawn.
       async click(){
         const n = asked.length, gen = panel._gen, ev = dispatch("click", target(this.BADGE));
@@ -901,6 +899,8 @@ const VIEW_STATE_DRIVER: &str = r##"
             + (ev.defaultPrevented ? "was prevented" : asked.length !== n ? "requested " + asked.slice(n) : "redrew the panel"));
       },
       async show(){
+        await setOverlay(true);
+        await __flush();
         await this.click();
         toggle(this.BADGE, true);
         toggle(this.LEAF, true);
@@ -934,12 +934,22 @@ const VIEW_STATE_DRIVER: &str = r##"
       }
     }
   };
+  // The pan, and the transform and marks it leaves, which a moved view keeps from then on.
+  let kept = null, marks = null;
+  function pan(){ __press(-30, 15); kept = JSON.stringify(__view(at + "the pan")); marks = __marks(); }
+  function keeps(what){
+    const now = JSON.stringify(__view(at + what));
+    if (now !== kept || __marks() !== marks)
+      throw new Error("REGRESSION: " + at + "the moved view must keep its transform and its marks through " + what + ", "
+        + now + " against " + kept + (__marks() === marks ? "" : ", its marks laid out again"));
+  }
   const W = WRITERS[ROW.writer];
   __size(__WIDE);
   await __flush();
   await W.open();
   told = box();
   settle("the view drawn");
+  if (ROW.pan === "before") pan();
   await W.show();
   if (W.shown() !== W.expect)
     throw new Error(at + "showing it must show " + W.expect + ", it shows " + JSON.stringify(W.shown()));
@@ -948,22 +958,16 @@ const VIEW_STATE_DRIVER: &str = r##"
     throw new Error("REGRESSION: " + at + "it must stay shown once the panel settles after showing it, it shows "
       + JSON.stringify(W.shown()));
   placed("showing it");
-  let kept = null, marks = null;
-  if (ROW.moved) {
-    __press(-30, 15);
-    kept = JSON.stringify(__view(at + "the pan"));
-    marks = __marks();
-  }
+  if (ROW.pan === "before") keeps("showing it");
+  if (ROW.pan === "after") pan();
   __size(ROW.resize === "window" ? __NARROW : [__WIDE[0] - __geom.scrollbar, __WIDE[1], __WIDE[2]]);
   const made = settle("the resize");
   if (W.shown() !== W.expect)
     throw new Error("REGRESSION: " + at + "it must stay shown through the redraw, it shows " + JSON.stringify(W.shown()));
   placed("the resize");
-  if (ROW.moved) {
-    const now = JSON.stringify(__view(at + "the resize"));
-    if (now !== kept || __marks() !== marks || made !== 0)
-      throw new Error("REGRESSION: " + at + "the moved view must keep its transform and its marks with no redraw, "
-        + now + " against " + kept + " after " + made + " redraws");
+  if (ROW.pan !== "none") {
+    keeps("the resize");
+    if (made !== 0) throw new Error("REGRESSION: " + at + "the moved view must redraw nothing on the resize, it redrew " + made + " times");
   } else if (made !== 1) {
     throw new Error("REGRESSION: " + at + "the untouched view must redraw once, not " + made + " times");
   }
@@ -1068,44 +1072,62 @@ rigger::test_cases! {
     );
     /// The call view's frontier choice list, the view untouched, through a window resize.
     the_frontier_list_stays_through_a_window_resize_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "frontier", "moved": false, "resize": "window"}"#);
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "none", "resize": "window"}"#);
     /// The same list, the view panned after it was shown.
-    the_frontier_list_stays_through_a_window_resize_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "frontier", "moved": true, "resize": "window"}"#);
+    the_frontier_list_stays_through_a_window_resize_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "after", "resize": "window"}"#);
+    /// The same list shown on a view already panned, which keeps its pan through the list's redraw.
+    the_frontier_list_stays_through_a_window_resize_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "before", "resize": "window"}"#);
     /// The same list, the panel narrowed by the 12px a scrollbar takes.
     the_frontier_list_stays_through_a_scrollbar_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "frontier", "moved": false, "resize": "scrollbar"}"#);
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "none", "resize": "scrollbar"}"#);
     /// The same, the view panned after the list was shown.
-    the_frontier_list_stays_through_a_scrollbar_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "frontier", "moved": true, "resize": "scrollbar"}"#);
+    the_frontier_list_stays_through_a_scrollbar_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "after", "resize": "scrollbar"}"#);
+    /// The same, the list shown on a view already panned.
+    the_frontier_list_stays_through_a_scrollbar_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "frontier", "pan": "before", "resize": "scrollbar"}"#);
     /// A rationale disclosure opened below the call walk, the view untouched, through a window resize.
     an_open_disclosure_stays_through_a_window_resize_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": false, "resize": "window"}"#);
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "none", "resize": "window"}"#);
     /// The same disclosure, the view panned after it was opened.
-    an_open_disclosure_stays_through_a_window_resize_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": true, "resize": "window"}"#);
+    an_open_disclosure_stays_through_a_window_resize_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "after", "resize": "window"}"#);
+    /// The same disclosure on a view already panned, which keeps its pan through the overlay's redraw.
+    an_open_disclosure_stays_through_a_window_resize_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "before", "resize": "window"}"#);
     /// The same disclosure, the panel narrowed by the 12px a scrollbar takes.
     an_open_disclosure_stays_through_a_scrollbar_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": false, "resize": "scrollbar"}"#);
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "none", "resize": "scrollbar"}"#);
     /// The same, the view panned after the disclosure was opened.
-    an_open_disclosure_stays_through_a_scrollbar_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "disclosure", "moved": true, "resize": "scrollbar"}"#);
+    an_open_disclosure_stays_through_a_scrollbar_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "after", "resize": "scrollbar"}"#);
+    /// The same, the disclosure opened on a view already panned.
+    an_open_disclosure_stays_through_a_scrollbar_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "disclosure", "pan": "before", "resize": "scrollbar"}"#);
     /// A grain typed into the code lens's resolution box, the overview untouched, through a window
     /// resize.
     a_typed_grain_stays_through_a_window_resize_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "grain", "moved": false, "resize": "window"}"#);
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "none", "resize": "window"}"#);
     /// The same grain, the overview panned after it was typed.
-    a_typed_grain_stays_through_a_window_resize_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "grain", "moved": true, "resize": "window"}"#);
+    a_typed_grain_stays_through_a_window_resize_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "after", "resize": "window"}"#);
+    /// The same grain typed on an overview already panned.
+    a_typed_grain_stays_through_a_window_resize_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "before", "resize": "window"}"#);
     /// The same grain, the panel narrowed by the 12px a scrollbar takes.
     a_typed_grain_stays_through_a_scrollbar_of_an_untouched_view:
-        keeps_what_it_shows(r#"{"writer": "grain", "moved": false, "resize": "scrollbar"}"#);
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "none", "resize": "scrollbar"}"#);
     /// The same, the overview panned after the grain was typed.
-    a_typed_grain_stays_through_a_scrollbar_of_a_moved_view:
-        keeps_what_it_shows(r#"{"writer": "grain", "moved": true, "resize": "scrollbar"}"#);
+    a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_after_it:
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "after", "resize": "scrollbar"}"#);
+    /// The same, the grain typed on an overview already panned.
+    a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_before_it:
+        keeps_what_it_shows(r#"{"writer": "grain", "pan": "before", "resize": "scrollbar"}"#);
 }
 
-/// What the panel shows of the view it holds, in the `{writer, moved, resize}` row `VIEW_STATE_DRIVER`
+/// What the panel shows of the view it holds, in the `{writer, pan, resize}` row `VIEW_STATE_DRIVER`
 /// reads, kept through the panel settling and a resize, and still answering.
 fn keeps_what_it_shows(row: &str) {
     drive(
