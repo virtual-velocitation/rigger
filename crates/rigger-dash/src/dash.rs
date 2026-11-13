@@ -6653,6 +6653,57 @@ mod tests {
         );
     }
 
+    /// GIVEN the served page, WHEN the card or the rail shows a name with no break opportunity in
+    /// it (a long path, an id), THEN the name wraps inside the pane and never scrolls it sideways:
+    /// each pane wraps anywhere (`overflow-wrap: anywhere`, which every row and chip its renderer
+    /// writes inside it inherits, and which, unlike `break-word`, lets an inline-block chip shrink
+    /// to the pane's width), docked or stacked, and no rule styling a part a pane's renderer
+    /// writes (a `kgcard-` or `kgrail-` class) wraps it otherwise or keeps it on one line. Layout
+    /// is outside what the page harness can run, so this reads the panes' rules through the
+    /// page's own stylesheet.
+    #[test]
+    fn a_long_name_wraps_inside_the_card_and_the_rail() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        for body in [400.0, 1400.0] {
+            let layout = style.layout(true, true, body);
+            for pane in ["kgcard", "kgrail"] {
+                assert_eq!(
+                    layout.value(layout.index(pane), "overflow-wrap").as_deref(),
+                    Some("anywhere"),
+                    "#{pane} in a {body}px body wraps a long name anywhere, so every chip and row \
+                     its renderer writes inside it wraps inside it"
+                );
+            }
+        }
+        let mut parts = 0;
+        for rule in style_rules(&page) {
+            let styles_a_part = rule
+                .selectors
+                .iter()
+                .any(|s| s.contains(".kgcard-") || s.contains(".kgrail-"));
+            if !styles_a_part {
+                continue;
+            }
+            parts += 1;
+            for (name, value) in &rule.declarations {
+                let keeps_a_line = match name.as_str() {
+                    "overflow-wrap" | "word-wrap" => value != "anywhere",
+                    "white-space" => matches!(value.as_str(), "nowrap" | "pre"),
+                    "word-break" => value == "keep-all",
+                    _ => false,
+                };
+                assert!(
+                    !keeps_a_line,
+                    "{:?} sets {name}: {value} on a part of a pane, so a long name there does \
+                     not wrap as the pane does",
+                    rule.text
+                );
+            }
+        }
+        assert!(parts > 0, "some rule styles a part of a pane");
+    }
+
     /// GIVEN the served page, WHEN the explorer draws, THEN no rule that may select the drawing's
     /// svg (`<svg class="kgsvg">`, which the page's script writes into the panel) gives it a border
     /// or padding, so its box is the drawing's surface: `kgDims` draws at that box's width, the
