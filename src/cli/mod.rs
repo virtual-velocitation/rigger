@@ -5614,27 +5614,53 @@ mod tests {
         );
     }
 
-    /// A reader that answers many opens (the MCP session, a run) holds no discovery between them:
-    /// an open after the directory it stands in became a repository reads that repository's head.
+    /// A reader that answers many opens (the MCP session, a run, either's grounder) holds no
+    /// discovery between them: an open after the directory it stands in became a repository reads
+    /// that repository's head.
     #[test]
     fn a_reader_asks_where_its_repository_lies_anew_for_each_later_open() {
         let records = Projector::open(":memory:", "test").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let site = Site::of(dir.path());
         let read = ReadGraph::new(&records, &site).unwrap();
-        let commit = |read: &ReadGraph| read.head().unwrap().view.stamp().tip.commit.clone();
-        assert_eq!(commit(&read), None, "a directory's head names no commit");
+        // (reader, the commit the head its next open reads names)
+        type NextOpen<'a> = Box<dyn Fn() -> Option<String> + 'a>;
+        let readers: &[(&str, NextOpen<'_>)] = &[
+            (
+                "the graph reader",
+                Box::new(|| read.head().unwrap().view.stamp().tip.commit.clone()),
+            ),
+            #[cfg(feature = "symbols")]
+            ("a grounder's heads", {
+                use rigger_domain::code_view::OpenCodeView;
+                let heads = SiteOpens::new(Site::of(dir.path()));
+                let worktree = dir.path().to_path_buf();
+                Box::new(move || {
+                    let head = heads.head(&worktree).unwrap();
+                    head.view.stamp().tip.commit.clone()
+                })
+            }),
+        ];
+        for (reader, next_open) in readers {
+            assert_eq!(
+                next_open(),
+                None,
+                "{reader}: a directory's head names no commit"
+            );
+        }
         git_init_quiet(dir.path());
         crate::test_support::git_ok_with_identity(
             dir.path(),
             &["commit", "-q", "--allow-empty", "-m", "i"],
         );
         let sha = crate::test_support::git_out(dir.path(), &["rev-parse", "HEAD"]);
-        assert_eq!(
-            commit(&read),
-            Some(sha),
-            "a later open reads the repository the directory became"
-        );
+        for (reader, next_open) in readers {
+            assert_eq!(
+                next_open(),
+                Some(sha.clone()),
+                "{reader}: a later open reads the repository the directory became"
+            );
+        }
     }
 
     /// Fold one decision into the `graph.db` at `graph_db` for project `p`, current under today's
