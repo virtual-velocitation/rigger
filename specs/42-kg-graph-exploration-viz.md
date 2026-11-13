@@ -77,9 +77,11 @@ library, honoring the dash charter):
   marks where they are, only the drawing surface taking the new size. The redraw keeps everything
   the panel was showing: a frontier choice list, an opened rationale disclosure, a grain being typed
   with its box's focus and caret (Enter outside an input method's composition, or leaving the box,
-  commits it, and the text typed in a focused box outlives the reply to a new view). Every write of
-  the panel keeps its scroll, as far as the new markup reaches, and the keyboard focus on a control
-  it writes again (a lens tab, a tier checkbox, a back link, the grain box). Every redraw of the
+  commits it, and the text typed in a focused box outlives the reply to a new view). A new view
+  (an overview, a drill, a call walk, a neighborhood, a re-projection) opens at the panel's top, its
+  toolbar in sight; a redraw of the view the panel holds keeps the panel's scroll, as far as the new
+  markup reaches. Every write of the panel keeps the keyboard focus on a control it writes again (a
+  lens tab, a tier checkbox, a back link, the grain box). Every redraw of the
   view the panel holds, for its size or for what the panel shows of it, keeps a moved view's
   transform and marks. Drag handlers live on `window` (installed once) so a drag that leaves the svg
   still tracks.
