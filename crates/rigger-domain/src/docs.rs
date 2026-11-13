@@ -444,13 +444,13 @@ easy-but-wrong implementation is rejected by the text, not by attempt 4's advers
   on every neighbor that could claim the concern ("the advisory is criterion 3's, NOT this
   one's");
 - the code it touches named in backticks (`run_wave`, `src/ingest`). The unit's
-  blast radius grounds only on those spans and identifier-shaped words, never on prose, so a
-  criterion naming no code runs alone, graph or no graph. A span naming a defined symbol grounds
-  on its definition and references, an undefined name on the files holding it as a whole word,
-  and a file path on that file; a multi-word span (`rigger validate`) grounds nothing, so name
-  the symbol a command runs through rather than the command line. A name ending in `_`
-  (`TYPE_`) matches its whole family; when that family is wide, name the constants the unit
-  touches instead.
+  blast radius grounds only on those spans and identifier-shaped words, never on prose, so
+  under `partition: by-blast-radius` a criterion naming no code runs alone, graph or no graph.
+  A span naming a defined symbol grounds on its definition and references, an undefined name
+  on the files holding it as a whole word, and a file path on that file; a multi-word span
+  (`rigger validate`) grounds nothing, so name the symbol a command runs through rather than
+  the command line. A name ending in `_` (`TYPE_`) matches its whole family; when that family
+  is wide, name the constants the unit touches instead.
 Type shapes, tables, long detail: a non-criteria Notes section. Two behaviors joined by "and":
 two checkboxes.
 
@@ -964,8 +964,11 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
             "`rigger graph build` folds the project's source straight into `.rigger/graph.db` - \
              no run, no `RunStarted`, and nothing on the event log, since the graph re-derives \
              each file's batch from the tree. \
-             It CREATES the store when the checkout is cold (`.rigger/` does not exist yet) and \
-             REFRESHES an existing store incrementally: an unchanged file re-ingests nothing, and \
+             Run at the project root, it CREATES the store when the checkout is cold \
+             (`.rigger/` does not exist yet); run from a subdirectory or a linked worktree, it \
+             writes the root's one store, and where the root holds none it refuses, naming \
+             `rigger setup` in the root as the command that makes it. It REFRESHES an existing \
+             store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n",
             "Rerun it any time it is convenient - on a schedule, after pulling a large set of \

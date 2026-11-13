@@ -462,10 +462,75 @@ code::open_current(root) -> CodeView
 | `rigger setup` | on install | advances from empty to HEAD |
 | any reader | when HEAD moved without the conductor (a hand commit, a pull) | advances before it answers |
 
-`root` is always the project root that owns `.rigger/`, which is the operator checkout. A caller
-inside a unit worktree resolves `root` through git's common directory to that main worktree. A
-checkout whose common directory is its own administrative directory kept apart from it, as a
-submodule's is, is its own root.
+`root` is always the project root that owns `.rigger/`: the main checkout git records for the
+repository, which every worktree of it shares, so a caller inside a unit worktree resolves `root`
+to the operator checkout. Git records a main checkout where, asked from the physical path of the
+repository's common directory (`git rev-parse --git-common-dir`), `git config --type=bool --get
+core.bare` does not answer `true` and either `git config --get core.worktree` answers (the main
+checkout is the directory it names, taken from the common directory) or the common directory is
+named `.git` (the main checkout is its parent). Anywhere else git records none, and
+`git worktree list --porcelain` names the common directory itself as the main worktree or marks
+it `bare`; there each worktree is its own root. Reads, setup, graph build and status work in such
+a worktree, and `rigger run` refuses there before it anchors anything, saying git records no main
+checkout and naming the clone to run from: a run's unit worktrees are linked worktrees of the
+checkout it starts in, which would each be their own root and hold a store of their own. Read per
+layout:
+
+| Layout | Main checkout git records | `root` |
+|---|---|---|
+| a clone | its top | its top |
+| a clone with every ref packed | its top | its top |
+| a clone whose remote path names worktrees | its top | its top |
+| a linked worktree naming its administrative directory relatively | the clone's top | the clone's top |
+| a sparse checkout | its top | its top |
+| a checkout whose git directory lies apart | none | its top |
+| a linked worktree of a checkout whose git directory lies apart | none | its own top |
+| a submodule | its top, which `core.worktree` names | its top |
+| a linked worktree of a submodule | the submodule's top | the submodule's top |
+| a checkout whose `.git` is a symlink | none | its top |
+| a linked worktree of a checkout whose `.git` is a symlink | none | its own top |
+| a linked worktree under per-worktree configuration | the main checkout's top | the main checkout's top |
+| a bare repository's linked worktree | none | its own top |
+| a linked worktree of a checkout configured bare | none | its own top |
+| a checkout whose configuration includes a file | its top | its top |
+| a checkout whose configuration includes a file that sets `core.bare` | none | its top |
+| a linked worktree of it | none | its own top |
+| a clone read under a ceiling above it | its top | its top |
+| a clone whose configuration names no format version | its top | its top |
+| a clone of format 0 naming an extension git ignores there | its top | its top |
+| a checkout whose `.git` directory names a common directory | the top that common directory is the `.git` of | that top |
+
+Every command that writes the store (`run`, `critique`, `graph build`, `canary`,
+`playbooks --rebuild`, `setup`) resolves it from `root` too; `run` and `critique` refuse anywhere
+but `root` before they open it. Run at `root`, it writes `root`'s `.rigger/`, created when absent:
+the one place a store is made. Run from a subdirectory or a linked worktree, it writes the
+`.rigger/` at `root` that `rigger init` or `rigger setup` made there, and where `root` holds none
+it refuses, naming `root` and `rigger setup` as what makes one. No command leaves a store file in
+the `.rigger/` of the directory it runs in. `rigger init` and `rigger setup` still scaffold the
+directory they run in, so a project below the repository root keeps its own instruction layer;
+its store is `root`'s.
+
+Every command that reads the run store (`stats`, `replay`, `dash`, `mcp`, `graph`, the store
+advisories of `validate`) reads `root`'s `.rigger/` from a subdirectory or a linked worktree,
+answering as it answers at `root`. Below a `root` that holds no `.rigger/` it refuses in the
+writers' one sentence; a command that answers without a store (`prime`, `status --line`,
+`validate`) reads that as no store yet.
+
+Configuration is found by the same rule. `run`, `critique`, `canary` and the grep guard read the
+definition of the project governing the caller under `root`: the nearest directory holding a
+workflow definition, from the caller's position mapped under `root` up to `root`. `validate` and
+`docs` judge and render the project governing the caller in its own worktree, where an edit to it
+is made before it lands, and `ground` and the MCP server's ground tool take that project's
+grounder to ground the caller's worktree with. The docs pre-commit block asks git for `root`, the
+directory the run's build caches lie under: the main worktree `git worktree list` names, or the
+caller's own top where that entry is bare or names the common directory itself. Telling the common
+directory needs git 2.31 or newer (`rev-parse --path-format`); an older git roots that layout at
+the common directory, where no unit or shared build cache lies, so the block finds a build only in
+the environment's or the worktree's own target, or on PATH. Every command finds its store, its
+configuration and `root` through the one resolver, which alone reads the directory the command
+runs in; the suite fails on any other read of it, and on any store, configuration or root path
+spelled relative to it, outside the resolver.
+
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.
@@ -636,11 +701,18 @@ ground, lookup, MCP, dash), so a read from a subdirectory counts the whole workt
 files and its label names the top-level.
 
 A read asks where the repository lies once per open. The reader's site discovers it once, from
-git's files, else in one `rev-parse` where the files cannot answer, and every rule that names a
-root, a tree, a store or an identity from that site reads the one answer: the store walk, the
-store selection, the identity, W, `root` and the tree source. A reader that answers many opens
-(the MCP session, a run, either's grounder) asks anew for each open after its first, so it holds
-no discovery between opens; the head, the diff and the listing are read per open.
+git's files, else in one `rev-parse` where the files cannot answer. Discovery never follows an
+`include` or `includeIf` section itself: a repository whose configuration holds one is asked of
+git, in that `rev-parse` and in one `git config --list` from the common directory for the main
+checkout git records. Every rule that names a root, a tree, a store or an identity from that
+site reads the one answer: the store walk, the store selection, the identity, W, `root` and the
+tree source. No open reads a discovery made before its own call. A reader built and opened in
+one step (`rigger graph --around`, `--show`, `--lookup` and `ground`, and the dashboard's
+reader, built per request) serves its first open from the discovery its build made, which found
+its store, so a lookup gains no git spawn. A reader held from its build to a later first open
+(the MCP session's graph reader and grounder, built when the session starts, and a run's, built
+when the run starts) asks anew for that open, and every reader asks anew for each later open.
+The head, the diff and the listing are read per open.
 
 The check never writes W's index. Every git the source starts itself passes
 `--no-optional-locks` (discovery's `rev-parse`, where it is asked, reads no index), and
@@ -791,7 +863,7 @@ reached.
 
 | Query | Work | Budget (through the binary) |
 |---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git) | inside the budgets below |
+| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below |
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |

@@ -79,7 +79,7 @@ const WORKFLOW: &str = "defaults:\n  grounder: nop\n  budget: 60\n  max_retries:
                         stages:\n  plan:\n    agent: planner\n    produces: dag\n  \
                         plan-critique:\n    needs: [plan]\n    adversary: adversary\n    \
                         adjudicator: judge\n  implement:\n    needs: [plan-critique]\n    \
-                        agent: worker\n    strategy: fan-out\n    on_pass: none\n";
+                        agent: worker\n    strategy: fan-out\n";
 
 /// A repo-less project scaffolded with [`WORKFLOW`] and its four agents.
 fn critique_project() -> tempfile::TempDir {

@@ -78,7 +78,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // dependency of its own (spec 77 c4 review history: the identical composition defect an
         // earlier attempt at this feature was caught for, reproduced independently before this
         // fix landed).
-        reset_build_cache(ResetEnv::resolved(&mut env, &loc)?)?;
+        reset_build_cache(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
     }
     if modes.scratch_orphans {
         reset_scratch_orphans()?;
@@ -164,7 +164,7 @@ impl ResetEnv {
                 "the store at {} has no UTF-8 owning root, so the scratch root its runs write \
                  their liveness markers and build caches under cannot be resolved; refusing \
                  rather than reading that as no live spawn",
-                loc.dir.display()
+                loc.absolute_dir().display()
             )
             .into());
         }
@@ -415,14 +415,15 @@ fn reset_scratch_orphans() -> Res {
 /// authority over this resource, and reports what happened via
 /// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
 /// refusal when a rigger-launched shared-cache build holds the guard.
-fn reset_build_cache(env: &ResetEnv) -> Res {
+fn reset_build_cache(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -> Res {
     let scratch = PathBuf::from(&env.scratch_root);
     // Every dead class the footprint accounting names with this verb first (gap 96), so a
     // busy shared cache below never keeps the rest from being reclaimed - unless the run log
     // cannot be read: then nothing says which units and spawns are live, and every
     // liveness-dependent class is left alone (FAIL CLOSED), reported after the shared cache,
     // whose own guard lock decides it independently.
-    let (categories, liveness_unknown) = super::validate::measure_footprint(&cwd(), &env.workdir)?;
+    let (categories, liveness_unknown) =
+        super::validate::measure_footprint(loc, selection, &env.workdir)?;
     if liveness_unknown.is_none() {
         for line in footprint_reclaim_lines(&reclaim_dead_footprint(&categories)) {
             println!("{line}");
@@ -527,7 +528,7 @@ fn reset_derived(loc: &StoreLocation) -> Res {
     // the records-only fold has proven it loses nothing before a derived row goes.
     if Path::new(&graph_db).exists() {
         open_graph(
-            &graph_db,
+            loc,
             &loc.identity()?,
             &StoreSelection::Sqlite,
             "reset --derived",
@@ -851,12 +852,7 @@ fn live_writer_facts(
         .registry_dir
         .as_deref()
         .map(|dir| {
-            let root = loc
-                .dir
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            let expected = registry_store_identity(selection, &root);
+            let expected = registry_store_identity(selection, &loc.owner());
             live_driver_registrations(dir, &expected, env.now_ms)
         })
         .unwrap_or(0);
@@ -945,7 +941,7 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // with no run) reclaims no edge, so LIVE and recent history are both untouched.
         let boundary = superseded_edge_boundary(&events);
 
-        let graph = open_graph(&graph_db, &loc.identity()?, selection, "reset --runs")?;
+        let graph = open_graph(loc, &loc.identity()?, selection, "reset --runs")?;
         // The probe's step lock is held until the close returns, so no `rigger run` starts against
         // a run this reset is closing; the graph prune below takes no part in
         // it.
@@ -1787,7 +1783,7 @@ mod tests {
             registry_dir: None,
             now_ms: rigger::registry::now_ms(),
         };
-        (StoreLocation { dir: rigger_dir }, env)
+        (StoreLocation::at(rigger_dir), env)
     }
 
     /// The live-run refusal names every live reason at once, in the order the probe lists them
@@ -1884,7 +1880,7 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let dir =
             Path::new(std::ffi::OsStr::from_bytes(b"/nonexistent-\xff-root")).join(RIGGER_DIR);
-        let loc = StoreLocation { dir: dir.clone() };
+        let loc = StoreLocation::at(dir.clone());
         let Err(err) = ResetEnv::resolve(&loc) else {
             panic!("an owning root with no UTF-8 path must refuse, never resolve a scratch root");
         };

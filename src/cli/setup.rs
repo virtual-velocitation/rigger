@@ -529,7 +529,8 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 }
 
 pub(crate) fn cmd_init() -> Res {
-    let report = init_project(Path::new("."), TEMPLATE_SETS)?;
+    let site = Site::here();
+    let report = init_project(site.located()?, TEMPLATE_SETS)?;
     let lines = scaffold_summary_lines(&report);
     if lines.is_empty() {
         // Re-runnable: an already-initialized project is a silent no-op with a plain
@@ -812,7 +813,14 @@ pub(crate) fn open_project_code_store(
 /// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
-    let root = Path::new(".");
+    let site = Site::here();
+    // The directory setup scaffolds: the one it runs in, as the resolver read it.
+    let root = site.located()?;
+    // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
+    // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
+    // resolved before setup writes anything, so where that root holds none setup is refused
+    // untouched.
+    let (store, selection) = store_to_write_in(&site)?;
     // Each step is drift-aware and reports whether it changed anything, so setup is
     // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
@@ -832,7 +840,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Pay the one cold rebuild a `graph.db` owes (spec 101) - folded under an older fold rule, or
     // missing an event the log holds, in the cases `rebuild_owed_graph` names: the only command
     // that rebuilds it, because it is the verb every install already runs.
-    let graph_rebuilt = rebuild_owed_graph()?;
+    let graph_rebuilt = rebuild_owed_graph(&site, &store, &selection)?;
     let retired = [
         remove_retired_driver_files(root)?,
         remove_retired_symbols_index(root),
@@ -1017,9 +1025,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
 /// graph cuts it into, and an interrupted rebuild resumes from the last of them committed.
 const REBUILD_BATCH: usize = 10_000;
 
-/// Rebuild this project's `graph.db` from the event log when it owes that rebuild (spec 101) - it
-/// was folded under an older fold rule, or it misses an event the log holds, which setup finds by
-/// seeding the file's `caught_up` cursor ([`Projector::seed_cursor`]): on a file not yet carrying
+/// Rebuild the `graph.db` of the store `loc` that setup resolved at `site` ([`store_to_write_in`])
+/// from the event log when it owes that rebuild (spec 101) - it was folded under an older fold
+/// rule, or it misses an event the log holds, which setup finds by seeding the file's `caught_up`
+/// cursor ([`Projector::seed_cursor`]): on a file not yet carrying
 /// it, the seeding reads the file's ledger of folded positions against the log's live selection,
 /// and the prefix it finds violated is owed - a position missing up to the bound the seeding names
 /// and older than the catch-up horizon (every one on a server-backed log, whose stamps are taken on
@@ -1072,41 +1081,41 @@ const REBUILD_BATCH: usize = 10_000;
 ///
 /// On the sqlite backend, once the rebuild is paid or found not owed, setup deletes the derived
 /// events the log still holds, under the same rebuild lock ([`delete_derived_once_rebuilt`]).
-fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
-    let graph_db = db_path("graph.db");
+fn rebuild_owed_graph(
+    site: &Site,
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let graph_db = loc.file("graph.db");
     Projector::forget_orphaned_mark(&graph_db)?;
     let held = Projector::lock_rebuild(&graph_db)?;
     // The scaffold may just have minted the durable identity: the log moves to it first (the
     // migration every run driver performs on open), so the rebuild reads the history the legacy
     // namespace still holds.
-    migrate_local_identity(Some(&held))?;
-    let project = project_identity()?;
+    migrate_identity_at(loc, Some(&held))?;
+    let project = loc.identity_in(site)?;
     let graph_error = |e: rigger::eventstore::Error| contextgraph::Error(e.to_string());
     // A NEW rebuild - one whose pay starts a fresh shadow - is refused while the run is live (spec
     // 124): the live-run refusal `rigger reset --derived` has, over this store's log, its scratch
     // configuration, registry and clock read only once the pay would start one, so a setup whose
     // pay starts none reads none of them.
-    let selection = store_selection(None, None)?;
-    let loc = StoreLocation {
-        dir: cwd().join(RIGGER_DIR),
-    };
     let refuse = |log: &dyn EventStore| {
         refuse_if_live(
-            &loc,
-            &selection,
-            &ResetEnv::resolve(&loc)?,
+            loc,
+            selection,
+            &ResetEnv::resolve(loc)?,
             log,
             live_run_rebuild_refusal,
         )
     };
     // The one write open of `graph.db` this setup makes, under the rebuild lock: the file it seeds,
     // rebuilds and catches up, with the catch-up's log installed.
-    let graph = open_graph_for_write(held.path(), &project, &selection)?;
-    match &selection {
+    let graph = open_graph_for_write(loc, &project, selection)?;
+    match selection {
         sqlite @ StoreSelection::Sqlite => {
             // A project with no run recorded has no log file: its log is read as the empty one it
             // is, so setup never makes `events.db`.
-            let events_db = db_path("events.db");
+            let events_db = loc.file("events.db");
             let store = open_sqlite_store(sqlite.log_file(&events_db))?;
             let prefix = Namespaced::prefix_for(&project);
             let identity = rigger::ingest::derived_index_identity();
@@ -1151,9 +1160,9 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
             )?;
             for line in delete_derived_once_rebuilt(&store, &run_stream_of(&project), &|| {
                 refuse_if_live(
-                    &loc,
-                    &selection,
-                    &ResetEnv::resolve(&loc)?,
+                    loc,
+                    selection,
+                    &ResetEnv::resolve(loc)?,
                     &log,
                     live_run_delete_refusal,
                 )
@@ -1168,7 +1177,7 @@ fn rebuild_owed_graph() -> Result<bool, Box<dyn std::error::Error>> {
         // taken on the server's clock, not this host's, so the seeding is handed none: the
         // server's skew moves nothing, and every position the file misses counts old.
         selection => {
-            let backend = resolve_store(selection, &db_path("events.db"))?;
+            let backend = resolve_store(selection, &loc.file("events.db"))?;
             let store = Namespaced::new(backend.as_ref(), &project);
             let mut positions =
                 contextgraph::sqlite::stream_positions(&store, conductor::STREAM, REBUILD_BATCH);
@@ -2099,12 +2108,13 @@ graph - is a reject.\n\
 re-litigate; an undecided disposition is a reject.\n\
 \n\
 NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
-`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
-the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
-on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
-merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
-a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
-concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+Overlapping units run in SEPARATE sequential batches (each branches off the prior batch's\n\
+integrated tree) only where the workflow declares `partition: by-blast-radius` for both;\n\
+otherwise they run side by side unless one `needs` the other. Either way per-unit worktree\n\
+isolation keeps every reviewer on its own diff, so overlap reviews independently. Do NOT\n\
+reject merely because two units touch the same file. Reject a shared-file split ONLY when\n\
+it is a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap.\n\
 \n\
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
@@ -2160,12 +2170,13 @@ graph - is a reject.\n\
 re-litigate; an undecided disposition is a reject.\n\
 \n\
 NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defect.\n\
-`partition: by-blast-radius` runs them in SEPARATE sequential batches (each branches off\n\
-the prior batch's integrated tree), and per-unit worktree isolation keeps every reviewer\n\
-on its own diff - so overlap integrates cleanly and reviews independently. Do NOT reject\n\
-merely because two units touch the same file. Reject a shared-file split ONLY when it is\n\
-a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
-concern cleanly - not for mechanical overlap the partitioner already serializes.\n\
+Overlapping units run in SEPARATE sequential batches (each branches off the prior batch's\n\
+integrated tree) only where the workflow declares `partition: by-blast-radius` for both;\n\
+otherwise they run side by side unless one `needs` the other. Either way per-unit worktree\n\
+isolation keeps every reviewer on its own diff, so overlap reviews independently. Do NOT\n\
+reject merely because two units touch the same file. Reject a shared-file split ONLY when\n\
+it is a genuine OWNERSHIP or COHERENCE defect (rule 7) - two units that cannot own their\n\
+concern cleanly - not for mechanical overlap.\n\
 \n\
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
