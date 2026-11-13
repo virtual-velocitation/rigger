@@ -1506,6 +1506,34 @@ function kgDraw(above, draw, below) {
   bindKgView();
 }
 
+// Whether a redraw for a new panel size is queued for the next animation frame.
+let kgResizeQueued = false;
+// Fit the view the panel holds to the panel's new size, with no new request, when the box kgDims now
+// measures differs from the one the drawing was drawn at - so a redraw, which leaves that box as it
+// measured it, cannot feed itself. An unmoved view is drawn again from its held body and re-fits by
+// the opening rule. A panned or zoomed one keeps its transform and its marks where they are: only the
+// drawing surface takes the new size, and the labels follow the scale it is now seen at. A panel
+// holding no finished drawing (a message, an empty state, a draw that threw) is left as it is: only
+// kgSvg's markup carries #kgzoom, and kgSvg sets kgDrawn to describe it first.
+function kgRedrawResized() {
+  kgResizeQueued = false;
+  const panel = el("kgpanel");
+  if (!panel.querySelector("#kgzoom")) return;
+  const dims = kgDims();
+  if (dims.w === kgDrawn.width && dims.h === kgDrawn.height) return;
+  if (!kgViewMoved) {
+    rerenderCurrentView();
+    return;
+  }
+  const svg = panel.querySelector("svg.kgsvg");
+  svg.setAttribute("height", dims.h);
+  svg.setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
+  kgDrawn.width = dims.w;
+  kgDrawn.height = dims.h;
+  if (kgLabelState) kgLabelState.width = dims.w;
+  kgApplyLabels();
+}
+
 // Union-find (path-compressed) over node ids, so a DISCONNECTED graph (a drilled cluster's separate
 // files) can be split into connected COMPONENTS and laid out piece by piece instead of flung to the
 // corners as one tangle.
@@ -2033,10 +2061,14 @@ function layeredLayout(nodes, edges, width, height) {
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
 // the #kgzoom group (never re-laying-out). The wheel + mousedown bind to the FRESH svg each render (a
-// drill / back rebinds and opens the view FITTED again, kgOpeningView); the drag move/up live on
-// `window` (installed once, below) so a drag that leaves the svg still tracks.
+// drill / back rebinds and opens the view FITTED again, kgOpeningView; a new panel size re-fits it
+// too unless the user has moved it, kgRedrawResized); the drag move/up live on `window`
+// (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
+// Whether the user has panned or zoomed the view since it opened: a new panel size (kgRedrawResized)
+// keeps a moved view's transform and marks and re-fits an unmoved one.
+let kgViewMoved = false;
 // The last drawing's viewBox size and the box holding every mark it drew (set by kgSvg).
 let kgDrawn = null;
 // How far the wheel zooms out: 0.2, or the opening scale when the fit opens below that.
@@ -2085,6 +2117,7 @@ function kgOpeningView(drawn) {
 }
 function bindKgView() {
   kgView = kgOpeningView(kgDrawn);              // a fresh render opens fitted to the panel
+  kgViewMoved = false;
   kgZoomFloor = Math.min(0.2, kgView.k);
   const svg = el("kgpanel").querySelector("svg");
   if (!svg) return;
@@ -2099,6 +2132,7 @@ function bindKgView() {
     kgView.x = mx - (mx - kgView.x) * (nk / kgView.k);
     kgView.y = my - (my - kgView.y) * (nk / kgView.k);
     kgView.k = nk;
+    kgViewMoved = true;
     applyKgView();
   });
   svg.addEventListener("mousedown", ev => {
@@ -2658,9 +2692,21 @@ window.addEventListener("mousemove", ev => {
   if (!kgDrag) return;
   kgView.x = kgDrag.ox + (ev.clientX - kgDrag.sx);
   kgView.y = kgDrag.oy + (ev.clientY - kgDrag.sy);
+  kgViewMoved = true;
   applyKgView();
 });
 window.addEventListener("mouseup", () => { kgDrag = null; });
+
+// One SIZE OBSERVER on the panel, bound once: each change of its size (a window resize, the instances
+// strip above it growing) queues kgRedrawResized for the next animation frame, at most one at a time.
+// A host without one keeps each drawing at the size it was drawn.
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(() => {
+    if (kgResizeQueued) return;
+    kgResizeQueued = true;
+    requestAnimationFrame(kgRedrawResized);
+  }).observe(el("kgpanel"));
+}
 
 // DEFAULT the KG panel to the whole-graph clustered overview on load (spec 42 c5): the exploration
 // path starts from the whole graph. loadKgOverview handles the static-export and offline cases itself.
