@@ -15,6 +15,32 @@ pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
      RED, implement minimally, confirm GREEN, run\nthe named gates, commit. Report the \
      final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n";
 
+/// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
+pub const ROLE_SEED_FILES: [&str; 5] = [
+    "adjudicator.md",
+    "adversary.md",
+    "architecture-reviewer.md",
+    "planner.md",
+    "sdet.md",
+];
+
+/// The sorted files `.rigger/agents` holds when its implementer persona is `implementer`: the
+/// role seeds and that file.
+pub fn agents_beside(implementer: &str) -> Vec<String> {
+    let mut files: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
+    files.push(implementer.to_string());
+    files.sort();
+    files
+}
+
+/// The two unit stages' agents, `[implement, checkin]`.
+pub fn stage_agents(cfg: &Config) -> [String; 2] {
+    [
+        cfg.workflow.stages["implement"].agent.clone(),
+        cfg.workflow.stages["checkin"].agent.clone(),
+    ]
+}
+
 /// The names in the directory `dir`, sorted.
 pub fn sorted_dir_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(dir)

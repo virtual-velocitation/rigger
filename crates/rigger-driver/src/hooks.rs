@@ -89,33 +89,49 @@ pub fn resolve_spawn_host(
 /// The fan-out helpers a spawn of the checkout at `root` carries, one per [`HELPER_AGENTS`] entry
 /// in its order: the operator's copy under [`HELPER_AGENTS_DIR`] where the checkout holds one,
 /// whatever its text, else the embedded text. A missing file, or an agents path that is no
-/// directory, holds no copy; a copy that cannot be read, or does not parse as a helper
-/// definition, fails naming its path and never falls back to the embedded text.
+/// directory, holds no copy; a copy that cannot be read, does not parse as a helper definition,
+/// or names the helper another file defines, fails naming its path and never falls back to the
+/// embedded text, so `--agents` and the tool pre-approval read one helper per name.
 pub fn resolved_helpers(root: &Path) -> Result<Vec<HelperCopy>, Error> {
-    HELPER_AGENTS
-        .iter()
-        .map(|(file, embedded)| {
-            let path = root.join(HELPER_AGENTS_DIR).join(file);
-            let (text, present) = match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    parse_helper(path.display(), &text)?;
-                    (text, true)
-                }
-                Err(e) if is_absent(&e) => (embedded.to_string(), false),
-                Err(e) => return Err(helper_error(path.display(), e)),
+    let mut named: Vec<(String, std::path::PathBuf, HelperCopy)> = Vec::new();
+    for (file, embedded) in HELPER_AGENTS {
+        let path = root.join(HELPER_AGENTS_DIR).join(file);
+        let (text, present) = match std::fs::read_to_string(&path) {
+            Ok(text) => (text, true),
+            Err(e) if is_absent(&e) => (embedded.to_string(), false),
+            Err(e) => return Err(helper_error(path.display(), e)),
+        };
+        let (name, _) = parse_helper(path.display(), &text)?;
+        if let Some((_, first_path, first)) = named.iter().find(|(seen, ..)| *seen == name) {
+            // The embedded helpers name themselves apart, so of the two one is an operator's copy:
+            // the error names that copy, and the other file.
+            let (copy, other) = if present {
+                (&path, first.name.as_str())
+            } else {
+                (first_path, *file)
             };
-            Ok(HelperCopy {
+            return Err(helper_error(
+                copy.display(),
+                format!("the name {name:?} is also {other}'s"),
+            ));
+        }
+        named.push((
+            name,
+            path,
+            HelperCopy {
                 name: file.to_string(),
                 text,
                 present,
-            })
-        })
-        .collect()
+            },
+        ));
+    }
+    Ok(named.into_iter().map(|(.., copy)| copy).collect())
 }
 
 /// Whether the failed read `e` found no file at the path: nothing there, or a path component
-/// that is no directory.
-fn is_absent(e: &std::io::Error) -> bool {
+/// that is no directory. The one test for "an operator's copy that is not there is no copy",
+/// read wherever a project's own file shadows a shipped default.
+pub fn is_absent(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
@@ -127,45 +143,35 @@ fn helper_error(label: impl std::fmt::Display, reason: impl std::fmt::Display) -
     Error(format!("helper agent {label}: {reason}"))
 }
 
-/// The helper definition `text` holds, as `--agents` keys it: its name and its fields, each
-/// frontmatter field verbatim (`tools` as the list its comma-separated value spells) and its
-/// body as the prompt. A text that does not parse fails naming `label`.
+/// The helper definition `text` holds, as `--agents` keys it: its name and its fields, its
+/// frontmatter read as the YAML Claude Code reads (`tools` as a list, whether written as one or
+/// as a comma-separated string) and its body as the prompt. A text that does not parse, or whose
+/// frontmatter names no helper, fails naming `label`.
 fn parse_helper(
     label: impl std::fmt::Display,
     text: &str,
 ) -> Result<(String, Map<String, Value>), Error> {
     let (front, body) =
         rigger_domain::config::split_frontmatter(text).map_err(|e| helper_error(&label, e))?;
-    let mut def = Map::new();
-    let mut name = None;
-    for line in front.lines() {
-        let (key, value) = line
-            .split_once(':')
-            .ok_or_else(|| helper_error(&label, format!("frontmatter line {line:?}")))?;
-        let value = value.trim();
-        match key {
-            "name" => name = Some(value),
-            "tools" => {
-                def.insert(
-                    key.to_string(),
-                    value.split(',').map(str::trim).collect::<Vec<_>>().into(),
-                );
-            }
-            _ => {
-                def.insert(key.to_string(), value.into());
-            }
-        }
+    let mut def: Map<String, Value> = rigger_domain::config::parse_yaml_naming_unknown_keys(front)
+        .map_err(|e| helper_error(&label, e))?;
+    let Some(Value::String(name)) = def.remove("name") else {
+        return Err(helper_error(&label, "no name"));
+    };
+    if let Some(Value::String(tools)) = def.get("tools") {
+        let tools: Vec<Value> = tools.split(',').map(|tool| tool.trim().into()).collect();
+        def.insert("tools".to_string(), tools.into());
     }
     def.insert("prompt".to_string(), body.into());
-    let name = name.ok_or_else(|| helper_error(&label, "no name"))?;
-    Ok((name.to_string(), def))
+    Ok((name, def))
 }
 
 /// Merge the session settings rigger installs - the SessionStart prime hook and the status line,
 /// and the PreToolUse grep-guard when `grep_guard` is set - into `existing` settings JSON, through
-/// the same installers `rigger setup` runs one by one, preserving every other setting. It never
-/// removes: settings already carrying the guard keep it with `grep_guard` unset. `existing` may
-/// be empty.
+/// the same installers `rigger setup` runs one by one, preserving every other setting. With
+/// `grep_guard` unset it removes nothing: settings already carrying the guard keep it; set, the
+/// guard's installer replaces an entry under a drifted matcher ([`install_grep_guard`]).
+/// `existing` may be empty.
 pub fn install_session_settings(existing: &[u8], grep_guard: bool) -> Result<Vec<u8>, Error> {
     let mut merged = install_session_start(existing, PRIME_COMMAND)?;
     if grep_guard {
@@ -306,9 +312,9 @@ pub fn carries_session_settings(existing: &[u8], grep_guard: bool) -> bool {
 }
 
 /// The `helpers` as the JSON object Claude Code's `--agents` flag takes:
-/// `{name: {description, model, tools: [..], prompt}}`, each field read from the helper's own
-/// frontmatter and the prompt its body, verbatim. A helper that does not parse fails naming its
-/// file.
+/// `{name: {description, model, tools: [..], prompt}}`, each field the value the helper's own
+/// YAML frontmatter gives it and the prompt its body, verbatim ([`parse_helper`]). A helper that
+/// does not parse fails naming its file.
 pub fn helper_agents_json(helpers: &[HelperCopy]) -> Result<Value, Error> {
     let mut agents = Map::new();
     for helper in helpers {
@@ -558,7 +564,9 @@ pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{write_helper_copies, write_helper_copy, OPERATOR_HELPER_COPIES};
+    use crate::test_support::{
+        hook, hook_block, write_helper_copies, write_helper_copy, OPERATOR_HELPER_COPIES,
+    };
 
     /// `install` onto an empty settings file writes every one of `needles`, and installing again
     /// onto its own output leaves each command of `counted` exactly as many times as it names.
@@ -685,16 +693,6 @@ mod tests {
                 ],
             );
         }
-    }
-
-    /// One hook block running `command` under `matcher`, as the installers write it.
-    fn hook_block(matcher: &str, command: &str) -> Value {
-        json!({"matcher": matcher, "hooks": [hook(command)]})
-    }
-
-    /// One inner hook running `command`.
-    fn hook(command: &str) -> Value {
-        json!({"type": "command", "command": command})
     }
 
     /// `settings` as the bytes of a compact settings file.
@@ -848,8 +846,9 @@ mod tests {
         }
     }
 
-    /// A copy that exists but cannot be read, or does not parse as a helper definition, fails the
-    /// resolution with an error naming that file, never falling back to the embedded text.
+    /// A copy that exists but cannot be read, does not parse as a helper definition, or names the
+    /// helper another file defines, fails the resolution with an error naming that copy, and for a
+    /// repeated name the other file, never falling back to the embedded text.
     #[test]
     fn an_unreadable_or_malformed_helper_copy_fails_the_resolution_naming_the_file() {
         const NO_FRONTMATTER: &str = "Answer one question.\n";
@@ -872,10 +871,32 @@ mod tests {
                 },
             },
             Row {
-                name: "a frontmatter line with no colon",
+                name: "a frontmatter that is no YAML mapping",
                 setup: |root| write_helper_copy(root, "lookup.md", "---\nname lookup\n---\nbody\n"),
                 file: "lookup.md",
-                reason: |_| "frontmatter line \"name lookup\"".to_string(),
+                reason: |_| {
+                    rigger_domain::config::parse_yaml_naming_unknown_keys::<Map<String, Value>>(
+                        "name lookup",
+                    )
+                    .unwrap_err()
+                },
+            },
+            Row {
+                name: "a lookup copy naming the helper verify defines",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", "---\nname: verify\n---\nbody\n")
+                },
+                file: "lookup.md",
+                reason: |_| "the name \"verify\" is also verify.md's".to_string(),
+            },
+            Row {
+                name: "a verify copy naming the helper the lookup copy defines",
+                setup: |root| {
+                    write_helper_copy(root, "lookup.md", OPERATOR_HELPER_COPIES[0].1);
+                    write_helper_copy(root, "verify.md", "---\nname: lookup\n---\nbody\n");
+                },
+                file: "verify.md",
+                reason: |_| "the name \"lookup\" is also lookup.md's".to_string(),
             },
             Row {
                 name: "a copy with no name",
@@ -1343,6 +1364,16 @@ mod tests {
             ),
             ("no helpers", vec![], Ok(vec![])),
             (
+                "a YAML list of tools declares each of its entries",
+                vec![HelperCopy {
+                    text:
+                        "---\nname: lookup\ntools: [mcp__rigger__rigger_graph, Read]\n---\nbody\n"
+                            .to_string(),
+                    ..resolved("lookup.md", true)
+                }],
+                Ok(vec!["mcp__rigger__rigger_graph"]),
+            ),
+            (
                 "a copy with no name",
                 vec![HelperCopy {
                     text: "---\nmodel: haiku\n---\nbody\n".to_string(),
@@ -1357,6 +1388,51 @@ mod tests {
                 expected
                     .map(|tools| tools.iter().map(|t| t.to_string()).collect::<Vec<_>>())
                     .map_err(str::to_string),
+                "{name}"
+            );
+        }
+    }
+
+    /// A helper copy's frontmatter reads as the YAML Claude Code reads it in the operator's own
+    /// session: a blank line and a comment are no field, a quoted value is its text, and `tools`
+    /// is a list whether written as one or as a comma-separated string.
+    #[test]
+    fn a_helper_copys_frontmatter_reads_as_yaml() {
+        let rows = [
+            (
+                "a blank line and a comment",
+                "---\nname: lookup\n\n# the operator's note\nmodel: sonnet\n---\nbody\n",
+                json!({"model": "sonnet", "prompt": "body\n"}),
+            ),
+            (
+                "a quoted name and a quoted value holding a colon",
+                "---\nname: \"lookup\"\ndescription: \"Answer: one node.\"\n---\nbody\n",
+                json!({"description": "Answer: one node.", "prompt": "body\n"}),
+            ),
+            (
+                "a flow list of tools",
+                "---\nname: lookup\ntools: [mcp__rigger__rigger_graph, Read]\n---\nbody\n",
+                json!({"tools": ["mcp__rigger__rigger_graph", "Read"], "prompt": "body\n"}),
+            ),
+            (
+                "a block list of tools",
+                "---\nname: lookup\ntools:\n  - Read\n  - Bash\n---\nbody\n",
+                json!({"tools": ["Read", "Bash"], "prompt": "body\n"}),
+            ),
+            (
+                "a comma-separated string of tools",
+                "---\nname: lookup\ntools: Read, Bash\n---\nbody\n",
+                json!({"tools": ["Read", "Bash"], "prompt": "body\n"}),
+            ),
+        ];
+        for (name, text, expected) in rows {
+            let copy = HelperCopy {
+                text: text.to_string(),
+                ..resolved("lookup.md", true)
+            };
+            assert_eq!(
+                helper_agents_json(&[copy]).map_err(|e| e.to_string()),
+                Ok(json!({ "lookup": expected })),
                 "{name}"
             );
         }

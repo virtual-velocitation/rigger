@@ -152,8 +152,7 @@ fn init_project(
 
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
-    let agents_dir = rigger_dir.join("agents");
-    std::fs::create_dir_all(&agents_dir)?;
+    std::fs::create_dir_all(&rigger_dir)?;
     let wrote_workflow = write_if_absent(
         &rigger_dir.join(WORKFLOW_FILE),
         &scaffold_workflow(matched.map(|(_, spec)| spec)),
@@ -272,16 +271,17 @@ fn init_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when `root` holds no workflow), returning the file names it
-/// newly wrote. An existing file is kept silently ([`write_if_absent`]), so a rerun writes
-/// nothing new and an operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent),
+/// returning the file names it newly wrote. It creates `.rigger/agents/` when absent. An
+/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
+/// operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // Load the workflow to determine which agents are referenced, then only scaffold those
     // agents. This allows setup to skip scaffolding when the workflow's referenced agents
-    // already exist (§05 setup hygiene). A genuine parse failure (most importantly an
+    // already exist (spec 05 setup hygiene). A genuine parse failure (most importantly an
     // unrecognized key) escalates as a real `Err` here - never `.unwrap_or_default()` -
     // because folding it into the empty set would treat a broken PRESENT workflow.yml the same
     // as a genuinely ABSENT one, below, and silently re-scaffold the full default fleet over
@@ -302,16 +302,17 @@ fn write_seed_agents(
 
     // If the workflow references agents, scaffold only those; a candidate whose id cannot be
     // parsed is skipped, never scaffolded invalid. If it references nothing, scaffold every
-    // candidate for backward compatibility (empty repo case) - reached only when
+    // candidate for backward compatibility (empty repo case) - reached when
     // `get_referenced_agent_ids` returned the empty set because workflow.yml is genuinely
-    // ABSENT, never because a present one failed to parse.
-    let agents_dir = root.join(RIGGER_DIR).join("agents");
+    // ABSENT or names no agent, never because a present one failed to parse.
+    let agents_dir = project_agents_dir(root);
+    std::fs::create_dir_all(&agents_dir)?;
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
         let referenced = referenced_agents.is_empty()
             || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
-        // rerun scaffolds nothing new (the skip-scaffolding hygiene of §05). A genuine
+        // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
         if referenced && write_if_absent(&agents_dir.join(&file), content)? {
             new_agents.push(file);
@@ -421,8 +422,9 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 }
 
 /// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
-/// empty set ONLY when the file is genuinely ABSENT (the legitimate empty-repo signal
-/// `init_project` seeds the full default fleet on); a PRESENT-but-unparseable file - most
+/// empty set when the file is genuinely ABSENT (the legitimate empty-repo signal
+/// `init_project` seeds the full default fleet on) or parses but names no agent (its stages
+/// and `defaults.review` are optional); a PRESENT-but-unparseable file - most
 /// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
 /// same empty set. Routed through [`config_store::load_workflow`], the one canonical
 /// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
@@ -708,8 +710,8 @@ fn remove_retired_driver_files(root: &Path) -> Result<Vec<String>, Box<dyn std::
 /// What setup's report of an installed lookup hook says the hook does: the searches it bounces
 /// and the combined lookup it bounces them toward, then its escape hatch.
 const LOOKUP_HOOK_BOUNCES: &str = "a Grep tool call, or a `grep` command or `sed` or `awk` \
-     pattern search, over src/, tests/, or workflows/ now bounces toward the combined lookup, \
-     rigger_graph `lookup` (end the command with a `# --literal` comment to proceed anyway)";
+     pattern search, anywhere, now bounces toward the combined lookup, rigger_graph `lookup` \
+     (end the command with a `# --literal` comment to proceed anyway)";
 
 /// The code store of the project `start` lies in, rooted where the stamp rule puts it: at the
 /// operator checkout git's common directory names, read from that checkout's HEAD whichever
@@ -828,8 +830,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door, with this repo's project overlay (base branch, specs location,
-    // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
-    // repo changes nothing.
+    // Global constraints) merged into the render, or, for a skill the project keeps its own
+    // copy of under `.rigger/skills/`, that copy verbatim with no overlay (spec 121, criterion
+    // 14); every other entry there is a stray, listed below. Drift-aware, so a rerun on an
+    // up-to-date repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
@@ -875,25 +879,24 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Each entry under `.rigger/skills/` that shadows no shipped skill is listed on EVERY setup,
     // so it prints before the silent-no-op check below (spec 121, criterion 14). A project copy
     // installed in place of a skill (`ProjectCopy`) is a state, not a change: it reads as
-    // `AlreadyCurrent` at that check and in the report.
+    // `AlreadyCurrent` at that check and in the report. Both paths in the line are root-relative
+    // and spelled with `/` on every OS, like the report's `.claude/skills/` install lines.
     for stray in &skills.strays {
         println!(
-            "{stray} shadows no shipped skill and installs nothing: a project copy is {}, <name> \
-             a shipped skill's exact name",
-            project_skill_path(Path::new(""), "<name>").display()
+            "{stray} shadows no shipped skill and installs nothing: a project copy is \
+             {RIGGER_DIR}/{}, <name> a shipped skill's exact name",
+            skill_source_rel("<name>")
         );
     }
 
-    let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
-        !matches!(
-            outcome,
-            InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
-        )
-    });
-    let hook_changed = hook.is_some_and(|hook| hook != InstallOutcome::AlreadyCurrent);
-    let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
-    let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
-    let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
+    let skill_changed = skills
+        .outcomes
+        .iter()
+        .any(|(_, outcome)| outcome.is_change());
+    let hook_changed = hook.is_some_and(InstallOutcome::is_change);
+    let mcp_changed = mcp_registered.is_change();
+    let lookup_hook_changed = lookup_hook.is_change();
+    let status_line_changed = status_line.is_change();
     let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
     if !scaffold.changed()
         && !graph_rebuilt
@@ -1426,9 +1429,9 @@ fn rebuild_progress_line(
 /// The same three-state contract every other `rigger setup` install artifact has:
 /// absent settings.json -> `Installed` (a fresh file, our block its first content),
 /// an existing settings.json the install or the removal changes -> `Refreshed` (the FILE
-/// existed even though our own array entry did not, mirroring [`install_operator_mcp`]'s
-/// `existed` distinction), a file the edit leaves as it is, or no file with the guard
-/// undeclared -> `AlreadyCurrent` (a silent no-op).
+/// existed, mirroring [`install_operator_mcp`]'s `existed` distinction: the install added or
+/// re-matched our entry, or the removal stripped it), a file the edit leaves as it is, or no
+/// file with the guard undeclared -> `AlreadyCurrent` (a silent no-op).
 fn install_lookup_hook(
     root: &Path,
     grep_guard: bool,
@@ -1555,7 +1558,7 @@ struct ImportSummary {
 /// being written and breaking a later load. Rooted at `root` so it is testable against
 /// a temp dir.
 fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::error::Error>> {
-    let dest = root.join(RIGGER_DIR).join("agents");
+    let dest = project_agents_dir(root);
     std::fs::create_dir_all(&dest)?;
 
     // Collect the source `.md` files, SURFACING (never silently dropping) any directory
@@ -2096,7 +2099,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
@@ -2157,7 +2160,7 @@ concern cleanly - not for mechanical overlap the partitioner already serializes.
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one\n\
 checkbox carrying two mitigations) are each a BLOCKING finding.\n\
 \n\
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n  \
+- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap\n\
 measures review scope - how much one review round must read - never code shape.\n\
 - Overlap: judge ownership/coherence, not the overlap.\n\
 \n\
@@ -2180,6 +2183,7 @@ mod tests {
     use crate::test_support::read_text;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
+    use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
@@ -2558,7 +2562,7 @@ mod tests {
     fn load_scaffold(set: Option<&SetSpec>, workflow: &str) -> config::Config {
         let dir = tempfile::tempdir().unwrap();
         let rigger = dir.path().join(RIGGER_DIR);
-        std::fs::create_dir_all(rigger.join("agents")).unwrap();
+        std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
         write_seed_agents(dir.path(), set).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
@@ -3068,15 +3072,6 @@ mod tests {
         );
     }
 
-    /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-    const ROLE_SEED_FILES: [&str; 5] = [
-        "adjudicator.md",
-        "adversary.md",
-        "architecture-reviewer.md",
-        "planner.md",
-        "sdet.md",
-    ];
-
     /// `init_project` over `sets` on a fresh project holding the root file `marker`, if any,
     /// writes the role seeds and `<id>.md` holding `persona` byte for byte and nothing else under
     /// `.rigger/agents`, reports exactly those as new, and writes a workflow whose implement and
@@ -3093,9 +3088,7 @@ mod tests {
             std::fs::write(root.join(marker), "").unwrap();
         }
         let report = init_project(root, sets).expect("init must scaffold");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push(format!("{id}.md"));
-        want.sort();
+        let want = agents_beside(&format!("{id}.md"));
         assert_eq!(
             sorted_dir_names(&root.join(RIGGER_DIR).join("agents")),
             want,
@@ -3115,10 +3108,7 @@ mod tests {
         );
         let cfg = config_store::load(root.to_str().unwrap()).expect("the scaffold loads");
         assert_eq!(
-            [
-                cfg.workflow.stages["implement"].agent.as_str(),
-                cfg.workflow.stages["checkin"].agent.as_str()
-            ],
+            stage_agents(&cfg),
             [id, id],
             "the implement and checkin stages run the implementer"
         );
@@ -3190,10 +3180,11 @@ mod tests {
         let mut reported = report.new_agents.clone();
         reported.sort();
         assert_eq!(reported, ROLE_SEED_FILES, "the agents reported new");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push("rust-engineer.md".to_string());
-        want.sort();
-        assert_eq!(sorted_dir_names(&agents), want, "the agents on disk");
+        assert_eq!(
+            sorted_dir_names(&agents),
+            agents_beside("rust-engineer.md"),
+            "the agents on disk"
+        );
     }
 
     rigger::test_cases! {
@@ -3514,7 +3505,7 @@ mod tests {
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id a scaffolded workflow references, identical for every rendering.
+        // Every agent id a scaffolded workflow references.
         let referenced_by = |workflow: &str| -> BTreeSet<String> {
             let wf: config::Workflow =
                 serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
@@ -4239,7 +4230,7 @@ mod tests {
     /// drifted matcher is replaced.
     #[test]
     fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
-        let block = |matcher: &str, command: &str| serde_json::json!({"matcher": matcher, "hooks": [{"type": "command", "command": command}]});
+        use crate::test_support::hook_block as block;
         let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
         let foreign = block("Write", "prettier --write");
         let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});
@@ -4387,6 +4378,18 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// The committed personas carrying `heading` are exactly `owners`, each once: the persona
+    /// section it opens belongs to them and to no other persona.
+    fn assert_section_belongs_to(heading: &str, owners: &[&str]) {
+        for (file, text) in committed_personas() {
+            assert_eq!(
+                text.matches(heading).count(),
+                usize::from(owners.contains(&file.as_str())),
+                "{file}: {heading:?} belongs to {owners:?} alone"
+            );
+        }
+    }
+
     /// The tracked files under `paths`, repo-relative, as `git ls-files` lists them.
     fn tracked_files(paths: &[&str]) -> Vec<String> {
         let out = std::process::Command::new("git")
@@ -4426,6 +4429,17 @@ mod tests {
                 .map(|(name, body)| (format!("BUILTIN {name}"), (*body).to_string())),
         );
         all
+    }
+
+    /// The body of the built-in instruction entry `name`, read through
+    /// [`every_shipped_agent_text`]'s `BUILTIN <name>` label; fails when no such entry is shipped.
+    fn shipped_builtin(name: &str) -> String {
+        let label = format!("BUILTIN {name}");
+        every_shipped_agent_text()
+            .into_iter()
+            .find(|(at, _)| *at == label)
+            .map(|(_, text)| text)
+            .unwrap_or_else(|| panic!("the {name} body is shipped"))
     }
 
     /// The MARKERS rule itself: a word marker hits as a token, as its plural or as a part of a
@@ -4563,7 +4577,7 @@ mod tests {
             ("the pre-move EMIT_PROTOCOL", PRE_MOVE_EMIT_PROTOCOL),
             (
                 "a capitalised phrase",
-                "Keep It Flowing, and Do Not Batch it.",
+                "Keep It Flowing, and Do Not Batch it, do not batch.",
             ),
             (
                 "a toolchain word",
@@ -4621,11 +4635,7 @@ mod tests {
     /// longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         let section = format!(
             "{WHEN_YOU_REVIEW_HEADING} {} {FAN_OUT_HEADING}",
@@ -4661,11 +4671,7 @@ mod tests {
     /// second paragraph, right after the corners sentence and before the success one.
     #[test]
     fn the_working_discipline_holds_each_moved_method_in_its_slot() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let words = rigger::wave::normalize_ws(&body);
         for (heading, method, before, after) in [
             (
@@ -4705,11 +4711,7 @@ mod tests {
     /// nothing else.
     #[test]
     fn the_hand_over_section_holds_the_bounded_audit_bullet_verbatim() {
-        let body = every_shipped_agent_text()
-            .into_iter()
-            .find(|(at, _)| at == "BUILTIN working-discipline")
-            .map(|(_, text)| text)
-            .expect("the working-discipline body is shipped");
+        let body = shipped_builtin("working-discipline");
         let section = markdown_section(&body, HAND_OVER_HEADING);
         let bullet = format!(
             "- **{}** {} {}",
@@ -4928,13 +4930,11 @@ mod tests {
     #[test]
     fn the_planner_persona_and_its_seed_state_the_planning_policy() {
         for (at, text) in shipped_planners() {
-            for sentence in crate::test_support::PLANNING_POLICY {
-                assert_eq!(
-                    text.matches(sentence).count(),
-                    1,
-                    "{at} states the planning policy sentence {sentence:?} once"
-                );
-            }
+            assert_eq!(
+                crate::test_support::policy_counts(&text),
+                [1; 6],
+                "{at} states each planning policy sentence once"
+            );
         }
     }
 
@@ -4963,34 +4963,26 @@ mod tests {
     #[test]
     fn the_test_roles_carry_the_exact_assertion_block_exactly_once() {
         const HEADING: &str = "## Every test asserts exactly";
-        for (file, text) in committed_personas() {
-            let want = usize::from(matches!(
-                file.as_str(),
-                "rust-engineer.md" | "sdet-author.md" | "sdet.md"
-            ));
-            assert_eq!(
-                text.matches(HEADING).count(),
-                want,
-                "{file}: the test block appears {want} time(s)"
-            );
-            if want == 1 {
-                let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
-                for wanted in [
-                    "- Assert exact values, never existence:",
-                    "- Pin every boundary from both sides:",
-                    "- Exercise both arms of every condition and every early return,",
-                    "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
-                ] {
-                    assert!(
-                        block.contains(wanted),
-                        "{file}: the test block says {wanted:?}"
-                    );
-                }
+        const OWNERS: [&str; 3] = ["rust-engineer.md", "sdet-author.md", "sdet.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        for file in OWNERS {
+            let text = committed_persona(file);
+            let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
+            for wanted in [
+                "- Assert exact values, never existence:",
+                "- Pin every boundary from both sides:",
+                "- Exercise both arms of every condition and every early return,",
+                "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
+            ] {
                 assert!(
-                    !block.to_lowercase().contains("mutant"),
-                    "{file}: the test block names no mutant and no tool that makes one"
+                    block.contains(wanted),
+                    "{file}: the test block says {wanted:?}"
                 );
             }
+            assert!(
+                !block.to_lowercase().contains("mutant"),
+                "{file}: the test block names no mutant and no tool that makes one"
+            );
         }
     }
 
@@ -5010,19 +5002,10 @@ mod tests {
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
-        let mut blocks = Vec::new();
-        for (file, text) in committed_personas() {
-            let author = matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md");
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(author),
-                "{file}: the hand-over block belongs to the author roles alone"
-            );
-            if author {
-                blocks.push(markdown_section(&text, HEADING).to_string());
-            }
-        }
-        assert_eq!(blocks.len(), 2, "both author roles carry the block");
+        const OWNERS: [&str; 2] = ["rust-engineer.md", "sdet-author.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        let blocks =
+            OWNERS.map(|file| markdown_section(&committed_persona(file), HEADING).to_string());
         assert_eq!(
             blocks[0], blocks[1],
             "the block is byte-identical in both author roles"
@@ -5160,13 +5143,7 @@ mod tests {
     #[test]
     fn the_sdet_lens_blocks_on_a_missing_criterion_test_and_notes_shape_and_sentences() {
         const HEADING: &str = "## Review the tests against the criteria";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet.md"),
-                "{file}: the criterion-test review belongs to the sdet lens alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
             "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
@@ -5572,13 +5549,7 @@ mod tests {
     #[test]
     fn the_sdet_author_persona_ends_with_the_documentation_only_round_rule() {
         const HEADING: &str = "## A documentation-only round";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet-author.md"),
-                "{file}: the documentation-only round rule belongs to the sdet-author persona alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet-author.md"]);
         let text = committed_persona("sdet-author.md");
         let headings: Vec<&str> = text
             .lines()
@@ -5593,6 +5564,38 @@ mod tests {
             rigger::wave::normalize_ws(markdown_section(&text, HEADING)),
             format!("{HEADING} {DOC_ONLY_ROUND_RULE}"),
             "sdet-author.md's last section holds the rule's sentence verbatim and nothing else"
+        );
+    }
+
+    /// Spec 121's EXISTING DATA row for the moved sentences: the handbook's upgrade note, from its
+    /// persona lead-in to the next heading, quotes each sentence a prompt no longer carries
+    /// verbatim and once, the same text the persona pins hold - the sdet-author's
+    /// documentation-only round rule, the planner's planning policy and the unit size cap's scope.
+    #[test]
+    fn the_handbook_upgrade_note_quotes_each_moved_sentence_once() {
+        const LEAD: &str = "Some guidance an agent's prompt once carried now lives in a persona";
+        let page = read_text(&repo().join("docs/handbook/authoring-loops.md"));
+        let from = page
+            .find(LEAD)
+            .expect("authoring-loops.md holds the upgrade note's persona lead-in");
+        let note = &page[from..];
+        let note = rigger::wave::normalize_ws(note.split("\n#").next().unwrap_or(note));
+        let moved: Vec<&str> = [DOC_ONLY_ROUND_RULE]
+            .into_iter()
+            .chain(crate::test_support::PLANNING_POLICY)
+            .chain([crate::test_support::UNIT_SIZE_CAP_SCOPE])
+            .collect();
+        let quoted: Vec<(&str, usize)> = moved
+            .iter()
+            .map(|sentence| (*sentence, note.matches(&format!("\"{sentence}\"")).count()))
+            .collect();
+        assert_eq!(
+            quoted,
+            moved
+                .iter()
+                .map(|sentence| (*sentence, 1))
+                .collect::<Vec<_>>(),
+            "the upgrade note quotes each moved sentence once; it reads:\n{note}"
         );
     }
 

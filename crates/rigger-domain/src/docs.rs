@@ -18,10 +18,11 @@
 //!
 //! The composition root (the binary) populates the context from the real code
 //! definitions and calls [`render_using_rigger_skill`] and
-//! [`render_handbook_discipline`]. Both outputs render from the SAME context, so a
-//! project overlay that overrides a field (unit 3) flows into both through this one
-//! pipeline. The render is byte-stable on unchanged inputs (no map iteration, fixed
-//! collection order), so the drift check (unit 2) has no false positives.
+//! [`render_handbook_discipline`] on it, so both outputs render from the SAME code-derived
+//! context. A project overlay that overrides a field (unit 3) merges onto that context only
+//! for the skills `rigger setup` installs into a project; `rigger docs` and the handbook
+//! render from the bare context. The render is byte-stable on unchanged inputs (no map
+//! iteration, fixed collection order), so the drift check (unit 2) has no false positives.
 
 use std::fmt::Write as _;
 
@@ -2599,7 +2600,7 @@ mod tests {
         /// Spec 121, criterion 13 (THE PLANNING SKILL CARRIES THE PROJECT'S CONSTRAINTS): with
         /// no project constraints in the context, step 6 is the generic step alone - its title,
         /// then the one sentence every spec carries - and no project list follows it.
-        planning_a_spec_step_6_carries_the_projects_own_global_constraints:
+        planning_a_spec_step_6_is_the_generic_step_alone:
             assert_planning_a_spec_reads(
                 "**6. ",
                 "**7. ",

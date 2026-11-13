@@ -49,7 +49,6 @@ use serde_json::{json, Value};
 
 use common::fixtures::apply_next_json;
 use common::fixtures::assert_carries_each;
-use common::fixtures::assert_system_prompt_carries_the_review_method_once;
 use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::declare_test_author;
 use common::fixtures::language_marker_hits;
@@ -57,7 +56,7 @@ use common::fixtures::test_spawn_host;
 use common::fixtures::{file_half, NESTED_METHOD, RANGE_ARTIFACT};
 use common::fixtures::{
     CHECK_THE_PEERS, GROUNDING_METHOD, LOOKUP_METHOD, LOOKUP_POINTER, RECORD_EACH_DECISION,
-    RECORD_EACH_FINDING, SUPERSEDE_A_PEER,
+    RECORD_EACH_FINDING, SUPERSEDE_A_PEER, WHEN_YOU_REVIEW,
 };
 
 /// The opening words of the code-neighborhood section's header.
@@ -932,23 +931,27 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 }
 
 /// Spec 121's THE LOOKUP POINTER NAMES ONLY THE TOOLS and THE TASK PROMPTS CARRY NO CADENCE OR
-/// METHOD, at the review boundary end to end: each method a prompt text no longer carries reaches
-/// every spawn through the built-in its system prompt composes, and only there. The rows are the
-/// lookup method the grounding pointer left to `working-discipline`'s Fan out section; the
-/// grounding method the grounding sections' headers and `review_protocol` left to its One-pass
-/// section; and, each left to `communication`, the record cadence `EMIT_PROTOCOL` and
-/// `review_protocol` left, the peers check a peers refresh left, and the supersede rule
-/// the decisions header and the peers refresh left. Given a live fan-out `run` whose empty
-/// operator layer neither replaces nor switches off a built-in, when the lens, the adversary and
-/// the adjudicator each spawn through the `AgentDriver` port, then each one's system prompt
-/// carries each row's sentences exactly once and its task prompt carries none of them, so each
-/// method has one home in what a spawn receives.
+/// METHOD, at the review boundary end to end, with spec 120's THE REVIEWER PROMPT CARRIES ONLY THE
+/// CONTRACT: each method a prompt text no longer carries reaches every spawn through the built-in
+/// its system prompt composes. The rows are the review method the reviewer discipline left to
+/// `working-discipline`'s `## When you review` section; the lookup method the grounding pointer
+/// left to its Fan out section; the grounding method the grounding sections' headers and
+/// `review_protocol` left to its One-pass section; and, each left to `communication`, the record
+/// cadence `EMIT_PROTOCOL` and `review_protocol` left, the peers check a peers refresh left, and
+/// the supersede rule the decisions header and the peers refresh left. Given a live fan-out `run`
+/// whose empty operator layer neither replaces nor switches off a built-in, when the lens, the
+/// adversary and the adjudicator each spawn through the `AgentDriver` port, then each one's system
+/// prompt carries each row's sentences exactly once and its task prompt carries none of those
+/// sentences.
 ///
 /// Non-vacuous: restoring the Fan out section's former `lookup` bullet ending, the one rule in
 /// another wording, reddens the lookup row on every tier; dropping the One-pass section's grounding
 /// paragraph reddens the grounding row on every tier; spelling a row's sentence a second time in
 /// any built-in reddens that row on every tier, and spelling it once in a task-prompt text reddens
-/// that row on each tier the text reaches.
+/// that row on each tier the text reaches. A task-prompt text restoring a cut clause in its own
+/// wording, never a row's sentence, stays green here: the conductor's
+/// `every_task_prompt_text_keeps_its_shape_and_leaves_its_cadence_and_method_to_a_built_in`, which
+/// compares each text whole, is the guard against that.
 #[test]
 fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_system_prompt() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -966,7 +969,8 @@ fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_s
         (vec!["lens", "adversary", "adj"], 3),
         "the three review tiers spawn once each, in order, each with a system prompt"
     );
-    let moved: [(&str, &[&str]); 4] = [
+    let moved: [(&str, &[&str]); 5] = [
+        ("review method", &WHEN_YOU_REVIEW),
         ("lookup method", &LOOKUP_METHOD),
         ("grounding method", &[GROUNDING_METHOD]),
         (
@@ -999,12 +1003,10 @@ fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_s
 /// REVIEWER PROMPT CARRIES ONLY THE CONTRACT at the same boundary: each tier's task prompt carries
 /// the reviewer discipline whole and once, and none of the review method `## When you review`
 /// holds, so a review call site that dropped the discipline, or a core string that restated the
-/// method, reddens here; and each tier's system prompt, received through the same port, carries
-/// each review sentence `## When you review` holds exactly once, so the method the task prompt no
-/// longer carries still reaches every tier, through the working-discipline body, which this
-/// run's empty operator layer neither replaces nor switches off. Spec 120's THE
-/// BUILT-IN LAYER NAMES NO LANGUAGE: the discipline as received spells no marker of the MARKERS
-/// rule.
+/// method, reddens here; the method reaches every tier through its system prompt instead, which
+/// `every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_system_prompt`
+/// pins as its review-method row. Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: the discipline
+/// as received spells no marker of the MARKERS rule.
 #[test]
 fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_its_tool() {
     let graph = Projector::open(":memory:", "test").unwrap();
@@ -1015,17 +1017,16 @@ fn every_review_spawn_carries_the_reviewer_contract_without_naming_the_gate_or_i
         "summary": "a lens finding about the seed file",
         "about": ["core.rs"],
     });
-    let (prompts, system_prompts) = run_and_capture_review_spawns(&graph, finding);
+    let (prompts, _) = run_and_capture_review_spawns(&graph, finding);
     let roles: Vec<&str> = prompts.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(
         roles,
         vec!["lens", "adversary", "adj"],
         "the three review tiers spawn once each, in order"
     );
-    for ((role, prompt), system) in prompts.iter().zip(&system_prompts) {
+    for (role, prompt) in &prompts {
         let tier = format!("{role:?} review");
         assert_task_prompt_carries_only_the_reviewer_contract(&tier, prompt, REVIEWER_DISCIPLINE);
-        assert_system_prompt_carries_the_review_method_once(&tier, &normalize_ws(system));
         let discipline = prompt
             .find(REVIEWER_DISCIPLINE)
             .map(|at| &prompt[at..at + REVIEWER_DISCIPLINE.len()])

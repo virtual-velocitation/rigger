@@ -7,3 +7,9 @@
 pub const THIS_REPOSITORYS_PLANNING_CONSTRAINTS: &str =
     "This project's:\n- Hyphens not em dashes (U+2014 fails the diff gate).\n- Both feature \
      lanes green.\n\n";
+
+/// `skill`, a rendered `planning-a-spec`, with `list` - a project's constraint block - set
+/// between step 6 and step 7: the skill an install carrying that list holds.
+pub fn planning_skill_carrying(skill: &str, list: &str) -> String {
+    skill.replacen("**7. ", &format!("{list}**7. "), 1)
+}

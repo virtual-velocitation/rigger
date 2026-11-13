@@ -3402,10 +3402,11 @@ mod tests {
         use crate::driver::tests::framed_groups;
         use crate::eventstore::ExpectedRevision;
         use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         use crate::test_support::{held_event, released_event};
         use rigger_domain::prompt_surface::fill;
-        let group = |surface: &str, name: &str| rendered_groups(prompt_groups(), surface, &[name]);
+        let picks = GroupPicks::new(prompt_groups());
+        let group = |surface: &str, name: &str| picks.rendered(surface, &[name]);
         let note = |clause: &str, slots: &[(&str, &str)]| {
             let surface = "driver::claude_code::interruption_note";
             let why = fill(&group(surface, clause), slots);
