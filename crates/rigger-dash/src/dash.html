@@ -2182,7 +2182,13 @@ function layeredLayout(nodes, edges, width, height) {
 // transform, kgDraw and kgRedrawResized); the drag move/up live on `window`
 // (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
+// The press on the drawing being dragged: where it was pressed, the transform it started from, and
+// whether it has passed KG_PAN_THRESHOLD and pans.
 let kgDrag = null;
+// The pixels the pointer may travel from a press on the drawing and still click: a press that never
+// travels further pans nothing, so a click's wobble leaves the view unmoved; one that does pans by
+// all of its travel until its release.
+const KG_PAN_THRESHOLD = 4;
 // Whether the user has panned or zoomed the view the panel holds since it opened: a redraw of that view
 // (kgDraw, kgRedrawResized) keeps a moved view's transform and marks and re-fits an unmoved one; a new
 // view (holdKgView) opens unmoved.
@@ -2258,7 +2264,7 @@ function bindKgView() {
     applyKgView();
   });
   svg.addEventListener("mousedown", ev => {
-    kgDrag = { sx: ev.clientX, sy: ev.clientY, ox: kgView.x, oy: kgView.y };
+    kgDrag = { sx: ev.clientX, sy: ev.clientY, ox: kgView.x, oy: kgView.y, panning: false };
   });
 }
 
@@ -2874,8 +2880,11 @@ renderInstances(lastInstances);
 // (mousedown binds per render on the fresh svg in bindKgView; move/up track globally until release).
 window.addEventListener("mousemove", ev => {
   if (!kgDrag) return;
-  kgView.x = kgDrag.ox + (ev.clientX - kgDrag.sx);
-  kgView.y = kgDrag.oy + (ev.clientY - kgDrag.sy);
+  const dx = ev.clientX - kgDrag.sx, dy = ev.clientY - kgDrag.sy;
+  if (!kgDrag.panning && Math.hypot(dx, dy) <= KG_PAN_THRESHOLD) return;
+  kgDrag.panning = true;
+  kgView.x = kgDrag.ox + dx;
+  kgView.y = kgDrag.oy + dy;
   kgViewMoved = true;
   applyKgView();
 });
