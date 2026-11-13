@@ -122,7 +122,7 @@ where
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
     let addr = listener.local_addr().expect("learn the bound port");
     let graph_provider =
-        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| Graph::default();
     let calls_provider =
         |_: Option<&str>,
          _: &[String],

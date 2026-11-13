@@ -55,9 +55,10 @@ The mockup file is the visual contract for all of the below; it renders standalo
   reusing it rather than building a second one.
 - **Subject view** (all lenses, on click): clicking focuses the node as subject - canvas
   re-seeds to its one-hop neighborhood (typed edges preserved), a breadcrumb names lens and
-  subject with an escape route, and a MEMORY RAIL docks right listing the governing
+  subject with an escape route, and a MEMORY RAIL docks right beside the drawing where the
+  explorer has room for it (above the drawing where it has not) listing the governing
   decisions/findings/concepts as scrollable cards. The rail is a panel: it never inserts
-  nodes and the layout never re-flows for it.
+  nodes and never covers one.
 - **Overview zoom** (code lens zoomed out): hulls collapse to COMMUNITY nodes sized by
   member count, labeled by community name, drill-down on click. Storage type names are
   never a grouping key at any zoom. Criterion 6 OWNS this zoomed-out collapse into community

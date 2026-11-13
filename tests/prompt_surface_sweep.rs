@@ -234,8 +234,6 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "graph build: this build keeps no code store",
             "graph {verb}: {} over {members} node(s) at resolution {resol",
-            "graph {verb}: --resolution expects a number, got {raw:?}",
-            "graph {verb}: --resolution must be a positive finite number,",
             "graph {verb}: unknown argument {other:?}",
         ],
     ),

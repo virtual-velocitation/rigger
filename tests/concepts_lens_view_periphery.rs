@@ -27,10 +27,10 @@
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the concepts-lens BEHAVIOUR but never that
 //!    `Lens::Concepts`, `Lens::from_query`, the concepts arms of `clustered_overview` /
-//!    `cluster_detail`, the new `NeighborhoodNode.shared` field, and the `DEFAULT_CONCEPT_RESOLUTION`
-//!    / `CONCEPTS_LENS_UNDERIVED` consts are all `pub` and reachable as `rigger::dash::...`. If any
-//!    were accidentally crate-private, only a crate-external test fails to COMPILE - the inside-out
-//!    test would stay green.
+//!    `cluster_detail`, the new `NeighborhoodNode.shared` field, the default grain
+//!    (`community::grain(DEFAULT_RESOLUTION)`) and `CONCEPTS_LENS_UNDERIVED` are all `pub` and
+//!    reachable as `rigger::...`. If any were accidentally crate-private, only a crate-external test
+//!    fails to COMPILE - the inside-out test would stay green.
 //!  - THE SERVED ROUTE END-TO-END. The unit test calls `clustered_overview` / `cluster_detail`
 //!    directly and NEVER through `route`'s `lens=` / `resolution=` query parsing (`from_query` wired
 //!    to `query_param` + `percent_decode`). A regression that forgot to thread the concepts lens into
@@ -53,17 +53,20 @@ use common::fixtures::edge;
 use common::fixtures::leaf_named_node;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
-use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
+use common::lens::{
+    assert_each_spelling_of_one_reads_grain_one, assert_not_a_grain_is_said, assert_overview_folds,
+    assert_underived_grain_is_the_empty_state,
+};
 use common::served::node_harness_passes;
 use common::served::served;
 use common::served::served_json;
+use rigger::community::{grain, DEFAULT_RESOLUTION};
 use rigger::contextgraph::{
     Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS, REL_REALIZES,
     REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
-    DEFAULT_CONCEPT_RESOLUTION,
 };
 
 // The two default-grain concept ids (`concept/<resolution>/<n>`) the fixture derives.
@@ -119,21 +122,21 @@ fn lens_graph() -> Graph {
     }
 }
 
-/// The default concepts lens (`resolution = DEFAULT_CONCEPT_RESOLUTION`), reachable as a public type.
+/// The default concepts lens (the grain of `DEFAULT_RESOLUTION`), reachable as a public type.
 fn concepts_default() -> Lens {
     Lens::Concepts {
-        resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+        resolution: grain(DEFAULT_RESOLUTION),
     }
 }
 
 /// THE PUBLIC SELECTOR PARSER (`Lens::from_query`) at the crate boundary, for the concepts arm. The
 /// route relies on it being TOTAL and INFALLIBLE: `lens=concepts` selects the concepts fold at
-/// `resolution=` (defaulting to `DEFAULT_CONCEPT_RESOLUTION` when absent OR empty), an explicit grain
+/// `resolution=` (defaulting to the grain of `DEFAULT_RESOLUTION` when absent OR empty), an explicit grain
 /// is honoured verbatim, and every other value - an unknown lens or an absent one - still falls back
 /// to the byte-identical `Lens::Files`, so a hostile selector can never error the route. The
 /// inside-out test asserts the same table via `super::`; this pins that `Lens::Concepts`, `from_query`,
-/// and the default-grain const are reachable as `rigger::dash::...` - a boundary a same-crate test
-/// cannot prove.
+/// and the default grain are reachable as `rigger::...` - a boundary a same-crate test cannot
+/// prove.
 #[test]
 fn lens_from_query_is_a_public_total_selector_including_concepts() {
     assert_eq!(
@@ -152,6 +155,11 @@ fn lens_from_query_is_a_public_total_selector_including_concepts() {
             resolution: "1.5".to_string()
         },
         "an explicit resolution grain is honoured verbatim"
+    );
+    assert_eq!(
+        Lens::from_query(Some("concepts"), Some("1.0")),
+        concepts_default(),
+        "a grain is the number it names: 1.0 is the default grain 1, the spelling grouping ids carry"
     );
     assert_eq!(
         Lens::from_query(Some("bogus"), Some("9")),
@@ -405,6 +413,7 @@ rigger::test_cases! {
             &Lens::Concepts {
                 resolution: "2".to_string(),
             },
+            "2",
             8,
             CONCEPTS_LENS_UNDERIVED,
         );
@@ -477,7 +486,8 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
 ///   * `?lens=concepts&cluster=<id>` drills that concept to exactly its members (the lens reaches the
 ///     DRILL branch too, not just the overview) AND flags the shared member `"shared": true` on the
 ///     served wire;
-///   * `?lens=concepts&resolution=2` (underived) carries the `empty_state` prompt, never an error;
+///   * `?lens=concepts&resolution=2` over a served graph that holds no membership at grain 2 and
+///     has no code view to compute one from carries the `empty_state` prompt, never an error;
 ///   * an absent lens, `?lens=files`, and a hostile `?lens=bogus` are ALL byte-identical (the spec-42
 ///     default the browser and every spec-30/42 request already receive), and genuinely NOT the
 ///     concepts body.
@@ -553,7 +563,8 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         "the served drill flags the shared member append with \"shared\": true: {drill}"
     );
 
-    // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
+    // --- A grain nothing can be computed at (a fixed graph, no code view) via the route: the
+    // empty_state prompt, never a 500 ---
     let underived = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),
@@ -579,6 +590,22 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "the concepts lens actually changes the served body (the back-compat equality is not vacuous)"
     );
+}
+
+/// A `resolution=` naming grain `1` in another spelling (`1.0`, `01`, `1e0`, `+1`) reads the derived
+/// grain `1`: the served concepts overview, the drill of a concept and its re-projection are those of
+/// `resolution=1`, never the underived empty state.
+#[test]
+fn every_spelling_of_grain_one_reads_the_derived_concept_grain() {
+    assert_each_spelling_of_one_reads_grain_one(&lens_graph(), "concepts", C0, C0);
+}
+
+/// A `resolution=` that names no grain empties the served concepts overview, drill and re-projection
+/// with the one sentence saying so, never the underived prompt to run a command that cannot change
+/// it.
+#[test]
+fn a_resolution_that_is_not_a_grain_is_said_to_be_none() {
+    assert_not_a_grain_is_said(&lens_graph(), "concepts", C0, C0);
 }
 
 // ---------------------------------------------------------------------------------------------------

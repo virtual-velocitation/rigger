@@ -544,7 +544,10 @@ so it runs once per advance and is stored in the snapshot:
   generation, and a golden test pins it beside a digest of the rows over a fixture. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
-- A grain other than the default is computed on demand at read (~2 s) and is not stored.
+- A grain other than the default is computed at read, on each open that asks for it, and is
+  not stored: the reports and the dash's views go through the one rule (`groupings::computed_at`),
+  so a dash view at grain 2 shows the groupings `--resolution 2` reports, joined on beside the
+  stored ones, and states the grain it shows.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
 
@@ -669,7 +672,8 @@ and the label travels with every answer:
 - the MCP tools return it as a field;
 - the dash sends it beside every graph reply (`X-Rigger-Graph-Label`, from the same open as the
   body) and shows it in the explorer's header; a graph it cannot read (none built, a store that
-  cannot be opened) is a stated error (`X-Rigger-Graph-Error`) shown there, never an empty graph;
+  cannot be opened, an instance not registered) is a stated error (`X-Rigger-Graph-Error`) shown
+  there and in place of any view's empty caption, never an empty graph;
   the polled run snapshot (`/api/state`, and the static export built from it) carries the same
   label or reason as `graph.label` and shows it over the decision history.
 
@@ -791,7 +795,7 @@ reached.
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |
-| non-default community grain | groupings on demand | ~ 2 s |
+| whole view at a non-default grain (dash) | the default view plus groupings on demand | ~ 270 ms |
 
 The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
 does it in less, so no cache is kept: each view open resolves what its query needs.
@@ -978,7 +982,8 @@ hidden test.
  concept evidence        product; "N tests hidden"      both                  tests
  lookups (CLI, MCP)      product hits; test hits as     all hits, marked      test hits
                          a separate count
- explorer code view      product; "Show tests" toggle   product + tests       tests
+ explorer code view      product; "Show tests" toggle   product + tests;      tests, each
+                                                        each test marked      marked
  proofs (proven_by,      always computed from test      same                  same
  proof_evidence)         mentions
 ```
@@ -998,7 +1003,10 @@ hidden test.
     another hidden test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
-    toggle sets it;
+    toggle sets it; each reply that draws nodes names the drawn ones that are test code
+    (`test_nodes`, from their `test` attribute), and the explorer marks each apart from product
+    code: a neighborhood's, a drill's and a call walk's nodes and its referenced-not-called list,
+    a re-projection's unresolved and shared members, and a card's subject, file and member chips;
   - the MCP tools and the CLI take `tests` / `--tests`.
 
 ---

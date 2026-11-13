@@ -28,7 +28,7 @@ fn intent_tree() -> Vec<(String, String)> {
 }
 
 /// The subcommand under test, grouping the two design regions.
-const CONCEPTS: LayerCli = LayerCli {
+pub(crate) const CONCEPTS: LayerCli = LayerCli {
     subcommand: "concepts",
     empty_summary: "graph concepts: 0 concepts over 0 node(s) at resolution 1",
     #[cfg(feature = "symbols")]
