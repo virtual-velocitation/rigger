@@ -1158,9 +1158,9 @@ pub(crate) mod tests {
     }
 
     /// A tree holding a case of every rule: same-file, cross-file, ambiguous and unknown calls,
-    /// tagged references (one held by a call), out-of-line and test-only module declarations, a
-    /// test module and a test helper sharing product leaves, a second language, and design and
-    /// workflow facts.
+    /// calls outside every definition, tagged references (one held by a call), out-of-line and
+    /// test-only module declarations, a test module and a test helper sharing product leaves, a
+    /// second language, and design and workflow facts.
     pub(crate) fn fixture() -> FactsView {
         let mut a = code(
             "src/a.rs",
@@ -1272,7 +1272,10 @@ pub(crate) mod tests {
                 def("Shape", "type", 1, None, false),
                 def("assist", "function", 4, None, false),
             ],
-            vec![call("compute", Some(1), 5, false)],
+            vec![
+                call("compute", Some(1), 5, false),
+                call("compute", None, 7, false),
+            ],
         );
         let doc = FileFacts {
             path: "docs/d.md".into(),
@@ -1539,15 +1542,22 @@ pub(crate) mod tests {
                 &[],
             ),
             (
-                "call: no candidate is an ambiguous placeholder from the file",
+                "call: no candidate is an ambiguous placeholder, outside every definition the \
+                 file's call",
                 Ask::Links("src/a.rs", false),
-                &["src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish"],
-                &["CALLS/ambiguous"],
+                &[
+                    "src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish",
+                    "src/a.rs -CALLS/ambiguous-> src/a.rs::%vanish",
+                ],
+                &[],
             ),
             (
-                "call: candidates of any language",
+                "call: candidates of any language, a definition's call or its file's",
                 Ask::Links("scripts/t.py", false),
-                &["scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute"],
+                &[
+                    "scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute",
+                    "scripts/t.py -CALLS/inferred-> scripts/t.py::%compute",
+                ],
                 &[],
             ),
             (
@@ -1602,10 +1612,14 @@ pub(crate) mod tests {
                 &["Widget"],
             ),
             (
-                "held: a tagged reference the call rule already references writes no edge",
+                "held: a tagged reference the call rule already references writes no edge, and \
+                 no call from its file",
                 Ask::Links("src/a.rs", false),
                 &["src/a.rs -REFERENCES/inferred-> src/a.rs::%compute"],
-                &["src/b.rs::compute"],
+                &[
+                    "src/b.rs::compute",
+                    "src/a.rs -CALLS/inferred-> src/a.rs::%compute",
+                ],
             ),
             (
                 "module: the first candidate that is a code file",

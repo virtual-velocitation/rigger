@@ -434,6 +434,50 @@ fn a_design_link_to_an_inline_test_is_test_code() {
     }
 }
 
+/// GIVEN a built project whose product module and test module each call a function at module
+/// level, outside every definition, WHEN the graph reads the function's neighbourhood under each
+/// `--tests` setting, THEN each call is its file's: the product module calls the function, and the
+/// test module's call shows under `include` and is the hidden test hit under `exclude`.
+#[test]
+fn a_call_outside_every_definition_is_its_files_call() {
+    let dir = temp_project();
+    let root = dir.path();
+    let call = "from y import f\n\nf()\n";
+    write_text(root, "y.py", "def f():\n    return 1\n");
+    write_text(root, "z.py", call);
+    write_text(root, "test_y.py", call);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let around = ["--around", "y.py::f", "--depth", "1"];
+    // (the arguments, the lines the answer holds, what it never holds)
+    let cases: [(&[&str], &[&str], &[&str]); 2] = [
+        (
+            &around,
+            &["edge z.py -CALLS-> y.py::f", "1 test hit not shown"],
+            &["test_y.py"],
+        ),
+        (
+            &[&around[..], &["--tests", "include"]].concat(),
+            &[
+                "edge z.py -CALLS-> y.py::f",
+                "edge test_y.py -CALLS-> y.py::f",
+            ],
+            &["not shown"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        for hold in holds {
+            assert!(out.contains(hold), "{args:?} holds {hold:?}:\n{out}");
+        }
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.

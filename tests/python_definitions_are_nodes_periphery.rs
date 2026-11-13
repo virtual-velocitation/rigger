@@ -34,8 +34,8 @@ rigger::test_cases! {
     /// Its `CALLS` edges are exactly: `probe()` from `host`, `make()` from `Shape.k`, the
     /// class-body assignment of one target spanning its whole value, and `paint()` from
     /// `Shape::area::inner`, each from the node of its caller's path, `<file>::<path>` (spec 119
-    /// criterion 8). The `f()` of the list pattern and of the
-    /// chain take the file as caller and so are no edge.
+    /// criterion 8), and `f()` from the file, the caller of the list pattern's and the chain's
+    /// calls, each outside every definition.
     #[cfg(feature = "symbols")]
     graph_build_makes_each_python_definition_a_node_of_its_kind_and_none_under_type_checking:
         common::cli::assert_built_graph_holds(
@@ -70,6 +70,7 @@ rigger::test_cases! {
             ],
             &["f", "make", "paint", "probe"],
             &[
+                ("f.py", "f.py::%f"),
                 ("f.py::Shape.k", "f.py::%make"),
                 ("f.py::Shape::area::inner", "f.py::%paint"),
                 ("f.py::host", "f.py::%probe"),

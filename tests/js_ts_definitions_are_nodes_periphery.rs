@@ -124,10 +124,12 @@ const JS_LINES_PLACEHOLDERS: [&str; 8] =
 /// caller's path, `<file>::<path>` (spec 119 criterion 8): the calls in `host`'s local
 /// const and loop from `host`, the two in the constructor's body and in its local const from
 /// `Shape::constructor`, the generator value's from `g`, the static field initializer's from
-/// `Foo.s`, the method's from `Shape::area` and the assigned function's from `handler`. `f()`, the initializer of a
-/// pattern declarator, takes the file as caller and so is no edge.
+/// `Foo.s`, the method's from `Shape::area` and the assigned function's from `handler`; and
+/// `f()`, the initializer of a pattern declarator and outside every definition, from the file,
+/// the caller at the empty path.
 #[cfg(feature = "symbols")]
-const JS_LINES_CALLS: [(&str, &str); 8] = [
+const JS_LINES_CALLS: [(&str, &str); 9] = [
+    ("", "f"),
     ("Foo.s", "tick"),
     ("Shape::area", "paint"),
     ("Shape::constructor", "init"),
@@ -191,10 +193,12 @@ const TS_LINES_PLACEHOLDERS: [&str; 11] = [
 /// and field's type reference from that member (`Shape2.p-q`, `Shape2.2`, `Shape2.prop`,
 /// `Abs.fld`), the method and index signatures' from their interface, the enum member value's
 /// call from `Color::Blue`, and the
-/// module's and the namespace's body calls from `x` and `A.B`. The ambient function's types
-/// take the file as caller and so are no edge.
+/// module's and the namespace's body calls from `x` and `A.B`; and the ambient function's
+/// types, outside every definition, from the file, the caller at the empty path.
 #[cfg(feature = "symbols")]
-const TS_LINES_CALLS: [(&str, &str); 9] = [
+const TS_LINES_CALLS: [(&str, &str); 11] = [
+    ("", "Arg"),
+    ("", "Ret"),
     ("A.B", "setup"),
     ("Abs.fld", "FT"),
     ("Color::Blue", "mk"),
@@ -209,8 +213,8 @@ const TS_LINES_CALLS: [(&str, &str); 9] = [
 /// The graph `rigger graph build` folds from a project whose one file, `path`, is `source`, a JS
 /// or TS definitions fixture, holds exactly the JS lines' nodes, placeholders and `CALLS` edges
 /// and the `nodes`, `placeholders` and `calls` the fixture adds, each caller id the file and its
-/// path, each callee the placeholder of its leaf, and each node of the language the extension
-/// names.
+/// path (the file alone at the empty path), each callee the placeholder of its leaf, and each
+/// node of the language the extension names.
 #[cfg(feature = "symbols")]
 fn assert_definitions_graph(
     (path, source): (&str, &str),
@@ -224,7 +228,13 @@ fn assert_definitions_graph(
     let mut edges: Vec<(String, String)> = JS_LINES_CALLS
         .iter()
         .chain(calls)
-        .map(|(from, to)| (format!("{path}::{from}"), placeholder_id(path, to)))
+        .map(|(from, to)| {
+            let caller = match *from {
+                "" => path.to_string(),
+                from => format!("{path}::{from}"),
+            };
+            (caller, placeholder_id(path, to))
+        })
         .collect();
     edges.sort();
     let edges: Vec<(&str, &str)> = edges
