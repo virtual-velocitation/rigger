@@ -2362,7 +2362,7 @@ function renderKgCalls(cg) {
     edgeWidth: () => 1.2
   });
   // The UP "referenced but not called" sidecar: files that reference the seed's name - a file-level
-  // import/use or a definition's reference within them - but call it from no function, each a
+  // import/use or a definition's reference within them - but call it from nowhere in them, each a
   // data-seed handle back into the neighborhood. Empty for a down walk.
   const refSection = refd.length
     ? '<div class="kgrefd"><h3>referenced but not called</h3>'
