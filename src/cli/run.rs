@@ -835,9 +835,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         println!("{}", spec_lint_next_step(spec));
     }
     // THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
-    // FIRST - see `resolve_main_worktree_or_refuse`'s doc comment.
+    // FIRST, in a repository with a main checkout - see `resolve_run_checkout_or_refuse`'s doc
+    // comment.
     let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
+    let repo = resolve_run_checkout_or_refuse(&cwd, command)?;
     refuse_outside_a_project(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.

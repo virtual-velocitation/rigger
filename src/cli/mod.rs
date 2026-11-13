@@ -1572,14 +1572,43 @@ impl Site {
 /// there in the main tree). A command started with its cwd drifted into a unit worktree is the
 /// shape this refuses.
 ///
-/// Compares [`Site::main_root`] (the common-dir-derived main checkout, correct even from
-/// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
+/// Compares [`Site::main_root`] (the main checkout git records, correct even from inside a
+/// linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
 /// the LINKED tree when run from inside one): equal - `cwd` already IS the main tree, return it
 /// unchanged; a real repo where they differ - refuse; no repo reachable at all -
 /// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
 /// guards its own repo-only logic on; git refusing inside a repository - that refusal.
 fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
+    main_worktree_or_refuse(&Site::of(cwd), command)
+}
+
+/// A RUN NEEDS A MAIN CHECKOUT: `rigger run` resolves its main worktree as
+/// [`resolve_main_worktree_or_refuse`] does, after first refusing in a repository git records no
+/// main checkout for ([`Repository::main_checkout`]). A run's unit worktrees are linked worktrees
+/// of the checkout it starts in, each finding the run's store at the main checkout, so there each
+/// would be its own root and hold a store of its own. The refusal names what is missing and the
+/// clone to run from instead; reads, setup, graph build and status work in that checkout as they
+/// are.
+fn resolve_run_checkout_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
     let site = Site::of(cwd);
+    if let Some(repo) = site.repository()? {
+        if repo.main_checkout().is_none() {
+            return Err(format!(
+                "{command}: refusing to run in {top}: git records no main checkout for its \
+                 repository (its git directory is {common}), and a run's unit worktrees find the \
+                 run's store at the main checkout; run from a clone with its own `.git` directory \
+                 (`git clone {common} <dir>`) - reads, setup, graph build and status work here as \
+                 they are.",
+                top = repo.toplevel.display(),
+                common = repo.common_dir.display(),
+            ));
+        }
+    }
+    main_worktree_or_refuse(&site, command)
+}
+
+/// [`resolve_main_worktree_or_refuse`] over the site of the command's working directory.
+fn main_worktree_or_refuse(site: &Site, command: &str) -> Result<String, String> {
     let toplevel = site.toplevel()?;
     if toplevel.is_empty() {
         return Ok(String::new());
@@ -6924,6 +6953,87 @@ mod tests {
             "resolve_main_worktree_or_refuse must return EXACTLY `git rev-parse --show-toplevel`'s \
              own output for a plain (non-linked) worktree, not a stand-in value"
         );
+    }
+
+    /// A run resolves its checkout only where git records a main checkout: from a checkout whose
+    /// git directory lies apart and from a bare repository's linked worktree it refuses saying so,
+    /// a submodule's checkout is the main checkout its configuration records, and a linked
+    /// worktree of a repository with a main checkout is refused as a linked worktree.
+    #[test]
+    fn a_run_resolves_its_checkout_only_where_git_records_a_main_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let main = root.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_committed_repo(&main, "README.md", "seed\n");
+        let origin = main.to_str().unwrap();
+        for (at, args) in [
+            (
+                "",
+                &[
+                    "clone",
+                    "-q",
+                    "--separate-git-dir",
+                    "apart.git",
+                    origin,
+                    "apart",
+                ][..],
+            ),
+            ("", &["clone", "-q", "--bare", origin, "bare.git"][..]),
+            (
+                "bare.git",
+                &["worktree", "add", "-q", "../bare-wt", "-b", "bwt"][..],
+            ),
+            (
+                "main",
+                &["worktree", "add", "-q", "../linked", "-b", "linked"][..],
+            ),
+            ("", &["init", "-q", "outer"][..]),
+            (
+                "outer",
+                &[
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    "-q",
+                    origin,
+                    "sub",
+                ][..],
+            ),
+            (
+                "outer/sub",
+                &["worktree", "add", "-q", "../../sub-linked", "-b", "subl"][..],
+            ),
+        ] {
+            git_ok(root.join(at), args);
+        }
+        let no_main = "git records no main checkout";
+        let linked = "refusing to run from inside a linked worktree";
+        for (checkout, answer) in [
+            ("main", Ok("main")),
+            ("apart", Err(no_main)),
+            ("bare-wt", Err(no_main)),
+            ("linked", Err(linked)),
+            ("outer/sub", Ok("outer/sub")),
+            ("sub-linked", Err(linked)),
+        ] {
+            let got = resolve_run_checkout_or_refuse(&root.join(checkout), "rigger run");
+            match answer {
+                Ok(top) => assert_eq!(
+                    got,
+                    Ok(root.join(top).to_string_lossy().into_owned()),
+                    "{checkout}: the run resolves its checkout"
+                ),
+                Err(says) => {
+                    let why = got.expect_err(checkout);
+                    assert!(
+                        why.contains(says),
+                        "{checkout}: the refusal says {says:?}: {why}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -470,7 +470,11 @@ core.bare` does not answer `true` and either `git config --get core.worktree` an
 checkout is the directory it names, taken from the common directory) or the common directory is
 named `.git` (the main checkout is its parent). Anywhere else git records none, and
 `git worktree list --porcelain` names the common directory itself as the main worktree or marks
-it `bare`; there each worktree is its own root. Read per layout:
+it `bare`; there each worktree is its own root. Reads, setup, graph build and status work in such
+a worktree, and `rigger run` refuses there before it anchors anything, saying git records no main
+checkout and naming the clone to run from: a run's unit worktrees are linked worktrees of the
+checkout it starts in, which would each be their own root and hold a store of their own. Read per
+layout:
 
 | Layout | Main checkout git records | `root` |
 |---|---|---|
