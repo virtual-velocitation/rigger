@@ -386,6 +386,7 @@ rigger::test_cases! {
             &Lens::Code {
                 resolution: "2".to_string(),
             },
+            "2",
             8,
             CODE_LENS_UNDERIVED,
         );

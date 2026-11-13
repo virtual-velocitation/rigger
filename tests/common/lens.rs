@@ -111,11 +111,12 @@ pub fn assert_overview_folds(
 }
 
 /// `lens` at a resolution grain with NO derived assignments over `graph` folds nothing, still
-/// reports all `total` graph nodes, and carries the documented `empty_state` prompt - never an
-/// error and never a bare kind-bucket view.
+/// reports all `total` graph nodes, states `grain`, the grain it was asked for, and carries the
+/// documented `empty_state` prompt - never an error and never a bare kind-bucket view.
 pub fn assert_underived_grain_is_the_empty_state(
     graph: &Graph,
     lens: &Lens,
+    grain: &str,
     total: usize,
     empty_state: &str,
 ) {
@@ -132,6 +133,11 @@ pub fn assert_underived_grain_is_the_empty_state(
         underived.empty_state.as_deref(),
         Some(empty_state),
         "an underived grain carries the documented empty-state message, never an error"
+    );
+    assert_eq!(
+        underived.grain.as_deref(),
+        Some(grain),
+        "an underived grain still states the grain it was asked for: {underived:?}"
     );
 }
 

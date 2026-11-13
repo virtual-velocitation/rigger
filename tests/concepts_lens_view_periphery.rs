@@ -413,6 +413,7 @@ rigger::test_cases! {
             &Lens::Concepts {
                 resolution: "2".to_string(),
             },
+            "2",
             8,
             CONCEPTS_LENS_UNDERIVED,
         );
