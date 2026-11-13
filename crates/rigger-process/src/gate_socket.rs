@@ -154,6 +154,10 @@ pub struct GateSocket {
     _unbindable: std::convert::Infallible,
 }
 
+/// How long the serving loop sleeps between looks for a connection and for a close.
+#[cfg(unix)]
+const ACCEPT_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// How long the driver waits for a connected client's request line before giving it up, so a
 /// client that connects and sends nothing cannot hold the serving loop open.
 #[cfg(unix)]
@@ -198,6 +202,7 @@ impl GateSocket {
             let _ = std::fs::remove_file(&staging);
             return Err(e);
         }
+        listener.set_nonblocking(true)?;
         Ok(GateSocket {
             path: path.to_path_buf(),
             listener,
@@ -220,15 +225,22 @@ fn staging_path(path: &Path) -> PathBuf {
 impl GateChannel for GateSocket {
     fn serve(&self, answer: &(dyn Fn(GateRequest) -> GateReply + Sync)) -> io::Result<()> {
         use std::sync::atomic::Ordering;
+        // The listener is non-blocking, so the loop sees the flag within one poll whether or
+        // not any connection can reach the socket.
         std::thread::scope(|s| {
-            for stream in self.listener.incoming() {
-                if self.closed.load(Ordering::SeqCst) {
-                    break;
+            while !self.closed.load(Ordering::SeqCst) {
+                match self.listener.accept() {
+                    Ok((stream, _)) => {
+                        // A connection taken from a non-blocking listener may inherit that mode.
+                        if stream.set_nonblocking(false).is_ok() {
+                            s.spawn(move || answer_one(stream, answer));
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(ACCEPT_POLL)
+                    }
+                    Err(_) => {}
                 }
-                let Ok(stream) = stream else {
-                    continue;
-                };
-                s.spawn(move || answer_one(stream, answer));
             }
         });
         Ok(())
@@ -236,8 +248,6 @@ impl GateChannel for GateSocket {
 
     fn close(&self) {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
-        // Wake the accept the serving loop blocks in, so it sees the flag.
-        let _ = std::os::unix::net::UnixStream::connect(&self.path);
     }
 
     /// The bound path; `None` for a path that is not UTF-8, which no spawn env can carry, so a
