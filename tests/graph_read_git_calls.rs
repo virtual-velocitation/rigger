@@ -96,7 +96,7 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
     // (layout, how it is laid out, the root its store lies at below the scratch directory the
     // layout lies in, whether the read runs under a git ceiling at that scratch directory, which
     // a walk up from the checkout meets after its `.git`)
-    let layouts: [(&str, Layout, &str, bool); 16] = [
+    let layouts: [(&str, Layout, &str, bool); 15] = [
         (
             "a clone",
             |at| cloned(&at.join("origin"), at),
@@ -211,17 +211,6 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
             false,
         ),
         (
-            "a checkout whose configuration includes a file",
-            |at| {
-                let clone = cloned(&at.join("origin"), at);
-                write_text(&clone, ".git/extra", "[core]\n\tautocrlf = false\n");
-                git_ok(&clone, &["config", "include.path", "extra"]);
-                clone
-            },
-            "clone",
-            false,
-        ),
-        (
             "a clone read under a ceiling above it",
             |at| cloned(&at.join("origin"), at),
             "clone",
@@ -237,11 +226,13 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
 /// to set up, built, with a file edited since, WHEN `rigger graph --around` reads the other file
 /// from the checkout, traced by git itself, THEN it answers from that checkout's own content and
 /// its one open asks git where the repository lies once, in one `rev-parse`, besides the diff and
-/// the untracked listing.
+/// the untracked listing, and for a configuration that includes a file, which discovery never
+/// follows itself, asks git once more, in one `git config`, for the main checkout git records.
 #[test]
 fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
-    // (layout, how it is laid out, the root its store lies at below the scratch directory)
-    let layouts: [(&str, Layout, &str); 3] = [
+    // (layout, how it is laid out, the root its store lies at below the scratch directory, the
+    // discovery commands its one open asks git)
+    let layouts: [(&str, Layout, &str, &[&str]); 4] = [
         (
             "a clone whose configuration names no format version",
             |at| {
@@ -253,6 +244,7 @@ fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
                 clone
             },
             "clone",
+            REV_PARSE,
         ),
         (
             "a clone of format 0 naming an extension git ignores there",
@@ -262,6 +254,7 @@ fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
                 clone
             },
             "clone",
+            REV_PARSE,
         ),
         (
             "a checkout whose .git directory names a common directory",
@@ -275,12 +268,27 @@ fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
                 named
             },
             "main",
+            REV_PARSE,
+        ),
+        (
+            "a checkout whose configuration includes a file",
+            |at| {
+                let clone = cloned(&at.join("origin"), at);
+                write_text(&clone, ".git/extra", "[core]\n\tautocrlf = false\n");
+                git_ok(&clone, &["config", "include.path", "extra"]);
+                clone
+            },
+            "clone",
+            &["config -z", "rev-parse --show-toplevel"],
         ),
     ];
-    for (layout, lay_out, root) in layouts {
-        assert_one_open_in(layout, lay_out, root, false, &["rev-parse --show-toplevel"]);
+    for (layout, lay_out, root, asked) in layouts {
+        assert_one_open_in(layout, lay_out, root, false, asked);
     }
 }
+
+/// The one discovery command a repository git alone sets up asks git.
+const REV_PARSE: &[&str] = &["rev-parse --show-toplevel"];
 
 /// Lay a committed project out as `lay_out` does, build it, edit a file, and read around the
 /// other file from the checkout, under a git ceiling at the scratch directory when

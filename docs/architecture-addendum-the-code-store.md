@@ -493,6 +493,8 @@ layout:
 | a bare repository's linked worktree | none | its own top |
 | a linked worktree of a checkout configured bare | none | its own top |
 | a checkout whose configuration includes a file | its top | its top |
+| a checkout whose configuration includes a file that sets `core.bare` | none | its top |
+| a linked worktree of it | none | its own top |
 | a clone read under a ceiling above it | its top | its top |
 | a clone whose configuration names no format version | its top | its top |
 | a clone of format 0 naming an extension git ignores there | its top | its top |
@@ -677,16 +679,18 @@ ground, lookup, MCP, dash), so a read from a subdirectory counts the whole workt
 files and its label names the top-level.
 
 A read asks where the repository lies once per open. The reader's site discovers it once, from
-git's files, else in one `rev-parse` where the files cannot answer, and every rule that names a
-root, a tree, a store or an identity from that site reads the one answer: the store walk, the
-store selection, the identity, W, `root` and the tree source. No open reads a discovery made
-before its own call. A reader built and opened in one step (`rigger graph --around`, `--show`,
-`--lookup` and `ground`, and the dashboard's reader, built per request) serves its first open
-from the discovery its build made, which found its store, so a lookup gains no git spawn. A
-reader held from its build to a later first open (the MCP session's graph reader and grounder,
-built when the session starts, and a run's, built when the run starts) asks anew for that open,
-and every reader asks anew for each later open. The head, the diff and the listing are read per
-open.
+git's files, else in one `rev-parse` where the files cannot answer. Discovery never follows an
+`include` or `includeIf` section itself: a repository whose configuration holds one is asked of
+git, in that `rev-parse` and in one `git config --list` from the common directory for the main
+checkout git records. Every rule that names a root, a tree, a store or an identity from that
+site reads the one answer: the store walk, the store selection, the identity, W, `root` and the
+tree source. No open reads a discovery made before its own call. A reader built and opened in
+one step (`rigger graph --around`, `--show`, `--lookup` and `ground`, and the dashboard's
+reader, built per request) serves its first open from the discovery its build made, which found
+its store, so a lookup gains no git spawn. A reader held from its build to a later first open
+(the MCP session's graph reader and grounder, built when the session starts, and a run's, built
+when the run starts) asks anew for that open, and every reader asks anew for each later open.
+The head, the diff and the listing are read per open.
 
 The check never writes W's index. Every git the source starts itself passes
 `--no-optional-locks` (discovery's `rev-parse`, where it is asked, reads no index), and
@@ -837,7 +841,7 @@ reached.
 
 | Query | Work | Budget (through the binary) |
 |---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git) | inside the budgets below |
+| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below |
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |
