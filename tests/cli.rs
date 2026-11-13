@@ -17490,6 +17490,93 @@ fn a_dash_reading_graph_db_by_its_relative_path_serves_the_code_overview() {
     );
 }
 
+/// The JSON body of a whole HTTP `response`, asserted served `200` for `view`.
+fn served_ok_json(view: &str, response: Option<String>) -> serde_json::Value {
+    let response = response.unwrap_or_else(|| panic!("the dash never served {view}"));
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "{view} is served 200: {response}"
+    );
+    let body = &response[response.find("\r\n\r\n").map_or(0, |i| i + 4)..];
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("{view} answers JSON ({e}): {body}"))
+}
+
+/// GIVEN a committed project whose code store is built, WHEN `rigger dash` serves a derived lens at
+/// a grain the store does not hold, THEN the overview, the drill of one of its clusters, and the
+/// re-projections of a file and of a stored-grain cluster read that grain as `rigger graph
+/// <layer> --resolution 2` computes it: each folds into that grain's clusters, none into the
+/// stored grain's, each names the grain it shows, and none carries the underived empty state.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_reads_an_unstored_grain_as_the_report_computes_it() {
+    use std::collections::BTreeSet;
+    let enc = |id: &str| id.replace('/', "%2F");
+    for (layer, lens, file) in [
+        (
+            &crate::community_detection_cli::COMMUNITIES,
+            "code",
+            "src/combat/hit.rs",
+        ),
+        (
+            &crate::concepts_derivation_cli::CONCEPTS,
+            "concepts",
+            "docs/graph-design.md",
+        ),
+    ] {
+        let dir = layer.project(&(layer.tree)());
+        let root = dir.path();
+        run_rigger_ok(root, &["graph", "build"]);
+        let (_, stored) = layer.report(root, &[]);
+        let (_, computed) = layer.report(root, &["--resolution", "2"]);
+        let grain_two: BTreeSet<String> = computed.into_iter().map(|(id, _, _)| id).collect();
+        assert!(
+            !grain_two.is_empty() && grain_two.iter().all(|id| id.contains("/2/")),
+            "the report computes grain 2's clusters: {grain_two:?}"
+        );
+        let at = format!("/api/graph?lens={lens}&resolution=2");
+        let views = [
+            at.clone(),
+            format!("{at}&seed={}", enc(file)),
+            format!("{at}&seed={}", enc(&stored[0].0)),
+        ];
+        let port = free_loopback_port();
+        let dash = serving_dash(root, port);
+        let bodies: Vec<serde_json::Value> = (views.iter())
+            .map(|view| served_ok_json(view, http_get_path(port, view)))
+            .collect();
+        let first = bodies[0]["clusters"][0]["key"].as_str().unwrap_or_default();
+        let drill_view = format!("{at}&cluster={}", enc(first));
+        let drill = served_ok_json(&drill_view, http_get_path(port, &drill_view));
+        drop(dash);
+
+        for (view, body) in views.iter().zip(&bodies) {
+            let keys: Vec<&str> = (body["clusters"].as_array().into_iter().flatten())
+                .filter_map(|c| c["key"].as_str())
+                .collect();
+            assert!(
+                body["empty_state"].is_null() && body["grain"] == "2",
+                "{view} shows grain 2, not an empty state: {body}"
+            );
+            assert!(
+                keys.iter().any(|k| grain_two.contains(*k))
+                    && keys.iter().all(|k| !k.contains("/1/")),
+                "{view} folds into grain 2's clusters {grain_two:?} and none of the stored \
+                 grain's: {keys:?}"
+            );
+        }
+        let overview = &bodies[0]["clusters"];
+        assert!(
+            (overview.as_array().into_iter().flatten())
+                .all(|c| c["key"].as_str().is_some_and(|k| grain_two.contains(k))),
+            "every cluster of the overview is one the report computes: {overview}"
+        );
+        assert!(
+            drill["nodes"].as_array().is_some_and(|n| !n.is_empty()),
+            "{drill_view} drills grain 2's cluster to its members: {drill}"
+        );
+    }
+}
+
 /// GIVEN a committed project, WHEN `rigger dash` serves its graph route from the project's own
 /// directory over a graph built and read from a clean worktree, an edited file, an unreadable git
 /// index, a code store that cannot be opened, and no graph built at all, THEN the reply states
