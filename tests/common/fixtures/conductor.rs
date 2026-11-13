@@ -103,13 +103,14 @@ pub fn review_or_adjudicate(opts: &SpawnOpts) -> AgentResult {
 /// review wrote.
 pub const REJECT_FEATURE: &str = r#"{"verdict":"reject","required":[{"finding":"close the unscoped read","path":"feature.rs","correctness":true}]}"#;
 
-/// A first round's reject requiring three correctness fixes: two REQUIRED pattern items of
-/// different shapes either side of one plain item.
-pub const PATTERN_REJECT: &str = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"bound the retry","path":"feature.rs","correctness":true},{"finding":"close the handle","path":"lib.rs","correctness":true,"pattern":"leaked handles"}]}"#;
+/// A first round's reject requiring four correctness fixes: two REQUIRED pattern items of
+/// different shapes either side of one plain item, the second's shape padded with blanks, then an
+/// item whose pattern is blanks alone, so it names no shape.
+pub const PATTERN_REJECT: &str = r#"{"verdict":"reject","required":[{"finding":"scope the log read","path":"feature.rs","correctness":true,"pattern":"unscoped log reads"},{"finding":"bound the retry","path":"feature.rs","correctness":true},{"finding":"close the handle","path":"lib.rs","correctness":true,"pattern":"  leaked handles "},{"finding":"drop the dead flag","path":"lib.rs","correctness":true,"pattern":" "}]}"#;
 
 /// The REQUIRED block [`PATTERN_REJECT`] hands the next attempt's implementer, through the blank
-/// line closing it: each item, and under each pattern item its shape and the DecisionMade `audit`
-/// it asks for.
+/// line closing it: each item, and under each item naming a shape that shape, trimmed, and the
+/// DecisionMade `audit` it asks for.
 pub fn implementer_pattern_block(audit: &str) -> String {
     format!(
         "REQUIRED - review holds the next round to each of these:\n\
@@ -117,13 +118,14 @@ pub fn implementer_pattern_block(audit: &str) -> String {
          PATTERN: unscoped log reads. Record DecisionMade `{audit}` for it.\n\
          - feature.rs: bound the retry\n\
          - lib.rs: close the handle\n  \
-         PATTERN: leaked handles. Record DecisionMade `{audit}` for it.\n\n"
+         PATTERN: leaked handles. Record DecisionMade `{audit}` for it.\n\
+         - lib.rs: drop the dead flag\n\n"
     )
 }
 
 /// The REQUIRED list [`PATTERN_REJECT`] hands every tier of the next review round, up to the
-/// sentence after it: each item, and under each pattern item its shape and the DecisionMade
-/// `audit` it names as the implementer's audit record.
+/// sentence after it: each item, and under each item naming a shape that shape, trimmed, and the
+/// DecisionMade `audit` it names as the implementer's audit record.
 pub fn review_pattern_list(audit: &str) -> String {
     format!(
         "The items that round REQUIRED:\n\
@@ -132,6 +134,7 @@ pub fn review_pattern_list(audit: &str) -> String {
          - feature.rs: bound the retry\n\
          - lib.rs: close the handle\n  \
          PATTERN: leaked handles. The implementer's audit record is DecisionMade `{audit}`.\n\
+         - lib.rs: drop the dead flag\n\
          A finding outside that delta"
     )
 }

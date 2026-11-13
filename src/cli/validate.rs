@@ -606,11 +606,6 @@ fn behind_the_tree_advisory(
     behind_the_tree_message(installed_version, &checkout_version, distance)
 }
 
-/// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
-/// `None` when the tracked `.rigger/` tree is clean (or the project is not a git repo, or
-/// git is unavailable - in which case there is nothing to flag). Runs `git status
-/// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
-/// [`dirty_tracked_paths`] seam.
 /// The warnings on the checkout's `.claude/settings.json`, in order: one when it lacks any of
 /// the session settings `rigger setup` installs (the prime hook and the status line, and the
 /// grep-guard when `grep_guard`, the workflow's `defaults.grep_guard`, declares it), and one when
@@ -641,6 +636,11 @@ fn session_hooks_advisory(root: &Path, grep_guard: bool) -> Vec<String> {
     advisories.into_iter().map(str::to_string).collect()
 }
 
+/// Advisory naming the tracked `.rigger/` files that carry uncommitted modifications, or
+/// `None` when the tracked `.rigger/` tree is clean (or the project is not a git repo, or
+/// git is unavailable - in which case there is nothing to flag). Runs `git status
+/// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
+/// [`dirty_tracked_paths`] seam.
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
     let out = subprocess::command("git")
         .args(["status", "--porcelain", "--", RIGGER_DIR])

@@ -7,18 +7,22 @@
 # names (found through `launch-args.sh`, sourced from beside this fixture's own path, and read
 # now, since the host removes that file once the spawn ends), the KURRENTDB_CONN it was started
 # with (`unset` when none) and the host's first stream-json user message, then replays the
-# canned transcript the writer left there. Every later spawn records none of those: it still
+# canned transcript the writer left there; when a `critique-writes` directory stands beside it, the
+# first spawn then copies that tree into its own working directory, so a test stages a file that
+# lands in the checkout as the first pass runs. Every later spawn records none of those: it still
 # reads the host's first message, then replays the later transcript the writer left beside the
-# canned one. While a `critique-hold` file stands beside it, a spawn that has read the host's
-# first message writes `critique-held` and waits (bounded, for a test that panicked) until the
-# hold is removed, so a test acts while that pass is in flight. Each spawn appends one line to
-# its spawn count before it replays. A checked-in executable fixture (never written at test
+# canned one. Every spawn, the first and each later one, also goes on record under
+# `critique-launches` there (`launch-args.sh`'s `record_launch`). While a `critique-hold` file
+# stands beside it, a spawn that has read the host's first message writes `critique-held` and
+# waits (bounded, for a test that panicked) until the hold is removed, so a test acts while that
+# pass is in flight. Each spawn appends one line to its spawn count before it replays. A checked-in executable fixture (never written at test
 # time), for the same reason as every sibling fixture here: no concurrent test's fork+exec can
 # inherit a write fd to it.
 here=$(dirname "$0")
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
 sid=$(launched_session "" "$@")
+record_launch "$here/critique-launches" "$@"
 if [ -s "$here/critique-spawns" ]; then
     transcript="$here/critique-later-transcript.jsonl"
     IFS= read -r line
@@ -34,6 +38,9 @@ else
     printf '%s' "${KURRENTDB_CONN-unset}" > "$here/critique-conn"
     IFS= read -r line
     printf '%s\n' "$line" > "$here/critique-task.jsonl"
+    if [ -d "$here/critique-writes" ]; then
+        cp -R "$here/critique-writes/." .
+    fi
 fi
 if [ -e "$here/critique-hold" ]; then
     : > "$here/critique-held"

@@ -5,8 +5,8 @@
 //! advertise word for word is one shared const, `<TOOL>` for a tool's description and
 //! `<TOOL>_<ARG>` for a property's; any other text is `<SURFACE>_<TOOL>` or
 //! `<SURFACE>_<TOOL>_<ARG>`, its surface prefix `SPAWN_BOUND` or `LOOKUP`. No text
-//! carries a slot. The registry types are `rigger_domain::prompt_surface`'s. The module is pure
-//! consts and compiles in every lane.
+//! carries a slot. The registry types are `rigger_domain::prompt_surface`'s. The module holds the
+//! consts and their registry, [`prompt_groups`], both pure, so it compiles in every lane.
 
 /// CONTRACT: the spawn-bound surface's `rigger_emit` description: the record is stamped
 /// with the bound spawn.

@@ -877,6 +877,24 @@ fn build_budget_of(cfg: &Config) -> BuildBudget {
     )
 }
 
+/// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`] paired
+/// with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir` has no unit
+/// sibling - a review-only worktree, `re_plan`'s planner's empty dir, a canary's. The ONE
+/// derivation both [`RunCtx::spawn_env`] and [`reviewer_carries_build_cache`] read, so a
+/// reviewer's prompt names a build cache exactly when its environment carries one.
+fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
+    crate::worktree::unit_sibling(dir, cache)
+        .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
+}
+
+/// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
+/// ([`build_cache_var`] over [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which
+/// its prompt carries [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]): the one predicate every
+/// review prompt's flag is read from, the live loop's and the canary's.
+pub(crate) fn reviewer_carries_build_cache(dir: &str) -> bool {
+    build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
+}
+
 /// The shared gate build cache's DIR and guard-lock PATH for the project at `repo` (spec 77
 /// criterion 5), both derived from one `scratch_root_from_env(repo, workdir)` call. The one
 /// resolution [`RunCtx::shared_build_cache_paths`] and [`gate_once`] share.
@@ -2168,9 +2186,10 @@ impl PriorFailure {
         if !self.required.is_empty() {
             let audit = audit_id(unit, attempt);
             b.push_str(PRIOR_REQUIRED_LEAD);
-            b.push_str(&required_lines(&self.required, |shape| {
-                fill(PRIOR_PATTERN, &[("shape", shape), ("audit", &audit)])
-            }));
+            b.push_str(&required_lines(
+                &self.required,
+                &fill(PRIOR_PATTERN, &[("audit", &audit)]),
+            ));
         }
         if !self.contradiction.trim().is_empty() {
             // Compensation re-entry (spec 12, unit 4): a later unit's work proved this
@@ -5371,6 +5390,17 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// The definition of the agent `agent_id` that stage `st` spawns as `role`, or the stage
+    /// error naming the stage, the role and the id when no agent defines it.
+    fn stage_agent(&self, st: &Stage, role: &str, agent_id: &str) -> Result<&AgentDef, Error> {
+        self.cfg.agents.get(agent_id).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown {role} {agent_id:?}",
+                st.name
+            ))
+        })
+    }
+
     /// Build a REVIEWER's spawn options. A reviewer writes no code to integrate, but
     /// it still has tools that touch the filesystem (every review agent has `Bash`;
     /// the sdet lens has `Edit`/`Write`), so it must NOT run in the live main checkout
@@ -5408,12 +5438,7 @@ impl RunCtx<'_> {
         } else {
             crate::worktree::UNIT_REVIEW_CACHE_PREFIX
         };
-        let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
-            Error(format!(
-                "stage {:?} references unknown {role} {agent_id:?}",
-                st.name
-            ))
-        })?;
+        let agent_def = self.stage_agent(st, role, agent_id)?;
         let build_env = self.build_env()?;
         Ok(SpawnOpts {
             system_prompt: self.build_system_prompt(agent_def),
@@ -6107,7 +6132,9 @@ impl RunCtx<'_> {
     /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
     /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
     /// an outage to rerun, so the single lane fails its stage with it and a speculation candidate
-    /// loses.
+    /// loses. Returns the stage error naming the role and the id, before any budget slot, when the
+    /// declared id names no defined agent, which only a config that never went through a load
+    /// holds: the single lane fails its stage with it and a speculation candidate loses.
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends that round's fact ([`doc_only_round`]) to the prompt and to a resumed session's
@@ -6136,15 +6163,12 @@ impl RunCtx<'_> {
         }
         // No declared test author is a clean no-op (the build proceeds without the seam),
         // whatever agents the project defines: the seam spawns only the agent the workflow names.
-        let author = &self.cfg.workflow.defaults.test_author;
-        if author.is_empty() {
-            return Ok(());
-        }
-        // A load refuses a declared id no agent defines (`Config::validate`), so this arm is
-        // reached only by a config that never went through one; it proceeds author-less too.
-        let Some(sdet_def) = self.cfg.agents.get(author) else {
+        let Some(author) = self.cfg.workflow.defaults.declared_test_author() else {
             return Ok(());
         };
+        // A load refuses a declared id no agent defines (`Config::validate`); a config that never
+        // went through one fails here, before any budget slot, as an unknown review agent does.
+        let sdet_def = self.stage_agent(st, ROLE_SDET_AUTHOR, author)?;
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
         // gets the trimmed implement slice like the implementer it authors periphery tests alongside.
@@ -6155,7 +6179,7 @@ impl RunCtx<'_> {
             GroundingSlice::Implement,
         )?;
         // The doc-only fact is framing, never a gate: a delta that cannot be read leaves the
-        // prompt without it, so this seam still errs only on a park.
+        // prompt without it, so reading it adds no error to this seam.
         let delta = self.round_delta(wt, &st.name, attempt);
         let doc_only = doc_only_round(delta.as_ref());
         if !doc_only.is_empty() {
@@ -8885,7 +8909,7 @@ impl RunCtx<'_> {
         let prompt = format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            adjudicator_contract(Self::reviewer_carries_build_cache(dir)),
+            adjudicator_contract(reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -9258,7 +9282,7 @@ impl RunCtx<'_> {
                     ReviewerOutput::Findings,
                     &format!(
                         "{prompt}{}",
-                        review_protocol(ROLE_ADVERSARY, Self::reviewer_carries_build_cache(dir))
+                        review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
                     ),
                     None,
                     None,
@@ -9442,7 +9466,7 @@ impl RunCtx<'_> {
     /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
     /// LOCATION): `build_env`'s wrapper/cache/incremental/jobs vars (spec 65), PLUS - the
     /// biggest leak spec 77 exists to close - a per-unit [`crate::spawn::BUILD_CACHE_ENV`]
-    /// ([`build_cache_var`](Self::build_cache_var)) naming the
+    /// ([`build_cache_var`]) naming the
     /// SAME `cargo-target-<slug>` cache sibling [`run_gates`](Self::run_gates) already
     /// points a gate's OWN build at for this exact `dir` (Gap 19,
     /// [`worktree::unit_cache_sibling`]). Without this, an agent that runs its own `cargo
@@ -9481,32 +9505,13 @@ impl RunCtx<'_> {
         cache: &str,
     ) -> Vec<(String, String)> {
         let mut vars = build_env.vars().to_vec();
-        vars.extend(Self::build_cache_var(dir, cache));
+        vars.extend(build_cache_var(dir, cache));
         vars.extend(
             self.gate_address
                 .clone()
                 .map(|address| (GATE_SOCKET_ENV.to_string(), address)),
         );
         vars
-    }
-
-    /// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`]
-    /// paired with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir`
-    /// has no unit sibling - a review-only worktree, the planner's empty dir. The ONE
-    /// derivation both [`spawn_env`](Self::spawn_env) and
-    /// [`reviewer_carries_build_cache`](Self::reviewer_carries_build_cache) read, so a
-    /// reviewer's prompt names a build cache exactly when its environment carries one.
-    fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
-        crate::worktree::unit_sibling(dir, cache)
-            .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
-    }
-
-    /// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
-    /// ([`build_cache_var`](Self::build_cache_var) over
-    /// [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which its prompt carries
-    /// [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]).
-    fn reviewer_carries_build_cache(dir: &str) -> bool {
-        Self::build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -12050,7 +12055,7 @@ impl RunCtx<'_> {
         Ok(format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            review_protocol(actor, Self::reviewer_carries_build_cache(dir)),
+            review_protocol(actor, reviewer_carries_build_cache(dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
@@ -13684,8 +13689,9 @@ fn re_plan_lead(feedback: &str) -> String {
 /// lenses) retrieve it via grounding + rigger_peers, never via the conductor splicing one
 /// agent's stdout into another's prompt. When to record a finding, and what to do with one
 /// another reviewer already raised, are guidance the communication and working-discipline
-/// built-ins state, so the protocol carries only the tool, its data and what the record
-/// reaches ([`REVIEW_FINDING_PROTOCOL`] and [`REVIEW_FINDING_LIVE`]).
+/// built-ins state, so the protocol carries, for a finding, only the tool, its data and what the
+/// record reaches ([`REVIEW_FINDING_PROTOCOL`] and [`REVIEW_FINDING_LIVE`]), then the reviewer
+/// discipline.
 ///
 /// `actor` is the reviewer's ROLE token, its step's [`review_step_role`] (`lens:<agent>` or
 /// `adversary`, with `@<k>` from a kind's second step on), that the finding's `by` field carries.
@@ -13705,7 +13711,7 @@ fn re_plan_lead(feedback: &str) -> String {
 /// same `by` role token the live review-quality folds key on - one protocol, not two.
 ///
 /// `carries_cache` is whether the reviewer's spawn environment carries the unit's review
-/// cache ([`RunCtx::reviewer_carries_build_cache`]); the protocol ends with
+/// cache ([`reviewer_carries_build_cache`]); the protocol ends with
 /// [`reviewer_discipline`] of it, so the build cache sentence reaches only a reviewer that has
 /// one.
 pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
@@ -13718,7 +13724,7 @@ pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
 
 /// The reviewer contract a review-tier prompt ends with: [`REVIEWER_DISCIPLINE`], followed by
 /// [`REVIEWER_BUILD_CACHE`] when `carries_cache` - the spawn's environment carries the unit's
-/// review cache ([`RunCtx::reviewer_carries_build_cache`]).
+/// review cache ([`reviewer_carries_build_cache`]).
 ///
 /// It carries only what the harness enforces or provides, never a method of review. A REVIEW
 /// ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): [`REVIEWER_DISCIPLINE`]'s two
@@ -13810,12 +13816,12 @@ impl ReviewRound {
         let required = if self.required.is_empty() {
             ROUND_REQUIRED_NONE.to_string()
         } else {
-            let audit = &self.audit;
             format!(
                 "{ROUND_REQUIRED_HEADER}{}",
-                required_lines(&self.required, |shape| {
-                    fill(ROUND_PATTERN, &[("shape", shape), ("audit", audit)])
-                })
+                required_lines(
+                    &self.required,
+                    &fill(ROUND_PATTERN, &[("audit", &self.audit)])
+                )
             )
         };
         format!(
@@ -13839,17 +13845,19 @@ fn rejects_without_required(output: &str) -> bool {
 /// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
-/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by
-/// `pattern`'s clause for its shape: the one rendering the implementer's prior-failure block
-/// and a later round's review block share, each with its own pattern clause.
-fn required_lines(items: &[RequiredItem], pattern: impl Fn(&str) -> String) -> String {
+/// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by its
+/// [`PATTERN_LABEL`] line, the trimmed shape and then `record`, the block's record sentence:
+/// the one rendering the implementer's prior-failure block and a later round's review block
+/// share, each passing its own record sentence.
+fn required_lines(items: &[RequiredItem], record: &str) -> String {
     items
         .iter()
         .map(|item| {
             let mut line = format!("- {}: {}\n", item.path, item.finding);
             let shape = item.pattern.trim();
             if !shape.is_empty() {
-                line.push_str(&pattern(shape));
+                line.push_str(&fill(PATTERN_LABEL, &[("shape", shape)]));
+                line.push_str(record);
             }
             line
         })
@@ -14656,9 +14664,10 @@ fn write_peers_pointer(b: &mut String) {
 /// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
 /// prior decisions, findings, and lessons about the files). It names the tools and one worked
 /// example each of the two commonest questions, who calls a name and where it is defined, with a
-/// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and the `grep-fallback:` progress line a grep over
-/// the project's sources owes - is the `working-discipline` built-in's, which every spawn's
-/// instructions carry. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
+/// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and
+/// the `grep-fallback:` progress line a grep over the project's sources owes - is the
+/// `working-discipline` built-in's, which the built-in layer carries into every spawn's system
+/// prompt unless the operator switches it off or shadows it. Rendered on the IMPLEMENT slice (after the bulk-not-inlined note) and the
 /// FULL/review slice (after the capped bulk) alike, so every spawn's grounding names the verbs. A
 /// fixed string with no seed/graph data, so it is deterministic by construction; hyphens only (a
 /// gate rejects U+2014), and it names only first-party tools.
@@ -15645,10 +15654,10 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, dag_critique_prompt, dag_critique_verdict_paragraph, keyed_index,
-        keyed_payload, payloads_of_type, plan_protocol_text, run_log, spec_defect_halt_text,
-        stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
-        DAG_PRIOR_REJECT_HEADER, DAG_SIZE_CAP_CAUSE, PLANNING_POLICY, STOP_ESCALATED_KEY,
-        STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SCOPE, WIDGET_CRITERION,
+        keyed_payload, payloads_of_type, plan_protocol_text, policy_counts, run_log,
+        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
+        DAG_PRIOR_REJECT_HEADER, DAG_SIZE_CAP_CAUSE, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+        STOP_SPEC_DEFECT_KEY, UNIT_SIZE_CAP_SCOPE, WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -30544,7 +30553,9 @@ mod tests {
 
     /// A GATE-ONLY failure resumes the sdet-author too: the unit's first attempt goes red at a
     /// gate before any review round, and its second attempt's sdet-author continues the session
-    /// its first ran as, sent the failed attempt's gate evidence as what changed.
+    /// its first ran as, sent the failed attempt's gate evidence as what changed. The test author
+    /// is declared under `test-writer`, an id other than its role token, so the session it resumes
+    /// is the `sdet-author` token's, whatever the declared agent is named.
     #[test]
     fn a_gate_only_failure_resumes_the_sdet_authors_session_with_the_gate_evidence() {
         let repo = temp_git_project_with_commit();
@@ -30560,8 +30571,14 @@ mod tests {
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
-        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        let mut cfg = session_cfg();
+        declare_test_author(&mut cfg, "test-writer");
+        let rs = run_isolated(&cfg, &deps).unwrap();
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        assert!(
+            driver.spawned("test-writer"),
+            "premise: the declared test-writer is the agent spawned"
+        );
         let first = spawn_id("implement", ROLE_SDET_AUTHOR, 0);
         let (from, task) = driver
             .resume_of(&spawn_id("implement", ROLE_SDET_AUTHOR, 1))
@@ -37964,8 +37981,10 @@ mod tests {
 
     /// Where each spawn builds and whether its task prompt names that build cache, for each kind
     /// of working tree a spawn gets, under either driver. A unit's panel builds into the unit's
-    /// caches - the implementer and the sdet-author into the unit's own, the lenses, the adversary
-    /// and the adjudicator into the unit's review cache, so a reproduction in a reviewer's scratch
+    /// caches - the implementer and the test author into the unit's own, the test author by its
+    /// `sdet-author` role token whatever id the workflow declares it under (here `test-writer`),
+    /// the lenses, the adversary and the adjudicator into the unit's review cache, so a
+    /// reproduction in a reviewer's scratch
     /// worktree never swaps a binary the unit's gates or another tier's test is using - in the
     /// spawn environment and in the parked request the host launches. Each review tier
     /// reads the reviewer discipline once, followed by the build-cache sentence. A spawn with no
@@ -37984,7 +38003,7 @@ mod tests {
         type Built<'a> = Vec<(&'a str, &'a [Option<&'a str>], usize, usize)>;
         let unit_panel: Setup = || {
             let mut cfg = per_unit_panel_cfg(None);
-            declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
+            declare_test_author(&mut cfg, "test-writer");
             let driver = Stub {
                 output: "reviewed the diff".into(),
                 write_file: Some("feature.rs".into()),
@@ -38046,7 +38065,7 @@ mod tests {
                 unit_panel,
                 vec![
                     ("worker", &[Some("cargo-target-implement")], 0, 0),
-                    (ROLE_SDET_AUTHOR, &[Some("cargo-target-implement")], 0, 0),
+                    ("test-writer", &[Some("cargo-target-implement")], 0, 0),
                     ("lens", &[Some("review-target-implement")], 1, 1),
                     ("adversary", &[Some("review-target-implement")], 1, 1),
                     ("adj", &[Some("review-target-implement")], 1, 1),
@@ -45250,6 +45269,15 @@ mod tests {
             "the re-run's prompt names the refusal: {}",
             prompts[rerun]
         );
+        let refused = rerun.replace("~retry2", "~retry1");
+        assert!(
+            prompts[rerun].starts_with(&format!(
+                "{}\n\nYour previous run's record was refused: ",
+                prompts[&refused]
+            )),
+            "the re-run's prompt is the refused run's task, then the refusal: {}",
+            prompts[rerun]
+        );
         assert_eq!(merged, "RESOLVED\n", "the resolution lands");
     }
 
@@ -47251,7 +47279,7 @@ mod tests {
     /// docs, and a round that changed nothing state no such fact.
     #[test]
     fn a_doc_only_round_states_only_the_fact_to_the_sdet_author() {
-        use crate::test_support::DOC_ONLY_ROUND_FACT as FACT;
+        use crate::test_support::{DOC_ONLY_ROUND_FACT as FACT, LATER_ATTEMPT_CLOSE};
         for (second_round, told, why) in [
             (
                 &["docs/diagram.svg", "README.md"][..],
@@ -47279,7 +47307,7 @@ mod tests {
                 for (round, (resumed, turn)) in turns.iter().enumerate() {
                     let stated = told && round == 1;
                     let tail = if *resumed {
-                        format!("Bring the periphery tests in line with that change.\n{FACT}")
+                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}")
                     } else {
                         format!("\n\n{FACT}")
                     };
@@ -47943,7 +47971,7 @@ mod tests {
         ///
         /// The seam is reached (a real worktree, so `dir` is non-empty - the worktree gate does NOT
         /// short-circuit first), and the undeclared-author arm
-        /// (`if author.is_empty() { return Ok(()); }`) is the code under test. NON-VACUOUS: RED
+        /// (`let Some(author) = .. else { return Ok(()); }`) is the code under test. NON-VACUOUS: RED
         /// when that arm is made NON-tolerant - change its `return Ok(())` to
         /// `return Err(Error("no sdet-author".into()))` and the undeclared author propagates an
         /// error out of the seam (`spawn_sdet_author(..)?`), so the unit never integrates.
@@ -47980,11 +48008,13 @@ mod tests {
 
     /// Spec 121's THE TEST AUTHOR IS DECLARED: the build seam spawns the agent
     /// `defaults.test_author` names, served that agent's own persona, under the `sdet-author` role
-    /// token; it spawns nothing when the key is absent, whatever agents the project defines; and a
-    /// workflow whose key names no defined agent is refused at load, so it never runs. Each spawn
-    /// reads as its agent, its spawn id and the defined agents whose persona its system prompt
-    /// carries, so a seam that resolved the conventional `sdet-author` agent, or served the
-    /// declared one another agent's persona, names the wrong agent or persona.
+    /// token; it spawns nothing when the key is absent, whatever agents the project defines; a
+    /// workflow whose key names no defined agent is refused at load, so it never runs; and a config
+    /// that never went through a load, whose key names no defined agent, fails the run at the seam
+    /// naming the stage, the role and the id, as an unknown review agent does, never proceeding
+    /// author-less. Each spawn reads as its agent, its spawn id and the defined agents whose
+    /// persona its system prompt carries, so a seam that resolved the conventional `sdet-author`
+    /// agent, or served the declared one another agent's persona, names the wrong agent or persona.
     #[test]
     fn the_build_seam_spawns_the_declared_test_author_under_the_sdet_author_token() {
         let persona = |id: &str| format!("Persona of {id}.");
@@ -47996,10 +48026,12 @@ mod tests {
             )
         };
         let worker = spawn("worker", "s/implementer#0", &[]);
+        // (declared, defined, loaded: whether the config goes through a load first, want)
         let rows = [
             (
                 "sdet-author",
                 &["sdet-author"][..],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("sdet-author", "s/sdet-author#0", &["sdet-author"]),
@@ -48008,6 +48040,7 @@ mod tests {
             (
                 "test-writer",
                 &["sdet-author", "test-writer"],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
@@ -48016,20 +48049,28 @@ mod tests {
             (
                 "test-writer",
                 &["test-writer"],
+                true,
                 Ok(vec![
                     worker.clone(),
                     spawn("test-writer", "s/sdet-author#0", &["test-writer"]),
                 ]),
             ),
-            ("", &["sdet-author"], Ok(vec![worker.clone()])),
-            ("", &[], Ok(vec![worker])),
+            ("", &["sdet-author"], true, Ok(vec![worker.clone()])),
+            ("", &[], true, Ok(vec![worker])),
             (
                 "ghost",
                 &["sdet-author"],
+                true,
                 Err(GHOST_TEST_AUTHOR_REFUSAL.to_string()),
             ),
+            (
+                "ghost",
+                &["sdet-author"],
+                false,
+                Err(r#"stage "s" references unknown sdet-author "ghost""#.to_string()),
+            ),
         ];
-        for (declared, defined, want) in rows {
+        for (declared, defined, loaded, want) in rows {
             let mut cfg = sdet_lane_cfg(false);
             for id in defined {
                 cfg.agents
@@ -48037,29 +48078,59 @@ mod tests {
             }
             cfg.workflow.defaults.test_author = declared.to_string();
             let driver = sdet_lane_driver();
-            let spawned = cfg.validate().map_err(|e| e.0).map(|_| {
-                run_in_repo(&cfg, &driver)
-                    .0
-                    .expect("the sdet seam never fails the run");
-                let order = driver.call_order.lock().unwrap().clone();
-                order
-                    .into_iter()
-                    .zip(driver.spawn_ids())
-                    .map(|(agent, id)| {
-                        let system = driver.system_prompt_for(&agent).unwrap_or_default();
-                        let served = defined
-                            .iter()
-                            .map(|d| d.to_string())
-                            .filter(|d| system.contains(&persona(d)))
-                            .collect::<Vec<_>>();
-                        (agent, id, served)
-                    })
-                    .collect::<Vec<_>>()
-            });
+            let load = if loaded {
+                cfg.validate().map(|_| ()).map_err(|e| e.0)
+            } else {
+                Ok(())
+            };
+            let spawned = load
+                .and_then(|()| run_in_repo(&cfg, &driver).0.map_err(|e| e.0))
+                .map(|_| {
+                    let order = driver.call_order.lock().unwrap().clone();
+                    order
+                        .into_iter()
+                        .zip(driver.spawn_ids())
+                        .map(|(agent, id)| {
+                            let system = driver.system_prompt_for(&agent).unwrap_or_default();
+                            let served = defined
+                                .iter()
+                                .map(|d| d.to_string())
+                                .filter(|d| system.contains(&persona(d)))
+                                .collect::<Vec<_>>();
+                            (agent, id, served)
+                        })
+                        .collect::<Vec<_>>()
+                });
             assert_eq!(
                 spawned, want,
-                "test_author {declared:?} over the agents {defined:?}"
+                "test_author {declared:?} over the agents {defined:?}, loaded first: {loaded}"
             );
+        }
+    }
+
+    /// The records a test author emits at the build seam carry the `sdet-author` role token as
+    /// their actor, whatever id the workflow declares the author under.
+    #[test]
+    fn a_test_authors_records_carry_the_sdet_author_token_as_their_actor() {
+        for declared in [ROLE_SDET_AUTHOR, "test-writer"] {
+            let mut cfg = sdet_lane_cfg(false);
+            declare_test_author(&mut cfg, declared);
+            let decision = json!({"id": "d-periphery", "summary": "periphery authored"});
+            let driver = Stub {
+                emits_by_agent: HashMap::from([(
+                    declared.to_string(),
+                    vec![(contextgraph::TYPE_DECISION_MADE.to_string(), decision)],
+                )]),
+                ..sdet_lane_driver()
+            };
+            let (run, events) = run_in_repo(&cfg, &driver);
+            run.expect("the unit integrates");
+            let actors: Vec<&str> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+                .map(|e| e.meta[contextgraph::META_ACTOR].as_str())
+                .collect();
+            assert_eq!(actors, [ROLE_SDET_AUTHOR], "test_author {declared:?}");
         }
     }
 
@@ -48714,13 +48785,11 @@ mod tests {
             Some(protocol.as_str()),
             "the planner's task ends with the emit protocol and then the plan protocol alone"
         );
-        for sentence in PLANNING_POLICY {
-            assert_eq!(
-                planner.matches(sentence).count(),
-                0,
-                "the planner's task states the planning policy {sentence:?}:\n{planner}"
-            );
-        }
+        assert_eq!(
+            policy_counts(&planner),
+            [0; 6],
+            "the planner's task states none of the planning policy:\n{planner}"
+        );
     }
 
     #[test]
@@ -49412,6 +49481,14 @@ mod tests {
                 "Your previous run's record was refused: {refusal}"
             )) && !rerun.contains('\u{1}'),
             "the re-run's prompt names the refusal, unmarked: {rerun}"
+        );
+        let tasks = driver.prompts_for(author.agent);
+        let refused_task = &tasks[tasks.len() - 2];
+        assert!(
+            rerun.starts_with(&format!(
+                "{refused_task}\n\nYour previous run's record was refused: "
+            )),
+            "the re-run's prompt is the refused run's task, then the refusal: {rerun}"
         );
         for holder in author.holders {
             assert!(
@@ -50590,11 +50667,9 @@ mod tests {
     /// neither a skeleton nor a joiner is a group.
     #[test]
     fn the_conductor_protocols_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
-        let plan = |names: &[&str]| groups("conductor::render_plan_protocol", names);
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let plan = |names: &[&str]| picks.rendered("conductor::render_plan_protocol", names);
         let plan_body = plan(&[
             "PLAN_ROLE",
             "PLAN_SPLIT_ID_ECHO",
@@ -50610,9 +50685,9 @@ mod tests {
             "- [{}] {{criterion}}",
             criterion_stable_id(1, "{criterion}")
         );
-        let adjudicator = |names: &[&str]| groups("conductor::adjudicator_contract", names);
-        let review = |names: &[&str]| groups("conductor::review_protocol", names);
-        let notes = |names: &[&str]| groups("conductor::notes_block", names);
+        let adjudicator = |names: &[&str]| picks.rendered("conductor::adjudicator_contract", names);
+        let review = |names: &[&str]| picks.rendered("conductor::review_protocol", names);
+        let notes = |names: &[&str]| picks.rendered("conductor::notes_block", names);
         let note = |id: &str, about: &[&str], summary: &str| RunNote {
             id: id.to_string(),
             about: about.iter().map(|a| a.to_string()).collect(),
@@ -50632,7 +50707,7 @@ mod tests {
                 ..Stage::default()
             })
         };
-        let conflict = groups(
+        let conflict = picks.rendered(
             "conductor::conflict_resolution_prompt",
             &["CONFLICT_RESOLUTION"],
         );
@@ -50652,7 +50727,7 @@ mod tests {
             (
                 "the emit protocol",
                 emit_protocol(),
-                groups("conductor::emit_protocol", &["EMIT_PROTOCOL", "EMIT_LIVE"]),
+                picks.rendered("conductor::emit_protocol", &["EMIT_PROTOCOL", "EMIT_LIVE"]),
             ),
             (
                 "the plan protocol with no cap and no criterion",
@@ -50734,7 +50809,7 @@ mod tests {
             (
                 "a task re-run after a refusal",
                 refused.task("{prompt}").into_owned(),
-                groups("conductor::RefusedRecord::task", &["REFUSED_RECORD_NOTE"]),
+                picks.rendered("conductor::RefusedRecord::task", &["REFUSED_RECORD_NOTE"]),
             ),
             (
                 "a producer's task",
@@ -50749,7 +50824,7 @@ mod tests {
             (
                 "a unit's task",
                 task("{criterion}", ""),
-                groups("conductor::task_block", &["TASK_BLOCK"]),
+                picks.rendered("conductor::task_block", &["TASK_BLOCK"]),
             ),
             (
                 "a conflict over one path",
@@ -50764,7 +50839,7 @@ mod tests {
             (
                 "a round that changed documentation only",
                 round(&["docs/a.md"]),
-                groups("conductor::doc_only_round", &["DOC_ONLY_ROUND"]),
+                picks.rendered("conductor::doc_only_round", &["DOC_ONLY_ROUND"]),
             ),
             (
                 "a round that changed code",
@@ -50775,7 +50850,7 @@ mod tests {
             (
                 "the peers pointer",
                 pushed(write_peers_pointer),
-                groups(
+                picks.rendered(
                     "conductor::write_peers_pointer",
                     &["PEERS_POINTER", "LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
                 ),
@@ -50783,7 +50858,7 @@ mod tests {
             (
                 "the lookup pointer",
                 pushed(write_lookup_pointer),
-                groups(
+                picks.rendered(
                     "conductor::write_lookup_pointer",
                     &["LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
                 ),
@@ -50801,14 +50876,12 @@ mod tests {
     /// gate's lines spelled here, since neither a skeleton nor a joiner is a group.
     #[test]
     fn the_retry_and_review_round_blocks_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
-        let prior = |names: &[&str]| groups("conductor::PriorFailure::block", names);
-        let round = |names: &[&str]| groups("conductor::ReviewRound::block", names);
-        let evidence = |names: &[&str]| groups("conductor::gate_evidence_block", names);
-        let later = |names: &[&str]| groups("conductor::later_attempt_block", names);
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let prior = |names: &[&str]| picks.rendered("conductor::PriorFailure::block", names);
+        let round = |names: &[&str]| picks.rendered("conductor::ReviewRound::block", names);
+        let evidence = |names: &[&str]| picks.rendered("conductor::gate_evidence_block", names);
+        let later = |names: &[&str]| picks.rendered("conductor::later_attempt_block", names);
         let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let required = |pattern: &str| RequiredItem {
             finding: "{finding}".to_string(),
@@ -50819,7 +50892,7 @@ mod tests {
         let item_line = "- {path}: {finding}\n";
         let failure = |f: PriorFailure| f.block("{unit}", 2);
         let pattern = fill(
-            &prior(&["PRIOR_PATTERN"]),
+            &prior(&["PATTERN_LABEL", "PRIOR_PATTERN"]),
             &[("audit", &audit_id("{unit}", 2))],
         );
         let review_round = |delta: &[&str], required: Vec<RequiredItem>| {
@@ -50950,7 +51023,7 @@ mod tests {
                         &round(&["ROUND_LEAD_IN", "ROUND_REQUIRED_HEADER"]),
                         &[("delta", "{a}, {b}")]
                     ),
-                    round(&["ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
+                    round(&["PATTERN_LABEL", "ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
                 ),
             ),
             (
@@ -51005,19 +51078,14 @@ mod tests {
     /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
     /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
-    /// none, and a re-plan under a cap whose unit holds each and overlaps another, its rows'
-    /// lists filled into their slots.
+    /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, and a
+    /// re-plan under a cap whose unit holds each and overlaps another, its rows' lists filled into
+    /// their slots.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let dag = |names: &[&str]| {
-            rendered_groups(
-                prompt_groups(),
-                "conductor::build_dag_critique_prompt",
-                names,
-            )
-        };
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let dag = |names: &[&str]| picks.rendered("conductor::build_dag_critique_prompt", names);
         let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let critique = |coverage: &str,
                         needs: &[&str],
@@ -51069,6 +51137,24 @@ mod tests {
                 ),
             ),
             (
+                "a first plan whose criterion holds a quote and a backslash",
+                critique(r#" keep "a\b" whole "#, &[], &[], &[], "", None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", r#"keep \"a\\b\" whole"#),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
+                    contract("")
+                ),
+            ),
+            (
                 "a re-plan under a cap",
                 critique(
                     "{criterion}",
@@ -51096,8 +51182,7 @@ mod tests {
             (
                 "a re-plan's lead",
                 re_plan_lead("{feedback}"),
-                rendered_groups(
-                    prompt_groups(),
+                picks.rendered(
                     "conductor::re_plan_lead",
                     &["REPLAN_LEAD", "REPLAN_ID_CONTRACT"],
                 ),
@@ -51117,12 +51202,10 @@ mod tests {
     /// here, since a skeleton is not a group.
     #[test]
     fn the_grounding_sections_are_their_groups_on_each_branch() {
-        use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         use crate::test_support::{edge, node_with_attrs};
         type Writer = fn(&mut String, &Graph, &[String]);
-        let groups =
-            |surface: &str, names: &[&str]| rendered_groups(prompt_groups(), surface, names);
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
         let written = |write: Writer, g: &Graph, seed: &[String]| {
             let mut b = String::new();
             write(&mut b, g, seed);
@@ -51161,13 +51244,13 @@ mod tests {
         ];
         let mut cases: Vec<(String, String, String)> = Vec::new();
         for (surface, header, noun, write, one, line, over_budget) in records {
-            let header = groups(surface, &[header]);
+            let header = picks.rendered(surface, &[header]);
             let note = fill(
-                &groups(surface, &["ELISION_NOTE_RECORDS"]),
+                &picks.rendered(surface, &["ELISION_NOTE_RECORDS"]),
                 &[
                     ("elided", "1"),
                     ("noun", noun),
-                    ("recover", &groups(surface, &["RECORD_RECOVERY"])),
+                    ("recover", &picks.rendered(surface, &["RECORD_RECOVERY"])),
                 ],
             );
             cases.extend([
@@ -51188,7 +51271,8 @@ mod tests {
                 ),
             ]);
         }
-        let neighborhood = |names: &[&str]| groups("conductor::write_code_neighborhood", names);
+        let neighborhood =
+            |names: &[&str]| picks.rendered("conductor::write_code_neighborhood", names);
         let code_header = neighborhood(&["CODE_NEIGHBORHOOD_HEADER"]);
         let code_note = |recover: String| {
             fill(
@@ -51197,7 +51281,7 @@ mod tests {
             )
         };
         let long_name = over(CODE_NEIGHBORHOOD_BUDGET_BYTES);
-        let intent = |names: &[&str]| groups("conductor::write_design_intent", names);
+        let intent = |names: &[&str]| picks.rendered("conductor::write_design_intent", names);
         let intent_header = intent(&["DESIGN_INTENT_HEADER"]);
         let intent_note = |recover: String| {
             fill(
@@ -51220,7 +51304,7 @@ mod tests {
                 contextgraph::TIER_EXTRACTED,
             )],
         };
-        let around = |names: &[&str]| groups("conductor::graph_around_recovery", names);
+        let around = |names: &[&str]| picks.rendered("conductor::graph_around_recovery", names);
         cases.extend([
             (
                 "the code neighborhood with no definition".to_string(),

@@ -9,7 +9,9 @@ use crate::common;
 use common::cli::{
     cargo_project, loaded_config, run_rigger, run_rigger_ok, setup_ok, temp_project,
 };
-use common::fixtures::{sorted_dir_names, LANGUAGE_NEUTRAL_IMPLEMENTER};
+use common::fixtures::{
+    agents_beside, sorted_dir_names, stage_agents, LANGUAGE_NEUTRAL_IMPLEMENTER,
+};
 use common::repo::repo_root;
 use std::path::Path;
 
@@ -70,14 +72,6 @@ fn init(root: &Path) -> String {
 /// `rigger setup` in `root`, with the npm step stubbed, returning its stdout.
 fn setup(root: &Path) -> String {
     setup_ok(root, &[])
-}
-
-/// The two unit stages' agents, `[implement, checkin]`.
-fn stage_agents(cfg: &rigger::config::Config) -> [String; 2] {
-    [
-        cfg.workflow.stages["implement"].agent.clone(),
-        cfg.workflow.stages["checkin"].agent.clone(),
-    ]
 }
 
 /// The two unit stages' gate lists, `(implement, checkin)`.
@@ -335,23 +329,6 @@ const NO_SET_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, impleme
 /// order, then the set's `rust-engineer`.
 const RUST_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \
                                 sdet.md, adversary.md, adjudicator.md, rust-engineer.md}";
-
-/// The sorted files `.rigger/agents` holds when its implementer persona is `implementer`: the
-/// role seeds and that file.
-fn agents_beside(implementer: &str) -> Vec<String> {
-    let mut files: Vec<String> = [
-        "planner.md",
-        "architecture-reviewer.md",
-        "sdet.md",
-        "adversary.md",
-        "adjudicator.md",
-        implementer,
-    ]
-    .map(String::from)
-    .to_vec();
-    files.sort();
-    files
-}
 
 /// Given a project matching no set or the Rust set, when the operator runs `rigger init` or
 /// `rigger setup`, then the implement and checkin stages both run the implementer the set brings -

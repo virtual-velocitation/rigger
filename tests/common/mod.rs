@@ -45,12 +45,39 @@ pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
     (out.status.success(), text)
 }
 
+/// The profile dir (`<target>/<profile>`) a cargo-run integration suite is running out of, read
+/// from where its executable sits, or `None` when `test_exe` sits in neither place cargo runs an
+/// integration suite from.
+///
+/// Cargo before 1.100 runs a suite from `<target>/<profile>/deps/<suite>-<hash>`. Cargo 1.100
+/// made its build-unit layout the default: a suite runs from its own unit's output dir,
+/// `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` (cargo's private opt-out still
+/// gives the old shape). Each shape is matched whole, by structure; nothing is searched for
+/// upward, and anything else is declined.
+pub fn suite_profile_dir(test_exe: &Path) -> Option<&Path> {
+    let dir = test_exe.parent()?;
+    let name = dir.file_name()?;
+    if name == "deps" {
+        return dir.parent();
+    }
+    if name == "out" {
+        let build = dir.parent()?.parent()?.parent()?;
+        if build.file_name()? == "build" {
+            return build.parent();
+        }
+    }
+    None
+}
+
 /// The product binary that belongs to the target dir a test executable is running out of, or
 /// `None` when `test_exe` is not a cargo-run integration suite.
 ///
-/// Cargo runs an integration suite from `<target>/<profile>/deps/<suite>-<hash>` and uplifts the
-/// package's binaries one directory up, at `<target>/<profile>/`. Deriving the product from the
-/// RUNNING executable therefore always names the target dir the test is actually in.
+/// Under either layout [`suite_profile_dir`] recognises, cargo uplifts the package's binaries to
+/// the profile dir itself, `<target>/<profile>/`. Deriving the product from the RUNNING
+/// executable therefore always names the target dir the test is actually in. (Cargo keeps suites
+/// in its build dir and uplifts binaries to its target dir; the two are the same `target/` unless
+/// a build dir is configured apart from it, and then the derived path names nothing and
+/// [`rigger_bin`] falls back.)
 ///
 /// WHY THIS EXISTS RATHER THAN `CARGO_BIN_EXE_rigger` ALONE. That macro expands at COMPILE time
 /// to an absolute path into the target dir the suite was COMPILED under. Cargo's fingerprints do
@@ -63,16 +90,12 @@ pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
 /// evidence never named it. Runtime derivation cannot drift that way, because the answer is read
 /// from the same directory tree the test itself was just loaded from.
 ///
-/// It DECLINES (returns `None`) rather than guessing when the executable is not in a `deps/`
-/// dir - a hand-run binary, a copied artifact - so [`rigger_bin`] can fall back honestly instead
-/// of handing back a path nobody built.
+/// It DECLINES (returns `None`) rather than guessing when the executable sits in neither layout -
+/// a hand-run binary, a copied artifact - so [`rigger_bin`] can fall back honestly instead of
+/// handing back a path nobody built.
 pub fn product_binary_from(test_exe: &Path) -> Option<PathBuf> {
-    let deps = test_exe.parent()?;
-    if deps.file_name()? != "deps" {
-        return None;
-    }
-    let profile = deps.parent()?;
-    Some(profile.join(format!("rigger{}", std::env::consts::EXE_SUFFIX)))
+    suite_profile_dir(test_exe)
+        .map(|profile| profile.join(format!("rigger{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// The compiled `rigger` binary this suite drives - THE one authority every integration suite
@@ -81,7 +104,8 @@ pub fn product_binary_from(test_exe: &Path) -> Option<PathBuf> {
 /// Resolution order, and why: [`product_binary_from`] over the running test executable first,
 /// because it follows a moved target dir; the compile-time `CARGO_BIN_EXE_rigger` second, which
 /// is the correct answer whenever nothing moved and covers a runner that stages test executables
-/// outside `deps/`. This is the SINGLE site in `tests/` allowed to spell that macro, pinned by
+/// outside both cargo layouts, or a build dir cargo keeps apart from its target dir. This is the
+/// SINGLE site in `tests/` allowed to spell that macro, pinned by
 /// `tests/product_binary_location.rs`. When neither path exists, it panics naming BOTH candidates
 /// rather than letting the spawn fail with a bare `NotFound` that names nothing.
 pub fn rigger_bin() -> PathBuf {
@@ -98,9 +122,11 @@ pub fn rigger_bin() -> PathBuf {
             }
             panic!(
                 "no `rigger` binary to drive: derived {} / compiled-beside {}",
-                derived
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "<none: the test executable is not in a deps/ dir>".into()),
+                derived.map(|p| p.display().to_string()).unwrap_or_else(|| {
+                    "<none: the test executable is in neither cargo layout, \
+                         <profile>/deps/ nor <profile>/build/<package>/<hash>/out/>"
+                        .into()
+                }),
                 baked.display()
             )
         }

@@ -50,7 +50,8 @@ fn in_force_line(builtin: &str, operator_files: usize) -> String {
     )
 }
 
-/// The lines `rigger prime` prints after its first, each ending in a newline: [`PRIME_NO_STORE`]
+/// The decisions lines `rigger prime` prints after its in-force line, each ending in a newline:
+/// [`PRIME_NO_STORE`]
 /// for a project with no store (`None`), else [`PRIME_DECISIONS_HEADER`], then a `- <id>:
 /// <summary>` line per `shown` decision, or [`PRIME_NONE_YET`] when none shows.
 fn decisions_block(shown: Option<&[PeerDecision]>) -> String {
@@ -119,28 +120,22 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+    use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
 
     /// `rigger prime`'s hook form (no spec argument) is its groups concatenated in registry order
     /// on each branch: no store, a store with no decision, and a store with two, each beside an
-    /// operator file count of none or some. The built-ins in force and the decisions are `{slot}`
+    /// operator file count of none or some. The render composes the two seams `cmd_prime` prints,
+    /// `in_force_line` then `decisions_block`, with no store read; the binary's whole stdout is
+    /// pinned through the periphery. The built-ins in force and the decisions are `{slot}`
     /// values; the count, a number, takes a fixed one. The heading is the domain's
     /// `instructions::compose` group, and the line breaks and the decision line's skeleton are
     /// the test's.
     #[test]
     fn the_prime_output_is_its_groups_on_each_branch() {
-        let pick = |names: &[&str]| {
-            rendered_groups(
-                rigger::prompt_surface::prompt_groups(),
-                "prime::cmd_prime",
-                names,
-            )
-        };
-        let heading = rendered_groups(
-            rigger_domain::prompt_surface::prompt_groups(),
-            "instructions::compose",
-            &["INSTRUCTIONS_HEADING"],
-        );
+        let picks = GroupPicks::new(rigger::prompt_surface::prompt_groups());
+        let pick = |names: &[&str]| picks.rendered("prime::cmd_prime", names);
+        let heading = GroupPicks::new(rigger_domain::prompt_surface::prompt_groups())
+            .rendered("instructions::compose", &["INSTRUCTIONS_HEADING"]);
         let in_force = |extra: &str| {
             format!(
                 "{heading}{}",

@@ -43,8 +43,8 @@ const LITERAL_MARKER: &str = "--literal";
 
 /// The pure decision core of `rigger grep-guard` (spec 92, criterion 4, HOOK SCOPE
 /// amendment d-spec92-hook-no-target-axis): given the PreToolUse tool name and its raw
-/// `tool_input`, decide whether this call should bounce toward `rigger_ground`/
-/// `rigger_graph` or pass through untouched. The hook has NO target axis - a shell command's
+/// `tool_input`, decide whether this call should bounce toward the graph's combined lookup
+/// (`rigger_graph` `lookup`) or pass through untouched. The hook has NO target axis - a shell command's
 /// real search target is undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a
 /// redirection, a symlink all defeat a path-based guess) - so every `Grep` tool call and
 /// every `Bash` command that searches for a name ([`invokes_name_search`]: a `grep`, `git grep`
@@ -692,7 +692,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+    use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
 
     /// The pure decision core, d-spec92-hook-no-target-axis (spec 92's Design amended after
     /// round 5 to retire the guarded-tree apparatus): a `Bash` `grep` invocation is denied
@@ -1547,6 +1547,7 @@ mod tests {
     /// each deny branch, and nothing on the allow branch.
     #[test]
     fn the_grep_guard_reason_is_its_group_on_each_branch() {
+        let picks = GroupPicks::new(rigger::prompt_surface::prompt_groups());
         let rows: [(&str, &str, serde_json::Value, &[&str]); 3] = [
             (
                 "the Grep tool",
@@ -1575,11 +1576,7 @@ mod tests {
             assert_renders(
                 case,
                 &render,
-                &rendered_groups(
-                    rigger::prompt_surface::prompt_groups(),
-                    "guard::grep_guard_decision",
-                    names,
-                ),
+                &picks.rendered("guard::grep_guard_decision", names),
             );
         }
     }
@@ -1588,8 +1585,7 @@ mod tests {
     /// root in `{root}`, and with an empty `{root}` over no root at all.
     #[test]
     fn the_guard_write_deny_reason_is_its_group_on_each_branch() {
-        let group = rendered_groups(
-            rigger::prompt_surface::prompt_groups(),
+        let group = GroupPicks::new(rigger::prompt_surface::prompt_groups()).rendered(
             "guard::guard_write_deny_outside_first_root",
             &["GUARD_WRITE_DENY"],
         );
@@ -1616,6 +1612,7 @@ mod tests {
     /// `{arg}` slot values, and the unreadable payload over `{error}`.
     #[test]
     fn the_guard_write_refusals_are_their_groups_on_each_branch() {
+        let picks = GroupPicks::new(rigger::prompt_surface::prompt_groups());
         let refused = |args: &[&str]| {
             let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
             guard_write_stderr(
@@ -1656,8 +1653,7 @@ mod tests {
             assert_renders(
                 case,
                 &render,
-                &rendered_groups(
-                    rigger::prompt_surface::prompt_groups(),
+                &picks.rendered(
                     "guard::cmd_guard_write",
                     &["GUARD_WRITE_STDERR_PREFIX", reason],
                 ),

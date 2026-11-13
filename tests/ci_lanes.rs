@@ -194,12 +194,26 @@ fn ci_runs_the_no_default_and_core_lanes_through_the_lanes_script() {
 }
 
 /// The loop runs each non-default lane through the lanes script as a gate of its own, so a lane
-/// is an instrument, never a reviewer's hand run: every implement round gates both lanes, so a
-/// lane that stops compiling is caught at the unit that broke it, and the check-in gates both
-/// again on the merged tree.
+/// is an instrument, never a reviewer's hand run: every implement round gates the core lane and,
+/// as a gate of its own, the no-default lane's lint command - the first command the lanes script
+/// derives for that lane - so a lane that stops compiling is caught at the unit that broke it,
+/// and the check-in gates both lanes in full on the merged tree.
 #[test]
-fn the_loop_gates_both_lanes_every_round_and_again_at_check_in() {
+fn the_loop_gates_the_core_lane_and_the_no_default_lint_every_round_and_both_lanes_at_check_in() {
     let cfg = common::cli::loaded_config(&repo_root());
+    let lint = lanes_dry_run("no-default")
+        .into_iter()
+        .next()
+        .expect("the no-default lane derives its lint command first");
+    assert_eq!(
+        cfg.workflow.stages["implement"]
+            .gates
+            .iter()
+            .filter(|id| cfg.workflow.gates[id.as_str()].run == lint)
+            .collect::<Vec<_>>(),
+        ["clippy-no-default"],
+        "the implement stage runs the no-default lane's lint, {lint:?}, as one gate"
+    );
     let lane_gates = |stage: &str| -> Vec<String> {
         cfg.workflow.stages[stage]
             .gates
@@ -213,10 +227,7 @@ fn the_loop_gates_both_lanes_every_round_and_again_at_check_in() {
             })
             .collect()
     };
-    assert_eq!(
-        lane_gates("implement"),
-        ["lane-no-default=no-default", "lane-core=core"]
-    );
+    assert_eq!(lane_gates("implement"), ["lane-core=core"]);
     assert_eq!(
         lane_gates("checkin"),
         ["lane-no-default=no-default", "lane-core=core"]

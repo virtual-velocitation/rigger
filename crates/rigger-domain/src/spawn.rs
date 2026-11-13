@@ -827,8 +827,9 @@ impl SpawnEventBody for SpawnResult {
 }
 
 /// The environment variable the build tool reads its cache location from: the ONE home of
-/// that name. The conductor sets it in a spawn's environment, the shell gate runner in a
-/// gate's, and the agent driver reads it back from a spawn's.
+/// that name for every rigger surface that sets or reads it. The conductor sets it in a spawn's
+/// environment, the shell gate runner in a gate's, the agent driver reads it back from a
+/// spawn's, and the managed pre-commit hook reads it to find the build it checks the docs with.
 pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
 
 /// One entry of the pending frontier: the identity of a parked spawn that still awaits its

@@ -1,9 +1,10 @@
 //! The checks every crate's `prompt_surface` tests share (spec 121, criterion 16): the registry
 //! test over a module's source and its groups, which one macro generates in each crate, and the
-//! concatenation test's group pick and whitespace-normalized comparison. Each reads only the
-//! source text and the groups its caller passes, never a file at run time.
+//! concatenation test's group pick, per-surface guard and whitespace-normalized comparison. Each
+//! reads only the source text and the groups its caller passes, never a file at run time.
 
 use rigger_domain::prompt_surface::Group;
+use std::cell::RefCell;
 
 /// The class words a registry const's doc comment opens with, each followed by a colon.
 const CLASS_WORDS: [&str; 2] = ["CONTRACT", "FRAMING"];
@@ -100,23 +101,70 @@ pub fn assert_groups_name_the_consts(source: &str, groups: &[Group]) {
     );
 }
 
-/// The texts of the groups `names` picks from `surface`, concatenated in registry order: one
-/// branch's expected render. Fails when `names` picks a group `surface` does not hold, so a
-/// misspelt surface or name reads red rather than empty.
-pub fn rendered_groups(groups: &[Group], surface: &str, names: &[&str]) -> String {
-    let picked: Vec<&Group> = groups
-        .iter()
-        .filter(|g| g.surface == surface && names.contains(&g.name))
-        .collect();
-    let mut found: Vec<&str> = picked.iter().map(|g| g.name).collect();
-    found.sort();
-    let mut wanted = names.to_vec();
-    wanted.sort();
-    assert_eq!(
-        found, wanted,
-        "{surface:?} holds each group the branch renders"
-    );
-    picked.iter().map(|g| g.text).collect()
+/// One concatenation test's picks over a crate's `groups`: each [`GroupPicks::rendered`] call is
+/// one branch's expected render, and the picks it records are what the test covers. When the
+/// test ends, its drop is the per-surface guard: every group a surface the test picked from
+/// lists was picked under that surface.
+pub struct GroupPicks<'g> {
+    groups: &'g [Group],
+    picked: RefCell<Vec<(&'static str, &'static str)>>,
+}
+
+impl<'g> GroupPicks<'g> {
+    /// A test's picks over `groups`, none picked yet.
+    pub fn new(groups: &'g [Group]) -> Self {
+        GroupPicks {
+            groups,
+            picked: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// The texts of the groups `names` picks from `surface`, concatenated in registry order: one
+    /// branch's expected render, each of those groups recorded as picked under `surface`. Fails
+    /// when `names` picks a group `surface` does not hold, so a misspelt surface or name reads red
+    /// rather than empty.
+    pub fn rendered(&self, surface: &str, names: &[&str]) -> String {
+        let picked: Vec<&Group> = self
+            .groups
+            .iter()
+            .filter(|g| g.surface == surface && names.contains(&g.name))
+            .collect();
+        let mut found: Vec<&str> = picked.iter().map(|g| g.name).collect();
+        found.sort();
+        let mut wanted = names.to_vec();
+        wanted.sort();
+        assert_eq!(
+            found, wanted,
+            "{surface:?} holds each group the branch renders"
+        );
+        self.picked
+            .borrow_mut()
+            .extend(picked.iter().map(|g| (g.surface, g.name)));
+        picked.iter().map(|g| g.text).collect()
+    }
+}
+
+impl Drop for GroupPicks<'_> {
+    /// The per-surface guard: fails naming, in registry order, each (surface, name) pair of a
+    /// surface the test picked from that no pick covered. A surface the test never picked from is
+    /// outside the check, and a test already failing keeps its own message.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let picked = self.picked.borrow();
+        let unpicked: Vec<(&str, &str)> = self
+            .groups
+            .iter()
+            .map(|g| (g.surface, g.name))
+            .filter(|pair| picked.iter().any(|(s, _)| *s == pair.0) && !picked.contains(pair))
+            .collect();
+        assert_eq!(
+            unpicked,
+            Vec::<(&str, &str)>::new(),
+            "each group a surface lists is picked by a case of that surface"
+        );
+    }
 }
 
 /// The concatenation test's comparison: `render` equals `expected`, whitespace-normalized.
