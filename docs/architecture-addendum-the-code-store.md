@@ -520,7 +520,8 @@ Configuration is found by the same rule. `run`, `critique`, `canary` and the gre
 definition of the project governing the caller under `root`: the nearest directory holding a
 workflow definition, from the caller's position mapped under `root` up to `root`. `validate` and
 `docs` judge and render the project governing the caller in its own worktree, where an edit to it
-is made before it lands. The docs pre-commit block asks git for `root`, the directory the run's
+is made before it lands, and `ground` and the MCP server's ground tool take that project's
+grounder to ground the caller's worktree with. The docs pre-commit block asks git for `root`, the directory the run's
 build caches lie under: the main worktree `git worktree list` names, or the caller's own top where
 that entry is bare or names the common directory itself. Every command finds its store, its
 configuration and `root` through the one resolver, which alone reads the directory the command

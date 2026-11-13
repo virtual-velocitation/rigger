@@ -5718,16 +5718,18 @@ fn select_grounder(
     Ok(rigger::grounder::grounder_for(name, &worktree)?)
 }
 
-/// The grounder the caller's tree (the cwd's [`Site::tree`]) configures: its workflow's
-/// `defaults.grounder` ([`select_grounder`]), opening its heads through the cwd's site as `opens`
-/// does ([`SiteOpens::new`] for a grounder built and opened in one step, [`SiteOpens::held`] for
-/// one held to a later first open); a tree with no workflow yet grounds with the default, so an
-/// agent can ground before a workflow is authored.
+/// The grounder the project governing the cwd in its own worktree ([`project_in_tree`]) configures:
+/// its workflow's `defaults.grounder` ([`select_grounder`]), so from below a project set up in a
+/// directory of an outer one it is the inner project's, as `rigger validate` finds it. It grounds
+/// the caller's worktree, opening its heads through the cwd's site as `opens` does
+/// ([`SiteOpens::new`] for a grounder built and opened in one step, [`SiteOpens::held`] for one
+/// held to a later first open); a tree with no workflow yet grounds with the default, so an agent
+/// can ground before a workflow is authored.
 fn configured_grounder(
     opens: fn(Site) -> SiteOpens<Site>,
 ) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     let site = Site::here();
-    let name = config_store::load(&site.tree()?.to_string_lossy())
+    let name = config_store::load(&project_in_tree(&site)?.to_string_lossy())
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     select_grounder(opens(site), &name)
