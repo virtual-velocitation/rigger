@@ -264,15 +264,20 @@ fn awk_matches_a_pattern(program: &str) -> bool {
 /// rewrite: see [`GuardDecision`]), and always exits 0 - a hook's own exit code is a SEPARATE failure channel from its JSON decision, so this
 /// command reports "deny" through the JSON body alone, never a nonzero exit (a transport
 /// hiccup stays tellable apart from a deliberate block). Inert outside a rigger project (no
-/// [`RIGGER_DIR`] in the current tree) - malformed or unreadable stdin degrades to an allow
-/// rather than erroring, so the hook never blocks a tool call it failed to understand. This
-/// command does no I/O beyond stdin/stdout and the [`RIGGER_DIR`] check: since the hook has
-/// no target axis (d-spec92-hook-no-target-axis), the pure [`grep_guard_decision`] needs no
-/// resolved project root to decide against.
+/// [`RIGGER_DIR`] in the project governing the directory it runs in, [`instruction_layer_root`],
+/// so below the root it judges as at the root) - malformed or unreadable stdin degrades to an
+/// allow rather than erroring, so the hook never blocks a tool call it failed to understand; git
+/// refusing inside a repository is an error, through the exit code. This command does no I/O
+/// beyond stdin/stdout and the [`RIGGER_DIR`] check: since the hook has no target axis
+/// (d-spec92-hook-no-target-axis), the pure [`grep_guard_decision`] needs no resolved project
+/// root to decide against.
 pub(crate) fn cmd_grep_guard(_args: &[String]) -> Res {
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    let decision = if !Path::new(RIGGER_DIR).is_dir() {
+    let decision = if !instruction_layer_root(&Site::here())?
+        .join(RIGGER_DIR)
+        .is_dir()
+    {
         GuardDecision::Allow
     } else {
         let payload: serde_json::Value =
