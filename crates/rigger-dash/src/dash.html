@@ -2417,9 +2417,11 @@ function railOf(subject) {
 }
 
 // The panel shows a message in place of a view (a static export, or a read that failed): no
-// subject is drawn, so both panes hide first.
+// subject is drawn, so both panes hide first, and the panel holds no view, so nothing that redraws the
+// held view (the overlay toggle, the card docking) draws the one the message replaced over it.
 function showKgMessage(html) {
   setSubjectPanes(null, null);
+  holdKgView(kgMode, null);
   el("kgpanel").innerHTML = html;
 }
 
