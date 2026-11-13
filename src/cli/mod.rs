@@ -5289,9 +5289,12 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// debug builds is checked, so a stale release build never shadows a fresh debug build beside
 /// it; a lower tier never wins on recency, since the run's shared build cache can hold a newer
 /// build of another worktree's tree. PATH is the last candidate, so a team's clones need no
-/// absolute path to one developer's binary. The block's own `git rev-parse` discovery drops a
-/// refusal, and keeps that best-effort: a refusal only leaves the tree-built candidates unnamed,
-/// so PATH's binary checks, and git runs the hook only inside a repository.
+/// absolute path to one developer's binary. The run's build caches are looked for under the
+/// root rigger resolves ([`Site::main_root`]), asked of git rather than derived from the common
+/// directory: the main worktree `git worktree list` names, else, where git records no main
+/// checkout, the worktree's own top. The block's own git discovery drops a refusal, and keeps
+/// that best-effort: a refusal only leaves the tree-built candidates unnamed, so PATH's binary
+/// checks, and git runs the hook only inside a repository.
 ///
 /// The trailing `true` on the pass path (rather than `exit 0`) keeps the block cooperative:
 /// it contributes a zero exit when it is the last block, without hard-terminating any block a
@@ -5330,13 +5333,27 @@ fn precommit_block() -> String {
 # newer build of another worktree's tree. PATH is consulted only when no tier holds a build.
 # The check is only as current as the binary that runs it, which is why the tree-built
 # candidates come first.
-git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
 worktree_top=$(git rev-parse --show-toplevel 2>/dev/null)
 worktree_base=$(basename "$worktree_top" 2>/dev/null)
 unit=
 case "$worktree_base" in
     rigger-wt-*) unit="${worktree_base#rigger-wt-}" ;;
 esac
+# The root the run's build caches lie under is the one rigger resolves, asked of git: the main
+# worktree `git worktree list` names first, unless git marks it bare or names the git directory
+# itself (a git directory kept apart), where git records no main checkout and the root is this
+# worktree's own top.
+main_record=$(git worktree list --porcelain 2>/dev/null | sed '/^$/q')
+main_worktree=$(printf '%s\n' "$main_record" | sed -n 's/^worktree //p')
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+repo_root=
+if [ -n "$main_worktree" ]; then
+    if printf '%s\n' "$main_record" | grep -qx bare || [ "$main_worktree" = "$common_dir" ]; then
+        repo_root=$worktree_top
+    else
+        repo_root=$main_worktree
+    fi
+fi
 # The relocated per-unit target (spec 89): a unit's build cache is the sibling
 # `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
 # where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
@@ -5358,18 +5375,15 @@ unit_debug=
 relocated_release=
 relocated_debug=
 shared_debug=
-if [ -n "$git_common_dir" ]; then
+if [ -n "$repo_root" ]; then
     if [ -n "$unit" ]; then
-        unit_release="$git_common_dir/../.rigger/tmp/cargo-target-$unit/release/rigger"
-        unit_debug="$git_common_dir/../.rigger/tmp/cargo-target-$unit/debug/rigger"
-        repo_root=$(cd "$git_common_dir/.." 2>/dev/null && pwd -P)
-        if [ -n "$repo_root" ]; then
-            cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
-            relocated_release="$cache_root/cargo-target-$unit/release/rigger"
-            relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
-        fi
+        unit_release="$repo_root/.rigger/tmp/cargo-target-$unit/release/rigger"
+        unit_debug="$repo_root/.rigger/tmp/cargo-target-$unit/debug/rigger"
+        cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+        relocated_release="$cache_root/cargo-target-$unit/release/rigger"
+        relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
     fi
-    shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
+    shared_debug="$repo_root/.rigger/tmp/cargo-target/debug/rigger"
 fi
 rigger_bin=
 # One tier is one target dir: take the more recently modified of its builds that exist. A later

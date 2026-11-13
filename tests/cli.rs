@@ -21776,10 +21776,9 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
 }
 
 /// Place a copy of the REAL compiled `rigger` binary at the UNIT-DERIVED candidate path
-/// (spec 75's `<git-common-dir>/../.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off
-/// `main_repo_root` (the MAIN checkout's own root, never the linked worktree itself - the
-/// candidate is resolved relative to `git-common-dir`, which for a linked worktree points
-/// back at the main repo's `.git`, not a directory inside the worktree).
+/// (`<root>/.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off `main_repo_root` (the MAIN
+/// checkout's own root, never the linked worktree itself - the root is the main worktree git
+/// lists for the repository, not a directory inside the worktree).
 fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
     let dir = main_repo_root
         .join(".rigger")
@@ -21798,13 +21797,13 @@ fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
 /// compiled from one - so the unit-derived tier is the candidate spec 75 was written to serve
 /// FIRST, not an edge case, yet nothing before this test ever drove it through a real `git
 /// worktree add` and real `/bin/sh` execution. Uses a genuinely linked worktree named
-/// `rigger-wt-probeunit`, whose `git-common-dir` resolves back to the MAIN checkout's `.git`
-/// (verified: that is exactly how this very spawn's own worktree resolves), and proves
+/// `rigger-wt-probeunit`, whose repository git lists with the MAIN checkout as its main worktree
+/// (exactly how this very spawn's own worktree resolves), and proves
 /// discrimination twice over in the SAME worktree: first REFUSED with nothing but the stale
 /// PATH shim (proving the hook genuinely fires inside a linked worktree at all - without this
 /// half, a hook that silently never ran there would make the pass below vacuous), then the
-/// identical staged commit PASSES once the unit-derived binary is staged at the path the hook
-/// computes relative to `git-common-dir`.
+/// identical staged commit PASSES once the unit-derived binary is staged under the root the hook
+/// asks git for.
 #[test]
 fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger(
 ) {
