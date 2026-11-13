@@ -8323,6 +8323,28 @@ mod tests {
         );
     }
 
+    /// The store the walk from `start` (a path inside a storeless repository below a directory
+    /// holding a store) binds.
+    fn walked_from_inside_a_storeless_repository(start: &str) -> Option<PathBuf> {
+        let dir = tempfile::tempdir().unwrap();
+        plant_store(dir.path());
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(start)).unwrap();
+        git_init_quiet(&repo);
+        walk_stores_from(&repo.join(start)).unwrap().dir
+    }
+
+    // GIVEN a store above a storeless repository, WHEN the walk starts anywhere inside the
+    // repository, THEN it binds none: the repository's root bounds the climb wherever it starts.
+    rigger::test_cases! {
+        the_walk_from_a_repository_top_never_climbs_above_it:
+            assert_eq!(walked_from_inside_a_storeless_repository(""), None);
+        the_walk_from_a_subdirectory_never_climbs_above_its_repository:
+            assert_eq!(walked_from_inside_a_storeless_repository("src"), None);
+        the_walk_from_a_deep_subdirectory_never_climbs_above_its_repository:
+            assert_eq!(walked_from_inside_a_storeless_repository("crate/src/deep"), None);
+    }
+
     #[test]
     fn reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir() {
         // spec 23: the run's scratch-area reclaim (`reclaim_run_scratch`, through
