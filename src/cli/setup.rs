@@ -4548,7 +4548,7 @@ mod tests {
             ("the pre-move EMIT_PROTOCOL", PRE_MOVE_EMIT_PROTOCOL),
             (
                 "a capitalised phrase",
-                "Keep It Flowing, and Do Not Batch it.",
+                "Keep It Flowing, and Do Not Batch it, do not batch.",
             ),
             (
                 "a toolchain word",
