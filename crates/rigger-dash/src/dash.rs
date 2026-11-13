@@ -5911,8 +5911,9 @@ mod tests {
         }
 
         /// The border-box height of each box from the page's body down to the panel and of each
-        /// box in flow beside them, when the panel holds `content` px of drawing or list, in the
-        /// viewport the layout was made for (`None` for a box it does not place). The body takes
+        /// box in flow beside them, when the panel holds `content` px of drawing or list and each
+        /// stacked pane `content` px of rows, in the viewport the layout was made for (`None` for
+        /// a box it does not place). The body takes
         /// its declared height, or else its content's; each box on the way down to the panel is a
         /// column flex container sharing its height among its children in flow ([`Self::flex`]);
         /// every other box is one row ([`Self::natural`]).
@@ -5981,19 +5982,17 @@ mod tests {
         }
 
         /// The content height of a box the layout model places as one row: `content` for the
-        /// panel, and for every other box a nominal height of the rows it holds (the header's
-        /// title, the instances strip, the explorer's title and its header's controls, a
-        /// stacked card or rail, the columns below the explorer). A box with none panics.
+        /// panel and for a stacked card or rail, and for every other box a nominal height of the
+        /// rows it holds (the header's title, the instances strip, the explorer's title and its
+        /// header's controls, the columns below the explorer). A box with none panics.
         fn nominal(&self, at: usize, content: f64) -> f64 {
             let element = &self.style.markup[at];
             match (element.tag.as_str(), element.id.as_str()) {
-                (_, "kgpanel") => content,
+                (_, "kgpanel" | "kgcard" | "kgrail") => content,
                 ("header", _) => 21.0,
                 (_, "landing") => 23.0,
                 ("h2", _) => 19.5,
                 (_, "kghead") => 21.5,
-                (_, "kgcard") => 320.0,
-                (_, "kgrail") => 420.0,
                 _ if element.classes.iter().any(|c| c == "columns") => 2400.0,
                 _ => panic!(
                     "the layout model has no content height for <{}> #{} {:?}",
@@ -6092,16 +6091,21 @@ mod tests {
                     .iter()
                     .any(|axis| self.value(child, axis).is_some_and(|o| o != "visible"));
                 let edges = self.vertical_edges(child);
+                let max = match self.value(child, "max-height").as_deref() {
+                    None | Some("none") => f64::INFINITY,
+                    Some(max) => height(child, max).unwrap_or(f64::INFINITY),
+                };
+                // A box's automatic minimum is its content's height or its declared one, the
+                // less, and never more than its maximum.
                 let min = match self.value(child, "min-height").as_deref() {
                     None | Some("auto") if clips => 0.0,
-                    None | Some("auto") => natural().min(declared.unwrap_or(f64::INFINITY)),
+                    None | Some("auto") => {
+                        natural().min(declared.unwrap_or(f64::INFINITY)).min(max)
+                    }
                     Some(min) => height(child, min).unwrap_or(0.0),
                 };
                 least.push(min.max(edges));
-                most.push(match self.value(child, "max-height").as_deref() {
-                    None | Some("none") => f64::INFINITY,
-                    Some(max) => height(child, max).unwrap_or(f64::INFINITY),
-                });
+                most.push(max);
                 let factor = |property: &str, otherwise: f64| {
                     self.value(child, property)
                         .map_or(otherwise, |f| f.parse().expect("a flex factor is a number"))
@@ -6780,6 +6784,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// GIVEN the served page, WHEN the rail, the card or both stack above the panel (a body too
+    /// narrow to dock them) holding rows of any length, in a viewport of any width from a phone's
+    /// to a wide screen's, THEN each stacked pane keeps the height of its rows up to the height a
+    /// docked pane's column runs, the body's height with no pane in its flow, and no more, so the
+    /// panel never sits more than that height per stacked pane below the explorer's header; the
+    /// rows past it scroll inside the pane (the rail's own overflow, the card's as
+    /// `a_card_taller_than_the_explorer_body_scrolls_inside_it` pins). Layout is outside what the
+    /// page harness can run, so this lays the page out by its own stylesheet at each viewport
+    /// width from 320px to 1600px.
+    #[test]
+    fn a_stacked_pane_is_capped_at_the_height_a_docked_one_spans() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        let mut stacked = 0;
+        for tall in [640, 900] {
+            let tall = f64::from(tall);
+            for wide in 320..=1600 {
+                let viewport = [f64::from(wide), tall];
+                let bare = style.layout_at(false, false, viewport);
+                let body = bare.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
+                let layouts = PANE_STATES
+                    .map(|(shown, rail, card)| (shown, style.layout_at(rail, card, viewport)));
+                for held in [200.0, 333_000.0] {
+                    let column = bare.heights(held)[body].expect("the body is laid out");
+                    for (shown, layout) in &layouts {
+                        let heights = layout.heights(held);
+                        for (pane, side) in [("kgrail", "right"), ("kgcard", "left")] {
+                            if layout.pane(pane, side) != Some(None) {
+                                continue;
+                            }
+                            stacked += 1;
+                            let at = layout.index(pane);
+                            let height = heights[at].expect("a stacked pane is laid out");
+                            let rows = held + layout.vertical_edges(at);
+                            assert!(
+                                (height - rows.min(column)).abs() < 1.0 / 64.0,
+                                "with {shown} shown in a {wide}x{tall} viewport a stacked #{pane} \
+                                 holding {held}px of rows takes {height}px, not its rows' {rows}px \
+                                 capped at the {column}px a docked pane's column runs"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(stacked > 0, "some viewport stacks a pane");
     }
 
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or

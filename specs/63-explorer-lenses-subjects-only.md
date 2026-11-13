@@ -58,7 +58,8 @@ The mockup file is the visual contract for all of the below; it renders standalo
   subject with an escape route, and a MEMORY RAIL docks right beside the drawing where the
   explorer has room for it (above the drawing where it has not) listing the governing
   decisions/findings/concepts as scrollable cards. The rail is a panel: it never inserts
-  nodes and never covers one.
+  nodes and never covers one. Stacked above the drawing, the rail and the card are each no
+  taller than a docked one, the drawing's panel's height, and scroll the rest inside it.
 - **Overview zoom** (code lens zoomed out): hulls collapse to COMMUNITY nodes sized by
   member count, labeled by community name, drill-down on click. Storage type names are
   never a grouping key at any zoom. Criterion 6 OWNS this zoomed-out collapse into community
