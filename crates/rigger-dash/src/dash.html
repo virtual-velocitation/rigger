@@ -11,11 +11,6 @@
     --bad: #f87171; --dim: #3a4150;
   }
   * { box-sizing: border-box; }
-  /* The page's scrolling root keeps its scrollbar's gutter whether or not the page overflows, so
-     the body's width is one function of the viewport's and never of how much the page holds: what
-     the explorer docks at a width (see .kgbody) does not depend on whether its stacked panes made
-     the page scroll. An overlay scrollbar takes no gutter. */
-  html { scrollbar-gutter: stable; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -101,8 +96,14 @@
      and never the length of the list or drawing the last view put in it. That height,
      --kgpanel-h, is the one a docked pane spans (the body holds only the panel then), and it caps
      a pane stacked above the panel too, which scrolls the rest inside it; panes stack only here,
-     since a wider screen gives the body room to dock both. */
+     since a wider screen gives the body room to dock both. Since the page scrolls only here, only
+     here does its scrolling root keep the scrollbar's gutter whether or not the page overflows, so
+     the body's width is one function of the viewport's and never of how much the page holds: what
+     the explorer docks at a width (see .kgbody) does not depend on whether its stacked panes made
+     the page scroll. The query reads the viewport's width with the gutter in it, so the gutter
+     cannot move a viewport across it. An overlay scrollbar takes no gutter. */
   @media (max-width: 1000px) {
+    html { scrollbar-gutter: stable; }
     body { height: auto; overflow: auto; }
     main { overflow: visible; }
     #kg { flex-basis: auto; }
