@@ -48,12 +48,13 @@ Stay inside your unit's blast-radius.
 ## Hand-over checks in this project
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
-(`.rigger/workflow.yml`) are fmt, clippy, build, test, lane-no-default, lane-core, style,
+(`.rigger/workflow.yml`) are fmt, clippy, clippy-no-default, build, test, lane-core, style,
 no-os-kill, boundary and red-before-green. The workflow's gates run that full battery on your
 committed result and are the authority: you do not run the whole suite, the other lanes, the
 boundary suite, the content gates or red-before-green by hand, and a gate failure comes back
-as the next round's finding. Before you report, run from the worktree root, on your committed
-tree, these and nothing else:
+as the next round's finding. The no-default lane is linted at every unit and its whole suite
+runs once, at the check-in, on the merged tree. Before you report, run from the worktree root,
+on your committed tree, these and nothing else:
 
 - `cargo fmt --all --check`;
 - `cargo clippy --workspace --all-targets -- -D warnings`;

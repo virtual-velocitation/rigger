@@ -4995,7 +4995,8 @@ mod tests {
     }
 
     /// The two author roles carry this project's anchors for the built-in hand-over rules as one
-    /// block, byte-identical in both and in no other persona: the implement gate set by name, the
+    /// block, byte-identical in both and in no other persona: the implement gate set by name, as
+    /// the workflow lists it, where the no-default lane is linted and where its suite runs, the
     /// statement that the workflow's gates run the full battery and are the authority (a gate
     /// failure is the next round's finding), the only commands the author runs before it reports
     /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
@@ -5028,13 +5029,20 @@ mod tests {
             "the block is byte-identical in both author roles"
         );
         let block = rigger::wave::normalize_ws(&blocks[0]);
+        let cfg = config_store::load(repo().to_str().unwrap()).expect("the workflow loads");
+        let (last, rest) = cfg.workflow.stages["implement"]
+            .gates
+            .split_last()
+            .expect("the implement stage names its gates");
+        let implement_gates = format!("{} and {last}", rest.join(", "));
         for wanted in [
-            "fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary \
-             and red-before-green",
+            implement_gates.as_str(),
             "The workflow's gates run that full battery on your committed result and are the \
              authority: you do not run the whole suite, the other lanes, the boundary suite, the \
              content gates or red-before-green by hand, and a gate failure comes back as the \
              next round's finding.",
+            "The no-default lane is linted at every unit and its whole suite runs once, at the \
+             check-in, on the merged tree.",
             "these and nothing else",
             "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
