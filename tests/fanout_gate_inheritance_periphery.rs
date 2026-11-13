@@ -22,7 +22,7 @@
 //! ledger's per-unit `evidence["verified"]` - the exact field the spec's Goal cites as `{}`.
 //!
 //! Mechanical surface probes (new/changed pub API, trait impl, CLI flag, event type,
-//! cross-module call) over this unit's diff all return EMPTY: `template_gates`,
+//! cross-module call) over this unit's diff all return EMPTY: `template_shape`,
 //! `union_gates` and the modified `harvest_proposed` body are non-pub items entirely local
 //! to `src/conductor.rs`, called only from within that same module. But this codebase's own
 //! established convention for exactly this class of change - a private conductor fold whose
@@ -40,14 +40,14 @@
 //! The spec's Done-when criterion names three shapes by name - "a proposal that supersedes
 //! a baseline, a same-id refine, and an unmatched sub-unit" - so this file drives the real
 //! boundary for the two source lines that produce a stage's `gates`: the INSERT site
-//! (`gates: union_gates(&template_gates, &u.gates)`, hit identically by both the supersede
+//! (`gates: union_gates(&template.gates, &u.gates)`, hit identically by both the supersede
 //! and the unmatched-sub-unit shapes - the same line, only `criterion_id` resolution
 //! differs between them, already exhaustively distinguished at the pure-fold level by the
 //! implementer) and the EXISTING-STAGE refine site (`existing.gates =
 //! union_gates(&existing.gates, &u.gates)`), a genuinely different line reached only when a
 //! second proposal reuses an id already in `stages`.
 //!
-//! NOT OWNED HERE: the pure fold arithmetic itself (`template_gates`, `union_gates`, and
+//! NOT OWNED HERE: the pure fold arithmetic itself (`template_shape`, `union_gates`, and
 //! all three of `harvest_proposed`'s insertion/mutation sites, all non-pub, exhaustively
 //! covered by the implementer's own colocated tests - including resumed-window
 //! re-derivation, a pure-function determinism claim with no new I/O boundary of its own);

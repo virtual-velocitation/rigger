@@ -48,8 +48,8 @@ use rigger_domain::review::{
 use rigger_domain::review::{path_is_high_risk, TIER_FULL, TIER_LIGHT};
 use rigger_domain::wave::{
     baseline_units, coverage_gap, criterion_remainder, criterion_stable_id, critique_gate_name,
-    fan_out_lenses, first_stage_named, is_check_in, is_fan_out, is_fan_out_template, is_producer,
-    wave_ready,
+    fan_out_lenses, first_stage_named, inherited_shape, is_check_in, is_fan_out,
+    is_fan_out_template, is_producer, wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
 // The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
@@ -11795,15 +11795,7 @@ impl RunCtx<'_> {
     /// is removed from the live `stages` once expanded). The planner is told this id so
     /// its refinements assign the same implementer. Empty when there is no template.
     fn implementer_agent(&self) -> String {
-        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
-            .and_then(|name| {
-                self.cfg
-                    .workflow
-                    .stages
-                    .get(&name)
-                    .map(|st| st.agent.clone())
-            })
-            .unwrap_or_default()
+        self.template_shape().agent
     }
 
     /// The planner's refine protocol, with the run's acceptance criteria, the implementer agent id
@@ -12852,20 +12844,19 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
-    /// The fan-out implement template's gate list, read from the ORIGINAL workflow
-    /// definition (`self.cfg.workflow.stages`, mirroring [`implementer_agent`]'s
-    /// rationale: the template itself is removed from the live runtime `stages` once
-    /// expanded into per-criterion baseline units, so the pinned static definition is
-    /// the only place left carrying it). GATE INHERITANCE (spec 103, decided): this is
-    /// THE base list [`harvest_proposed`] unions every proposal's own named gates onto,
-    /// never the reverse. Re-derived fresh from `self.cfg` on every call (never cached
-    /// on `self` or on a `Stage`), so a resumed window's fresh `RunCtx` reaches the
-    /// identical list a live window already recorded. Empty when the workflow has no
-    /// fan-out template.
-    fn template_gates(&self) -> Vec<String> {
+    /// The fan-out implement template's [`inherited_shape`], read from the ORIGINAL workflow
+    /// definition (`self.cfg.workflow.stages`): the template itself is removed from the live
+    /// runtime `stages` once expanded into per-criterion baseline units, so the pinned static
+    /// definition is the only place left carrying it. Every unit [`harvest_proposed`] adds starts
+    /// from it, as every baseline does; GATE INHERITANCE (spec 103, decided) makes its gate list
+    /// THE base a proposal's own named gates are unioned onto, never the reverse. Re-derived
+    /// fresh from `self.cfg` on every call (never cached on `self` or on a `Stage`), so a resumed
+    /// window's fresh `RunCtx` reaches the identical shape a live window already recorded. The
+    /// empty stage when the workflow has no fan-out template.
+    fn template_shape(&self) -> Stage {
         first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| self.cfg.workflow.stages.get(&name))
-            .map(|st| st.gates.clone())
+            .map(inherited_shape)
             .unwrap_or_default()
     }
 
@@ -12880,13 +12871,13 @@ impl RunCtx<'_> {
         // Every run's lifecycle events, read once, at the first added stage that serves a
         // criterion ([`RunCtx::land_if_landed`]).
         let mut lifecycle = None;
-        // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
-        // base every proposed unit's stage carries below - a proposal's own `gates`
-        // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
-        // proposal can ADD a gate but never remove one the template already runs.
-        // Computed once per call (like `gate` just below): a proposal's coverage never
-        // changes which fan-out it belongs to within one harvest pass.
-        let template_gates = self.template_gates();
+        // The fan-out template's inherited shape, the base every proposed unit's stage
+        // carries below, as every baseline does. GATE INHERITANCE (spec 103, decided): a
+        // proposal's own `gates` field is accepted for compatibility and UNIONED in
+        // ([`union_gates`]), so a proposal can ADD a gate but never remove one the template
+        // already runs. Computed once per call (like `gate` just below): a proposal's
+        // coverage never changes which fan-out it belongs to within one harvest pass.
+        let template = self.template_shape();
         // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
         // releases, if the workflow wires one. Computed once over the static gate stage
         // (always present) so it is stable as the loop mutates `stages`; None when no
@@ -13054,7 +13045,7 @@ impl RunCtx<'_> {
                         // never overwritten, never dropped. `existing.gates` already
                         // carries the template's list (stamped by the add path below on
                         // this unit's FIRST proposal), so unioning onto IT rather than
-                        // a freshly-read `template_gates` preserves every earlier
+                        // a freshly-read template gate list preserves every earlier
                         // proposal's additions as well - monotonic growth only.
                         existing.gates = union_gates(&existing.gates, &u.gates);
                         // spec 72 round-2 REJECT fix (sdet-c1-refine-branch-never-
@@ -13289,14 +13280,16 @@ impl RunCtx<'_> {
                     // that supersedes a baseline (`resolved_criterion_id` set above)
                     // and a genuinely-new unmatched sub-unit (left empty) - unioned
                     // with any the proposal itself names, never overwritten by them.
-                    gates: union_gates(&template_gates, &u.gates),
+                    gates: union_gates(&template.gates, &u.gates),
                     criterion_id: resolved_criterion_id,
                     // Record the episode that proposed this stage (spec 72), so a LATER
                     // episode's own supersede scan can compare against it - the read half
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
                     unmatched_fanout_proposal,
-                    ..Default::default()
+                    // The rest of the template's inherited shape (its `on_pass` and
+                    // `partition`), on both branches, as a baseline carries it.
+                    ..template.clone()
                 },
             );
             // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of

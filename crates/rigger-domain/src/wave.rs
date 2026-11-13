@@ -294,11 +294,24 @@ pub fn unit_slug(n: usize, criterion: &str) -> String {
     }
 }
 
+/// The executable shape every unit fanned out from `template` inherits: its `agent`, `gates`,
+/// `on_pass` and `partition`. The one inheritance list a baseline ([`baseline_units`]) and a
+/// planner-proposed unit both start from, so a unit is scheduled, gated and integrated as its
+/// template declares whichever way it reached the DAG.
+pub fn inherited_shape(template: &Stage) -> Stage {
+    Stage {
+        agent: template.agent.clone(),
+        gates: template.gates.clone(),
+        on_pass: template.on_pass.clone(),
+        partition: template.partition.clone(),
+        ..Default::default()
+    }
+}
+
 /// The deterministic decomposition BASELINE (§3.2): given a fan-out implement
 /// `template` stage and the spec's acceptance `criteria`, synthesize ONE implement
-/// unit per criterion. Each unit inherits the template's executable shape - its
-/// `agent`, `gates`, `on_pass`, and `partition` - but carries THE CRITERION TEXT as
-/// its `coverage`, so it grounds on the real criterion (not the template's label) and
+/// unit per criterion. Each unit inherits the template's executable shape
+/// ([`inherited_shape`]) but carries THE CRITERION TEXT as its `coverage`, so it grounds on the real criterion (not the template's label) and
 /// its `UnitStarted` records the real `spec_criterion`. Each unit `needs` the planner
 /// (`producer`) when one exists, so the baseline runs only after the planner refines.
 /// The template itself is NOT run as a unit - these per-criterion units replace it.
@@ -313,6 +326,7 @@ pub fn baseline_units(
             needs.push(p.to_string());
         }
     }
+    let shape = inherited_shape(template);
     let mut units = Vec::with_capacity(criteria.len());
     for (i, criterion) in criteria.iter().enumerate() {
         let name = unit_slug(i + 1, criterion);
@@ -320,10 +334,6 @@ pub fn baseline_units(
             name.clone(),
             Stage {
                 name,
-                agent: template.agent.clone(),
-                gates: template.gates.clone(),
-                on_pass: template.on_pass.clone(),
-                partition: template.partition.clone(),
                 needs: needs.clone(),
                 // The criterion text IS the unit's coverage: it grounds on the
                 // criterion, and its UnitStarted spec_criterion is the real criterion.
@@ -336,7 +346,7 @@ pub fn baseline_units(
                 // (spec 18 §3.3) - position + normalized-content hash, so a paraphrase
                 // still resolves to this baseline instead of spawning a duplicate.
                 criterion_id: criterion_stable_id(i + 1, criterion),
-                ..Default::default()
+                ..shape.clone()
             },
         ));
     }
