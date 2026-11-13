@@ -321,20 +321,25 @@ pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
 /// The documented empty-state message the [`Lens::Code`] overview carries when the graph it reads
 /// holds NO community assignment at the selected grain, which the read computes when the store
 /// holds another: a graph with no code to group, or one served without a code view to compute
-/// from. The panel shows this instead of an error or a bare kind-bucket view (spec 53 c4).
-pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
+/// from. The groupings reports only read, so it names no command; why a graph holds nothing (none
+/// built) is the reply's graph header. The panel shows this instead of an error or a bare
+/// kind-bucket view (spec 53 c4).
+pub const CODE_LENS_UNDERIVED: &str =
+    "code lens not derived yet - no community can be computed from this graph";
 
 /// The documented empty-state message the [`Lens::Concepts`] overview carries when the graph it
 /// reads holds NO concept assignment at the selected grain, which the read computes when the store
 /// holds another: a graph with nothing to derive concepts from, or one served without a code view
-/// to compute from. The panel shows this instead of an error or a bare kind-bucket view (spec 54
-/// c3).
-pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
+/// to compute from. The groupings reports only read, so it names no command; why a graph holds
+/// nothing (none built) is the reply's graph header. The panel shows this instead of an error or a
+/// bare kind-bucket view (spec 54 c3).
+pub const CONCEPTS_LENS_UNDERIVED: &str =
+    "concepts not derived yet - no concept can be computed from this graph";
 
 /// The documented empty-CELL message a [`Lens::Code`] RE-PROJECTION (spec 55 c2) carries when the
 /// selected subject's member set folds into NO coupling community - the members exist, but none is
-/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole-graph
-/// "the offline pass never ran" prompt): a re-projection cell is empty when THIS subject's members
+/// part of any derived community at this grain. Distinct from [`CODE_LENS_UNDERIVED`] (the whole
+/// graph yields no community at all): a re-projection cell is empty when THIS subject's members
 /// carry no membership, whether or not the grain is derived elsewhere, so `dash.rs`'s
 /// `reproject_derived` captions the defined-but-empty cell rather than showing a bare kind-bucket
 /// fold with no explanation.
@@ -607,8 +612,8 @@ impl<'g> Buckets<'g> {
         }
     }
 
-    /// A derived lens at the selected grain has NO assignments: the documented empty state (the
-    /// offline pass never ran at this resolution). Always `false` under [`Lens::Files`].
+    /// A derived lens at the selected grain has NO assignments: the documented empty state (no
+    /// grouping can be computed from this graph). Always `false` under [`Lens::Files`].
     pub(crate) fn underived(&self) -> bool {
         matches!(self.lens, Lens::Code { .. } | Lens::Concepts { .. }) && self.membership.is_empty()
     }

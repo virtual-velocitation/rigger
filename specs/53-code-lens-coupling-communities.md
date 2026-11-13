@@ -49,8 +49,8 @@ result as events:
 - `resolution=<r>` selects which grain to read (default the default-resolution assignment the store
   holds); any other grain is computed at read exactly as `rigger graph communities --resolution <r>`
   computes it and is never stored, and the view states the grain it shows. A graph in which no grain
-  can be computed renders the documented "code lens not derived yet - run `rigger graph
-  communities`" empty state, never an error.
+  can be computed renders the documented "code lens not derived yet - no community can be computed
+  from this graph" empty state, never an error and never a command to run.
 - Drill and select-to-seed work identically under the lens (a community drills to its members; a
   member click seeds the neighborhood / call views), and the toolbar carries the lens selector with
   the resolution control visible under `lens=code`.
