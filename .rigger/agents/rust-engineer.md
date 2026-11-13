@@ -81,8 +81,10 @@ The test homes: a crate's own `mod tests` and its contract module under `crates/
 shared fixtures, `tests/common/fixtures/<area>.rs` (a crate mounts each one it needs with
 `#[path]` in its `lib.rs`, so this is the one home a crate's unit tests and a root test both
 reach) and `tests/common/cli.rs` (root tests only); and the root integration files
-`tests/*.rs`. The graph carries no test-helper node yet, so search all three with Read, awk or
-python3 before you write a helper, fixture, builder, expected line or oracle.
+`tests/*.rs`. The graph holds the test code of all three, and a lookup hides it unless asked:
+set the lookup's tests filter to include (or only, for test code alone) and look for an existing
+helper, fixture, builder, expected line or oracle before you write one. A reply that hid test
+hits says how many.
 
 The counted check. A renamed or retired name's old spelling is counted over the tracked
 files of `src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`, the

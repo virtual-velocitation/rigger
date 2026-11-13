@@ -5002,7 +5002,8 @@ mod tests {
     /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
     /// feature-gated code), the root test filter by module on `all` or by executable name, the
     /// declaration of a new test file and how a suite reaches the shared helpers, the test homes
-    /// with the tool that searches them, the counted check - the roots a retired spelling is counted over
+    /// with the lookup's tests filter that finds the test code in them, the counted check - the
+    /// roots a retired spelling is counted over
     /// with the command that counts it - and the foreground wait for the long runs (the
     /// touched tests and a lane script), polled to its exit line when the host
     /// backgrounds one, and this project's anchor for the gate verb, whose verdict the driver
@@ -5057,7 +5058,8 @@ mod tests {
              `use crate::common;`, a suite with its own `[[test]]` entry declares `mod common;`",
             "`tests/common/fixtures/<area>.rs`",
             "`tests/common/cli.rs` (root tests only)",
-            "search all three with Read, awk or python3",
+            "The graph holds the test code of all three, and a lookup hides it unless asked: \
+             set the lookup's tests filter to include (or only, for test code alone)",
             "`src/`, `crates/`, `tests/`, `docs/`, `skills/`, `scaffold/` and `.rigger/`",
             "the `tests/*.rs` doc comments, `//!` module docs, comments and assertion messages \
              included",
