@@ -177,7 +177,7 @@ const CONTRACT_DRIVER: &str = r##"
 const INTEGRATION_DRIVER: &str = r##"
 ;(function(){
   var spec = overview(90);
-  var SCREEN_W = 160;   // the on-screen panel width; the density canvas viewBox is KG_W (900), so the
+  var SCREEN_W = 160;   // the drawing's on-screen surface width; the density canvas viewBox is KG_W (900), so the
                         // default (k=1) effective scale SCREEN_W/KG_W ~ 0.18 shrinks labels together.
 
   // Set the declutter state HONESTLY through the render path, then read it back.
@@ -206,7 +206,7 @@ const INTEGRATION_DRIVER: &str = r##"
 
   var panel = {
     querySelector: function(sel){
-      if (sel === "svg") return { getBoundingClientRect: function(){ return { width: SCREEN_W }; } };
+      if (sel === ".kgsvg") return { getBoundingClientRect: function(){ return { width: SCREEN_W }; } };
       if (sel === "#kgzoom") return { setAttribute: function(){} };
       return null;
     },

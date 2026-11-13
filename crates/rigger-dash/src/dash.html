@@ -75,13 +75,13 @@
      panes beside the panel: then each is position:absolute within the body (relative, so neither
      covers the header above), the card on the left and the rail on the right, and takes its
      column from #kgpanel's own box (the margin on the pane's side), so no drawn node, list row or
-     panel control ever sits under a pane. The panes dock only where their columns leave the panel
-     at least the 320px kgDims draws at (see the @container rules after .kgcard); the body is a size
-     container, so the room it actually has decides, whatever the viewport. Each pane's width is
-     declared once here, and each precedes #kgpanel so the sibling selectors can read its hidden
-     state. Each view sets or clears both panes for its own subject before it draws (see
-     setSubjectPanes); the card's dock shows only when a card arrives, and the view is laid out once
-     more whenever the dock shows or hides, so a drawing always fills the room the panes leave. */
+     panel control ever sits under a pane. The panes dock only where their columns leave the panel's
+     content box, the drawing's surface, at least 320px (see the @container rules after .kgcard);
+     the body is a size container, so the room it actually has decides, whatever the viewport. Each
+     pane's width is declared once here, and each precedes #kgpanel so the sibling selectors can
+     read its hidden state. Each view sets or clears both panes for its own subject before it draws
+     (see setSubjectPanes); the card's dock shows only when a card arrives, and the view is laid out
+     once more whenever the dock shows or hides, so a drawing always fills the room the panes leave. */
   .kgbody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative;
     container: kgbody / inline-size; --kgrail-w: 260px; --kgcard-w: 280px; }
   .kgbody > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
@@ -264,8 +264,11 @@
   .kglens.active { color: var(--ink); font-weight: 600; }
   .kgres { width: 3.2em; font: inherit; color: var(--ink); background: var(--panel);
     border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+  /* The drawing's svg is its own SURFACE (see kgSurface): no border and no padding, so a drawing made
+     at its box's size is seen at a scale of 1. Its frame is an outline drawn just inside that box,
+     which takes no room. */
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
-    border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
+    outline: 1px solid var(--line); outline-offset: -1px; border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
   /* GROUP HULL (spec 63 c3, directory hulls): a low-contrast tinted region behind the members sharing
      a group key (the files lens's directory grouping), never a hub node - a region, never a member. */
@@ -389,19 +392,20 @@
      the sections below. */
   .kgcard { top: 8px; bottom: 8px; left: 8px; display: flex; flex-direction: column; }
   .kgcard[hidden] { display: none; }
-  /* DOCKING (see .kgbody): a lone rail docks from a 580px body (the 320px kgDims draws at plus
-     the rail's 260px column), a lone card from 608px (320 plus its 8px inset and 280px width), the
-     two together from 868px; below that every shown pane stays stacked and the panel keeps the
-     body's whole width. The thresholds are those sums, so the panel never has less than 320px. */
-  @container kgbody (width >= 580px) {
+  /* DOCKING (see .kgbody): a lone rail docks from a 604px body (a 320px surface, the panel's 12px
+     padding on each side and the rail's 260px column), a lone card from 632px (344 plus its 8px
+     inset and 280px width), the two together from 892px; below that every shown pane stays stacked
+     and the panel keeps the body's whole width. The thresholds are those sums, so a docked pane
+     never leaves the drawing's surface less than 320px. */
+  @container kgbody (width >= 604px) {
     .kgrail { position: absolute; width: var(--kgrail-w); }
     #kgrail:not([hidden]) ~ #kgpanel { margin-right: var(--kgrail-w); }
   }
-  @container kgbody (width >= 608px) {
+  @container kgbody (width >= 632px) {
     .kgcard { position: absolute; width: var(--kgcard-w); }
     #kgcard:not([hidden]) ~ #kgpanel { margin-left: calc(var(--kgcard-w) + 8px); }
   }
-  @container kgbody (width < 868px) {
+  @container kgbody (width < 892px) {
     #kgcard:has(~ #kgrail:not([hidden])), #kgcard:not([hidden]) ~ #kgrail { position: static; width: auto; }
     #kgcard:not([hidden]) ~ #kgrail:not([hidden]) ~ #kgpanel { margin: 0; }
   }
@@ -1483,15 +1487,27 @@ function kindColor(kind) {
   return "hsl(" + (h % 360) + ",55%,62%)";
 }
 
-// The live drawing box: the panel's own width, and the height its content box leaves below what the
-// view puts above the drawing - its toolbar, wrapped to however many lines the width needs, and any
-// caption - measured off the drawing's slot, which kgDraw puts in place first. So the viz fills
-// whatever size the responsive shell and the docked panes leave it and never runs past the panel; a
-// room under 200px keeps a 200px drawing, and the panel scrolls.
+// The drawing's SURFACE: the box of the panel's drawing svg (the slot kgDraw puts in place, or the
+// drawing drawn into it), which takes no border and no padding, so a viewBox made at its size is seen
+// at a scale of 1 on both axes. The one measurement of where the drawing shows and how big: kgDims
+// draws at it, kgApplyLabels reads the scale the drawing is seen at from it, and the wheel zooms
+// about the pointer's place on it. Null while the panel holds no drawing.
+function kgSurface() {
+  const svg = el("kgpanel").querySelector(".kgsvg");
+  return svg ? svg.getBoundingClientRect() : null;
+}
+
+// The live drawing box: its surface's width, and the height the panel's content box leaves below
+// what the view puts above the drawing - its toolbar, wrapped to however many lines the width needs,
+// and any caption - measured off the drawing's slot, which kgDraw puts in place first. So the viz
+// fills whatever size the responsive shell and the docked panes leave it, is seen at a scale of 1 at
+// every width and never runs past the panel; a room under 200px keeps a 200px drawing, and the panel
+// scrolls. A surface with no width yet (a panel not laid out) draws at 800px, and the panel's size
+// observer redraws it once it has one.
 function kgDims() {
   const p = el("kgpanel");
-  const w = Math.max(320, p.clientWidth || 800);
-  const slot = p.querySelector(".kgsvg").getBoundingClientRect();
+  const slot = kgSurface();
+  const w = slot.width || 800;
   const above = slot.top - (p.getBoundingClientRect().top + p.clientTop);
   const h = Math.max(200, Math.floor(p.clientHeight - parseFloat(getComputedStyle(p).paddingBottom) - above));
   return { w: w, h: h };
@@ -2083,7 +2099,8 @@ function applyKgView() {
   kgApplyLabels();
 }
 // ADAPTIVE LABELS live toggle (spec 59 c3): recompute the visible-label set at the CURRENT effective
-// screen scale - the viewBox-to-panel FIT (rendered width / graph width) times the zoom factor - and
+// screen scale - the FIT the drawing is seen at on its surface (kgSurface's width / graph width, 1
+// as kgDims makes the drawing at its surface's width) times the zoom factor - and
 // draw only those labels, hiding the rest (.kg-nolabel) as bare dots. The hover <title> still names
 // every node, so a hidden label is one hover away. Cheap (O(n^2) over <=160 nodes) and deterministic:
 // kgVisibleLabels is the single declutter authority. A no-op on a layered view (no state) or before a
@@ -2091,11 +2108,10 @@ function applyKgView() {
 function kgApplyLabels() {
   const st = kgLabelState;
   if (!st) return;
+  const surface = kgSurface();
+  if (!surface) return;
   const panel = el("kgpanel");
-  const svg = panel.querySelector("svg");
-  if (!svg) return;
-  const screenW = (svg.getBoundingClientRect && svg.getBoundingClientRect().width) || svg.clientWidth || st.width;
-  const fit = st.width ? screenW / st.width : 1;
+  const fit = st.width ? (surface.width || st.width) / st.width : 1;
   const eff = fit * kgView.k;
   const vis = kgVisibleLabels(st.nodes, st.pos, eff, st.radius, st.label);
   const nodes = panel.querySelectorAll("#kgzoom .kgn");
@@ -2124,7 +2140,8 @@ function bindKgView() {
   applyKgView();
   svg.addEventListener("wheel", ev => {
     ev.preventDefault();
-    const rect = svg.getBoundingClientRect();
+    // The pointer's place on the surface is its place in the drawing, which the surface shows at 1.
+    const rect = kgSurface();
     const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
     const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
     const nk = Math.max(kgZoomFloor, Math.min(8, kgView.k * factor));

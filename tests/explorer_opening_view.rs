@@ -52,7 +52,7 @@ ResizeObserver.prototype.observe = function(t){ this._targets.push(t); };
 const __frames = [];
 const requestAnimationFrame = function(f){ __frames.push(f); return __frames.length; };
 const __winListeners = {};
-const __geom = { width: 800, height: 300, padTop: 10, padBottom: 10,
+const __geom = { width: 800, height: 300, padTop: 10, padBottom: 10, padSide: 12,
   toolbar: { overview: 24, reproject: 24, drill: 24, calls: 24 } };
 const __classList = { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){ return false; } };
 function __Stub(){ this._attrs = {}; this._listeners = {}; this.dataset = {}; this.classList = __classList; }
@@ -82,7 +82,7 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   if (high) svg.setAttribute("height", high[1]);
   if (box) svg.setAttribute("viewBox", box[1]);
   svg.getBoundingClientRect = function(){
-    return { left: 12, top: __slotTop(html), width: __geom.width - 24, height: Number(svg.getAttribute("height") || 0) };
+    return { left: __geom.padSide, top: __slotTop(html), width: __geom.width - 2 * __geom.padSide, height: Number(svg.getAttribute("height") || 0) };
   };
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
@@ -213,6 +213,15 @@ function __seenAt(what){
   const d = __svgBox(what), r = el("kgpanel")._svg.getBoundingClientRect();
   return { x: r.width / d.W, y: r.height / d.H };
 }
+// The drawing, made at its surface's own size - as wide as the panel's content box, its client width
+// less its padding on each side - so seen at a scale of 1 on both axes. Answers the drawing.
+function __atItsSurface(what){
+  const d = __svgBox(what), seen = __seenAt(what);
+  if (seen.x !== 1 || seen.y !== 1)
+    throw new Error("REGRESSION: " + what + " is drawn at " + d.W + "x" + d.H + " and seen at " + JSON.stringify(seen)
+      + " on its surface, not at 1");
+  return d;
+}
 // Where each node the drawing holds shows on screen, relative to the top-left corner of its surface:
 // the viewBox shows in the svg's box at the larger scale that fits it whole, centred on the axis it
 // leaves room on (preserveAspectRatio xMidYMid meet), under the transform on #kgzoom.
@@ -291,10 +300,7 @@ const OPENING_DRIVER: &str = r##"
     const d = drawn(what);
     if (d.nodes !== body.clusters.length || d.hulls !== hulls)
       throw new Error(what + " drew " + d.nodes + " clusters and " + d.hulls + " hulls, not " + body.clusters.length + " and " + hulls);
-    const seen = __seenAt(what);
-    if (seen.x !== 1 || seen.y !== 1)
-      throw new Error("REGRESSION: " + what + " is drawn at " + d.W + "x" + d.H + " and seen at " + JSON.stringify(seen)
-        + " on its surface, not at 1");
+    __atItsSurface(what);
     const t = __view(what);
     if (!(t.k > 0 && t.k <= 1)) throw new Error("REGRESSION: " + what + " opens at scale " + t.k + ", never past 1");
     const out = d.boxes.filter(function(o){ const b = o.b;
@@ -419,11 +425,10 @@ function __press(dx, dy){
   (__winListeners.mouseup || []).forEach(function(f){ f({}); });
 }
 // The overview the panel holds, drawn at the size the panel now has: filling the room below its
-// toolbar, as wide as the panel. Answers its markup and its transform.
+// toolbar, at its surface's own size. Answers its markup and its transform.
 function __overviewAt(at, what){
   const d = __fillsItsRoom(at, what, "overview");
-  if (d.W !== __geom.width)
-    throw new Error("REGRESSION: " + at + "the " + what + " is drawn " + d.W + " wide in a " + __geom.width + "px wide panel");
+  __atItsSurface(at + "the " + what);
   return { html: d.html, t: JSON.stringify(__view(at + "the " + what)) };
 }
 "##;
@@ -489,10 +494,11 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 /// Driver: an overview the user has panned keeps its transform and its marks, each node where it
 /// shows on screen, through a resize from a 1400px viewport to 800px and back, and through a change
 /// of its width alone and of its height alone and back, with no new request: only its drawing
-/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call walk does the same, through 800px and a phone's panel beside the page's scrollbar. A
-/// fresh view after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px
-/// keeps its zoom through a resize to 1400px, where the fitted scale is larger, and the wheel zooms on
-/// from the kept scale, in and back, never jumping above it.
+/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call
+/// walk does the same, through 800px and a phone's panel beside the page's scrollbar. A fresh view
+/// after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px keeps its
+/// zoom through a resize to a 1400px viewport whose panel is taller, where the fitted scale is
+/// larger, and the wheel zooms on from the kept scale, in and back, never jumping above it.
 const MOVED_RESIZE_DRIVER: &str = r##"
 ;(async function(){
   const at = "1400px to 800px and back, moved: ";
@@ -504,6 +510,8 @@ const MOVED_RESIZE_DRIVER: &str = r##"
     return visibleLabels(nodes, pos, scale, radiusOf, labelOf);
   };
   const near = function(a, b){ return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)); };
+  // The panel at a 1400px viewport in a taller window.
+  const TALL = [1358, 340, 24];
   // A moved view, once the panel is resized to the row p and the frame has run: its transform as t
   // was, its marks as they were and each node where it showed on screen, relative to the surface's
   // top-left corner; its surface filling the room the panel leaves; on a force view, the labels
@@ -514,8 +522,7 @@ const MOVED_RESIZE_DRIVER: &str = r##"
     __resize(p);
     __frame();
     const d = __fillsItsRoom(at, what, mode);
-    if (d.W !== __geom.width)
-      throw new Error("REGRESSION: " + at + "the " + what + " is drawn " + d.W + " wide in a " + __geom.width + "px wide panel");
+    __atItsSurface(at + "the " + what);
     const now = JSON.stringify(__view(at + "the " + what));
     if (now !== t)
       throw new Error("REGRESSION: " + at + "the " + what + " must keep its transform, " + now + " against " + t);
@@ -543,7 +550,7 @@ const MOVED_RESIZE_DRIVER: &str = r##"
   keptThrough(__NARROW, "panned overview resized to 800px", "overview", panned, wideMarks);
   keptThrough(__WIDE, "panned overview resized back to 1400px", "overview", panned, wideMarks);
   // Each dimension alone, and back.
-  [[1200, 294, 24], __WIDE, [1358, 340, 24], __WIDE].forEach(function(p){
+  [[1200, 294, 24], __WIDE, TALL, __WIDE].forEach(function(p){
     keptThrough(p, "panned overview resized to " + p[0] + "x" + p[1], "overview", panned, wideMarks);
   });
   if (__fetches !== fetches)
@@ -564,6 +571,9 @@ const MOVED_RESIZE_DRIVER: &str = r##"
   const fresh = __overviewAt(at, "files overview drawn fresh after the kept pan");
   if (fresh.t !== wide.t)
     throw new Error("REGRESSION: " + at + "a fresh view must open fitted, not where a kept pan left it, " + fresh.t + " against " + wide.t);
+  __resize(TALL);
+  __frame();
+  const tall = __overviewAt(at, "fresh overview resized to the taller 1400px panel");
   __resize(__NARROW);
   __frame();
   const refit = __overviewAt(at, "fresh overview resized to 800px");
@@ -576,9 +586,9 @@ const MOVED_RESIZE_DRIVER: &str = r##"
   const marks800 = __marks();
   const k = __wheel(-1);
   const zoomed = JSON.stringify(__view(at + "the zoom"));
-  if (!(k < JSON.parse(wide.t).k))
-    throw new Error(at + "this case needs the 800px zoom " + k + " below the 1400px opening scale " + wide.t);
-  keptThrough(__WIDE, "zoomed 800px overview resized to 1400px", "overview", zoomed, marks800);
+  if (!(k < JSON.parse(tall.t).k))
+    throw new Error(at + "this case needs the 800px zoom " + k + " below the taller 1400px panel's opening scale " + tall.t);
+  keptThrough(TALL, "zoomed 800px overview resized to the taller 1400px panel", "overview", zoomed, marks800);
   const zin = __wheel(-1);
   if (Math.abs(zin - k * 1.1) > 1e-12)
     throw new Error("REGRESSION: " + at + "the wheel must zoom on from the kept scale " + k + ", got " + zin);

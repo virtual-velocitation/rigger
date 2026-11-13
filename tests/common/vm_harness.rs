@@ -43,9 +43,10 @@ pub struct DomShim {
     /// `None` gives elements no size at all.
     pub panel_height: Option<u32>,
     /// Whether the panel measures the drawing's slot: a `clientTop`, a `.kgsvg` slot at the top
-    /// of the room under the panel's 10px top padding and a one-line 24px toolbar, and the
-    /// panel's 10px bottom padding through `getComputedStyle`. So a 300px panel leaves the
-    /// drawing 256px, and a 320px one 276px.
+    /// of the room under the panel's 10px top padding and a one-line 24px toolbar, 776px wide
+    /// inside its 12px padding on each side (the drawing's surface, whose width the page draws
+    /// at), and the panel's 10px bottom padding through `getComputedStyle`. So a 300px panel
+    /// leaves the drawing 776 by 256px, and a 320px one 776 by 276px.
     pub slot: bool,
     /// Whether `setInterval` exists (as an inert timer, like `setTimeout`).
     pub interval: bool,

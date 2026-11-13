@@ -6620,9 +6620,13 @@ mod tests {
         assert!(styled > 0, "some rule styles the drawing's svg");
     }
 
+    /// The narrowest surface a docked pane leaves the drawing, which `kgDims` makes at its surface's
+    /// width whatever that is: where the panes' columns would leave less, they stack above the panel.
+    const LEAST_DOCKED_SURFACE: f64 = 320.0;
+
     /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
     /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps its
-    /// content box, the drawing's surface, at least the width `kgDims` draws at: shown panes dock
+    /// content box, the drawing's surface, at least `LEAST_DOCKED_SURFACE`: shown panes dock
     /// beside the panel (absolutely positioned, each taking exactly its own column and inset from
     /// the panel's margin on its side) wherever their columns leave the panel's content box that
     /// width, and everywhere else every shown pane stacks above the panel at the body's full width
@@ -6633,13 +6637,6 @@ mod tests {
     fn the_panel_keeps_the_drawing_width_beside_the_rail_and_the_card() {
         let page = live_page();
         let style = ExplorerStyle::read(&page);
-        let drawn: f64 = page[page
-            .find("function kgDims()")
-            .expect("the page sizes its drawing")..]
-            .split_once("Math.max(")
-            .and_then(|(_, rest)| rest.split_once(','))
-            .and_then(|(least, _)| least.trim().parse().ok())
-            .expect("kgDims draws at least a fixed width");
         let panel = explorer_index(&style.markup, "kgpanel");
         let body = *style.markup[panel]
             .ancestors
@@ -6698,9 +6695,9 @@ mod tests {
                 );
                 if docked.first() == Some(&true) {
                     assert!(
-                        surface >= drawn,
+                        surface >= LEAST_DOCKED_SURFACE,
                         "with {shown} shown in a {width}px body the panel's content box keeps \
-                         {surface}px, less than the {drawn}px kgDims draws at"
+                         {surface}px, less than the {LEAST_DOCKED_SURFACE}px a docked pane leaves the drawing"
                     );
                 }
                 laid_out.push((shown, rail, card, width, edges, docked.first().copied()));
@@ -6717,12 +6714,13 @@ mod tests {
                     0.0
                 }
             };
-            let needs = drawn + edges + column("kgrail", rail) + column("kgcard", card);
+            let needs =
+                LEAST_DOCKED_SURFACE + edges + column("kgrail", rail) + column("kgcard", card);
             assert_eq!(
                 docked,
                 width >= needs,
                 "with {shown} shown in a {width}px body the panes dock exactly where their \
-                 columns leave the panel's content box {drawn}px (from {needs}px)"
+                 columns leave the panel's content box {LEAST_DOCKED_SURFACE}px (from {needs}px)"
             );
         }
     }
