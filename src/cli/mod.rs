@@ -1894,21 +1894,16 @@ fn owning_graph_to_read(site: &Site) -> Result<Projector, Box<dyn std::error::Er
     open_graph_to_read(&loc.file("graph.db"), &loc.identity_in(site)?)
 }
 
-/// The site a reader that answers many opens (the MCP session, a run) reads each open through:
-/// its own site, whose one discovery serves the first open as it serves the rules that found the
-/// reader's store, then a site at the same directory that asks anew for each later open, so the
-/// reader holds no discovery between opens.
+/// The site a reader that answers many opens (the MCP session, a run, either's grounder) reads
+/// each open through: a site at its own site's directory that asks anew where the repository lies,
+/// so the reader holds no discovery from its build to its first open or between two opens.
 pub(crate) struct SiteOpens<S> {
     site: S,
-    served: std::sync::atomic::AtomicBool,
 }
 
 impl<S: std::borrow::Borrow<Site>> SiteOpens<S> {
     pub(crate) fn new(site: S) -> Self {
-        Self {
-            site,
-            served: std::sync::atomic::AtomicBool::new(false),
-        }
+        Self { site }
     }
 
     /// The reader's own site.
@@ -1918,18 +1913,14 @@ impl<S: std::borrow::Borrow<Site>> SiteOpens<S> {
 
     /// `open` run over the site this open reads ([`SiteOpens`]).
     pub(crate) fn open<T>(&self, open: impl FnOnce(&Site) -> T) -> T {
-        if self.served.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            open(&self.site().anew())
-        } else {
-            open(self.site())
-        }
+        open(&self.site().anew())
     }
 }
 
 /// The context graph a reader reads (7.3): the record graph `records` composed with the code
 /// view of the operator checkout's head, compared with the caller's worktree, the tree its `site`
 /// lies in. A reader in a unit worktree reads the operator checkout's store, which owns
-/// `.rigger/`. Each open asks where the repository lies once ([`SiteOpens`]).
+/// `.rigger/`. Each open asks where the repository lies, once ([`SiteOpens`]).
 pub(crate) struct ReadGraph<'r> {
     records: &'r Projector,
     opens: SiteOpens<&'r Site>,

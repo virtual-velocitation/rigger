@@ -635,9 +635,10 @@ files and its label names the top-level.
 A read asks where the repository lies once per open. The reader's site discovers it once, from
 git's files, else in one `rev-parse` where the files cannot answer, and every rule that names a
 root, a tree, a store or an identity from that site reads the one answer: the store walk, the
-store selection, the identity, W, `root` and the tree source. A reader that answers many opens
-(the MCP session, a run, either's grounder) asks anew for each open after its first, so it holds
-no discovery between opens; the head, the diff and the listing are read per open.
+store selection, the identity, W, `root` and the tree source. A reader asks anew for every open,
+its first included: the MCP session and a run build their graph reader and their grounder's heads
+when they start and first open them at a later call, so a discovery kept from the build is as
+stale as one kept between opens. The head, the diff and the listing are read per open.
 
 The check never writes W's index. Every git the source starts itself passes
 `--no-optional-locks` (discovery's `rev-parse`, where it is asked, reads no index), and
