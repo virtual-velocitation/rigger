@@ -232,6 +232,21 @@ fn expected_tasks(root: &Path, reject: &str, cap: u32) -> [(&'static str, String
 /// What a given does to a freshly scaffolded project before the verbs re-run.
 type Arrange = fn(&Path);
 
+/// The declared caps each gate's table closes with: a workflow declaring no unit size cap, and one
+/// declaring a cap of 1 line, each with the cap it reads as.
+const CAP_ROWS: [(&str, Arrange, u32); 2] = [
+    (
+        "a workflow declaring no unit size cap",
+        |root| declare_the_cap(root, ""),
+        0,
+    ),
+    (
+        "a workflow declaring a cap of 1 line",
+        |root| declare_the_cap(root, "  max_unit_added_lines: 1\n"),
+        1,
+    ),
+];
+
 /// Strike the critique section out of each critiquing persona of `root`, leaving the text a
 /// consumer scaffolded before the method moved.
 fn strike_the_critique_sections(root: &Path) {
@@ -281,25 +296,15 @@ fn planning_counts(text: &str) -> ([usize; 6], usize) {
 /// none is declared, and states none of the planning policy and no scope sentence.
 #[test]
 fn each_planner_spawn_is_served_the_planning_policy_by_its_persona_and_none_by_its_task() {
-    let givens: [(&str, Arrange, u32); 4] = [
+    let givens: [(&str, Arrange, u32); 2] = [
         ("the planner rigger init wrote", |_| {}, SCAFFOLD_CAP),
         (
             "this repository's committed planner",
             copy_in_the_committed_planner,
             SCAFFOLD_CAP,
         ),
-        (
-            "a workflow declaring no unit size cap",
-            |root| declare_the_cap(root, ""),
-            0,
-        ),
-        (
-            "a workflow declaring a cap of 1 line",
-            |root| declare_the_cap(root, "  max_unit_added_lines: 1\n"),
-            1,
-        ),
     ];
-    for (given, arrange, cap) in givens {
+    for (given, arrange, cap) in givens.into_iter().chain(CAP_ROWS) {
         let dir = scaffolded_project();
         let root = dir.path();
         arrange(root);
@@ -366,25 +371,15 @@ fn rigger_init_writes_each_critiquing_persona_its_method_under_the_critique_sect
 /// byte for byte.
 #[test]
 fn each_gate_spawn_is_served_its_own_persona_then_only_the_framing_and_the_output_contract() {
-    let givens: [(&str, Arrange, u32); 4] = [
+    let givens: [(&str, Arrange, u32); 2] = [
         ("the personas rigger init wrote", |_| {}, SCAFFOLD_CAP),
         (
             "a consumer's personas with no critique section",
             strike_the_critique_sections,
             SCAFFOLD_CAP,
         ),
-        (
-            "a workflow declaring no unit size cap",
-            |root| declare_the_cap(root, ""),
-            0,
-        ),
-        (
-            "a workflow declaring a cap of 1 line",
-            |root| declare_the_cap(root, "  max_unit_added_lines: 1\n"),
-            1,
-        ),
     ];
-    for (given, arrange, cap) in givens {
+    for (given, arrange, cap) in givens.into_iter().chain(CAP_ROWS) {
         let dir = scaffolded_project();
         let root = dir.path();
         arrange(root);
