@@ -211,7 +211,9 @@ const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", 
 /// file clusters in 32 directories (one at the repo root), the code lens's 200 communities, the
 /// concepts lens's 98 concepts - a subject's re-projection under each lens (40 files, a single
 /// community, 12 concepts), a drilled cluster's 12 members and a 4-layer call walk; a card or
-/// rationale read finds nothing. `__fetches` counts every request the page makes.
+/// rationale read finds nothing. `__fetches` counts every request the page makes. While `__held` is
+/// a list, each graph read waits in it until the driver lands its reply, which then names the read in
+/// the graph header, or fails it.
 const OVERVIEWS_FETCH: &str = r##"
 let __fetches = 0;
 function __chain(keys, step){
@@ -274,10 +276,17 @@ function __graph(url){
   }
   return __OVERVIEWS[lens];
 }
+let __held = null;
 const fetch = function(url){
   __fetches++;
   if (String(url).indexOf("/api/graph") === -1) return Promise.reject(new Error("no network for " + url));
-  return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__graph(url)); } });
+  const reply = function(label){ return { headers: { get: function(h){ return h === "X-Rigger-Graph-Label" ? label : null; } },
+    json: function(){ return Promise.resolve(__graph(url)); } }; };
+  if (!__held) return Promise.resolve(reply(null));
+  return new Promise(function(land, fail){
+    __held.push({ url: String(url), land: function(){ land(reply(encodeURIComponent("read " + url))); },
+      fail: function(){ fail(new Error("the read of " + url + " failed")); } });
+  });
 };
 "##;
 
@@ -782,6 +791,129 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver: of two graph reads in flight, the reply to the one asked first, landing last, is dropped
+/// whole. The grain box edited and left by a press on the files tab commits the grain (a code-lens
+/// read) and then picks the files lens (a files read): the files reply lands first and draws, the
+/// code reply after it draws nothing and leaves the header naming the files read, the grain committed
+/// kept. A drill read failing after an overview asked after it drew puts no message over it. With the
+/// rationale overlay on, a drill reply landing after a call walk asked after it drew, its rationale
+/// badge shown, reads no rationale and leaves the walk's badge through a redraw; and a drill a call
+/// walk supersedes while the drill's rationale read is in flight draws nothing when that read lands.
+/// The overlay's own rationale read, landing after an overview asked after it, leaves the header.
+const STALE_REPLY_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px, two reads in flight: ";
+  const panel = el("kgpanel"), header = el("kglabel");
+  const urls = function(){ return JSON.stringify(__held.map(function(h){ return h.url; })); };
+  __size(__WIDE);
+  await __flush();
+  kgLens = "code";
+  loadKgOverview();
+  await __flush();
+  __held = [];
+  const b = panel.querySelector("[data-lens-res]");
+  b.focus();
+  b.value = "3";
+  __reach(panel, { type: "input", target: b });
+  b._leave();
+  await __flush();
+  onLensPick("files");
+  await __flush();
+  if (__held.length !== 2 || !/lens=code&resolution=3(&|$)/.test(__held[0].url) || __held[1].url.indexOf("lens=") !== -1)
+    throw new Error(at + "leaving the grain box onto the files tab must read the code lens at 3, then the files lens, it read " + urls());
+  const code = __held[0], files = __held[1];
+  files.land();
+  await __flush();
+  const filesView = __overviewAt(at, "files overview").html, filesHeader = header.textContent;
+  if (kgLens !== "files" || filesHeader !== "read " + files.url)
+    throw new Error(at + "the files reply must draw the files overview and name its read in the header, the header reads " + filesHeader);
+  code.land();
+  await __flush();
+  if (panel._html !== filesView)
+    throw new Error("REGRESSION: " + at + "the code reply, landing after the files read asked after it, must draw nothing over the files "
+      + "overview, the panel holds " + panel._html.slice(0, 300));
+  if (header.textContent !== filesHeader)
+    throw new Error("REGRESSION: " + at + "the header must keep naming the files read on show, not " + header.textContent);
+  if (kgResolution !== "3") throw new Error(at + "the grain committed must stay committed, the view reads " + kgResolution);
+  __held = [];
+  drillCluster(__CLUSTER);
+  loadKgOverview();
+  await __flush();
+  if (__held.length !== 2) throw new Error(at + "a drill and an overview must each read once, they read " + urls());
+  const drill = __held[0], overview = __held[1];
+  overview.land();
+  await __flush();
+  const shown = __overviewAt(at, "overview asked after the drill").html;
+  drill.fail();
+  await __flush();
+  if (panel._html !== shown)
+    throw new Error("REGRESSION: " + at + "the drill read failing after the overview asked after it drew must put no message over it, "
+      + "the panel holds " + panel._html.slice(0, 300));
+  const WHY = __CALLS.nodes[3].id, served = __graph;
+  __graph = function(url){
+    if (String(url).indexOf("explain=") === -1) return served(url);
+    return { nodes: [{ node: WHY, leaves: [{ kind: "decision", summary: "it calls on the next layer" }] }] };
+  };
+  __held = null;
+  await setOverlay(true);
+  __held = [];
+  drillCluster(__CLUSTER);
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  if (__held.length !== 2) throw new Error(at + "a drill and a call walk must each read once, they read " + urls());
+  const drilled = __held[0];
+  const explains = function(){ return __held.filter(function(h){ return h.url.indexOf("explain=") !== -1; }); };
+  __held[1].land();
+  await __flush();
+  if (explains().length !== 1)
+    throw new Error(at + "the call walk must read its rationale with the overlay on, the page read " + urls());
+  explains()[0].land();
+  await __flush();
+  const badge = 'data-explain="' + WHY + '"';
+  if (kgMode !== "calls" || panel._html.indexOf(badge) === -1)
+    throw new Error(at + "the call walk must draw with its rationale badge, the panel holds " + panel._html.slice(0, 300));
+  drilled.land();
+  await __flush();
+  if (explains().length !== 1)
+    throw new Error("REGRESSION: " + at + "the drill reply, landing after the call walk asked after it, must read no rationale, the page read "
+      + urls());
+  rerenderCurrentView();
+  if (kgMode !== "calls" || panel._html.indexOf(badge) === -1)
+    throw new Error("REGRESSION: " + at + "the call walk must keep its rationale badge through a redraw after the drill reply, the panel holds "
+      + panel._html.slice(0, 300));
+  const walked = panel._html;
+  __held = [];
+  drillCluster(__CLUSTER);
+  await __flush();
+  __held[0].land();
+  await __flush();
+  if (explains().length !== 1) throw new Error(at + "the drill must read its rationale with the overlay on, the page read " + urls());
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  explains()[0].land();
+  await __flush();
+  if (panel._html !== walked)
+    throw new Error("REGRESSION: " + at + "a drill a call walk superseded while its rationale read was in flight must draw nothing "
+      + "when that read lands, the panel holds " + panel._html.slice(0, 300));
+  __held = null;
+  await setOverlay(false);
+  __held = [];
+  const toggled = setOverlay(true);
+  await __flush();
+  if (explains().length !== 1) throw new Error(at + "the overlay turned on must read the walk's rationale, the page read " + urls());
+  loadKgOverview();
+  await __flush();
+  const named = header.textContent;
+  explains()[0].land();
+  await toggled;
+  await __flush();
+  if (header.textContent !== named)
+    throw new Error("REGRESSION: " + at + "the overlay's rationale read, landing after an overview asked after it, must leave the header, "
+      + "which now reads " + header.textContent);
+  console.log("OK a-stale-reply-is-dropped");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Driver, for the row `__ROW__` (`{writer, pan, resize}`): what the panel shows of the view it
 /// holds beyond the view's body - the `writer` row of `WRITERS` - is shown, still shown once the panel
 /// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
@@ -1188,6 +1320,13 @@ rigger::test_cases! {
         RESIZE_DISCIPLINE_DRIVER,
         "OK the-panel-redraws-once-a-frame-and-only-on-a-new-size",
         "the panel must redraw at most once a frame, only on a new size, and never over a message or an empty slot",
+    );
+    /// A reply landing after a read asked after it is dropped: its view, its message, its rationale
+    /// read and its header.
+    a_stale_reply_is_dropped: drive(
+        STALE_REPLY_DRIVER,
+        "OK a-stale-reply-is-dropped",
+        "a reply that lands after a read asked after it must change nothing the panel shows",
     );
     /// The call view's frontier choice list, the view untouched, through a window resize.
     the_frontier_list_stays_through_a_window_resize_of_an_untouched_view:
