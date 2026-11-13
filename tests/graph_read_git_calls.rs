@@ -202,24 +202,81 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
         ),
     ];
     for (layout, lay_out, under_a_ceiling) in layouts {
-        let scratch = tempfile::tempdir().unwrap();
-        let checkout = lay_out(scratch.path());
-        run_rigger_ok(&checkout, &["graph", "build"]);
-        write_text(&checkout, "src/other.rs", "pub fn gamma() {}\n");
-        let ceiling = [("GIT_CEILING_DIRECTORIES", scratch.path().to_str().unwrap())];
-        let envs: &[(&str, &str)] = if under_a_ceiling { &ceiling } else { &[] };
-        let args = ["graph", "--around", "src/lib.rs", "--depth", "1"];
-        let (out, traced) = traced_read(&checkout, &args, envs, &scratch.path().join("trace"));
-        assert!(
-            out.contains("src/lib.rs::alpha") && !out.contains("enclosing"),
-            "{layout}: the read answers from the checkout's own content:\n{out}"
-        );
-        assert_eq!(
-            git_commands(&traced),
-            one_open(&checkout),
-            "{layout}: one open runs the diff and the untracked listing alone; trace:\n{traced}"
-        );
+        assert_one_open_in(layout, lay_out, under_a_ceiling, &[]);
     }
+}
+
+/// GIVEN a committed project laid out in each shape whose repository git's files leave to git
+/// to set up, built, with a file edited since, WHEN `rigger graph --around` reads the other file
+/// from the checkout, traced by git itself, THEN it answers from that checkout's own content and
+/// its one open asks git where the repository lies once, in one `rev-parse`, besides the diff and
+/// the untracked listing.
+#[test]
+fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
+    let layouts: [(&str, Layout); 3] = [
+        (
+            "a clone whose configuration names no format version",
+            |at| {
+                let clone = cloned(&at.join("origin"), at);
+                git_ok(
+                    &clone,
+                    &["config", "--unset", "core.repositoryformatversion"],
+                );
+                clone
+            },
+        ),
+        (
+            "a clone of format 0 naming an extension git ignores there",
+            |at| {
+                let clone = cloned(&at.join("origin"), at);
+                git_ok(&clone, &["config", "extensions.unheardof", "true"]);
+                clone
+            },
+        ),
+        (
+            "a checkout whose .git directory names a common directory",
+            |at| {
+                let main = source(&at.join("main"));
+                let named = common::git::linked_worktree(&main, at.join("named"));
+                std::fs::remove_file(named.join(".git")).unwrap();
+                std::fs::rename(main.join(".git/worktrees/named"), named.join(".git")).unwrap();
+                let common = main.join(".git");
+                write_text(&named, ".git/commondir", &format!("{}\n", common.display()));
+                named
+            },
+        ),
+    ];
+    for (layout, lay_out) in layouts {
+        assert_one_open_in(layout, lay_out, false, &["rev-parse --show-toplevel"]);
+    }
+}
+
+/// Lay a committed project out as `lay_out` does, build it, edit a file, and read around the
+/// other file from the checkout, under a git ceiling at the scratch directory when
+/// `under_a_ceiling`: the read answers from the checkout's own content, and its one open runs the
+/// diff and the untracked listing and the `asked` discovery commands alone.
+fn assert_one_open_in(layout: &str, lay_out: Layout, under_a_ceiling: bool, asked: &[&str]) {
+    let scratch = tempfile::tempdir().unwrap();
+    let checkout = lay_out(scratch.path());
+    run_rigger_ok(&checkout, &["graph", "build"]);
+    write_text(&checkout, "src/other.rs", "pub fn gamma() {}\n");
+    let ceiling = [("GIT_CEILING_DIRECTORIES", scratch.path().to_str().unwrap())];
+    let envs: &[(&str, &str)] = if under_a_ceiling { &ceiling } else { &[] };
+    let args = ["graph", "--around", "src/lib.rs", "--depth", "1"];
+    let (out, traced) = traced_read(&checkout, &args, envs, &scratch.path().join("trace"));
+    assert!(
+        out.contains("src/lib.rs::alpha") && !out.contains("enclosing"),
+        "{layout}: the read answers from the checkout's own content:\n{out}"
+    );
+    let mut expected = one_open(&checkout);
+    expected.extend(asked.iter().map(ToString::to_string));
+    expected.sort();
+    assert_eq!(
+        git_commands(&traced),
+        expected,
+        "{layout}: one open runs the diff and the untracked listing and {asked:?} alone; \
+         trace:\n{traced}"
+    );
 }
 
 /// A repository at `at` with `src/lib.rs` defining `alpha` and `src/other.rs` defining `beta`,
