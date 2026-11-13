@@ -2868,17 +2868,21 @@ fn ground_rejects_an_unknown_grounder_naming_only_the_accepted_set() {
     );
 }
 
-/// GIVEN a project whose workflow names an unknown grounder, WHEN `rigger ground` and the MCP
-/// ground tool run from a directory below the top of its worktree, THEN each reads the grounder
-/// from the workflow of the caller's worktree, as every other read names its worktree, and
-/// refuses the unknown name: neither falls back to the default grounder because the cwd holds no
-/// workflow.
-#[test]
-fn ground_reads_its_grounder_from_the_callers_worktree_below_its_top() {
+/// GIVEN a project set up at `project` (empty for the top of the worktree) whose workflow names an
+/// unknown grounder, below an outer project at the top pinning the literal `grep` grounder where
+/// the two differ, WHEN `rigger ground` and the MCP ground tool run from `from`, a directory below
+/// that project, THEN each reads the grounder from the workflow of the project governing the
+/// caller in its own worktree, as `rigger validate` finds it, and refuses the unknown name: neither
+/// falls back to the default grounder because the cwd holds no workflow, nor to the outer
+/// project's.
+fn assert_ground_reads_the_governing_projects_grounder(project: &str, from: &str) {
     let dir = temp_project();
     let root = dir.path();
-    write_grounder_workflow(root, "semantic-embed");
-    let below = root.join("src");
+    if !project.is_empty() {
+        write_grounder_workflow(root, "grep");
+    }
+    write_grounder_workflow(&root.join(project), "semantic-embed");
+    let below = root.join(from);
     std::fs::create_dir_all(&below).unwrap();
     std::fs::write(below.join("lib.rs"), "pub fn apply_damage() {}\n").unwrap();
     common::fixtures::git_commit_all(root, "source");
@@ -2905,6 +2909,15 @@ fn ground_reads_its_grounder_from_the_callers_worktree_below_its_top() {
         reply.to_string().contains("unknown grounder"),
         "the MCP tool refuses the configured name: {reply}"
     );
+}
+
+rigger::test_cases! {
+    /// From below the top of a project set up at the top of its worktree.
+    ground_reads_its_grounder_from_the_callers_worktree_below_its_top:
+        assert_ground_reads_the_governing_projects_grounder("", "src");
+    /// From below a project set up in a directory of an outer project that pins another grounder.
+    ground_reads_its_grounder_from_the_nested_project_governing_the_caller:
+        assert_ground_reads_the_governing_projects_grounder("proj", "proj/src");
 }
 
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
