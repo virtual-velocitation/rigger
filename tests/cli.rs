@@ -26568,8 +26568,9 @@ fn pipe_into_rigger(cwd: &Path, args: &[&str], stdin: &[u8]) -> std::process::Ou
         .spawn()
         .unwrap_or_else(|e| panic!("spawn rigger {verb}: {e}"));
     // A verb that refuses its argv before reading stdin (guard-write with no --root) may exit
-    // and close the pipe first; that write loses the race, not the test - the exit status is
-    // what the caller asserts.
+    // and close the pipe first; that write loses the race, not the test - `assert_blocks`, which
+    // drives that verb, asserts the exit status and the whole stderr, and a lost stdin write
+    // changes neither.
     match child.stdin.take().unwrap().write_all(stdin) {
         Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
             panic!("write stdin to rigger {verb}: {e}")

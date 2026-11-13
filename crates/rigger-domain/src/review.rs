@@ -323,11 +323,12 @@ pub fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> 
     step_roster(&steps, steps.len(), review_step_role)
 }
 
-/// The spec critique prompt (spec 112): the task framing with the voided-duties clause, the
-/// output contract, and the spec text verbatim as its tail - in that order. With `recorded`
+/// The spec critique prompt (spec 112): the task framing with the voided-duties clause
+/// ([`CRITIQUE_FRAMING`]), the output contract ([`CRITIQUE_OUTPUT_CONTRACT`]), and the spec path
+/// and its text verbatim as the tail ([`CRITIQUE_SPEC_TAIL`]) - in that order. With `recorded`
 /// findings (spec 123), the [`CRITIQUE_RECORDED_FINDINGS`] clause and one line per finding, its
 /// [`summary`](CritiqueFinding::summary), in the order given, then a blank line, stand between
-/// the output contract and the spec text; with none, the prompt is the spec path and text alone.
+/// the output contract and the tail; with none, the output contract runs straight into the tail.
 /// The method stands in the critic's persona; a persona without it still critiques under the
 /// output contract.
 pub fn spec_critique_prompt<'a>(
