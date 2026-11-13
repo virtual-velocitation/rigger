@@ -2576,12 +2576,11 @@ mod tests {
     #[test]
     fn the_canary_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let header =
-            |names: &[&str]| rendered_groups(prompt_groups(), "canary_store::review_header", names);
-        let adjudicator = |names: &[&str]| {
-            rendered_groups(prompt_groups(), "canary_store::adjudicator_prompt", names)
-        };
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(prompt_groups());
+        let header = |names: &[&str]| picks.rendered("canary_store::review_header", names);
+        let adjudicator =
+            |names: &[&str]| picks.rendered("canary_store::adjudicator_prompt", names);
         let anchored = CanaryItem {
             anchor: "{file}".into(),
             review: "{review}".into(),
@@ -2592,7 +2591,7 @@ mod tests {
             ..anchored.clone()
         };
         // The anchorless header as the surface `pick` reads its groups from.
-        let unanchored_header = |pick: fn(&[&str]) -> String| {
+        let unanchored_header = |pick: &dyn Fn(&[&str]) -> String| {
             fill(
                 &pick(&["CANARY_REVIEW_HEADER"]),
                 &[("file", &pick(&["CANARY_NO_ANCHOR"]))],
@@ -2615,14 +2614,14 @@ mod tests {
             (
                 "the review header of an anchorless item",
                 review_header(&anchorless),
-                unanchored_header(header),
+                unanchored_header(&header),
             ),
             (
                 "the adjudicator prompt of an anchorless item and no finding",
                 adjudicator_prompt(&anchorless, &[]),
                 format!(
                     "{}{}",
-                    unanchored_header(adjudicator),
+                    unanchored_header(&adjudicator),
                     adjudicator(&[
                         "CANARY_FINDINGS_LEAD",
                         "CANARY_NO_FINDINGS",

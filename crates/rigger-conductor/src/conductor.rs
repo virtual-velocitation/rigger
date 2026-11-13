@@ -50659,24 +50659,15 @@ mod tests {
         );
     }
 
-    /// The registered groups `names` of the conductor surface `surface`, concatenated in registry
-    /// order as the renderer under test must produce them.
-    fn groups(surface: &str, names: &[&str]) -> String {
-        crate::prompt_surface_fixtures::rendered_groups(
-            crate::prompt_surface::prompt_groups(),
-            surface,
-            names,
-        )
-    }
-
     /// Spec 121, criterion 16: over the placeholder fixture each protocol, note block and task
     /// block the conductor renders is its registry groups concatenated in registry order, on each
     /// branch, a computed slot value filled into its group and a list's lines spelled here, since
     /// neither a skeleton nor a joiner is a group.
     #[test]
     fn the_conductor_protocols_are_their_groups_on_each_branch() {
-        use crate::prompt_surface_fixtures::assert_renders;
-        let plan = |names: &[&str]| groups("conductor::render_plan_protocol", names);
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let plan = |names: &[&str]| picks.rendered("conductor::render_plan_protocol", names);
         let plan_body = plan(&[
             "PLAN_ROLE",
             "PLAN_SPLIT_ID_ECHO",
@@ -50692,9 +50683,9 @@ mod tests {
             "- [{}] {{criterion}}",
             criterion_stable_id(1, "{criterion}")
         );
-        let adjudicator = |names: &[&str]| groups("conductor::adjudicator_contract", names);
-        let review = |names: &[&str]| groups("conductor::review_protocol", names);
-        let notes = |names: &[&str]| groups("conductor::notes_block", names);
+        let adjudicator = |names: &[&str]| picks.rendered("conductor::adjudicator_contract", names);
+        let review = |names: &[&str]| picks.rendered("conductor::review_protocol", names);
+        let notes = |names: &[&str]| picks.rendered("conductor::notes_block", names);
         let note = |id: &str, about: &[&str], summary: &str| RunNote {
             id: id.to_string(),
             about: about.iter().map(|a| a.to_string()).collect(),
@@ -50714,7 +50705,7 @@ mod tests {
                 ..Stage::default()
             })
         };
-        let conflict = groups(
+        let conflict = picks.rendered(
             "conductor::conflict_resolution_prompt",
             &["CONFLICT_RESOLUTION"],
         );
@@ -50734,7 +50725,7 @@ mod tests {
             (
                 "the emit protocol",
                 emit_protocol(),
-                groups("conductor::emit_protocol", &["EMIT_PROTOCOL", "EMIT_LIVE"]),
+                picks.rendered("conductor::emit_protocol", &["EMIT_PROTOCOL", "EMIT_LIVE"]),
             ),
             (
                 "the plan protocol with no cap and no criterion",
@@ -50816,7 +50807,7 @@ mod tests {
             (
                 "a task re-run after a refusal",
                 refused.task("{prompt}").into_owned(),
-                groups("conductor::RefusedRecord::task", &["REFUSED_RECORD_NOTE"]),
+                picks.rendered("conductor::RefusedRecord::task", &["REFUSED_RECORD_NOTE"]),
             ),
             (
                 "a producer's task",
@@ -50831,7 +50822,7 @@ mod tests {
             (
                 "a unit's task",
                 task("{criterion}", ""),
-                groups("conductor::task_block", &["TASK_BLOCK"]),
+                picks.rendered("conductor::task_block", &["TASK_BLOCK"]),
             ),
             (
                 "a conflict over one path",
@@ -50846,7 +50837,7 @@ mod tests {
             (
                 "a round that changed documentation only",
                 round(&["docs/a.md"]),
-                groups("conductor::doc_only_round", &["DOC_ONLY_ROUND"]),
+                picks.rendered("conductor::doc_only_round", &["DOC_ONLY_ROUND"]),
             ),
             (
                 "a round that changed code",
@@ -50857,7 +50848,7 @@ mod tests {
             (
                 "the peers pointer",
                 pushed(write_peers_pointer),
-                groups(
+                picks.rendered(
                     "conductor::write_peers_pointer",
                     &["PEERS_POINTER", "LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
                 ),
@@ -50865,7 +50856,7 @@ mod tests {
             (
                 "the lookup pointer",
                 pushed(write_lookup_pointer),
-                groups(
+                picks.rendered(
                     "conductor::write_lookup_pointer",
                     &["LOOKUP_LEAD_IN", "LOOKUP_VERBS"],
                 ),
@@ -50883,11 +50874,12 @@ mod tests {
     /// gate's lines spelled here, since neither a skeleton nor a joiner is a group.
     #[test]
     fn the_retry_and_review_round_blocks_are_their_groups_on_each_branch() {
-        use crate::prompt_surface_fixtures::assert_renders;
-        let prior = |names: &[&str]| groups("conductor::PriorFailure::block", names);
-        let round = |names: &[&str]| groups("conductor::ReviewRound::block", names);
-        let evidence = |names: &[&str]| groups("conductor::gate_evidence_block", names);
-        let later = |names: &[&str]| groups("conductor::later_attempt_block", names);
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let prior = |names: &[&str]| picks.rendered("conductor::PriorFailure::block", names);
+        let round = |names: &[&str]| picks.rendered("conductor::ReviewRound::block", names);
+        let evidence = |names: &[&str]| picks.rendered("conductor::gate_evidence_block", names);
+        let later = |names: &[&str]| picks.rendered("conductor::later_attempt_block", names);
         let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let required = |pattern: &str| RequiredItem {
             finding: "{finding}".to_string(),
@@ -51089,8 +51081,9 @@ mod tests {
     /// their slots.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
-        use crate::prompt_surface_fixtures::assert_renders;
-        let dag = |names: &[&str]| groups("conductor::build_dag_critique_prompt", names);
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let dag = |names: &[&str]| picks.rendered("conductor::build_dag_critique_prompt", names);
         let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let critique = |coverage: &str,
                         needs: &[&str],
@@ -51187,7 +51180,7 @@ mod tests {
             (
                 "a re-plan's lead",
                 re_plan_lead("{feedback}"),
-                groups(
+                picks.rendered(
                     "conductor::re_plan_lead",
                     &["REPLAN_LEAD", "REPLAN_ID_CONTRACT"],
                 ),
@@ -51207,9 +51200,10 @@ mod tests {
     /// here, since a skeleton is not a group.
     #[test]
     fn the_grounding_sections_are_their_groups_on_each_branch() {
-        use crate::prompt_surface_fixtures::assert_renders;
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         use crate::test_support::{edge, node_with_attrs};
         type Writer = fn(&mut String, &Graph, &[String]);
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
         let written = |write: Writer, g: &Graph, seed: &[String]| {
             let mut b = String::new();
             write(&mut b, g, seed);
@@ -51248,13 +51242,13 @@ mod tests {
         ];
         let mut cases: Vec<(String, String, String)> = Vec::new();
         for (surface, header, noun, write, one, line, over_budget) in records {
-            let header = groups(surface, &[header]);
+            let header = picks.rendered(surface, &[header]);
             let note = fill(
-                &groups(surface, &["ELISION_NOTE_RECORDS"]),
+                &picks.rendered(surface, &["ELISION_NOTE_RECORDS"]),
                 &[
                     ("elided", "1"),
                     ("noun", noun),
-                    ("recover", &groups(surface, &["RECORD_RECOVERY"])),
+                    ("recover", &picks.rendered(surface, &["RECORD_RECOVERY"])),
                 ],
             );
             cases.extend([
@@ -51275,7 +51269,8 @@ mod tests {
                 ),
             ]);
         }
-        let neighborhood = |names: &[&str]| groups("conductor::write_code_neighborhood", names);
+        let neighborhood =
+            |names: &[&str]| picks.rendered("conductor::write_code_neighborhood", names);
         let code_header = neighborhood(&["CODE_NEIGHBORHOOD_HEADER"]);
         let code_note = |recover: String| {
             fill(
@@ -51284,7 +51279,7 @@ mod tests {
             )
         };
         let long_name = over(CODE_NEIGHBORHOOD_BUDGET_BYTES);
-        let intent = |names: &[&str]| groups("conductor::write_design_intent", names);
+        let intent = |names: &[&str]| picks.rendered("conductor::write_design_intent", names);
         let intent_header = intent(&["DESIGN_INTENT_HEADER"]);
         let intent_note = |recover: String| {
             fill(
@@ -51307,7 +51302,7 @@ mod tests {
                 contextgraph::TIER_EXTRACTED,
             )],
         };
-        let around = |names: &[&str]| groups("conductor::graph_around_recovery", names);
+        let around = |names: &[&str]| picks.rendered("conductor::graph_around_recovery", names);
         cases.extend([
             (
                 "the code neighborhood with no definition".to_string(),

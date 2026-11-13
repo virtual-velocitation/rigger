@@ -120,7 +120,7 @@ pub(crate) fn cmd_prime(args: &[String]) -> Res {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+    use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
 
     /// `rigger prime`'s hook form (no spec argument) is its groups concatenated in registry order
     /// on each branch: no store, a store with no decision, and a store with two, each beside an
@@ -132,18 +132,10 @@ mod tests {
     /// the test's.
     #[test]
     fn the_prime_output_is_its_groups_on_each_branch() {
-        let pick = |names: &[&str]| {
-            rendered_groups(
-                rigger::prompt_surface::prompt_groups(),
-                "prime::cmd_prime",
-                names,
-            )
-        };
-        let heading = rendered_groups(
-            rigger_domain::prompt_surface::prompt_groups(),
-            "instructions::compose",
-            &["INSTRUCTIONS_HEADING"],
-        );
+        let picks = GroupPicks::new(rigger::prompt_surface::prompt_groups());
+        let pick = |names: &[&str]| picks.rendered("prime::cmd_prime", names);
+        let heading = GroupPicks::new(rigger_domain::prompt_surface::prompt_groups())
+            .rendered("instructions::compose", &["INSTRUCTIONS_HEADING"]);
         let in_force = |extra: &str| {
             format!(
                 "{heading}{}",

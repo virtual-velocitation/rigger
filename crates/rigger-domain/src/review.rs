@@ -1446,10 +1446,9 @@ mod tests {
     #[test]
     fn the_spec_critique_prompt_is_its_groups_concatenated_on_each_branch() {
         use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let groups = |names: &[&str]| {
-            rendered_groups(prompt_groups(), "review::spec_critique_prompt", names)
-        };
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(prompt_groups());
+        let groups = |names: &[&str]| picks.rendered("review::spec_critique_prompt", names);
         let recorded = finding(
             "{id}",
             true,

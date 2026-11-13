@@ -6157,15 +6157,12 @@ mod tests {
     /// `GREP_GUARD_MESSAGE` (spec 121, criterion 16): `docs_context` renders it on its one branch.
     #[test]
     fn the_docs_context_grep_guard_message_is_its_group() {
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         assert_renders(
             "the docs context's grep-guard message",
             &docs_context().grep_guard_message,
-            &rendered_groups(
-                rigger::prompt_surface::prompt_groups(),
-                "cli::docs_context",
-                &["GREP_GUARD_MESSAGE"],
-            ),
+            &GroupPicks::new(rigger::prompt_surface::prompt_groups())
+                .rendered("cli::docs_context", &["GREP_GUARD_MESSAGE"]),
         );
     }
 
