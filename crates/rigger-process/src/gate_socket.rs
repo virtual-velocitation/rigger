@@ -169,7 +169,11 @@ impl GateSocket {
     /// the OS allows a socket is `InvalidInput`.
     pub fn bind(path: &Path) -> io::Result<GateSocket> {
         use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+        // The staging name is shorter than the final one, so the OS accepting it says nothing
+        // about whether a client can connect to `path`: ask for the final address first, with
+        // this OS's own limit, before creating anything.
+        SocketAddr::from_pathname(path).map_err(|e| naming_overflow(path, e))?;
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             private_dir(dir)?;
         }
