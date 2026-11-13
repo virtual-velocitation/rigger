@@ -15,7 +15,7 @@
 
 use crate::common::fixtures::production_files;
 use crate::common::repo::{repo_root, rs_files_under};
-use crate::source_audit::{tokenize, RawKind};
+use crate::source_audit::{is_comment_line, tokenize, RawKind};
 use std::collections::BTreeMap;
 
 /// Who reads an allow-listed literal, and so why it is no prompt text.
@@ -24,7 +24,8 @@ enum Category {
     /// An error, a status line, a help text, a log line the operator reads, or a command line
     /// the host runs.
     OperatorMessage,
-    /// A tool result or error an agent reads back as data, never as instruction.
+    /// A tool result or error, or the summary of a recorded decision or lesson, that an agent
+    /// reads back as data, never as instruction.
     ToolOutput,
 }
 
@@ -69,22 +70,16 @@ const ALLOW_LIST: &[Allowed] = &[
             "{role} {agent_id:?} would run directly in the main repo chec",
             "stage {:?} references unknown {role} {agent_id:?}",
             "spawn {}: session {} to resume is gone; it ran as a fresh se",
-            "For the operator: review of unit {unit:?} at attempt {attemp",
-            "a review round left unit {unit:?}'s worktree as residue afte",
             "{} (guard_review_round_tree also failed to restore residue:",
             "stage {:?} references unknown agent {:?}",
             "a plan-stage commit touched paths outside specs/: {}",
             "the plan amendment conflicts with a concurrent specs/ change",
-            "unit {:?} escalated after {attempts} attempts; {why}",
             "stage {:?} references unknown agent {:?}",
-            "unit {:?} escalated: all {width} speculation candidates fail",
             "speculation winner {lane} implemented by {}",
             "candidate {lane} rejected by the adjudicator",
-            "review stage {:?} escalated after {attempts} attempts; {why}",
             "stage {:?} references unknown {tier} {agent_id:?}",
             "plan-critique re-plan references unknown planner {:?}",
             "the adjudicator did not approve the decomposition",
-            "plan-critique {gate_name:?} escalated after {attempts} attem",
             "plan-critique {gate:?} stopped the run: its {} reject at att",
             "rigger: branch-gc: removing branch {branch:?} - {}",
             "rigger: branch-gc: kept branch {branch:?} - {}",
@@ -99,7 +94,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "landing {unit:?} was refused: local content at {} would be o",
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for loca",
             "same-id refine resolves to a criterion its unit does not ser",
-            "unmatched-proposal: proposed unit {} maps to no baseline cri",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
         ],
@@ -118,6 +112,13 @@ const ALLOW_LIST: &[Allowed] = &[
             "skipped: gate {gid:?} inputs {:?} do not intersect the unit'",
             "skipped: gate {gid:?} declares post_merge: false, so it judg",
             "{why_rerun}cache-hit: gate {gid:?} was proven green at log p",
+            "For the operator: review of unit {unit:?} at attempt {attemp",
+            "a review round left unit {unit:?}'s worktree as residue afte",
+            "unit {:?} escalated after {attempts} attempts; {why}",
+            "unit {:?} escalated: all {width} speculation candidates fail",
+            "review stage {:?} escalated after {attempts} attempts; {why}",
+            "plan-critique {gate_name:?} escalated after {attempts} attem",
+            "unmatched-proposal: proposed unit {} maps to no baseline cri",
         ],
     ),
     (
@@ -451,6 +452,11 @@ fn a_string_literal_token_decodes_to_its_value() {
         ("single quote", r#""a\'b""#, Some("a'b")),
         ("hex", r#""a\x41b""#, Some("aAb")),
         ("unicode", r#""a\u{e9}b""#, Some("a\u{e9}b")),
+        (
+            "unicode with an underscore",
+            r#""a\u{0_e9}b""#,
+            Some("a\u{e9}b"),
+        ),
         ("continuation", "\"one \\\n      two\"", Some("one two")),
         (
             "crlf continuation",
@@ -525,6 +531,16 @@ fn a_literal_qualifies_at_forty_characters_with_a_space() {
             "a raw literal",
             format!("f(r#\"{}\"#);", spaced(40)),
             vec![(1, spaced(40))],
+        ),
+        (
+            "a raw literal's CRLF line break read as LF",
+            format!("f(r\"{}\r\nend\");\r\n", spaced(40)),
+            vec![(1, format!("{}\nend", spaced(40)))],
+        ),
+        (
+            "an escaped literal's CRLF line break read as LF",
+            format!("f(\"{}\r\nend\");\r\n", spaced(40)),
+            vec![(1, format!("{}\nend", spaced(40)))],
         ),
         (
             "a line comment",
@@ -880,15 +896,15 @@ fn in_module(file: &str) -> bool {
 /// Whether the production `text` spells one of [`TOKENS`] on a line whose first non-blank
 /// characters are not `//`.
 fn prompt_bearing(text: &str) -> bool {
-    text.lines().any(|line| {
-        !line.trim_start().starts_with("//") && TOKENS.iter().any(|token| line.contains(token))
-    })
+    text.lines()
+        .any(|line| !is_comment_line(line) && TOKENS.iter().any(|token| line.contains(token)))
 }
 
 /// Each string literal of `text` of at least [`MIN_CHARS`] characters holding a space, as the
-/// 1-based line it opens on and its decoded value, in source order. Comments hold none.
+/// 1-based line it opens on and its decoded value, in source order. Comments hold none. A CRLF
+/// line break reads as LF, as rustc reads it before lexing.
 fn qualifying_literals(text: &str) -> Vec<Literal> {
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<char> = text.replace("\r\n", "\n").chars().collect();
     tokenize(&chars)
         .into_iter()
         .filter(|token| token.kind == RawKind::Lit)
@@ -931,7 +947,12 @@ fn unescape(body: &str) -> String {
                 ));
             }
             Some('u') => {
-                let hex: String = chars.by_ref().skip(1).take_while(|c| *c != '}').collect();
+                let hex: String = chars
+                    .by_ref()
+                    .skip(1)
+                    .take_while(|c| *c != '}')
+                    .filter(|c| *c != '_')
+                    .collect();
                 let code = u32::from_str_radix(&hex, 16).expect("a \\u escape");
                 value.push(char::from_u32(code).expect("a scalar value"));
             }

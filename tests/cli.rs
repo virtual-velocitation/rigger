@@ -50,8 +50,8 @@ use common::cli::{
 };
 use common::fixtures::file_len;
 use common::fixtures::{
-    api_retry_lines, recorded_argv, recorded_task, stand_in_launches, ERROR_RESULT,
-    GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
+    api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
+    ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
 };
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
@@ -4440,8 +4440,10 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
                 session,
                 recorded_task(&fake.path().join("bin/first-message-at-the-second-launch"))
             )),
-            case.note
-                .map(|note| (first_session, format!("{note}{LIVE_PROGRESS_FRAME}"))),
+            case.note.map(|note| (
+                first_session,
+                format!("{note}{}", headless_progress_frame())
+            )),
             "{name}: the second launch resumes the first launch's session with the note, or \
              launches fresh; argv: {argv:?}"
         );
@@ -6650,7 +6652,8 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
 #[test]
 fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
     use common::fixtures::{
-        write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS,
+        helper_copies_in, helper_files, write_helper_copies, HelperFile, OPERATOR_HELPER_COPIES,
+        OPERATOR_HELPER_TOOLS,
     };
     use common::repo::{
         handed_helpers_agents_json, launch_helpers, BOUND_TOOLS, EMBEDDED_HELPER_TOOLS,
@@ -6701,24 +6704,9 @@ fn every_launch_of_a_run_defines_the_helpers_from_the_operators_copies() {
             !fake.path().join("bin/worktree-holds-copies").exists(),
             "{name}: no launch's worktree holds a helper copy"
         );
-        let mut on_disk: Vec<(String, String)> = std::fs::read_dir(root.join(".claude/agents"))
-            .into_iter()
-            .flatten()
-            .map(|entry| {
-                let path = entry.unwrap().path();
-                let file = path.file_name().unwrap().to_string_lossy().into_owned();
-                (file, std::fs::read_to_string(&path).unwrap())
-            })
-            .collect();
-        on_disk.sort();
-        let mut held: Vec<(String, String)> = copies
-            .iter()
-            .chain(mid_run)
-            .map(|(file, text)| (file.to_string(), text.to_string()))
-            .collect();
-        held.sort();
         assert_eq!(
-            on_disk, held,
+            helper_copies_in(root),
+            helper_files(&[copies, mid_run]),
             "{name}: the checkout holds the copies it started with and those written mid-run"
         );
 
@@ -6818,11 +6806,6 @@ fn cut_a_run_branch_tracking(root: &Path, copies: &[common::fixtures::HelperFile
     git_ok(root, &["checkout", "-q", "-"]);
 }
 
-/// The live-progress frame closing a launch's first user message: the progress verb and its
-/// argument only, since when to report is the communication built-in's.
-const LIVE_PROGRESS_FRAME: &str = "\n\n--- rigger driver ---\nLIVE PROGRESS: record a progress \
-     line by calling the mcp__rigger__rigger_progress tool with that line as its activity.";
-
 /// The last spawn `rigger canary` launches over the one-item canary panel project: the
 /// adjudicator's natural-order probe, its only one while the panel raises no finding.
 #[cfg(unix)]
@@ -6859,18 +6842,21 @@ fn cli_launch() -> (String, String) {
 /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME, end to end, with spec 105's live-progress frame:
 /// given a project, when the operator launches a spawn through each host - `rigger run` through
 /// the headless host and `rigger canary` through the cli host - then the spawn's system prompt
-/// carries each sentence of the communication built-in's progress bullet once and its task none,
-/// and its task closes, once, with that host's frame naming its progress verb and the verb's
-/// arguments.
+/// carries each sentence of the communication built-in's progress bullet once, its task states
+/// the cadence in no wording, and its task closes, once, with that host's frame naming its
+/// progress verb and the verb's arguments.
 #[cfg(unix)]
 #[test]
 fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_prompt() {
-    use common::fixtures::{assert_carries_each, cli_progress_frame, PROGRESS_CADENCE};
+    use common::fixtures::{
+        assert_carries_each, assert_states_no_progress_cadence, cli_progress_frame,
+        DRIVER_SEPARATOR, PROGRESS_CADENCE,
+    };
     let hosts: [(&str, HostLaunch, String); 2] = [
         (
             "the headless host",
             headless_launch,
-            LIVE_PROGRESS_FRAME.to_string(),
+            headless_progress_frame(),
         ),
         (
             "the cli host",
@@ -6886,13 +6872,13 @@ fn every_host_hands_its_spawn_the_progress_cadence_once_through_its_system_promp
             &PROGRESS_CADENCE,
             1,
         );
-        assert_carries_each(&format!("{host}'s task"), &task, &PROGRESS_CADENCE, 0);
+        assert_states_no_progress_cadence(&format!("{host}'s task"), &task);
         assert!(
             task.ends_with(frame.as_str()),
             "{host}: the frame closes the task: {task:?}"
         );
         assert_eq!(
-            task.matches("--- rigger driver ---").count(),
+            task.matches(DRIVER_SEPARATOR).count(),
             1,
             "{host}: the task is framed once: {task:?}"
         );
@@ -6927,17 +6913,16 @@ rigger::test_cases! {
     /// Spec 121's THE PROGRESS CADENCE HAS ONE HOME at a spawn's own MCP server: given a
     /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
     /// `rigger_progress` entry names what the tool records and its argument only, and no tool of
-    /// the list carries a sentence of the progress cadence, which the spawn's system prompt states.
+    /// the list states the progress cadence in any wording, which the spawn's system prompt
+    /// states.
     a_spawns_mcp_server_lists_the_progress_tool_without_the_progress_cadence:
-        common::fixtures::assert_carries_each(
+        common::fixtures::assert_states_no_progress_cadence(
             "the spawn's tool list",
             &assert_a_spawns_server_lists(
                 "rigger_progress",
                 common::fixtures::progress_tool_entry(),
             )
             .to_string(),
-            &common::fixtures::PROGRESS_CADENCE,
-            0,
         );
     /// Spec 121's THE SCRATCH TOOL NAMES NO TOOLCHAIN at a spawn's own MCP server: given a
     /// spawn-bound `rigger mcp --spawn`, when its agent lists the tools over stdio, then the one
@@ -7771,7 +7756,7 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     assert_eq!(flag_value(&argv, "--resume"), session);
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{RED_GATE_RETRY_TASK}{LIVE_PROGRESS_FRAME}"),
+        format!("{RED_GATE_RETRY_TASK}{}", headless_progress_frame()),
         "the resumed launch's first message is the retry task, framed once"
     );
 }
@@ -8262,7 +8247,8 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
-             {LIVE_PROGRESS_FRAME}"
+             {}",
+            headless_progress_frame()
         ),
         "the fallback's launch carries the whole prompt, not the resumed session's short task"
     );
@@ -8400,6 +8386,28 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     assert_eq!(logged, told, "each fallback on the operator's log; {err}");
 }
 
+/// The session rows of a later-round periphery test: whether each role's session resumes on the
+/// second round, the session's label, and what the fake `claude` does on a `--resume` launch, `:`
+/// serving it and `exit 1` reporting the session gone.
+#[cfg(unix)]
+const SESSION_ROWS: [(bool, &str, &str); 2] = [(true, "resumed", ":"), (false, "gone", "exit 1")];
+
+/// Asserts that the launch whose argv a stand-in `claude` recorded at `argv(0)` answered the first
+/// round fresh and the one at `argv(1)` answered the second resumed exactly when `resumes`.
+#[cfg(unix)]
+fn assert_resumed_per_round(argv: impl Fn(u32) -> std::path::PathBuf, resumes: bool, at: &str) {
+    let resumed = |attempt| {
+        recorded_argv(&argv(attempt))
+            .iter()
+            .any(|word| word == "--resume")
+    };
+    assert_eq!(
+        [resumed(0), resumed(1)],
+        [false, resumes],
+        "{at}: whether the launch that answered each round resumed"
+    );
+}
+
 /// Spec 121's A DOC-ONLY ROUND STATES ONLY THE FACT, end to end: given a reviewed unit rejected
 /// once, whose sdet-author is this repository's committed persona, when `rigger run` drives a
 /// second round that changed documentation only, then the sdet-author's second launch is told that
@@ -8412,7 +8420,9 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
 #[cfg(unix)]
 #[test]
 fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
-    use common::fixtures::{status_sha, DOC_ONLY_ROUND_FACT, DOC_ONLY_ROUND_RULE};
+    use common::fixtures::{
+        status_sha, DOC_ONLY_ROUND_FACT, DOC_ONLY_ROUND_RULE, LATER_ATTEMPT_CLOSE,
+    };
     let rule = DOC_ONLY_ROUND_RULE.to_lowercase();
     for (case, writes, changed, stated) in [
         (
@@ -8435,12 +8445,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
         ),
     ] {
         let round_1 = writes.join("\n        ");
-        for resumes in [true, false] {
-            let (session, on_resume) = if resumes {
-                ("resumed", ":")
-            } else {
-                ("gone", "exit 1")
-            };
+        for (resumes, session, on_resume) in SESSION_ROWS {
             let dir = temp_git_project_with_commit();
             let root = dir.path();
             write_reviewed_unit(root);
@@ -8485,16 +8490,7 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
             );
             let recorded =
                 |what: &str, attempt: u32| fake.path().join(format!("bin/sdet-{what}-{attempt}"));
-            let resumed = |attempt| {
-                recorded_argv(&recorded("argv", attempt))
-                    .iter()
-                    .any(|word| word == "--resume")
-            };
-            assert_eq!(
-                [resumed(0), resumed(1)],
-                [false, resumes],
-                "{at}: whether the sdet-author's launch that answered each round resumed"
-            );
+            assert_resumed_per_round(|attempt| recorded("argv", attempt), resumes, &at);
             let opening = recorded_task(&recorded("first", 0));
             let closing = recorded_task(&recorded("first", 1));
             assert_eq!(
@@ -8514,13 +8510,13 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. Bring the periphery tests in line with that change.\n\
-                         {fact}{LIVE_PROGRESS_FRAME}"
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}",
+                        headless_progress_frame()
                     ),
                     "{at}: the resumed session's whole task"
                 );
             } else {
-                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{LIVE_PROGRESS_FRAME}");
+                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{}", headless_progress_frame());
                 assert_eq!(
                     (
                         closing.matches(DOC_ONLY_ROUND_FACT).count(),
@@ -8642,12 +8638,13 @@ fn the_build_seam_launches_the_test_author_the_workflow_declares() {
 }
 
 /// Spec 121's THE REQUIRED PATTERN NAMES ONLY ITS RECORD, end to end: given a reviewed unit whose
-/// first round rejects with two REQUIRED pattern items of different shapes and one plain item,
-/// when `rigger run` drives the second round, whether each role resumes its session (the
-/// later-attempt task) or that session is gone (the whole prompt), then the implementer's second
-/// launch is told each pattern item's shape and the DecisionMade `audit-solo-1` to record it
-/// under, each review tier's second launch is told that shape and that record as the
-/// implementer's, the plain item carries no `PATTERN:` line and no first launch carries any. How
+/// first round rejects with two REQUIRED pattern items of different shapes, one plain item and one
+/// whose pattern is blanks alone, when `rigger run` drives the second round, whether each role
+/// resumes its session (the later-attempt task) or that session is gone (the whole prompt), then
+/// the implementer's second launch is told each pattern item's shape, trimmed, and the
+/// DecisionMade `audit-solo-1` to record it under, each review tier's second launch is told that
+/// shape and that record as the implementer's, the plain and the blank item carry no `PATTERN:`
+/// line and no first launch carries any. How
 /// the audit is done and bounded is in no task: each second launch's system prompt carries every
 /// sentence of the working-discipline built-in's bounded-audit bullet once. The fake `claude`
 /// answers each spawn from one arm keyed on the spawn id, recording what each launch received
@@ -8661,7 +8658,7 @@ fn each_later_launch_names_a_required_pattern_by_its_shape_and_audit_record_alon
     };
     use rigger::wave::normalize_ws;
     const AUDIT: &str = "audit-solo-1";
-    for (resumes, session, on_resume) in [(true, "resumed", ":"), (false, "gone", "exit 1")] {
+    for (resumes, session, on_resume) in SESSION_ROWS {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_reviewed_unit(root);
@@ -8703,16 +8700,7 @@ fn each_later_launch_names_a_required_pattern_by_its_shape_and_audit_record_alon
             ("adjudicator", review_pattern_list(AUDIT)),
         ] {
             let at = format!("{role}, its session {session}");
-            let resumed = |attempt| {
-                recorded_argv(&recorded("argv", role, attempt))
-                    .iter()
-                    .any(|word| word == "--resume")
-            };
-            assert_eq!(
-                [resumed(0), resumed(1)],
-                [false, resumes],
-                "{at}: whether the launch that answered each round resumed"
-            );
+            assert_resumed_per_round(|attempt| recorded("argv", role, attempt), resumes, &at);
             let opening = recorded_task(&recorded("first", role, 0));
             let closing = recorded_task(&recorded("first", role, 1));
             assert_eq!(
@@ -11361,7 +11349,8 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
             forked.as_str(),
             format!(
                 "This session was interrupted: rigger's supervisor restarted. Continue where you \
-                 left off.{LIVE_PROGRESS_FRAME}"
+                 left off.{}",
+                headless_progress_frame()
             ),
             cwd,
         ),
@@ -19045,7 +19034,7 @@ fn assert_setup_installs_the_planning_skill_carrying(overlay: &str, list: &str) 
     let committed = repo_text("skills/planning-a-spec/SKILL.md");
     assert_eq!(
         std::fs::read_to_string(root.join(".claude/skills/planning-a-spec/SKILL.md")).unwrap(),
-        committed.replacen("**7. ", &format!("{list}**7. "), 1),
+        common::fixtures::planning_skill_carrying(&committed, list),
         "rigger setup must install the committed planning-a-spec with the overlay's \
          constraints under step 6"
     );
@@ -19341,18 +19330,12 @@ rigger::test_cases! {
 /// root-relative path `rigger setup` reads for the project's skill copies, made a directory where
 /// a file is read (`dir`) or a file where a directory is listed, when the operator runs `rigger
 /// setup`, then it fails printing nothing on stdout and, on stderr, the one line naming that path
-/// and the error reading it gives, and installs no skill.
+/// and the error reading it gives. Setup reads the `.rigger/skills` listing, and `using-rigger`'s
+/// copy as the registry's first skill, before it installs any skill, so neither row installs one.
 fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
     let proj = temp_project();
     let root = proj.path();
-    let path = root.join(seeded);
-    let error = if dir {
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::read(&path).unwrap_err()
-    } else {
-        common::fixtures::write_files(root, &[(seeded, "not a directory\n")]);
-        std::fs::read_dir(&path).unwrap_err()
-    };
+    let error = common::fixtures::seed_unreadable_project_skill(root, seeded, dir);
     assert_eq!(
         run_rigger_envs(root, &["setup"], &[]),
         (
@@ -26183,9 +26166,8 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
 fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_not() {
     let reinstalled = "installed the graph-first lookup hook into the existing settings.json - \
                        a Grep tool call, or a `grep` command or `sed` or `awk` pattern search, \
-                       over src/, tests/, or workflows/ now bounces toward the combined lookup, \
-                       rigger_graph `lookup` (end the command with a `# --literal` comment to \
-                       proceed anyway)";
+                       anywhere, now bounces toward the combined lookup, rigger_graph `lookup` \
+                       (end the command with a `# --literal` comment to proceed anyway)";
     let removal = "removed the graph-first lookup hook: `defaults.grep_guard` is not declared";
     // (whether the workflow keeps `defaults.grep_guard`, the one lookup-hook line setup reports)
     for (declared, report) in [(true, reinstalled), (false, removal)] {
@@ -26610,8 +26592,9 @@ fn pipe_into_rigger(cwd: &Path, args: &[&str], stdin: &[u8]) -> std::process::Ou
         .spawn()
         .unwrap_or_else(|e| panic!("spawn rigger {verb}: {e}"));
     // A verb that refuses its argv before reading stdin (guard-write with no --root) may exit
-    // and close the pipe first; that write loses the race, not the test - the exit status is
-    // what the caller asserts.
+    // and close the pipe first; that write loses the race, not the test - `assert_blocks`, which
+    // drives that verb, asserts the exit status and the whole stderr, and a lost stdin write
+    // changes neither.
     match child.stdin.take().unwrap().write_all(stdin) {
         Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
             panic!("write stdin to rigger {verb}: {e}")

@@ -35,7 +35,8 @@
 //! of the panel starts with the session's grep guard exactly when the workflow declares
 //! `defaults.grep_guard`. It carries spec 121's criterion 3 (THE OPERATOR'S HELPER COPY IS THE
 //! DEFINITION) too: every spawn of the panel defines the helpers from the operator's copies the
-//! checkout holds, else from the embedded text, and pre-approves the rigger tools they declare.
+//! checkout holds as the canary starts, else from the embedded text, and pre-approves the rigger
+//! tools they declare.
 
 use crate::common;
 
@@ -57,8 +58,8 @@ use common::fixtures::{
 };
 #[cfg(unix)]
 use common::fixtures::{
-    read_text, stand_in_launches, write_helper_copies, HelperFile, CONTROL_ITEM,
-    OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
+    helper_copies_in, helper_files, read_text, stand_in_launches, write_helper_copies, HelperFile,
+    CONTROL_ITEM, OPERATOR_HELPER_COPIES, OPERATOR_HELPER_TOOLS, PROMPT_CAPTURE_DIR,
 };
 use common::git::temp_git_project_with_commit;
 use common::repo::repo_root;
@@ -279,15 +280,20 @@ fn canary_on_stub(
 #[cfg(unix)]
 fn canary_of(root: &Path, panel: &str) -> (String, String, bool) {
     write_canary_project(root, panel, CONTROL_ITEM);
-    let (out, err, ok, _capture) = canary_capturing(root);
+    let (out, err, ok, _capture) = canary_capturing(root, &[]);
     (out, err, ok)
 }
 
 /// `rigger canary` run in `root` over the real subprocess driver standing on the prompt-capture
-/// stub: its stdout, stderr and success, then the directory holding what the stub captured.
+/// stub, each launch of which writes the helper copies `mid_run` into the checkout as it runs:
+/// its stdout, stderr and success, then the directory holding what the stub captured.
 #[cfg(unix)]
-fn canary_capturing(root: &Path) -> (String, String, bool, tempfile::TempDir) {
+fn canary_capturing(
+    root: &Path,
+    mid_run: &[HelperFile],
+) -> (String, String, bool, tempfile::TempDir) {
     let capture = tempfile::tempdir().unwrap();
+    write_helper_copies(&capture.path().join("writes"), mid_run);
     let (out, err, ok) = canary_on_stub(
         root,
         ("prompt-capture-agent.sh", PROMPT_CAPTURE_DIR),
@@ -312,7 +318,7 @@ fn rigger_canary_starts_every_panel_spawn_with_the_grep_guard_exactly_when_decla
         if grep_guard {
             declare_grep_guard(root);
         }
-        let (_out, err, ok, capture) = canary_capturing(root);
+        let (_out, err, ok, capture) = canary_capturing(root, &[]);
         assert!(
             ok,
             "grep_guard {grep_guard}: the canary scores; stderr:\n{err}"
@@ -357,25 +363,42 @@ fn repeated_kind_canary_spawns() -> Vec<String> {
 /// helpers or of neither, when the operator runs `rigger canary`, then every spawn of the panel,
 /// each reviewer and the adjudicator, defines the helpers from those copies, else from the
 /// embedded text, and pre-approves exactly the rigger tools those definitions declare: the panel's
-/// agents grant none of their own, and this host serves no bound tool.
+/// agents grant none of their own, and this host serves no bound tool. The canary resolves the
+/// helpers once, as it starts, so a copy the first spawn writes into the checkout changes no
+/// spawn's launch.
 #[cfg(unix)]
 #[test]
 fn rigger_canary_hands_every_panel_spawn_the_operators_helper_copies() {
-    let rows: [(&str, &[HelperFile], &str); 2] = [
-        ("no copy", &[], EMBEDDED_HELPER_TOOLS),
+    let [lookup, _] = OPERATOR_HELPER_COPIES;
+    // Each row: the copies the checkout holds as the canary starts, the copies each spawn writes
+    // into the checkout as it runs, and the rigger tools the helpers resolved at the start declare.
+    let rows: [(&str, &[HelperFile], &[HelperFile], &str); 3] = [
+        ("no copy", &[], &[], EMBEDDED_HELPER_TOOLS),
         (
             "both copies",
             &OPERATOR_HELPER_COPIES,
+            &[],
             OPERATOR_HELPER_TOOLS,
         ),
+        (
+            "a lookup copy written mid-run",
+            &[],
+            &[lookup],
+            EMBEDDED_HELPER_TOOLS,
+        ),
     ];
-    for (name, copies, tools) in rows {
+    for (name, copies, mid_run, tools) in rows {
         let dir = temp_project();
         let root = dir.path();
         write_canary_project(root, REPEATED_KIND_LIST, CONTROL_ITEM);
         write_helper_copies(root, copies);
-        let (_out, err, ok, capture) = canary_capturing(root);
+        let (_out, err, ok, capture) = canary_capturing(root, mid_run);
         assert!(ok, "{name}: the canary scores; stderr:\n{err}");
+        assert_eq!(
+            helper_copies_in(root),
+            helper_files(&[copies, mid_run]),
+            "{name}: the checkout holds the copies it started with and those written mid-run"
+        );
         let spawns = launch_helpers(&capture.path().join("launches"));
         let expected: Vec<(String, Value, String)> = repeated_kind_canary_spawns()
             .into_iter()

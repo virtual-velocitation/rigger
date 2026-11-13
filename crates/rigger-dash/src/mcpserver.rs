@@ -1165,7 +1165,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
     use crate::prompt_surface::prompt_groups;
-    use crate::prompt_surface_fixtures::{assert_renders, registry_test, rendered_groups};
+    use crate::prompt_surface_fixtures::{assert_renders, registry_test, GroupPicks};
     use crate::test_support::stemmed_texts;
     use std::io::Cursor;
 
@@ -2209,6 +2209,7 @@ mod tests {
     /// in that order, the consts THE NAMING RULE names holding the texts it names them for.
     #[test]
     fn each_tool_list_surface_is_its_groups_concatenated() {
+        let picks = GroupPicks::new(prompt_groups());
         let surfaces = tool_surfaces();
         for ((surface, _, tools), (_, named)) in surfaces.iter().zip(rule_named(&surfaces)) {
             let held: Vec<(&str, &str)> = prompt_groups()
@@ -2228,7 +2229,7 @@ mod tests {
             assert_renders(
                 surface,
                 &descriptions(tools).concat(),
-                &rendered_groups(prompt_groups(), surface, &names),
+                &picks.rendered(surface, &names),
             );
         }
     }

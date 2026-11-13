@@ -207,7 +207,10 @@ impl ProseIndex {
             .parse_query(&query_words.join(" "))
             .map_err(|e| tantivy::TantivyError::InvalidArgument(e.to_string()))?;
         let searcher = open.reader.searcher();
-        let (top, matched) = searcher.search(&query, &(TopDocs::with_limit(PROSE_TOP), Count))?;
+        let (top, matched) = searcher.search(
+            &query,
+            &(TopDocs::with_limit(PROSE_TOP).order_by_score(), Count),
+        )?;
         let mut snippets = SnippetGenerator::create(&searcher, &*query, open.fields.body)?;
         snippets.set_max_num_chars(SNIPPET_CHARS);
         let mut hits = Vec::with_capacity(top.len());
