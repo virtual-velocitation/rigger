@@ -378,7 +378,7 @@ impl StoreSelection {
 
 /// The run's report sink ([`conductor::Deps::log`]) at this composition root: one line to stderr.
 pub(crate) fn stderr_line(line: &str) {
-    eprintln!("{line}");
+    rigger::whole_line::say(format_args!("{line}"));
 }
 
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
@@ -508,7 +508,7 @@ fn open_graph_to_read(
 ) -> Result<Projector, Box<dyn std::error::Error>> {
     let (graph, note) = graph_to_read(graph_db, project, Projector::open)?;
     if let Some(note) = note {
-        eprintln!("{note}");
+        rigger::whole_line::say(format_args!("{note}"));
     }
     Ok(graph)
 }
@@ -595,14 +595,14 @@ fn warn_if_conn_file_is_exposed(path: &Path) {
         if let Ok(meta) = std::fs::metadata(path) {
             let mode = meta.permissions().mode();
             if conn_file_is_group_or_other_readable(mode) {
-                eprintln!(
+                rigger::whole_line::say(format_args!(
                     "warning: {} is readable by other users (mode {:o}); it holds the store \
                      connection credential - restrict it to your account (chmod 600 {}) so the \
                      secret is not exposed",
                     path.display(),
                     mode & 0o777,
                     path.display()
-                );
+                ));
             }
         }
     }
@@ -880,10 +880,15 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     let Some(root) = loc.dir.parent() else {
         return;
     };
+    let skipped = |e: &dyn std::fmt::Display| {
+        rigger::whole_line::say(format_args!(
+            "rigger: instance registry refresh skipped ({e}); discovery is unaffected"
+        ))
+    };
     let project = match loc.identity() {
         Ok(project) => project,
         Err(e) => {
-            eprintln!("rigger: instance registry refresh skipped ({e}); discovery is unaffected");
+            skipped(&e);
             return;
         }
     };
@@ -897,7 +902,7 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
         },
     };
     if let Err(e) = rigger::registry::write(&dir, &inst) {
-        eprintln!("rigger: instance registry refresh skipped ({e}); discovery is unaffected");
+        skipped(&e);
     }
 }
 
@@ -1246,13 +1251,13 @@ fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
     let graph = graph.with_rebuild_lock(held);
     if let Some((n, decision)) = migrate_project_identity(&backend, &minted, &legacy, Some(&graph))?
     {
-        eprintln!(
+        rigger::whole_line::say(format_args!(
             "rigger: migrated project identity - renamed {n} stream(s) from the legacy \
              namespace {legacy:?} to the minted identity {minted:?} (.rigger/{PROJECT_ID_FILE}); \
              recorded its decision (position {}){}",
             decision.position,
             fold_clause(&decision.fold)
-        );
+        ));
     }
     Ok(())
 }
@@ -1699,12 +1704,12 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     // (`validate`'s residue scan keeps its own shadow-store warning; this is the
     // courier-time notice at the exact moment a write is about to be routed.)
     for shadow in &walk.shadows {
-        eprintln!(
+        rigger::whole_line::say(format_args!(
             "store: warning: bypassing a nearer shadow store at {} in favor of the outermost \
              store at {} (a shadow store never eclipses the real run stream)",
             shadow.display(),
             dir.display()
-        );
+        ));
     }
     Ok((StoreLocation { dir }, sel))
 }
@@ -1983,7 +1988,9 @@ fn live_branches_for_sweep(
     match read {
         Ok(events) => Some(current_run_units(&events).live_branches),
         Err(e) => {
-            eprintln!("rigger run: scratch sweep skipped (liveness unreadable): {e}");
+            rigger::whole_line::say(format_args!(
+                "rigger run: scratch sweep skipped (liveness unreadable): {e}"
+            ));
             None
         }
     }
@@ -2148,13 +2155,13 @@ fn refuse_when_base_lacks_spec_paths(
         .into());
     }
     if !absent.is_empty() {
-        eprintln!(
+        rigger::whole_line::say(format_args!(
             "{cmd}: {n} spec-referenced path(s) are absent from the base ref {base:?} (e.g. \
              {first:?}); proceeding because others are present. If the base is wrong, delete the \
              {RUN_BRANCH} branch and re-run with --base <your-branch>.",
             n = absent.len(),
             first = absent[0],
-        );
+        ));
     }
     Ok(())
 }
@@ -2749,10 +2756,10 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         println!("{line}");
     }
     if let Some(e) = drive_err {
-        eprintln!(
+        rigger::whole_line::say(format_args!(
             "rigger replay: the candidate re-drive did not complete ({e}); the candidate \
              column reflects the run up to where the recorded trajectory ran out"
-        );
+        ));
     }
     Ok(())
 }

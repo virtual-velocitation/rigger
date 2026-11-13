@@ -63,7 +63,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
     // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
-        eprintln!("{note}");
+        rigger::whole_line::say(format_args!("{note}"));
     }
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
     // 14). Resolved once; a repo-less invocation with no `RIGGER_TMPDIR`/configured `workdir`

@@ -4093,27 +4093,7 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
-
-    /// The writes a stream took, each as the bytes it carried.
-    #[derive(Default)]
-    struct Writes(Vec<Vec<u8>>);
-
-    impl Write for Writes {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.push(buf.to_vec());
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// The writes `say` hands its stream, each as the bytes it carried.
-    fn writes_of(say: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Vec<Vec<u8>> {
-        let mut out = Writes::default();
-        say(&mut out).unwrap();
-        out.0
-    }
+    use rigger_process::whole_line::writes_of;
 
     // GIVEN a line the dash, or the run that started it, says on the stderr they share, WHEN it
     // is said, THEN the line and its newline reach the stream in one write, which a pipe keeps

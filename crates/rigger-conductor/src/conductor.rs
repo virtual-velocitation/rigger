@@ -9849,7 +9849,9 @@ impl RunCtx<'_> {
     /// here closes that gap, reusing the one fence authority rather than a second notion
     /// of liveness.
     fn gc_integrated_branches(&self, rs: &ledger::RunState, events: &[Event]) {
-        self.gc_integrated_branches_logged(rs, events, &mut |line| eprintln!("{line}"));
+        self.gc_integrated_branches_logged(rs, events, &mut |line| {
+            rigger_process::whole_line::say(format_args!("{line}"))
+        });
     }
 
     /// [`Self::gc_integrated_branches`]'s real body, with its evidence lines routed

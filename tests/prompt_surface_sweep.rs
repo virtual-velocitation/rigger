@@ -297,7 +297,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "the project config's store.backend is {other:?}; only \"sqlit",
             "the server event store is selected but no connection string",
             "rigger: instance registry refresh skipped ({e}); discovery i",
-            "rigger: instance registry refresh skipped ({e}); discovery i",
             "definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}",
             "ambiguous project identity: the event store holds history un",
             "migrated project history to the durable identity: renamed {n",
