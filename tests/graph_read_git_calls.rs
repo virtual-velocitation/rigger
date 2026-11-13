@@ -253,8 +253,9 @@ fn every_layout_git_alone_sets_up_is_asked_of_git_once() {
 
 /// Lay a committed project out as `lay_out` does, build it, edit a file, and read around the
 /// other file from the checkout, under a git ceiling at the scratch directory when
-/// `under_a_ceiling`: the read answers from the checkout's own content, and its one open runs the
-/// diff and the untracked listing and the `asked` discovery commands alone.
+/// `under_a_ceiling`: the read names the checkout and its commit, answers from the checkout's own
+/// content where the build keeps a code store, and its one open runs the diff and the untracked
+/// listing and the `asked` discovery commands alone.
 fn assert_one_open_in(layout: &str, lay_out: Layout, under_a_ceiling: bool, asked: &[&str]) {
     let scratch = tempfile::tempdir().unwrap();
     let checkout = lay_out(scratch.path());
@@ -264,8 +265,17 @@ fn assert_one_open_in(layout: &str, lay_out: Layout, under_a_ceiling: bool, aske
     let envs: &[(&str, &str)] = if under_a_ceiling { &ceiling } else { &[] };
     let args = ["graph", "--around", "src/lib.rs", "--depth", "1"];
     let (out, traced) = traced_read(&checkout, &args, envs, &scratch.path().join("trace"));
+    // A build with no code store holds no fact to answer with, so its label alone names the
+    // checkout and the commit it read.
+    let label = format!(
+        "describes {} ({} + 1 file)",
+        checkout.canonicalize().unwrap().display(),
+        git_out(&checkout, &["rev-parse", "HEAD"])
+    );
     assert!(
-        out.contains("src/lib.rs::alpha") && !out.contains("enclosing"),
+        out.starts_with(&label)
+            && (!cfg!(feature = "symbols") || out.contains("src/lib.rs::alpha"))
+            && !out.contains("enclosing"),
         "{layout}: the read answers from the checkout's own content:\n{out}"
     );
     let mut expected = one_open(&checkout);
