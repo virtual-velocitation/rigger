@@ -164,7 +164,7 @@ impl ResetEnv {
                 "the store at {} has no UTF-8 owning root, so the scratch root its runs write \
                  their liveness markers and build caches under cannot be resolved; refusing \
                  rather than reading that as no live spawn",
-                loc.dir.display()
+                loc.absolute_dir().display()
             )
             .into());
         }
@@ -851,12 +851,7 @@ fn live_writer_facts(
         .registry_dir
         .as_deref()
         .map(|dir| {
-            let root = loc
-                .dir
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            let expected = registry_store_identity(selection, &root);
+            let expected = registry_store_identity(selection, &loc.owner());
             live_driver_registrations(dir, &expected, env.now_ms)
         })
         .unwrap_or(0);

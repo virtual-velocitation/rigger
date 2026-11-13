@@ -2304,12 +2304,13 @@ fn graph_build_holds_only_the_projects_own_sources_across_both_halves() {
 }
 
 /// Cold-checkout build resolves the whole-project root, not the cwd (spec 45): a `graph build`
-/// launched from a SUBDIRECTORY still folds the ENTIRE project - `cmd_graph_build` walks the git
-/// top-level (the same root a run's `deps.repo` carries), not the directory it was invoked from.
-/// The implementer's build test runs from the project root, so this guards the root-resolution
-/// seam it leaves open: a root-level source file is folded even though the build ran from a
-/// nested dir, read back through the shipped `graph --around` inspector run in that same
-/// subdirectory (so the build and the read share one store, isolating the tree-root property).
+/// launched from a SUBDIRECTORY of a project `rigger init` set up still folds the ENTIRE project -
+/// `cmd_graph_build` walks the git top-level (the same root a run's `deps.repo` carries), not the
+/// directory it was invoked from. The implementer's build test runs from the project root, so this
+/// guards the root-resolution seam it leaves open: a root-level source file is folded even though
+/// the build ran from a nested dir, read back through the shipped `graph --around` inspector run in
+/// that same subdirectory (so the build and the read share the root's one store, isolating the
+/// tree-root property).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
@@ -2322,6 +2323,7 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
     .unwrap();
     let sub = root.join("engine").join("nested");
     std::fs::create_dir_all(&sub).unwrap();
+    run_rigger_ok(root, &["init"]);
 
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(&sub, &["graph", "build"]);
@@ -2330,8 +2332,9 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
         "graph build from a subdirectory must succeed; stderr: {err}; stdout: {out}"
     );
 
-    // Read back from the SAME subdirectory (the store the subdir build wrote): the root-level
-    // combat.rs entities were folded, proving the walk rooted at the git top-level, not the cwd.
+    // Read back from the SAME subdirectory (the root's store the subdir build wrote): the
+    // root-level combat.rs entities were folded, proving the walk rooted at the git top-level, not
+    // the cwd.
     let (g, gerr, gok) = run_rigger(&sub, &["graph", "--around", "combat.rs::helper"]);
     assert!(
         gok,

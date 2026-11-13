@@ -239,8 +239,8 @@ pub(crate) fn refuse_unless_one_root(
     if repo.is_empty() {
         return Ok(());
     }
-    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
+    let cwd_canon = canonical_or_spelled(cwd);
+    let repo_canon = canonical_or_spelled(Path::new(repo));
     if cwd_canon != repo_canon {
         return Err(format!(
             "{command}: refusing - the store this command would open and the repository git \
@@ -259,8 +259,7 @@ pub(crate) fn refuse_unless_one_root(
     if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
         let scratch_repo = git_repo_at(Path::new(scratch))?;
         if !scratch_repo.is_empty() {
-            let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
-                .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
+            let scratch_repo_canon = canonical_or_spelled(Path::new(&scratch_repo));
             if scratch_repo_canon != repo_canon {
                 return Err(format!(
                     "{command}: refusing - the scratch root this command would use belongs to \

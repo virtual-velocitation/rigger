@@ -498,6 +498,15 @@ layout:
 | a clone of format 0 naming an extension git ignores there | its top | its top |
 | a checkout whose `.git` directory names a common directory | the top that common directory is the `.git` of | that top |
 
+Every command that writes the store (`graph build`, `canary`, `playbooks --rebuild`, `setup`)
+resolves it from `root` too. Run at `root`, it writes `root`'s `.rigger/`, created when absent:
+the one place a store is made. Run from a subdirectory or a linked worktree, it writes the
+`.rigger/` at `root` that `rigger init` or `rigger setup` made there, and where `root` holds none
+it refuses, naming `root` and `rigger setup` as what makes one. No command leaves a store file in
+the `.rigger/` of the directory it runs in. `rigger init` and `rigger setup` still scaffold the
+directory they run in, so a project below the repository root keeps its own instruction layer;
+its store is `root`'s.
+
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.

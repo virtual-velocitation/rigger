@@ -142,6 +142,11 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     let args = parse_canary_args(args)?;
     let corpus_dir = args.corpus_dir;
     let if_model_changed = args.if_model_changed;
+    // The one store this canary reads its drift from and records its scores to: the store a
+    // writer resolves ([`store_to_write_in`]), never one made in a directory below the root.
+    let site = Site::here();
+    let (loc, selection) = store_to_write_in(&site)?;
+    let identity = loc.identity_in(&site)?;
 
     // The drift gate (spec 13b, unit 1): with `--if-model-changed`, run the canary ONLY when a
     // tier's resolved model re-pointed since the previous run; an unchanged model runs no
@@ -149,7 +154,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // the SAME namespaced run stream `rigger validate`'s drift advisory folds, so the warning
     // and this trigger can never disagree on what "the model changed" means.
     if if_model_changed {
-        let drift = read_model_drift(&db_path("events.db"), &project_identity()?)?;
+        let drift = read_model_drift(&loc.file("events.db"), &identity)?;
         if !drift.changed() {
             println!(
                 "canary: no resolved-model change since the previous run - skipping (run \
@@ -211,15 +216,13 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // The host values every canary spawn carries, resolved once at the canary's start.
     let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new("."))?;
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
     // so the canary stream lands under the same identity `stats --canary` reads.
-    let selection = store_selection(None, None)?;
     if selection.is_sqlite() {
-        migrate_local_identity(None)?;
+        migrate_identity_at(&loc, None)?;
     }
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &project_identity()?);
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &identity);
     let driver = cli::Driver::default();
 
     // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
@@ -267,13 +270,15 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
 }
 
 /// `rigger playbooks --rebuild` (spec 13b, unit 2) - reconstruct the distilled playbook pool
-/// under `.rigger/playbooks/` from this project's recorded `LessonLearned` stream. The pool is
-/// a rebuildable PROJECTION of the log (never hand-edited state): [`playbooks::rebuild`] clears
-/// the rigger-managed pool files and re-derives every deduplicated, trigger-scoped playbook, so
-/// this command is the operator's way to regenerate the pool after new lessons land (or to
-/// recover a hand-corrupted pool). It only READS the run stream (never writes it), scoped to
-/// this project's namespace exactly as `rigger stats`/`rigger canary` read it; an absent store
-/// (a never-run project) has no lessons, so the pool rebuilds empty rather than fabricating one.
+/// under the store's `.rigger/playbooks/` from this project's recorded `LessonLearned` stream.
+/// The pool is a rebuildable PROJECTION of the log (never hand-edited state):
+/// [`playbooks::rebuild`] clears the rigger-managed pool files and re-derives every deduplicated,
+/// trigger-scoped playbook, so this command is the operator's way to regenerate the pool after new
+/// lessons land (or to recover a hand-corrupted pool). It only READS the run stream (never writes
+/// it), scoped to this project's namespace exactly as `rigger stats`/`rigger canary` read it; an
+/// absent store at the project root (a never-run project) has no lessons, so the pool rebuilds
+/// empty rather than fabricating one, and below the root a root holding no `.rigger/` is refused
+/// ([`store_to_write_in`]).
 pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
     match args {
         [flag] if flag == "--rebuild" => {}
@@ -282,22 +287,25 @@ pub(crate) fn cmd_playbooks(args: &[String]) -> Res {
         }
     }
 
-    // Migrate a pre-spec-09 namespace once so the lessons stream lands under the same
-    // identity the conductor wrote, then READ (never fabricate) this project's run stream.
-    let selection = store_selection(None, None)?;
+    // The pool is the store's own projection, so it is rebuilt beside the store a writer
+    // resolves ([`store_to_write_in`]), never in a directory below the root. Migrate a
+    // pre-spec-09 namespace once so the lessons stream lands under the same identity the
+    // conductor wrote, then READ (never fabricate) this project's run stream.
+    let site = Site::here();
+    let (loc, selection) = store_to_write_in(&site)?;
     if selection.is_sqlite() {
-        migrate_local_identity(None)?;
+        migrate_identity_at(&loc, None)?;
     }
-    let db = db_path("events.db");
+    let db = loc.file("events.db");
     let events = if !selection.log_absent(&db) {
         let backend = resolve_store(&selection, &db)?;
-        let store = Namespaced::new(backend.as_ref(), &project_identity()?);
+        let store = Namespaced::new(backend.as_ref(), &loc.identity_in(&site)?);
         store.read_stream(conductor::STREAM, 0, Direction::Forward)?
     } else {
         Vec::new()
     };
 
-    let pool_dir = Path::new(RIGGER_DIR).join(playbooks::POOL_SUBDIR);
+    let pool_dir = loc.dir.join(playbooks::POOL_SUBDIR);
     let pool = playbooks::rebuild(&events, &pool_dir)?;
     let lessons = events
         .iter()

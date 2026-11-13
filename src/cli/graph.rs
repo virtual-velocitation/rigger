@@ -633,18 +633,19 @@ fn locate_definition_extent(
 }
 
 /// `rigger graph build` - advance the project's code store to the head, from a cold checkout or
-/// a live one. It creates the store under the cwd's `.rigger/` when absent, as a run does, rather
-/// than the courier walk-up that refuses a missing store, and records nothing in the log: the
-/// code half is the snapshot the advance writes, never an event. The light lane compiles no
-/// extractor and keeps no code store, so there `graph build` creates the store, says so and exits
-/// 0.
+/// a live one. It writes the store a writer resolves ([`store_to_write_in`]): at the project root
+/// the root's `.rigger/`, created when absent as a run does; from a subdirectory or a linked
+/// worktree the `.rigger/` at the project root, refusing where the root holds none. It records
+/// nothing in the log: the code half is the snapshot the advance writes, never an event. The light
+/// lane compiles no extractor and keeps no code store, so there `graph build` creates the store,
+/// says so and exits 0.
 fn cmd_graph_build(_args: &[String]) -> Res {
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let selection = store_selection(None, None)?;
-    resolve_store(&selection, &db_path("events.db"))?;
+    let site = Site::here();
+    let (loc, selection) = store_to_write_in(&site)?;
+    resolve_store(&selection, &loc.file("events.db"))?;
     open_graph(
-        &db_path("graph.db"),
-        &project_identity()?,
+        &loc.file("graph.db"),
+        &loc.identity_in(&site)?,
         &selection,
         "graph build",
     )?;

@@ -304,6 +304,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{command}: refusing to run in {top}: git records no main che",
             "{command}: refusing to run from inside a linked worktree ({l",
             "no rigger store found: neither {} nor any parent directory h",
+            "no rigger store at {}, the one store {} resolves to: run `ri",
             "the working directory cannot be read: {why}",
             "store: warning: bypassing a nearer shadow store at {} in fav",
             "result: note: no spawn request is recorded for {id:?}; recor",

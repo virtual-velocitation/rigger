@@ -876,19 +876,13 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     // ambient side channel that fence exists to close. A fenced gate sees strictly less ambient
     // state, never more - the registry is ambient state, so a fenced courier skips it entirely
     // rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
-    if let Ok(fenced) = std::env::var(STORE_FENCE_ENV) {
-        if !fenced.trim().is_empty() {
-            return;
-        }
+    if store_fence().is_some() {
+        return;
     }
     let Some(dir) = rigger::registry::default_dir() else {
         return; // homeless environment: degrade to a no-op, exactly like register_run_instance
     };
-    // `loc.dir` is always `<root>/.rigger` (see `StoreLocation`/`require_store_dir`); a missing
-    // parent is the same pathological case `StoreLocation::identity` already degrades from.
-    let Some(root) = loc.dir.parent() else {
-        return;
-    };
+    let root = loc.owner();
     let skipped = |e: &dyn std::fmt::Display| {
         rigger::whole_line::say(format_args!(
             "rigger: instance registry refresh skipped ({e}); discovery is unaffected"
@@ -904,7 +898,7 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     let inst = rigger::registry::Instance {
         project,
         root: root.to_string_lossy().into_owned(),
-        store: registry_store_identity(selection, root),
+        store: registry_store_identity(selection, &root),
         heartbeat_ms: rigger::registry::now_ms(),
         writer: rigger::registry::Writer::Courier {
             driver_heartbeat_ms: None,
@@ -1246,13 +1240,9 @@ fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
     if !Path::new(&store_path).is_file() {
         return Ok(()); // a fresh project: no history to migrate
     }
-    // ONE root for both halves of the comparison. A `.rigger` with no parent is pathological (the
-    // resolved dir is always `<root>/.rigger`), and it falls back to the cwd exactly as
-    // [`StoreLocation::identity`] does, so the two can never disagree about which root they mean.
-    let root = match loc.dir.parent() {
-        Some(root) => root.to_path_buf(),
-        None => std::env::current_dir()?,
-    };
+    // ONE root for both halves of the comparison, the one [`StoreLocation::identity`] binds to,
+    // so the two can never disagree about which root they mean.
+    let root = loc.owner();
     let minted = project_identity_at(&root)?;
     let legacy = legacy_identity_at(&root)?;
     if minted == legacy {
@@ -1301,8 +1291,8 @@ struct StoreWalk {
 /// return the OUTERMOST as the chosen store together with any nearer shadows it bypassed
 /// (see [`StoreWalk`]).
 ///
-/// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
-/// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
+/// The walk is BOUNDED at the main-repo root governing `start` ([`Site::main_root`]): the
+/// sanctioned walk-up case is a courier inside a nested git worktree
 /// of THIS project, and an unbounded walk lets a courier in a storeless nested repo bind
 /// to a PARENT project's store and write into a foreign run stream with exit-0 success
 /// (adversary finding adv9-walkup-cross-project, empirically proven). Outside any git
@@ -1616,9 +1606,8 @@ fn main_worktree_or_refuse(site: &Site, command: &str) -> Result<String, String>
     let Some(main_root) = site.main_root()? else {
         return Ok(toplevel);
     };
-    let main_canon = std::fs::canonicalize(&main_root).unwrap_or_else(|_| main_root.clone());
-    let top_canon =
-        std::fs::canonicalize(Path::new(&toplevel)).unwrap_or_else(|_| PathBuf::from(&toplevel));
+    let main_canon = canonical_or_spelled(&main_root);
+    let top_canon = canonical_or_spelled(Path::new(&toplevel));
     if main_canon == top_canon {
         return Ok(toplevel);
     }
@@ -1654,7 +1643,9 @@ fn run_stream_of(identity: &str) -> String {
 /// stays parked (spec 05's charter defect). [`identity`](Self::identity) anchors identity
 /// at the resolved root instead, so the write lands in the stream the conductor reads.
 struct StoreLocation {
-    /// The `.rigger` store directory (`<root>/.rigger`) resolved by walking up the cwd.
+    /// The `.rigger` store directory (`<root>/.rigger`) resolved by walking up the cwd, or
+    /// `.rigger` relative to the cwd where a writer at the project root resolved it
+    /// ([`store_to_write_in`]).
     dir: PathBuf,
 }
 
@@ -1691,18 +1682,33 @@ impl StoreLocation {
     /// the conductor reads, never a `proj-<worktree>-run` misfile (spec 05). An error when git
     /// refuses inside the repository holding the store ([`project_identity_at`]).
     fn identity(&self) -> Result<String, String> {
-        self.identity_in(&Site::of(self.dir.parent().unwrap_or(Path::new(""))))
+        self.identity_in(&Site::of(&self.owner()))
     }
 
     /// [`identity`](Self::identity), with the owning root's git top-level read from the
     /// discovery of `site`, the site the store was resolved from ([`Site::toplevel_of`]).
     fn identity_in(&self, site: &Site) -> Result<String, String> {
-        match self.dir.parent() {
-            Some(root) => Ok(project_identity_from(&site.toplevel_of(root)?, root)),
-            // A `.rigger` with no parent is pathological (the resolved dir is always
-            // `<root>/.rigger` from an absolute cwd); fall back to the cwd-anchored identity.
-            None => project_identity(),
-        }
+        let root = self.owner();
+        Ok(project_identity_from(&site.toplevel_of(&root)?, &root))
+    }
+
+    /// This store's directory as an absolute path: `dir` itself, or `dir` under the cwd where it
+    /// is spelled relative to it, as a writer at the project root spells it
+    /// ([`store_to_write_in`]).
+    fn absolute_dir(&self) -> PathBuf {
+        cwd().join(&self.dir)
+    }
+
+    /// The store's OWNING ROOT: the directory its `.rigger/` lies in ([`absolute_dir`]'s
+    /// parent), or the cwd for a directory with none, which no resolution yields. Every reading of
+    /// the owning root - [`identity`](Self::identity), [`repo_root`](Self::repo_root), the
+    /// identity migration ([`migrate_identity_at`]) and the registry refresh - is this one.
+    ///
+    /// [`absolute_dir`]: Self::absolute_dir
+    fn owner(&self) -> PathBuf {
+        self.absolute_dir()
+            .parent()
+            .map_or_else(cwd, Path::to_path_buf)
     }
 
     /// The repo root this store lives under (spec 83, criterion 2): the SAME OWNING root
@@ -1713,15 +1719,10 @@ impl StoreLocation {
     /// (always run from the repo root) touches a spawn's liveness marker under; resolving the
     /// scratch root from that raw cwd instead of this owning root makes `rigger status`/`rigger
     /// watch` read back "no marker" for an agent that is demonstrably alive and heartbeating
-    /// (spec 83's Problem statement). Empty when `dir` has no parent (pathological - the
-    /// resolved dir is always `<root>/.rigger`), mirroring [`identity`](Self::identity)'s own
-    /// fallback shape.
+    /// (spec 83's Problem statement). Empty when the owning root ([`owner`](Self::owner)) has no
+    /// UTF-8 path.
     fn repo_root(&self) -> String {
-        self.dir
-            .parent()
-            .and_then(|p| p.to_str())
-            .map(String::from)
-            .unwrap_or_default()
+        self.owner().to_str().map(String::from).unwrap_or_default()
     }
 }
 
@@ -1804,32 +1805,12 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
 fn require_store_dir_in(
     site: &Site,
 ) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
-    // The gate store fence (spec 70 criterion 3): the gate runner (`gate::ExecRunner::run`)
-    // pins STORE_FENCE_ENV around a unit-worktree gate's spawned process so a store-opening
-    // courier command IT runs (a test invoking `rigger emit`/`result`/`peers`)
-    // resolves to the fenced scratch dir named here, never walking up into the repo's LIVE
-    // run stream. Checked BEFORE store_selection/the walk so a fenced courier never even
-    // reads the real backend config or touches the ambient filesystem above `cwd` - a
-    // fenced gate sees strictly less ambient state, never more. Additive and defaulted
-    // off: unset (every caller that is not a gate's own spawned process), resolution is
-    // byte-identical to before this fence existed.
-    if let Ok(fenced) = std::env::var(STORE_FENCE_ENV) {
-        let fenced = fenced.trim();
-        if !fenced.is_empty() {
-            let dir = PathBuf::from(fenced);
-            // The fenced location is a scratch sibling ExecRunner names but never
-            // creates (it must not create it INSIDE target_dir, which cargo owns and
-            // may wipe - see ExecRunner::run). A store-opening courier that resolves
-            // here is about to `Store::open` a path inside it; sqlite/rusqlite refuses
-            // to create a database file in a directory that does not yet exist, so an
-            // uncreated fence would fail every fenced courier outright instead of
-            // landing it in an isolated EMPTY store - the opposite of "isolate more".
-            // Creating it here (the one store-resolution authority every courier
-            // funnels through) covers every current and future caller of this env var
-            // uniformly, not just ExecRunner's specific choice of path.
-            std::fs::create_dir_all(&dir)?;
-            return Ok((StoreLocation { dir }, StoreSelection::Sqlite));
-        }
+    // Checked BEFORE store_selection/the walk so a fenced courier never even reads the real
+    // backend config or touches the ambient filesystem above `cwd` - a fenced gate sees strictly
+    // less ambient state, never more. Unset (every caller that is not a gate's own spawned
+    // process), resolution is byte-identical to before this fence existed.
+    if let Some(fenced) = fenced_store()? {
+        return Ok(fenced);
     }
     let sel = store_selection_in(site, None, None)?;
     let cwd = site.located()?;
@@ -1868,6 +1849,74 @@ fn require_store_dir_in(
         ));
     }
     Ok((StoreLocation { dir }, sel))
+}
+
+/// The directory the gate store fence names (spec 70 criterion 3), when [`STORE_FENCE_ENV`] is set
+/// and not blank: the gate runner (`gate::ExecRunner::run`) pins it around a unit-worktree gate's
+/// spawned process, so a store-opening command that process runs (a test invoking `rigger
+/// emit`/`result`/`peers`) resolves to that scratch directory, never to the repository's LIVE
+/// store.
+fn store_fence() -> Option<PathBuf> {
+    let fenced = std::env::var(STORE_FENCE_ENV).ok()?;
+    let fenced = fenced.trim();
+    (!fenced.is_empty()).then(|| PathBuf::from(fenced))
+}
+
+/// The fenced store ([`store_fence`]), its directory created, under the local sqlite selection;
+/// `None` when no fence is set. The fenced location is a scratch sibling ExecRunner names but never
+/// creates (it must not create it INSIDE target_dir, which cargo owns and may wipe - see
+/// ExecRunner::run), and sqlite refuses to create a database file in a directory that does not yet
+/// exist, so an uncreated fence would fail every fenced command outright instead of landing it in
+/// an isolated EMPTY store. Creating it here, in the one helper every store resolution that honours
+/// the fence funnels through, covers every caller of the variable alike.
+fn fenced_store() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
+    let Some(dir) = store_fence() else {
+        return Ok(None);
+    };
+    std::fs::create_dir_all(&dir)?;
+    Ok(Some((StoreLocation { dir }, StoreSelection::Sqlite)))
+}
+
+/// The store a command that WRITES it (`graph build`, `canary`, `playbooks --rebuild`, `setup`)
+/// uses, resolved from `site`, the cwd's ([`Site::here`]). At the project root
+/// ([`Site::project_root`]) it is the root's own `.rigger/`, made when absent and spelled relative
+/// to the cwd: the one place a store is created. Anywhere else (a subdirectory, a linked worktree)
+/// it is the fenced store where a gate set one ([`fenced_store`]), else the `.rigger/` at the
+/// project root, which `rigger init` or `rigger setup` made there; where the root holds none it
+/// refuses, naming the root and `rigger setup`, so a writer never makes a store in the directory it
+/// runs in below the root.
+fn store_to_write_in(
+    site: &Site,
+) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    let here = site.located()?;
+    let root = site.project_root()?;
+    let dir = if canonical_or_spelled(here) == canonical_or_spelled(&root) {
+        let dir = PathBuf::from(RIGGER_DIR);
+        std::fs::create_dir_all(&dir)?;
+        dir
+    } else if let Some(fenced) = fenced_store()? {
+        return Ok(fenced);
+    } else {
+        let dir = root.join(RIGGER_DIR);
+        if !dir.is_dir() {
+            return Err(format!(
+                "no rigger store at {}, the one store {} resolves to: run `rigger setup` in {} to \
+                 make it; no command makes a store anywhere else",
+                dir.display(),
+                here.display(),
+                root.display()
+            )
+            .into());
+        }
+        dir
+    };
+    Ok((StoreLocation { dir }, store_selection_in(site, None, None)?))
+}
+
+/// `dir` as the filesystem resolves it (symbolic links and `..` segments followed), or as spelled
+/// where it cannot be resolved: the one form two directories are compared in.
+fn canonical_or_spelled(dir: &Path) -> PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 /// `act` over this project's run store: the `events.db` log of the store [`require_store_dir`]
