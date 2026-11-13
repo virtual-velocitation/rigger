@@ -285,16 +285,20 @@ enum Met {
     Nothing,
 }
 
+/// `start` as git takes it: an empty `start` is the current directory, as `git -C ""` takes it.
+fn as_git_takes(start: &Path) -> &Path {
+    if start.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        start
+    }
+}
+
 /// Walks up from `start` as git does: from its physical path, never into a ceiling of `reach`
 /// that is a proper ancestor, and never onto another device unless `reach` crosses devices
 /// (a device this OS does not report is never a boundary, which can only lengthen the walk).
 fn walk(start: &Path, reach: &Reach) -> Met {
-    // An empty `start` is the current directory, as `git -C ""` takes it.
-    let start = if start.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        start
-    };
+    let start = as_git_takes(start);
     let physical = match std::fs::canonicalize(start) {
         Ok(physical) => physical,
         Err(e) if e.kind() == ErrorKind::NotFound => return Met::Nothing,
@@ -936,12 +940,7 @@ fn repository_asked(start: &Path, out: &[u8]) -> Result<Repository, &'static str
     let [toplevel, git_dir, common, prefix] = text.split('\n').collect::<Vec<_>>()[..] else {
         return Err(NO_REPOSITORY);
     };
-    // An empty `start` is the current directory, as `git -C ""` takes it.
-    let start = if start.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        start
-    };
+    let start = as_git_takes(start);
     let physical = |path: &Path| std::fs::canonicalize(path).map_err(|_| NO_REPOSITORY);
     let common_dir = physical(&start.join(common))?;
     let recorded = std::fs::read(common_dir.join("config"))
