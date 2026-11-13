@@ -645,12 +645,13 @@ let kgTests = (function () {
 // registry projection and is NEVER threaded - it lists every instance regardless of the selection.
 // Every graph read goes through here, so the graph header states what the graph on show describes:
 // the label of the read that answered it, or why no graph could be read (spec 6.1). The server sends
-// both beside the body, percent-encoded; a reply carrying neither leaves the header as it was.
-async function graphFetch(path) {
+// both beside the body, percent-encoded; a reply carrying neither, or answering a read `live` says a
+// newer one superseded (kgLatest), leaves the header as it was.
+async function graphFetch(path, live) {
   const resp = await fetch(apiUrl(path), { cache: "no-store" });
   const label = resp.headers.get("X-Rigger-Graph-Label");
   const error = resp.headers.get("X-Rigger-Graph-Error");
-  if (label !== null || error !== null) {
+  if (live() && (label !== null || error !== null)) {
     kgUnread = error !== null ? decodeURIComponent(error) : null;
     const box = el("kglabel");
     box.textContent = decodeURIComponent(error !== null ? error : label);
@@ -658,6 +659,15 @@ async function graphFetch(path) {
     box.hidden = false;
   }
   return resp;
+}
+
+// A sequence of graph reads of which only the latest answers: `next()` starts a read and answers its
+// check, true while no later read of the sequence has started, so a reply landing after a newer request
+// is dropped whole; `now()` answers the check of the latest read started, for a read made on its behalf.
+function kgLatest() {
+  let latest = 0;
+  const check = (ask) => () => ask === latest;
+  return { next: () => check(++latest), now: () => check(latest) };
 }
 
 // Why the graph on show could not be read, as the header states it, or null when it was read; set
@@ -1106,11 +1116,11 @@ function renderCard(card, body) {
     + '<div class="kgcard-prov">' + prov + '</div>' + rows + '</div>';
 }
 
-// The card request the dock answers: the latest request's number (a card that lands after a newer
-// request - another subject carded, or the card hidden - is dropped, so a slow card never opens over
-// a later view), the subject it asked for and under which graph-read params, and whether its answer
-// is still awaited.
-let kgCardAsk = 0;
+// The card requests the dock answers, of which only the latest answers (a card that lands after a
+// newer request - another subject carded, or the card hidden - is dropped, so a slow card never opens
+// over a later view), the subject the latest asked for and under which graph-read params, and whether
+// its answer is still awaited.
+const kgCardReads = kgLatest();
 let kgCardSubject = null;
 let kgCardAsked = null;
 let kgCardAwaited = false;
@@ -1129,7 +1139,7 @@ async function loadCard(id, fresh) {
   // The subject under the params every graph read carries now (the tests filter, the instance).
   const asked = LIVE && id ? id + "\n" + apiUrl("/api/graph") : null;
   if (asked !== null && asked === kgCardAsked && (kgCardAwaited || !fresh)) return;
-  const ask = ++kgCardAsk;
+  const live = kgCardReads.next();
   if (asked === null || id !== kgCardSubject) renderCard(null);
   kgCardSubject = asked === null ? null : id;
   kgCardAsked = asked;
@@ -1137,9 +1147,9 @@ async function loadCard(id, fresh) {
   if (asked === null) return;
   let answer = null;
   try {
-    answer = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
+    answer = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id), live)).json();
   } catch (e) { /* no card: the dock hides */ }
-  if (ask !== kgCardAsk) return;
+  if (!live()) return;
   kgCardAwaited = false;
   const dock = el("kgcard");
   const shown = !!dock && !dock.hidden;
@@ -1163,6 +1173,7 @@ function onLensPick(lens) {
 // lens= is explicitly present, so this composition fires exactly here; a lens-absent seed request stays
 // the byte-identical spec-30 neighborhood. A static export / failed fetch degrades to a message.
 async function reprojectSubject(subject) {
+  const live = kgViewReads.next();
   kgSubject = subject;
   kgSeed = null;
   syncSubjectLens();
@@ -1171,14 +1182,9 @@ async function reprojectSubject(subject) {
       + '<div class="empty">the subject re-projection is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const rp = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
-      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution))).json();
-    await overlayFor(rp.nodes);
-    renderReprojection(rp);
-  } catch (e) {
-    showKgMessage('<div class="empty">the subject re-projection is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
+    + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution), live),
+    (rp) => renderReprojection(rp), '<div class="empty">the subject re-projection is unavailable</div>');
 }
 
 // Draw a SUBJECT x LENS re-projection (the /api/graph?seed=&lens= body, spec 55 c1/c2): the subject's
@@ -1251,22 +1257,24 @@ function renderReprojection(rp) {
 }
 
 // Fetch the rationale for a view's nodes when the overlay is ON (a no-op when off), so a freshly
-// fetched view carries its badges without a second round-trip. Best-effort inside loadRationale.
-async function overlayFor(nodes) {
-  if (kgOverlay) await loadRationale(nodes || []);
+// fetched view carries its badges without a second round-trip, as part of the view read `live`.
+// Best-effort inside loadRationale.
+async function overlayFor(nodes, live) {
+  if (kgOverlay) await loadRationale(nodes || [], live);
 }
 
 // Batch-fetch the rationale for the visible nodes over the c3 data path - GET /api/graph?explain=
 // <id>[,<id>...] in ONE request - and key it by node id (spec 55 c4). Only nodes carrying a decision /
 // finding / lesson come back, so the client badges exactly those and no others. A static export /
-// empty node set / failed fetch leaves the overlay empty, never an error.
-async function loadRationale(nodes) {
+// empty node set / failed fetch leaves the overlay empty, never an error. `live` is the check of the
+// view read it is made for (kgLatest).
+async function loadRationale(nodes, live) {
   kgRationale = {};
   const ids = (nodes || []).map(n => n.id).filter(Boolean);
   if (!LIVE || !ids.length) return;
   try {
     const body = await (await graphFetch("/api/graph?explain="
-      + ids.map(encodeURIComponent).join(","))).json();
+      + ids.map(encodeURIComponent).join(","), live)).json();
     (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
   } catch (e) { /* the overlay is best-effort; no badges on failure */ }
 }
@@ -1311,7 +1319,7 @@ async function setOverlay(on) {
   kgOverlay = on;
   syncOverlayToggle();
   const nodes = (kgViewData && kgViewData.nodes) || [];
-  if (on) await loadRationale(nodes);
+  if (on) await loadRationale(nodes, kgViewReads.now());
   else { kgRationale = {}; kgShown.open.clear(); }
   rerenderCurrentView();
 }
@@ -1454,6 +1462,7 @@ function renderGraph(g) {
 // seed is encodeURIComponent'd because a graph node id carries `#` / `::` / `/` (the route
 // percent-decodes it back). A failed/absent fetch degrades to a message, never an error.
 async function seedGraph(seed) {
+  const live = kgViewReads.next();
   kgSeed = seed;
   // FOCUS this node as the subject (spec 55 c4): reveal the subject-sticky lens control so a lens flip
   // re-projects THIS subject. State-only; the neighborhood render below stays byte-identical.
@@ -1465,13 +1474,8 @@ async function seedGraph(seed) {
       + '<div class="empty">the knowledge-graph neighborhood is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2")).json();
-    await overlayFor(g.nodes);
-    renderGraph(g);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2", live),
+    (g) => renderGraph(g), '<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
 }
 
 // Highlight the QUERY-PATH (spec 30 c6) from the current seed to a SECOND selected node `target`: the
@@ -1482,14 +1486,10 @@ async function seedGraph(seed) {
 async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
-  try {
-    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target))).json();
-    await overlayFor(g.nodes);
-    renderGraph(g);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
-  }
+  const live = kgViewReads.next();
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+    + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target), live),
+    (g) => renderGraph(g), '<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -2425,51 +2425,62 @@ function showKgMessage(html) {
   el("kgpanel").innerHTML = html;
 }
 
+// The panel's view reads (the overview, a drill, a re-projection, a seeded neighborhood, a path, a call
+// walk): each supersedes any still in flight, so the panel draws the view asked for last.
+const kgViewReads = kgLatest();
+
+// Draw the view the read `reply` answers for the view read `live` with `draw`, its rationale read first
+// while the overlay is on, or show the message `failed` when the read fails. A read a newer one
+// superseded draws, reads and shows nothing.
+async function kgReadView(live, reply, draw, failed) {
+  try {
+    const body = await (await reply).json();
+    if (!live()) return;
+    await overlayFor(body.nodes, live);
+    if (live()) draw(body);
+  } catch (e) {
+    if (live()) showKgMessage(failed);
+  }
+}
+
 // Load the whole-graph clustered OVERVIEW - the DEFAULT KG view (spec 42 c5). Fetches the no-argument
 // /api/graph route (the c4 default). A static export has no server, so it says so; a failed fetch
 // degrades to a message. The panel never throws. It also CLEARS the focused subject (spec 55 c4): the
 // whole-graph overview is the subject-less altitude, so the subject-sticky lens control is re-hidden.
 async function loadKgOverview() {
+  const live = kgViewReads.next();
   kgSeed = null;
   kgSubject = null; syncSubjectLens();
   if (!LIVE) {
     showKgMessage('<div class="empty">the whole-graph explorer is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
-    // under a derived lens; the files lens sends no lens param, so the request - and the response -
-    // stay byte-identical.
-    const q = (kgLens === "code" || kgLens === "concepts")
-      ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
-      : "";
-    const ov = await (await graphFetch("/api/graph" + q)).json();
-    renderKgOverview(ov);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge graph is unavailable</div>');
-  }
+  // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
+  // under a derived lens; the files lens sends no lens param, so the request - and the response -
+  // stay byte-identical.
+  const q = (kgLens === "code" || kgLens === "concepts")
+    ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+    : "";
+  await kgReadView(live, graphFetch("/api/graph" + q, live), (ov) => renderKgOverview(ov),
+    '<div class="empty">the knowledge graph is unavailable</div>');
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
 // module key carries `/`) and render its members. A static export / failed fetch degrades to a message.
 async function drillCluster(key) {
+  const live = kgViewReads.next();
   kgSeed = null;
   if (!LIVE) {
     showKgMessage('<div class="empty">cluster drill is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
-    // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
-    const q = (kgLens === "code" || kgLens === "concepts")
-      ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
-      : "";
-    const nb = await (await graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q)).json();
-    await overlayFor(nb.nodes);
-    renderKgDrill(nb);
-  } catch (e) {
-    showKgMessage('<div class="empty">the cluster is unavailable</div>');
-  }
+  // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
+  // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
+  const q = (kgLens === "code" || kgLens === "concepts")
+    ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+    : "";
+  await kgReadView(live, graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q, live),
+    (nb) => renderKgDrill(nb), '<div class="empty">the cluster is unavailable</div>');
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -2488,6 +2499,7 @@ let kgCallsDir = "down";
 // shared `kgSeed` in sync so the rest of the panel wiring has a current seed. A static export / failed
 // fetch degrades to a message; the panel never throws.
 async function seedCalls(seed, dir) {
+  const live = kgViewReads.next();
   kgCallsDir = dir || "down";
   kgSeed = seed;
   if (!LIVE) {
@@ -2495,14 +2507,9 @@ async function seedCalls(seed, dir) {
       + '<div class="empty">the directed-call views are available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const cg = await (await graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
-      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6")).json();
-    await overlayFor(cg.nodes);
-    renderKgCalls(cg);
-  } catch (e) {
-    showKgMessage('<div class="empty">the directed-call view is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+    + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6", live),
+    (cg) => renderKgCalls(cg), '<div class="empty">the directed-call view is unavailable</div>');
 }
 
 // Draw a directed-call DAG (the c4 `view=calls` body): the layered left-to-right graph through the
