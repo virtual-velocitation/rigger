@@ -600,6 +600,45 @@ mod tests {
         }
     }
 
+    /// A PATH ONLY THE STAGING NAME FITS IS REFUSED: GIVEN a final socket path longer than any OS
+    /// allows a socket but whose shorter staging name would fit, THEN binding answers
+    /// `InvalidInput` naming the path and creates nothing, rather than placing a socket no client
+    /// can connect to.
+    #[test]
+    fn a_final_path_over_the_limit_that_its_staging_name_fits_is_refused_and_creates_nothing() {
+        let runtime = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let measured = socket_path_under(&runtime.path().join("p"), repo.path()).unwrap();
+        let pad = 109usize.saturating_sub(measured.as_os_str().len()) + 1;
+        let long = runtime.path().join("p".repeat(pad));
+        std::fs::create_dir_all(&long).unwrap();
+        let path = socket_path_under(&long, repo.path()).unwrap();
+        assert_eq!(
+            path.as_os_str().len(),
+            109,
+            "the path is over every OS limit"
+        );
+        // A successful bind is dropped, never served, so a wrongly accepted path fails the
+        // assertion rather than hanging a serving loop.
+        let bound = GateSocket::bind(&path);
+        let err = match bound {
+            Ok(socket) => {
+                drop(socket);
+                panic!("a path no client can connect to was bound");
+            }
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+        assert!(
+            err.to_string().contains(&path.display().to_string()),
+            "{err}"
+        );
+        assert!(
+            !path.parent().unwrap().exists(),
+            "nothing is created for a path that cannot be bound"
+        );
+    }
+
     /// THE DRIVER'S ADDRESS WINS: GIVEN `RIGGER_GATE_SOCKET` set to an absolute path, THEN the
     /// verb asks there whatever the runtime directory derives; unset or empty, it derives the
     /// path as the operator's own shell does; set to a relative path, it is refused naming the
