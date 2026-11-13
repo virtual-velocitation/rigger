@@ -1230,11 +1230,9 @@ function renderReprojection(rp) {
       + shared.map(s => '<span class="kgsharedmember' + marks.cls({ id: s }) + '">' + esc(s)
         + marks.tag({ id: s }) + '</span>').join(", ") + '</div>' : '';
   if (!clusters.length) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = toolbar
-        + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
-        + unresolvedSection + sharedSection;
-    });
+    kgWritePanel(toolbar
+      + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+      + unresolvedSection + sharedSection);
     return;
   }
   const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
@@ -1405,8 +1403,7 @@ function renderGraph(g) {
         + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
     + '</div>' + callsOffer;
   if (!nodes.length && !edges.length) {
-    el("kgpanel").innerHTML = head
-      + kgNothingDrawn('<div class="empty">no knowledge-graph neighborhood for this node</div>');
+    kgWritePanel(head + kgNothingDrawn('<div class="empty">no knowledge-graph neighborhood for this node</div>'));
     return;
   }
   // c7 TIER FILTER: one checkbox per confidence tier, checked when that tier is currently VISIBLE.
@@ -1450,12 +1447,12 @@ function renderGraph(g) {
         ).join("") || '<div class="empty">no recorded provenance</div>')
       + '</div>'
     : "";
-  el("kgpanel").innerHTML = head + tierToggles
+  kgWritePanel(head + tierToggles
     + '<div class="kgcols">'
     + '<div><h3>Nodes</h3>' + nodeList + '</div>'
     + '<div><h3>Edges (tier-tagged)</h3>' + edgeList + '</div>'
     + '</div>'
-    + provSection;
+    + provSection);
 }
 
 // Set the KG seed to `seed` and fetch its neighborhood from the read-only GET /api/graph route. The
@@ -1552,14 +1549,15 @@ function kgSurface() {
 
 // The drawing box the drawing's slot shows at the height it has now: its surface's width, and the
 // height the panel's content box leaves below what the view puts above the drawing - its toolbar,
-// wrapped to however many lines the width needs, and any caption. A room under 200px keeps a 200px
-// drawing, and the panel scrolls. A surface with no width yet (a panel not laid out) draws at 800px,
-// and the panel's size observer redraws it once it has one.
+// wrapped to however many lines the width needs, and any caption, measured from the top of the panel's
+// content however far it is scrolled. A room under 200px keeps a 200px drawing, and the panel
+// scrolls. A surface with no width yet (a panel not laid out) draws at 800px, and the panel's size
+// observer redraws it once it has one.
 function kgMeasure() {
   const p = el("kgpanel");
   const slot = kgSurface();
   const w = slot.width || 800;
-  const above = slot.top - (p.getBoundingClientRect().top + p.clientTop);
+  const above = slot.top - (p.getBoundingClientRect().top + p.clientTop) + p.scrollTop;
   const h = Math.max(200, Math.floor(p.clientHeight - parseFloat(getComputedStyle(p).paddingBottom) - above));
   return { w: w, h: h };
 }
@@ -1583,10 +1581,10 @@ function kgDims() {
 // markup `below`. A view the user has not moved opens fitted. A moved one drawn again (the held body,
 // with what the panel shows of it now) keeps where the user moved it: its marks are laid out at the
 // size they were laid out at, so each lands where it was under the kept transform, and only its
-// surface takes the box measured now (kgResurface). The grain box keeps the focus and the caret the
-// user holds in it (kgKeepingFocus).
+// surface takes the box measured now (kgResurface). The panel keeps its scroll and the control holding
+// the focus through both writes (kgKeepingPlace).
 function kgDraw(above, draw, below) {
-  kgKeepingFocus(panel => {
+  kgKeepingPlace(panel => {
     panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
     const dims = kgDims();
     const laid = kgViewMoved ? kgDrawn.laid : null;
@@ -1596,17 +1594,35 @@ function kgDraw(above, draw, below) {
   bindKgView();
 }
 
-// Replace the panel's markup with `write`, the grain box keeping the focus and the caret the user holds
-// in it, as a box the browser never replaced keeps them: the box the new markup writes takes them back.
-// The focus anywhere else, or a markup holding no grain box, is left as the write leaves it.
-function kgKeepingFocus(write) {
-  const panel = el("kgpanel"), held = kgGrainBoxFocused();
-  const caret = held ? [held.selectionStart, held.selectionEnd] : null;
+// Write the markup `html` into the panel, keeping what the user holds in it (kgKeepingPlace).
+function kgWritePanel(html) {
+  kgKeepingPlace(panel => { panel.innerHTML = html; });
+}
+
+// Replace the panel's markup with `write`, keeping what the user holds in it as a panel the browser
+// never replaced keeps it: its scroll, as far as the new markup reaches, and the keyboard focus on a
+// control in it (a lens tab, the grain box, a tier checkbox, a back link), which the control the new
+// markup writes with the same tag and data attributes takes back, a text box with its caret. A focus
+// outside the panel, or on a control the new markup does not write again, is left as the write
+// leaves it.
+function kgKeepingPlace(write) {
+  const panel = el("kgpanel"), held = document.activeElement, scroll = panel.scrollTop;
+  const key = held && panel.contains(held) ? kgControlKey(held) : null;
+  const caret = key && typeof held.selectionStart === "number" ? [held.selectionStart, held.selectionEnd] : null;
   write(panel);
-  const box = caret && panel.querySelector("[data-lens-res]");
-  if (!box) return;
-  box.focus({ preventScroll: true });
-  box.setSelectionRange(caret[0], caret[1]);
+  panel.scrollTop = scroll;
+  const back = key && panel.querySelector(key);
+  if (!back) return;
+  back.focus({ preventScroll: true });
+  if (caret) back.setSelectionRange(caret[0], caret[1]);
+}
+
+// The selector that finds the control `c` again in a new markup of the panel: its tag and each data
+// attribute it carries, or null for a control that carries none.
+function kgControlKey(c) {
+  const marks = Array.from(c.attributes).filter(a => a.name.startsWith("data-"))
+    .map(a => "[" + a.name + '="' + CSS.escape(a.value) + '"]').join("");
+  return marks ? c.localName + marks : null;
 }
 
 // The panel's grain box while it holds the focus, else null.
@@ -2284,17 +2300,13 @@ function renderKgOverview(ov) {
   // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
   // and keep the lens selector so the operator can switch back to files or another grain.
   if (ov && ov.empty_state) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-        + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
-    });
+    kgWritePanel('<div class="kgtoolbar">' + controls + '</div>'
+      + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>'));
     return;
   }
   if (!clusters.length) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-        + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
-    });
+    kgWritePanel('<div class="kgtoolbar">' + controls + '</div>'
+      + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>'));
     return;
   }
   // A code-lens community super-node carries its deterministic display `label` (its highest-degree
@@ -2340,7 +2352,7 @@ function commitGrain(text) {
 // The grain box `res` committed, by its change, by Enter or by leaving it: asked once the event is
 // done, and only while the box is still in the page. A box the panel's markup replaces was not
 // committed by the user: a browser may send it change and focusout as it goes, while it is still in
-// the page, and its draft and focus pass to the box written in its place (kgKeepingFocus).
+// the page, and its draft and focus pass to the box written in its place (kgKeepingPlace).
 function grainCommitted(res) {
   Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
 }
@@ -2350,7 +2362,7 @@ function grainCommitted(res) {
 // kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
 // grain, each re-loading the overview; the active lens is marked. The box shows the grain being typed
 // (kgShown.grain) over the one the view reads, so a redraw keeps the draft, and every markup holding the
-// box is written keeping its focus and caret (kgKeepingFocus).
+// box is written keeping its focus and caret (kgKeepingPlace).
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
@@ -2383,8 +2395,8 @@ function renderKgDrill(nb) {
   setSubjectPanes(null, kgLens === "files" || kgLens === "concepts" ? key : null, fresh);
   const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
   if (!nodes.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
-      + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>');
+    kgWritePanel('<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
+      + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>'));
     return;
   }
   const cap = (nb && nb.truncated)
@@ -2440,7 +2452,7 @@ function railOf(subject) {
 function showKgMessage(html) {
   setSubjectPanes(null, null);
   holdKgView(kgMode, null);
-  el("kgpanel").innerHTML = html;
+  kgWritePanel(html);
 }
 
 // The panel's view reads (the overview, a drill, a re-projection, a seeded neighborhood, a path, a call
@@ -2556,8 +2568,7 @@ function renderKgCalls(cg) {
     + esc(seed) + '</b>' + switcher + '</div>'
     + '<div id="kgfrontier" class="kgfrontier">' + frontierChoices(kgShown.choices) + '</div>';
   if (!nodes.length) {
-    el("kgpanel").innerHTML = head
-      + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
+    kgWritePanel(head + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>'));
     return;
   }
   // HIGH FAN-OUT cap (spec 52 c5): a single layer with more callees/callers than the render budget
