@@ -5939,27 +5939,29 @@ mod tests {
             .unwrap_or_else(|| panic!("the explorer holds #{id}"))
     }
 
-    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card, THEN
-    /// each is absolutely positioned against a box that does not hold the explorer's header, so
-    /// neither covers the header or its controls (the lens control, the label, the toggles and the
-    /// tests state) in any view. Layout is outside what the page harness can run, so this pins the
-    /// box each docks against.
+    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card (a body
+    /// with room for both), THEN each is absolutely positioned against a box that does not hold
+    /// the explorer's header, so neither covers the header or its controls (the lens control, the
+    /// label, the toggles and the tests state) in any view. Layout is outside what the page
+    /// harness can run, so this pins the box each docks against.
     #[test]
     fn the_rail_and_the_card_dock_below_the_explorer_header() {
         let page = live_page();
-        let markup = explorer_markup(&page);
+        let style = ExplorerStyle::read(&page);
+        let wide = style.layout(true, true, 1400.0);
+        let markup = &style.markup;
         let positioned = |e: &Element, how: &[&str]| {
             rules_of(&page, e).iter().any(|rule| {
                 how.iter()
                     .any(|value| rule.contains(&format!("position: {value}")))
             })
         };
-        let header = explorer_index(&markup, "kghead");
-        for docked in ["kgrail", "kgcard"] {
-            let at = explorer_index(&markup, docked);
+        let header = explorer_index(markup, "kghead");
+        for (docked, side) in [("kgrail", "right"), ("kgcard", "left")] {
+            let at = explorer_index(markup, docked);
             assert!(
-                positioned(&markup[at], &["absolute"]),
-                "#{docked} docks absolutely"
+                matches!(wide.pane(docked, side), Some(Some(_))),
+                "#{docked} docks absolutely in a body with room for it"
             );
             let block = markup[at]
                 .ancestors

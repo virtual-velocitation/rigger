@@ -69,18 +69,20 @@
      hold the remaining half and scroll INTERNALLY, so the whole dashboard fits one screen with no
      page overflow. */
   #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; }
-  /* The explorer's body below its header: position:relative so the docked memory rail (spec 63 c5,
-     .kgrail) and the metadata card (spec 63 c2, .kgcard) are position:absolute WITHIN it, scoped to
-     its bounds, so neither covers the header above. Each pane's width is declared once here, and a
-     shown pane takes that column from #kgpanel's own box (the margin on the pane's side), so no
-     drawn node, list row or panel control ever sits under a pane, wherever the pane's top lands.
-     Each pane precedes #kgpanel in the markup so the sibling selector can read its hidden state. A
-     view sets its panes before it draws, so its drawing is laid out once in the room they leave. */
+  /* The explorer's body below its header: a column holding the metadata card (spec 63 c2,
+     .kgcard), the memory rail (spec 63 c5, .kgrail) and #kgpanel, in that order. A shown pane
+     stacks above the panel at the body's full width, unless the body has room to DOCK the shown
+     panes beside the panel: then each is position:absolute within the body (relative, so neither
+     covers the header above), the card on the left and the rail on the right, and takes its
+     column from #kgpanel's own box (the margin on the pane's side), so no drawn node, list row or
+     panel control ever sits under a pane. The panes dock only where their columns leave the panel
+     at least the 320px kgDims draws at (see the @container rules after .kgcard); the body is a size
+     container, so the room it actually has decides, whatever the viewport. Each pane's width is
+     declared once here, and each precedes #kgpanel so the sibling selectors can read its hidden
+     state. A view sets its panes before it draws, so its drawing is laid out in the room they leave. */
   .kgbody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative;
-    --kgrail-w: min(260px, 42%); --kgcard-w: min(280px, 46%); }
+    container: kgbody / inline-size; --kgrail-w: 260px; --kgcard-w: 280px; }
   .kgbody > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  #kgrail:not([hidden]) ~ #kgpanel { margin-right: var(--kgrail-w); }
-  #kgcard:not([hidden]) ~ #kgpanel { margin-left: calc(var(--kgcard-w) + 8px); }
   .columns { flex: 1 1 0; min-height: 0; display: flex; gap: 16px; }
   .columns > .col { flex: 1 1 46%; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
   /* Narrow screens: drop the fixed one-screen layout and allow normal page scroll. */
@@ -360,16 +362,14 @@
   .kgunresolved { margin-top: 6px; }
   .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
   .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
-  /* The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely
-     positioned WITHIN .kgbody (never a flex sibling), docked right in the column it takes from the
-     panel while it shows (see .kgbody), so it never inserts a node and never covers one.
-     Lists the focused subject's governing decisions/findings/concepts as scrollable cards; hidden
-     with no subject focused (mirrors .kgsubjectlens). Its top is the bottom edge of the panel's
-     last control row (the box's top with none drawn), by an explicit anchor() rather than a
-     default anchor, so it stays put when the panel scrolls; the plain top is for a browser
-     without anchors. */
-  .kgrail { position: absolute; top: 0; top: anchor(--kgcontrols bottom, 0px);
-    right: 0; bottom: 0; width: var(--kgrail-w);
+  /* The SUBJECT VIEW's MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, stacked above it or
+     docked right in the column it takes from the panel (see .kgbody), so it never inserts a node
+     and never covers one. Lists the focused subject's governing decisions/findings/concepts as
+     scrollable cards; hidden with no subject focused (mirrors .kgsubjectlens). Docked, its top is
+     the bottom edge of the panel's last control row (the box's top with none drawn), by an
+     explicit anchor() rather than a default anchor, so it stays put when the panel scrolls; the
+     plain top is for a browser without anchors. */
+  .kgrail { top: 0; top: anchor(--kgcontrols bottom, 0px); right: 0; bottom: 0;
     overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
   .kgrail[hidden] { display: none; }
@@ -379,19 +379,34 @@
   .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
   .kgrail-card b { display: block; color: var(--ink); }
   /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
-     so populating it never touches the panel's own rendered nodes/edges. Docks LEFT (the memory
-     rail docks right) so a code subject's card and its rail can show together without
-     overlapping, each in the column it takes from the panel (see .kgbody), so the card never
-     covers a node. Hidden with no subject carded. Its top sits just below the panel's last
-     control row, anchored the same way as the rail's.
-     #kgcard is the DOCK: inset at both ends, so it spans exactly the room left in .kgbody, a
-     column that lets clicks through. The visible card (.kgcard-body) inside keeps its
+     so populating it never touches the panel's own rendered nodes/edges. Stacked, it sits first,
+     above the rail; docked, it docks LEFT (the memory rail docks right) so a code subject's card
+     and its rail can show together without overlapping, each in the column it takes from the
+     panel (see .kgbody), so the card never covers a node. Hidden with no subject carded. Docked,
+     its top sits just below the panel's last control row, anchored the same way as the rail's.
+     #kgcard is the DOCK: docked, it is inset at both ends, so it spans exactly the room left in
+     .kgbody, a column that lets clicks through. The visible card (.kgcard-body) inside keeps its
      content height up to the dock's and scrolls past that, so a long card never runs past the
      explorer's bottom over the sections below. */
-  .kgcard { position: absolute; top: 8px; top: calc(anchor(--kgcontrols bottom, 0px) + 8px);
-    bottom: 8px; left: 8px; width: var(--kgcard-w); display: flex; flex-direction: column;
-    pointer-events: none; z-index: 2; }
+  .kgcard { top: 8px; top: calc(anchor(--kgcontrols bottom, 0px) + 8px); bottom: 8px; left: 8px;
+    display: flex; flex-direction: column; pointer-events: none; z-index: 2; }
   .kgcard[hidden] { display: none; }
+  /* DOCKING (see .kgbody): a lone rail docks from a 580px body (the 320px kgDims draws at plus
+     the rail's 260px column), a lone card from 608px (320 plus its 8px inset and 280px width), the
+     two together from 868px; below that every shown pane stays stacked and the panel keeps the
+     body's whole width. The thresholds are those sums, so the panel never has less than 320px. */
+  @container kgbody (width >= 580px) {
+    .kgrail { position: absolute; width: var(--kgrail-w); }
+    #kgrail:not([hidden]) ~ #kgpanel { margin-right: var(--kgrail-w); }
+  }
+  @container kgbody (width >= 608px) {
+    .kgcard { position: absolute; width: var(--kgcard-w); }
+    #kgcard:not([hidden]) ~ #kgpanel { margin-left: calc(var(--kgcard-w) + 8px); }
+  }
+  @container kgbody (width < 868px) {
+    #kgcard:has(~ #kgrail:not([hidden])), #kgcard:not([hidden]) ~ #kgrail { position: static; width: auto; }
+    #kgcard:not([hidden]) ~ #kgrail:not([hidden]) ~ #kgpanel { margin: 0; }
+  }
   .kgcard-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; pointer-events: auto;
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
@@ -447,18 +462,19 @@
         <span class="kgteststate" id="kgtestsstate" hidden></span>
       </span>
     </div>
-    <!-- The body below the header: the two panes and the panel beside them, so a docked pane
-         never covers the header's controls. The panes come first so a shown pane's column is
-         taken from the panel by a sibling selector (see .kgbody). -->
+    <!-- The body below the header: the two panes and the panel, the panes stacked above the
+         panel or docked beside it (see .kgbody), so a pane never covers the header's controls.
+         The panes come first so a shown pane's column is taken from the panel by a sibling
+         selector. -->
     <div class="kgbody">
-      <!-- The docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely positioned so
-           populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
-           focused (a plain node click), exactly like #kgsubjectlens. -->
-      <div class="kgrail" id="kgrail" hidden></div>
-      <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, absolutely positioned so
-           populating it never touches the panel's own rendered nodes/edges - hidden until a subject
-           is carded (a plain node click, or a files/concepts cluster click). -->
+      <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, so populating it never
+           touches the panel's own rendered nodes/edges - hidden until a subject is carded (a plain
+           node click, or a files/concepts cluster click). -->
       <div class="kgcard" id="kgcard" hidden></div>
+      <!-- The MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, so populating it never
+           touches the panel's own rendered nodes/edges - hidden until a subject is focused (a
+           plain node click), exactly like #kgsubjectlens. -->
+      <div class="kgrail" id="kgrail" hidden></div>
       <div class="kg" id="kgpanel">
         <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
       </div>
