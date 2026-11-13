@@ -5678,34 +5678,6 @@ mod tests {
             layout.values.get_mut().clear();
             layout
         }
-
-        /// The value the stylesheet's last top-level rule selecting the page's root (`html` or
-        /// `:root`) declares for `property`. The root is no box the layout model places, so a
-        /// rule under an at-rule declaring it panics.
-        fn root(&self, property: &str) -> Option<String> {
-            let mut value = None;
-            for rule in &self.rules {
-                if !rule
-                    .selectors
-                    .iter()
-                    .any(|s| matches!(*s, "html" | ":root"))
-                {
-                    continue;
-                }
-                for (name, declared) in &rule.declarations {
-                    if let Some(set) = longhand(name, declared, property) {
-                        assert!(
-                            rule.at.is_none(),
-                            "the layout model reads the root's {property} at the top level only: \
-                             {:?}",
-                            rule.text
-                        );
-                        value = Some(set);
-                    }
-                }
-            }
-            value
-        }
     }
 
     /// The width a classic scrollbar takes beside what it scrolls (Firefox on Linux draws 12px,
@@ -5950,27 +5922,67 @@ mod tests {
                 .expect("a viewport length is read only in a layout made for a viewport")
         }
 
-        /// The width the page's scrollbar takes from the viewport when the page `overflows` it or
-        /// fits it: the viewport scrolls by the root's overflow, or by the body's when the root's
-        /// is `visible` (the body's propagates), reading `visible` as `auto` and `clip` as
-        /// `hidden`; it takes a classic scrollbar's [`SCROLLBAR`] when it shows one (`scroll`, or
-        /// `auto` and the page overflows) or when the root keeps the gutter (`scrollbar-gutter:
-        /// stable`), and none otherwise.
-        fn scrollbar(&self, overflows: bool) -> f64 {
+        /// The value the stylesheet's last rule selecting the page's root (`html` or `:root`)
+        /// whose at-rule holds declares for `property`: a top-level rule, or one under `@media`
+        /// when the viewport's width meets it. The root is no box the layout model places, so a
+        /// rule under any other at-rule declaring it panics.
+        fn root(&self, property: &str) -> Option<String> {
+            let body = self.index_where(|e| e.tag == "body");
+            let mut value = None;
+            for rule in &self.style.rules {
+                if !rule
+                    .selectors
+                    .iter()
+                    .any(|s| matches!(*s, "html" | ":root"))
+                {
+                    continue;
+                }
+                for (name, declared) in &rule.declarations {
+                    if let Some(set) = longhand(name, declared, property) {
+                        assert!(
+                            rule.at.is_none_or(|at| at.starts_with("@media")),
+                            "the layout model reads the root's {property} at the top level or \
+                             under @media only: {:?}",
+                            rule.text
+                        );
+                        if self.condition_holds(rule, body) {
+                            value = Some(set);
+                        }
+                    }
+                }
+            }
+            value
+        }
+
+        /// How the page's viewport scrolls: by the root's overflow, or by the body's when the
+        /// root's is `visible` (the body's propagates), reading `visible` as `auto` and `clip` as
+        /// `hidden`.
+        fn viewport_overflow(&self) -> &'static str {
             let body = self.index_where(|e| e.tag == "body");
             let overflow = self
-                .style
                 .root("overflow-y")
                 .filter(|o| o != "visible")
                 .or_else(|| self.value(body, "overflow-y"))
                 .unwrap_or_else(|| "visible".to_string());
-            let shows = match overflow.as_str() {
-                "scroll" => true,
-                "auto" | "visible" => overflows,
-                "hidden" | "clip" => false,
+            match overflow.as_str() {
+                "scroll" => "scroll",
+                "auto" | "visible" => "auto",
+                "hidden" | "clip" => "hidden",
                 other => panic!("the layout model reads no overflow {other:?} on the viewport"),
+            }
+        }
+
+        /// The width the page's scrollbar takes from the viewport when the page `overflows` it or
+        /// fits it: a classic scrollbar's [`SCROLLBAR`] when the viewport shows one (it scrolls
+        /// by `scroll`, or by `auto` and the page overflows, [`Self::viewport_overflow`]) or when
+        /// the root keeps the gutter (`scrollbar-gutter: stable`), and none otherwise.
+        fn scrollbar(&self, overflows: bool) -> f64 {
+            let shows = match self.viewport_overflow() {
+                "scroll" => true,
+                "auto" => overflows,
+                _ => false,
             };
-            let gutter = self.style.root("scrollbar-gutter");
+            let gutter = self.root("scrollbar-gutter");
             let kept = match gutter.as_deref() {
                 None | Some("auto") => false,
                 Some(stable) if stable.starts_with("stable") => true,
@@ -6978,10 +6990,16 @@ mod tests {
     /// screen's, with the rail, the card, both or neither shown, on a platform whose scrollbar
     /// takes room beside what it scrolls ([`SCROLLBAR`]), THEN the explorer body's width, and
     /// with it where each pane sits, is the same whether the page fits the viewport or overflows
-    /// it: the body's width is one function of the viewport's, so whether the panes dock never
+    /// it: where the page scrolls (the narrow layout, whose stacked panes can make it overflow)
+    /// the body's width is one function of the viewport's, so whether the panes dock never
     /// depends on whether stacked panes made the page overflow, nor on the order a view and a
-    /// resize arrived in. Layout is outside what the page harness can run, so this lays the page
-    /// out by its own stylesheet at each viewport width from 320px to 1600px.
+    /// resize arrived in; and where the page never scrolls (the wide layout, 1400px among it) it
+    /// keeps no gutter for a scrollbar it never shows, so the page reads the whole viewport. The
+    /// media query choosing the layout reads the viewport's width with any scrollbar in it, so
+    /// the gutter one side of it keeps cannot move a viewport across it: the widths either side
+    /// of the boundary are among those laid out. Layout is outside what the page harness can
+    /// run, so this lays the page out by its own stylesheet at each viewport width from 320px
+    /// to 1600px.
     #[test]
     fn where_a_pane_sits_does_not_depend_on_whether_the_page_overflows() {
         let page = live_page();
@@ -6997,13 +7015,27 @@ mod tests {
                             layout.pane("kgrail", "right"),
                             layout.pane("kgcard", "left"),
                         );
-                        (layout.body, sits)
+                        let scrolls = layout.viewport_overflow() != "hidden";
+                        (layout.body, sits, scrolls, layout.scrollbar(overflows))
                     });
                     assert_eq!(
                         fits, overflows,
                         "with {shown} shown in a {wide}x{tall} viewport the explorer body's width \
                          and where its panes sit are the same whether the page fits the viewport \
                          or overflows it"
+                    );
+                    let (.., scrolls, scrollbar) = fits;
+                    assert!(
+                        scrolls || scrollbar == 0.0,
+                        "with {shown} shown in a {wide}x{tall} viewport the page never scrolls, so \
+                         it keeps no gutter: it reads {} of the viewport's {wide}px",
+                        wide - scrollbar
+                    );
+                    assert!(
+                        wide != 1400.0 || (!scrolls && wide - scrollbar == 1400.0),
+                        "with {shown} shown in a 1400x{tall} viewport the wide layout never \
+                         scrolls and the page reads all 1400px, not {}",
+                        wide - scrollbar
                     );
                 }
             }
