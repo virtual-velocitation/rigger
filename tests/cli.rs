@@ -19507,7 +19507,7 @@ rigger::test_cases! {
 /// root-relative path `rigger setup` reads for the project's skill copies, made a directory where
 /// a file is read (`dir`) or a file where a directory is listed, when the operator runs `rigger
 /// setup`, then it fails printing nothing on stdout and, on stderr, the one line naming that path
-/// and the error reading it gives. Setup reads the `.rigger/skills` listing, and `using-rigger`'s
+/// under the directory setup runs in and the error reading it gives. Setup reads the `.rigger/skills` listing, and `using-rigger`'s
 /// copy as the registry's first skill, before it installs any skill, so neither row installs one.
 fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
     let proj = temp_project();
@@ -19519,7 +19519,7 @@ fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
             String::new(),
             format!(
                 "rigger: setup: reading {}: {error}\n",
-                Path::new(".").join(seeded).display()
+                root.canonicalize().unwrap().join(seeded).display()
             ),
             false,
         ),

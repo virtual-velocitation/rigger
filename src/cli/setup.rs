@@ -529,7 +529,8 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 }
 
 pub(crate) fn cmd_init() -> Res {
-    let report = init_project(Path::new("."), TEMPLATE_SETS)?;
+    let site = Site::here();
+    let report = init_project(site.located()?, TEMPLATE_SETS)?;
     let lines = scaffold_summary_lines(&report);
     if lines.is_empty() {
         // Re-runnable: an already-initialized project is a silent no-op with a plain
@@ -812,8 +813,9 @@ pub(crate) fn open_project_code_store(
 /// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
-    let root = Path::new(".");
     let site = Site::here();
+    // The directory setup scaffolds: the one it runs in, as the resolver read it.
+    let root = site.located()?;
     // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
     // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
     // resolved before setup writes anything, so where that root holds none setup is refused
