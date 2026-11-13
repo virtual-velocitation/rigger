@@ -9007,7 +9007,10 @@ mod tests {
         let [(file, lookup), _] = crate::test_support::OPERATOR_HELPER_COPIES;
         let edited = lookup.replace("model: sonnet", "model: opus");
         let remove = |root: &Path| std::fs::remove_file(root.join(".claude/agents").join(file));
-        let rows: [(&str, &dyn Fn(&Path), &dyn Fn(&Path)); 3] = [
+        // A step over the project's root, writing or removing its copy.
+        type Step<'a> = &'a dyn Fn(&Path);
+        // Each row: the step to the rev, then the step to the head.
+        let rows: [(&str, Step, Step); 3] = [
             (
                 "the head edits the copy the rev tracks",
                 &|root| write_helper_copy(root, file, lookup),
