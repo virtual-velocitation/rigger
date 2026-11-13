@@ -1744,6 +1744,74 @@ rigger::test_cases! {
     the_grain_input_shows_the_grain_the_view_displays: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, GRAIN_DRIVER, "dash-grain-shown-harness.js"), "OK the-grain-input-shows-the-grain-displayed");
 }
 
+/// Driver: on a fresh page, the derived read `__FIRST__` names comes first, then the operator
+/// empties the code overview's grain box. Neither read names a grain: the server reads its default
+/// grain, its reply names the grain it displays (`7` here, a grain no copy in the page could hold),
+/// and the box shows that grain.
+const DEFAULT_GRAIN_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const SERVED = "7";
+  const asked = [];
+  const named = function(u){ const m = u.match(/[?&]resolution=([^&]*)/); return m ? decodeURIComponent(m[1]) : ""; };
+  __reply = function(u){
+    if (u.indexOf("card=") !== -1) return {};
+    if (u.indexOf("lens=") === -1) return { clusters: [], edges: [], total: 0 };
+    asked.push(u);
+    const grain = named(u) || SERVED;
+    const key = (u.indexOf("lens=concepts") !== -1 ? "concept/" : "community/") + grain + "/0";
+    return { subject: "src/a.rs", clusters: [{ key: key, count: 1, kind: "code-entity" }], edges: [],
+      total: 1, grain: grain };
+  };
+  const shown = function(){
+    const m = el("kgpanel")._html.match(/class="kgres"[^>]*value="([^"]*)"/);
+    return m ? m[1] : null;
+  };
+  const emptied = async function(){
+    kgLens = "code";
+    const box = { value: "", dataset: {}, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
+    el("kgpanel")._listeners.change.forEach(function(fn){ fn({ target: box }); });
+    await flush();
+  };
+  const steps = [__FIRST__, ["the code overview with its grain box emptied", emptied, SERVED]];
+  for (const [step, act, box] of steps) {
+    const before = asked.length;
+    await act();
+    await flush();
+    if (asked.length === before) throw new Error(step + ": no derived read was asked");
+    const u = asked[asked.length - 1];
+    if (named(u) !== "")
+      throw new Error("REGRESSION: " + step + " asked for grain " + JSON.stringify(named(u))
+        + ", which the operator never chose: " + u);
+    if (box !== null && shown() !== box)
+      throw new Error("REGRESSION: after " + step + " the grain box shows " + JSON.stringify(shown())
+        + ", not the grain the reply displays " + JSON.stringify(box));
+  }
+  console.log("OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// The [`DEFAULT_GRAIN_DRIVER`] harness whose first derived read is `first`, a `[step, act, box]`
+/// row whose `box` is the grain the box then shows, or `null` for a view that draws no box.
+fn default_grain_harness(first: &str) -> String {
+    common::served::vm_harness(
+        LABEL_SHIM,
+        &DEFAULT_GRAIN_DRIVER.replace("__FIRST__", first),
+        "dash-default-grain-harness.js",
+    )
+}
+
+rigger::test_cases! {
+    /// RUNTIME guard: the derived lenses' default grain has one definition, the server's. A fresh
+    /// page's first overview and an emptied grain box ask for no grain, and the box shows the grain
+    /// the reply displays.
+    a_fresh_page_s_first_derived_overview_asks_for_no_grain: node_harness_passes(&default_grain_harness(r#"["the first code overview of a fresh page", function(){ kgLens = "code"; return loadKgOverview(); }, SERVED]"#), "OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
+    /// RUNTIME guard: a fresh page's first re-projection under a derived lens asks for no grain
+    /// either.
+    a_fresh_page_s_first_derived_re_projection_asks_for_no_grain: node_harness_passes(&default_grain_harness(r#"["the first concepts re-projection of a fresh page", function(){ kgLens = "concepts"; return reprojectSubject("src/a.rs"); }, null]"#), "OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
+}
+
 /// A node program loading the served page into a fresh realm per load over a browser store the
 /// loads share, so a second load is a reload in the same browser. It steps the explorer's tests
 /// toggle through the header's own click dispatch and records, per load, the toggle's text and the
