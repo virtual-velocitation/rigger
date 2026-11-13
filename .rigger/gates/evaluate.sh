@@ -16,8 +16,8 @@
 # Usage: sh .rigger/gates/evaluate.sh <measure|evidence|check|emit|run> [args]
 #   measure [run] [out]  write the run file from docs/evaluation/TEMPLATE.md: the scorecard, the
 #                        comparison with the baseline and the last five run files, and the
-#                        previous run file's adopted proposal scored. Refuses to overwrite a
-#                        file. Prints the file's path.
+#                        previous run file's adopted proposal scored (its metric, then each
+#                        metric its `also` lists). Refuses to overwrite a file. Prints the path.
 #   evidence [run]       print the evaluator's three sources as JSON: the failures (rejects, gate
 #                        failures, other failures, escalations and deferred gate failures, each
 #                        with its measured rework), the cost (time by unit, label, battery and
@@ -62,6 +62,9 @@
 #   - a binary proposal is of form `gate`: rigger is language and process agnostic, so the binary
 #     gains no gate, and a gate is this repository's own, on the `gate` or `workflow` surface;
 #   - "adopted" is not null, "none" or one of the file's proposal ids;
+#   - a proposal's optional `also` (the other metrics an adopted change is predicted to move) is
+#     not a list of {metric, predicted_move}, each a scorecard number or a by-map key and a
+#     non-zero move;
 #   - the previous block differs from what measure computes from the previous run file.
 # WHY format only: the operator judges content when adopting at most one proposal; the script
 # makes every proposal scorable and every number reproducible, nothing more.
@@ -943,9 +946,23 @@ def score_previous(card, previous_path):
     was, now = metric_value(blocks.get("scorecard"), metric), metric_value(card, metric)
     move = round(now - was, 3) if is_number(was) and is_number(now) else None
     kept = is_number(predicted) and move not in (None, 0) and (move > 0) == (predicted > 0)
-    return {"file": previous_path.name, "adopted": adopted, "class": proposal.get("class"),
-            "metric": metric, "predicted_move": predicted, "before": was, "after": now,
-            "actual_move": move, "verdict": "kept" if kept else "reverted"}
+    scored = {"file": previous_path.name, "adopted": adopted, "class": proposal.get("class"),
+              "metric": metric, "predicted_move": predicted, "before": was, "after": now,
+              "actual_move": move, "verdict": "kept" if kept else "reverted"}
+    # The other metrics the adopted change was predicted to move (a gate it adds, say) are
+    # scored beside its own; the verdict stays its own metric's.
+    if isinstance(proposal.get("also"), list):
+        scored["also"] = []
+        for side in proposal["also"]:
+            side = side if isinstance(side, dict) else {}
+            before = metric_value(blocks.get("scorecard"), side.get("metric"))
+            after = metric_value(card, side.get("metric"))
+            scored["also"].append({
+                "metric": side.get("metric"), "predicted_move": side.get("predicted_move"),
+                "before": before, "after": after,
+                "actual_move": round(after - before, 3)
+                if is_number(before) and is_number(after) else None})
+    return scored
 
 
 def baseline_of(directory):
@@ -1145,6 +1162,15 @@ def check_proposal(i, p, slugs, recurring, card, problems):
                         "scorecard")
     if not is_number(p.get("predicted_move")) or p["predicted_move"] == 0:
         problems.append(f"{name}: predicted_move is not a non-zero number")
+    if "also" in p:
+        sides = p["also"] if isinstance(p["also"], list) else [None]
+        for side in sides:
+            side = side if isinstance(side, dict) else {}
+            if metric_value(card, side.get("metric")) is None \
+                    or not is_number(side.get("predicted_move")) or side["predicted_move"] == 0:
+                problems.append(f"{name}: `also` is a list of {{metric, predicted_move}}, each "
+                                "metric a scorecard number or a by-map key and each move non-zero")
+                break
     if source == "cost":
         if head not in COST_HOURS + COST_SHARES:
             problems.append(f"{name}: a cost class's metric is a time measure ("

@@ -15,6 +15,7 @@ Run these from the operator checkout, after the check-in has merged and before t
 4. Adopt at most one proposal:
    - Set `"adopted"` in the proposals block to its id, or to `"none"`.
    - Make the change and commit both. A `binary` or `spec-skill` change is the spec its `path` names, run like any other spec.
+   - When the adopted change differs from the proposal, rewrite its `change`, `predicted_move` and `hours_saved` to match what was made, and list under `also` each other metric the change is predicted to move, such as the cost of a gate it adds.
    - The next run's file scores it.
 
 `measure` and `evidence` also read a run that has not landed; the scorecard's `labels.run` then reads `interim`. While a run is live, point `EVALUATE_DB` and `EVALUATE_PROGRESS` at a copy of the store files (each database with its `-wal` and `-shm`, copied together), never at the live stores.
@@ -64,6 +65,7 @@ A grep-fallbacks class is a habit gap when the graph could answer and the agent 
 | `metric` | a measured scorecard key, or `<map>.<key>` of a by-map. A cost class's metric is a time measure (`hours_by_label`, `gate_hours_by_gate`, `repeated_hours`, `unit_elapsed_hours`, `time_shares`, `gates_share` or `post_merge_gates_share`); a grep-fallbacks class's is `grep_fallbacks` or `grep_fallbacks_by_target`. |
 | `predicted_move` | the signed move in the metric's units. A cost proposal lowers its metric by at most the value it holds. |
 | `hours_saved` | the hours per run the change removes, the ranking key; null for a grep-fallbacks class, which ranks last |
+| `also` | optional: `[{metric, predicted_move}]`, the other metrics the change is predicted to move, each named and signed as `metric` and `predicted_move` are. The next file scores each beside the proposal's own metric; the verdict stays the proposal's own. |
 
 ## Rules
 
