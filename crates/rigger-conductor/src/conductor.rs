@@ -20784,6 +20784,49 @@ mod tests {
         );
     }
 
+    /// Every proposed unit takes its fan-out template's `partition` and `on_pass`, as the baseline
+    /// it supersedes does, on each path a proposal reaches the DAG: superseding a baseline (u-a),
+    /// a same-id refine (u-a re-emitted) and a genuinely-new unmatched sub-unit (u-new).
+    #[test]
+    fn harvest_proposed_gives_every_proposed_unit_its_templates_partition_and_on_pass() {
+        let crit_a = "criterion A: the alpha module is implemented";
+        let mut cfg = supersede_cfg(); // template "implement" carries on_pass: merge
+        cfg.workflow.stages.get_mut("implement").unwrap().partition = "by-blast-radius".into();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string()]);
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+        // (proposals appended before the harvest, as (id, matched), the units then checked)
+        type Step<'a> = (&'a [(&'a str, bool)], &'a [&'a str]);
+        let steps: &[Step] = &[
+            (&[("u-a", true)], &["u-a"]),
+            (&[("u-a", true), ("u-new", false)], &["u-a", "u-new"]),
+        ];
+        for (proposals, checked) in steps {
+            for &(id, matched) in *proposals {
+                let (criterion, cid) = if matched {
+                    (crit_a, Some(criterion_stable_id(1, crit_a)))
+                } else {
+                    ("an entirely separate concern the spec never lists", None)
+                };
+                append_gated_proposal(&st, id, criterion, cid, "ok");
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+                .unwrap();
+            for id in *checked {
+                let unit = &stages[*id];
+                assert_eq!(
+                    (unit.partition.as_str(), unit.on_pass.as_str()),
+                    ("by-blast-radius", "merge"),
+                    "{id} must carry its template's partition and on_pass after {proposals:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn harvest_proposed_gate_inheritance_survives_a_resumed_window() {
         // spec 103 criterion 1: "a resumed window re-derives the same list." The
@@ -42445,6 +42488,18 @@ mod tests {
             );
         }
         let store = Store::open(":memory:").unwrap();
+        record_radii(&store, recorded);
+        let deps = Deps {
+            grounder: Some(grounder),
+            ..stub_deps(&store, probe, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        drive_one_wave(&ctx, &cfg.workflow.stages, &ready, parked)
+    }
+
+    /// Append a `BlastRadiusComputed` to `store` for each `recorded` `(unit, safe files)`.
+    fn record_radii(store: &Store, recorded: &[(&str, &[&str])]) {
         for (unit, safe) in recorded {
             let payload = json!({ "id": unit, "unit": unit, "precise": [], "safe": safe });
             let e = Event::new(
@@ -42453,18 +42508,21 @@ mod tests {
             );
             store.append(STREAM, ExpectedRevision::Any, &[e]).unwrap();
         }
-        let deps = Deps {
-            grounder: Some(grounder),
-            ..stub_deps(&store, probe, Vec::new())
-        };
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let stages = cfg.workflow.stages.clone();
-        let ready: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    }
+
+    /// Drive ONE `run_wave` call under `ctx` over the `ready` units of `stages`, with the units
+    /// `parked` already in flight from an earlier wave; returns the stages the call integrated.
+    fn drive_one_wave(
+        ctx: &RunCtx<'_>,
+        stages: &BTreeMap<String, Stage>,
+        ready: &[String],
+        parked: &[&str],
+    ) -> HashSet<String> {
         let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
         let mut in_flight: HashSet<String> = parked.iter().map(|p| p.to_string()).collect();
         ctx.run_wave(
-            &stages,
-            &ready,
+            stages,
+            ready,
             None,
             &mut integrated,
             &mut terminal,
@@ -42472,6 +42530,93 @@ mod tests {
         )
         .unwrap();
         integrated
+    }
+
+    /// A planner-proposed unit is scheduled under the partition its fan-out template declares,
+    /// as the baseline it supersedes would be: over a wave of proposed units only, whose recorded
+    /// radii share a file, the rule is in force exactly when the template's partition (else
+    /// `defaults.partition`) is `by-blast-radius`, and then the two units never run side by side.
+    #[test]
+    fn run_wave_schedules_proposed_units_under_their_templates_partition() {
+        let (crit_a, crit_b) = (
+            "criterion A: the alpha module is implemented",
+            "criterion B: the beta module is implemented",
+        );
+        // (template partition, defaults.partition, rule in force, peak, why)
+        let rows: &[(&str, &str, bool, usize, &str)] = &[
+            (
+                "by-blast-radius",
+                "",
+                true,
+                1,
+                "a template asking for the rule keeps overlapping proposed units apart",
+            ),
+            (
+                "",
+                "",
+                false,
+                2,
+                "with no partition anywhere, overlapping proposed units run side by side",
+            ),
+            (
+                "",
+                "by-blast-radius",
+                true,
+                1,
+                "a template naming no partition leaves its proposed units under the default",
+            ),
+            (
+                "none",
+                "by-blast-radius",
+                false,
+                2,
+                "the template's own partition overrides the default for its proposed units",
+            ),
+        ];
+        for &(template_partition, default_partition, in_force, peak, why) in rows {
+            let mut cfg = supersede_cfg();
+            let scratch = tempfile::tempdir().unwrap();
+            cfg.workflow.defaults.workdir = scratch.path().to_str().unwrap().to_string();
+            cfg.workflow.defaults.max_parallel_units = 2;
+            cfg.workflow.defaults.partition = default_partition.into();
+            cfg.workflow.stages.get_mut("implement").unwrap().partition = template_partition.into();
+            let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+            let mut stages = cfg.workflow.stages.clone();
+            let template = stages.remove("implement").unwrap();
+            stages.extend(baseline_units(&template, &criteria, Some("plan")));
+            let store = Store::open(":memory:").unwrap();
+            append_proposal(&store, "u-a", crit_a, &criterion_stable_id(1, crit_a), None);
+            append_proposal(&store, "u-b", crit_b, &criterion_stable_id(2, crit_b), None);
+            record_radii(&store, &[("u-a", &["shared.rs"]), ("u-b", &["shared.rs"])]);
+            // Side-by-side units meet inside the probe, so their overlap never rests on timing.
+            let probe = if peak == 2 {
+                OverlapProbe::meeting(2)
+            } else {
+                OverlapProbe::new(&[])
+            };
+            let grounder = stub_radii(&[]);
+            let deps = Deps {
+                grounder: Some(&grounder),
+                ..stub_deps(&store, &probe, criteria)
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.harvest_proposed(
+                &mut stages,
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+            )
+            .unwrap();
+            let ready = vec!["u-a".to_string(), "u-b".to_string()];
+            assert!(
+                !stages.values().any(|st| st.baseline),
+                "both proposals supersede their baselines, so the wave is proposed units only"
+            );
+            assert_eq!(ctx.partition_requested(&stages, &ready), in_force, "{why}");
+            let integrated = drive_one_wave(&ctx, &stages, &ready, &[]);
+            assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
+            assert_eq!(probe.peak(), peak, "{why}");
+        }
     }
 
     /// Units whose criteria each name a HUB symbol - a name referenced across many files - still
