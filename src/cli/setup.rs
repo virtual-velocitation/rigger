@@ -4358,6 +4358,18 @@ mod tests {
             .unwrap_or_else(|| panic!("{file} must be a committed persona"))
     }
 
+    /// The committed personas carrying `heading` are exactly `owners`, each once: the persona
+    /// section it opens belongs to them and to no other persona.
+    fn assert_section_belongs_to(heading: &str, owners: &[&str]) {
+        for (file, text) in committed_personas() {
+            assert_eq!(
+                text.matches(heading).count(),
+                usize::from(owners.contains(&file.as_str())),
+                "{file}: {heading:?} belongs to {owners:?} alone"
+            );
+        }
+    }
+
     /// The tracked files under `paths`, repo-relative, as `git ls-files` lists them.
     fn tracked_files(paths: &[&str]) -> Vec<String> {
         let out = std::process::Command::new("git")
@@ -4931,34 +4943,26 @@ mod tests {
     #[test]
     fn the_test_roles_carry_the_exact_assertion_block_exactly_once() {
         const HEADING: &str = "## Every test asserts exactly";
-        for (file, text) in committed_personas() {
-            let want = usize::from(matches!(
-                file.as_str(),
-                "rust-engineer.md" | "sdet-author.md" | "sdet.md"
-            ));
-            assert_eq!(
-                text.matches(HEADING).count(),
-                want,
-                "{file}: the test block appears {want} time(s)"
-            );
-            if want == 1 {
-                let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
-                for wanted in [
-                    "- Assert exact values, never existence:",
-                    "- Pin every boundary from both sides:",
-                    "- Exercise both arms of every condition and every early return,",
-                    "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
-                ] {
-                    assert!(
-                        block.contains(wanted),
-                        "{file}: the test block says {wanted:?}"
-                    );
-                }
+        const OWNERS: [&str; 3] = ["rust-engineer.md", "sdet-author.md", "sdet.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        for file in OWNERS {
+            let text = committed_persona(file);
+            let block = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
+            for wanted in [
+                "- Assert exact values, never existence:",
+                "- Pin every boundary from both sides:",
+                "- Exercise both arms of every condition and every early return,",
+                "- For a bounded buffer, a retry count or a timeout, test the exact bound:",
+            ] {
                 assert!(
-                    !block.to_lowercase().contains("mutant"),
-                    "{file}: the test block names no mutant and no tool that makes one"
+                    block.contains(wanted),
+                    "{file}: the test block says {wanted:?}"
                 );
             }
+            assert!(
+                !block.to_lowercase().contains("mutant"),
+                "{file}: the test block names no mutant and no tool that makes one"
+            );
         }
     }
 
@@ -4978,19 +4982,10 @@ mod tests {
     #[test]
     fn the_author_roles_carry_one_hand_over_block_naming_the_checks_and_the_test_homes() {
         const HEADING: &str = "## Hand-over checks in this project";
-        let mut blocks = Vec::new();
-        for (file, text) in committed_personas() {
-            let author = matches!(file.as_str(), "rust-engineer.md" | "sdet-author.md");
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(author),
-                "{file}: the hand-over block belongs to the author roles alone"
-            );
-            if author {
-                blocks.push(markdown_section(&text, HEADING).to_string());
-            }
-        }
-        assert_eq!(blocks.len(), 2, "both author roles carry the block");
+        const OWNERS: [&str; 2] = ["rust-engineer.md", "sdet-author.md"];
+        assert_section_belongs_to(HEADING, &OWNERS);
+        let blocks =
+            OWNERS.map(|file| markdown_section(&committed_persona(file), HEADING).to_string());
         assert_eq!(
             blocks[0], blocks[1],
             "the block is byte-identical in both author roles"
@@ -5128,13 +5123,7 @@ mod tests {
     #[test]
     fn the_sdet_lens_blocks_on_a_missing_criterion_test_and_notes_shape_and_sentences() {
         const HEADING: &str = "## Review the tests against the criteria";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet.md"),
-                "{file}: the criterion-test review belongs to the sdet lens alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
             "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
@@ -5540,13 +5529,7 @@ mod tests {
     #[test]
     fn the_sdet_author_persona_ends_with_the_documentation_only_round_rule() {
         const HEADING: &str = "## A documentation-only round";
-        for (file, text) in committed_personas() {
-            assert_eq!(
-                text.matches(HEADING).count(),
-                usize::from(file == "sdet-author.md"),
-                "{file}: the documentation-only round rule belongs to the sdet-author persona alone"
-            );
-        }
+        assert_section_belongs_to(HEADING, &["sdet-author.md"]);
         let text = committed_persona("sdet-author.md");
         let headings: Vec<&str> = text
             .lines()
