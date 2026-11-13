@@ -827,8 +827,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     .concat();
     // Install EVERY skill in the registry (spec 20, unit 3; spec 68, criterion 1): each a
     // loadable front-door, with this repo's project overlay (base branch, specs location,
-    // Global constraints) merged into the render. Drift-aware, so a rerun on an up-to-date
-    // repo changes nothing.
+    // Global constraints) merged into the render, or, for a skill the project keeps its own
+    // copy of under `.rigger/skills/`, that copy verbatim with no overlay (spec 121, criterion
+    // 14); every other entry there is a stray, listed below. Drift-aware, so a rerun on an
+    // up-to-date repo changes nothing.
     let skills = install_skills(root)?;
     // Install the docs-checking git pre-commit hook (spec 24): on `git commit` it runs
     // `rigger docs --check` and refuses the commit when a rendered output the repo tracks
@@ -874,12 +876,13 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Each entry under `.rigger/skills/` that shadows no shipped skill is listed on EVERY setup,
     // so it prints before the silent-no-op check below (spec 121, criterion 14). A project copy
     // installed in place of a skill (`ProjectCopy`) is a state, not a change: it reads as
-    // `AlreadyCurrent` at that check and in the report.
+    // `AlreadyCurrent` at that check and in the report. Both paths in the line are root-relative
+    // and spelled with `/` on every OS, like the report's `.claude/skills/` install lines.
     for stray in &skills.strays {
         println!(
-            "{stray} shadows no shipped skill and installs nothing: a project copy is {}, <name> \
-             a shipped skill's exact name",
-            project_skill_path(Path::new(""), "<name>").display()
+            "{stray} shadows no shipped skill and installs nothing: a project copy is \
+             {RIGGER_DIR}/{}, <name> a shipped skill's exact name",
+            skill_source_rel("<name>")
         );
     }
 

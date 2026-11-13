@@ -4777,7 +4777,7 @@ fn setup_read_error(path: &Path, e: std::io::Error) -> Box<dyn std::error::Error
 /// What [`install_skills`] did: each registry entry's `(name, outcome)` in registry order, and
 /// each stray under `.rigger/skills/` - an entry that is not a directory named by a registry
 /// entry and holding a `SKILL.md`, so it shadows no shipped skill - by its root-relative path,
-/// sorted.
+/// spelled with `/` on every OS, sorted.
 struct SkillInstall {
     outcomes: Vec<(&'static str, InstallOutcome)>,
     strays: Vec<String>,
@@ -4823,35 +4823,41 @@ fn read_project_skill(
 /// criterion 1: generalizes the single-skill `install_skill` seam over the whole registry),
 /// returning each entry's outcome and the strays ([`SkillInstall`]). ONE code-derived context
 /// is built and this repo's [overlay](read_docs_overlay) merged onto it ONCE, then EVERY entry
-/// renders against that same context and installs via [`install_file_if_changed`] - so a
-/// downstream repo's base branch, specs location and Global constraints reach every rendered
-/// skill that carries them without anyone editing the shared discipline source, and adding an
-/// entry to the registry is the ONLY step needed to make a new skill install; this loop needs
-/// no per-skill edit.
+/// no project copy shadows (below) renders against that same context and installs via
+/// [`install_file_if_changed`] - so a downstream repo's base branch, specs location and Global
+/// constraints reach every rendered skill that carries them without anyone editing the shared
+/// discipline source, and adding an entry to the registry is the ONLY step needed to make a new
+/// skill install; this loop needs no per-skill edit.
 ///
 /// A project copy shadows the shipped skill of its exact name (spec 121, criterion 14): an
 /// entry of `.rigger/skills/` whose name equals a registry entry's byte for byte
 /// (case-sensitive, never trimmed) and that holds a `SKILL.md` installs that file's bytes
 /// verbatim in place of the render, with no overlay, reported as
 /// [`ProjectCopy`](InstallOutcome::ProjectCopy). Every other entry there is a stray, which
-/// installs nothing. A `.rigger/skills` or a copy that cannot be read fails setup naming it,
-/// installing no render in place of that copy. Through [`install_file_if_changed`], each entry writes
-/// ONLY when its file is absent or differs, so a `rigger setup` rerun on an up-to-date repo is
-/// a true no-op that does not even move a file's mtime.
+/// installs nothing. The loop is the one place the exact-name rule is read: an entry a copy
+/// claims leaves the unclaimed entries, and the strays are what is left. A `.rigger/skills` or
+/// a copy that cannot be read fails setup naming it, installing no render in place of that
+/// copy. Through [`install_file_if_changed`], each entry writes ONLY when its file is absent or
+/// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
+/// move a file's mtime.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
-    let entries = project_skill_entries(root)?;
+    // Every entry no project copy has claimed yet; what is left after the loop is the strays.
+    let mut unclaimed = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
     for entry in rigger::docs::skill_registry() {
         let installed = skill_install_path(root, entry.name);
-        let copy = if entries.iter().any(|name| name.as_os_str() == entry.name) {
-            read_project_skill(root, entry.name)?
-        } else {
-            None
+        let copy = match unclaimed
+            .iter()
+            .position(|name| name.as_os_str() == entry.name)
+        {
+            Some(at) => read_project_skill(root, entry.name)?.map(|bytes| (at, bytes)),
+            None => None,
         };
         let outcome = match copy {
-            Some(bytes) => {
+            Some((at, bytes)) => {
+                unclaimed.swap_remove(at);
                 install_file_if_changed(&installed, &bytes)?;
                 InstallOutcome::ProjectCopy
             }
@@ -4859,15 +4865,9 @@ fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error
         };
         outcomes.push((entry.name, outcome));
     }
-    let dir = rigger_path(Path::new(""), SKILLS_DIR);
-    let mut strays: Vec<String> = entries
+    let mut strays: Vec<String> = unclaimed
         .iter()
-        .filter(|name| {
-            !outcomes.iter().any(|(skill, outcome)| {
-                *outcome == InstallOutcome::ProjectCopy && name.as_os_str() == *skill
-            })
-        })
-        .map(|name| dir.join(name).display().to_string())
+        .map(|name| format!("{RIGGER_DIR}/{SKILLS_DIR}/{}", name.to_string_lossy()))
         .collect();
     strays.sort();
     Ok(SkillInstall { outcomes, strays })
