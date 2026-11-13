@@ -909,20 +909,6 @@ fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     }
 }
 
-/// The project identity that scopes the event streams and context graph (§5.1.1,
-/// R9): the basename of the git repo top-level, falling back to the current
-/// directory's name, falling back to "rigger". Never empty.
-///
-/// Anchored at the process cwd, which is correct for the RUN DRIVER (`rigger run`): it
-/// creates the store under the cwd's `.rigger/`, so the cwd's git
-/// top-level is the identity that scopes it. The store-opening COURIERS must NOT use
-/// this - a courier can run from a cwd that is not the store's owner (a nested git
-/// worktree) - so they bind identity to the RESOLVED store root instead, via
-/// [`StoreLocation::identity`] / [`project_identity_at`].
-fn project_identity() -> Result<String, String> {
-    project_identity_at(&cwd())
-}
-
 /// The project identity, anchored at an explicit `root` rather than the process cwd. In
 /// precedence order (spec 09): the tracked `.rigger/project.id` file when present, else the
 /// legacy basename identity ([`legacy_identity_at`]). Never empty; an error when git refuses inside
@@ -1201,27 +1187,12 @@ fn migrate_project_identity(
     }
 }
 
-/// Run the spec-09 open-time identity migration against the LOCAL sqlite store
-/// (`.rigger/events.db` under the cwd), before the run driver opens its own backend. A
-/// no-op when there is no local store yet (a fresh project), or when the minted identity is
-/// not distinct from the legacy basename (no `project.id` minted). Refuses loudly (Err) when
-/// both namespaces hold history. Self-contained: it opens its own short-lived store + graph
-/// connections and drops them before the caller opens the real ones, so it wires into any
-/// run-driver entry point in a single call and never touches the injected backend. `held` is the
-/// rebuild lock the caller holds on that store's `graph.db`, or none ([`migrate_identity_at`]).
-fn migrate_local_identity(held: Option<&RebuildLock>) -> Res {
-    let cwd = std::env::current_dir()?;
-    migrate_identity_at(
-        &StoreLocation {
-            dir: cwd.join(RIGGER_DIR),
-        },
-        held,
-    )
-}
-
 /// The spec-09 open-time identity migration against an ALREADY-RESOLVED store
-/// ([`StoreLocation`]) - the one implementation [`migrate_local_identity`] is the cwd-anchored
-/// entry to.
+/// ([`StoreLocation`]), run before a command opens its own backend on it. A no-op when the store
+/// holds no log yet (a fresh project), or when the minted identity is not distinct from the legacy
+/// basename (no `project.id` minted). Refuses loudly (Err) when both namespaces hold history.
+/// Self-contained: it opens its own short-lived store + graph connections and drops them before
+/// the caller opens the real ones, so it never touches the caller's backend.
 ///
 /// It is anchored at the store's OWNING ROOT (the parent of the resolved `.rigger/`), the same
 /// anchor [`StoreLocation::identity`] binds the namespace to, so the migration and the streams it
@@ -1262,13 +1233,6 @@ fn migrate_identity_at(loc: &StoreLocation, held: Option<&RebuildLock>) -> Res {
         ));
     }
     Ok(())
-}
-
-fn db_path(name: &str) -> String {
-    Path::new(RIGGER_DIR)
-        .join(name)
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// The bounded store walk's outcome: the CHOSEN store (the OUTERMOST `.rigger/events.db`
@@ -1642,8 +1606,8 @@ fn run_stream_of(identity: &str) -> String {
 ///
 /// Binding identity to the owning root is the whole point of this type. Walking up already
 /// finds the real store file when a courier runs from a nested git worktree; but the
-/// STREAM the write lands in is chosen by the identity, and `project_identity()` reads the
-/// cwd's git top-level, which inside a git-linked worktree is the WORKTREE path (basename
+/// STREAM the write lands in is chosen by the identity, and an identity read from the cwd's git
+/// top-level would be, inside a git-linked worktree, the WORKTREE path (basename
 /// `rigger-wt-...`), not the repo. So a walked-up write would silently misfile under
 /// `proj-<worktree>-run` while the conductor keeps reading `proj-<repo>-run` - the spawn
 /// stays parked (spec 05's charter defect). [`identity`](Self::identity) anchors identity
@@ -1917,6 +1881,16 @@ fn fenced_store() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 fn store_to_write_in(
     site: &Site,
 ) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    store_to_write_with(site, None, None)
+}
+
+/// [`store_to_write_in`], its backend selected with the command's own `--store` and `--conn`
+/// flags ([`store_selection_in`]), as `rigger run` and `rigger critique` take them.
+fn store_to_write_with(
+    site: &Site,
+    flag_store: Option<StoreKind>,
+    flag_conn: Option<&str>,
+) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     let here = site.located()?;
     let root = site.project_root()?;
     let dir = if at_the_root(here, &root) {
@@ -1932,7 +1906,10 @@ fn store_to_write_in(
         }
         dir
     };
-    Ok((StoreLocation { dir }, store_selection_in(site, None, None)?))
+    Ok((
+        StoreLocation { dir },
+        store_selection_in(site, flag_store, flag_conn)?,
+    ))
 }
 
 /// The store a command that only READS it opens, resolved from `site`: the store
@@ -9974,7 +9951,9 @@ mod tests {
 
     #[test]
     fn project_identity_is_never_empty() {
-        assert!(!project_identity().unwrap().is_empty());
+        assert!(!project_identity_at(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

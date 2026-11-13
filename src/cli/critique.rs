@@ -110,15 +110,16 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let (_, text) = load_criteria(Some(&spec))?;
     let hash = review::critique_hash(&text);
 
-    std::fs::create_dir_all(RIGGER_DIR)?;
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
+    // The critique's store is the root's, made where absent, through the one writer resolver
+    // ([`store_to_write_with`]): the root check above keeps the critique at the root.
+    let (loc, selection) = store_to_write_with(&site, parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity(None)?;
+        migrate_identity_at(&loc, None)?;
     }
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
-    let identity = project_identity()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let identity = loc.identity_in(&site)?;
     let store = Namespaced::new(backend.as_ref(), &identity);
-    let graph = open_graph(&db_path("graph.db"), &identity, &selection, "critique")?;
+    let graph = open_graph(&loc.file("graph.db"), &identity, &selection, "critique")?;
     let critiques = critique_store(backend.as_ref(), &identity);
     let ceiling = Ceiling {
         spec: &spec,
@@ -139,6 +140,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             cfg: &cfg,
             critic: &critic,
             critiques: &critiques,
+            store: &loc,
             store_env: selection.handed_env(),
             identity: &identity,
             scratch_root: &scratch_root,
@@ -295,6 +297,9 @@ struct CriticHost<'a> {
     critic: &'a Critic,
     /// The critique's own store ([`critique_store`]).
     critiques: &'a dyn EventStore,
+    /// The store the critique is recorded in, whose progress store the critic's host records its
+    /// launch to ([`open_progress_backend`]).
+    store: &'a StoreLocation,
     /// The verb's store selection, handed to the critic so its bound `rigger mcp --spawn` server
     /// resolves the store the critique is recorded to ([`StoreSelection::handed_env`]).
     store_env: Vec<(String, String)>,
@@ -356,7 +361,7 @@ impl CriticHost<'_> {
             &opts.run_id,
             self.scratch_root,
         )?;
-        let progress_backend = open_progress_backend()?;
+        let progress_backend = open_progress_backend(self.store)?;
         let progress = Namespaced::new(&progress_backend, self.identity);
         let host = claude_code::Driver {
             bin: String::new(),

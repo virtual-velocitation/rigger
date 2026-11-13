@@ -14,9 +14,9 @@ use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 /// never a broken run. `run_id` empty (no run started yet in this project) writes nothing: there
 /// is no run for the breadcrumb to name, so a later watch poll correctly falls back to the
 /// existing unknown-run handling rather than matching an empty string against another empty one.
-fn record_dash_attempt(run_id: &str) {
+fn record_dash_attempt(loc: &StoreLocation, run_id: &str) {
     if !run_id.is_empty() {
-        let _ = std::fs::write(db_path(DASH_ATTEMPT_FILE), run_id);
+        let _ = std::fs::write(loc.file(DASH_ATTEMPT_FILE), run_id);
     }
 }
 
@@ -90,6 +90,7 @@ impl Drop for RunRegistration {
 #[must_use = "hold the RunRegistration for the life of the run so its heartbeat stays fresh"]
 fn register_run_instance(
     repo: &str,
+    loc: &StoreLocation,
     identity: &str,
     selection: &StoreSelection,
 ) -> RunRegistration {
@@ -97,7 +98,7 @@ fn register_run_instance(
         return RunRegistration::inert(); // homeless environment: degrade to no registration
     };
     let root = if repo.is_empty() {
-        cwd()
+        loc.owner()
     } else {
         PathBuf::from(repo)
     };
@@ -292,10 +293,12 @@ pub(crate) fn project_scratch_root(repo: &str, cfg: &config::Config) -> Option<S
         .then(|| rigger::worktree::scratch_root_from_env(repo, &cfg.workflow.defaults.workdir))
 }
 
-/// This project's progress store (`.rigger/progress.db`), the separate log a headless host
+/// The progress store (`progress.db`) of the store `loc`, the separate log a headless host
 /// records a spawn's launch and live activity to, never the run stream.
-pub(crate) fn open_progress_backend() -> Result<Store, Box<dyn std::error::Error>> {
-    Ok(Store::open(&db_path("progress.db"))?)
+pub(super) fn open_progress_backend(
+    loc: &StoreLocation,
+) -> Result<Store, Box<dyn std::error::Error>> {
+    Ok(Store::open(&loc.file("progress.db"))?)
 }
 
 /// This binary's own path, so a child rigger process is always the same build as its parent (no
@@ -852,21 +855,22 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let scratch = project_scratch_root(&repo, &cfg);
     refuse_unless_one_root(&cwd, &repo, scratch.as_deref(), command)?;
     let (criteria, text) = load_criteria(parsed.spec.as_deref())?;
-    std::fs::create_dir_all(RIGGER_DIR)?;
+    // The run's store is the root's, made where absent, through the one writer resolver
+    // ([`store_to_write_with`]): the root check above keeps the run at the root.
+    let (loc, selection) = store_to_write_with(&site, parsed.store, parsed.conn.as_deref())?;
     // ONE DRIVER AT A TIME (spec 105, RESUME BY SESSION): the step lock is held from here until
     // this run returns, before any store is opened, any launch closed or any run branch anchored,
     // so a second `rigger run` beside this one refuses with the busy refusal
     // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
-    let _step_lock = acquire_step_lock(Path::new(RIGGER_DIR))?;
+    let _step_lock = acquire_step_lock(&loc.dir)?;
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
-    let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
     if selection.is_sqlite() {
-        migrate_local_identity(None)?;
+        migrate_identity_at(&loc, None)?;
     }
-    let progress_backend = open_progress_backend()?;
-    let identity = project_identity()?;
+    let progress_backend = open_progress_backend(&loc)?;
+    let identity = loc.identity_in(&site)?;
     let progress = Namespaced::new(&progress_backend, &identity);
     // No launch the progress store holds open has a live driver now that this run holds the
     // step lock: each is reaped and closed before the base gates, so a start they refuse has
@@ -913,13 +917,13 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // of discovery mid-run; it is dropped when `run_cli` returns. Best-effort - it never blocks the
     // run. Registered here, off the same resolved `selection` the run store opens on, so
     // discovery names the store this run drives.
-    let _registration = register_run_instance(&repo, &identity, &selection);
+    let _registration = register_run_instance(&repo, &loc, &identity, &selection);
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
     // outlive the `conductor::run` call below.
-    let backend = resolve_store(&selection, &db_path("events.db"))?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &identity);
-    let graph = open_graph(&db_path("graph.db"), &identity, &selection, "run")?;
+    let graph = open_graph(&loc.file("graph.db"), &identity, &selection, "run")?;
     // Every appended event is folded into the graph as it lands, on `--fresh`'s mint and on the
     // results the host records alike.
     let folding = rigger::ingest::folding_into(&store, Some(&graph), &stderr_line);
@@ -952,6 +956,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             identity: &identity,
             workflow: &cfg.workflow,
             root: &review::spec_root(&cwd, &repo),
+            project: &project,
             text: &text,
         },
     )?;
@@ -1002,7 +1007,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run before
     // the loop begins, so an active harness is never invisible. Held for the whole run - the
     // guard reaps the dash when this scope ends (unit 3's reaping mechanism).
-    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store);
+    let _dash = start_run_dashboard(cfg.workflow.dash_enabled(), &store, &loc);
     let _awake = keep_awake(sleep, command);
     // The hold controller polls beside the drive, on the folding store the host holds the run on.
     let control_holds = || {
@@ -1209,7 +1214,7 @@ fn fresh_run_if_requested(
         }
     }
     critique.refuse_unless_clean(parsed.spec.as_deref(), criteria, parsed.fresh)?;
-    let definition = definition_hash(".", helpers)?;
+    let definition = definition_hash(&critique.project.to_string_lossy(), helpers)?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
     // 3), resolved from the SAME precedence the run branch is anchored with (the `--base` flag,
     // then the `RIGGER_BASE` env override, then the default) so the persisted base matches the
@@ -1259,6 +1264,9 @@ struct RunStartCritique<'a> {
     /// The root the spec path and every `governs` entry are made relative to
     /// ([`review::spec_root`]).
     root: &'a Path,
+    /// The project whose definition the run loaded ([`instruction_layer_root`]), the definition a
+    /// minted run pins ([`definition_hash`]).
+    project: &'a Path,
     /// The exact spec text `load_criteria` read for this command: the critique is keyed on its
     /// hash.
     text: &'a str,
@@ -1433,9 +1441,9 @@ pub(crate) fn load_criteria(
 /// loopback (`127.0.0.1`, default [`dash::DEFAULT_PORT`], override with `--port`);
 /// `rigger dash --export <path>` writes the equivalent static, shareable snapshot.
 ///
-/// Composition mirrors the sibling operator reads (`stats`, `graph`): it resolves this
-/// project's `.rigger/events.db` + `.rigger/graph.db` by cwd (via [`db_path`] /
-/// [`project_identity`]) and re-reads them on EACH request, so the page reflects the run
+/// Composition mirrors the sibling operator reads (`stats`, `graph`): it reads the root's
+/// `events.db` + `graph.db`, resolved as every reader resolves its store ([`store_to_read_in`]),
+/// and re-reads them on EACH request, so the page reflects the run
 /// as it advances. An ABSENT `events.db` reads as an empty run (guarded BEFORE
 /// [`Store::open`], which would otherwise create it), so an operator can launch the dash
 /// first and watch the run populate it. The context graph is best-effort: a grep-only run
@@ -1461,14 +1469,18 @@ pub(crate) fn load_criteria(
 ///
 /// OPT-OUT: the one opt-out ([`dash_opted_out`] over `config_dash_enabled`, the workflow's
 /// resolved [`config::Workflow::dash_enabled`]) starts no dash and stamps no attempt.
-fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Option<RunDash> {
+fn start_run_dashboard(
+    config_dash_enabled: bool,
+    store: &dyn EventStore,
+    loc: &StoreLocation,
+) -> Option<RunDash> {
     if dash_opted_out(config_dash_enabled) {
         return None;
     }
     if let Ok((_, run_id)) = runscope::read::read_current_run(store, conductor::STREAM) {
-        record_dash_attempt(&run_id);
+        record_dash_attempt(loc, &run_id);
     }
-    match spawn_run_dashboard() {
+    match spawn_run_dashboard(loc) {
         Ok((guard, url)) => {
             // Stderr: stdout is the run's own report, which the run-start pointer stays out of.
             // One write, since the dash just started says its own line on the same stream.
@@ -1490,16 +1502,18 @@ fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Opt
 const DASH_REPORT_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Spawn `rigger dash --port-from <DEFAULT_PORT>` as a child of the current executable, read the
-/// URL it reports once it has bound the first free port, and record that URL in
-/// `.rigger/`[`DASH_URL_FILE`] for `rigger status` and its port and pid in
-/// `.rigger/`[`DASH_MARKER_FILE`] for `rigger watch` and `rigger status`. The dash chooses its
+/// URL it reports once it has bound the first free port, and record that URL in the run's store
+/// `loc` as [`DASH_URL_FILE`] for `rigger status` and its port and pid as [`DASH_MARKER_FILE`] for
+/// `rigger watch` and `rigger status`. The dash chooses its
 /// own port by binding it, so two runs starting together never record one address. The child's
 /// stdout is piped to this read alone, never the run's own report; the dash logs to its own
 /// stderr. Its stdin is a pipe whose write end the guard's child handle holds for the whole run,
 /// and the dash runs with `--exit-on-stdin-close`, so however the run ends, the closed pipe ends
 /// the dash with it. A dash that reports no address within [`DASH_REPORT_BOUND`] is reaped and
 /// nothing is recorded. Returns the guard plus the URL for the run-start pointer.
-fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>> {
+fn spawn_run_dashboard(
+    loc: &StoreLocation,
+) -> Result<(RunDash, String), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let mut child = dash::ReapedChild::new(
         subprocess::command(exe)
@@ -1524,12 +1538,12 @@ fn spawn_run_dashboard() -> Result<(RunDash, String), Box<dyn std::error::Error>
     let url = format!("http://127.0.0.1:{port}/");
     // Discoverability breadcrumb for `rigger status`; best-effort and overwritten each run.
     // `.rigger/` already exists (the driver created it before reaching here).
-    let _ = std::fs::write(db_path(DASH_URL_FILE), &url);
+    let _ = std::fs::write(loc.file(DASH_URL_FILE), &url);
     let marker = dash::DashMarker {
         port,
         pid: child.id(),
     };
-    let marker_path = PathBuf::from(db_path(DASH_MARKER_FILE));
+    let marker_path = PathBuf::from(loc.file(DASH_MARKER_FILE));
     let _ = marker.write(&marker_path);
     Ok((
         RunDash {
