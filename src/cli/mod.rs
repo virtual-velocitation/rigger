@@ -1313,24 +1313,21 @@ struct StoreWalk {
 fn walk_stores_from(start: &Path) -> Result<StoreWalk, String> {
     let boundary = main_repo_root(start)?;
     let mut found: Vec<PathBuf> = Vec::new();
-    // The nested-vs-relocated classification needs an apples-to-apples comparison, but
-    // `main_repo_root` can return a path carrying literal `..` segments (a RELATIVE
-    // `git rev-parse --git-common-dir` output for a plain subdirectory of the SAME repo
-    // joined onto `start`, never resolved - harmless for that shape's own git-worktree
-    // admin files, which always store an ABSOLUTE common-dir, but not for this component-
-    // wise prefix check). Canonicalized ONLY for this decision, on throwaway copies -
-    // `main_repo_root`'s own return value (every other caller's `boundary`) is untouched,
-    // and the walk below still uses the original, uncanonicalized `start`/`boundary`
-    // throughout. A `start` that cannot be canonicalized (does not exist on disk) falls
-    // back to `nested = true`, the ORIGINAL unconditional ancestor climb every existing
-    // caller already relies on.
-    let nested = match (
-        start.canonicalize(),
-        boundary.as_deref().map(Path::canonicalize),
-    ) {
-        (Ok(s), Some(Ok(b))) => s.starts_with(&b),
+    // Both the nested-vs-relocated classification and the climb's stop compare directories
+    // physically: `start` and the boundary may each be spelled through a symbolic link or `..`
+    // segments (the relative common dir git names for a subdirectory, joined onto `start`), and
+    // a lexical comparison would then never meet the boundary and climb past it to a store above
+    // the repository. The stores found keep `start`'s own spelling. A `start` that cannot be
+    // canonicalized (does not exist on disk) is classified nested, the plain ancestor climb, and
+    // a directory that cannot be canonicalized meets the boundary only as spelled.
+    let physical = |dir: &Path| dir.canonicalize().ok();
+    let bound = boundary.as_deref().and_then(physical);
+    let nested = match (physical(start), &bound) {
+        (Some(s), Some(b)) => s.starts_with(b),
         _ => true,
     };
+    let at_bound =
+        |dir: &Path| boundary.as_deref() == Some(dir) || bound.is_some() && physical(dir) == bound;
     if boundary.is_none() || nested {
         let mut cur = Some(start);
         while let Some(dir) = cur {
@@ -1338,10 +1335,9 @@ fn walk_stores_from(start: &Path) -> Result<StoreWalk, String> {
             if rigger.join("events.db").is_file() {
                 found.push(rigger);
             }
-            match &boundary {
-                Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
-                None => break,                      // no git context: only `start` counts
-                _ => {}
+            // No git context: only `start` counts. Otherwise the bound is inclusive.
+            if boundary.is_none() || at_bound(dir) {
+                break;
             }
             cur = dir.parent();
         }
