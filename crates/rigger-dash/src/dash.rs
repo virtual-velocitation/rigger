@@ -8322,8 +8322,9 @@ mod tests {
         assert_eq!(body["seed"], "a", "the neighborhood echoes its seed");
     }
 
-    /// Each view that draws nodes - the seeded neighborhood, the cluster drill and the call walk
-    /// with its referenced-not-called sidecar - names the drawn nodes that are test code in its
+    /// Each view that draws nodes - the seeded neighborhood, the cluster drill, the call walk with
+    /// its referenced-not-called sidecar, a re-projection's unresolved and shared members, and a
+    /// card's subject, file and member chips - names the drawn nodes that are test code in its
     /// `test_nodes`, from the `test` attribute of the graph nodes its answer read, and omits it
     /// when none is. Each row: the view, its body, and the ids it names.
     #[test]
@@ -8376,6 +8377,33 @@ mod tests {
             String::from_utf8(r.body).unwrap()
         };
         let named = |ids: &[&str]| Some(ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        // The member views' graph: src/a.rs holds the product f and the test checks, both realizing
+        // concept/1/0 and the test also concept/1/1 (a shared member); a bare test placeholder no
+        // definition resolves; and a test entity in a test file.
+        let probe = node_with_attrs("src/b.rs::probe", KIND_CODE_ENTITY, &[("test", "true")]);
+        let case = node_with_attrs(
+            "tests/it.rs::case",
+            KIND_CODE_ENTITY,
+            &[("name", "case"), ("test", "true")],
+        );
+        let concept = |id: &str| node_with_attrs(id, KIND_CONCEPT, &[("label", id)]);
+        let members = Graph {
+            nodes: vec![
+                product.clone(),
+                test.clone(),
+                node_with_attrs("src/a.rs", KIND_FILE, &[]),
+                probe.clone(),
+                test_file.clone(),
+                case.clone(),
+                concept("concept/1/0"),
+                concept("concept/1/1"),
+            ],
+            edges: vec![
+                edge(&product.id, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(&test.id, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(&test.id, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+            ],
+        };
         let rows = [
             (
                 "the seeded neighborhood",
@@ -8395,6 +8423,36 @@ mod tests {
             (
                 "a neighborhood with no test",
                 routed(&tiered_chain_graph(), "/api/graph?seed=a&depth=2"),
+                None,
+            ),
+            (
+                "a files re-projection's unresolved member",
+                routed(&members, "/api/graph?seed=src%2Fb.rs%3A%3Aprobe&lens=files"),
+                named(&[&probe.id]),
+            ),
+            (
+                "a concepts re-projection's shared member",
+                routed(&members, "/api/graph?seed=concept%2F1%2F0&lens=concepts"),
+                named(&[&test.id]),
+            ),
+            (
+                "a file card's top entities",
+                routed(&members, "/api/graph?card=src%2Fa.rs"),
+                named(&[&test.id]),
+            ),
+            (
+                "a concept card's top evidence",
+                routed(&members, "/api/graph?card=concept%2F1%2F0"),
+                named(&[&test.id]),
+            ),
+            (
+                "a test entity's card and its test file",
+                routed(&members, "/api/graph?card=tests%2Fit.rs%3A%3Acase"),
+                named(&[&test_file.id, &case.id]),
+            ),
+            (
+                "a product entity's card",
+                routed(&members, "/api/graph?card=src%2Fa.rs%3A%3Af"),
                 None,
             ),
         ];

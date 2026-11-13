@@ -1,6 +1,7 @@
 //! Periphery (integration) test for the explorer's TEST MARKER client seam: with tests drawn, every
 //! view that draws nodes - the seeded neighborhood's list, the cluster drill, the call walk and its
-//! "referenced but not called" sidecar - marks each node its answer names in `test_nodes` apart from
+//! "referenced but not called" sidecar, a re-projection's unresolved and shared members, and a
+//! card's subject and node chips - marks each node its answer names in `test_nodes` apart from
 //! product code (a `kgtest` class and a visible test tag), and a body that names none draws no
 //! marker. Driven by the served page's OWN script under node's built-in `vm` (hermetic, no npm)
 //! through a DOM shim mirroring `metadata_card_handoff_viz.rs`'s harness verbatim - the established
@@ -38,21 +39,28 @@ const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
 
-/// No network needed for this seam (every driver calls a renderer directly with fixture bodies) - a
-/// rejecting stub satisfies the page script's own top-level references to `fetch`, matching
-/// `proof_row_renders_on_the_card.rs::REJECTING_FETCH`.
-const REJECTING_FETCH: &str = r#"
-const fetch = function(url){ return Promise.reject(new Error("no network needed for this seam: " + url)); };
+/// A `fetch` shim answering a `card=` request from the driver's `__cardBodies` (keyed by the
+/// decoded subject id); every other request rejects, as every other view is drawn from a fixture
+/// body handed straight to its renderer.
+const CARD_FETCH: &str = r#"
+const __cardBodies = {};
+const fetch = function(url){
+  const m = /[?&]card=([^&]*)/.exec(String(url));
+  const body = m && __cardBodies[decodeURIComponent(m[1])];
+  if (body) return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(body); } });
+  return Promise.reject(new Error("no network needed for this seam: " + url));
+};
 "#;
 
 /// The node `vm` program name this suite's harness runs under.
 const HARNESS_FILE: &str = "explorer-test-marker-harness.js";
 
 /// Driver: each row draws one view from a body whose `test_nodes` names one test node, then reads the
-/// drawn element of the test node and of a product node (the element carrying its `data-seed`): the
-/// test node's element carries the `kgtest` class and a visible test tag (`[test]` on a drawn label, a
-/// `test` badge on a list row), the product node's carries neither. A body naming no test node (tests
-/// hidden) draws no marker anywhere.
+/// drawn element of the test node and of a product node (the element carrying its `data-seed`, or a
+/// shared member's list item): the test node's element carries the `kgtest` class and a visible test
+/// tag (`[test]` on a drawn label or chip, a `test` badge on a list row), the product node's carries
+/// neither. A card marks its subject's title and its node chips, never its MEMORY chips (which seed
+/// the subject itself). A body naming no test node (tests hidden) draws no marker anywhere.
 const MARKER_DRIVER: &str = r#"
 ;(async function(){
   function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
@@ -60,41 +68,84 @@ const MARKER_DRIVER: &str = r#"
   const P = "src/a.rs::f", T = "src/a.rs::tests::checks", F = "tests/it.rs", R = "src/b.rs";
   const product = { id: P, kind: "code-entity", label: "f", degree: 1 };
   const test = { id: T, kind: "code-entity", label: "checks", degree: 1 };
-  // The drawn element of node id: the nearest tag opening before its data-seed, to its first close.
-  function drawn(view, tag, id) {
-    const html = el("kgpanel")._html;
-    const at = html.indexOf('data-seed="' + id + '"');
-    if (at === -1) throw new Error(view + ": no drawn element for " + id + ": " + html);
-    const open = html.lastIndexOf("<" + tag + " ", at);
-    return html.slice(open, html.indexOf("</" + tag + ">", at));
+  // The drawn element of node id in element box: the nearest tag opening before its data-seed, to
+  // its first close.
+  function seeded(tag, box) {
+    return (view, id) => {
+      const html = el(box || "kgpanel")._html;
+      const at = html.indexOf('data-seed="' + id + '"');
+      if (at === -1) throw new Error(view + ": no drawn element for " + id + ": " + html);
+      const open = html.lastIndexOf("<" + tag + " ", at);
+      return html.slice(open, html.indexOf("</" + tag + ">", at));
+    };
+  }
+  // A shared member's item in the re-projection's shared list: the element whose text opens with id.
+  function sharedItem(view, id) {
+    const html = el("kgpanel")._html, list = html.indexOf('class="kgsharedlist"');
+    const at = list === -1 ? -1 : html.indexOf(">" + id, list);
+    if (at === -1) throw new Error(view + ": no listed element for " + id + ": " + html);
+    const open = html.lastIndexOf("<span ", at);
+    return html.slice(open, html.indexOf("</span>", at));
   }
   function marked(e) {
     const opening = e.slice(0, e.indexOf(">"));
     return { cls: / class="[^"]*\bkgtest\b/.test(opening), tag: e.indexOf("[test]") !== -1 || e.indexOf(">test<") !== -1 };
   }
-  function check(view, tag, testId, productId) {
-    const t = marked(drawn(view, tag, testId)), p = marked(drawn(view, tag, productId));
-    if (!t.cls || !t.tag)
-      throw new Error("REGRESSION: " + view + " must mark its test node " + testId + " (kgtest class: " + t.cls + ", test tag: " + t.tag + "): " + drawn(view, tag, testId));
-    if (p.cls || p.tag)
-      throw new Error("REGRESSION: " + view + " must not mark the product node " + productId + ": " + drawn(view, tag, productId));
+  function expectMarked(view, element, id) {
+    const m = marked(element);
+    if (!m.cls || !m.tag)
+      throw new Error("REGRESSION: " + view + " must mark its test node " + id + " (kgtest class: " + m.cls + ", test tag: " + m.tag + "): " + element);
+  }
+  function expectUnmarked(view, element, id) {
+    const m = marked(element);
+    if (m.cls || m.tag)
+      throw new Error("REGRESSION: " + view + " must not mark " + id + ": " + element);
+  }
+  function check(view, locate, testId, productId) {
+    expectMarked(view, locate(view, testId), testId);
+    expectUnmarked(view, locate(view, productId), productId);
   }
 
   renderGraph({ seed: P, depth: 1, nodes: [product, test],
     edges: [ { from: T, to: P, rel: "calls", tier: "extracted" } ], test_nodes: [T] });
-  check("the seeded neighborhood", "div", T, P);
+  check("the seeded neighborhood", seeded("div"), T, P);
 
   renderKgDrill({ seed: "src/a.rs", nodes: [product, test],
     edges: [ { from: T, to: P, rel: "calls", tier: "extracted" } ], test_nodes: [T] });
-  check("the cluster drill", "g", T, P);
+  check("the cluster drill", seeded("g"), T, P);
 
   renderKgCalls({ seed: P, dir: "up", depth: 6,
     nodes: [ { id: P, kind: "code-entity", label: "f", layer: 0 }, { id: T, kind: "code-entity", label: "checks", layer: -1 } ],
     edges: [ { from: T, to: P, back: false } ],
     referenced_not_called: [ { id: F, kind: "file", label: "it.rs" }, { id: R, kind: "file", label: "b.rs" } ],
     test_nodes: [T, F] });
-  check("the call walk", "g", T, P);
-  check("the referenced-not-called sidecar", "div", F, R);
+  check("the call walk", seeded("g"), T, P);
+  check("the referenced-not-called sidecar", seeded("div"), F, R);
+
+  renderReprojection({ subject: "concept/1/0", clusters: [], edges: [], total: 2,
+    unresolved: [ { id: T, candidates: [] }, { id: P, candidates: [R] } ], shared: [T, P], test_nodes: [T] });
+  check("the re-projection's unresolved members", seeded("div"), T, P);
+  check("the re-projection's shared members", sharedItem, T, P);
+
+  const C = "concept/1/0";
+  const member = (id, label) => ({ id: id, kind: "code-entity", label: label });
+  __cardBodies["src/a.rs"] = { card: { id: "src/a.rs", kind: "file", label: "a.rs", degree: 2, concepts: [],
+    decisions: 0, findings: 0, top_entities: [member(T, "checks"), member(P, "f")], proven_by: 0 }, test_nodes: [T] };
+  __cardBodies[C] = { card: { id: C, kind: "concept", label: "the graph", degree: 2, concepts: [],
+    decisions: 0, findings: 0, top_evidence: [member(T, "checks"), member(P, "f")], proven_by: 0 }, test_nodes: [T] };
+  const CASE = "tests/it.rs::case";
+  __cardBodies[CASE] = { card: { id: CASE, kind: "code-entity", label: "case", file: F, line: "3", degree: 1,
+    concepts: [], decisions: 1, findings: 0, proven_by: 0 }, test_nodes: [F, CASE] };
+  await loadCard("src/a.rs", true);
+  check("a file card's top entities", seeded("a", "kgcard"), T, P);
+  await loadCard(C, true);
+  check("a concept card's top evidence", seeded("a", "kgcard"), T, P);
+  await loadCard(CASE, true);
+  const card = el("kgcard")._html;
+  const title = card.slice(card.indexOf('<div class="kgcard-title'), card.indexOf("</div>", card.indexOf('<div class="kgcard-title')));
+  expectMarked("a test entity's card title", title, CASE);
+  expectMarked("a test entity's FILE chip", seeded("a", "kgcard")("a test entity's card", F), F);
+  expectUnmarked("a test entity's MEMORY chip", seeded("a", "kgcard")("a test entity's card", CASE), CASE);
 
   renderGraph({ seed: P, depth: 1, nodes: [product, test], edges: [] });
   if (/\bkgtest\b|\[test\]|>test</.test(el("kgpanel")._html))
@@ -106,8 +157,9 @@ const MARKER_DRIVER: &str = r#"
 
 rigger::test_cases! {
     /// RUNTIME guard for the explorer's test marker: with tests drawn, the seeded neighborhood, the
-    /// cluster drill, the call walk and its sidecar each mark the nodes their answer names as test
-    /// code apart from product code, and draw no marker when the answer names none.
+    /// cluster drill, the call walk and its sidecar, a re-projection's unresolved and shared members
+    /// and a card's subject and node chips each mark the nodes their answer names as test code apart
+    /// from product code, and draw no marker when the answer names none.
     every_drawn_test_node_is_marked_apart_from_product_code:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, REJECTING_FETCH], MARKER_DRIVER, HARNESS_FILE), "OK every-drawn-test-node-is-marked");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FETCH], MARKER_DRIVER, HARNESS_FILE), "OK every-drawn-test-node-is-marked");
 }
