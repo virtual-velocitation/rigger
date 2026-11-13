@@ -303,6 +303,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "rigger: migrated project identity - renamed {n} stream(s) fr",
             "{command}: refusing to run from inside a linked worktree ({l",
             "no rigger store found: neither {} nor any parent directory h",
+            "the working directory cannot be read: {why}",
             "store: warning: bypassing a nearer shadow store at {} in fav",
             "result: note: no spawn request is recorded for {id:?}; recor",
             "result: note: {id:?} already has a recorded result at positi",
