@@ -1417,7 +1417,8 @@ pub struct ConceptRef {
 /// same GOVERNS/ABOUT content [`node_rationale`] computes - narrowed to [`KIND_DECISION`] /
 /// [`KIND_FINDING`] only; a `lesson` is deliberately excluded (it is memory ABOUT the build
 /// process, not the target project's design memory the rail exists to surface). Concepts are
-/// [`ConceptRef`]s. Each list may be independently empty - the rail still renders.
+/// [`ConceptRef`]s. Each list may be independently empty; the explorer shows the rail only while
+/// one of them has an entry.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct MemoryRail {
     pub decisions: Vec<RationaleLeaf>,

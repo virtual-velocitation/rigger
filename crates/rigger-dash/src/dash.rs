@@ -5278,6 +5278,52 @@ mod tests {
             + page[start..]
                 .find("</section>")
                 .expect("the section closes");
+        markup_in(&page[start..end])
+    }
+
+    /// The explorer section's markup inside the page boxes its height comes from: the body, with
+    /// the rows above `main` (read from the served markup) and `main`, holding the section and,
+    /// after it, the columns, each of those two a box with no children.
+    fn page_markup(page: &str) -> Vec<Element> {
+        let rows = page.find("<body>").expect("the page has a body") + "<body>".len();
+        let main = page.find("<main>").expect("the page has a main region");
+        let (section, columns) = (
+            page[main..].find(r#"<section class="view" id="kg">"#),
+            page[main..].find(r#"<div class="columns">"#),
+        );
+        assert!(
+            section.is_some() && section < columns,
+            "main holds the explorer section and then the columns"
+        );
+        let bare = |tag: &str, class: &str, ancestors: Vec<usize>| Element {
+            tag: tag.to_string(),
+            id: String::new(),
+            classes: class.split_whitespace().map(str::to_string).collect(),
+            hidden: false,
+            ancestors,
+        };
+        let adopt = |markup: &mut Vec<Element>, children: Vec<Element>, parents: &[usize]| {
+            let from = markup.len();
+            markup.extend(children.into_iter().map(|mut child| {
+                child.ancestors = parents
+                    .iter()
+                    .copied()
+                    .chain(child.ancestors.iter().map(|a| a + from))
+                    .collect();
+                child
+            }));
+        };
+        let mut markup = vec![bare("body", "", Vec::new())];
+        adopt(&mut markup, markup_in(&page[rows..main]), &[0]);
+        markup.push(bare("main", "", vec![0]));
+        let main = markup.len() - 1;
+        adopt(&mut markup, explorer_markup(page), &[0, main]);
+        markup.push(bare("div", "columns", vec![0, main]));
+        markup
+    }
+
+    /// The elements of `html`, a run of container elements, text and comments, in document order.
+    fn markup_in(html: &str) -> Vec<Element> {
         let attr = |tag: &str, name: &str| {
             let key = format!(" {name}=\"");
             tag.find(&key).map(|at| {
@@ -5287,7 +5333,7 @@ mod tests {
         };
         let mut elements = Vec::new();
         let mut open: Vec<usize> = Vec::new();
-        let mut rest = &page[start..end];
+        let mut rest = html;
         while let Some(at) = rest.find('<') {
             rest = &rest[at..];
             if let Some(comment) = rest.strip_prefix("<!--") {
@@ -5545,9 +5591,10 @@ mod tests {
             .fold((0, 0, 0), |(a, b, c), (x, y, z)| (a + x, b + y, c + z))
     }
 
-    /// The served stylesheet's rules and the explorer's markup, with, for each element, the rules
-    /// holding a selector whose last compound names nothing the element lacks (an id, a class, a
-    /// type): the only rules that can select it in any state.
+    /// The served stylesheet's rules and the explorer's markup inside the page boxes around it
+    /// ([`page_markup`]), with, for each element, the rules holding a selector whose last compound
+    /// names nothing the element lacks (an id, a class, a type): the only rules that can select
+    /// it in any state.
     struct ExplorerStyle<'a> {
         rules: Vec<StyleRule<'a>>,
         markup: Vec<Element>,
@@ -5557,7 +5604,7 @@ mod tests {
     impl<'a> ExplorerStyle<'a> {
         fn read(page: &'a str) -> Self {
             let rules = style_rules(page);
-            let markup = explorer_markup(page);
+            let markup = page_markup(page);
             let candidates = markup
                 .iter()
                 .map(|element| {
@@ -5601,20 +5648,43 @@ mod tests {
                 style: self,
                 hidden,
                 body,
+                viewport: None,
+                values: Default::default(),
             }
+        }
+
+        /// The explorer laid out with the rail and the card shown or hidden as given, in a
+        /// viewport `[width, height]` px: the body is as wide as the viewport less the margin,
+        /// border and padding of each box from the page's body down to the explorer body.
+        fn layout_at(&self, rail: bool, card: bool, viewport: [f64; 2]) -> ExplorerLayout<'_, 'a> {
+            let mut layout = self.layout(rail, card, f64::NAN);
+            layout.viewport = Some(viewport);
+            let body = layout.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
+            let chain = self.markup[body].ancestors.iter().copied().chain([body]);
+            layout.body = chain.fold(viewport[0], |width, at| {
+                ["left", "right"].iter().fold(width, |width, side| {
+                    width - layout.px(at, &format!("margin-{side}")) - layout.edge(at, side)
+                })
+            });
+            // A container query reads the body's width, unknown until now.
+            layout.values.get_mut().clear();
+            layout
         }
     }
 
     /// The explorer laid out by the served stylesheet in one state - which panes show, and how
-    /// wide the body (`.kgbody`, the panes' and the panel's parent) is - reading only what places
-    /// the panes and the panel: the cascade of the rules selecting them (selectors, specificity,
-    /// source order, container queries) and the lengths those rules declare. Anything it would
-    /// have to read and cannot - a selector part, an at-rule, a length form - panics, so a pin
-    /// built on it fails loudly instead of reading past a rule it does not understand.
+    /// wide the body (`.kgbody`, the panes' and the panel's parent) is, and, for the heights, the
+    /// viewport - reading only what places the panes and the panel: the cascade of the rules
+    /// selecting them (selectors, specificity, source order, container and media queries) and
+    /// the lengths those rules declare. Anything it would have to read and cannot - a selector
+    /// part, an at-rule, a length form - panics, so a pin built on it fails loudly instead of
+    /// reading past a rule it does not understand.
     struct ExplorerLayout<'s, 'a> {
         style: &'s ExplorerStyle<'a>,
         hidden: Vec<bool>,
         body: f64,
+        viewport: Option<[f64; 2]>,
+        values: std::cell::RefCell<HashMap<(usize, String), Option<String>>>,
     }
 
     impl ExplorerLayout<'_, '_> {
@@ -5707,13 +5777,24 @@ mod tests {
         }
 
         /// Whether `rule`'s at-rule holds for element `at`: always at the top level; under
-        /// `@container`, when the element's nearest query container of that name is the body and
-        /// the body's width meets every condition.
+        /// `@media`, when the viewport's width meets every condition; under `@container`, when
+        /// the element's nearest query container of that name is the body and the body's width
+        /// meets every condition.
         fn condition_holds(&self, rule: &StyleRule<'_>, at: usize) -> bool {
             let Some(prelude) = rule.at else {
                 return true;
             };
             let element = &self.style.markup[at];
+            if let Some(query) = prelude.strip_prefix("@media") {
+                let [width, _] = self.viewport.unwrap_or_else(|| {
+                    panic!(
+                        "the layout model reads {prelude:?}, which may select #{} {:?}, only in \
+                         a viewport",
+                        element.id, element.classes
+                    )
+                });
+                return width_meets(query.trim(), width, |v| self.length(at, v));
+            }
             let query = prelude
                 .strip_prefix("@container")
                 .unwrap_or_else(|| {
@@ -5749,48 +5830,33 @@ mod tests {
                     .any(|c| c == "kgbody"),
                 "the layout model knows only the explorer body's width"
             );
-            assert!(
-                !condition.contains(" or ") && !condition.starts_with("not"),
-                "the layout model reads `and`-joined width conditions only: {condition:?}"
-            );
-            condition.split(" and ").all(|feature| {
-                let feature = feature
-                    .trim()
-                    .strip_prefix('(')
-                    .and_then(|f| f.strip_suffix(')'))
-                    .unwrap_or_else(|| panic!("a parenthesised feature: {feature:?}"));
-                let px = |v: &str| self.length(container, v);
-                if let Some(v) = feature.strip_prefix("min-width:") {
-                    return self.body >= px(v);
-                }
-                if let Some(v) = feature.strip_prefix("max-width:") {
-                    return self.body <= px(v);
-                }
-                let range = feature
-                    .strip_prefix("width")
-                    .unwrap_or_else(|| panic!("a width feature: {feature:?}"))
-                    .trim();
-                if let Some(v) = range.strip_prefix(">=") {
-                    self.body >= px(v)
-                } else if let Some(v) = range.strip_prefix("<=") {
-                    self.body <= px(v)
-                } else if let Some(v) = range.strip_prefix('>') {
-                    self.body > px(v)
-                } else if let Some(v) = range.strip_prefix('<') {
-                    self.body < px(v)
-                } else {
-                    panic!("the layout model cannot read the width feature {feature:?}")
-                }
-            })
+            width_meets(condition, self.body, |v| self.length(container, v))
         }
 
         /// The value the cascade gives `property` on element `at`: the latest declaration of the
-        /// most specific, then latest, rule selecting it whose at-rule holds. A `margin`
-        /// declaration counts toward each side.
+        /// most specific, then latest, rule selecting it whose at-rule holds. A shorthand counts
+        /// toward each longhand it sets ([`longhand`]).
         fn value(&self, at: usize, property: &str) -> Option<String> {
+            let key = (at, property.to_string());
+            if let Some(known) = self.values.borrow().get(&key) {
+                return known.clone();
+            }
             let mut best: Option<(Weight, usize, usize, String)> = None;
             for &r in &self.style.candidates[at] {
                 let rule = &self.style.rules[r];
+                let declared: Vec<(usize, String)> = rule
+                    .declarations
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(d, (name, value))| {
+                        let set = longhand(name, value, property)?;
+                        assert!(!value.contains("!important"), "an !important {name}");
+                        Some((d, set))
+                    })
+                    .collect();
+                if declared.is_empty() {
+                    continue;
+                }
                 let Some(weight) = rule
                     .selectors
                     .iter()
@@ -5803,27 +5869,7 @@ mod tests {
                 if !self.condition_holds(rule, at) {
                     continue;
                 }
-                for (d, (name, value)) in rule.declarations.iter().enumerate() {
-                    let side = property
-                        .strip_prefix("margin-")
-                        .filter(|_| name == "margin")
-                        .map(|side| {
-                            let values = split_top(value, ' ');
-                            let pick = match (values.len(), side) {
-                                (1, _) => 0,
-                                (2 | 3, "left" | "right") => 1,
-                                (4, "right") => 1,
-                                (4, "left") => 3,
-                                (_, "top") => 0,
-                                (2, "bottom") => 0,
-                                _ => 2,
-                            };
-                            values[pick].to_string()
-                        });
-                    let Some(value) = (name == property).then(|| value.to_string()).or(side) else {
-                        continue;
-                    };
-                    assert!(!value.contains("!important"), "an !important {name}");
+                for (d, value) in declared {
                     if best
                         .as_ref()
                         .is_none_or(|b| (b.0, b.1, b.2) <= (weight, r, d))
@@ -5832,11 +5878,297 @@ mod tests {
                     }
                 }
             }
-            best.map(|(.., value)| value)
+            let value = best.map(|(.., value)| value);
+            self.values.borrow_mut().insert(key, value.clone());
+            value
+        }
+
+        /// The element of the markup `picks` accepts first.
+        fn index_where(&self, picks: impl Fn(&Element) -> bool) -> usize {
+            self.style
+                .markup
+                .iter()
+                .position(picks)
+                .expect("the markup holds the element")
+        }
+
+        /// The px the length the cascade gives `property` on element `at` resolves to, 0 when
+        /// nothing declares it.
+        fn px(&self, at: usize, property: &str) -> f64 {
+            self.value(at, property)
+                .map_or(0.0, |value| self.length(at, &value))
+        }
+
+        /// The border and padding of element `at` on `side`.
+        fn edge(&self, at: usize, side: &str) -> f64 {
+            self.px(at, &format!("border-{side}-width")) + self.px(at, &format!("padding-{side}"))
+        }
+
+        /// The viewport the layout was made for.
+        fn viewport(&self) -> [f64; 2] {
+            self.viewport
+                .expect("a viewport length is read only in a layout made for a viewport")
+        }
+
+        /// The border-box height of each box from the page's body down to the panel and of each
+        /// box in flow beside them, when the panel holds `content` px of drawing or list, in the
+        /// viewport the layout was made for (`None` for a box it does not place). The body takes
+        /// its declared height, or else its content's; each box on the way down to the panel is a
+        /// column flex container sharing its height among its children in flow ([`Self::flex`]);
+        /// every other box is one row ([`Self::natural`]).
+        fn heights(&self, content: f64) -> Vec<Option<f64>> {
+            let body = self.style.markup[self.index("kgpanel")].ancestors[0];
+            for bound in ["min-height", "max-height"] {
+                assert!(
+                    self.value(body, bound).is_none(),
+                    "the layout model reads no {bound} on the page's body"
+                );
+            }
+            let height = self
+                .value(body, "height")
+                .filter(|height| height != "auto")
+                .map_or_else(
+                    || self.natural(body, content),
+                    |height| self.length(body, &height),
+                );
+            let mut used = vec![None; self.style.markup.len()];
+            self.lay(body, height, content, &mut used);
+            used
+        }
+
+        /// Gives element `at` the border-box height `height` and, on the way down to the panel,
+        /// shares the room inside it among its children.
+        fn lay(&self, at: usize, height: f64, content: f64, used: &mut [Option<f64>]) {
+            used[at] = Some(height);
+            if self.on_the_way_to_the_panel(at) {
+                let room = height - self.vertical_edges(at);
+                for (child, size) in self.flex(at, Some(room), content) {
+                    self.lay(child, size, content, used);
+                }
+            }
+        }
+
+        fn on_the_way_to_the_panel(&self, at: usize) -> bool {
+            self.style.markup[self.index("kgpanel")]
+                .ancestors
+                .contains(&at)
+        }
+
+        /// The border-box height element `at` takes from its content when nothing sizes it: on
+        /// the way down to the panel, its children in flow at their hypothetical heights with the
+        /// gaps and margins between them; any other box is one row of [`Self::nominal`] content
+        /// height. Either way with its own border and padding.
+        fn natural(&self, at: usize, content: f64) -> f64 {
+            let edges = self.vertical_edges(at);
+            if !self.on_the_way_to_the_panel(at) {
+                return self.nominal(at, content) + edges;
+            }
+            let (children, sizes): (Vec<usize>, Vec<f64>) =
+                self.flex(at, None, content).into_iter().unzip();
+            sizes.iter().sum::<f64>() + self.spacing(at, &children) + edges
+        }
+
+        /// The border and padding of element `at` above and below.
+        fn vertical_edges(&self, at: usize) -> f64 {
+            self.edge(at, "top") + self.edge(at, "bottom")
+        }
+
+        /// The room the flex container `at` keeps between and around `children`: the gaps
+        /// between them and their margins above and below.
+        fn spacing(&self, at: usize, children: &[usize]) -> f64 {
+            self.px(at, "row-gap") * children.len().saturating_sub(1) as f64
+                + children.iter().map(|&c| self.margins(c)).sum::<f64>()
+        }
+
+        /// The content height of a box the layout model places as one row: `content` for the
+        /// panel, and for every other box a nominal height of the rows it holds (the header's
+        /// title, the instances strip, the explorer's title and its header's controls, a
+        /// stacked card or rail, the columns below the explorer). A box with none panics.
+        fn nominal(&self, at: usize, content: f64) -> f64 {
+            let element = &self.style.markup[at];
+            match (element.tag.as_str(), element.id.as_str()) {
+                (_, "kgpanel") => content,
+                ("header", _) => 21.0,
+                (_, "landing") => 23.0,
+                ("h2", _) => 19.5,
+                (_, "kghead") => 21.5,
+                (_, "kgcard") => 320.0,
+                (_, "kgrail") => 420.0,
+                _ if element.classes.iter().any(|c| c == "columns") => 2400.0,
+                _ => panic!(
+                    "the layout model has no content height for <{}> #{} {:?}",
+                    element.tag, element.id, element.classes
+                ),
+            }
+        }
+
+        /// The margins above and below element `at`.
+        fn margins(&self, at: usize) -> f64 {
+            self.px(at, "margin-top") + self.px(at, "margin-bottom")
+        }
+
+        /// Whether element `at` takes room in its parent's column: shown, displayed, and neither
+        /// absolutely nor fixed positioned.
+        fn in_flow(&self, at: usize) -> bool {
+            let display = self.value(at, "display");
+            if self.hidden[at] {
+                assert!(
+                    display.as_deref().is_none_or(|d| d == "none"),
+                    "a hidden #{} hides",
+                    self.style.markup[at].id
+                );
+                return false;
+            }
+            display.as_deref() != Some("none")
+                && !matches!(
+                    self.value(at, "position").as_deref(),
+                    Some("absolute" | "fixed")
+                )
+        }
+
+        /// The children in flow of the column flex container `at` with the border-box height
+        /// each takes, by the flex layout algorithm, in `room` px (`None` when the container is
+        /// sized by its content, where each takes its hypothetical height): each child's flex
+        /// basis (a length, a percentage of a definite `room`, or its declared or content
+        /// height) clamped by its minimum and maximum (a box that does not clip its content
+        /// never shrinks below it), then grown or shrunk by its factors to fill `room`, freezing
+        /// each child that its minimum or maximum stops.
+        fn flex(&self, at: usize, room: Option<f64>, content: f64) -> Vec<(usize, f64)> {
+            let markup = &self.style.markup;
+            for (property, laid) in [("display", "flex"), ("flex-direction", "column")] {
+                assert_eq!(
+                    self.value(at, property).as_deref(),
+                    Some(laid),
+                    "the layout model lays out column flex containers only, not <{}> #{} {:?}",
+                    markup[at].tag,
+                    markup[at].id,
+                    markup[at].classes
+                );
+            }
+            assert!(
+                self.value(at, "flex-wrap")
+                    .is_none_or(|wrap| wrap == "nowrap"),
+                "the layout model lays out single-line flex containers only"
+            );
+            let children: Vec<usize> = (at + 1..markup.len())
+                .filter(|&j| markup[j].ancestors.last() == Some(&at) && self.in_flow(j))
+                .collect();
+            let height = |child: usize, value: &str| match value.strip_suffix('%') {
+                Some(percent) => room.map(|room| {
+                    percent.parse::<f64>().expect("a percentage is a number") * room / 100.0
+                }),
+                None => {
+                    assert!(
+                        !value.contains('%'),
+                        "the layout model reads a height percentage only bare: {value:?}"
+                    );
+                    Some(self.length(child, value))
+                }
+            };
+            let mut base = Vec::new();
+            let mut least = Vec::new();
+            let mut most = Vec::new();
+            let mut grow = Vec::new();
+            let mut shrink = Vec::new();
+            for &child in &children {
+                assert_eq!(
+                    self.value(child, "box-sizing").as_deref(),
+                    Some("border-box"),
+                    "the layout model sizes border boxes"
+                );
+                let once = std::cell::OnceCell::new();
+                let natural = || *once.get_or_init(|| self.natural(child, content));
+                let declared = self
+                    .value(child, "height")
+                    .filter(|h| h != "auto")
+                    .and_then(|h| height(child, &h));
+                let basis = self.value(child, "flex-basis");
+                base.push(match basis.as_deref().unwrap_or("auto") {
+                    "auto" => declared.unwrap_or_else(natural),
+                    "content" => natural(),
+                    basis => height(child, basis).unwrap_or_else(natural),
+                });
+                let clips = ["overflow-x", "overflow-y"]
+                    .iter()
+                    .any(|axis| self.value(child, axis).is_some_and(|o| o != "visible"));
+                let edges = self.vertical_edges(child);
+                let min = match self.value(child, "min-height").as_deref() {
+                    None | Some("auto") if clips => 0.0,
+                    None | Some("auto") => natural().min(declared.unwrap_or(f64::INFINITY)),
+                    Some(min) => height(child, min).unwrap_or(0.0),
+                };
+                least.push(min.max(edges));
+                most.push(match self.value(child, "max-height").as_deref() {
+                    None | Some("none") => f64::INFINITY,
+                    Some(max) => height(child, max).unwrap_or(f64::INFINITY),
+                });
+                let factor = |property: &str, otherwise: f64| {
+                    self.value(child, property)
+                        .map_or(otherwise, |f| f.parse().expect("a flex factor is a number"))
+                };
+                grow.push(factor("flex-grow", 0.0));
+                shrink.push(factor("flex-shrink", 1.0));
+            }
+            let clamp = |i: usize, size: f64| size.min(most[i]).max(least[i]);
+            let mut size: Vec<f64> = (0..children.len()).map(|i| clamp(i, base[i])).collect();
+            let Some(room) = room else {
+                return children.into_iter().zip(size).collect();
+            };
+            let room = room - self.spacing(at, &children);
+            let growing = size.iter().sum::<f64>() < room;
+            let factor = |i: usize| if growing { grow[i] } else { shrink[i] };
+            let mut frozen: Vec<bool> = (0..children.len())
+                .map(|i| {
+                    factor(i) == 0.0
+                        || (growing && base[i] > size[i])
+                        || (!growing && base[i] < size[i])
+                })
+                .collect();
+            let free = |frozen: &[bool], size: &[f64]| {
+                room - (0..children.len())
+                    .map(|i| if frozen[i] { size[i] } else { base[i] })
+                    .sum::<f64>()
+            };
+            let initial = free(&frozen, &size);
+            while frozen.contains(&false) {
+                let open: Vec<usize> = (0..children.len()).filter(|&i| !frozen[i]).collect();
+                let factors: f64 = open.iter().map(|&i| factor(i)).sum();
+                let mut left = free(&frozen, &size);
+                if factors < 1.0 && (initial * factors).abs() < left.abs() {
+                    left = initial * factors;
+                }
+                let scaled = |i: usize| {
+                    if growing {
+                        grow[i]
+                    } else {
+                        shrink[i] * base[i]
+                    }
+                };
+                let weights: f64 = open.iter().map(|&i| scaled(i)).sum();
+                let mut violation = 0.0;
+                let mut moved = Vec::new();
+                for &i in &open {
+                    let target = if weights > 0.0 {
+                        base[i] + left * scaled(i) / weights
+                    } else {
+                        base[i]
+                    };
+                    size[i] = clamp(i, target);
+                    violation += size[i] - target;
+                    moved.push((i, size[i] - target));
+                }
+                for (i, by) in moved {
+                    frozen[i] |= violation == 0.0
+                        || (violation > 0.0 && by > 0.0)
+                        || (violation < 0.0 && by < 0.0);
+                }
+            }
+            children.into_iter().zip(size).collect()
         }
 
         /// The px a length declared on element `at` resolves to, a percentage of the body's
-        /// width (the containing block of every box the model places).
+        /// width (the containing block of every box the model places) and a viewport unit of the
+        /// viewport the layout was made for.
         fn length(&self, at: usize, value: &str) -> f64 {
             let value = value.trim();
             let call = |name: &str| {
@@ -5851,6 +6183,10 @@ mod tests {
                 px
             } else if let Some(pc) = value.strip_suffix('%').and_then(|n| n.parse::<f64>().ok()) {
                 pc * self.body / 100.0
+            } else if let Some(vh) = value.strip_suffix("vh").and_then(|n| n.parse::<f64>().ok()) {
+                vh * self.viewport()[1] / 100.0
+            } else if let Some(vw) = value.strip_suffix("vw").and_then(|n| n.parse::<f64>().ok()) {
+                vw * self.viewport()[0] / 100.0
             } else if let Some(args) = call("var") {
                 let (name, fallback) = args
                     .split_once(',')
@@ -5931,8 +6267,156 @@ mod tests {
                     "the panel's {sized} is its column's"
                 );
             }
-            self.value(at, &format!("margin-{side}"))
-                .map_or(0.0, |margin| self.length(at, &margin))
+            self.px(at, &format!("margin-{side}"))
+        }
+    }
+
+    /// Whether a box `width` px wide meets `condition`, an `and`-joined run of parenthesised width
+    /// features (`min-width:`, `max-width:` or a `width` range), each length read by `px`.
+    fn width_meets(condition: &str, width: f64, px: impl Fn(&str) -> f64) -> bool {
+        assert!(
+            !condition.contains(" or ") && !condition.starts_with("not"),
+            "the layout model reads `and`-joined width conditions only: {condition:?}"
+        );
+        condition.split(" and ").all(|feature| {
+            let feature = feature
+                .trim()
+                .strip_prefix('(')
+                .and_then(|f| f.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("a parenthesised feature: {feature:?}"));
+            if let Some(v) = feature.strip_prefix("min-width:") {
+                return width >= px(v);
+            }
+            if let Some(v) = feature.strip_prefix("max-width:") {
+                return width <= px(v);
+            }
+            let range = feature
+                .strip_prefix("width")
+                .unwrap_or_else(|| panic!("a width feature: {feature:?}"))
+                .trim();
+            if let Some(v) = range.strip_prefix(">=") {
+                width >= px(v)
+            } else if let Some(v) = range.strip_prefix("<=") {
+                width <= px(v)
+            } else if let Some(v) = range.strip_prefix('>') {
+                width > px(v)
+            } else if let Some(v) = range.strip_prefix('<') {
+                width < px(v)
+            } else {
+                panic!("the layout model cannot read the width feature {feature:?}")
+            }
+        })
+    }
+
+    /// What the declaration `name: value` sets the longhand `property` to: `value` when `name` is
+    /// `property`; the part of a shorthand that sets it (a side of `margin`, `padding` or
+    /// `border-width`; the width of `border` or `border-<side>`, nothing without a drawn style;
+    /// `flex`'s factors and basis; `gap`'s row or column; `overflow`'s axis); `None` when the
+    /// declaration does not set it.
+    fn longhand(name: &str, value: &str, property: &str) -> Option<String> {
+        if name == property {
+            return Some(value.to_string());
+        }
+        let shorthand = matches!(
+            name,
+            "margin"
+                | "padding"
+                | "border"
+                | "border-width"
+                | "border-top"
+                | "border-right"
+                | "border-bottom"
+                | "border-left"
+                | "flex"
+                | "gap"
+                | "overflow"
+        );
+        if !shorthand {
+            return None;
+        }
+        let values = split_top(value, ' ');
+        let side = |values: &[&str], side: &str| {
+            let pick = match (values.len(), side) {
+                (1, _) => 0,
+                (2 | 3, "left" | "right") => 1,
+                (4, "right") => 1,
+                (4, "left") => 3,
+                (_, "top") => 0,
+                (2, "bottom") => 0,
+                _ => 2,
+            };
+            values[pick].to_string()
+        };
+        let sides = ["top", "right", "bottom", "left"];
+        for shorthand in ["margin", "padding"] {
+            let of = property
+                .strip_prefix(shorthand)
+                .and_then(|rest| rest.strip_prefix('-'));
+            if let Some(at) = of.filter(|at| name == shorthand && sides.contains(at)) {
+                return Some(side(&values, at));
+            }
+        }
+        if let Some(at) = property
+            .strip_prefix("border-")
+            .and_then(|rest| rest.strip_suffix("-width"))
+            .filter(|at| sides.contains(at))
+        {
+            if name == "border-width" {
+                return Some(side(&values, at));
+            }
+            if name == "border" || name == format!("border-{at}") {
+                let drawn = values.iter().any(|v| {
+                    matches!(
+                        *v,
+                        "solid"
+                            | "dashed"
+                            | "dotted"
+                            | "double"
+                            | "groove"
+                            | "ridge"
+                            | "inset"
+                            | "outset"
+                    )
+                });
+                let width = values.iter().find(|v| {
+                    v.ends_with("px") || **v == "0" || matches!(**v, "thin" | "medium" | "thick")
+                });
+                return Some(if drawn {
+                    width.map_or("medium", |w| w).to_string()
+                } else {
+                    "0".to_string()
+                });
+            }
+        }
+        let number = |v: &str| v.parse::<f64>().is_ok();
+        match (name, property) {
+            ("flex", "flex-grow" | "flex-shrink" | "flex-basis") => {
+                let [grow, shrink, basis] = match values.as_slice() {
+                    ["none"] => ["0", "0", "auto"],
+                    ["auto"] => ["1", "1", "auto"],
+                    ["initial"] => ["0", "1", "auto"],
+                    [grow] if number(grow) => [*grow, "1", "0"],
+                    [basis] => ["1", "1", *basis],
+                    [grow, shrink] if number(shrink) => [*grow, *shrink, "0"],
+                    [grow, basis] => [*grow, "1", *basis],
+                    [grow, shrink, basis] => [*grow, *shrink, *basis],
+                    _ => panic!("the layout model cannot read flex: {value}"),
+                };
+                Some(
+                    match property {
+                        "flex-grow" => grow,
+                        "flex-shrink" => shrink,
+                        _ => basis,
+                    }
+                    .to_string(),
+                )
+            }
+            ("gap", "row-gap") => values.first().map(|v| v.to_string()),
+            ("gap", "column-gap") | ("overflow", "overflow-y") => {
+                values.last().map(|v| v.to_string())
+            }
+            ("overflow", "overflow-x") => values.first().map(|v| v.to_string()),
+            _ => None,
         }
     }
 
@@ -6128,17 +6612,11 @@ mod tests {
             Some("column"),
             "the body lays its children out top to bottom"
         );
-        let states = [
-            ("neither pane", false, false),
-            ("the rail", true, false),
-            ("the card", false, true),
-            ("the rail and the card", true, true),
-        ];
         let mut columns: HashMap<&str, f64> = HashMap::new();
         let mut laid_out = Vec::new();
         for width in 280..=1400 {
             let width = f64::from(width);
-            for (shown, rail, card) in states {
+            for (shown, rail, card) in PANE_STATES {
                 let layout = style.layout(rail, card, width);
                 let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
                 let room = width - left - right;
@@ -6198,6 +6676,61 @@ mod tests {
                 "with {shown} shown in a {width}px body the panes dock exactly where their \
                  columns leave the panel {drawn}px (from {needs}px)"
             );
+        }
+    }
+
+    /// The explorer's panes in each state a subject can leave them: what shows, the rail shown,
+    /// the card shown.
+    const PANE_STATES: [(&str, bool, bool); 4] = [
+        ("neither pane", false, false),
+        ("the rail", true, false),
+        ("the card", false, true),
+        ("the rail and the card", true, true),
+    ];
+
+    /// GIVEN the served page, WHEN the explorer's panel holds a drawing or a list of any length (a
+    /// well-connected seed's neighbour columns run to hundreds of thousands of px) in a viewport of
+    /// any width from a phone's to a wide screen's, with the rail, the card, both or neither shown,
+    /// THEN the panel keeps one height whatever it holds, no taller than the viewport, and scrolls
+    /// what does not fit inside it: the height `kgDims` reads from the panel, which the next view
+    /// draws at, is the panel's own and never the length of what the last view drew. Layout is
+    /// outside what the page harness can run, so this lays the page out by its own stylesheet (the
+    /// flex rules from the body down to the panel, media and container queries, lengths) at each
+    /// viewport width from 320px to 1600px.
+    #[test]
+    fn the_panel_keeps_one_height_whatever_it_holds_at_every_viewport_width() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        let panel = explorer_index(&style.markup, "kgpanel");
+        for tall in [640, 900] {
+            let tall = f64::from(tall);
+            for wide in 320..=1600 {
+                let wide = f64::from(wide);
+                for (shown, rail, card) in PANE_STATES {
+                    let layout = style.layout_at(rail, card, [wide, tall]);
+                    let [short, long] = [200.0, 333_000.0]
+                        .map(|held| layout.heights(held)[panel].expect("the panel is laid out"));
+                    // One height to a browser's layout unit (1/64 px): the flex arithmetic rounds
+                    // differently with a long list than with a short one.
+                    assert!(
+                        (short - long).abs() < 1.0 / 64.0,
+                        "with {shown} shown in a {wide}x{tall} viewport the panel keeps one height \
+                         whatever it holds: {short}px holding 200px, {long}px holding 333000px"
+                    );
+                    assert!(
+                        short > 0.0 && short <= tall,
+                        "with {shown} shown in a {wide}x{tall} viewport the panel ({short}px) fits \
+                         the viewport"
+                    );
+                    assert!(
+                        matches!(
+                            layout.value(panel, "overflow-y").as_deref(),
+                            Some("auto" | "scroll")
+                        ),
+                        "the panel scrolls what does not fit inside it"
+                    );
+                }
+            }
         }
     }
 
@@ -11793,7 +12326,7 @@ mod subject_view_c5 {
     }
 
     /// A node with no governing memory at all returns an entirely empty rail (every list empty),
-    /// never an error - the graceful degrade the panel's per-section "none" state expects.
+    /// never an error - the answer on which the explorer shows no rail.
     #[test]
     fn memory_rail_is_empty_for_a_node_with_no_governing_memory() {
         let g = subject_graph();

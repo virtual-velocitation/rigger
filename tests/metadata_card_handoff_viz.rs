@@ -57,8 +57,12 @@ const setTimeout = function(){ return 0; };
 /// re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body naming the
 /// requested subject (so `kgSubject`/`kgSeed` land on it), and a `cluster=` drill echoes its
 /// cluster key as its seed, as the route does; anything else (the initial whole-graph overview,
-/// `explain=`, `/api/instances`, `/api/state`) serves a graceful empty.
+/// `explain=`, `/api/instances`, `/api/state`) serves a graceful empty. `GOVERNING_MEMORY` is a
+/// memory rail with an entry in each section, which a drawn seed's rail shows.
 const CARD_FIXTURE: &str = r#"
+const GOVERNING_MEMORY = { decisions: [ { id: "d1", kind: "decision", summary: "use the shared authority" } ],
+  findings: [ { id: "f1", kind: "finding", summary: "the finding content" } ],
+  concepts: [ { id: "concept/combat", label: "combat resolution" } ] };
 const CODE_CARD = { id: "combat.rs::fire", kind: "code-entity", label: "fire",
   file: "combat.rs", line: "42", degree: 5, community: "combat lifecycle",
   concepts: [ { id: "concept/combat", label: "combat resolution" } ],
@@ -335,7 +339,8 @@ const PANES_DRIVER: &str = r#"
   await flush();
   if (drawn() !== JSON.stringify({ card: false, rail: false }))
     throw new Error("REGRESSION: the drill of another subject was drawn beside the last subject's card: " + drawn());
-  renderMemoryRail({ decisions: [], findings: [], concepts: [] });
+  renderMemoryRail(GOVERNING_MEMORY);
+  if (el("kgrail").hidden) throw new Error("setup: the rail must show before the overview is loaded");
   await loadKgOverview();
   await flush();
   if (drawn() !== JSON.stringify({ card: false, rail: false }))
@@ -348,7 +353,7 @@ const PANES_DRIVER: &str = r#"
   if (draws.length !== before)
     throw new Error("REGRESSION: a dropped card drew the overview again: " + JSON.stringify(draws.slice(before)));
 
-  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [], memory: { decisions: [], findings: [], concepts: [] } });
+  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [], memory: GOVERNING_MEMORY });
   if (drawn() !== JSON.stringify({ card: false, rail: true }))
     throw new Error("REGRESSION: the seed was drawn before its rail, or beside a card that had not arrived: " + drawn());
   renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
@@ -466,9 +471,8 @@ const OWN_PANES_DRIVER: &str = r#"
   const both = JSON.stringify({ card: true, rail: true });
   const neither = JSON.stringify({ card: false, rail: false });
   const card = () => (el("kgcard").hidden ? "" : el("kgcard")._html);
-  const MEMORY = { decisions: [], findings: [], concepts: [] };
   const seed = async id => {
-    renderGraph({ seed: id, nodes: [], edges: [], memory: MEMORY });
+    renderGraph({ seed: id, nodes: [], edges: [], memory: GOVERNING_MEMORY });
     await flush();
     if (el("kgrail").hidden) throw new Error("setup: the seed of " + id + " must show its rail");
   };
