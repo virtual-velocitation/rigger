@@ -1687,6 +1687,63 @@ rigger::test_cases! {
     a_view_over_a_graph_that_could_not_be_read_states_why_never_an_empty_graph: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, UNREAD_DRIVER, "dash-graph-unread-harness.js"), "OK a-view-over-an-unread-graph-states-why");
 }
 
+/// Driver: the overview and a re-projection under each derived lens, asked for a grain in a
+/// spelling other than its own (`2.0`), then for a text that names no grain. The grain input shows
+/// the grain the reply says it displays (`2`), and, when the reply displays none, the text as
+/// asked, beside the reply's empty state.
+const GRAIN_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const asked = [];
+  const shown = function(){
+    const m = el("kgpanel")._html.match(/class="kgres"[^>]*value="([^"]*)"/);
+    return m ? m[1] : null;
+  };
+  for (const lens of ["code", "concepts"]) {
+    const views = [
+      ["overview", function(){ return loadKgOverview(); }],
+      ["re-projection", function(){ return reprojectSubject("src/a.rs"); }],
+    ];
+    for (const [view, load] of views) {
+      for (const [text, grain, want] of [["2.0", "2", "2"], ["abc", null, "abc"]]) {
+        kgLens = lens;
+        kgResolution = text;
+        __reply = function(u){
+          if (u.indexOf("card=") !== -1) return {};
+          asked.push(u);
+          const body = { subject: "src/a.rs", clusters: [], edges: [], total: 0 };
+          if (grain) {
+            body.clusters = [{ key: lens.replace("code", "community").replace("concepts", "concept") + "/2/0", count: 1, kind: "code-entity" }];
+            body.total = 1;
+            body.grain = grain;
+          } else {
+            body.empty_state = 'resolution "' + text + '" is not a grain';
+          }
+          return body;
+        };
+        await load();
+        await flush();
+        const last = asked[asked.length - 1] || "";
+        if (last.indexOf("resolution=" + encodeURIComponent(text)) === -1)
+          throw new Error(lens + " " + view + ": the read did not ask for " + text + ": " + last);
+        if (shown() !== want)
+          throw new Error("REGRESSION: the " + lens + " " + view + " asked for " + JSON.stringify(text)
+            + " shows grain " + JSON.stringify(shown()) + ", not the grain it displays " + JSON.stringify(want));
+      }
+    }
+  }
+  console.log("OK the-grain-input-shows-the-grain-displayed");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: the explorer shows the grain a derived view displays, as the reply states it,
+    /// never only the text the operator typed; a text naming no grain stays as typed beside the
+    /// reply's empty state.
+    the_grain_input_shows_the_grain_the_view_displays: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, GRAIN_DRIVER, "dash-grain-shown-harness.js"), "OK the-grain-input-shows-the-grain-displayed");
+}
+
 /// A node program loading the served page into a fresh realm per load over a browser store the
 /// loads share, so a second load is a reload in the same browser. It steps the explorer's tests
 /// toggle through the header's own click dispatch and records, per load, the toggle's text and the
