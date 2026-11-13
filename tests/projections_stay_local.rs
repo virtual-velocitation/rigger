@@ -102,11 +102,13 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
          gone"
     );
 
-    // The progress projection is opened by the sqlite `Store` at the local `.rigger/progress.db`.
+    // The progress projection is opened by the sqlite `Store` at the resolved store's local
+    // `.rigger/progress.db`.
     assert!(
-        src.contains(r#"Store::open(&db_path("progress.db")"#),
-        "the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
-         (`Store::open(&db_path(\"progress.db\") ...)`); the canonical local construction is gone"
+        src.contains(r#"Store::open(&loc.file("progress.db")"#),
+        "the progress projection must be opened by the LOCAL sqlite Store at the resolved store's \
+         .rigger/progress.db (`Store::open(&loc.file(\"progress.db\") ...)`); the canonical local \
+         construction is gone"
     );
 }
 
