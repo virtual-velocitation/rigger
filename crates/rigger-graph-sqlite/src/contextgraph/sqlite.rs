@@ -3849,6 +3849,45 @@ mod tests {
         open_connection(path).unwrap()
     }
 
+    /// THE COMPACTION REPORTS ONLY BYTES THE DISK LOST: the byte count `compact` reports is the
+    /// drop in the file's size on disk. Each row: whether a reader holds a snapshot of the log
+    /// across the compaction, which its truncating checkpoint then cannot fold back.
+    #[test]
+    fn a_compaction_reports_only_the_bytes_the_file_lost_on_disk() {
+        for held in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db").to_str().unwrap().to_string();
+            let p = Projector::open(&path, "test").unwrap();
+            {
+                let conn = p.conn.lock().unwrap();
+                conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE filler(x BLOB);
+                     WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 64)
+                     INSERT INTO filler SELECT zeroblob(4096) FROM n;
+                     DROP TABLE filler;",
+                )
+                .unwrap();
+                assert!(truncate_log(&conn).unwrap(), "no reader holds the log yet");
+            }
+            let reader = connection_to(&path);
+            if held {
+                reader.execute_batch("BEGIN").unwrap();
+                let _: i64 = reader
+                    .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                    .unwrap();
+            }
+            let size = || std::fs::metadata(&path).unwrap().len();
+            let before = size();
+            let reported = p.compact().unwrap();
+            let lost = before.saturating_sub(size());
+            assert_eq!(
+                reported, lost,
+                "held {held}: the reported bytes against the file's drop on disk"
+            );
+        }
+    }
+
     /// A rebuild of the graph file at `path` from `log` in batches of `batch`, owed by its caller,
     /// once it takes the rebuild lock, recording where each read of the log started.
     fn rebuild_in_batches(
