@@ -716,10 +716,12 @@ fn git_bool(value: Option<&[u8]>) -> Option<bool> {
     }
 }
 
-/// `value` read as git reads an integer: after any white space and an optional sign, digits in
-/// hex after `0x`, in octal after a leading `0`, else in decimal, then optionally a unit `k`,
-/// `m` or `g` in any case, multiplying by 1024 for each step, the whole within plus or minus
-/// `i32::MAX`. None for any other value, which git refuses.
+/// `value` read as the newest git reads an integer, the rule git 2.50.0 set: after any white
+/// space and an optional sign, digits in hex after `0x`, in octal after a leading `0`, else in
+/// decimal, then optionally a unit `k`, `m` or `g` in any case, multiplying by 1024 for each
+/// step, the whole within `i32::MIN..=i32::MAX`. None for any other value, which git refuses.
+/// An older git refuses `i32::MIN` too, however it is written (`-2147483648`, `-2097152k`,
+/// `-2048m`, `-2g`).
 fn git_int(value: &[u8]) -> Option<i32> {
     let start = value
         .iter()
@@ -759,11 +761,8 @@ fn git_int(value: &[u8]) -> Option<i32> {
         b"g" => 1 << 30,
         _ => return None,
     };
-    if magnitude > i64::from(i32::MAX) / factor {
-        return None;
-    }
-    let value = i32::try_from(magnitude * factor).ok()?;
-    Some(if negative { -value } else { value })
+    let signed = if negative { -magnitude } else { magnitude };
+    i32::try_from(signed.checked_mul(factor)?).ok()
 }
 
 /// Whether this user owns every one of `paths`, as git requires before it trusts a repository.
