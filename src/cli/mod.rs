@@ -1894,16 +1894,34 @@ fn owning_graph_to_read(site: &Site) -> Result<Projector, Box<dyn std::error::Er
     open_graph_to_read(&loc.file("graph.db"), &loc.identity_in(site)?)
 }
 
-/// The site a reader that answers many opens (the MCP session, a run, either's grounder) reads
-/// each open through: a site at its own site's directory that asks anew where the repository lies,
-/// so the reader holds no discovery from its build to its first open or between two opens.
+/// The site each open of a reader (the graph reader, a grounder's heads) reads through. A reader
+/// built and opened in one step (a `rigger graph` read, a dashboard request) serves its first
+/// open from its own site, whose discovery its build just made, and a reader held from its build
+/// to a later first open (the MCP session's, a run's) asks anew for that open too; every later
+/// open of either reads a site at the same directory that asks anew where the repository lies.
+/// No open reads a discovery made before its own call.
 pub(crate) struct SiteOpens<S> {
     site: S,
+    /// Whether the next open asks anew: false only before a one-step reader's first open.
+    asks_anew: std::sync::atomic::AtomicBool,
 }
 
 impl<S: std::borrow::Borrow<Site>> SiteOpens<S> {
+    /// The opens of a reader built and opened in one step.
     pub(crate) fn new(site: S) -> Self {
-        Self { site }
+        Self::asking(site, false)
+    }
+
+    /// The opens of a reader held from its build to a later first open.
+    pub(crate) fn held(site: S) -> Self {
+        Self::asking(site, true)
+    }
+
+    fn asking(site: S, asks_anew: bool) -> Self {
+        Self {
+            site,
+            asks_anew: std::sync::atomic::AtomicBool::new(asks_anew),
+        }
     }
 
     /// The reader's own site.
@@ -1913,7 +1931,14 @@ impl<S: std::borrow::Borrow<Site>> SiteOpens<S> {
 
     /// `open` run over the site this open reads ([`SiteOpens`]).
     pub(crate) fn open<T>(&self, open: impl FnOnce(&Site) -> T) -> T {
-        open(&self.site().anew())
+        if self
+            .asks_anew
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            open(&self.site().anew())
+        } else {
+            open(self.site())
+        }
     }
 }
 
@@ -1927,13 +1952,21 @@ pub(crate) struct ReadGraph<'r> {
 }
 
 impl<'r> ReadGraph<'r> {
-    /// The reader at `site`, comparing with the tree it lies in ([`Site::tree`]).
+    /// The reader at `site`, comparing with the tree it lies in ([`Site::tree`]), built and
+    /// opened in one step ([`SiteOpens::new`]).
     pub(crate) fn new(records: &'r Projector, site: &'r Site) -> Result<Self, String> {
-        site.tree()?;
-        Ok(Self {
-            records,
-            opens: SiteOpens::new(site),
-        })
+        Self::over(records, SiteOpens::new(site))
+    }
+
+    /// [`ReadGraph::new`] for a reader held from its build to a later first open
+    /// ([`SiteOpens::held`]).
+    pub(crate) fn held(records: &'r Projector, site: &'r Site) -> Result<Self, String> {
+        Self::over(records, SiteOpens::held(site))
+    }
+
+    fn over(records: &'r Projector, opens: SiteOpens<&'r Site>) -> Result<Self, String> {
+        opens.site().tree()?;
+        Ok(Self { records, opens })
     }
 }
 
@@ -5521,25 +5554,23 @@ fn spec_lint_next_step(spec_path: &str) -> String {
 /// authority that PROVES the accepted-name contract (the exact `symbols`/`grep`/`nop` set
 /// and the loud migration error for the retired `turbovec` / `hybrid` names).
 fn select_grounder(
-    site: Site,
+    heads: SiteOpens<Site>,
     name: &str,
 ) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     // `symbols` (and the UNSET / empty default) resolve to the real structural grounder when the
-    // feature is built (it reads the code store's view of the head, opened on every read); a build
-    // WITHOUT the feature falls through to `grounder_for`, whose `symbols` arm is the loud
-    // no-silent-degrade error.
-    // Every grounder reads the worktree of `site`, named as every other read names it.
-    let worktree = site.tree()?;
+    // feature is built (it reads the code store's view of the head, opened on every read through
+    // `heads`); a build WITHOUT the feature falls through to `grounder_for`, whose `symbols` arm is
+    // the loud no-silent-degrade error.
+    // Every grounder reads the worktree of the site `heads` opens through, named as every other
+    // read names it.
+    let worktree = heads.site().tree()?;
     let worktree = worktree.to_string_lossy();
     #[cfg(feature = "symbols")]
     {
         let n = name.trim();
         if n.is_empty() || n.eq_ignore_ascii_case("symbols") {
             return Ok(Box::new(
-                rigger::grounder::symbols::grounder::Symbols::over(
-                    &worktree,
-                    Box::new(SiteOpens::new(site)),
-                ),
+                rigger::grounder::symbols::grounder::Symbols::over(&worktree, Box::new(heads)),
             ));
         }
     }
@@ -5547,14 +5578,18 @@ fn select_grounder(
 }
 
 /// The grounder the caller's tree (the cwd's [`Site::tree`]) configures: its workflow's
-/// `defaults.grounder` ([`select_grounder`]); a tree with no workflow yet grounds with the
-/// default, so an agent can ground before a workflow is authored.
-fn configured_grounder() -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
+/// `defaults.grounder` ([`select_grounder`]), opening its heads through the cwd's site as `opens`
+/// does ([`SiteOpens::new`] for a grounder built and opened in one step, [`SiteOpens::held`] for
+/// one held to a later first open); a tree with no workflow yet grounds with the default, so an
+/// agent can ground before a workflow is authored.
+fn configured_grounder(
+    opens: fn(Site) -> SiteOpens<Site>,
+) -> Result<Box<dyn Grounder>, Box<dyn std::error::Error>> {
     let site = Site::here();
     let name = config_store::load(&site.tree()?.to_string_lossy())
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    select_grounder(site, &name)
+    select_grounder(opens(site), &name)
 }
 
 fn git_repo() -> Result<String, String> {
@@ -5605,38 +5640,48 @@ mod tests {
         );
     }
 
-    /// A reader that answers many opens (the MCP session, a run, either's grounder) holds no
-    /// discovery from its build to its first open or between two opens: an open after the
-    /// directory it stands in became a repository reads that repository's head.
+    /// A reader holds no discovery between two opens, and a reader held from its build to a later
+    /// first open (the MCP session's, a run's, either's grounder) none from its build to that
+    /// open: an open after the directory it stands in became a repository reads that
+    /// repository's head.
     #[test]
     fn a_reader_asks_where_its_repository_lies_anew_for_each_open() {
         let records = Projector::open(":memory:", "test").unwrap();
-        // (when the directory becomes a repository, the directory)
+        // (when the directory becomes a repository, whether the reader is held, the directory)
         let moments = [
-            ("before the first open", tempfile::tempdir().unwrap()),
-            ("between two opens", tempfile::tempdir().unwrap()),
+            ("before the first open", true, tempfile::tempdir().unwrap()),
+            ("between two opens", true, tempfile::tempdir().unwrap()),
+            ("between two opens", false, tempfile::tempdir().unwrap()),
         ];
-        let sites = moments.each_ref().map(|(_, dir)| Site::of(dir.path()));
-        let reads = sites
-            .each_ref()
-            .map(|site| ReadGraph::new(&records, site).unwrap());
+        let sites = moments.each_ref().map(|(_, _, dir)| Site::of(dir.path()));
+        let reads: Vec<_> = (sites.iter().zip(&moments))
+            .map(|(site, (_, held, _))| match held {
+                true => ReadGraph::held(&records, site).unwrap(),
+                false => ReadGraph::new(&records, site).unwrap(),
+            })
+            .collect();
         // (reader, when its directory becomes a repository, the directory, its next open's commit)
         type NextOpen<'a> = Box<dyn Fn() -> Option<String> + 'a>;
         let mut readers: Vec<(&str, &str, &Path, NextOpen<'_>)> = Vec::new();
-        for ((moment, dir), read) in moments.iter().zip(&reads) {
+        for ((moment, _, dir), read) in moments.iter().zip(&reads) {
             readers.push((
                 "the graph reader",
                 moment,
                 dir.path(),
                 Box::new(move || read.head().unwrap().view.stamp().tip.commit.clone()),
             ));
-            #[cfg(feature = "symbols")]
+        }
+        #[cfg(feature = "symbols")]
+        for (moment, held, dir) in &moments {
             readers.push(("a grounder's heads", moment, dir.path(), {
                 use rigger_domain::code_view::OpenCodeView;
                 // Its site has named the worktree, as `select_grounder` names it first.
                 let site = Site::of(dir.path());
                 let worktree = site.tree().unwrap();
-                let heads = SiteOpens::new(site);
+                let heads = match held {
+                    true => SiteOpens::held(site),
+                    false => SiteOpens::new(site),
+                };
                 Box::new(move || {
                     let head = heads.head(&worktree).unwrap();
                     head.view.stamp().tip.commit.clone()
@@ -5652,7 +5697,7 @@ mod tests {
                 );
             }
         }
-        for (_, dir) in &moments {
+        for (_, _, dir) in &moments {
             git_init_quiet(dir.path());
             crate::test_support::git_ok_with_identity(
                 dir.path(),

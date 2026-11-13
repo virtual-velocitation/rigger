@@ -816,7 +816,7 @@ pub(crate) fn cmd_ground(args: &[String]) -> Res {
         )
         .into());
     }
-    let grounder = configured_grounder()?;
+    let grounder = configured_grounder(SiteOpens::new)?;
     // The rows and their honesty label (6.1) come from one read of the code store.
     let grounded = grounder.ground_ranked_labelled(query, k, tests);
     match grounded.rows {

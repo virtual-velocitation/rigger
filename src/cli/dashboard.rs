@@ -916,7 +916,7 @@ fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::
 pub(crate) fn cmd_mcp(args: &[String]) -> Res {
     let spawn = parse_mcp_spawn_flag(args)?;
     over_the_run_store(|loc, selection, store| {
-        let grounder = configured_grounder();
+        let grounder = configured_grounder(SiteOpens::held);
         // The resolved store's own graph, so a server started in a linked worktree serves and folds
         // into the owning repository's graph, never one opened in the worktree. Opened as it
         // stands: an emit this server serves appends whether or not the graph owes its rebuild (the
@@ -926,7 +926,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
         let site = Site::here();
-        let context = ReadGraph::new(&graph, &site)?;
+        let context = ReadGraph::held(&graph, &site)?;
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.

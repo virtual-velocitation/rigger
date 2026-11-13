@@ -971,12 +971,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
     // and its site the one the run's reads find their repository from, anew for each open.
     let site = Site::of(Path::new(&repo));
-    let grounder = select_grounder(site.anew(), &cfg.workflow.defaults.grounder)?;
+    let grounder = select_grounder(
+        SiteOpens::held(site.anew()),
+        &cfg.workflow.defaults.grounder,
+    )?;
     let root = repo.clone();
     let code_store = run_code_store(&site)?;
     // The grounding reads compare with the operator checkout the run lands its merges on, named
     // as every reader names its worktree; a unit's read compares with the unit's own worktree.
-    let read_graph = ReadGraph::new(&graph, &site)?;
+    let read_graph = ReadGraph::held(&graph, &site)?;
     let deps = Deps {
         store: &store,
         driver: &held,
