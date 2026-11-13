@@ -46,24 +46,37 @@ const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
 
-/// A `fetch` + fixtures prelude: the whole-graph overview (the no-argument route) and a seeded
-/// neighborhood carrying a `memory` rail ({decisions, findings, concepts}) for subject
-/// `combat.rs::fire`. Every other fetch (explain overlay, instances/state poll) resolves gracefully
-/// empty, matching the live page's own network shape.
+/// A `fetch` + fixtures prelude: the whole-graph overview (the no-argument route) and the seeded
+/// neighborhoods, each carrying its `memory` rail ({decisions, findings, concepts}): subject
+/// `combat.rs::fire` with an entry in every section, `combat.rs::aim` with one decision alone,
+/// `combat.rs::reload` with nothing to list, and any other seed answered as the route answers a
+/// seed the graph does not hold (no node, no edge, every section empty). Every other fetch
+/// (explain overlay, instances/state poll) resolves gracefully empty, matching the live page's
+/// own network shape.
 const RESOLVING_FETCH: &str = r#"
 const __OVERVIEW = { clusters: [ { key: "src", count: 2, kind: "code-entity" } ], edges: [], total: 2 };
-const __NEIGH = { seed: "combat.rs::fire", depth: 2,
-  nodes: [ { id: "combat.rs::fire", kind: "code-entity", label: "fire" } ], edges: [],
-  memory: {
+const __NOTHING_TO_LIST = { decisions: [], findings: [], concepts: [] };
+function __held(id, memory){
+  return { seed: id, depth: 2, nodes: [ { id: id, kind: "code-entity", label: id.split("::")[1] } ], edges: [], memory: memory };
+}
+const __NEIGHBORHOODS = {
+  "combat.rs::fire": __held("combat.rs::fire", {
     decisions: [ { id: "d1", kind: "decision", summary: "use the shared authority" } ],
     findings: [ { id: "f1", kind: "finding", summary: "the finding content" } ],
     concepts: [ { id: "concept/combat", label: "combat resolution" } ]
-  } };
+  }),
+  "combat.rs::aim": __held("combat.rs::aim", {
+    decisions: [ { id: "d2", kind: "decision", summary: "aim before firing" } ], findings: [], concepts: []
+  }),
+  "combat.rs::reload": __held("combat.rs::reload", __NOTHING_TO_LIST)
+};
 function __view(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return { nodes: [] };
-  if (s.indexOf("seed=") !== -1 && s.indexOf("seed=&") === -1) return __NEIGH;
-  return __OVERVIEW;
+  const m = s.match(/[?&]seed=([^&]+)/);
+  if (m === null) return __OVERVIEW;
+  const seed = decodeURIComponent(m[1]);
+  return __NEIGHBORHOODS[seed] || { seed: seed, depth: 2, nodes: [], edges: [], memory: __NOTHING_TO_LIST };
 }
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
@@ -132,6 +145,45 @@ const RAIL_DRIVER: &str = r#"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "#;
 
+/// Driver: the rail shows only for a subject with an entry to list. A seed the graph does not
+/// hold gets the panel's message and no rail; a held subject with nothing to list shows no rail
+/// either; a subject with one entry shows the rail, its other sections saying there is none; and
+/// a seed the graph does not hold after that one hides the shown rail.
+const NOTHING_TO_LIST_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  const noRail = function(what){
+    if (el("kgrail").hidden !== true || el("kgrail")._html !== "")
+      throw new Error("REGRESSION: " + what + " showed the memory rail: " + el("kgrail")._html);
+  };
+  await flush();
+
+  seedGraph("nowhere.rs::ghost");
+  await flush();
+  noRail("a seed the graph does not hold");
+  if (el("kgpanel")._html.indexOf("no knowledge-graph neighborhood for this node") === -1)
+    throw new Error("a seed the graph does not hold must get the panel's message: " + el("kgpanel")._html);
+
+  seedGraph("combat.rs::reload");
+  await flush();
+  noRail("a subject with nothing to list");
+
+  seedGraph("combat.rs::aim");
+  await flush();
+  const rail = el("kgrail")._html;
+  if (el("kgrail").hidden !== false || rail.indexOf("aim before firing") === -1)
+    throw new Error("REGRESSION: a subject with one entry must show it in the rail: " + rail);
+  if (rail.split(">none<").length - 1 !== 2)
+    throw new Error("the rail's two empty sections must each say there is none: " + rail);
+
+  seedGraph("nowhere.rs::ghost");
+  await flush();
+  noRail("a seed the graph does not hold, after a subject whose rail showed,");
+
+  console.log("OK the-rail-shows-only-a-subject-with-an-entry-to-list");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
 rigger::test_cases! {
     /// RUNTIME guard (spec 63 c5, SUBJECT VIEW): clicking a node reveals the docked memory rail with the
     /// subject's decisions/findings/concepts, never leaking that content into the neighborhood panel
@@ -139,4 +191,9 @@ rigger::test_cases! {
     /// folding its content into `#kgpanel`) reddens this.
     clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel:
         node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], RAIL_DRIVER, HARNESS_FILE), "OK memory-rail-shows-on-seed-and-hides-on-clear");
+    /// RUNTIME guard that the rail shows only for a subject with an entry to list: a seed the graph
+    /// does not hold gets the panel's message and no rail, so the rail never narrows the panel
+    /// for a subject it has nothing to say about.
+    the_rail_shows_only_for_a_subject_with_an_entry_to_list:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], NOTHING_TO_LIST_DRIVER, HARNESS_FILE), "OK the-rail-shows-only-a-subject-with-an-entry-to-list");
 }
