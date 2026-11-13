@@ -69,6 +69,7 @@ impl Driver {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
         let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
         let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
+        crate::claude_auth::apply_agent_credential(&mut cmd);
         cmd.args(build_args(
             agent,
             &persona,
@@ -551,6 +552,95 @@ thinking out loud, not json\n\
             "an empty SpawnOpts.env must inject nothing: {:?}",
             without.output
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(claude_code_ambient_env)]
+    fn spawn_hands_the_rigger_named_token_to_the_agent_only() {
+        let rows = [
+            ("rigger-named alone", None, Some("marker-a"), "marker-a"),
+            (
+                "both set: the rigger-named wins",
+                Some("ambient"),
+                Some("marker-b"),
+                "marker-b",
+            ),
+            (
+                "unset: the ambient rides through",
+                Some("ambient"),
+                None,
+                "ambient",
+            ),
+            (
+                "empty: the ambient rides through",
+                Some("ambient"),
+                Some(""),
+                "ambient",
+            ),
+            ("neither", None, None, ""),
+        ];
+        let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/env-echo-agent.sh")
+            .to_string_lossy()
+            .into_owned();
+        let driver = Driver {
+            bin,
+            ..Driver::default()
+        };
+        let emit = |_: &str, _: Value| Ok(());
+        let agent = AgentDef {
+            id: "e".into(),
+            ..Default::default()
+        };
+        for (name, ambient, rigger, seen) in rows {
+            let _env = crate::claude_auth::TokenEnv::set(ambient, rigger);
+            let out = driver
+                .spawn(&agent, "task", &SpawnOpts::new(test_spawn_host()), &emit)
+                .unwrap()
+                .output;
+            assert!(
+                out.contains(&format!("\nCLAUDE_CODE_OAUTH_TOKEN={seen}\n")),
+                "{name}: {out:?}"
+            );
+            assert!(
+                out.contains("\nRIGGER_CLAUDE_CODE_OAUTH_TOKEN=\n"),
+                "{name}: the rigger-named variable is not passed on: {out:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(claude_code_ambient_env)]
+    fn the_token_value_is_in_nothing_a_spawn_emits_or_returns() {
+        const MARKER: &str = "marker-secret-7f3a";
+        let _env = crate::claude_auth::TokenEnv::set(None, Some(MARKER));
+        let driver = Driver {
+            bin: crate::test_support::fixture_script("claude-code-token-presence-agent.sh"),
+            ..Driver::default()
+        };
+        let emitted = std::cell::RefCell::new(String::new());
+        let emit = |kind: &str, data: Value| {
+            emitted.borrow_mut().push_str(&format!("{kind} {data}"));
+            Ok(())
+        };
+        let agent = AgentDef {
+            id: "e".into(),
+            ..Default::default()
+        };
+        let opts = SpawnOpts::new(test_spawn_host());
+        let result = driver.spawn(&agent, "task", &opts, &emit).unwrap();
+        assert!(
+            result
+                .output
+                .lines()
+                .any(|l| l == "CLAUDE_CODE_OAUTH_TOKEN_SET=yes"),
+            "the spawn got the token: {:?}",
+            result.output
+        );
+        let seen = format!("{result:?}{}", emitted.borrow());
+        assert!(!seen.contains(MARKER), "the token value leaked: {seen}");
     }
 
     #[cfg(unix)]

@@ -227,8 +227,10 @@ that cannot resume gets a fresh launch of the same spawn. Neither charges an att
   account, model); the statusline health word is `held`; the dash health strip shows it.
 - Attention gains two crossings, `held` and `released`; the plugin monitor delivers each
   to the operator's session within seconds.
-- `rigger validate` reports the auth method and warns when a long run rides a login that
-  can expire, naming the subscription's long-lived token as the remedy.
+- `rigger validate` reports the auth method and never warns of a login: the long-lived
+  token is supported, never required, and never nagged about.
+  `RIGGER_CLAUDE_CODE_OAUTH_TOKEN` in rigger's environment becomes `CLAUDE_CODE_OAUTH_TOKEN` on
+  every `claude` launch only, leaving the operator's own sessions on their login.
 
 ---
 

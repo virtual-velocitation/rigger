@@ -19,4 +19,6 @@ echo "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=$CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS
 # The spawn id the host exports, so a test can assert the worker's own `rigger emit` is told
 # the spawn it runs as.
 echo "RIGGER_SPAWN=$RIGGER_SPAWN"
+echo "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
+echo "RIGGER_CLAUDE_CODE_OAUTH_TOKEN=$RIGGER_CLAUDE_CODE_OAUTH_TOKEN"
 echo '{"id":"final","pass":true}'
