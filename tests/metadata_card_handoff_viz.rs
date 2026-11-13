@@ -55,8 +55,9 @@ const setTimeout = function(){ return 0; };
 /// The in-memory `/api/graph` fixture the `fetch` shims answer from: `card=<id>` serves one of
 /// three fixture cards (a code entity, its file, and the concept it realizes); a `seed=&lens=`
 /// re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body naming the
-/// requested subject (so `kgSubject`/`kgSeed` land on it); anything else (the initial whole-graph
-/// overview, `explain=`, `/api/instances`, `/api/state`) serves a graceful empty.
+/// requested subject (so `kgSubject`/`kgSeed` land on it), and a `cluster=` drill echoes its
+/// cluster key as its seed, as the route does; anything else (the initial whole-graph overview,
+/// `explain=`, `/api/instances`, `/api/state`) serves a graceful empty.
 const CARD_FIXTURE: &str = r#"
 const CODE_CARD = { id: "combat.rs::fire", kind: "code-entity", label: "fire",
   file: "combat.rs", line: "42", degree: 5, community: "combat lifecycle",
@@ -84,6 +85,8 @@ function __view(url){
   const s = String(url);
   const cardId = __qval(s, "card");
   if (cardId !== null) return { card: __cardFor(cardId) };
+  const cluster = __qval(s, "cluster");
+  if (cluster !== null) return { seed: cluster, depth: 1, nodes: [], edges: [] };
   const seed = __qval(s, "seed");
   if (seed !== null && __qval(s, "lens") !== null) return { subject: seed, clusters: [], edges: [], total: 0 };
   if (seed !== null) return { seed: seed, depth: 2, nodes: [], edges: [] };
