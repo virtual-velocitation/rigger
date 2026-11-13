@@ -5328,7 +5328,9 @@ esac
 # The root the run's build caches lie under is the one rigger resolves, asked of git: the main
 # worktree `git worktree list` names first, unless git marks it bare or names the git directory
 # itself (a git directory kept apart), where git records no main checkout and the root is this
-# worktree's own top.
+# worktree's own top. Telling that last case needs `--path-format`, so git 2.31 or newer; an
+# older git roots it at the git directory, where no unit or shared build cache lies, so a build
+# is found only in the environment's or this worktree's own target, or on PATH.
 main_record=$(git worktree list --porcelain 2>/dev/null | sed '/^$/q')
 main_worktree=$(printf '%s\n' "$main_record" | sed -n 's/^worktree //p')
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)

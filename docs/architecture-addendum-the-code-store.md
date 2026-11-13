@@ -521,9 +521,12 @@ definition of the project governing the caller under `root`: the nearest directo
 workflow definition, from the caller's position mapped under `root` up to `root`. `validate` and
 `docs` judge and render the project governing the caller in its own worktree, where an edit to it
 is made before it lands, and `ground` and the MCP server's ground tool take that project's
-grounder to ground the caller's worktree with. The docs pre-commit block asks git for `root`, the directory the run's
-build caches lie under: the main worktree `git worktree list` names, or the caller's own top where
-that entry is bare or names the common directory itself. Every command finds its store, its
+grounder to ground the caller's worktree with. The docs pre-commit block asks git for `root`, the
+directory the run's build caches lie under: the main worktree `git worktree list` names, or the
+caller's own top where that entry is bare or names the common directory itself. Telling the common
+directory needs git 2.31 or newer (`rev-parse --path-format`); an older git roots that layout at
+the common directory, where no unit or shared build cache lies, so the block finds a build only in
+the environment's or the worktree's own target, or on PATH. Every command finds its store, its
 configuration and `root` through the one resolver, which alone reads the directory the command
 runs in; the suite fails on any other read of it, and on any store, configuration or root path
 spelled relative to it, outside the resolver.
