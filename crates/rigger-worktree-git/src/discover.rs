@@ -980,17 +980,19 @@ mod tests {
     }
 
     /// Beside `main` under `root`: a linked worktree whose `.git` names its administrative
-    /// directory relatively (`relative`), a checkout whose git directory lies apart (`apart`), a
-    /// submodule (`outer/sub`), a checkout whose `.git` is a symlink (`dotlink`), a sparse
-    /// checkout (`sparse`), a main checkout and a linked worktree under per-worktree
-    /// configuration (`wtc`, `wtc-linked`), a bare repository's linked worktree (`bare-wt`), a
-    /// configuration including a file and naming worktrees in a remote (`configured`), a work
-    /// tree configured where its `.git` lies (`selfwt`), a `bare` value written quoted beside a
-    /// comment (`quoted`), a format version written in hex and a `bare` value as a number with a
-    /// unit (`suffixed`); and what git alone sets up: a work tree configured elsewhere
-    /// (`elsewhere`), a `.git` configured bare (`baremain`), a configuration naming no format
-    /// version (`noversion`), a format 0 naming an extension git ignores there (`ext0`), and a
-    /// `.git` directory naming a common directory (`named`).
+    /// directory relatively (`relative`), a checkout whose git directory lies apart and a linked
+    /// worktree of it (`apart`, `apart-linked`), a submodule and a linked worktree of it
+    /// (`outer/sub`, `sub-linked`), a checkout whose `.git` is a symlink and a linked worktree of
+    /// it (`dotlink`, `dotlink-linked`), a sparse checkout (`sparse`), a main checkout and a
+    /// linked worktree under per-worktree configuration (`wtc`, `wtc-linked`), a bare
+    /// repository's linked worktree (`bare-wt`), a configuration including a file and naming
+    /// worktrees in a remote (`configured`), a work tree configured where its `.git` lies
+    /// (`selfwt`), a `bare` value written quoted beside a comment (`quoted`), a format version
+    /// written in hex and a `bare` value as a number with a unit (`suffixed`), a linked worktree
+    /// of a `.git` configured bare (`baremain-wt`); and what git alone sets up: a work tree
+    /// configured elsewhere (`elsewhere`), a `.git` configured bare (`baremain`), a configuration
+    /// naming no format version (`noversion`), a format 0 naming an extension git ignores there
+    /// (`ext0`), and a `.git` directory naming a common directory (`named`).
     fn layouts(root: &Path) {
         let main = root.join("main");
         git_ok(
@@ -1008,6 +1010,10 @@ mod tests {
         );
         git_ok_with_identity(root.join("apart"), &["commit", "--allow-empty", "-qm", "i"]);
         std::fs::create_dir_all(root.join("apart/x")).unwrap();
+        git_ok(
+            root.join("apart"),
+            &["worktree", "add", "-q", "../apart-linked", "-b", "apartl"],
+        );
         let outer = root.join("outer");
         std::fs::create_dir_all(&outer).unwrap();
         init_repo(&outer);
@@ -1017,12 +1023,20 @@ mod tests {
             &[&["-c", "protocol.file.allow=always"][..], &add].concat(),
         );
         std::fs::create_dir_all(outer.join("sub/x")).unwrap();
+        git_ok(
+            outer.join("sub"),
+            &["worktree", "add", "-q", "../../sub-linked", "-b", "subl"],
+        );
         for repo in ["dotlink", "sparse", "wtc", "configured", "selfwt"] {
             std::fs::create_dir_all(root.join(repo).join("d")).unwrap();
             init_repo(root.join(repo));
         }
         std::fs::rename(root.join("dotlink/.git"), root.join("dotlink.git")).unwrap();
         std::os::unix::fs::symlink(root.join("dotlink.git"), root.join("dotlink/.git")).unwrap();
+        git_ok(
+            root.join("dotlink"),
+            &["worktree", "add", "-q", "../dotlink-linked", "-b", "dotl"],
+        );
         git_ok(
             root.join("sparse"),
             &["sparse-checkout", "set", "--no-cone", "/*"],
@@ -1069,6 +1083,10 @@ mod tests {
             init_repo(root.join(repo));
             git_ok(root.join(repo), &["config", key, value.to_str().unwrap()]);
         }
+        git_ok(
+            root.join("baremain"),
+            &["worktree", "add", "-q", "../baremain-wt", "-b", "bmwt"],
+        );
         for (repo, bare, version) in [
             ("quoted", "\"false\" ; quoted", "0"),
             ("suffixed", "0k", "0x0"),
@@ -1160,15 +1178,19 @@ mod tests {
             ("relative", true, true),
             ("apart", true, true),
             ("apart/x", true, true),
+            ("apart-linked", true, true),
             ("outer", true, true),
             ("outer/sub", true, true),
             ("outer/sub/x", true, true),
+            ("sub-linked", true, true),
             ("dotlink", true, true),
             ("dotlink/d", true, true),
+            ("dotlink-linked", true, true),
             ("sparse/d", true, true),
             ("wtc/d", true, true),
             ("wtc-linked", true, true),
             ("bare-wt", true, true),
+            ("baremain-wt", true, true),
             ("configured/d", true, true),
             ("selfwt", true, true),
             ("selfwt/d", true, true),
@@ -1371,10 +1393,34 @@ mod tests {
         }
     }
 
+    /// The main checkout git records for the repository `start` lies in, from git's own answers
+    /// asked from the physical path of its common directory (`git rev-parse --git-common-dir`):
+    /// none where `git config --type=bool --get core.bare` answers `true`, the path `git config
+    /// --get core.worktree` answers, taken from the common directory, where it answers one, the
+    /// common directory's parent where it is named `.git`, and none anywhere else.
+    fn git_records_main(start: &Path) -> Option<PathBuf> {
+        let common = git_says(start, Location::CommonDir).unwrap();
+        let common = std::fs::canonicalize(start.join(common)).unwrap();
+        let config = |args: &[&str]| {
+            let out = run_git(&common, &[&["config"][..], args].concat());
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        };
+        if config(&["--type=bool", "--get", "core.bare"]).as_deref() == Some("true") {
+            return None;
+        }
+        if let Some(worktree) = config(&["--get", "core.worktree"]) {
+            return Some(std::fs::canonicalize(common.join(worktree)).unwrap());
+        }
+        (common.file_name() == Some(".git".as_ref())).then(|| common.parent().unwrap().into())
+    }
+
     /// Each row: a directory under the shapes, the root its repository's store lies at, and the
-    /// directory whose `HEAD` git names the main checkout's head from. The repository discovered
-    /// from it, from git's files or of git, names that root and that head, whichever worktree it
-    /// is discovered from.
+    /// directory whose `HEAD` names the head that store is read at. The repository discovered
+    /// from it, from git's files or of git, names that root and that head: the main checkout's
+    /// where git records one ([`git_records_main`]), whichever worktree it is discovered from,
+    /// and otherwise the worktree's own top and head.
     #[test]
     fn the_main_root_and_head_are_the_ones_every_worktree_shares() {
         let dir = shapes();
@@ -1387,17 +1433,29 @@ mod tests {
             ("relative", "main", "main"),
             ("named/d", "main", "main"),
             ("apart/x", "apart", "apart"),
+            ("apart-linked", "apart-linked", "apart-linked"),
             ("outer/sub/x", "outer/sub", "outer/sub"),
+            ("sub-linked", "outer/sub", "outer/sub"),
+            ("dotlink/d", "dotlink", "dotlink"),
+            ("dotlink-linked", "dotlink-linked", "dotlink-linked"),
             ("wtc-linked", "wtc", "wtc"),
-            ("bare-wt", "", "bare.git"),
+            ("bare-wt", "bare-wt", "bare-wt"),
+            ("baremain-wt", "baremain-wt", "baremain-wt"),
             ("noversion/d", "noversion", "noversion"),
             ("ext0/d", "ext0", "ext0"),
             ("elsewhere", "plain", "elsewhere"),
         ];
         for (path, root, head_of) in cases {
-            let repo = discover(&dir.path().join(path)).unwrap().unwrap();
+            let start = dir.path().join(path);
+            let repo = discover(&start).unwrap().unwrap();
             let root = std::fs::canonicalize(dir.path().join(root)).unwrap();
             assert_eq!(repo.main_root(), root, "{path}: the main root");
+            let top = git_says(&start, Location::Toplevel).unwrap();
+            let recorded = git_records_main(&start).unwrap_or_else(|| PathBuf::from(top));
+            assert_eq!(
+                root, recorded,
+                "{path}: the root is the main checkout git records"
+            );
             let head = git_head(&dir.path().join(head_of));
             assert_eq!(repo.main_head(), Some(head), "{path}: the main head");
         }
