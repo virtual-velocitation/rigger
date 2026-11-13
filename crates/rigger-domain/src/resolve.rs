@@ -655,9 +655,7 @@ impl<'v> Resolver<'v> {
                 continue;
             }
             let (to, tier) = self.call_edge(file, &m.leaf, test);
-            if let Some(caller) = m.enclosing.and_then(entity) {
-                sink(caller, REL_CALLS, &to, tier, test);
-            }
+            sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
             match referenced.get_mut(&to) {
                 Some(product) => *product |= !test,

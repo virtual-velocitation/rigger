@@ -703,6 +703,10 @@ Which definitions a mention may resolve to depends on whether the mention is tes
   proof credits, so a shown test's call edge and the proof it adds name one definition. Under
   `exclude` it produces no edge.
 
+A call in file F yields two edges to the one target the call rule below resolves: CALLS from its
+enclosing definition, or from F when the call sits outside every definition (a module-level
+call), and REFERENCES from F.
+
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |

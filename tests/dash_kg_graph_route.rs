@@ -1822,7 +1822,8 @@ type Touch = (&'static str, &'static str, &'static str);
 
 /// WITH TESTS SHOWN, A TEST'S CALLS ARE ITS EDGES: under `include` and `only`, a product entity's
 /// neighbourhood holds every test entity that calls it, from its own file or another, by its CALLS
-/// edge, and a call at a test file's top level by the file's REFERENCES edge; under `exclude` none.
+/// edge, and a call at a test file's top level by the file's CALLS edge beside its REFERENCES
+/// edge; under `exclude` none.
 /// A test calling its own helper keeps that edge, and a product caller's edge is the same under
 /// every filter. Read through the store's walk and through the explorer's seeded route.
 #[cfg(feature = "symbols")]
@@ -1843,6 +1844,7 @@ fn a_product_entity_s_neighbourhood_holds_the_shown_tests_that_call_it() {
         ("tests/t.rs::from_outside", "CALLS", "inferred"),
     ];
     let gadget_in_by_tests: &[Touch] = &[
+        ("tests/test_p.py", "CALLS", "inferred"),
         ("tests/test_p.py", "REFERENCES", "inferred"),
         ("tests/test_p.py::test_gadget", "CALLS", "inferred"),
     ];

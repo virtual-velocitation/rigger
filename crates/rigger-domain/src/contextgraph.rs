@@ -211,15 +211,14 @@ pub const REL_CONTAINS: &str = "CONTAINS";
 /// tier is layered onto this edge by a later criterion; this criterion only makes the structural
 /// edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
-/// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
-/// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
-/// attributed to - and that carries no `ref_kind` (a tagged reference folds no CALLS edge, spec
-/// 117).
+/// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>` from the
+/// definition enclosing the call, or `<file> --CALLS--> <callee>` from the file when the call sits
+/// outside every definition (a module-level call), so every call has a caller. A tagged reference
+/// (a top-level `use`/import) folds no CALLS edge (spec 117).
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
-/// function, not merely "referenced from which file". A reference outside every definition
-/// (a top-level `use`/import) carries no caller and folds no CALLS edge. Re-extraction supersedes a
-/// file's CALLS edges under the same `fresh` batch boundary as its other structural edges (spec 29a).
+/// function or module, not merely "referenced from which file". Re-extraction supersedes a file's
+/// CALLS edges under the same `fresh` batch boundary as its other structural edges (spec 29a).
 pub const REL_CALLS: &str = "CALLS";
 /// A `design-doc` SPECIFIES (designs) a code node (spec 29b): the design-intent edge from a
 /// reference-architecture / `architecture.md` / addendum node to the subsystem it designs, so a
