@@ -1316,7 +1316,8 @@ async function setOverlay(on) {
 
 // Re-render the CURRENT KG view in place from its cached body (the overlay toggle, the card docking, a
 // resize, a frontier node's choices). Mirrors the renderer the view was drawn by, so a redraw never
-// changes WHICH view is shown - only whether its nodes carry badges and what kgShown holds.
+// changes WHICH view is shown nor where the user moved it - only whether its nodes carry badges and
+// what kgShown holds.
 function rerenderCurrentView() {
   if (!kgViewData) return;
   if (kgMode === "overview") renderKgOverview(kgViewData);
@@ -1502,11 +1503,15 @@ async function pathTo(target) {
 let kgMode = "overview";
 
 // Record the view the panel now holds and its body (so a toggle re-renders it in place), drop what
-// the panel showed of a view it no longer holds, and bring the header's tests state up to that view.
-// Answers whether the body is a new one (a fresh read) rather than the held one drawn again.
+// the panel showed of a view it no longer holds and where the user moved it (a new view opens fitted),
+// and bring the header's tests state up to that view. Answers whether the body is a new one (a fresh
+// read) rather than the held one drawn again.
 function holdKgView(mode, body) {
   const fresh = body !== kgViewData;
-  if (fresh) kgShown = kgShownNone();
+  if (fresh) {
+    kgShown = kgShownNone();
+    kgViewMoved = false;
+  }
   kgMode = mode;
   kgViewData = body;
   syncTestsToggle();
@@ -1569,12 +1574,30 @@ function kgDims() {
 
 // Draw a view into the panel: the markup `above` the drawing, then the drawing `draw` makes at the box
 // kgDims measures with that markup, the drawing's slot and the markup `below` it in place, then that
-// markup `below`; the view opens fitted.
+// markup `below`. A view the user has not moved opens fitted. A moved one drawn again (the held body,
+// with what the panel shows of it now) keeps where the user moved it: its marks are laid out at the
+// size they were laid out at, so each lands where it was under the kept transform, and only its
+// surface takes the box measured now (kgResurface).
 function kgDraw(above, draw, below) {
   const panel = el("kgpanel");
   panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
-  panel.innerHTML = above + draw(kgDims()) + below;
+  const dims = kgDims();
+  const laid = kgViewMoved ? kgDrawn.laid : null;
+  panel.innerHTML = above + draw(laid || dims) + below;
+  if (laid) kgResurface(dims);
   bindKgView();
+}
+
+// Give the drawing's surface the box `dims` with its marks left where they were laid out: the svg takes
+// its height and a viewBox of its size, so it is still seen at a scale of 1, and the labels read the
+// width it now shows.
+function kgResurface(dims) {
+  const svg = el("kgpanel").querySelector("svg.kgsvg");
+  svg.setAttribute("height", dims.h);
+  svg.setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
+  kgDrawn.width = dims.w;
+  kgDrawn.height = dims.h;
+  if (kgLabelState) kgLabelState.width = dims.w;
 }
 
 // Whether a redraw for a new panel size is queued for the next animation frame.
@@ -1583,9 +1606,9 @@ let kgResizeQueued = false;
 // measures differs from the one the drawing was drawn at - so a redraw, which leaves that box as it
 // measured it, cannot feed itself. An unmoved view is drawn again from its held body and re-fits by
 // the opening rule. A panned or zoomed one keeps its transform and its marks where they are: only the
-// drawing surface takes the new size, and the labels follow the scale it is now seen at. A panel
-// holding no finished drawing (a message, an empty state, a draw that threw) is left as it is: only
-// kgSvg's markup carries #kgzoom, and kgSvg sets kgDrawn to describe it first.
+// drawing surface takes the new size (kgResurface), and the labels follow the scale it is now seen
+// at. A panel holding no finished drawing (a message, an empty state, a draw that threw) is left as
+// it is: only kgSvg's markup carries #kgzoom, and kgSvg sets kgDrawn to describe it first.
 function kgRedrawResized() {
   kgResizeQueued = false;
   const panel = el("kgpanel");
@@ -1596,10 +1619,7 @@ function kgRedrawResized() {
     rerenderCurrentView();
     return;
   }
-  panel.querySelector("svg.kgsvg").setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
-  kgDrawn.width = dims.w;
-  kgDrawn.height = dims.h;
-  if (kgLabelState) kgLabelState.width = dims.w;
+  kgResurface(dims);
   kgApplyLabels();
 }
 
@@ -2077,7 +2097,7 @@ function kgSvg(nodes, edges, width, height, opts) {
       + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
-  kgDrawn = { width: width, height: height, box: extent };
+  kgDrawn = { width: width, height: height, box: extent, laid: { w: width, h: height } };
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
     + '" preserveAspectRatio="xMidYMid meet">' + defs
     + '<g id="kgzoom">' + hullMarkup + lines + circles + '</g></svg>';
@@ -2130,15 +2150,18 @@ function layeredLayout(nodes, edges, width, height) {
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
 // the #kgzoom group (never re-laying-out). The wheel + mousedown bind to the FRESH svg each render (a
-// drill / back rebinds and opens the view FITTED again, kgOpeningView; a new panel size re-fits it
-// too unless the user has moved it, kgRedrawResized); the drag move/up live on `window`
+// new view - a drill, a back - opens FITTED, kgOpeningView; the same view drawn again, for a new panel
+// size or for what the panel shows of it, re-fits too unless the user has moved it, which keeps its
+// transform, kgDraw and kgRedrawResized); the drag move/up live on `window`
 // (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
-// Whether the user has panned or zoomed the view since it opened: a new panel size (kgRedrawResized)
-// keeps a moved view's transform and marks and re-fits an unmoved one.
+// Whether the user has panned or zoomed the view the panel holds since it opened: a redraw of that view
+// (kgDraw, kgRedrawResized) keeps a moved view's transform and marks and re-fits an unmoved one; a new
+// view (holdKgView) opens unmoved.
 let kgViewMoved = false;
-// The last drawing's viewBox size and the box holding every mark it drew (set by kgSvg).
+// The last drawing's viewBox size, the size its marks were laid out at (`laid`, the viewBox size until
+// a moved view's surface takes a new one), and the box holding every mark it drew (set by kgSvg).
 let kgDrawn = null;
 // How far the wheel zooms out: 0.2, or the opening scale when the fit opens below that.
 let kgZoomFloor = 0.2;
@@ -2185,9 +2208,11 @@ function kgOpeningView(drawn) {
   return { k: k, x: (drawn.width - bw * k) / 2 - b.x0 * k, y: (drawn.height - bh * k) / 2 - b.y0 * k };
 }
 function bindKgView() {
-  kgView = kgOpeningView(kgDrawn);              // a fresh render opens fitted to the panel
-  kgViewMoved = false;
-  kgZoomFloor = Math.min(0.2, kgView.k);
+  // A drawing the user has not moved opens fitted to the panel; a moved one keeps its view and floor.
+  if (!kgViewMoved) {
+    kgView = kgOpeningView(kgDrawn);
+    kgZoomFloor = Math.min(0.2, kgView.k);
+  }
   const svg = el("kgpanel").querySelector("svg");
   if (!svg) return;
   applyKgView();
