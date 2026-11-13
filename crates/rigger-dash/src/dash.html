@@ -391,7 +391,7 @@
   .kgrail-section { margin-bottom: 10px; }
   .kgrail-section h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--muted); }
-  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
+  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; }
   .kgrail-card b { display: block; color: var(--ink); }
   /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
      so populating it never touches the panel's own rendered nodes/edges. Stacked, it sits first,
@@ -404,6 +404,10 @@
      the sections below. */
   .kgcard { top: 8px; bottom: 8px; left: 8px; display: flex; flex-direction: column; }
   .kgcard[hidden] { display: none; }
+  /* Every name either pane shows, a title, a provenance, a chip or a rail card, breaks inside the
+     pane's content box when it has no break of its own, so a long one never scrolls the pane
+     sideways; the rows and chips inherit this one rule. */
+  .kgrail, .kgcard { overflow-wrap: anywhere; }
   /* DOCKING (see .kgbody): a lone rail docks from a 604px body (a 320px content box, the panel's
      12px padding on each side and the rail's 260px column), a lone card from 632px (344 plus its
      8px inset and 280px width), the two together from 892px; below that every shown pane stays
@@ -429,7 +433,7 @@
   .kgcard-title { font-weight: 700; color: var(--ink); }
   .kgcard-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle; }
-  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; }
   .kgcard-row { margin-top: 4px; }
   .kgcard-row h4 { margin: 0 0 3px; font-size: 10px; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--muted); }
