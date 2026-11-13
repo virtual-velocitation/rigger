@@ -301,6 +301,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "ambiguous project identity: the event store holds history un",
             "migrated project history to the durable identity: renamed {n",
             "rigger: migrated project identity - renamed {n} stream(s) fr",
+            "{command}: refusing to run in {top}: git records no main che",
             "{command}: refusing to run from inside a linked worktree ({l",
             "no rigger store found: neither {} nor any parent directory h",
             "the working directory cannot be read: {why}",
