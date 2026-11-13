@@ -643,6 +643,27 @@ mod tests {
         );
     }
 
+    /// CLOSING ENDS THE SERVING LOOP WITHOUT A CONNECTION: GIVEN a socket whose file is gone (so
+    /// no client, the closing wake-up included, can connect), WHEN it is closed, THEN the serving
+    /// loop still ends.
+    #[test]
+    fn closing_ends_the_serving_loop_even_when_no_connection_can_reach_the_socket() {
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+        let socket = std::sync::Arc::new(GateSocket::bind(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        let (ended, wait) = std::sync::mpsc::channel();
+        let serving = std::sync::Arc::clone(&socket);
+        std::thread::spawn(move || {
+            let answer = |_: GateRequest| GateReply::Refused { reason: "x".into() };
+            let _ = ended.send(serving.serve(&answer));
+        });
+        socket.close();
+        // A loop that never ends is reported by the wait, not by hanging the test.
+        let result = wait.recv_timeout(std::time::Duration::from_secs(5));
+        assert!(result.is_ok(), "the serving loop did not end after close");
+    }
+
     /// THE DRIVER'S ADDRESS WINS: GIVEN `RIGGER_GATE_SOCKET` set to an absolute path, THEN the
     /// verb asks there whatever the runtime directory derives; unset or empty, it derives the
     /// path as the operator's own shell does; set to a relative path, it is refused naming the
