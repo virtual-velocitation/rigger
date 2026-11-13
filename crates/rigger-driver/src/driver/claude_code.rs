@@ -3238,6 +3238,97 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
     }
 
+    /// Row of the token tables: (name, the ambient long-lived token, the rigger-named one, the
+    /// token the spawn sees, whether it sees the rigger-named variable's value).
+    const TOKEN_ROWS: [(&str, Option<&str>, Option<&str>, &str); 5] = [
+        ("rigger-named alone", None, Some("marker-a"), "marker-a"),
+        (
+            "both set: the rigger-named wins",
+            Some("ambient"),
+            Some("marker-b"),
+            "marker-b",
+        ),
+        (
+            "unset: the ambient rides through",
+            Some("ambient"),
+            None,
+            "ambient",
+        ),
+        (
+            "empty: the ambient rides through",
+            Some("ambient"),
+            Some(""),
+            "ambient",
+        ),
+        ("neither", None, None, ""),
+    ];
+
+    #[test]
+    #[serial_test::serial(claude_code_ambient_env)]
+    fn launch_hands_the_rigger_named_token_to_the_spawn_only() {
+        for (name, ambient, rigger, seen) in TOKEN_ROWS {
+            let _env = crate::claude_auth::TokenEnv::set(ambient, rigger);
+            let driver = Driver {
+                bin: fixture_bin(),
+                rigger_bin: "rigger".to_string(),
+                ..Driver::default()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let mut launch = driver
+                .launch(
+                    &AgentDef::default(),
+                    "task",
+                    &opts("u/implementer#0"),
+                    &store,
+                )
+                .unwrap();
+            let lines = read_fixture_lines(&mut launch);
+            assert!(
+                lines.contains(&format!("CLAUDE_CODE_OAUTH_TOKEN={seen}")),
+                "{name}: {lines:?}"
+            );
+            assert!(
+                lines.contains(&"RIGGER_CLAUDE_CODE_OAUTH_TOKEN=".to_string())
+                    || rigger == Some(""),
+                "{name}: the rigger-named variable is not passed on: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(claude_code_ambient_env)]
+    fn the_token_value_is_in_nothing_a_launch_records_or_prints() {
+        const MARKER: &str = "marker-secret-7f3a";
+        let _env = crate::claude_auth::TokenEnv::set(None, Some(MARKER));
+        let scratch = tempfile::tempdir().unwrap();
+        let driver = Driver {
+            bin: crate::test_support::fixture_script("claude-code-token-presence-agent.sh"),
+            rigger_bin: "rigger".to_string(),
+            ..Driver::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let mut o = opts("u/implementer#0");
+        o.run_id = "run-1".to_string();
+        o.dir = scratch.path().to_string_lossy().into_owned();
+        let mut launch = driver
+            .launch(&AgentDef::default(), "task", &o, &store)
+            .unwrap();
+        let lines = read_fixture_lines(&mut launch);
+        assert!(
+            lines.contains(&"CLAUDE_CODE_OAUTH_TOKEN_SET=yes".to_string()),
+            "the spawn got the token: {lines:?}"
+        );
+        let mut seen = format!("{lines:?}");
+        for event in crate::progress::read_run(&store, "run-1").unwrap() {
+            seen.push_str(&format!("{event:?}"));
+            seen.push_str(&String::from_utf8_lossy(&event.data));
+        }
+        for entry in std::fs::read_dir(scratch.path()).unwrap() {
+            seen.push_str(&std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default());
+        }
+        assert!(!seen.contains(MARKER), "the token value leaked: {seen}");
+    }
+
     #[test]
     fn launch_applies_the_harness_env_and_lets_opts_env_override_it() {
         // Every headless worker gets the harness environment (`harness_env`): the print-mode

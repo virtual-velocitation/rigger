@@ -71,6 +71,46 @@ fn parse_logged_in(report: &str) -> bool {
     serde_json::from_str::<AuthStatus>(report).is_ok_and(|status| status.logged_in)
 }
 
+/// The two token variables' ambient values for the length of one test, restored on drop. Tests
+/// that hold one run under the `claude_code_ambient_env` serial key, since the process
+/// environment is global.
+#[cfg(test)]
+pub(crate) struct TokenEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+#[cfg(test)]
+impl TokenEnv {
+    /// Set (`Some`) or remove (`None`) the long-lived token variable and the rigger-named one.
+    pub(crate) fn set(agent: Option<&str>, rigger: Option<&str>) -> Self {
+        let vars = [
+            ("CLAUDE_CODE_OAUTH_TOKEN", agent),
+            ("RIGGER_CLAUDE_CODE_OAUTH_TOKEN", rigger),
+        ];
+        let saved = vars
+            .iter()
+            .map(|(k, _)| (*k, std::env::var_os(k)))
+            .collect();
+        for (k, v) in vars {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        Self(saved)
+    }
+}
+
+#[cfg(test)]
+impl Drop for TokenEnv {
+    fn drop(&mut self) {
+        for (k, v) in self.0.drain(..) {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +224,21 @@ mod tests {
             "a binary that does not start answers not logged in"
         );
         assert!(started.elapsed() < quick.1, "and at once");
+    }
+
+    /// The login read runs `claude` on the environment a spawn gets: with the rigger-named token
+    /// set it sees the long-lived token variable, so the method it reports is the spawns' own.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(claude_code_ambient_env)]
+    fn the_login_read_runs_on_the_spawns_token_environment() {
+        let _env = TokenEnv::set(Some("ambient"), Some("rigger-named"));
+        let fake = tempfile::tempdir().unwrap();
+        let auth = "    printf '{\"authMethod\": \"%s\"}\n' \"$CLAUDE_CODE_OAUTH_TOKEN\" >&3\n";
+        let bin = crate::test_support::arms_claude(fake.path(), &probe_arms(auth, PASSING_CANARY));
+        assert_eq!(
+            auth_method(&bin, Instant::now() + Duration::from_secs(5)).as_deref(),
+            Some("rigger-named")
+        );
     }
 }
