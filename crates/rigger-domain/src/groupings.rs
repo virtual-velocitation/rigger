@@ -160,7 +160,7 @@ mod tests {
             test_ids.contains("src/a.rs::tests::checks"),
             "the fixture holds test code"
         );
-        for linked in ["tests/it.rs", "src/a_tests.rs"] {
+        for linked in ["tests/it.rs", "src/a_tests.rs", "src/a.rs::tests::checks"] {
             assert!(test_ids.contains(linked), "a design link reaches {linked}");
         }
         let g = ProductionGroupings.group(&view);

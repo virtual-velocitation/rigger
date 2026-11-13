@@ -1285,6 +1285,11 @@ pub(crate) mod tests {
                     rel: REL_SPECIFIES.into(),
                     to: "src/a_tests.rs".into(),
                 },
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: REL_SPECIFIES.into(),
+                    to: "src/a.rs::tests::checks".into(),
+                },
             ],
             ..Default::default()
         };
@@ -1855,11 +1860,12 @@ pub(crate) mod tests {
                 &["deeper"],
             ),
             (
-                "a design link's end by its path",
+                "a design link's end by its path or its test entity",
                 Ask::Intent("docs/d.md"),
                 &[
                     "docs/d.md -SPECIFIES/extracted-> tests/it.rs test",
                     "docs/d.md -SPECIFIES/extracted-> src/a_tests.rs test",
+                    "docs/d.md -SPECIFIES/extracted-> src/a.rs::tests::checks test",
                     "docs/d.md -SPECIFIES/extracted-> src/b.rs",
                 ],
                 &[],

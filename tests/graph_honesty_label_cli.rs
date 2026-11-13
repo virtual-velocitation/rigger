@@ -376,6 +376,64 @@ fn a_test_twin_of_a_product_definition_is_no_test_entity() {
     }
 }
 
+/// GIVEN a built project whose design doc links a product function and the inline test proving
+/// it, WHEN the graph reads the doc under each `--tests` setting, THEN the linked test is test code
+/// like any other: `exclude` hides it and its link, standing in no artifact and clustering it into
+/// no concept, while `include` shows it as the code entity it is and `only` shows the doc's link
+/// to it.
+#[test]
+fn a_design_link_to_an_inline_test_is_test_code() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn run() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn checks() { super::run(); }\n}\n",
+    );
+    write_text(
+        root,
+        "docs/a.md",
+        "# Running\n\nThe entry is `src/lib.rs::run`, proved by `src/lib.rs::tests::checks`.\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let doc = ["--around", "docs/a.md", "--depth", "1"];
+    let link = "edge docs/a.md -SPECIFIES-> src/lib.rs::tests::checks";
+    // (the arguments, a line the answer holds, what it never holds)
+    let cases: [(&[&str], &str, &[&str]); 5] = [
+        (
+            &doc,
+            "edge docs/a.md -SPECIFIES-> src/lib.rs::run",
+            &["tests::checks", "artifact"],
+        ),
+        (
+            &["--show", "src/lib.rs::tests::checks"],
+            "not shown",
+            &["artifact"],
+        ),
+        (&["concepts"], "1 concept over 2 node(s)", &[]),
+        (
+            &[&doc[..], &["--tests", "include"]].concat(),
+            link,
+            &["artifact"],
+        ),
+        (
+            &[&doc[..], &["--tests", "only"]].concat(),
+            link,
+            &["artifact"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.
