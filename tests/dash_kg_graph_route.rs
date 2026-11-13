@@ -1585,10 +1585,12 @@ const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
 // A driver answers graph reads itself by replacing __reply(url); by default a read is an empty overview.
 let __reply = function(){ return { clusters: [], edges: [], total: 0 }; };
-// Each graph reply carries the headers its URL names: label= a label, error= an error, else none.
+// Each graph reply carries the headers a driver sets in __headers, plus those its URL names: label=
+// a label, error= an error.
+let __headers = {};
 const fetch = function(url){
   const u = String(url);
-  const sent = {};
+  const sent = Object.assign({}, __headers);
   const at = function(k){ const m = u.match(new RegExp("[?&]" + k + "=([^&]*)")); return m ? m[1] : null; };
   if (at("label") !== null) sent["X-Rigger-Graph-Label"] = at("label");
   if (at("error") !== null) sent["X-Rigger-Graph-Error"] = at("error");
@@ -1626,6 +1628,63 @@ rigger::test_cases! {
     /// label in the explorer's header, decoded, or the reason no graph could be read, marked as an
     /// error; a reply stating neither leaves the header as it was.
     the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
+}
+
+/// Driver: each graph view loads through its own loader over a read that answers an empty body,
+/// first under replies stating the graph could not be read (an error alone, then an error beside a
+/// label, as a read over two stores sends), then under a reply stating a read graph. Under an unread
+/// graph the panel states the header's reason and none of the view's own empty captions (the
+/// generic one nor the body's `empty_state`); under a read graph each view keeps its own caption.
+const UNREAD_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const reason = "no graph has been built at g.db", underived = "code lens not derived yet";
+  const empty = { clusters: [], edges: [], total: 0 };
+  const views = [
+    ["the files overview", function(){ kgLens = "files"; return loadKgOverview(); }, empty,
+     "empty graph - nothing to explore yet"],
+    ["the code-lens overview", function(){ kgLens = "code"; return loadKgOverview(); },
+     Object.assign({ empty_state: underived }, empty), underived],
+    ["the subject re-projection", function(){ kgLens = "code"; return reprojectSubject("src/a.rs"); },
+     Object.assign({ subject: "src/a.rs", empty_state: "no derived communities" }, empty), "no derived communities"],
+    ["the subject re-projection with no empty state", function(){ kgLens = "files"; return reprojectSubject("src/a.rs"); },
+     Object.assign({ subject: "src/a.rs" }, empty), "this subject has no members under this lens"],
+    ["the seeded neighborhood", function(){ return seedGraph("src/a.rs::f"); },
+     { seed: "src/a.rs::f", depth: 2, nodes: [], edges: [] }, "no knowledge-graph neighborhood for this node"],
+    ["the cluster drill", function(){ kgLens = "files"; return drillCluster("src"); },
+     { seed: "src", depth: 0, nodes: [], edges: [] }, "this cluster has no members to show"],
+    ["the call walk", function(){ return seedCalls("src/a.rs::f", "down"); },
+     { seed: "src/a.rs::f", dir: "down", depth: 6, nodes: [], edges: [] }, "no calls for this node in this direction"],
+  ];
+  const error = { "X-Rigger-Graph-Error": encodeURIComponent(reason) };
+  const label = { "X-Rigger-Graph-Label": "describes%20g" };
+  const replies = [["an error", error, true], ["an error beside a label", Object.assign({}, label, error), true],
+    ["a label", label, false]];
+  for (const [sent, headers, unread] of replies) {
+    __headers = headers;
+    for (const [view, load, body, caption] of views) {
+      __reply = function(u){ return u.indexOf("card=") !== -1 ? {} : body; };
+      el("kgpanel").innerHTML = "";
+      await load();
+      await flush();
+      const html = el("kgpanel")._html;
+      if (unread && (html.indexOf(reason) === -1 || html.indexOf(caption) !== -1))
+        throw new Error("REGRESSION: " + view + " under a reply carrying " + sent + " must state why no graph was read, never its empty caption " + JSON.stringify(caption) + ": " + html);
+      if (!unread && (html.indexOf(caption) === -1 || html.indexOf(reason) !== -1))
+        throw new Error("REGRESSION: " + view + " over a read graph that draws nothing must keep its own caption " + JSON.stringify(caption) + ": " + html);
+    }
+  }
+  console.log("OK a-view-over-an-unread-graph-states-why");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard (the code store's stated-error rule): a graph view whose read could not read a
+    /// graph states the reason the header states in its panel, never the view's empty caption or the
+    /// body's `empty_state`, so an unread graph never reads as an empty one; a read graph that draws
+    /// nothing keeps each view's own caption.
+    a_view_over_a_graph_that_could_not_be_read_states_why_never_an_empty_graph: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, UNREAD_DRIVER, "dash-graph-unread-harness.js"), "OK a-view-over-an-unread-graph-states-why");
 }
 
 /// A node program loading the served page into a fresh realm per load over a browser store the
