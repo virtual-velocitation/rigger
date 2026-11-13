@@ -8980,6 +8980,74 @@ mod tests {
         }
     }
 
+    /// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION, at a replay: the candidate
+    /// [`materialize_config_at_rev`] reads at `--against <rev>` hashes the helper copies that rev
+    /// tracks, exactly as a run's pin over the tree at that rev does, never the copies the head
+    /// holds.
+    #[test]
+    fn a_replay_hashes_the_helper_copies_its_rev_tracks() {
+        use crate::test_support::{git_ok, git_ok_with_identity, git_out, write_helper_copy};
+        let [(file, lookup), _] = crate::test_support::OPERATOR_HELPER_COPIES;
+        let edited = lookup.replace("model: sonnet", "model: opus");
+        let remove = |root: &Path| std::fs::remove_file(root.join(".claude/agents").join(file));
+        let rows: [(&str, &dyn Fn(&Path), &dyn Fn(&Path)); 3] = [
+            (
+                "the head edits the copy the rev tracks",
+                &|root| write_helper_copy(root, file, lookup),
+                &|root| write_helper_copy(root, file, &edited),
+            ),
+            ("the head adds a copy the rev lacks", &|_| {}, &|root| {
+                write_helper_copy(root, file, lookup)
+            }),
+            (
+                "the head removes the copy the rev tracks",
+                &|root| write_helper_copy(root, file, lookup),
+                &|root| remove(root).unwrap(),
+            ),
+        ];
+        for (name, at_rev, at_head) in rows {
+            let dir = crate::test_support::temp_git_project_with_commit();
+            let root = dir.path();
+            let repo = root.to_str().unwrap();
+            std::fs::create_dir_all(root.join(RIGGER_DIR).join("agents")).unwrap();
+            std::fs::write(
+                root.join(RIGGER_DIR).join(WORKFLOW_FILE),
+                "stages:\n  s:\n    agent: worker\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join(RIGGER_DIR).join("agents/worker.md"),
+                "---\nid: worker\n---\nDo the unit.\n",
+            )
+            .unwrap();
+            let pinned = || {
+                let cfg = config_store::load(repo).unwrap();
+                let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, root).unwrap();
+                definition_hash(repo, &host.helpers).unwrap()
+            };
+            at_rev(root);
+            git_ok(root, &["add", "-A"]);
+            git_ok_with_identity(root, &["commit", "-q", "-m", "the rev"]);
+            let rev = git_out(root, &["rev-parse", "HEAD"]);
+            let at_the_rev = pinned();
+            at_head(root);
+            git_ok(root, &["add", "-A"]);
+            git_ok_with_identity(root, &["commit", "-q", "-m", "the head"]);
+            let at_the_head = pinned();
+            assert_ne!(
+                at_the_rev, at_the_head,
+                "{name}: the head's definition differs"
+            );
+            let scratch = tempfile::tempdir().unwrap();
+            let (_, candidate, _) =
+                materialize_config_at_rev(repo, &rev, scratch.path().to_str().unwrap()).unwrap();
+            assert_eq!(
+                candidate, at_the_rev,
+                "{name}: the replay's candidate is the definition a run at the rev pins"
+            );
+        }
+    }
+
     /// KurrentDB is ALWAYS AVAILABLE (spec 47): the adapter is compiled into every
     /// build, not gated behind a cargo feature. Selecting it WITHOUT a connection
     /// string fails with the missing-`--conn` error - proving the real adapter is
