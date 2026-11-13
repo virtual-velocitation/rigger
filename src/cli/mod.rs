@@ -4633,6 +4633,15 @@ enum InstallOutcome {
     ProjectCopy,
 }
 
+impl InstallOutcome {
+    /// Whether `rigger setup` reports this outcome as a change: only a fresh install or a
+    /// refresh is one, so a rerun whose every step is [`AlreadyCurrent`](Self::AlreadyCurrent)
+    /// or [`ProjectCopy`](Self::ProjectCopy) stays a silent no-op.
+    fn is_change(self) -> bool {
+        matches!(self, Self::Installed | Self::Refreshed)
+    }
+}
+
 /// Write `contents` to `path` ONLY when it is absent or differs, returning [what it
 /// did](InstallOutcome). A byte-identical file is left untouched so a `rigger setup` rerun
 /// is a true no-op: rewriting identical content would still bump the file's mtime, an

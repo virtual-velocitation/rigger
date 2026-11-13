@@ -883,16 +883,14 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         );
     }
 
-    let skill_changed = skills.outcomes.iter().any(|(_, outcome)| {
-        !matches!(
-            outcome,
-            InstallOutcome::AlreadyCurrent | InstallOutcome::ProjectCopy
-        )
-    });
-    let hook_changed = hook.is_some_and(|hook| hook != InstallOutcome::AlreadyCurrent);
-    let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
-    let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
-    let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
+    let skill_changed = skills
+        .outcomes
+        .iter()
+        .any(|(_, outcome)| outcome.is_change());
+    let hook_changed = hook.is_some_and(InstallOutcome::is_change);
+    let mcp_changed = mcp_registered.is_change();
+    let lookup_hook_changed = lookup_hook.is_change();
+    let status_line_changed = status_line.is_change();
     let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
     if !scaffold.changed()
         && !graph_rebuilt
