@@ -34,7 +34,7 @@
 //!  - THE SERIALIZED WIRE-SHAPE back-compat. `Cluster.label` and `ClusterOverview.empty_state` are
 //!    both `#[serde(skip_serializing_if = "Option::is_none")]`, so the files overview an external JS
 //!    panel reads stays BYTE-IDENTICAL (no `label`, no `empty_state` key), while the code overview
-//!    gains a community `label` and an underived grain gains `empty_state`. The unit test asserts
+//!    gains a community `label` and a grain nothing can be computed at gains `empty_state`. The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
@@ -513,7 +513,8 @@ fn the_serialized_overview_skips_label_and_carries_the_accurate_empty_state_off_
 ///   * `?lens=code&cluster=<id>` drills that community to exactly its members (the lens reaches the
 ///     DRILL branch too, not just the overview);
 ///   * `?lens=code&resolution=` (empty) defaults to the same derived grain as an explicit `1`;
-///   * `?lens=code&resolution=2` (underived) carries the `empty_state` prompt, never an error;
+///   * `?lens=code&resolution=2` over a served graph that holds no membership at grain 2 and
+///     has no code view to compute one from carries the `empty_state` prompt, never an error;
 ///   * an absent lens, `?lens=files`, and a hostile `?lens=bogus` are ALL byte-identical (the
 ///     spec-42 default the browser and every spec-30/42 request already receive).
 #[test]
@@ -564,7 +565,8 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
         "the served community drill yields exactly its members: {drill}"
     );
 
-    // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
+    // --- A grain nothing can be computed at (a fixed graph, no code view) via the route: the
+    // empty_state prompt, never a 500 ---
     let underived = served_json(&lens_graph(), "/api/graph?lens=code&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),

@@ -692,13 +692,8 @@ fn report_groupings(
     let head = open_head(&caller_tree()?)?;
     let view = &*head.view;
     let lines = {
-        let computed;
-        let groupings = if resolution == community::DEFAULT_RESOLUTION {
-            view.groupings()
-        } else {
-            computed = rigger_domain::groupings::group_at(view, resolution);
-            &computed
-        };
+        let computed = rigger_domain::groupings::computed_at(view, resolution);
+        let groupings = computed.as_ref().unwrap_or_else(|| view.groupings());
         let clusters = pick(groupings);
         let members: usize = clusters.iter().map(|c| c.members.len()).sum();
         let resolver = rigger_domain::resolve::Resolver::new(view);

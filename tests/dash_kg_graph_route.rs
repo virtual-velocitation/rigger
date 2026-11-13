@@ -1408,7 +1408,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
         let graph_provider =
-            move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
+            move |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| -> Graph {
                 hits_for_provider.fetch_add(1, Ordering::SeqCst);
                 lazy_graph.clone()
             };

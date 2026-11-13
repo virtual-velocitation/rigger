@@ -542,7 +542,10 @@ so it runs once per advance and is stored in the snapshot:
   generation, and a golden test pins it beside a digest of the rows over a fixture. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
-- A grain other than the default is computed on demand at read (~2 s) and is not stored.
+- A grain other than the default is computed at read, on each open that asks for it, and is
+  not stored: the reports and the dash's views go through the one rule (`groupings::computed_at`),
+  so a dash view at grain 2 shows the groupings `--resolution 2` reports, joined on beside the
+  stored ones, and states the grain it shows.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
 
@@ -774,7 +777,7 @@ reached.
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |
-| non-default community grain | groupings on demand | ~ 2 s |
+| whole view at a non-default grain (dash) | the default view plus groupings on demand | ~ 270 ms |
 
 The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
 does it in less, so no cache is kept: each view open resolves what its query needs.

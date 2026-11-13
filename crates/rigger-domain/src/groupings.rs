@@ -79,6 +79,13 @@ impl Group for ProductionGroupings {
     }
 }
 
+/// The groupings of `view` at the grain `resolution` a reader computes: none at the stored grain,
+/// which the view holds ([`CodeView::groupings`]), and any other computed here ([`group_at`]) on
+/// each open that asks for it and never stored. The one rule every reader of a grain goes through.
+pub fn computed_at(view: &dyn CodeView, resolution: f64) -> Option<Groupings> {
+    (resolution != DEFAULT_RESOLUTION).then(|| group_at(view, resolution))
+}
+
 /// The production groupings of `view` at the grain `resolution`: the default grain is stored at
 /// advance, and any other is computed here on demand and never stored.
 pub fn group_at(view: &dyn CodeView, resolution: f64) -> Groupings {

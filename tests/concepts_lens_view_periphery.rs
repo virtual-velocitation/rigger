@@ -485,7 +485,8 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
 ///   * `?lens=concepts&cluster=<id>` drills that concept to exactly its members (the lens reaches the
 ///     DRILL branch too, not just the overview) AND flags the shared member `"shared": true` on the
 ///     served wire;
-///   * `?lens=concepts&resolution=2` (underived) carries the `empty_state` prompt, never an error;
+///   * `?lens=concepts&resolution=2` over a served graph that holds no membership at grain 2 and
+///     has no code view to compute one from carries the `empty_state` prompt, never an error;
 ///   * an absent lens, `?lens=files`, and a hostile `?lens=bogus` are ALL byte-identical (the spec-42
 ///     default the browser and every spec-30/42 request already receive), and genuinely NOT the
 ///     concepts body.
@@ -561,7 +562,8 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         "the served drill flags the shared member append with \"shared\": true: {drill}"
     );
 
-    // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
+    // --- A grain nothing can be computed at (a fixed graph, no code view) via the route: the
+    // empty_state prompt, never a 500 ---
     let underived = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),

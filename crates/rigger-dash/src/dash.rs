@@ -1239,6 +1239,10 @@ pub struct Reprojection {
     /// already-documented degenerate-but-defined cell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// The grain a derived lens displays ([`Lens::grain`]), as the overview states it; absent under
+    /// [`Lens::Files`] and when the lens's text names no grain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grain: Option<String>,
 }
 
 /// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare placeholder
@@ -1574,6 +1578,7 @@ pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
     // a re-grain over a huge subject (e.g. a concept whose members span hundreds of files) renders at
     // any size. `total` (the member-set size) is untouched; `truncated` carries the full bucket count.
     re.truncated = cap_clusters(&mut re.clusters, &mut re.edges);
+    re.grain = lens.grain();
     re
 }
 
@@ -1685,9 +1690,10 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
         total: members.len(),
         unresolved: Vec::new(),
         shared,
-        // The wide-cell cap runs once, uniformly, in `reproject`.
+        // The wide-cell cap and the grain are set once, uniformly, in `reproject`.
         truncated: None,
         empty_state,
+        grain: None,
     }
 }
 
@@ -1805,10 +1811,11 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         total: members.len(),
         unresolved,
         // A files re-grain never shares, so the spec 55 c2 shared flag never applies here; the
-        // wide-cell cap runs once, uniformly, in `reproject`.
+        // wide-cell cap and the grain are set once, uniformly, in `reproject`.
         shared: Vec::new(),
         truncated: None,
         empty_state,
+        grain: None,
     }
 }
 
@@ -3457,12 +3464,7 @@ fn route_hiding(
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
             // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
             // untouched. The seeded neighborhood below is lens-independent and ignores it.
-            let lens = Lens::from_query(
-                query_param(target, "lens").map(percent_decode).as_deref(),
-                query_param(target, "resolution")
-                    .map(percent_decode)
-                    .as_deref(),
-            );
+            let lens = request_lens(target);
             let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
                 let key = percent_decode(raw_cluster);
                 let hits = count_withheld(withheld, || {
@@ -3532,6 +3534,25 @@ fn tests_param(target: &str) -> Result<Tests, String> {
     query_param(target, "tests")
         .map(percent_decode)
         .map_or(Ok(Tests::Exclude), |spelled| spelled.parse())
+}
+
+/// The overview/drill bucket lens a request names (spec 53 c4), from `lens=` and `resolution=`:
+/// absent or unknown `lens` reads [`Lens::Files`], byte-identical.
+fn request_lens(target: &str) -> Lens {
+    Lens::from_query(
+        query_param(target, "lens").map(percent_decode).as_deref(),
+        query_param(target, "resolution")
+            .map(percent_decode)
+            .as_deref(),
+    )
+}
+
+/// The grain a request's graph is read at ([`request_lens`]'s): the stored grain unless a derived
+/// lens names another, which the read computes beside it.
+fn request_resolution(target: &str) -> f64 {
+    (request_lens(target).resolution())
+        .and_then(Result::ok)
+        .unwrap_or(rigger_domain::community::DEFAULT_RESOLUTION)
 }
 
 /// Percent-decode a URL query value (`%XX` -> the byte; every other byte verbatim). The client
@@ -3646,7 +3667,7 @@ pub fn serve_on<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> R,
+    G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
@@ -3705,7 +3726,7 @@ fn handle_conn<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> R,
+    G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
@@ -3844,7 +3865,12 @@ where
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
                             let read: GraphRead = if path == "/api/graph" {
-                                graph_provider(instance, tests.unwrap_or_default()).into()
+                                graph_provider(
+                                    instance,
+                                    tests.unwrap_or_default(),
+                                    request_resolution(&target),
+                                )
+                                .into()
                             } else {
                                 polled_graph
                             };
@@ -4783,7 +4809,7 @@ mod tests {
                 HashMap::new(),
             ))
         };
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let instances_provider = Vec::new;
         let calls_provider =
             |_: Option<&str>,
@@ -9045,7 +9071,7 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let calls_provider =
             |_: Option<&str>,
              _: &[String],
@@ -9174,7 +9200,7 @@ mod tests {
                     HashMap::new(),
                 ))
             };
-            let graph_provider = move |_: Option<&str>, tests: Tests| {
+            let graph_provider = move |_: Option<&str>, tests: Tests, _: f64| {
                 g.lock().unwrap().push(tests);
                 GraphRead {
                     tests_hidden: 4,
@@ -9282,7 +9308,7 @@ mod tests {
                 };
                 Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
             });
-            let graph_provider = |_: Option<&str>, _: Tests| GraphRead::default();
+            let graph_provider = |_: Option<&str>, _: Tests, _: f64| GraphRead::default();
             let calls_provider = |_: Option<&str>,
                                   _: &[String],
                                   _: crate::contextgraph::Direction,
@@ -9362,7 +9388,7 @@ mod tests {
             });
             let whole = read.clone();
             // The read withheld `x` alone: a view counts the withheld hits of its own answer.
-            let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
+            let graph_provider = move |_: Option<&str>, _: Tests, _: f64| GraphRead {
                 withheld: Graph {
                     nodes: vec![Node {
                         id: "x".to_string(),
@@ -9456,7 +9482,7 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| -> Graph {
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
         let calls_provider = |_: Option<&str>,
@@ -9534,7 +9560,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>, _tests: Tests| -> Graph {
+        let graph_provider = move |_instance: Option<&str>, _tests: Tests, _: f64| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {

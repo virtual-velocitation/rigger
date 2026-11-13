@@ -322,10 +322,10 @@ pub fn defs_by_entity_suffix(graph: &Graph) -> BTreeMap<&str, Vec<&str>> {
 /// (spec 53). The [`Lens::Code`] view reads THIS grain when a request omits `resolution=`.
 pub const DEFAULT_COMMUNITY_RESOLUTION: &str = "1";
 
-/// The documented empty-state message the [`Lens::Code`] overview carries when the selected
-/// resolution grain has NO derived community assignments (the offline detection pass never ran at
-/// that grain): the panel shows this instead of an error or a bare kind-bucket view, so an underived
-/// code lens degrades gracefully to a prompt to run the derivation (spec 53 c4).
+/// The documented empty-state message the [`Lens::Code`] overview carries when the graph it reads
+/// holds NO community assignment at the selected grain, which the read computes when the store
+/// holds another: a graph with no code to group, or one served without a code view to compute
+/// from. The panel shows this instead of an error or a bare kind-bucket view (spec 53 c4).
 pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger graph communities`";
 
 /// The default concept-derivation resolution grain, as its canonical string. The offline
@@ -334,10 +334,11 @@ pub const CODE_LENS_UNDERIVED: &str = "code lens not derived yet - run `rigger g
 /// `resolution=`.
 pub const DEFAULT_CONCEPT_RESOLUTION: &str = "1";
 
-/// The documented empty-state message the [`Lens::Concepts`] overview carries when the selected
-/// resolution grain has NO derived concept assignments (the offline intent-derivation pass never ran
-/// at that grain): the panel shows this instead of an error or a bare kind-bucket view, so an
-/// underived concepts lens degrades gracefully to a prompt to run the derivation (spec 54 c3).
+/// The documented empty-state message the [`Lens::Concepts`] overview carries when the graph it
+/// reads holds NO concept assignment at the selected grain, which the read computes when the store
+/// holds another: a graph with nothing to derive concepts from, or one served without a code view
+/// to compute from. The panel shows this instead of an error or a bare kind-bucket view (spec 54
+/// c3).
 pub const CONCEPTS_LENS_UNDERIVED: &str = "concepts not derived yet - run `rigger graph concepts`";
 
 /// The documented empty-CELL message a [`Lens::Code`] RE-PROJECTION (spec 55 c2) carries when the
@@ -457,6 +458,12 @@ impl Lens {
     /// the re-projection fold nothing and say so ([`community::NotAGrain`]'s sentence).
     pub fn not_a_grain(&self) -> Option<community::NotAGrain> {
         self.resolution().and_then(Result::err)
+    }
+
+    /// The grain this derived lens displays, as its ids spell it ([`community::grain`]), so a view
+    /// states which grain it shows; `None` under [`Lens::Files`] and when the text names no grain.
+    pub fn grain(&self) -> Option<String> {
+        self.resolution().and_then(Result::ok).map(community::grain)
     }
 }
 
@@ -678,6 +685,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
             edges: Vec::new(),
             total: graph.nodes.len(),
             empty_state: Some(empty_state),
+            grain: None,
             tests_hidden: 0,
         };
     }
@@ -729,6 +737,7 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
         edges,
         total: graph.nodes.len(),
         empty_state,
+        grain: lens.grain(),
         tests_hidden: 0,
     }
 }
@@ -1919,6 +1928,11 @@ pub struct ClusterOverview {
     /// folds and over an empty graph, so the default files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// The grain a derived lens displays ([`Lens::grain`]), read from the store or computed at
+    /// read when the store holds another; absent under [`Lens::Files`] and when the lens's text
+    /// names no grain, so the files overview stays byte-identical.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grain: Option<String>,
     /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
     /// the opened graph's `hidden_tests()`, since the drawn graph holds none of them. Skipped in
     /// JSON when none is hidden.
