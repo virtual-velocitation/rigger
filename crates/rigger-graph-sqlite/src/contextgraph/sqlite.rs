@@ -3918,6 +3918,42 @@ mod tests {
         )
     }
 
+    /// THE REBUILD REPORTS A HELD LOG: a rebuild ends by truncating the write-ahead log its swap
+    /// wrote, and reports the log held when a reader's snapshot declines that truncation, the
+    /// swap's frames then standing in the log. Each row: whether a reader holds a snapshot of the
+    /// file across the rebuild.
+    #[test]
+    fn a_rebuild_reports_its_log_held_while_a_reader_holds_a_snapshot() {
+        let log = decisions_through(6);
+        for held in [false, true] {
+            let (_dir, path) = crate::test_support::temp_graph_db();
+            let p = Projector::open(&path, "test").unwrap();
+            p.conn.lock().unwrap().busy_timeout(Duration::ZERO).unwrap();
+            let reader = connection_to(&path);
+            if held {
+                reader.execute_batch("BEGIN").unwrap();
+                let _: i64 = reader
+                    .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                    .unwrap();
+            }
+            let rebuilt = p
+                .rebuild(
+                    &Projector::lock_rebuild(&path).unwrap(),
+                    true,
+                    &mut |after, sink| stream_past(&log, after, 10, sink),
+                    &mut |_| {},
+                )
+                .unwrap()
+                .expect("an owed rebuild runs");
+            let log_bytes = std::fs::metadata(format!("{path}-wal")).map_or(0, |m| m.len());
+            assert_eq!(
+                (rebuilt.log_held, log_bytes > 0),
+                (held, held),
+                "held {held}: the rebuild's report, and whether its log keeps the swap's frames"
+            );
+        }
+    }
+
     /// A rebuild of the graph file at `path` from `log` in batches of two, owed by its caller,
     /// that fails at the second batch it is handed: its shadow is left holding the first.
     fn rebuild_interrupted_after_its_first_batch(
