@@ -10272,20 +10272,20 @@ mod tests {
         );
     }
 
-    /// Spec 121, criterion 14 (an unreadable project copy): with `seed` under the root,
-    /// [`install_skills`] fails naming the path `unread` returns with the error reading it gives,
-    /// and installs no shipped `using-rigger` in place of a copy it could not read.
-    fn assert_install_skills_refuses(
-        seed: fn(&Path),
-        unread: fn(&Path) -> (std::path::PathBuf, std::io::Error),
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed(root);
-        let (path, error) = unread(root);
+    /// Spec 121, criterion 14 (an unreadable project copy): with the root-relative `seeded` made
+    /// a directory where a file is read (`dir`) or a file where a directory is listed,
+    /// [`install_skills`] fails naming that path with the error reading it gives, and installs no
+    /// shipped `using-rigger` in place of a copy it could not read.
+    fn assert_install_skills_refuses(seeded: &str, dir: bool) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let error = crate::test_support::seed_unreadable_project_skill(root, seeded, dir);
         assert_eq!(
             install_skills(root).err().map(|e| e.to_string()),
-            Some(format!("setup: reading {}: {error}", path.display())),
+            Some(format!(
+                "setup: reading {}: {error}",
+                root.join(seeded).display()
+            )),
             "setup fails naming the path it could not read"
         );
         assert!(
@@ -10297,27 +10297,10 @@ mod tests {
     rigger::test_cases! {
         /// A `SKILL.md` that is a directory cannot be read as a project copy.
         a_project_copy_that_is_a_directory_fails_setup_naming_it:
-            assert_install_skills_refuses(
-                |root| {
-                    std::fs::create_dir_all(root.join(".rigger/skills/using-rigger/SKILL.md"))
-                        .unwrap()
-                },
-                |root| {
-                    let path = root.join(".rigger/skills/using-rigger/SKILL.md");
-                    let error = std::fs::read(&path).unwrap_err();
-                    (path, error)
-                },
-            );
+            assert_install_skills_refuses(".rigger/skills/using-rigger/SKILL.md", true);
         /// A `.rigger/skills` that is a plain file cannot be read as the project's skill home.
         a_project_skill_home_that_is_a_file_fails_setup_naming_it:
-            assert_install_skills_refuses(
-                |root| write_file(&root.join(".rigger/skills"), b"not a directory\n"),
-                |root| {
-                    let path = root.join(".rigger/skills");
-                    let error = std::fs::read_dir(&path).unwrap_err();
-                    (path, error)
-                },
-            );
+            assert_install_skills_refuses(".rigger/skills", false);
     }
 
     /// Spec 48, SECRETS DISCIPLINE (the permission-hygiene rung): the store-connection secret file
