@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use crate::common::fixtures::{commit_tree, write_files};
+use crate::common::lens::not_a_grain;
 use crate::common::rigger_bin;
 
 /// One grouping-report subcommand under test.
@@ -132,8 +133,9 @@ impl LayerCli {
         }
     }
 
-    /// Argument validation: a non-numeric resolution, a non-positive resolution, and an unknown
-    /// argument each exit non-zero with the documented message.
+    /// Argument validation: a non-numeric resolution and a non-positive resolution each exit
+    /// non-zero saying the text is not a grain and what a grain is, in the dash's own sentence
+    /// ([`not_a_grain`]); an unknown argument exits non-zero naming it.
     pub fn a_malformed_resolution_or_unknown_argument_fails_loudly(&self) {
         let dir = self.project(&[]);
         let root = dir.path();
@@ -142,19 +144,23 @@ impl LayerCli {
             (
                 &["--resolution", "not-a-number"][..],
                 "a non-numeric --resolution",
-                "--resolution expects a number",
+                format!("graph {}: {}", self.subcommand, not_a_grain("not-a-number")),
             ),
             (
                 &["--resolution", "0"][..],
                 "a non-positive --resolution",
-                "positive finite number",
+                format!("graph {}: {}", self.subcommand, not_a_grain("0")),
             ),
-            (&["--bogus"][..], "an unknown argument", "unknown argument"),
+            (
+                &["--bogus"][..],
+                "an unknown argument",
+                "unknown argument".to_string(),
+            ),
         ] {
             let out = self.run(root, args);
             assert!(!out.status.success(), "{what} is rejected");
             assert!(
-                String::from_utf8_lossy(&out.stderr).contains(message),
+                String::from_utf8_lossy(&out.stderr).contains(message.as_str()),
                 "the error for {what} names `{message}`: {}",
                 String::from_utf8_lossy(&out.stderr)
             );

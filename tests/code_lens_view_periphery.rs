@@ -48,7 +48,7 @@ use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
 use common::lens::{
-    assert_each_spelling_of_one_reads_grain_one, assert_overview_folds,
+    assert_each_spelling_of_one_reads_grain_one, assert_not_a_grain_is_said, assert_overview_folds,
     assert_underived_grain_is_the_empty_state,
 };
 use common::served::served;
@@ -598,4 +598,11 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
 #[test]
 fn every_spelling_of_grain_one_reads_the_derived_community_grain() {
     assert_each_spelling_of_one_reads_grain_one(&lens_graph(), "code", C0, C0);
+}
+
+/// A `resolution=` that names no grain empties the served code overview and re-projection with
+/// the one sentence saying so, never the underived prompt to run a command that cannot change it.
+#[test]
+fn a_resolution_that_is_not_a_grain_is_said_to_be_none() {
+    assert_not_a_grain_is_said(&lens_graph(), "code", C0);
 }
