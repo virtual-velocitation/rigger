@@ -945,7 +945,12 @@ fn unescape(body: &str) -> String {
                 ));
             }
             Some('u') => {
-                let hex: String = chars.by_ref().skip(1).take_while(|c| *c != '}').collect();
+                let hex: String = chars
+                    .by_ref()
+                    .skip(1)
+                    .take_while(|c| *c != '}')
+                    .filter(|c| *c != '_')
+                    .collect();
                 let code = u32::from_str_radix(&hex, 16).expect("a \\u escape");
                 value.push(char::from_u32(code).expect("a scalar value"));
             }
