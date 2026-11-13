@@ -6620,13 +6620,15 @@ mod tests {
         assert!(styled > 0, "some rule styles the drawing's svg");
     }
 
-    /// The narrowest surface a docked pane leaves the drawing, which `kgDims` makes at its surface's
-    /// width whatever that is: where the panes' columns would leave less, they stack above the panel.
-    const LEAST_DOCKED_SURFACE: f64 = 320.0;
+    /// The narrowest content box a docked pane leaves the panel: where the panes' columns would
+    /// leave less, they stack above the panel. The drawing's surface is that box, less the panel's
+    /// own scrollbar when what it holds overflows, and `kgDims` makes the drawing at its width
+    /// whatever that is.
+    const LEAST_DOCKED_CONTENT: f64 = 320.0;
 
     /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
     /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps its
-    /// content box, the drawing's surface, at least `LEAST_DOCKED_SURFACE`: shown panes dock
+    /// content box at least `LEAST_DOCKED_CONTENT`: shown panes dock
     /// beside the panel (absolutely positioned, each taking exactly its own column and inset from
     /// the panel's margin on its side) wherever their columns leave the panel's content box that
     /// width, and everywhere else every shown pane stacks above the panel at the body's full width
@@ -6661,10 +6663,10 @@ mod tests {
             for (shown, rail, card) in PANE_STATES {
                 let layout = style.layout(rail, card, width);
                 let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
-                // The panel's content box, the drawing's surface: its width less its margins, and
+                // The panel's content box: its width less its margins, and
                 // its own border and padding on each side.
                 let edges = layout.edge(panel, "left") + layout.edge(panel, "right");
-                let surface = width - left - right - edges;
+                let content = width - left - right - edges;
                 let mut docked = Vec::new();
                 for (pane, side, margin) in [("kgcard", "left", left), ("kgrail", "right", right)] {
                     match layout.pane(pane, side) {
@@ -6695,9 +6697,9 @@ mod tests {
                 );
                 if docked.first() == Some(&true) {
                     assert!(
-                        surface >= LEAST_DOCKED_SURFACE,
+                        content >= LEAST_DOCKED_CONTENT,
                         "with {shown} shown in a {width}px body the panel's content box keeps \
-                         {surface}px, less than the {LEAST_DOCKED_SURFACE}px a docked pane leaves the drawing"
+                         {content}px, less than the {LEAST_DOCKED_CONTENT}px a docked pane leaves it"
                     );
                 }
                 laid_out.push((shown, rail, card, width, edges, docked.first().copied()));
@@ -6715,12 +6717,12 @@ mod tests {
                 }
             };
             let needs =
-                LEAST_DOCKED_SURFACE + edges + column("kgrail", rail) + column("kgcard", card);
+                LEAST_DOCKED_CONTENT + edges + column("kgrail", rail) + column("kgcard", card);
             assert_eq!(
                 docked,
                 width >= needs,
                 "with {shown} shown in a {width}px body the panes dock exactly where their \
-                 columns leave the panel's content box {LEAST_DOCKED_SURFACE}px (from {needs}px)"
+                 columns leave the panel's content box {LEAST_DOCKED_CONTENT}px (from {needs}px)"
             );
         }
     }
