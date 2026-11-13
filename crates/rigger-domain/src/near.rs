@@ -811,7 +811,7 @@ impl<'v> State<'v> {
         let mut attrs: std::collections::BTreeMap<String, String> = [
             ("hash", c.hash.clone()),
             ("label", c.label.clone()),
-            ("resolution", format!("{}", c.resolution)),
+            ("resolution", crate::community::grain(c.resolution)),
         ]
         .map(|(k, v)| (k.to_string(), v))
         .into();

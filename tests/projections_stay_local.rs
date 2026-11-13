@@ -83,30 +83,36 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
     let src = production_main_rs();
 
     // The graph projection is opened by the sqlite `Projector` at the resolved store's local
-    // `.rigger/graph.db`: `StoreLocation::file` names a file under the resolved `.rigger/`, which
-    // the one opener every command that appends and then folds shares (`StoreLocation::graph`)
-    // hands the one write open (`open_graph_for_write`), and that open constructs the local
-    // `Projector` on the path it is handed. If a regression redirected it - e.g. through
-    // `resolve_store` - this canonical local construction would disappear.
+    // `.rigger/graph.db`: the one opener every command that appends and then folds shares
+    // (`StoreLocation::graph`) hands its store to the one write open (`open_graph_for_write`),
+    // which names the store's graph file with `StoreLocation::file`, a file under the resolved
+    // `.rigger/`, and constructs the local `Projector` on it. If a regression redirected it - e.g.
+    // through `resolve_store` - this canonical local construction would disappear.
     assert!(
-        src.contains(r#"open_graph_for_write(&self.file("graph.db")"#),
-        "the graph projection must be opened for write at the resolved store's .rigger/graph.db \
-         (`open_graph_for_write(&self.file(\"graph.db\") ...)`); the canonical local construction \
-         is gone"
-    );
-    let write_open = braced_declaration(&src, "fn open_graph_for_write(");
-    assert!(
-        write_open.contains("Projector::open(graph_db, project)"),
-        "the one graph write open must construct the LOCAL sqlite Projector on the graph.db path \
-         it is handed (`Projector::open(graph_db, project)`); the canonical local construction is \
+        src.contains("open_graph_for_write(self, &identity, selection)"),
+        "the graph projection must be opened for write at the resolved store \
+         (`open_graph_for_write(self, &identity, selection)`); the canonical local construction is \
          gone"
     );
+    let write_open = braced_declaration(&src, "fn open_graph_for_write(");
+    for construction in [
+        r#"let graph_db = store.file("graph.db");"#,
+        "Projector::open(&graph_db, project)",
+    ] {
+        assert!(
+            write_open.contains(construction),
+            "the one graph write open must construct the LOCAL sqlite Projector on its store's \
+             .rigger/graph.db (`{construction}`); the canonical local construction is gone"
+        );
+    }
 
-    // The progress projection is opened by the sqlite `Store` at the local `.rigger/progress.db`.
+    // The progress projection is opened by the sqlite `Store` at the resolved store's local
+    // `.rigger/progress.db`.
     assert!(
-        src.contains(r#"Store::open(&db_path("progress.db")"#),
-        "the progress projection must be opened by the LOCAL sqlite Store at .rigger/progress.db \
-         (`Store::open(&db_path(\"progress.db\") ...)`); the canonical local construction is gone"
+        src.contains(r#"Store::open(&loc.file("progress.db")"#),
+        "the progress projection must be opened by the LOCAL sqlite Store at the resolved store's \
+         .rigger/progress.db (`Store::open(&loc.file(\"progress.db\") ...)`); the canonical local \
+         construction is gone"
     );
 }
 

@@ -39,12 +39,12 @@ pub(crate) fn cmd_stats(args: &[String]) -> Res {
         }
     };
 
-    // Resolve the project identity and db path the same way every CLI command does,
-    // then delegate the namespace-scoped read + no-runs decision to `stats_lines`. This
-    // wrapper owns only the I/O boundary (which file, which project, and the printing);
-    // the read-model edges live in the testable seam below.
-    let selection = store_selection(None, None)?;
-    match stats_lines(&db_path("events.db"), &project_identity()?, all, &selection)? {
+    // Resolve the store every reader reads ([`store_to_read_in`]) and its identity, then
+    // delegate the namespace-scoped read + no-runs decision to `stats_lines`. This wrapper owns
+    // only the I/O boundary (which file, which project, and the printing); the read-model edges
+    // live in the testable seam below.
+    let (loc, selection) = store_to_read_in(&Site::here())?;
+    match stats_lines(&loc.file("events.db"), &loc.identity()?, all, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -67,7 +67,8 @@ const NO_CANARY_MESSAGE: &str =
 /// LATEST canary run - per-tier catch rate, adjudicator correctness, and finding-order
 /// stability - folded from the project's DISTINCT canary stream (never the run stream).
 fn cmd_stats_canary() -> Res {
-    match canary_stats_lines(&db_path("events.db"), &project_identity()?)? {
+    let (loc, selection) = store_to_read_in(&Site::here())?;
+    match canary_stats_lines(&loc.file("events.db"), &loc.identity()?, &selection)? {
         Some(lines) => {
             for line in lines {
                 println!("{line}");
@@ -87,9 +88,9 @@ fn cmd_stats_canary() -> Res {
 fn canary_stats_lines(
     path: &str,
     project: &str,
+    sel: &StoreSelection,
 ) -> Result<Option<Vec<String>>, Box<dyn std::error::Error>> {
-    let sel = store_selection(None, None)?;
-    let events = read_project_stream(path, project, canary::STREAM, &sel)?.unwrap_or_default();
+    let events = read_project_stream(path, project, canary::STREAM, sel)?.unwrap_or_default();
     if events.is_empty() {
         return Ok(None);
     }

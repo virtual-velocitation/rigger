@@ -2304,12 +2304,13 @@ fn graph_build_holds_only_the_projects_own_sources_across_both_halves() {
 }
 
 /// Cold-checkout build resolves the whole-project root, not the cwd (spec 45): a `graph build`
-/// launched from a SUBDIRECTORY still folds the ENTIRE project - `cmd_graph_build` walks the git
-/// top-level (the same root a run's `deps.repo` carries), not the directory it was invoked from.
-/// The implementer's build test runs from the project root, so this guards the root-resolution
-/// seam it leaves open: a root-level source file is folded even though the build ran from a
-/// nested dir, read back through the shipped `graph --around` inspector run in that same
-/// subdirectory (so the build and the read share one store, isolating the tree-root property).
+/// launched from a SUBDIRECTORY of a project `rigger init` set up still folds the ENTIRE project -
+/// `cmd_graph_build` walks the git top-level (the same root a run's `deps.repo` carries), not the
+/// directory it was invoked from. The implementer's build test runs from the project root, so this
+/// guards the root-resolution seam it leaves open: a root-level source file is folded even though
+/// the build ran from a nested dir, read back through the shipped `graph --around` inspector run in
+/// that same subdirectory (so the build and the read share the root's one store, isolating the
+/// tree-root property).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
@@ -2322,6 +2323,7 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
     .unwrap();
     let sub = root.join("engine").join("nested");
     std::fs::create_dir_all(&sub).unwrap();
+    run_rigger_ok(root, &["init"]);
 
     common::fixtures::commit_tree(root);
     let (out, err, ok) = run_rigger(&sub, &["graph", "build"]);
@@ -2330,8 +2332,9 @@ fn graph_build_from_a_subdirectory_ingests_the_whole_project() {
         "graph build from a subdirectory must succeed; stderr: {err}; stdout: {out}"
     );
 
-    // Read back from the SAME subdirectory (the store the subdir build wrote): the root-level
-    // combat.rs entities were folded, proving the walk rooted at the git top-level, not the cwd.
+    // Read back from the SAME subdirectory (the root's store the subdir build wrote): the
+    // root-level combat.rs entities were folded, proving the walk rooted at the git top-level, not
+    // the cwd.
     let (g, gerr, gok) = run_rigger(&sub, &["graph", "--around", "combat.rs::helper"]);
     assert!(
         gok,
@@ -2865,17 +2868,21 @@ fn ground_rejects_an_unknown_grounder_naming_only_the_accepted_set() {
     );
 }
 
-/// GIVEN a project whose workflow names an unknown grounder, WHEN `rigger ground` and the MCP
-/// ground tool run from a directory below the top of its worktree, THEN each reads the grounder
-/// from the workflow of the caller's worktree, as every other read names its worktree, and
-/// refuses the unknown name: neither falls back to the default grounder because the cwd holds no
-/// workflow.
-#[test]
-fn ground_reads_its_grounder_from_the_callers_worktree_below_its_top() {
+/// GIVEN a project set up at `project` (empty for the top of the worktree) whose workflow names an
+/// unknown grounder, below an outer project at the top pinning the literal `grep` grounder where
+/// the two differ, WHEN `rigger ground` and the MCP ground tool run from `from`, a directory below
+/// that project, THEN each reads the grounder from the workflow of the project governing the
+/// caller in its own worktree, as `rigger validate` finds it, and refuses the unknown name: neither
+/// falls back to the default grounder because the cwd holds no workflow, nor to the outer
+/// project's.
+fn assert_ground_reads_the_governing_projects_grounder(project: &str, from: &str) {
     let dir = temp_project();
     let root = dir.path();
-    write_grounder_workflow(root, "semantic-embed");
-    let below = root.join("src");
+    if !project.is_empty() {
+        write_grounder_workflow(root, "grep");
+    }
+    write_grounder_workflow(&root.join(project), "semantic-embed");
+    let below = root.join(from);
     std::fs::create_dir_all(&below).unwrap();
     std::fs::write(below.join("lib.rs"), "pub fn apply_damage() {}\n").unwrap();
     common::fixtures::git_commit_all(root, "source");
@@ -2902,6 +2909,15 @@ fn ground_reads_its_grounder_from_the_callers_worktree_below_its_top() {
         reply.to_string().contains("unknown grounder"),
         "the MCP tool refuses the configured name: {reply}"
     );
+}
+
+rigger::test_cases! {
+    /// From below the top of a project set up at the top of its worktree.
+    ground_reads_its_grounder_from_the_callers_worktree_below_its_top:
+        assert_ground_reads_the_governing_projects_grounder("", "src");
+    /// From below a project set up in a directory of an outer project that pins another grounder.
+    ground_reads_its_grounder_from_the_nested_project_governing_the_caller:
+        assert_ground_reads_the_governing_projects_grounder("proj", "proj/src");
 }
 
 /// Bad input to `rigger emit` is a clear error on stderr and a non-zero exit, never
@@ -17670,7 +17686,7 @@ fn a_dash_graph_reply_states_what_it_describes() {
             "no graph built",
             false,
             |_| {},
-            "X-Rigger-Graph-Error: no graph has been built at .rigger/graph.db",
+            "X-Rigger-Graph-Error: no graph has been built at {w}/.rigger/graph.db",
         ),
     ];
     for (case, built, spoil, expected) in cases {
@@ -19011,6 +19027,38 @@ rigger::test_cases! {
         );
 }
 
+/// `rigger docs --check` and `rigger docs` from a subdirectory of a repository check and render
+/// the docs of the project in the caller's worktree, as at its root: the check reports every
+/// output the root holds, the render names the root's outputs, and nothing is written in the
+/// subdirectory.
+#[test]
+fn docs_from_a_subdirectory_check_and_render_the_project_at_its_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let sub = root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let at_root = rendered_outputs(&run_rigger_ok(root, &["docs"]));
+    let (out, err, ok) = run_rigger(&sub, &["docs", "--check"]);
+    let every_fresh: String = at_root.iter().map(|rel| format!("fresh {rel}\n")).collect();
+    assert!(
+        ok && out == every_fresh,
+        "below the root the check reports the root's outputs fresh; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_eq!(
+        rendered_outputs(&run_rigger_ok(&sub, &["docs"])),
+        at_root,
+        "below the root `rigger docs` renders the root's outputs"
+    );
+    let written: Vec<_> = std::fs::read_dir(&sub)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(
+        written.is_empty(),
+        "nothing is written in the subdirectory; it holds {written:?}"
+    );
+}
+
 /// Spec 66, criterion 2 (the render pipeline covers the WHOLE handbook-page list, end to
 /// end): `rigger docs` renders EVERY entry in the binary's handbook-page list - not only the
 /// pre-existing `using-rigger.md` discipline chapter, but the second, generalized entry
@@ -19472,7 +19520,7 @@ rigger::test_cases! {
 /// root-relative path `rigger setup` reads for the project's skill copies, made a directory where
 /// a file is read (`dir`) or a file where a directory is listed, when the operator runs `rigger
 /// setup`, then it fails printing nothing on stdout and, on stderr, the one line naming that path
-/// and the error reading it gives. Setup reads the `.rigger/skills` listing, and `using-rigger`'s
+/// under the directory setup runs in and the error reading it gives. Setup reads the `.rigger/skills` listing, and `using-rigger`'s
 /// copy as the registry's first skill, before it installs any skill, so neither row installs one.
 fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
     let proj = temp_project();
@@ -19484,7 +19532,7 @@ fn assert_setup_refuses_an_unreadable_project_skill(seeded: &str, dir: bool) {
             String::new(),
             format!(
                 "rigger: setup: reading {}: {error}\n",
-                Path::new(".").join(seeded).display()
+                root.canonicalize().unwrap().join(seeded).display()
             ),
             false,
         ),
@@ -21773,10 +21821,9 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
 }
 
 /// Place a copy of the REAL compiled `rigger` binary at the UNIT-DERIVED candidate path
-/// (spec 75's `<git-common-dir>/../.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off
-/// `main_repo_root` (the MAIN checkout's own root, never the linked worktree itself - the
-/// candidate is resolved relative to `git-common-dir`, which for a linked worktree points
-/// back at the main repo's `.git`, not a directory inside the worktree).
+/// (`<root>/.rigger/tmp/cargo-target-<unit>/debug/rigger`), keyed off `main_repo_root` (the MAIN
+/// checkout's own root, never the linked worktree itself - the root is the main worktree git
+/// lists for the repository, not a directory inside the worktree).
 fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
     let dir = main_repo_root
         .join(".rigger")
@@ -21795,13 +21842,13 @@ fn stage_unit_derived_binary(main_repo_root: &Path, unit: &str) {
 /// compiled from one - so the unit-derived tier is the candidate spec 75 was written to serve
 /// FIRST, not an edge case, yet nothing before this test ever drove it through a real `git
 /// worktree add` and real `/bin/sh` execution. Uses a genuinely linked worktree named
-/// `rigger-wt-probeunit`, whose `git-common-dir` resolves back to the MAIN checkout's `.git`
-/// (verified: that is exactly how this very spawn's own worktree resolves), and proves
+/// `rigger-wt-probeunit`, whose repository git lists with the MAIN checkout as its main worktree
+/// (exactly how this very spawn's own worktree resolves), and proves
 /// discrimination twice over in the SAME worktree: first REFUSED with nothing but the stale
 /// PATH shim (proving the hook genuinely fires inside a linked worktree at all - without this
 /// half, a hook that silently never ran there would make the pass below vacuous), then the
-/// identical staged commit PASSES once the unit-derived binary is staged at the path the hook
-/// computes relative to `git-common-dir`.
+/// identical staged commit PASSES once the unit-derived binary is staged under the root the hook
+/// asks git for.
 #[test]
 fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger(
 ) {
@@ -27323,6 +27370,29 @@ fn grep_guard_is_inert_outside_a_rigger_project_and_degrades_to_allow_on_malform
         out,
         serde_json::json!({}),
         "malformed stdin must degrade to allow, never block; got:\n{out}"
+    );
+}
+
+/// `rigger grep-guard` judges a command from a subdirectory of a rigger project as it judges it
+/// at the project's root: the project governing the directory it runs in is the root's, so a bare
+/// source grep bounced at the root is bounced below it too.
+#[test]
+fn grep_guard_judges_a_command_below_the_project_root_as_at_the_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let sub = root.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let payload = r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO ."}}"#;
+    let at_root = run_grep_guard(root, payload);
+    assert_eq!(
+        at_root["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a bare source grep is bounced at the root; got:\n{at_root}"
+    );
+    assert_eq!(
+        run_grep_guard(&sub, payload),
+        at_root,
+        "below the root the grep is judged as at the root"
     );
 }
 

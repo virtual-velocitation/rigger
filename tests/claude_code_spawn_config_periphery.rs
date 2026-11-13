@@ -390,7 +390,10 @@ fn validate_fails_naming_an_operators_helper_copy_that_does_not_parse() {
         (
             "a copy with no name",
             NAMELESS_HELPER_COPY,
-            Some(nameless_copy_refusal(Path::new("."), "verify.md")),
+            Some(nameless_copy_refusal(
+                &root.canonicalize().unwrap(),
+                "verify.md",
+            )),
         ),
         ("the operator's own copy", OPERATOR_HELPER_COPIES[1].1, None),
     ];

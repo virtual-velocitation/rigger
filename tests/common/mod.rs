@@ -154,8 +154,10 @@ pub fn rigger_bin() -> PathBuf {
 /// file has to remember this individually, matching spec 70's own stated principle that
 /// "the fence is the gate runner's job, not each test's".
 ///
-/// This has no effect on a NON-courier command (`graph`, `docs`, `init`, ...): those never
-/// read `RIGGER_STORE_FENCE_DIR` at all, so clearing it ahead of them is a harmless no-op.
+/// A command that writes the store (`graph build`, `canary`, `playbooks`, `setup`) reads it only
+/// below its project root, where the fence takes the place of the root's store as it does a
+/// courier's; at the root, and for every other command (`docs`, `init`, ...), clearing it is a
+/// harmless no-op.
 ///
 /// Also unconditionally strips an ambient `KURRENTDB_CONN` (spec 62 unit u62c4, round-6
 /// adjudication `adj-u62c4-r6-verdict-reject-blast-radius-audit-incomplete`), mirroring the

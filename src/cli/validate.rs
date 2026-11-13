@@ -148,7 +148,12 @@ fn read_order_signatures(
 }
 
 pub(crate) fn cmd_validate(args: &[String]) -> Res {
-    let root = Path::new(".");
+    // The configuration judged is the project governing the caller in its own worktree
+    // ([`project_in_tree`]), where an edit to the configuration is made before it lands. The run
+    // store every advisory below reads is the one every reader reads ([`store_to_read_in`]).
+    let site = Site::here();
+    let project = project_in_tree(&site)?;
+    let root = project.as_path();
     // Optional `<spec>` path (spec 18, Unit 4; spec 66, unit c3): emit heuristic spec-lint
     // advisories - shape (multi-behavior / sub-bullet-as-unit / over-long), ownership
     // (F1), open dispositions (F4), and hygiene (em dash) - each naming its criterion (when
@@ -170,7 +175,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     let config_store::LoadedConfig {
         config: cfg,
         gate_requirements,
-    } = config_store::load_with_gate_requirements(".")?;
+    } = config_store::load_with_gate_requirements(&root.to_string_lossy())?;
     // The operator's helper copies are the definition every spawn carries, so a copy that cannot
     // be read or does not parse fails here, naming its file, as every spawning command would.
     hooks::resolved_helpers(root)?;
@@ -257,73 +262,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     for advisory in instructions::shadow_advisories(&cfg.instructions) {
         eprintln!("{advisory}");
     }
-    // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
-    // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
-    // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
-    // deletes anything (cleanup stays with the run-start sweeps and the run teardown).
-    // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
-    // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
-    // degrading to a wrong-store read that would misreport live worktrees/branches as residue
-    // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
-    // this only makes an inability to even resolve the run store loud, never silent.
-    for advisory in residue_advisories(root, &cfg)? {
-        eprintln!("{advisory}");
-    }
-    // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
-    // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
-    // A store-read failure just skips the advisory (never fails validate); git refusing inside a
-    // repository fails it, as it does every advisory above.
-    let identity = project_identity()?;
-    if let Ok(drift) = read_model_drift(&db_path("events.db"), &identity) {
-        if let Some(advisory) = model_drift_advisory(&drift) {
-            eprintln!("{advisory}");
-        }
-    }
-    // Order-signature advisory (spec 71, VALIDATE DETECTS THE SIGNATURE): warn when a
-    // stream's position order and revision order disagree - the tail a write leaves when it
-    // lands at a revision a compaction opened as a hole. Report-only, like every other
-    // validate advisory: this NEVER repairs, reorders, or changes the exit status (fail-safe
-    // direction only - the spec's repair stays a documented operator procedure, never a
-    // command). A store-read failure just skips the advisory (never fails validate), exactly
-    // like the model-drift advisory above.
-    if let Ok(signatures) = read_order_signatures(&db_path("events.db"), &identity) {
-        for advisory in order_signature_advisories(&signatures) {
-            eprintln!("{advisory}");
-        }
-    }
-    // LOG BLOAT advisory: warn while the event log still holds a derived event and name `rigger
-    // reset --derived`, the delete that removes it. Reads the store's own count
-    // ([`Store::count_derived`]), the read the reset menu prints and the delete acts on. `None`
-    // on a server-backed project (the delete is a mechanic of the sqlite store), on a project with no events.db yet, or on any read
-    // failure; this never fails validate and never creates a store that does not already exist.
-    if let Some(advisory) = bloat_advisory_for(&db_path("events.db"), &identity) {
-        eprintln!("{advisory}");
-    }
-    // FOOTPRINT ACCOUNTING (spec 77 criterion 6): rigger's total on-disk footprint by
-    // category, ALWAYS printed (an honest surface, not conditional on anything crossing a
-    // threshold), plus an advisory for any category whose dead share breaches the
-    // threshold, naming the reclaiming command. A store-ACCESS-miss failure degrades to an
-    // empty report (mirrors residue_advisories/read_run_units); only a genuine store-
-    // SELECTION failure or git refusing inside a repository is worth surfacing, and either
-    // already will be by the residue block above sharing the same read - so this stays a silent
-    // skip, never a second error path for the identical cause.
-    if let Ok((totals, advisories)) = footprint_report_for(&cfg) {
-        for line in totals {
-            println!("{line}");
-        }
-        for advisory in advisories {
-            eprintln!("{advisory}");
-        }
-    }
-    // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
-    // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
-    // writes nothing to it. Validate alone then says how many events the file passed over, by
-    // cause (spec 124, CATCH-UP LINES).
-    if let Some(note) = graph_rebuild_owed_note(&db_path("graph.db"), &identity) {
-        eprintln!("{note}");
-    }
-    if let Some(note) = graph_passed_over_note(&db_path("graph.db"), &identity) {
-        eprintln!("{note}");
+    // The store advisories read the run store every reader reads ([`store_to_read_in`]); below a
+    // root that holds no `.rigger/` there is none to read, and the configuration alone is judged.
+    if let Some((loc, selection)) = if_any(store_to_read_in(&site))? {
+        store_advisories(&site, &loc, &selection, &cfg)?;
     }
     // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
     // discipline chapter are generated by `rigger docs` from the same code facts this binary
@@ -336,6 +278,86 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     // operator project that never carries rigger's own committed docs still passes validate.
     if let Some(failure) = docs_drift_failure(root) {
         return Err(failure.into());
+    }
+    Ok(())
+}
+
+/// Every advisory `rigger validate` reads from the run store `loc` holds, selected by `selection`:
+/// residue, model drift, order signatures, log bloat, footprint and the graph's rebuild notes.
+fn store_advisories(
+    site: &Site,
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    cfg: &config::Config,
+) -> Res {
+    // Residue surfacing (spec 06, unit 6 / Gap 14d): report leftover scratch worktrees,
+    // orphaned build caches, shadow stores, and dead `rigger/u/*` branches - with sizes -
+    // so residue is seen before a disk fills. Warnings only; validate NEVER fails or
+    // deletes anything (cleanup stays with the run-start sweeps and the run teardown).
+    // A genuine store-SELECTION failure here (unreadable `.rigger/store.conn`, malformed
+    // `workflow.yml`, invalid `store.backend`) SURFACES loudly - `?` fails validate - rather than
+    // degrading to a wrong-store read that would misreport live worktrees/branches as residue
+    // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
+    // this only makes an inability to even resolve the run store loud, never silent.
+    for advisory in residue_advisories(loc, selection, cfg)? {
+        eprintln!("{advisory}");
+    }
+    // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
+    // re-pointed since the previous run and recommend `rigger canary --if-model-changed`.
+    // A store-read failure just skips the advisory (never fails validate); git refusing inside a
+    // repository fails it, as it does every advisory above.
+    let identity = loc.identity_in(site)?;
+    let (events_db, graph_db) = (loc.file("events.db"), loc.file("graph.db"));
+    if let Ok(drift) = read_model_drift(&events_db, &identity) {
+        if let Some(advisory) = model_drift_advisory(&drift) {
+            eprintln!("{advisory}");
+        }
+    }
+    // Order-signature advisory (spec 71, VALIDATE DETECTS THE SIGNATURE): warn when a
+    // stream's position order and revision order disagree - the tail a write leaves when it
+    // lands at a revision a compaction opened as a hole. Report-only, like every other
+    // validate advisory: this NEVER repairs, reorders, or changes the exit status (fail-safe
+    // direction only - the spec's repair stays a documented operator procedure, never a
+    // command). A store-read failure just skips the advisory (never fails validate), exactly
+    // like the model-drift advisory above.
+    if let Ok(signatures) = read_order_signatures(&events_db, &identity) {
+        for advisory in order_signature_advisories(&signatures) {
+            eprintln!("{advisory}");
+        }
+    }
+    // LOG BLOAT advisory: warn while the event log still holds a derived event and name `rigger
+    // reset --derived`, the delete that removes it. Reads the store's own count
+    // ([`Store::count_derived`]), the read the reset menu prints and the delete acts on. `None`
+    // on a server-backed project (the delete is a mechanic of the sqlite store), on a project with no events.db yet, or on any read
+    // failure; this never fails validate and never creates a store that does not already exist.
+    if let Some(advisory) = bloat_advisory_for(&events_db, &identity) {
+        eprintln!("{advisory}");
+    }
+    // FOOTPRINT ACCOUNTING (spec 77 criterion 6): rigger's total on-disk footprint by
+    // category, ALWAYS printed (an honest surface, not conditional on anything crossing a
+    // threshold), plus an advisory for any category whose dead share breaches the
+    // threshold, naming the reclaiming command. A store-ACCESS-miss failure degrades to an
+    // empty report (mirrors residue_advisories/read_run_units); only a genuine store-
+    // SELECTION failure or git refusing inside a repository is worth surfacing, and either
+    // already will be by the residue block above sharing the same read - so this stays a silent
+    // skip, never a second error path for the identical cause.
+    if let Ok((totals, advisories)) = footprint_report_for(loc, selection, cfg) {
+        for line in totals {
+            println!("{line}");
+        }
+        for advisory in advisories {
+            eprintln!("{advisory}");
+        }
+    }
+    // REBUILD OWED advisory (spec 101): a `graph.db` that owes its rebuild - folded under an older
+    // fold rule - answers as it stands until `rigger setup` rebuilds it; validate says so, and
+    // writes nothing to it. Validate alone then says how many events the file passed over, by
+    // cause (spec 124, CATCH-UP LINES).
+    if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
+        eprintln!("{note}");
+    }
+    if let Some(note) = graph_passed_over_note(&graph_db, &identity) {
+        eprintln!("{note}");
     }
     Ok(())
 }
@@ -694,14 +716,14 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
 /// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
 /// validate stays read-only.
 fn residue_advisories(
-    root: &Path,
+    loc: &StoreLocation,
+    selection: &StoreSelection,
     cfg: &config::Config,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| root.to_path_buf());
-    // The repo whose `<repo>/.rigger/tmp` the run uses (spec 77 criterion 6:
-    // [`owning_repo_root`] is the SAME authority [`footprint_report_for`] resolves its own
-    // scratch root from). Keeps the scanned scratch root aligned with the run's actual one.
-    let repo = owning_repo_root(&cwd)?;
+    // The repo whose `<repo>/.rigger/tmp` the run uses: the resolved store's owning root (spec 77
+    // criterion 6: the SAME one [`footprint_report_for`] resolves its own scratch root from).
+    // Keeps the scanned scratch root aligned with the run's actual one.
+    let repo = loc.repo_root();
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
         &repo,
         &cfg.workflow.defaults.workdir,
@@ -712,9 +734,9 @@ fn residue_advisories(
     // (d-u2rr-observer-selection-loud). The benign no-run/no-store and store-access-miss cases still
     // yield an empty live set inside `read_run_units`, so an unconfigured or never-run project scans
     // cleanly.
-    let run_units = read_run_units(&cwd)?;
+    let run_units = read_run_units(loc, selection)?;
     let slugs = live_slugs(&run_units.live_branches);
-    let local_branches = rigger::worktree::unit_branches(&cwd);
+    let local_branches = rigger::worktree::unit_branches(Path::new(&repo));
     let report = scan_residue(
         &scratch,
         &slugs,
@@ -784,8 +806,11 @@ fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
 /// (no live units): a sqlite selection whose local store was never created, and a store that resolves
 /// but cannot be opened or read (e.g. an unreachable configured server) - a store-ACCESS miss, distinct
 /// from a selection FAILURE.
-fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
-    Ok(read_run_units_or_why(cwd)?.unwrap_or_default())
+fn read_run_units(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+) -> Result<RunUnits, Box<dyn std::error::Error>> {
+    Ok(read_run_units_or_why(loc, selection)?.unwrap_or_default())
 }
 
 /// [`read_run_units`] without its best-effort degrade: a store-ACCESS miss comes back as the
@@ -794,28 +819,20 @@ fn read_run_units(cwd: &Path) -> Result<RunUnits, Box<dyn std::error::Error>> {
 /// units are live" is never "no unit is live". A project whose store was never created still
 /// reads as no live units: nothing ever ran there.
 fn read_run_units_or_why(
-    cwd: &Path,
+    loc: &StoreLocation,
+    sel: &StoreSelection,
 ) -> Result<Result<RunUnits, String>, Box<dyn std::error::Error>> {
-    let sel = store_selection(None, None)?;
-    // Resolve the store's OWNING root and identity. For sqlite the durable log is a LOCAL file,
-    // so walk UP to it (as the couriers do); its absence means no run ever happened => no live
-    // units. For the server backend there is no local `events.db` to walk to, so resolve through
-    // the shared [`server_store_location`] (the SAME authority the store-opening couriers'
-    // [`require_store_dir`] server branch uses), binding identity to the main repo root and
-    // letting [`resolve_store`] reach the server.
-    let loc = if sel.is_sqlite() {
-        let Some(dir) = find_store_dir_from(cwd)? else {
-            return Ok(Ok(RunUnits::default()));
-        };
-        StoreLocation { dir }
-    } else {
-        server_store_location(&Site::of(cwd))?
-    };
+    // The store `loc` is the one every reader resolves ([`store_to_read_in`]): for sqlite a local
+    // file whose absence means no run ever happened => no live units; for the server backend the
+    // shared [`server_store_location`], identity bound to the main repo root.
+    if sel.log_absent(&loc.file("events.db")) {
+        return Ok(Ok(RunUnits::default()));
+    }
     // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
     // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS
     // resolved, it just cannot be reached, so the residue scan stays warning-only rather than
     // failing validate on a transient outage.
-    let backend = match resolve_store(&sel, &loc.file("events.db")) {
+    let backend = match resolve_store(sel, &loc.file("events.db")) {
         Ok(backend) => backend,
         Err(e) => return Ok(Err(format!("the run log cannot be opened: {e}"))),
     };
@@ -840,24 +857,26 @@ fn footprint_report_lines(categories: &[FootprintCategory]) -> Vec<String> {
 /// `rigger validate`'s two FOOTPRINT ACCOUNTING output streams (spec 77 criterion 6): the
 /// unconditional per-category totals (stdout) and the dead-share advisories (stderr).
 /// Resolves the SAME repo/scratch-root/liveness inputs [`residue_advisories`] does, via the
-/// SAME shared authorities ([`owning_repo_root`], [`rigger::worktree::scratch_root_path_from_env`],
+/// SAME shared authorities (the store's owning root, [`rigger::worktree::scratch_root_path_from_env`],
 /// [`read_run_units`]) - never a second, independently-derived notion of what is live. A
 /// store-ACCESS miss (no run ever happened) degrades to an empty live set, exactly like
 /// `residue_advisories`, so an unconfigured or never-run project still gets a footprint
 /// report; a genuine store-SELECTION failure surfaces as `Err` (propagated with `?`),
 /// never a silent wrong-store read.
 fn footprint_report_for(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
     cfg: &config::Config,
 ) -> Result<(Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
     let (categories, _liveness_unknown) =
-        measure_footprint(&cwd(), &cfg.workflow.defaults.workdir)?;
+        measure_footprint(loc, selection, &cfg.workflow.defaults.workdir)?;
     Ok((
         footprint_report_lines(&categories),
         footprint_advisories(&categories),
     ))
 }
 
-/// Rigger's footprint by category, measured from `cwd` with the scratch root `workdir`
+/// Rigger's footprint by category, measured over the store `loc` with the scratch root `workdir`
 /// configures - the ONE measurement both `rigger validate`'s report and `rigger reset
 /// --build-cache`'s reclaim read (gap 96), so the verb reclaims exactly what the advisory
 /// calls dead. See [`footprint_report_for`] for how each input resolves. The second value is
@@ -865,13 +884,14 @@ fn footprint_report_for(
 /// measured against an EMPTY live set, which an advisory may report but a reclaim must never act
 /// on ([`read_run_units_or_why`]).
 pub(super) fn measure_footprint(
-    cwd: &Path,
+    loc: &StoreLocation,
+    selection: &StoreSelection,
     workdir: &str,
 ) -> Result<(Vec<FootprintCategory>, Option<String>), Box<dyn std::error::Error>> {
-    let repo = owning_repo_root(cwd)?;
-    let rigger_dir = Path::new(&repo).join(RIGGER_DIR);
+    let repo = loc.repo_root();
+    let rigger_dir = loc.absolute_dir();
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(&repo, workdir));
-    let (run_units, liveness_unknown) = match read_run_units_or_why(cwd)? {
+    let (run_units, liveness_unknown) = match read_run_units_or_why(loc, selection)? {
         Ok(units) => (units, None),
         Err(why) => (RunUnits::default(), Some(why)),
     };
@@ -906,15 +926,21 @@ const DOCS_USAGE_EXIT_CODE: i32 = 2;
 /// `fresh <path>` or `drifted <path>` for each output on disk ([`docs_freshness`]) and exits
 /// 1 when any drifted - the check the docs pre-commit hook runs. Any other argument is
 /// refused with [`DOCS_USAGE_EXIT_CODE`] before anything is rendered.
+///
+/// Both answer for the project governing the caller in its own worktree ([`project_in_tree`]), so
+/// from a subdirectory they render and check that project's outputs as at its root, and each
+/// output is named relative to that root.
 pub(crate) fn cmd_docs(args: &[String]) -> Res {
     match args {
         [] => {
-            for path in write_docs(Path::new("."))? {
-                println!("rendered {}", path.display());
+            let root = project_in_tree(&Site::here())?;
+            for path in write_docs(&root)? {
+                let rel = path.strip_prefix(&root).unwrap_or(&path);
+                println!("rendered ./{}", rel.display());
             }
             Ok(())
         }
-        [flag] if flag == "--check" => check_docs(Path::new(".")),
+        [flag] if flag == "--check" => check_docs(&project_in_tree(&Site::here())?),
         _ => {
             eprintln!(
                 "rigger: docs does not take {}; {DOCS_USAGE}",
