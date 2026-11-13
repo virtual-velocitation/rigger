@@ -4490,15 +4490,125 @@ mod tests {
             "every built-in body, and the reviewer discipline and its build-cache sentence on \
              each review-tier surface, are read"
         );
-        let hits: Vec<(&str, Vec<&str>)> = texts
-            .iter()
-            .map(|(at, text)| (at.as_str(), language_marker_hits(text)))
-            .filter(|(_, markers)| !markers.is_empty())
-            .collect();
         assert_eq!(
-            hits,
+            texts_hit_by(&texts, language_marker_hits),
             Vec::<(&str, Vec<&str>)>::new(),
             "the built-in layer and the reviewer discipline name no language"
+        );
+    }
+
+    /// Spec 121's cadence and method phrase list: each phrase is the tell of a prescription,
+    /// matched as a lowercase substring of a text.
+    const PRESCRIPTION_PHRASES: &[&str] = &[
+        "the moment",
+        "never batch",
+        "do not batch",
+        "keep it flowing",
+        "between your actions",
+        "between your own actions",
+        "do not contradict",
+        "supersede explicitly",
+        "default to skepticism",
+        "reject only",
+        "not by grepping",
+        "never a new test",
+        "audit the whole tree",
+        "do not write code",
+        "scope creep",
+        "for code lookups",
+        "read first",
+        "honor them",
+        "do not repeat",
+        "address or refute",
+    ];
+
+    /// Every phrase of [`PRESCRIPTION_PHRASES`] the lower-cased `text` holds, in list order.
+    fn prescription_phrase_hits(text: &str) -> Vec<&'static str> {
+        let text = text.to_lowercase();
+        PRESCRIPTION_PHRASES
+            .iter()
+            .copied()
+            .filter(|phrase| text.contains(phrase))
+            .collect()
+    }
+
+    /// Each labelled text of `texts` that `check` finds a hit in, with its hits, in `texts`
+    /// order.
+    fn texts_hit_by<T: AsRef<str>>(
+        texts: &[(String, T)],
+        check: fn(&str) -> Vec<&'static str>,
+    ) -> Vec<(&str, Vec<&'static str>)> {
+        texts
+            .iter()
+            .map(|(at, text)| (at.as_str(), check(text.as_ref())))
+            .filter(|(_, hits)| !hits.is_empty())
+            .collect()
+    }
+
+    /// The conductor's `EMIT_PROTOCOL` as it read before spec 121 cut its cadence clause.
+    const PRE_MOVE_EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger_emit \
+        tool the moment you make it, with type \"DecisionMade\" and data:\n{\"id\":\"<short-id>\",\
+        \"summary\":\"<one line>\",\"governs\":[\"<file>\"],\"supersedes\":\"<prior-id-or-empty>\"}\n\
+        This writes it to the shared event log live, so other agents see it immediately.";
+
+    /// Spec 121's NO REGISTERED TEXT PRESCRIBES: no group `rigger::prompt_surface::all_groups()`
+    /// returns spells a phrase of the cadence and method list or a marker of the MARKERS rule.
+    /// The two checks first run over held texts, so each is shown to flag what it must: the
+    /// pre-move `EMIT_PROTOCOL` by its cadence clause alone, a capitalised phrase by the
+    /// lowercase match, each phrase once in list order, and a toolchain word by the MARKERS rule,
+    /// while a contract sentence passes both.
+    #[test]
+    fn no_registered_text_spells_a_prescription_phrase_or_a_language_marker() {
+        let held: Vec<(String, &str)> = [
+            ("the pre-move EMIT_PROTOCOL", PRE_MOVE_EMIT_PROTOCOL),
+            (
+                "a capitalised phrase",
+                "Keep It Flowing, and Do Not Batch it.",
+            ),
+            (
+                "a toolchain word",
+                "Export CARGO_TARGET_DIR before the build.",
+            ),
+            (
+                "a contract sentence",
+                "This writes it to the shared event log live, so other agents see it immediately.",
+            ),
+        ]
+        .into_iter()
+        .map(|(at, text)| (at.to_string(), text))
+        .collect();
+        assert_eq!(
+            (
+                texts_hit_by(&held, prescription_phrase_hits),
+                texts_hit_by(&held, language_marker_hits)
+            ),
+            (
+                vec![
+                    ("the pre-move EMIT_PROTOCOL", vec!["the moment"]),
+                    (
+                        "a capitalised phrase",
+                        vec!["do not batch", "keep it flowing"]
+                    ),
+                ],
+                vec![("a toolchain word", vec!["cargo"])]
+            ),
+            "the phrase check flags the pre-move EMIT_PROTOCOL and the capitalised phrases, the \
+             MARKERS rule the toolchain word, and neither the contract sentence"
+        );
+
+        let registry: Vec<(String, &str)> = rigger::prompt_surface::all_groups()
+            .into_iter()
+            .map(|g| (format!("{}::{}", g.surface, g.name), g.text))
+            .collect();
+        assert_eq!(
+            texts_hit_by(&registry, prescription_phrase_hits),
+            Vec::<(&str, Vec<&str>)>::new(),
+            "no registry group spells a phrase of the cadence and method list"
+        );
+        assert_eq!(
+            texts_hit_by(&registry, language_marker_hits),
+            Vec::<(&str, Vec<&str>)>::new(),
+            "no registry group names a language under the MARKERS rule"
         );
     }
 

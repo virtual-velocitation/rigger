@@ -366,6 +366,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "warning: residue found under the scratch root (surfaced only",
             "\n  worktree with no live unit: {name} ({})",
             "reclaimed automatically by the next `rigger run`, or remove",
+            "reaped by the code store within its cap, or cleared by `rigg",
             "`rigger reset --build-cache` reclaims it now (the next `rigg",
             "`rigger reset --build-cache` reclaims it now (recording `rig",
             "no run or spawn owns this, so nothing reclaims it automatica",
