@@ -392,6 +392,11 @@ const PANEL_HEIGHT_DRIVER: &str = r##"
 const RESIZE_READERS: &str = r##"
 // The panel at a 1400px and at an 800px viewport: [clientWidth, clientHeight, toolbar height].
 const __WIDE = [1358, 294, 24], __NARROW = [758, 414, 44];
+// The panel at a phone's 390px viewport once the rail and the card stacked above it push the page
+// past the viewport: the page's 12px scrollbar leaves main 378px, the panel 336px inside main's 20px
+// padding and the section's 1px border on each side (its surface 312px inside its own 12px padding),
+// and the call walk's toolbar wraps to four lines.
+const __PHONE = [336, 414, 80];
 // The panel takes the client box and toolbar height a [clientWidth, clientHeight, toolbar] row
 // gives; __resize then notifies each observer watching the panel, as a browser does.
 function __size(p){
@@ -484,7 +489,7 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 /// Driver: an overview the user has panned keeps its transform and its marks, each node where it
 /// shows on screen, through a resize from a 1400px viewport to 800px and back, and through a change
 /// of its width alone and of its height alone and back, with no new request: only its drawing
-/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call walk does the same. A
+/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call walk does the same, through 800px and a phone's panel beside the page's scrollbar. A
 /// fresh view after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px
 /// keeps its zoom through a resize to 1400px, where the fitted scale is larger, and the wheel zooms on
 /// from the kept scale, in and back, never jumping above it.
@@ -550,6 +555,7 @@ const MOVED_RESIZE_DRIVER: &str = r##"
   __press(-30, 15);
   const walked = JSON.stringify(__view(at + "the pan on the call walk"));
   keptThrough(__NARROW, "panned call walk resized to 800px", "calls", walked, walk);
+  keptThrough(__PHONE, "panned call walk resized to a 390px phone's panel beside the page's scrollbar", "calls", walked, walk);
   keptThrough(__WIDE, "panned call walk resized back to 1400px", "calls", walked, walk);
   if (__fetches !== walkFetches)
     throw new Error("REGRESSION: " + at + "a resize of the call walk must make no request, it made " + (__fetches - walkFetches));
@@ -680,6 +686,10 @@ rigger::test_cases! {
     the_overview_opens_fitted_at_800px: opens_fitted("[800, 758, 414, 44]");
     /// A phone's 390px viewport, where the toolbar wraps to three lines.
     the_overview_opens_fitted_at_390px: opens_fitted("[390, 348, 414, 62]");
+    /// The same phone once the rail and the card stacked above the panel push the page past the
+    /// viewport, so the page's 12px scrollbar leaves the panel 336px and its surface 312px.
+    the_overview_opens_fitted_at_390px_beside_the_page_scrollbar:
+        opens_fitted("[390, 336, 414, 62]");
     /// 1400px: every toolbar on one line.
     the_drawing_fits_below_a_one_line_toolbar_at_1400px:
         fits_below_its_toolbar(r#"[1358, 294, {"overview": 24, "reproject": 24, "drill": 24, "calls": 24}]"#);
