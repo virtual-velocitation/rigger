@@ -4870,10 +4870,10 @@ impl RunCtx<'_> {
     /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
     /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
     /// at run start (see `run`'s own seed), so a crash-resumed process counts a spawn still in
-    /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): when a
-    /// grounder is present and `partition: by-blast-radius` is requested, a stage is admitted
-    /// only while its safe radius conflicts with no unit in flight ([`radii_conflict`]: a
-    /// shared file, or an empty radius), so two overlapping units never run at once.
+    /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): a stage
+    /// is admitted only while its safe radius conflicts with no unit in flight that the partition
+    /// [holds it apart from](Self::partition_holds_apart) ([`radii_conflict`]: a shared file, or
+    /// an empty radius), so two overlapping units the rule is in force for never run at once.
     fn run_wave(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -4894,7 +4894,9 @@ impl RunCtx<'_> {
         std::thread::scope(|s| loop {
             let mut i = 0;
             while i < waiting.len() {
-                if !admissible(&waiting[i], width, &running, in_flight, radii.as_ref()) {
+                if !admissible(&waiting[i], width, &running, in_flight, &radii, |a, b| {
+                    self.partition_holds_apart(stages, a, b)
+                }) {
                     i += 1;
                     continue;
                 }
@@ -5086,9 +5088,9 @@ impl RunCtx<'_> {
 
     /// The SAFE-SUPERSET radius (spec 16 unit 3) of each ready stage AND each unit already in
     /// flight - one parked in an earlier wave still runs off-process, so a ready unit is compared
-    /// with it too - for the wave's co-scheduling rule, or `None` when the rule does not apply - no
-    /// grounder, or no ready stage requests `partition: by-blast-radius` - so every stage is free
-    /// to pair. The radius is the RECORDED
+    /// with it too - that the wave's co-scheduling rule is [in force for](Self::partition_applies).
+    /// A unit the rule is not in force for gets no radius here, so a radius recorded before a
+    /// unit starts says the rule holds for that unit. The radius is the RECORDED
     /// one: the unit's latest `BlastRadiusComputed` in this run, the same radius the retention
     /// metric reads and a crash-resumed driver re-reads, so the live decision and the log agree.
     /// A unit with no recorded radius yet has its [`grounded_blast_radius`](Self::grounded_blast_radius)
@@ -5102,8 +5104,13 @@ impl RunCtx<'_> {
         ready: &[String],
         in_flight: &HashSet<String>,
     ) -> Result<WaveRadii, Error> {
-        if self.deps.grounder.is_none() || !self.partition_requested(stages, ready) {
-            return Ok(None);
+        let mut held = ready
+            .iter()
+            .chain(in_flight)
+            .filter(|name| self.partition_applies(stages, name))
+            .peekable();
+        if held.peek().is_none() {
+            return Ok(HashMap::new());
         }
         let mut recorded: HashMap<String, Vec<String>> = self
             .read_current_run()?
@@ -5111,7 +5118,7 @@ impl RunCtx<'_> {
             .filter_map(crate::metrics::recorded_radius)
             .collect();
         let mut radii = HashMap::new();
-        for name in ready.iter().chain(in_flight) {
+        for name in held {
             if radii.contains_key(name) {
                 continue;
             }
@@ -5126,15 +5133,25 @@ impl RunCtx<'_> {
             };
             radii.insert(name.clone(), safe);
         }
-        Ok(Some(radii))
+        Ok(radii)
     }
 
-    /// Whether by-blast-radius partitioning is requested for this wave (§3.2, §8): some ready
-    /// stage [asks for it](Self::partitions_by_blast).
-    fn partition_requested(&self, stages: &BTreeMap<String, Stage>, ready: &[String]) -> bool {
-        ready
-            .iter()
-            .any(|name| self.partitions_by_blast(&stages[name]))
+    /// Whether the co-scheduling rule holds units `a` and `b` apart when their radii conflict
+    /// (§3.2, §8): it is [in force](Self::partition_applies) for both. Admission, a landing's
+    /// joiners and the plan critique's overlap header all ask this one question, so a unit the
+    /// rule is not in force for is never held back by it and never holds another back.
+    fn partition_holds_apart(&self, stages: &BTreeMap<String, Stage>, a: &str, b: &str) -> bool {
+        self.partition_applies(stages, a) && self.partition_applies(stages, b)
+    }
+
+    /// Whether the co-scheduling rule is in force for unit `name`: a grounder computes radii,
+    /// and its stage [asks for it](Self::partitions_by_blast). A unit in flight that is no stage
+    /// of this workflow is held to the rule, since nothing says it does not ask (fail-safe).
+    fn partition_applies(&self, stages: &BTreeMap<String, Stage>, name: &str) -> bool {
+        self.deps.grounder.is_some()
+            && stages
+                .get(name)
+                .is_none_or(|st| self.partitions_by_blast(st))
     }
 
     /// Whether `st` asks for by-blast-radius partitioning: its own `partition` when set,
@@ -9262,9 +9279,9 @@ impl RunCtx<'_> {
             // per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
             let conflicts = blast_radius_conflicts(&radii);
-            let serialized = conflicts.iter().all(|(a, other, _)| {
-                self.partitions_by_blast(&stages[a]) && self.partitions_by_blast(&stages[other])
-            });
+            let serialized = conflicts
+                .iter()
+                .all(|(a, other, _)| self.partition_holds_apart(stages, a, other));
             let prompt = build_dag_critique_prompt(
                 stages,
                 &radii,
@@ -15394,9 +15411,9 @@ pub use crate::metrics::partition_by_blast_radius;
 
 pub use crate::metrics::radii_conflict;
 
-/// Each stage's safe radius for a wave's co-scheduling rule, or `None` when the rule does not
-/// apply ([`RunCtx::wave_radii`]).
-type WaveRadii = Option<HashMap<String, Vec<String>>>;
+/// The safe radius of each unit a wave's co-scheduling rule is in force for
+/// ([`RunCtx::wave_radii`]).
+type WaveRadii = HashMap<String, Vec<String>>;
 
 /// The rule that says which stages may run next: the plan-critique gate no wave schedules and
 /// the fan-out tables [`wave_ready`] and [`assert_no_ungated_fanout_unit`] read. The run loop
@@ -15439,16 +15456,18 @@ impl Frontier<'_> {
 /// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
 /// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
 /// (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
-/// under `width` (`0` = unbounded) AND, when `radii` is present, its radius conflicts with no
-/// unit in flight - every one, including a unit parked in an earlier wave, and one with no
-/// radius counts as conflicting. An in-flight unit that already holds its slot is admitted
-/// without the check, since it started under it.
+/// under `width` (`0` = unbounded) AND its radius conflicts with no unit in flight that
+/// `holds_apart` says the partition holds it apart from - every such one, including a unit
+/// parked in an earlier wave, and one with no radius in `radii` counts as conflicting. An
+/// in-flight unit that already holds its slot is admitted without the check, since it started
+/// under it.
 fn admissible(
     name: &str,
     width: usize,
     running: &HashSet<String>,
     in_flight: &HashSet<String>,
-    radii: Option<&HashMap<String, Vec<String>>>,
+    radii: &WaveRadii,
+    holds_apart: impl Fn(&str, &str) -> bool,
 ) -> bool {
     if running.len() >= MAX_CONCURRENCY {
         return false;
@@ -15459,12 +15478,11 @@ fn admissible(
     if width != 0 && in_flight.len() >= width {
         return false;
     }
-    radii.is_none_or(|radii| {
-        in_flight.iter().all(|other| {
-            radii
+    in_flight.iter().all(|other| {
+        !holds_apart(name, other)
+            || radii
                 .get(other)
                 .is_some_and(|other| !radii_conflict(&radii[name], other))
-        })
     })
 }
 
@@ -42637,7 +42655,11 @@ mod tests {
                 !stages.values().any(|st| st.baseline),
                 "both proposals supersede their baselines, so the wave is proposed units only"
             );
-            assert_eq!(ctx.partition_requested(&stages, &ready), in_force, "{why}");
+            assert_eq!(
+                ctx.partition_holds_apart(&stages, "u-a", "u-b"),
+                in_force,
+                "{why}"
+            );
             let integrated = drive_one_wave(&ctx, &stages, &ready, &[]);
             assert_eq!(integrated.len(), 2, "both units integrate: {integrated:?}");
             assert_eq!(probe.peak(), peak, "{why}");
@@ -42772,6 +42794,75 @@ mod tests {
             HashSet::from(["u_b".to_string()]),
             "u_a shares x.rs with the parked unit and waits; the disjoint u_b runs"
         );
+    }
+
+    /// The one question admission, a landing's joiners and the plan critique's overlap header
+    /// ask: the partition holds two units apart only when it is in force for both - a grounder
+    /// computes radii, and each unit's stage asks for `partition: by-blast-radius`, a unit that is
+    /// no stage of the workflow being held to the rule.
+    #[test]
+    fn the_partition_holds_two_units_apart_only_when_it_is_in_force_for_both() {
+        // (grounder present, a's partition, b's partition or None for no stage, held, why)
+        let rows = [
+            (
+                true,
+                "by-blast-radius",
+                Some("by-blast-radius"),
+                true,
+                "both ask",
+            ),
+            (true, "by-blast-radius", Some(""), false, "b does not ask"),
+            (true, "", Some("by-blast-radius"), false, "a does not ask"),
+            (
+                true,
+                "by-blast-radius",
+                None,
+                true,
+                "b is no stage, so it is held to the rule",
+            ),
+            (
+                true,
+                "",
+                None,
+                false,
+                "a does not ask beside a unit that is no stage",
+            ),
+            (
+                false,
+                "by-blast-radius",
+                Some("by-blast-radius"),
+                false,
+                "with no grounder the rule is in force for neither",
+            ),
+        ];
+        let grounder = stub_radii(&[]);
+        for (grounded, a, b, held, why) in rows {
+            let mut cfg = Config::default();
+            for (name, partition) in [("a", Some(a)), ("b", b)] {
+                if let Some(partition) = partition {
+                    cfg.workflow.stages.insert(
+                        name.into(),
+                        Stage {
+                            name: name.into(),
+                            partition: partition.into(),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                grounder: grounded.then_some(&grounder as &dyn Grounder),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            assert_eq!(
+                ctx.partition_holds_apart(&cfg.workflow.stages, "a", "b"),
+                held,
+                "{why}"
+            );
+        }
     }
 
     /// The partition holds two units apart only when it is in force for BOTH: units whose radii
