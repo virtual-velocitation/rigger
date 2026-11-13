@@ -15,14 +15,18 @@
 #
 # Usage: sh .rigger/gates/evaluate.sh <measure|evidence|check|emit|run> [args]
 #   measure [run] [out]  write the run file from docs/evaluation/TEMPLATE.md: the scorecard, the
-#                        comparison with the baseline and the last five run files, and the
-#                        previous run file's adopted proposal scored (its metric, then each
-#                        metric its `also` lists). Refuses to overwrite a file. Prints the path.
+#                        comparison with the baseline and the last five run files, the
+#                        scheduling (a row per started unit and the files that put the most unit
+#                        pairs in conflict), and the previous run file's adopted proposal scored
+#                        (its metric, then each metric its `also` lists). Refuses to overwrite a
+#                        file. Prints the path.
 #   evidence [run]       print the evaluator's three sources as JSON: the failures (rejects, gate
 #                        failures, other failures, escalations and deferred gate failures, each
 #                        with its measured rework), the cost (time by unit, label, battery and
-#                        gate, the repeats the log shows and what it cannot show), and the grep
-#                        fallbacks grouped by what they searched for. Never committed.
+#                        gate, the repeats the log shows and what it cannot show, and the
+#                        scheduling: units in flight, live time by slot state, each unit's blast
+#                        radius, changed files and overlaps, and the files behind the overlaps),
+#                        and the grep fallbacks grouped by what they searched for. Never committed.
 #   check [file]         grade a run file's format (default: the newest run file); exit 1 with
 #                        one line per problem. It never judges content.
 #   emit [file]          once check passes, record the adopted proposal as one DecisionMade
@@ -57,6 +61,12 @@
 #     time measure its predicted_move lowers by at most its value. A grep-fallbacks class's
 #     metric is grep_fallbacks or grep_fallbacks_by_target.<target>, and its hours_saved is null
 #     (the log holds no duration for a fallback), ranked after every proposal with hours;
+#   - a cost proposal claims scheduling hours (live wall hours) its kind cannot remove:
+#     queued_hours other than by a change to the width bound (surface workflow, path
+#     .rigger/workflow.yml, a change naming max_parallel_units), chain_hours other than on the
+#     planning surface (persona at .rigger/agents/planner.md, or spec-skill), or serial_hours
+#     while radii_recorded_before_start is 0: no wave applied the radius rule, so no radius held a
+#     unit back;
 #   - a persona or spec-skill proposal is not of form `instruction` (text is all those surfaces
 #     hold), or a proposal for a class the previous run file also diagnosed is not of form
 #     `check` or `gate`: instruction text already failed to remove that cause once;
@@ -105,7 +115,7 @@ EM_DASH = chr(0x2014)
 TODO = "TO BE WRITTEN"
 TYPES = ("RunStarted", "RunHeld", "RunReleased", "UnitStarted", "UnitStatus", "UnitFailed",
          "UnitEscalated", "UnitIntegrated", "SpawnRequested", "SpawnResult", "GateVerdict",
-         "DeferredGateFailed")
+         "DeferredGateFailed", "BlastRadiusComputed", "FileTouched")
 # The driver records a heartbeat every 30 s; a longer silence than this means it was not running.
 BEAT_GAP_S = 120
 # The spawns whose result opens a gate battery: the writers whose tree the driver then gates.
@@ -125,17 +135,47 @@ INSTRUCTION_SURFACES = ("persona", "spec-skill")
 BY_MAPS = ("failures_by_cause", "reject_items_by_class", "rejects_by_cause",
            "gate_fails_by_gate", "deferred_gate_fails_by_gate", "red_verdicts_by_gate",
            "time_shares", "hours_by_label", "gate_hours_by_gate", "repeated_hours",
-           "grep_fallbacks_by_target")
+           "grep_fallbacks_by_target", "slot_hours")
 # The metrics a cost class may name: hours by-maps and top-level hours, or shares of unit elapsed
 # time, which the bound on hours_saved converts to hours.
-COST_HOURS = ("hours_by_label", "gate_hours_by_gate", "repeated_hours", "unit_elapsed_hours")
+COST_HOURS = ("hours_by_label", "gate_hours_by_gate", "repeated_hours", "unit_elapsed_hours",
+              "serial_hours", "queued_hours", "chain_hours")
 COST_SHARES = ("time_shares", "gates_share", "post_merge_gates_share")
+# The scheduling hours only one kind of proposal may claim, each as (that kind, whether a proposal
+# is one). queued_hours is time the width bound held a ready unit back, which only a change to the
+# bound removes; chain_hours is time every unit not started waited on its needs, which only the
+# planning surface shapes: the planner's decomposition guidance, or the spec-writing skills that
+# shape a spec's needs.
+SCHEDULING_CLAIMS = {
+    "queued_hours": ("a change to the width bound: surface workflow, path .rigger/workflow.yml and "
+                     "a change naming max_parallel_units",
+                     lambda p: p.get("surface") == "workflow"
+                     and path_of(p) == ".rigger/workflow.yml"
+                     and "max_parallel_units" in str(p.get("change") or "")),
+    "chain_hours": ("a change to the planning surface: surface persona with path "
+                    ".rigger/agents/planner.md, or surface spec-skill",
+                    lambda p: p.get("surface") == "persona"
+                    and path_of(p) == ".rigger/agents/planner.md"
+                    or p.get("surface") == "spec-skill"),
+}
 GREP_METRICS = ("grep_fallbacks", "grep_fallbacks_by_target")
 COMPARED = ("units_integrated", "first_pass_rate", "attempts_per_unit", "rejects_per_unit",
             "gate_fails_per_unit", "escalations", "agent_busy_hours_per_unit",
             "wall_hours_per_criterion_unit", "live_wall_hours_per_criterion_unit",
             "rework_share", "gates_share",
-            "post_merge_gates_share", "grep_fallbacks")
+            "post_merge_gates_share", "grep_fallbacks", "units_in_flight_mean",
+            "units_in_flight_max", "serial_share", "queued_share", "chain_share",
+            "co_schedulable_share")
+# The run's live wall time, split by how many units held a slot (UnitStarted to UnitIntegrated or
+# UnitEscalated) and what the started units without one were doing; the keys sum to the live wall
+# time. With one slot held, the first that applies: another unit was ready but not started while
+# the run was held, or while it was not; another was not started and waited on its needs; none was
+# left to start.
+SLOT_KEYS = ("idle", "solo_ready_held", "solo_ready_waiting", "solo_needs_waiting",
+             "solo_none_left", "multi_ready_waiting", "multi")
+# How many files each overlap ranking in the evidence lists, and how many the run file shows.
+TOP_FILES = 15
+SHOWN_FILES = 5
 # The prefix an agent's progress line opens with when it searched the sources by text because
 # the graph could not answer; the binary's own grep-fallback count uses the same prefix.
 GREP_FALLBACK = "grep-fallback:"
@@ -172,6 +212,37 @@ GATE_HOURS = ("each fresh verdict's time since the previous verdict of its batte
               "gate's run plus the driver's step before it")
 REWORK_HOURS = ("each failure's unit hours from the failure to its unit's next failure, next merge "
                 "attempt or integration, whichever comes first")
+SCHEDULING = ("live wall hours, not unit hours: the run's first RunStarted to its last landing, "
+              "outages removed. units_in_flight counts the started units with an open agent "
+              "session or gate battery; slot_hours splits the time by how many units held a slot "
+              "(UnitStarted to UnitIntegrated or UnitEscalated, what the width bound counts) and "
+              "whether a started unit without one was ready (every unit its UnitStarted needs had "
+              "integrated) or still waited on its needs; serial_hours is "
+              "slot_hours.solo_ready_waiting, queued_hours slot_hours.multi_ready_waiting and "
+              "chain_hours slot_hours.solo_needs_waiting. co_schedulable_share is derived: no "
+              "event carries it, so it is recomputed from each unit's latest BlastRadiusComputed "
+              "by the driver's own rule (a shared file or an empty radius conflicts; units join "
+              "the first batch they conflict with no member of, in unit id order)")
+SESSIONS_ONLY = ("; approximate: the slice records no gate verdict, so units_in_flight counts "
+                 "agent sessions only")
+NO_SESSIONS = "; units_in_flight is unmeasured: the slice has no spawn record"
+NO_OUTAGES = ("; approximate: no heartbeat or hold is recorded, so a driver outage counts as live "
+              "time")
+SCHEDULING_NOT_SHOWN = {
+    "readiness": "no event records when a unit became ready; it is derived from the needs its "
+                 "UnitStarted names and their UnitIntegrated times",
+    "admission_refusal": "no event records that a ready unit was held back, by the width bound or "
+                         "by a radius conflict with a unit in flight, nor which unit held it",
+    "radius_rule": "no event records whether a wave applied the radius rule; a wave that applies "
+                   "it records a ready unit's radius before admitting it, which "
+                   "radii_recorded_before_start counts",
+    "width_bound": "no event records the width bound (max_parallel_units) a wave ran under; the "
+                   "workflow file the run used holds it",
+    "changed_files": "FileTouched names no unit; each is attributed to the next UnitIntegrated in "
+                     "log order, which the landing records right after its files. The files "
+                     "include what a regeneration rewrote, so the log does not tell a unit's edit "
+                     "from a regenerated file",
+}
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 # One gate battery: its opening (a writer's result), its last fresh verdict, whether that verdict
 # is post-merge, the writer's spawn id, and its verdicts as (time, info, position) in time order.
@@ -376,6 +447,20 @@ class Fold:
         self.open_spawns = {}
         self.spawns = []
         self.timeline = {}
+        self.verdicts = 0
+        # Scheduling: each unit's first start as (position, seconds), its closed slots and its open
+        # one, its first integration, its latest blast radius as (position, safe, precise), how
+        # many radii it recorded and the first one's position, the files a landing changed (those
+        # recorded since the last integration) and each integrated unit's changed files.
+        self.first_start = {}
+        self.slots = {}
+        self.slot_open = {}
+        self.first_integrated = {}
+        self.radius = {}
+        self.radius_records = Counter()
+        self.first_radius = {}
+        self.touched = set()
+        self.changed = {}
 
     # Each unit's events in log order, as (seconds, type, info, position), for the time shares and
     # the cost. A gate verdict belongs to the unit its replay key opens with; a unit's start to the
@@ -400,7 +485,18 @@ class Fold:
             info = data.get("status") if typ == "UnitStatus" else str(data.get("id") or "")
         self.timeline.setdefault(unit, []).append((at / 1e9, typ, info, pos))
 
+    # A blast radius or a changed file feeds the scheduling figures only: it stays out of the
+    # timeline and the slice's last time, so every other figure reads as it would without it.
     def add(self, pos, typ, data, meta, at):
+        if typ == "BlastRadiusComputed":
+            unit = str(data.get("id") or "")
+            self.radius[unit] = (pos, data.get("safe") or [], data.get("precise") or [])
+            self.radius_records[unit] += 1
+            self.first_radius.setdefault(unit, pos)
+            return
+        if typ == "FileTouched":
+            self.touched.add(str(data.get("path") or ""))
+            return
         self.track(pos, typ, data, meta, at)
         self.last_ns = at
         if typ == "RunStarted":
@@ -418,12 +514,19 @@ class Fold:
         elif typ == "UnitStarted":
             self.criterion[data.get("id", "")] = data.get("spec_criterion") or ""
             self.needs.setdefault(data.get("id", ""), data.get("needs"))
+            self.first_start.setdefault(data.get("id", ""), (pos, at / 1e9))
+            self.slot_open.setdefault(data.get("id", ""), at / 1e9)
         elif typ == "UnitIntegrated":
             if data.get("commit") == REVIEW_ONLY:
                 self.review_only.add(data.get("id", ""))
             else:
                 self.integrated.add(data.get("id", ""))
                 self.last_landing_ns = at
+            # The landing records its files just before its UnitIntegrated, under the landing lock.
+            self.first_integrated.setdefault(data.get("id", ""), at / 1e9)
+            self.changed.setdefault(data.get("id", ""), set()).update(self.touched)
+            self.touched = set()
+            self.close_slot(data.get("id", ""), at)
         elif typ == "UnitStatus":
             # A relaunch continues an interrupted launch under a new session id, so the session
             # the spawn continued differs from the one it ran as.
@@ -439,9 +542,11 @@ class Fold:
                 self.reject_cause[pos] = self.verdict_cause.pop(unit)
         elif typ == "UnitEscalated":
             self.escalations.append((pos, data))
+            self.close_slot(data.get("id", ""), at)
         elif typ == "DeferredGateFailed":
             self.deferred.append((pos, data))
         elif typ == "GateVerdict":
+            self.verdicts += 1
             # A skip, or a legacy artifact-tagged landing record, is not a gate run.
             if not data.get("pass", False) and not data.get("artifact") and not data.get("skipped"):
                 self.red_verdicts[data.get("gate", "")] += 1
@@ -458,6 +563,13 @@ class Fold:
                 verdict = last_json_line(data.get("output") or "")
                 if verdict.get("verdict") == "reject":
                     self.verdict_cause[match["unit"]] = verdict.get("cause") or "unstated"
+
+    # A unit holds a slot from its UnitStarted to its integration or escalation; a later
+    # UnitStarted (a resumed unit) opens another.
+    def close_slot(self, unit, at):
+        start = self.slot_open.pop(unit, None)
+        if start is not None:
+            self.slots.setdefault(unit, []).append((start, at / 1e9))
 
 
 def folded(wanted):
@@ -774,6 +886,260 @@ def joins_a_stage(fold, unit):
     return isinstance(needs, list) and any(n not in fold.criterion for n in needs)
 
 
+# ---- scheduling ----
+
+# When a started unit became ready, in seconds: its needs' first integrations, the run's start when
+# it needs nothing, None while a need never integrated. A need naming no started unit is a stage
+# (the check-in waits on `implement`, the fan-out stage), met once every other unit that joins no
+# stage has integrated.
+def ready_at(fold, unit, start):
+    needs = fold.needs.get(unit)
+    times = []
+    for need in needs if isinstance(needs, list) else []:
+        if need in fold.first_start:
+            times.append(fold.first_integrated.get(need))
+        else:
+            times += [fold.first_integrated.get(u) for u in fold.first_start
+                      if u != unit and not joins_a_stage(fold, u)]
+    if any(t is None for t in times):
+        return None
+    return max(times, default=start)
+
+
+def inside(spans, t):
+    return any(a <= t < b for a, b in spans)
+
+
+def pairs_of(k):
+    return k * (k - 1) // 2
+
+
+# The blast-radius figures, by the driver's own rule over each unit's latest radius: two units
+# conflict when their safe radii share a file or either is empty, and each unit, in id order,
+# joins the first batch it conflicts with no member of. A unit in a batch of two or more is
+# co-schedulable. Also the files that put unit pairs in conflict, beside the units that changed
+# them.
+def radius_overlap(fold):
+    radii = {u: set(r[1]) for u, r in fold.radius.items()}
+    grounded = sorted(radii)
+    conflict = lambda a, b: not radii[a] or not radii[b] or bool(radii[a] & radii[b])
+    batches = []
+    for unit in grounded:
+        batch = next((b for b in batches if not any(conflict(unit, m) for m in b)), None)
+        if batch is None:
+            batches.append([unit])
+        else:
+            batch.append(unit)
+    pairs = [(a, b) for i, a in enumerate(grounded) for b in grounded[i + 1:]]
+    shared = [len(radii[a] & radii[b]) for a, b in pairs if radii[a] and radii[b]]
+    in_radius = Counter(f for u in grounded for f in radii[u])
+    in_change = Counter(f for files in fold.changed.values() for f in files)
+    row = lambda f: {"file": f, "radius_units": in_radius[f],
+                     "radius_pairs": pairs_of(in_radius[f]), "changed_units": in_change[f],
+                     "changed_pairs": pairs_of(in_change[f])}
+    by_radius = sorted(in_radius, key=lambda f: (-in_radius[f], -in_change[f], f))
+    by_change = sorted((f for f in in_change if in_change[f] >= 2),
+                       key=lambda f: (-in_change[f], -in_radius[f], f))
+    empty = [u for u in grounded if not radii[u]]
+    return {
+        "radii": radii, "grounded": grounded, "conflict": conflict, "batches": batches,
+        "co_schedulable": sum(len(b) for b in batches if len(b) >= 2),
+        "conflicting_pairs": [(a, b) for a, b in pairs if conflict(a, b)],
+        "pairs": len(pairs),
+        "min_shared_files": min(shared, default=None),
+        "radius_files": len(in_radius),
+        "tied_at_top": sum(1 for f in in_radius if in_radius[f] == in_radius[by_radius[0]])
+        if by_radius else 0,
+        "by_radius": [row(f) for f in by_radius[:TOP_FILES]],
+        "by_change": [row(f) for f in by_change[:TOP_FILES]],
+        "empty_radius": {"units": empty,
+                         "pairs": len(empty) * (len(grounded) - len(empty)) + pairs_of(len(empty))},
+    }
+
+
+# The run's scheduling from the log, over its live wall time (its first RunStarted to its last
+# landing, outages removed): the units in flight (an open agent session or gate battery) as a
+# time-weighted mean and a maximum, the time by slot state (SLOT_KEYS), and per unit its slot hours,
+# its hours ready but not started and the units whose slot overlapped its own. The time figures are
+# None when the run has no landing.
+def slot_states(fold, work, dead):
+    if fold.started_ns is None or fold.last_landing_ns is None:
+        return None
+    start, end = fold.started_ns / 1e9, fold.last_landing_ns / 1e9
+    units = sorted(fold.first_start)
+    clip = lambda spans: [(max(a, start), min(b, end)) for a, b in spans if b > start and a < end]
+    busy = {u: [] for u in units}
+    for unit, (_, spans, batteries) in zip(fold.timeline, work):
+        if unit in busy:
+            busy[unit] = clip(merged(spans + [(b.opened, b.last) for b in batteries]))
+    slots = {u: clip(fold.slots.get(u, []) + ([(fold.slot_open[u], end)]
+                                              if u in fold.slot_open else [])) for u in units}
+    holds = list(fold.holds)
+    if fold.held is not None:
+        holds.append((fold.held[0], fold.last_ns / 1e9, fold.held[1]))
+    holds = clip([(a, b) for a, b, _ in holds])
+    ready = {u: ready_at(fold, u, start) for u in units}
+    began = {u: fold.first_start[u][1] for u in units}
+    edges = {start, end, *ready.values(), *began.values()}
+    for spans in [*busy.values(), *slots.values(), holds, dead]:
+        for a, b in spans:
+            edges.update((a, b))
+    edges = sorted(t for t in edges if t is not None and start <= t <= end)
+    seconds, in_flight, peak, waited = Counter(), 0.0, 0, Counter()
+    for a, b in zip(edges, edges[1:]):
+        mid = (a + b) / 2
+        if b <= a or inside(dead, mid):
+            continue
+        flying = sum(1 for u in units if inside(busy[u], mid))
+        held = sum(1 for u in units if inside(slots[u], mid))
+        waiting = [u for u in units if mid < began[u]]
+        ready_now = [u for u in waiting if ready[u] is not None and ready[u] <= mid]
+        in_flight += flying * (b - a)
+        peak = max(peak, flying)
+        for u in ready_now:
+            waited[u] += b - a
+        if held == 0:
+            state = "idle"
+        elif held == 1:
+            state = ("solo_ready_held" if inside(holds, mid) else "solo_ready_waiting") \
+                if ready_now else "solo_needs_waiting" if waiting else "solo_none_left"
+        else:
+            state = "multi_ready_waiting" if ready_now else "multi"
+        seconds[state] += b - a
+    live_seconds = sum(seconds.values())
+    live_slots = {u: minus(slots[u], dead) for u in units}
+    beside = {u: [v for v in units if v != u and sum(
+        overlap(live_slots[v], a, b) for a, b in live_slots[u]) > 0] for u in units}
+    return {
+        "units_in_flight_mean": ratio(in_flight, live_seconds),
+        "units_in_flight_max": peak,
+        "slot_hours": {k: unit_hours(seconds[k]) for k in SLOT_KEYS},
+        "serial_share": ratio(seconds["solo_ready_waiting"], live_seconds),
+        "queued_share": ratio(seconds["multi_ready_waiting"], live_seconds),
+        "chain_share": ratio(seconds["solo_needs_waiting"], live_seconds),
+        "live_hours": unit_hours(live_seconds),
+        "units": {u: {"slot_hours": unit_hours(sum(b - a for a, b in live_slots[u])),
+                      "ready_waiting_hours": unit_hours(waited[u]), "ran_beside": beside[u]}
+                  for u in units},
+    }
+
+
+# What the scorecard carries of the scheduling, and its label.
+def scheduling_card(fold, states, overlap_of, outage_source):
+    sessions = NO_SESSIONS if not fold.spawns else "" if fold.verdicts else SESSIONS_ONLY
+    label = SCHEDULING + sessions + (NO_OUTAGES if outage_source == "none recorded" else "")
+    timed = states or {}
+    flight = timed if fold.spawns else {}
+    hours = timed.get("slot_hours") or {}
+    beside = {u: v["ran_beside"] for u, v in timed.get("units", {}).items()}
+    return {
+        "units_in_flight_mean": flight.get("units_in_flight_mean"),
+        "units_in_flight_max": flight.get("units_in_flight_max"),
+        "slot_hours": hours or None,
+        "serial_hours": hours.get("solo_ready_waiting"),
+        "queued_hours": hours.get("multi_ready_waiting"),
+        "chain_hours": hours.get("solo_needs_waiting"),
+        "serial_share": timed.get("serial_share"),
+        "queued_share": timed.get("queued_share"),
+        "chain_share": timed.get("chain_share"),
+        "co_schedulable_share": ratio(overlap_of["co_schedulable"], len(overlap_of["grounded"])),
+        "grounded_units": len(overlap_of["grounded"]),
+        "empty_radii": len(overlap_of["empty_radius"]["units"]),
+        "conflicting_pairs": len(overlap_of["conflicting_pairs"]),
+        "conflicting_pairs_ran_together": sum(
+            1 for a, b in overlap_of["conflicting_pairs"] if b in beside.get(a, ()))
+        if states is not None else None,
+        "radii_recorded_before_start": sum(
+            1 for u, pos in fold.first_radius.items()
+            if u in fold.first_start and pos < fold.first_start[u][0]),
+    }, label
+
+
+# The evidence's scheduling section: the run-level figures, each started unit's radius, changes and
+# overlaps with their stream positions, the files that put the most unit pairs in conflict (by the
+# radii, and by the files the units changed), and what the log cannot show.
+def scheduling_evidence(fold, states, overlap_of, card, label):
+    radii, conflict = overlap_of["radii"], overlap_of["conflict"]
+    units = []
+    for u in sorted(fold.first_start):
+        r, mine = fold.radius.get(u), fold.changed.get(u)
+        others = [v for v in overlap_of["grounded"] if v != u]
+        apart = [v for v in others if not conflict(u, v)] if r else []
+        timed = (states or {}).get("units", {}).get(u, {})
+        units.append({
+            "unit": u, "started": fold.first_start[u][0],
+            "radius_positions": [fold.first_radius[u], r[0]] if r else [],
+            "radius_records": fold.radius_records[u],
+            "safe_files": len(r[1]) if r else None, "precise_files": len(r[2]) if r else None,
+            "changed_files": len(mine) if mine is not None else None,
+            "changed_in_safe_radius": len(mine & radii[u]) if r and mine is not None else None,
+            "conflicts": len(others) - len(apart) if r else None,
+            "conflicts_none_of": apart if r else None,
+            **timed,
+        })
+    return {
+        "label": label,
+        **card,
+        "live_hours": (states or {}).get("live_hours"),
+        "radius_population": ("each unit's latest BlastRadiusComputed in the slice, the population "
+                              "the driver's own share reads"),
+        "unit_pairs": overlap_of["pairs"],
+        "min_shared_files": overlap_of["min_shared_files"],
+        "radius_files": overlap_of["radius_files"],
+        "files_tied_at_top": overlap_of["tied_at_top"],
+        "batches": overlap_of["batches"],
+        "units": units,
+        "overlap_by_radius": overlap_of["by_radius"],
+        "overlap_by_change": overlap_of["by_change"],
+        "empty_radius": overlap_of["empty_radius"],
+        "not_shown": SCHEDULING_NOT_SHOWN,
+    }
+
+
+# The scheduling as the scorecard carries it, its label, and the evidence's full section.
+def scheduling_of(fold, work, dead, outage_source):
+    states, overlap_of = slot_states(fold, work, dead), radius_overlap(fold)
+    card, label = scheduling_card(fold, states, overlap_of, outage_source)
+    return card, label, scheduling_evidence(fold, states, overlap_of, card, label)
+
+
+# The run file's scheduling section: the run-level figures, a row per started unit and the files
+# that put the most unit pairs in conflict; the evidence holds the rest.
+def scheduling_text(s):
+    cell = lambda v: "-" if v is None else str(v)
+    rows = [
+        f"Live wall hours {cell(s['live_hours'])}; units in flight: mean "
+        f"{cell(s['units_in_flight_mean'])}, max {cell(s['units_in_flight_max'])}; serial hours "
+        f"(one unit held a slot, another was ready) {cell(s['serial_hours'])}; queued hours (two "
+        f"or more held slots, another was ready) {cell(s['queued_hours'])}; chain hours (one "
+        f"unit held a slot, the rest waited on their needs) {cell(s['chain_hours'])}. "
+        f"Co-schedulable share {cell(s['co_schedulable_share'])} (derived): "
+        f"{s['grounded_units']} units grounded, {s['empty_radii']} with an empty radius, "
+        f"{s['conflicting_pairs']} of {s['unit_pairs']} pairs in conflict, "
+        f"{cell(s['conflicting_pairs_ran_together'])} of those ran together; "
+        f"{s['radii_recorded_before_start']} radii recorded before their unit started. The "
+        f"fewest files two non-empty radii share: {cell(s['min_shared_files'])}; radius files "
+        f"tied for the most units: {s['files_tied_at_top']} of {s['radius_files']}.",
+        "",
+        "| unit | started | safe files | precise files | changed files | changed in radius "
+        "| conflicts | slot h | ready waiting h | ran beside |",
+        "|---" * 10 + "|",
+    ]
+    for u in s["units"]:
+        rows.append("| " + " | ".join(cell(v) for v in (
+            u["unit"], u["started"], u["safe_files"], u["precise_files"], u["changed_files"],
+            u["changed_in_safe_radius"], u["conflicts"], u.get("slot_hours"),
+            u.get("ready_waiting_hours"), len(u["ran_beside"]) if "ran_beside" in u else None))
+            + " |")
+    for title, key in (("radius", "overlap_by_radius"), ("change", "overlap_by_change")):
+        rows += ["", f"Files putting the most unit pairs in conflict, by {title}:", "",
+                 "| file | radius units | radius pairs | changed units | changed pairs |",
+                 "|---" * 5 + "|"]
+        rows += [f"| {r['file']} | {r['radius_units']} | {r['radius_pairs']} | "
+                 f"{r['changed_units']} | {r['changed_pairs']} |" for r in s[key][:SHOWN_FILES]]
+    return "\n".join(rows)
+
+
 def repeated_label(spent):
     unresolved = spent["unresolved_trees"]
     return ("unit hours of the batteries or verdicts that repeated earlier work; "
@@ -806,6 +1172,7 @@ def scorecard(fold, run, stream, lo, hi):
     criterion_units = [u for u in fold.integrated
                        if fold.criterion.get(u) and not joins_a_stage(fold, u)]
     work, dead, outage_source = run_work(fold, run)
+    sched, sched_label, _ = scheduling_of(fold, work, dead, outage_source)
     spent = cost(fold, work, dead)
     grep_lines = grep_fallback_lines(run)
     wall = outage = live_wall = None
@@ -885,11 +1252,12 @@ def scorecard(fold, run, stream, lo, hi):
         "deferred_gate_fails_by_gate":
             dict(sorted(Counter(d.get("gate", "") for _, d in fold.deferred).items())),
         "red_verdicts_by_gate": dict(sorted(fold.red_verdicts.items())),
+        **sched,
         "unsourced": UNSOURCED,
         "labels": {"run": state, "time_shares": shares_label, "grep_fallbacks": SELF_REPORTED,
                    "hours_by_label": UNIT_HOURS, "gate_hours_by_gate": GATE_HOURS,
                    "repeated_hours": repeated_label(spent), "failure_rework_hours": REWORK_HOURS,
-                   "grep_fallbacks_by_target": GREP_GROUPING},
+                   "grep_fallbacks_by_target": GREP_GROUPING, "scheduling": sched_label},
     }
 
 
@@ -1015,6 +1383,7 @@ def measure(wanted, out):
         "scorecard": json.dumps(card, indent=1),
         "comparison": comparison(card, history, baseline_of(directory)),
         "previous": json.dumps(previous, indent=1),
+        "scheduling": scheduling_text(scheduling_of(fold, *run_work(fold, run))[2]),
     }
     text = template.read_text(encoding="utf-8")
     for key, value in fill.items():
@@ -1064,6 +1433,7 @@ def evidence(wanted):
                       "context_restarts": UNSOURCED["context_restarts"]},
     }
     out["grep_fallbacks"] = {"label": GREP_GROUPING, "by_target": grep_lines}
+    out["scheduling"] = scheduling_of(fold, work, dead, outage_source)[2]
     print(json.dumps(out, indent=1))
 
 
@@ -1105,6 +1475,10 @@ def check_classes(classes, problems):
 def nonempty_strings(value):
     return isinstance(value, list) and value and all(
         isinstance(v, str) and v.strip() for v in value)
+
+
+def path_of(p):
+    return str(p.get("path") or "").strip()
 
 
 # The most hours a proposal for class `c` can claim, from measured numbers only: for a failure
@@ -1180,6 +1554,12 @@ def check_proposal(i, p, slugs, recurring, card, problems):
         if is_number(value) and is_number(move) and not -value <= move < 0:
             problems.append(f"{name}: a cost class's predicted_move lowers its metric by at most "
                             f"the {value} it measures")
+        if head in SCHEDULING_CLAIMS and not SCHEDULING_CLAIMS[head][1](p):
+            problems.append(f"{name}: {head} is claimed only by {SCHEDULING_CLAIMS[head][0]}")
+        if head == "serial_hours" and card.get("radii_recorded_before_start") == 0:
+            problems.append(f"{name}: serial_hours is claimed only when radii_recorded_before_start "
+                            "is above 0; at 0 no wave applied the radius rule, so no radius held a "
+                            "unit back")
     if source == "grep-fallbacks":
         if head not in GREP_METRICS:
             problems.append(f"{name}: a grep-fallbacks class's metric is grep_fallbacks or "

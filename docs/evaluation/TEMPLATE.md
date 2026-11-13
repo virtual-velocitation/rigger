@@ -12,6 +12,10 @@ Run `{{run}}`, started {{started}}, last landing {{last_landing}}. The measured 
 
 {{comparison}}
 
+## Scheduling (measured)
+
+{{scheduling}}
+
 ## Previous proposal (measured)
 
 ```json previous
