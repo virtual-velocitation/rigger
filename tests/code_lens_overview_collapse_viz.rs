@@ -20,38 +20,15 @@
 
 use crate::common;
 
+use crate::vm_harness::{vm_harness, DomShim};
 use common::served::node_harness_passes;
-use common::served::vm_harness;
 use rigger::dash;
 
-/// The minimal DOM shim the overview render path touches (node `vm`, no npm): innerHTML on the
-/// panel element, a stubbed `querySelector` so `bindKgView`'s post-render lookups resolve without
-/// throwing, and the panel's client box, bottom padding and drawing slot so `kgDims` sizes the
-/// drawing box. `renderKgOverview` is called directly (no network involved), so no `fetch` stub is
-/// needed.
-const DOM_SHIM: &str = r#"
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const __els = {};
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-"#;
+/// The DOM the overview render path touches (node `vm`, no npm): innerHTML on the panel element, a
+/// stubbed `querySelector` so `bindKgView`'s post-render lookups resolve without throwing, and the
+/// panel's client box, bottom padding and drawing slot so `kgDims` sizes the drawing box.
+/// `renderKgOverview` is called directly (no network involved), so no `fetch` stub is needed.
+const DOM: DomShim = DomShim::PANEL;
 
 /// Driver: feeds `renderKgOverview` a `Lens::Code`-shaped overview - TWO communities of eight total
 /// members (six and two), the larger one carrying a deterministic display label, the smaller one
@@ -134,7 +111,7 @@ rigger::test_cases! {
     /// Dropping the collapse (rendering members instead of clusters), the count-based sizing, the
     /// id-not-kind label fallback, or leaking a schema token onto the canvas each reddens this.
     the_overview_collapses_to_sized_labelled_community_super_nodes_purely:
-        node_harness_passes(&vm_harness(DOM_SHIM, COLLAPSE_DRIVER, "dash-overview-collapse-harness.js"), "OK overview-collapses-to-sized-labelled-community-super-nodes-purely");
+        node_harness_passes(&vm_harness(&[&DOM.render()], COLLAPSE_DRIVER, "dash-overview-collapse-harness.js"), "OK overview-collapses-to-sized-labelled-community-super-nodes-purely");
 }
 
 /// STRUCTURAL companion (the fallback proof when `node` is unavailable): the served page's

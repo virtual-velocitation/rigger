@@ -45,80 +45,25 @@
 //! or an auto `<title>` reddens the regression harness.
 
 use crate::common;
-
-use std::process::Command;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::fixtures::tool_available;
-use common::served::page_script;
+use common::served::run_page_harness;
 use rigger::dash;
 
-/// Wrap a DOM shim + a driver into a hermetic node program: it reads the served page script from
-/// `argv[2]`, then runs the shim, the page, and the driver in one `vm` context (so the driver reaches
-/// the page's own top-level functions and `let` state).
-fn program(shim: &str, driver: &str) -> String {
-    let mut p = String::new();
-    p.push_str("\"use strict\";\n");
-    p.push_str("const vm = require(\"vm\");\n");
-    p.push_str("const fs = require(\"fs\");\n");
-    p.push_str("const pageScript = fs.readFileSync(process.argv[2], \"utf8\");\n");
-    p.push_str("const SHIM = String.raw`");
-    p.push_str(shim);
-    p.push_str("`;\n");
-    p.push_str("const DRIVER = String.raw`");
-    p.push_str(driver);
-    p.push_str("`;\n");
-    p.push_str("const sandbox = { console: console };\n");
-    p.push_str("vm.createContext(sandbox);\n");
-    p.push_str("vm.runInContext(SHIM + \"\\n\" + pageScript + \"\\n\" + DRIVER, sandbox, { filename: \"periphery-harness.js\" });\n");
-    p
+/// A minimal, inert DOM so the page's top-level wiring does not throw, in a panel that measures its
+/// drawing's slot; the drivers call the page's real pure functions (and, for the integration driver,
+/// install their own panel over `getElementById`).
+const PERIPHERY_DOM: DomShim = DomShim {
+    slot: true,
+    ..DomShim::INERT
+};
+
+/// The node program running `driver` after the served page script over [`PERIPHERY_DOM`], in one `vm`
+/// context, so the driver reaches the page's own top-level functions and `let` state.
+fn program(driver: &str) -> String {
+    vm_harness(&[&PERIPHERY_DOM.render()], driver, "periphery-harness.js")
 }
-
-/// Run a node program that extracts and drives the served page script, returning its output.
-fn run_node(driver_program: &str) -> std::process::Output {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the periphery harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, driver_program).expect("write the periphery harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served declutter")
-}
-
-/// A minimal, inert DOM so the page's top-level wiring does not throw; the drivers call the page's real
-/// pure functions (and, for the integration driver, install their own panel over `getElementById`).
-const SHIM_MIN: &str = r##"
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; this.clientTop=0; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-"##;
 
 /// Shared synthetic-overview generator + the real (density force + separation) layout pipeline the
 /// served page draws, prepended to the drivers that need a laid-out graph.
@@ -232,7 +177,7 @@ const CONTRACT_DRIVER: &str = r##"
 const INTEGRATION_DRIVER: &str = r##"
 ;(function(){
   var spec = overview(90);
-  var SCREEN_W = 160;   // the on-screen panel width; the density canvas viewBox is KG_W (900), so the
+  var SCREEN_W = 160;   // the drawing's on-screen surface width; the density canvas viewBox is KG_W (900), so the
                         // default (k=1) effective scale SCREEN_W/KG_W ~ 0.18 shrinks labels together.
 
   // Set the declutter state HONESTLY through the render path, then read it back.
@@ -261,7 +206,7 @@ const INTEGRATION_DRIVER: &str = r##"
 
   var panel = {
     querySelector: function(sel){
-      if (sel === "svg") return { getBoundingClientRect: function(){ return { width: SCREEN_W }; } };
+      if (sel === ".kgsvg") return { getBoundingClientRect: function(){ return { width: SCREEN_W }; } };
       if (sel === "#kgzoom") return { setAttribute: function(){} };
       return null;
     },
@@ -434,11 +379,9 @@ const REAL_DRILL_HOVER_DRIVER: &str = r##"
 
 /// Assert a driver program runs green under node and prints its OK marker.
 fn assert_ok(driver_program: &str, marker: &str) {
-    let out = run_node(driver_program);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (ok, stdout, stderr) = run_page_harness(&dash::live_page(), driver_program);
     assert!(
-        out.status.success(),
+        ok,
         "the periphery harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(
@@ -457,7 +400,7 @@ fn assert_overview_driver_passes(test: &str, driver: &str, marker: &str) {
         );
         return;
     }
-    assert_ok(&program(SHIM_MIN, &[OVERVIEW_JS, driver].concat()), marker);
+    assert_ok(&program(&[OVERVIEW_JS, driver].concat()), marker);
 }
 
 rigger::test_cases! {
@@ -505,8 +448,5 @@ fn the_real_concepts_drill_names_its_decluttered_shared_member_on_hover() {
         );
         return;
     }
-    assert_ok(
-        &program(SHIM_MIN, REAL_DRILL_HOVER_DRIVER),
-        "OK real-drill-hover",
-    );
+    assert_ok(&program(REAL_DRILL_HOVER_DRIVER), "OK real-drill-hover");
 }

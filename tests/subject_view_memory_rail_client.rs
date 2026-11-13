@@ -17,38 +17,17 @@ use crate::common;
 
 use common::served::node_harness_passes;
 
-use crate::vm_harness;
-use vm_harness::vm_harness;
+use crate::vm_harness::{vm_harness, DomShim, Fields};
 
-/// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
-/// surfaces the client seam touches (innerHTML / textContent / dataset / .hidden / .className /
-/// addEventListener, a stubbed querySelector so bindKgView's lookups resolve without throwing). Kept
-/// free of backticks / `${` so it embeds verbatim inside a `String.raw` template.
-const DOM_SHIM: &str = r#"
-const __els = {};
-const __fetched = [];
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-"#;
+/// The DOM every driver in this file runs under (node `vm`, no npm): the element surfaces the client
+/// seam touches (innerHTML, textContent, dataset, .hidden, .className, addEventListener, a stubbed
+/// querySelector so bindKgView's lookups resolve without throwing), and the `__fetched` list each
+/// driver's own `fetch` records its URLs in.
+const DOM: DomShim = DomShim {
+    fields: Fields::Form,
+    fetch_log: true,
+    ..DomShim::PANEL
+};
 
 /// A `fetch` + fixtures prelude: the whole-graph overview (the no-argument route) and the seeded
 /// neighborhoods, each carrying its `memory` rail ({decisions, findings, concepts}): subject
@@ -194,10 +173,10 @@ rigger::test_cases! {
     /// itself, and clearing the subject hides the rail again. Dropping `renderMemoryRail`'s wiring (or
     /// folding its content into `#kgpanel`) reddens this.
     clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], RAIL_DRIVER, HARNESS_FILE), "OK memory-rail-shows-on-seed-and-hides-on-clear");
+        node_harness_passes(&vm_harness(&[&DOM.render(), RESOLVING_FETCH], RAIL_DRIVER, HARNESS_FILE), "OK memory-rail-shows-on-seed-and-hides-on-clear");
     /// RUNTIME guard that the rail shows only for a subject with an entry to list: a seed the graph
     /// does not hold gets the panel's message and no rail, so the rail never narrows the panel
     /// for a subject it has nothing to say about.
     the_rail_shows_only_for_a_subject_with_an_entry_to_list:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], NOTHING_TO_LIST_DRIVER, HARNESS_FILE), "OK the-rail-shows-only-a-subject-with-an-entry-to-list");
+        node_harness_passes(&vm_harness(&[&DOM.render(), RESOLVING_FETCH], NOTHING_TO_LIST_DRIVER, HARNESS_FILE), "OK the-rail-shows-only-a-subject-with-an-entry-to-list");
 }

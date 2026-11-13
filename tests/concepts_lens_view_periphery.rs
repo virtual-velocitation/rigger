@@ -46,6 +46,7 @@
 //! the route nor these DTOs is feature-gated), so this guards the served contract in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim, Fetch};
 
 use std::collections::BTreeSet;
 
@@ -621,49 +622,21 @@ fn a_resolution_that_is_not_a_grain_is_said_to_be_none() {
 // markers, so the marker is CONDITIONED on `n.shared`, never blanket-applied. This is the proof the
 // wire-shape tests structurally cannot make: dropping `renderKgDrill`'s shared branch reddens it.
 
-/// A DOM shim + driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's
-/// built-in `vm`. It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes
-/// multiple concepts (`shared: true`) and folds here under its primary bucket, then reads the rendered
-/// `kgpanel` HTML and asserts the shared marker reached the SVG (class + label tag + tooltip) exactly
-/// once, and that a shared-free drill renders none. Mutation-proven: dropping the shared branch in
-/// `renderKgDrill`, or blanket-applying it, reddens the driver.
-const DRILL_SHARED_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
+/// The DOM the drill runs in. No network is needed - the driver calls `renderKgDrill` DIRECTLY with a
+/// fixture neighborhood - so `fetch` just rejects; a stub element lets the pan/zoom binder's
+/// `querySelector` resolve without throwing.
+const DRILL_SHARED_DOM: DomShim = DomShim {
+    fetch: Fetch::Refused(r#""no network""#),
+    ..DomShim::PANEL
+};
 
-// Minimal DOM shim (vm-realm, prepended to the page script). No network is needed - the driver calls
-// `renderKgDrill` DIRECTLY with a fixture neighborhood - so `fetch` just rejects. A tiny element stub
-// lets the pan/zoom binder's querySelector resolve without throwing.
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){}, };
-const fetch = function(){ return Promise.reject(new Error("no network")); };
-const setTimeout = function(){ return 0; };
-`;
-
-// Test driver (vm-realm, appended after the page script - shares its scope, so it calls the page's
-// own `renderKgDrill` and reads its module state directly).
-const DRIVER = String.raw`
+/// A driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's built-in `vm`.
+/// It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes multiple concepts
+/// (`shared: true`) and folds here under its primary bucket, then reads the rendered `kgpanel` HTML and
+/// asserts the shared marker reached the SVG (class + label tag + tooltip) exactly once, and that a
+/// shared-free drill renders none. Mutation-proven: dropping the shared branch in `renderKgDrill`, or
+/// blanket-applying it, reddens the driver.
+const DRILL_SHARED_DRIVER: &str = r#"
 ;(function(){
   function count(hay, needle){ let i=0,n=0; while((i=hay.indexOf(needle,i))!==-1){ n++; i+=needle.length; } return n; }
 
@@ -710,12 +683,7 @@ const DRIVER = String.raw`
 
   console.log("OK concepts-drill-renders-the-shared-marker");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "drill-shared-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
@@ -724,5 +692,5 @@ rigger::test_cases! {
     /// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
     /// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
     /// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
-    the_concepts_drill_renders_the_shared_marker_to_the_human: node_harness_passes(DRILL_SHARED_HARNESS, "OK concepts-drill-renders-the-shared-marker");
+    the_concepts_drill_renders_the_shared_marker_to_the_human: node_harness_passes(&vm_harness(&[&DRILL_SHARED_DOM.render()], DRILL_SHARED_DRIVER, "drill-shared-harness.js"), "OK concepts-drill-renders-the-shared-marker");
 }

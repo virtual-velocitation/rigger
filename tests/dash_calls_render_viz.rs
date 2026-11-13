@@ -28,6 +28,7 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -209,30 +210,18 @@ fn the_served_page_ships_the_directed_call_layered_render() {
     );
 }
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN directed-call render under
-/// node's built-in `vm` (no npm, hermetic). It drives the real page script, asserting in turn that:
-/// (a) a code-entity neighborhood offers the two directed queries and a `data-calls-down` click drives
-/// `seedCalls` down (fetches `view=calls&dir=down`); (b) `renderKgCalls` DRAWS the layered SVG with the
-/// arrowhead marker definition + a `marker-end`, a BACK edge as a distinct curved `<path class="kgline
-/// back">` arc, and a FRONTIER node carrying its `data-frontier` + candidate badge; (c) a delegated
-/// `data-frontier` click EXPANDS the candidate list (each `data-candidate`) and a chosen `data-candidate`
-/// RE-SEEDS the same-direction walk on that definition; (d) an UP walk draws the "referenced but not
-/// called" sidecar; (e) `layeredLayout` yields FINITE positions that INCREASE with the server `layer`;
-/// and (f) an EMPTY walk degrades to a message and does NOT throw. Mutation-proven: dropping the marker,
-/// the back-edge arc, or the frontier dispatch reddens the driver.
-const CALLS_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
+/// The DOM the directed-call render runs in: a stub element lets `bindKgView`'s `querySelector` resolve,
+/// `setTimeout` is inert, and `__fetched` holds the URLs [`CALLS_FIXTURE`]'s `fetch` records.
+const CALLS_DOM: DomShim = DomShim {
+    fetch_log: true,
+    ..DomShim::PANEL
+};
 
-// Minimal DOM shim (vm-realm, prepended to the page script). fetch resolves the /api/graph?view=calls
-// views (down / up) from fixtures and records the URLs so the driver can assert the walk it invoked;
-// every other fetch (the load-time /api/state poll, the overview default) resolves to an empty body so
-// nothing throws. setTimeout is inert. A tiny element stub lets bindKgView's querySelector resolve.
-const SHIM = String.raw`
-const __els = {};
-const __fetched = [];
+/// The call walks the driver asks for: `fetch` resolves the /api/graph?view=calls views (down / up)
+/// from fixtures and records the URLs so the driver can assert the walk it invoked; every other graph
+/// fetch (the overview default) resolves to an empty graph, and any other fetch (the load-time
+/// /api/state poll) rejects.
+const CALLS_FIXTURE: &str = r#"
 // The DOWN execution-path DAG of src/a.rs::f: a same-file callee (layer 1), a cross-file callee
 // (layer 2), a RECURSION back edge (h -> f), and a multi-candidate cross-file FRONTIER (new, 2 defs)
 // the walk did NOT descend.
@@ -256,25 +245,6 @@ const __CALLS_UP = { seed: "src/a.rs::f", dir: "up", depth: 6,
   referenced_not_called: [ { id: "src/d.rs", kind: "file", label: "d.rs" } ] };
 const __CALLS_EMPTY = { seed: "src/a.rs::lonely", dir: "down", depth: 6,
   nodes: [], edges: [], referenced_not_called: [] };
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){}, };
 let __callsView = function(url){
   const s = String(url);
   if (s.indexOf("dir=up") !== -1) return __CALLS_UP;
@@ -291,12 +261,20 @@ const fetch = function(url){
   }
   return Promise.reject(new Error("no network for " + url));
 };
-const setTimeout = function(){ return 0; };
-`;
+"#;
 
-// Test driver (vm-realm, appended after the page script - shares its scope, so it calls the page's
-// own functions and reads its module state directly).
-const DRIVER = String.raw`
+/// A test driver (JavaScript) that RUNS the served page's OWN directed-call render under node's
+/// built-in `vm` (no npm, hermetic). It drives the real page script, asserting in turn that:
+/// (a) a code-entity neighborhood offers the two directed queries and a `data-calls-down` click drives
+/// `seedCalls` down (fetches `view=calls&dir=down`); (b) `renderKgCalls` DRAWS the layered SVG with the
+/// arrowhead marker definition + a `marker-end`, a BACK edge as a distinct curved `<path class="kgline
+/// back">` arc, and a FRONTIER node carrying its `data-frontier` + candidate badge; (c) a delegated
+/// `data-frontier` click EXPANDS the candidate list (each `data-candidate`) and a chosen `data-candidate`
+/// RE-SEEDS the same-direction walk on that definition; (d) an UP walk draws the "referenced but not
+/// called" sidecar; (e) `layeredLayout` yields FINITE positions that INCREASE with the server `layer`;
+/// and (f) an EMPTY walk degrades to a message and does NOT throw. Mutation-proven: dropping the marker,
+/// the back-edge arc, or the frontier dispatch reddens the driver.
+const CALLS_DRIVER: &str = r#"
 ;(async function(){
   function flush(){ return (async()=>{ for (let k=0;k<20;k++) await Promise.resolve(); })(); }
 
@@ -357,7 +335,9 @@ const DRIVER = String.raw`
   const frontierTarget = { dataset: { candidates: "src/p.rs::new|src/q.rs::new" },
     closest: function(sel){ return sel === "[data-frontier]" ? this : null; } };
   clickHandlers.forEach(function(fn){ fn({ target: frontierTarget, preventDefault: function(){} }); });
-  const fr = el("kgfrontier")._html;
+  // The list shows in the call view's frontier slot, between its toolbar and its drawing.
+  const drawn = el("kgpanel")._html, slotAt = drawn.indexOf('<div id="kgfrontier"');
+  const fr = slotAt === -1 ? "" : drawn.slice(slotAt, drawn.indexOf("<svg", slotAt));
   if (fr.indexOf('data-candidate="src/p.rs::new"') === -1 || fr.indexOf('data-candidate="src/q.rs::new"') === -1)
     throw new Error("a frontier click did not expand its candidate definitions (data-candidate): " + fr);
 
@@ -393,12 +373,7 @@ const DRIVER = String.raw`
 
   console.log("OK calls-render-lays-out-and-dispatches");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); throw e; });
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-calls-render-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 52 c5's directed-call render: the served page's OWN render LAYS OUT and
@@ -410,5 +385,5 @@ rigger::test_cases! {
     /// converges to finite layer-ordered positions; and an empty walk degrades to a message. This is the
     /// behavioral proof the grep test cannot make - dropping the marker, the back-edge arc, or the frontier
     /// dispatch makes it go red.
-    the_directed_call_render_lays_out_and_dispatches_the_layered_dag: node_harness_passes(CALLS_HARNESS, "OK calls-render-lays-out-and-dispatches");
+    the_directed_call_render_lays_out_and_dispatches_the_layered_dag: node_harness_passes(&vm_harness(&[&CALLS_DOM.render(), CALLS_FIXTURE], CALLS_DRIVER, "dash-calls-render-harness.js"), "OK calls-render-lays-out-and-dispatches");
 }

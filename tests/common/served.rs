@@ -276,26 +276,6 @@ pub fn page_script(page: &str) -> &str {
     &page[open..close]
 }
 
-/// A node `vm` harness that runs `shim`, then the page script it is handed as its first argument,
-/// then `driver`, in one sandbox exposing only `console` and `process`; `filename` names the
-/// harness in node's stack traces.
-pub fn vm_harness(shim: &str, driver: &str, filename: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__SHIM__`;
-const DRIVER = String.raw`__DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "__FILENAME__" });
-"##;
-    TEMPLATE
-        .replace("__SHIM__", shim)
-        .replace("__DRIVER__", driver)
-        .replace("__FILENAME__", filename)
-}
-
 /// Run `harness_src` under node against `page`'s script and return (success, stdout, stderr).
 pub fn run_page_harness(page: &str, harness_src: &str) -> (bool, String, String) {
     let script = page_script(page);

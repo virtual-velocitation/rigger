@@ -75,13 +75,15 @@
      panes beside the panel: then each is position:absolute within the body (relative, so neither
      covers the header above), the card on the left and the rail on the right, and takes its
      column from #kgpanel's own box (the margin on the pane's side), so no drawn node, list row or
-     panel control ever sits under a pane. The panes dock only where their columns leave the panel
-     at least the 320px kgDims draws at (see the @container rules after .kgcard); the body is a size
-     container, so the room it actually has decides, whatever the viewport. Each pane's width is
-     declared once here, and each precedes #kgpanel so the sibling selectors can read its hidden
-     state. Each view sets or clears both panes for its own subject before it draws (see
-     setSubjectPanes); the card's dock shows only when a card arrives, and the view is laid out once
-     more whenever the dock shows or hides, so a drawing always fills the room the panes leave. */
+     panel control ever sits under a pane. The panes dock only where their columns leave the panel's
+     content box, the drawing's surface, at least 320px while the panel shows no scrollbar of its
+     own (see the @container rules after .kgcard); a scrollbar it shows when what it holds
+     overflows takes its width from that box. The body is a size container, so the room it
+     actually has decides, whatever the viewport. Each
+     pane's width is declared once here, and each precedes #kgpanel so the sibling selectors can
+     read its hidden state. Each view sets or clears both panes for its own subject before it draws
+     (see setSubjectPanes); the card's dock shows only when a card arrives, and the view is laid out
+     once more whenever the dock shows or hides, so a drawing always fills the room the panes leave. */
   .kgbody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative;
     container: kgbody / inline-size; --kgrail-w: 260px; --kgcard-w: 280px; }
   .kgbody > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
@@ -91,12 +93,23 @@
      panel keeps a height of its own there, as the one-screen layout gives it a share of the
      screen: the page grows by what the explorer stacks above the panel (a shown card or rail),
      never by what the panel holds, which scrolls inside it, so kgDims reads the panel's height
-     and never the length of the list or drawing the last view put in it. */
+     and never the length of the list or drawing the last view put in it. That height,
+     --kgpanel-h, is the one a docked pane spans (the body holds only the panel then), and it caps
+     a pane stacked above the panel too, which scrolls the rest inside it; panes stack only here,
+     since a wider screen gives the body room to dock both. Since the page scrolls only here, only
+     here does its scrolling root keep the scrollbar's gutter whether or not the page overflows, so
+     the body's width is one function of the viewport's and never of how much the page holds: what
+     the explorer docks at a width (see .kgbody) does not depend on whether its stacked panes made
+     the page scroll. The query reads the viewport's width with the gutter in it, so the gutter
+     cannot move a viewport across it. An overlay scrollbar takes no gutter. */
   @media (max-width: 1000px) {
+    html { scrollbar-gutter: stable; }
     body { height: auto; overflow: auto; }
     main { overflow: visible; }
     #kg { flex-basis: auto; }
-    .kgbody > .kg { flex: none; height: 46vh; }
+    .kgbody { --kgpanel-h: 46vh; }
+    .kgbody > .kg { flex: none; height: var(--kgpanel-h); }
+    .kgrail, .kgcard { max-height: var(--kgpanel-h); }
     .columns { flex-direction: column; }
   }
   /* min-width:0 lets the section honor the shrinkable track instead of refusing to go below
@@ -264,8 +277,11 @@
   .kglens.active { color: var(--ink); font-weight: 600; }
   .kgres { width: 3.2em; font: inherit; color: var(--ink); background: var(--panel);
     border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+  /* The drawing's svg is its own SURFACE (see kgSurface): no border and no padding, so a drawing made
+     at its box's size is seen at a scale of 1. Its frame is an outline drawn just inside that box,
+     which takes no room. */
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
-    border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
+    outline: 1px solid var(--line); outline-offset: -1px; border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
   /* GROUP HULL (spec 63 c3, directory hulls): a low-contrast tinted region behind the members sharing
      a group key (the files lens's directory grouping), never a hub node - a region, never a member. */
@@ -376,7 +392,7 @@
   .kgrail-section { margin-bottom: 10px; }
   .kgrail-section h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
     letter-spacing: 0.06em; color: var(--muted); }
-  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
+  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; }
   .kgrail-card b { display: block; color: var(--ink); }
   /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
      so populating it never touches the panel's own rendered nodes/edges. Stacked, it sits first,
@@ -389,19 +405,27 @@
      the sections below. */
   .kgcard { top: 8px; bottom: 8px; left: 8px; display: flex; flex-direction: column; }
   .kgcard[hidden] { display: none; }
-  /* DOCKING (see .kgbody): a lone rail docks from a 580px body (the 320px kgDims draws at plus
-     the rail's 260px column), a lone card from 608px (320 plus its 8px inset and 280px width), the
-     two together from 868px; below that every shown pane stays stacked and the panel keeps the
-     body's whole width. The thresholds are those sums, so the panel never has less than 320px. */
-  @container kgbody (width >= 580px) {
+  /* Every name either pane or the call view's frontier list shows, a title, a provenance, a chip, a
+     rail card or a candidate definition, breaks inside its content box when it has no break of its
+     own, so a long one never scrolls the pane, or the panel holding the list, sideways; the rows,
+     chips and candidates inherit this one rule. */
+  .kgrail, .kgcard, .kgfrontier { overflow-wrap: anywhere; }
+  /* DOCKING (see .kgbody): a lone rail docks from a 604px body (a 320px content box, the panel's
+     12px padding on each side and the rail's 260px column), a lone card from 632px (344 plus its
+     8px inset and 280px width), the two together from 892px; below that every shown pane stays
+     stacked and the panel keeps the body's whole width. The thresholds are those sums, so a docked
+     pane never leaves the panel's content box, the drawing's surface, less than 320px while the
+     panel shows no scrollbar of its own; one it shows when what it holds overflows takes its
+     width from that box. */
+  @container kgbody (width >= 604px) {
     .kgrail { position: absolute; width: var(--kgrail-w); }
     #kgrail:not([hidden]) ~ #kgpanel { margin-right: var(--kgrail-w); }
   }
-  @container kgbody (width >= 608px) {
+  @container kgbody (width >= 632px) {
     .kgcard { position: absolute; width: var(--kgcard-w); }
     #kgcard:not([hidden]) ~ #kgpanel { margin-left: calc(var(--kgcard-w) + 8px); }
   }
-  @container kgbody (width < 868px) {
+  @container kgbody (width < 892px) {
     #kgcard:has(~ #kgrail:not([hidden])), #kgcard:not([hidden]) ~ #kgrail { position: static; width: auto; }
     #kgcard:not([hidden]) ~ #kgrail:not([hidden]) ~ #kgpanel { margin: 0; }
   }
@@ -411,7 +435,7 @@
   .kgcard-title { font-weight: 700; color: var(--ink); }
   .kgcard-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
     margin-right: 6px; vertical-align: middle; }
-  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; }
   .kgcard-row { margin-top: 4px; }
   .kgcard-row h4 { margin: 0 0 3px; font-size: 10px; text-transform: uppercase;
     letter-spacing: 0.08em; color: var(--muted); }
@@ -567,9 +591,29 @@ const LIVE = EMBEDDED_STATE === null;
 // every POLL_MS and wholesale-replaces the decisions region's innerHTML, which destroys and
 // recreates the <details> subtree - so without re-applying `open` a reasoning body the operator
 // opened would snap shut under them within 1.5s. This set outlives the DOM the poll destroys and
-// is keyed by the stable decision id (mirrored onto each <details> as data-did), so every render
-// re-opens what the operator opened. The poll is untouched; the decisions render participates in it.
+// is keyed by the stable decision id (mirrored onto each <details> by disclosureAttrs), so every
+// render re-opens what the operator opened. The poll is untouched; the decisions render participates
+// in it.
 const expandedDecisions = new Set();
+
+// A <details> whose open state outlives the markup that draws it (a poll's or a redraw's innerHTML
+// swap): its attributes, ` open` while `set` holds its `key`, and the key as data-disclosure, which
+// rememberDisclosures reads back.
+function disclosureAttrs(set, key) {
+  return (set.has(key) ? " open" : "") + ' data-disclosure="' + esc(key) + '"';
+}
+
+// Record each <details> in `container` carrying data-disclosure into the set `setOf()` answers as it
+// opens or closes: one capture-phase listener (toggle does not bubble) on the stable container, bound
+// once, so it outlives every innerHTML swap inside it.
+function rememberDisclosures(container, setOf) {
+  container.addEventListener("toggle", ev => {
+    const key = ev.target.dataset && ev.target.dataset.disclosure;
+    if (key === undefined) return;
+    if (ev.target.open) setOf().add(key);
+    else setOf().delete(key);
+  }, true);
+}
 
 // ATTACH SELECTOR (spec 50 c3): which registered instance the run/graph views are showing. The
 // source of truth is the page's OWN `?instance=` query param, so a selection is shareable, survives
@@ -766,22 +810,13 @@ function render(state) {
   el("decisions").innerHTML = decisions.length ? decisions.map(d =>
     '<details class="decision' + (d.superseded ? " struck" : "") + '"'
     // Re-apply the operator's expansion: a tracked id renders open, so the body they opened
-    // stays open across this poll's re-render instead of collapsing. data-did carries the id
-    // back to the toggle listener below (the summary's <code> is display-only).
-    + (expandedDecisions.has(d.id) ? " open" : "") + ' data-did="' + esc(d.id) + '">'
+    // stays open across this poll's re-render instead of collapsing; the container's toggle
+    // recorder (rememberDisclosures) keeps the set current (the summary's <code> is display-only).
+    + disclosureAttrs(expandedDecisions, d.id) + '>'
     + '<summary><code class="did">' + esc(d.id) + '</code> ' + esc(preview(d.summary)) + '</summary>'
     + '<div class="reasoning">' + esc(d.summary) + '</div>'
     + '</details>'
   ).join("") : '<div class="empty">no decisions recorded</div>';
-  // Re-arm the toggle listeners after the innerHTML swap (the prior subtree, and its listeners,
-  // were just destroyed): expanding or collapsing a decision updates the tracked set so the
-  // choice SURVIVES the next poll's re-render. Without this the poll would wipe every expansion.
-  el("decisions").querySelectorAll("details.decision").forEach(d => {
-    d.addEventListener("toggle", () => {
-      if (d.open) expandedDecisions.add(d.dataset.did);
-      else expandedDecisions.delete(d.dataset.did);
-    });
-  });
 
   // FUTURE: ready frontier (structural - the same wave, no ETA).
   el("ready").innerHTML = table(["spawn", "unit", "stage"],
@@ -910,6 +945,14 @@ let kgRationale = {};
 // The current view's fetched body, so toggling the overlay re-renders the SAME view in place (with or
 // without badges) without a re-fetch. Set at the top of each renderer alongside kgMode.
 let kgViewData = null;
+// What the panel shows of the view it holds beyond that view's body, written by the view's one render
+// so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
+// view's frontier choice list, the candidates a clicked frontier node offers; the keys of the
+// rationale disclosures open in it (rememberDisclosures records them); and the grain being typed in
+// the derived lens's resolution box, until a change commits it (null while none is). A new view
+// (holdKgView given a new body) shows none of it.
+function kgShownNone() { return { choices: [], open: new Set(), grain: null }; }
+let kgShown = kgShownNone();
 
 // Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
 function syncOverlayToggle() {
@@ -1181,9 +1224,11 @@ function renderReprojection(rp) {
       + shared.map(s => '<span class="kgsharedmember' + marks.cls({ id: s }) + '">' + esc(s)
         + marks.tag({ id: s }) + '</span>').join(", ") + '</div>' : '';
   if (!clusters.length) {
-    el("kgpanel").innerHTML = toolbar
-      + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
-      + unresolvedSection + sharedSection;
+    kgKeepingFocus(panel => {
+      panel.innerHTML = toolbar
+        + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+        + unresolvedSection + sharedSection;
+    });
     return;
   }
   const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
@@ -1228,18 +1273,19 @@ async function loadRationale(nodes) {
 
 // The per-node RATIONALE BADGE (spec 55 c4): a native <details> "why - N" that expands to the node's
 // leaves, each leaf its own native <details> (a one-line preview -> the full content, the disclosure
-// pattern the decisions region uses). Rendered ONLY when the overlay is ON and the node carries
-// rationale, so a node is BYTE-IDENTICAL with the overlay off (zero cost / zero clutter when off).
-// Machinery-free: only the leaf CONTENT (kind + summary) surfaces, never a builder persona.
+// pattern the decisions region uses, each kept open across a redraw of the view by kgShown.open).
+// Rendered ONLY when the overlay is ON and the node carries rationale, so a node is BYTE-IDENTICAL
+// with the overlay off (zero cost / zero clutter when off). Machinery-free: only the leaf CONTENT
+// (kind + summary) surfaces, never a builder persona.
 function rationaleBadge(id) {
   if (!kgOverlay) return "";
   const leaves = kgRationale[id];
   if (!leaves || !leaves.length) return "";
-  const body = leaves.map(lf =>
-    '<details class="kgleaf k-' + esc(lf.kind) + '">'
+  const body = leaves.map((lf, i) =>
+    '<details class="kgleaf k-' + esc(lf.kind) + '"' + disclosureAttrs(kgShown.open, "leaf:" + i + ":" + id) + '>'
     + '<summary>' + esc(lf.kind) + ' &middot; ' + esc(preview(lf.summary)) + '</summary>'
     + '<div class="kgleaf-body">' + esc(lf.summary) + '</div></details>').join("");
-  return '<details class="kgbadge" data-explain="' + esc(id) + '">'
+  return '<details class="kgbadge" data-explain="' + esc(id) + '"' + disclosureAttrs(kgShown.open, "why:" + id) + '>'
     + '<summary>why &middot; ' + leaves.length + '</summary>'
     + '<div class="kgleaves">' + body + '</div></details>';
 }
@@ -1258,20 +1304,22 @@ function overlayNotes(nodes) {
 }
 
 // Toggle the rationale overlay (spec 55 c4): flip the flag, reflect it on the toggle, (re)load the
-// current view's rationale when turning ON (clear it when OFF), then re-render the SAME view IN PLACE
-// so the badges appear / disappear without a re-fetch of the view itself.
+// current view's rationale when turning ON (clear it, and the disclosures open in it, when OFF), then
+// re-render the SAME view IN PLACE so the badges appear / disappear without a re-fetch of the view
+// itself.
 async function setOverlay(on) {
   kgOverlay = on;
   syncOverlayToggle();
   const nodes = (kgViewData && kgViewData.nodes) || [];
   if (on) await loadRationale(nodes);
-  else kgRationale = {};
+  else { kgRationale = {}; kgShown.open.clear(); }
   rerenderCurrentView();
 }
 
-// Re-render the CURRENT KG view in place from its cached body (used by the overlay toggle). Mirrors the
-// renderer the view was drawn by, so a toggle never changes WHICH view is shown - only whether its
-// nodes carry badges.
+// Re-render the CURRENT KG view in place from its cached body (the overlay toggle, the card docking, a
+// resize, a frontier node's choices). Mirrors the renderer the view was drawn by, so a redraw never
+// changes WHICH view is shown nor where the user moved it - only whether its nodes carry badges and
+// what kgShown holds.
 function rerenderCurrentView() {
   if (!kgViewData) return;
   if (kgMode === "overview") renderKgOverview(kgViewData);
@@ -1456,11 +1504,16 @@ async function pathTo(target) {
 // Which view the panel currently holds ("overview" | "drill"); the seed view is spec 30's renderGraph.
 let kgMode = "overview";
 
-// Record the view the panel now holds and its body (so a toggle re-renders it in place), and bring
-// the header's tests state up to that view. Answers whether the body is a new one (a fresh read)
-// rather than the held one drawn again.
+// Record the view the panel now holds and its body (so a toggle re-renders it in place), drop what
+// the panel showed of a view it no longer holds and where the user moved it (a new view opens fitted),
+// and bring the header's tests state up to that view. Answers whether the body is a new one (a fresh
+// read) rather than the held one drawn again.
 function holdKgView(mode, body) {
   const fresh = body !== kgViewData;
+  if (fresh) {
+    kgShown = kgShownNone();
+    kgViewMoved = false;
+  }
   kgMode = mode;
   kgViewData = body;
   syncTestsToggle();
@@ -1483,27 +1536,108 @@ function kindColor(kind) {
   return "hsl(" + (h % 360) + ",55%,62%)";
 }
 
-// The live drawing box: the panel's own width, and the height its content box leaves below what the
-// view puts above the drawing - its toolbar, wrapped to however many lines the width needs, and any
-// caption - measured off the drawing's slot, which kgDraw puts in place first. So the viz fills
-// whatever size the responsive shell and the docked panes leave it and never runs past the panel; a
-// room under 200px keeps a 200px drawing, and the panel scrolls.
-function kgDims() {
+// The drawing's SURFACE: the box of the panel's drawing svg (the slot kgDraw puts in place, or the
+// drawing drawn into it), which takes no border and no padding, so a viewBox made at its size is seen
+// at a scale of 1 on both axes. The one measurement of where the drawing shows and how big: kgDims
+// draws at it, kgApplyLabels reads the scale the drawing is seen at from it, and the wheel zooms
+// about the pointer's place on it. Null while the panel holds no drawing.
+function kgSurface() {
+  const svg = el("kgpanel").querySelector(".kgsvg");
+  return svg ? svg.getBoundingClientRect() : null;
+}
+
+// The drawing box the drawing's slot shows at the height it has now: its surface's width, and the
+// height the panel's content box leaves below what the view puts above the drawing - its toolbar,
+// wrapped to however many lines the width needs, and any caption. A room under 200px keeps a 200px
+// drawing, and the panel scrolls. A surface with no width yet (a panel not laid out) draws at 800px,
+// and the panel's size observer redraws it once it has one.
+function kgMeasure() {
   const p = el("kgpanel");
-  const w = Math.max(320, p.clientWidth || 800);
-  const slot = p.querySelector(".kgsvg").getBoundingClientRect();
+  const slot = kgSurface();
+  const w = slot.width || 800;
   const above = slot.top - (p.getBoundingClientRect().top + p.clientTop);
   const h = Math.max(200, Math.floor(p.clientHeight - parseFloat(getComputedStyle(p).paddingBottom) - above));
   return { w: w, h: h };
 }
 
+// The live drawing box, measured with the drawing in place: the slot first takes the height kgMeasure
+// gives, so the panel holds what it will once drawn and shows its own scrollbar exactly when that runs
+// past its height (a drawing kept at its 200px floor, markup below the drawing); the box is measured
+// again there, and the slot keeps the height it gives. So the viz fills whatever size the responsive
+// shell, the docked panes and the panel's scrollbar leave it, is seen at a scale of 1 at every width
+// and never runs past the panel.
+function kgDims() {
+  const svg = el("kgpanel").querySelector(".kgsvg");
+  svg.setAttribute("height", kgMeasure().h);
+  const dims = kgMeasure();
+  svg.setAttribute("height", dims.h);
+  return dims;
+}
+
 // Draw a view into the panel: the markup `above` the drawing, then the drawing `draw` makes at the box
-// kgDims measures with that markup already in place, then the markup `below` it; the view opens fitted.
+// kgDims measures with that markup, the drawing's slot and the markup `below` it in place, then that
+// markup `below`. A view the user has not moved opens fitted. A moved one drawn again (the held body,
+// with what the panel shows of it now) keeps where the user moved it: its marks are laid out at the
+// size they were laid out at, so each lands where it was under the kept transform, and only its
+// surface takes the box measured now (kgResurface). The grain box keeps the focus and the caret the
+// user holds in it (kgKeepingFocus).
 function kgDraw(above, draw, below) {
-  const panel = el("kgpanel");
-  panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>';
-  panel.innerHTML = above + draw(kgDims()) + below;
+  kgKeepingFocus(panel => {
+    panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
+    const dims = kgDims();
+    const laid = kgViewMoved ? kgDrawn.laid : null;
+    panel.innerHTML = above + draw(laid || dims) + below;
+    if (laid) kgResurface(dims);
+  });
   bindKgView();
+}
+
+// Replace the panel's markup with `write`, the grain box keeping the focus and the caret the user holds
+// in it, as a box the browser never replaced keeps them: the box the new markup writes takes them back.
+// The focus anywhere else, or a markup holding no grain box, is left as the write leaves it.
+function kgKeepingFocus(write) {
+  const panel = el("kgpanel"), held = panel.querySelector("[data-lens-res]");
+  const caret = held && held === document.activeElement ? [held.selectionStart, held.selectionEnd] : null;
+  write(panel);
+  const box = caret && panel.querySelector("[data-lens-res]");
+  if (!box) return;
+  box.focus({ preventScroll: true });
+  box.setSelectionRange(caret[0], caret[1]);
+}
+
+// Give the drawing's surface the box `dims` with its marks left where they were laid out: the svg takes
+// its height and a viewBox of its size, so it is still seen at a scale of 1, and the labels read the
+// width it now shows.
+function kgResurface(dims) {
+  const svg = el("kgpanel").querySelector("svg.kgsvg");
+  svg.setAttribute("height", dims.h);
+  svg.setAttribute("viewBox", "0 0 " + dims.w + " " + dims.h);
+  kgDrawn.width = dims.w;
+  kgDrawn.height = dims.h;
+  if (kgLabelState) kgLabelState.width = dims.w;
+}
+
+// Whether a redraw for a new panel size is queued for the next animation frame.
+let kgResizeQueued = false;
+// Fit the view the panel holds to the panel's new size, with no new request, when the box kgDims now
+// measures differs from the one the drawing was drawn at - so a redraw, which leaves that box as it
+// measured it, cannot feed itself. An unmoved view is drawn again from its held body and re-fits by
+// the opening rule. A panned or zoomed one keeps its transform and its marks where they are: only the
+// drawing surface takes the new size (kgResurface), and the labels follow the scale it is now seen
+// at. A panel holding no finished drawing (a message, an empty state, a draw that threw) is left as
+// it is: only kgSvg's markup carries #kgzoom, and kgSvg sets kgDrawn to describe it first.
+function kgRedrawResized() {
+  kgResizeQueued = false;
+  const panel = el("kgpanel");
+  if (!panel.querySelector("#kgzoom")) return;
+  const dims = kgDims();
+  if (dims.w === kgDrawn.width && dims.h === kgDrawn.height) return;
+  if (!kgViewMoved) {
+    rerenderCurrentView();
+    return;
+  }
+  kgResurface(dims);
+  kgApplyLabels();
 }
 
 // Union-find (path-compressed) over node ids, so a DISCONNECTED graph (a drilled cluster's separate
@@ -1980,7 +2114,7 @@ function kgSvg(nodes, edges, width, height, opts) {
       + q.y.toFixed(1) + ')">' + titleEl + '<circle r="' + r.toFixed(1) + '"' + fill + '/>'
       + '<text class="kglabel" y="' + (r + 11).toFixed(1) + '">' + esc(opts.label(n)) + '</text></g>';
   }).join("");
-  kgDrawn = { width: width, height: height, box: extent };
+  kgDrawn = { width: width, height: height, box: extent, laid: { w: width, h: height } };
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
     + '" preserveAspectRatio="xMidYMid meet">' + defs
     + '<g id="kgzoom">' + hullMarkup + lines + circles + '</g></svg>';
@@ -2033,11 +2167,18 @@ function layeredLayout(nodes, edges, width, height) {
 
 // PAN + ZOOM over the drawn graph: scroll zooms toward the cursor and drag pans, both by transforming
 // the #kgzoom group (never re-laying-out). The wheel + mousedown bind to the FRESH svg each render (a
-// drill / back rebinds and opens the view FITTED again, kgOpeningView); the drag move/up live on
-// `window` (installed once, below) so a drag that leaves the svg still tracks.
+// new view - a drill, a back - opens FITTED, kgOpeningView; the same view drawn again, for a new panel
+// size or for what the panel shows of it, re-fits too unless the user has moved it, which keeps its
+// transform, kgDraw and kgRedrawResized); the drag move/up live on `window`
+// (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
 let kgDrag = null;
-// The last drawing's viewBox size and the box holding every mark it drew (set by kgSvg).
+// Whether the user has panned or zoomed the view the panel holds since it opened: a redraw of that view
+// (kgDraw, kgRedrawResized) keeps a moved view's transform and marks and re-fits an unmoved one; a new
+// view (holdKgView) opens unmoved.
+let kgViewMoved = false;
+// The last drawing's viewBox size, the size its marks were laid out at (`laid`, the viewBox size until
+// a moved view's surface takes a new one), and the box holding every mark it drew (set by kgSvg).
 let kgDrawn = null;
 // How far the wheel zooms out: 0.2, or the opening scale when the fit opens below that.
 let kgZoomFloor = 0.2;
@@ -2051,7 +2192,8 @@ function applyKgView() {
   kgApplyLabels();
 }
 // ADAPTIVE LABELS live toggle (spec 59 c3): recompute the visible-label set at the CURRENT effective
-// screen scale - the viewBox-to-panel FIT (rendered width / graph width) times the zoom factor - and
+// screen scale - the FIT the drawing is seen at on its surface (kgSurface's width / graph width, 1
+// as kgDims makes the drawing at its surface's width) times the zoom factor - and
 // draw only those labels, hiding the rest (.kg-nolabel) as bare dots. The hover <title> still names
 // every node, so a hidden label is one hover away. Cheap (O(n^2) over <=160 nodes) and deterministic:
 // kgVisibleLabels is the single declutter authority. A no-op on a layered view (no state) or before a
@@ -2059,11 +2201,10 @@ function applyKgView() {
 function kgApplyLabels() {
   const st = kgLabelState;
   if (!st) return;
+  const surface = kgSurface();
+  if (!surface) return;
   const panel = el("kgpanel");
-  const svg = panel.querySelector("svg");
-  if (!svg) return;
-  const screenW = (svg.getBoundingClientRect && svg.getBoundingClientRect().width) || svg.clientWidth || st.width;
-  const fit = st.width ? screenW / st.width : 1;
+  const fit = st.width ? (surface.width || st.width) / st.width : 1;
   const eff = fit * kgView.k;
   const vis = kgVisibleLabels(st.nodes, st.pos, eff, st.radius, st.label);
   const nodes = panel.querySelectorAll("#kgzoom .kgn");
@@ -2084,14 +2225,18 @@ function kgOpeningView(drawn) {
   return { k: k, x: (drawn.width - bw * k) / 2 - b.x0 * k, y: (drawn.height - bh * k) / 2 - b.y0 * k };
 }
 function bindKgView() {
-  kgView = kgOpeningView(kgDrawn);              // a fresh render opens fitted to the panel
-  kgZoomFloor = Math.min(0.2, kgView.k);
+  // A drawing the user has not moved opens fitted to the panel; a moved one keeps its view and floor.
+  if (!kgViewMoved) {
+    kgView = kgOpeningView(kgDrawn);
+    kgZoomFloor = Math.min(0.2, kgView.k);
+  }
   const svg = el("kgpanel").querySelector("svg");
   if (!svg) return;
   applyKgView();
   svg.addEventListener("wheel", ev => {
     ev.preventDefault();
-    const rect = svg.getBoundingClientRect();
+    // The pointer's place on the surface is its place in the drawing, which the surface shows at 1.
+    const rect = kgSurface();
     const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
     const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
     const nk = Math.max(kgZoomFloor, Math.min(8, kgView.k * factor));
@@ -2099,6 +2244,7 @@ function bindKgView() {
     kgView.x = mx - (mx - kgView.x) * (nk / kgView.k);
     kgView.y = my - (my - kgView.y) * (nk / kgView.k);
     kgView.k = nk;
+    kgViewMoved = true;
     applyKgView();
   });
   svg.addEventListener("mousedown", ev => {
@@ -2122,13 +2268,17 @@ function renderKgOverview(ov) {
   // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
   // and keep the lens selector so the operator can switch back to files or another grain.
   if (ov && ov.empty_state) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
+    kgKeepingFocus(panel => {
+      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+        + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
+    });
     return;
   }
   if (!clusters.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
+    kgKeepingFocus(panel => {
+      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
+        + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
+    });
     return;
   }
   // A code-lens community super-node carries its deterministic display `label` (its highest-degree
@@ -2158,17 +2308,31 @@ function renderKgOverview(ov) {
   kgDraw(toolbar, draw, "");
 }
 
+// Commit the code-lens RESOLUTION grain (spec 53 c4) the grain box holds: a grain other than the one
+// the view reads re-loads the overview at it, and an empty text names no grain, so the server reads
+// its default and the reply names it. A text equal to the grain the view reads commits nothing, so
+// Enter and the change the browser fires with it read once.
+function commitGrain(text) {
+  const grain = (text || "").trim();
+  if (grain === kgResolution) return;
+  kgResolution = grain;
+  loadKgOverview();
+}
+
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
 // `code` (coupling communities), plus - only under `code` - a resolution grain input. The delegated
-// kgpanel click routes `data-lens` (switch lens) and the delegated change routes `data-lens-res`
-// (switch grain), each re-loading the overview; the active lens is marked.
+// kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
+// grain, each re-loading the overview; the active lens is marked. The box shows the grain being typed
+// (kgShown.grain) over the one the view reads, so a redraw keeps the draft, and every markup holding the
+// box is written keeping its focus and caret (kgKeepingFocus).
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
   let res = "";
   if (kgLens === "code" || kgLens === "concepts") {
     res = ' &middot; resolution <input class="kgres" type="text" spellcheck="false" '
-      + 'value="' + esc(kgResolution) + '" data-lens-res="1" title="the derived grain to read">';
+      + 'value="' + esc(kgShown.grain !== null ? kgShown.grain : kgResolution)
+      + '" data-lens-res="1" title="the derived grain to read">';
   }
   return 'lens: ' + tab("files", "files") + tab("code", "code") + tab("concepts", "concepts") + res;
 }
@@ -2355,7 +2519,7 @@ function renderKgCalls(cg) {
     + ' <a href="#" data-calls-both="' + esc(seed) + '">flow (both)</a>';
   const head = '<div class="kgtoolbar">' + back + ' &middot; ' + esc(dirLabel) + ' of <b>'
     + esc(seed) + '</b>' + switcher + '</div>'
-    + '<div id="kgfrontier" class="kgfrontier"></div>';
+    + '<div id="kgfrontier" class="kgfrontier">' + frontierChoices(kgShown.choices) + '</div>';
   if (!nodes.length) {
     el("kgpanel").innerHTML = head
       + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
@@ -2420,15 +2584,21 @@ function renderKgCalls(cg) {
 }
 
 // Expand a clicked FRONTIER node (spec 52 c5): a multi-candidate cross-file hop the walk did NOT
-// descend. Render its candidate definitions into the frontier slot, each a data-candidate handle;
-// choosing one RE-SEEDS the directed-call view on that definition (seedCalls), so the human picks the
-// definition and the graph never guesses. `raw` is the `|`-joined candidate ids the node carried.
+// descend. The call view it was drawn in shows its candidate definitions in the frontier slot from
+// now on, each a data-candidate handle; choosing one RE-SEEDS the directed-call view on that
+// definition (seedCalls), so the human picks the definition and the graph never guesses. `raw` is
+// the `|`-joined candidate ids the node carried; none clears the list.
 function showFrontierChoices(raw) {
-  const box = el("kgfrontier");
-  if (!box) return;
-  const cands = String(raw || "").split("|").filter(Boolean);
-  if (!cands.length) { box.innerHTML = ""; return; }
-  box.innerHTML = '<div class="kgfr-head">this name has ' + cands.length
+  if (kgMode !== "calls") return;
+  kgShown.choices = String(raw || "").split("|").filter(Boolean);
+  rerenderCurrentView();
+}
+
+// The frontier slot's content for the candidates `cands`: a head and each candidate a data-candidate
+// handle, or nothing when there are none.
+function frontierChoices(cands) {
+  if (!cands.length) return "";
+  return '<div class="kgfr-head">this name has ' + cands.length
     + ' definitions - choose one to continue the walk:</div>'
     + cands.map(c => '<a class="kgfr-cand" href="#" data-candidate="' + esc(c) + '">'
       + esc(c) + '</a>').join("");
@@ -2537,10 +2707,27 @@ function wireSelectToSeed() {
       if (kgLast) renderGraph(kgLast);
       return;
     }
-    // The code-lens RESOLUTION grain (spec 53 c4): a changed grain re-loads the overview at it; an
-    // empty value names no grain, so the server reads its default and the reply names it.
     const res = ev.target.closest("[data-lens-res]");
-    if (res) { kgResolution = (res.value || "").trim(); loadKgOverview(); }
+    if (res) commitGrain(res.value);
+  });
+  // The grain being typed is view state: held on the view so a redraw before it is committed writes
+  // the box with the draft rather than the grain the view reads.
+  el("kgpanel").addEventListener("input", ev => {
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) kgShown.grain = res.value;
+  });
+  // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. A box the
+  // panel's markup replaced was not left: a browser may send it focusout as it goes, while it is still
+  // in the page, and its draft and focus pass to the box written in its place (kgKeepingFocus), so it is
+  // asked once that write is done and commits only while still in the page.
+  el("kgpanel").addEventListener("keydown", ev => {
+    const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
+    if (res) commitGrain(res.value);
+  });
+  el("kgpanel").addEventListener("focusout", ev => {
+    const res = ev.target.closest("[data-lens-res]");
+    if (res) Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
@@ -2635,6 +2822,10 @@ async function poll() {
 // Attach the select-to-seed / drill / back / instance-select listeners once, on the stable containers,
 // before the first render/poll so an exploration or attach click works from the first painted panel.
 wireSelectToSeed();
+// Keep each disclosure the operator opens open across the innerHTML swaps that draw it again: the
+// decisions region's across the live poll, the explorer panel's across a redraw of the view it holds.
+rememberDisclosures(el("decisions"), () => expandedDecisions);
+rememberDisclosures(el("kgpanel"), () => kgShown.open);
 
 // Initialize the unified-inspector header (spec 55 c4): the subject-lens hidden (no subject yet) and
 // the rationale-overlay toggle reading "off", so the static controls are coherent before the first
@@ -2658,9 +2849,21 @@ window.addEventListener("mousemove", ev => {
   if (!kgDrag) return;
   kgView.x = kgDrag.ox + (ev.clientX - kgDrag.sx);
   kgView.y = kgDrag.oy + (ev.clientY - kgDrag.sy);
+  kgViewMoved = true;
   applyKgView();
 });
 window.addEventListener("mouseup", () => { kgDrag = null; });
+
+// One SIZE OBSERVER on the panel, bound once: each change of its size (a window resize, the instances
+// strip above it growing) queues kgRedrawResized for the next animation frame, at most one at a time.
+// A host without one keeps each drawing at the size it was drawn.
+if (typeof ResizeObserver === "function") {
+  new ResizeObserver(() => {
+    if (kgResizeQueued) return;
+    kgResizeQueued = true;
+    requestAnimationFrame(kgRedrawResized);
+  }).observe(el("kgpanel"));
+}
 
 // DEFAULT the KG panel to the whole-graph clustered overview on load (spec 42 c5): the exploration
 // path starts from the whole graph. loadKgOverview handles the static-export and offline cases itself.

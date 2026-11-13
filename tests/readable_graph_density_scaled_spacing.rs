@@ -30,6 +30,7 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim};
 
 use common::served::node_harness_passes;
 use rigger::dash;
@@ -58,41 +59,10 @@ fn the_served_page_ships_the_density_spread_lever() {
     );
 }
 
-/// The node harness: prepend a minimal DOM shim (the page runs some top-level wiring on load), then
-/// the served page script, then a driver that exercises the density-scaled layout over synthetic
-/// overviews and asserts the extent grows with node count and label area, and that edges are drawable.
-const SPACING_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-// Minimal DOM shim so the page's top-level wiring (el(...).addEventListener, loadKgOverview()) does
-// not throw. Everything is inert; the driver calls the page's PURE layout functions directly.
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){}
-__Stub.prototype.setAttribute = function(){};
-__Stub.prototype.getAttribute = function(){ return null; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth=800; this.clientHeight=300; }
-Object.defineProperty(__El.prototype,"innerHTML",{ get(){ return this._html; }, set(v){ this._html=String(v); } });
-Object.defineProperty(__El.prototype,"textContent",{ get(){ return this._text; }, set(v){ this._text=String(v); } });
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-__El.prototype.getBoundingClientRect = function(){ return { left:0, top:0, width:800, height:300 }; };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const location = { href: "" };
-const fetch = function(){ return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve({ clusters:[], edges:[], total:0, nodes:[] }); } }); };
-const setTimeout = function(){ return 0; };
-const setInterval = function(){ return 0; };
-`;
-
-const DRIVER = String.raw`
+/// The driver: run after the served page script over an inert DOM (the page runs some top-level
+/// wiring on load), it exercises the density-scaled layout over synthetic overviews and asserts the
+/// extent grows with node count and label area, and that edges are drawable.
+const SPACING_DRIVER: &str = r#"
 ;(function(){
   function isFin(p){ return p && isFinite(p.x) && isFinite(p.y); }
 
@@ -183,17 +153,12 @@ const DRIVER = String.raw`
 
   console.log("OK density-scaled-spacing");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-spacing-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME proof of the done-when: the served page's own force layout spreads with density - a 160-node
     /// overview occupies a strictly larger extent than a 60-node one, longer labels take strictly more room
     /// than short ones at a fixed node count, and after the full pipeline every edge's endpoints are at
     /// least the sum of their node radii apart - deterministically across two runs.
-    the_layout_extent_scales_with_density_and_edges_are_drawable: node_harness_passes(SPACING_HARNESS, "OK density-scaled-spacing");
+    the_layout_extent_scales_with_density_and_edges_are_drawable: node_harness_passes(&vm_harness(&[&DomShim::INERT.render()], SPACING_DRIVER, "dash-spacing-harness.js"), "OK density-scaled-spacing");
 }

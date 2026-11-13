@@ -28,10 +28,10 @@
 //! feature-gated), so this guards the served page in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim, Fields};
 
 use common::fixtures::tool_available;
 use common::served::node_harness_passes;
-use common::served::vm_harness;
 use common::served::{run_node_harness, SERVED_CLIENT_SEAM};
 use rigger::dash;
 
@@ -199,34 +199,21 @@ fn the_served_page_ships_the_subject_lens_and_rationale_overlay_seam() {
     );
 }
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN client seam under node's
-/// built-in `vm` (no npm, hermetic). It drives the real page script, asserting in turn that:
-/// (a) on load the subject-lens is HIDDEN (no subject) and the overview is fetched; (b) focusing a
-/// node reveals the subject-lens with its data-lens tabs + data-kgclear; (c) flipping the lens on a
-/// focused subject RE-REQUESTS that subject under the new lens (`seed=...&lens=...`, the
-/// re-projection - not the overview, not the lens-absent neighborhood) and renders the buckets;
-/// (d) clearing the subject returns to the whole-graph overview and re-hides the subject-lens;
-/// (e) with the overlay OFF the neighborhood carries NO badge; toggling the overlay ON batch-fetches
-/// `explain=` ONCE for the visible nodes and badges ONLY the node that carries rationale, its badge
-/// expanding to the leaf's content; and (f) toggling the overlay back OFF renders the neighborhood
-/// BYTE-IDENTICAL to before it was ever toggled (the additive proof). Mutation-proven: dropping the
-/// subject-sticky branch, or ungating the badge, reddens the driver.
-const SEAM_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
+/// The DOM the client seam's drivers run under: the handful of DOM surfaces the seam uses (innerHTML /
+/// textContent / dataset / .hidden / .className / addEventListener / a stubbed querySelector so
+/// bindKgView's `#kgzoom` / `svg` lookups resolve without throwing), `setTimeout` inert (the live tail
+/// never touches the network), and `__fetched` holding the URLs each fixture's `fetch` records.
+const SEAM_DOM: DomShim = DomShim {
+    fields: Fields::Form,
+    fetch_log: true,
+    ..DomShim::PANEL
+};
 
-// Minimal DOM shim (vm-realm, prepended to the page script). `fetch` resolves the /api/graph views
-// (overview default, seeded neighborhood, subject x lens re-projection, and the rationale batch) from
-// fixtures and records the URLs so the driver can assert the RIGHT view was fetched; every other
-// fetch (the load-time /api/state + /api/instances poll) rejects. setTimeout is inert (the live tail
-// never touches the network). The element stub supports the handful of DOM surfaces the seam uses:
-// innerHTML / textContent / dataset / .hidden / .className / addEventListener / a stubbed
-// querySelector so bindKgView's `#kgzoom` / `svg` lookups resolve without throwing.
-const SHIM = String.raw`
-const __els = {};
-const __fetched = [];
+/// The graph views the seam walks: `fetch` resolves the /api/graph views (overview default, seeded
+/// neighborhood, subject x lens re-projection, and the rationale batch) from fixtures and records the
+/// URLs so the driver can assert the RIGHT view was fetched; every other fetch (the load-time
+/// /api/state + /api/instances poll) rejects.
+const SEAM_FIXTURE: &str = r#"
 // The whole-graph overview: two clusters joined by one weighted cross-edge, three nodes total.
 const __OVERVIEW = { clusters: [ { key: "src", count: 2, kind: "code-entity" },
                                  { key: "docs", count: 1, kind: "design-doc" } ],
@@ -247,26 +234,6 @@ const __RATIONALE = { nodes: [ { node: "d1",
   leaves: [ { id: "dec1", kind: "decision",
               summary: "route the write through the shared authority so there is exactly one writer" } ] } ] };
 const __EMPTY = { clusters: [], edges: [], total: 0 };
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){}, };
 function __view(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return __RATIONALE;
@@ -284,12 +251,21 @@ const fetch = function(url){
   }
   return Promise.reject(new Error("no network for " + url));
 };
-const setTimeout = function(){ return 0; };
-`;
+"#;
 
-// Test driver (vm-realm, appended after the page script - shares its scope, so it calls the page's
-// own functions and reads its module state directly).
-const DRIVER = String.raw`
+/// A test driver (JavaScript) that RUNS the served page's OWN client seam under node's
+/// built-in `vm` (no npm, hermetic). It drives the real page script, asserting in turn that:
+/// (a) on load the subject-lens is HIDDEN (no subject) and the overview is fetched; (b) focusing a
+/// node reveals the subject-lens with its data-lens tabs + data-kgclear; (c) flipping the lens on a
+/// focused subject RE-REQUESTS that subject under the new lens (`seed=...&lens=...`, the
+/// re-projection - not the overview, not the lens-absent neighborhood) and renders the buckets;
+/// (d) clearing the subject returns to the whole-graph overview and re-hides the subject-lens;
+/// (e) with the overlay OFF the neighborhood carries NO badge; toggling the overlay ON batch-fetches
+/// `explain=` ONCE for the visible nodes and badges ONLY the node that carries rationale, its badge
+/// expanding to the leaf's content; and (f) toggling the overlay back OFF renders the neighborhood
+/// BYTE-IDENTICAL to before it was ever toggled (the additive proof). Mutation-proven: dropping the
+/// subject-sticky branch, or ungating the badge, reddens the driver.
+const SEAM_DRIVER: &str = r#"
 ;(async function(){
   function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
   function fire(listeners, target){
@@ -393,12 +369,7 @@ const DRIVER = String.raw`
 
   console.log("OK subject-lens-and-overlay-seam-drives");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
-`;
-
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-seam-harness.js" });
-"##;
+"#;
 
 /// RUNTIME guard for spec 55 c4's client seam: the served page's OWN wiring DISPATCHES and stays
 /// additive. It drives the real page script under a DOM shim (node's `vm`): focusing a node reveals
@@ -419,7 +390,11 @@ fn the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay() {
     }
 
     run_node_harness(
-        SEAM_HARNESS,
+        &vm_harness(
+            &[&SEAM_DOM.render(), SEAM_FIXTURE],
+            SEAM_DRIVER,
+            "dash-seam-harness.js",
+        ),
         "OK subject-lens-and-overlay-seam-drives",
         SERVED_CLIENT_SEAM,
     );
@@ -441,12 +416,9 @@ fn the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay() {
 //     `overlayNotes()` (a wrapper emitted with the overlay off) reddens this guard.
 // ---------------------------------------------------------------------------------------------------
 
-/// The DOM shim + graph fixtures both additive drivers run under (node `vm`, no npm). Mirrors the shim
-/// the primary seam harness uses, plus a `__DRILL` fixture so the `overlayNotes()`-bearing SVG view can
-/// be driven. Kept free of backticks / `${` so it embeds verbatim inside a `String.raw` template.
-const ADDITIVE_SHIM: &str = r#"
-const __els = {};
-const __fetched = [];
+/// The graph fixtures both additive drivers run under, over [`SEAM_DOM`]: the primary seam's views plus a
+/// `__DRILL` fixture so the `overlayNotes()`-bearing SVG view can be driven.
+const ADDITIVE_FIXTURE: &str = r#"
 // The seeded NEIGHBORHOOD of the focused subject: three nodes, ONE of which (d1) carries rationale in
 // the overlay batch; the other two carry none. Same shape the primary seam harness uses.
 const __NEIGH = { seed: "concept:auth", depth: 2,
@@ -470,26 +442,6 @@ const __OVERVIEW = { clusters: [ { key: "src", count: 2, kind: "code-entity" },
 const __RATIONALE = { nodes: [ { node: "d1",
   leaves: [ { id: "dec1", kind: "decision",
               summary: "route the write through the shared authority so there is exactly one writer" } ] } ] };
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
 function __view(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return __RATIONALE;
@@ -504,7 +456,6 @@ const fetch = function(url){
   }
   return Promise.reject(new Error("no network for " + url));
 };
-const setTimeout = function(){ return 0; };
 "#;
 
 /// Driver: a NEIGHBORHOOD rationale-badge click EXPANDS and does NOT re-seed. It renders the real
@@ -719,11 +670,11 @@ rigger::test_cases! {
     /// harness's single-attribute synthetic targets cannot make. Dropping the delegated listener's
     /// `data-explain` early guard reddens it (the summary click re-seeds).
     a_neighborhood_rationale_badge_click_expands_and_does_not_reseed:
-        node_harness_passes(&vm_harness(ADDITIVE_SHIM, BADGE_NO_RESEED_DRIVER, "dash-additive-harness.js"), "OK badge-click-expands-no-reseed");
+        node_harness_passes(&vm_harness(&[&SEAM_DOM.render(), ADDITIVE_FIXTURE], BADGE_NO_RESEED_DRIVER, "dash-additive-harness.js"), "OK badge-click-expands-no-reseed");
     /// RUNTIME guard (spec 55 c4, additive): the DRILL view - an overlayNotes-bearing SVG view, unlike the
     /// inline-badge neighborhood - renders BYTE-IDENTICAL with the overlay off, the same additive proof the
     /// primary harness makes for the neighborhood, driven here for the second overlay-surface wiring. An
     /// ungated `overlayNotes()` (emitting its wrapper with the overlay off) reddens it.
     the_drill_view_is_byte_identical_with_the_overlay_off:
-        node_harness_passes(&vm_harness(ADDITIVE_SHIM, DRILL_OVERLAY_OFF_DRIVER, "dash-additive-harness.js"), "OK drill-overlay-off-byte-identical");
+        node_harness_passes(&vm_harness(&[&SEAM_DOM.render(), ADDITIVE_FIXTURE], DRILL_OVERLAY_OFF_DRIVER, "dash-additive-harness.js"), "OK drill-overlay-off-byte-identical");
 }

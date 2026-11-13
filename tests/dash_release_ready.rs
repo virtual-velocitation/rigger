@@ -27,6 +27,7 @@
 //! proves crosses the wire, and asserts the resulting DOM node's content - not its source text.
 
 use crate::common;
+use crate::vm_harness::{DomShim, Fetch, Fields};
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -217,15 +218,24 @@ fn release_ready_carries_a_multi_unit_count_across_the_wire() {
     );
 }
 
-/// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` over a
+/// The DOM a full `render()` pass touches: every element it addresses via `el(id)` is auto-vivified
+/// with settable `innerHTML`/`textContent`/`hidden`. `querySelectorAll` returns an empty list (this
+/// driver never inspects the decisions/tree regions, only the release banner), so the toggle re-arm
+/// loop in `render()` runs zero iterations harmlessly; `window` takes the page's drag-pan handlers
+/// without keeping them.
+const RENDER_DOM: DomShim = DomShim {
+    fields: Fields::Shown,
+    fetch: Fetch::Refused(r#""no network in the render harness""#),
+    ..DomShim::MARKUP
+};
+
+/// A node program and driver (JavaScript source) that RUNS the served page's own `render()` over a
 /// REAL wire state (the exact JSON this file's socket test proves crosses `/api/state`), then reads
 /// back the rendered release banner's `<code class="pr">` content.
 ///
-/// The shim covers exactly what a full `render()` pass touches: every element it addresses via
-/// `el(id)` is auto-vivified with settable `innerHTML`/`textContent`/`hidden`, matching the
-/// `dash_decisions_progressive_disclosure.rs` harness's established shape. `querySelectorAll`
-/// returns an empty list (this driver never inspects the decisions/tree regions, only the release
-/// banner), so the toggle re-arm loop in `render()` runs zero iterations harmlessly.
+/// The program carries its own frame, beside [`vm_harness`](crate::vm_harness::vm_harness)'s,
+/// because it hands the driver the wire state it reads from `argv[3]`; [`RENDER_DOM`] takes the
+/// place of `__SHIM__`.
 const RENDER_PR_COMMAND_HARNESS: &str = r##"
 "use strict";
 const vm = require("vm");
@@ -233,21 +243,7 @@ const fs = require("fs");
 const pageScript = fs.readFileSync(process.argv[2], "utf8");
 const state = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 
-// Minimal DOM shim (vm-realm, prepended to the page script).
-const SHIM = String.raw`
-const __els = {};
-function __El(id){ this.id=id; this._html=""; this._text=""; this.hidden=false; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(){};
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-// The page installs its drag-pan handlers on the window global at load; a faithful shim provides
-// it (a no-op addEventListener; this harness only drives the release banner).
-const window = { addEventListener: function(){} };
-const fetch = function(){ return Promise.reject(new Error("no network in the render harness")); };
-const setTimeout = function(){ return 0; };
-`;
+const SHIM = String.raw`__SHIM__`;
 
 // Test driver (vm-realm, appended after the page script - shares its scope, `render`/`el` in scope).
 const DRIVER = String.raw`
@@ -350,7 +346,8 @@ fn release_ready_pr_command_survives_render_into_the_dom_with_its_newline_intact
     let harness_path = dir.path().join("harness.js");
     let script_path = dir.path().join("page-script.js");
     let state_path = dir.path().join("state.json");
-    std::fs::write(&harness_path, RENDER_PR_COMMAND_HARNESS).expect("write the render harness");
+    let harness = RENDER_PR_COMMAND_HARNESS.replace("__SHIM__", &RENDER_DOM.render());
+    std::fs::write(&harness_path, harness).expect("write the render harness");
     std::fs::write(&script_path, script).expect("write the served page script");
     std::fs::write(&state_path, state.to_string()).expect("write the wire state fixture");
 

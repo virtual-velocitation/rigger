@@ -22,6 +22,7 @@
 //! lane (none feature-gated), so this guards the served boundary in both lanes.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim, Fetch};
 
 use common::fixtures::assert_decisions_region_discloses_progressively;
 use common::served::node_harness_passes;
@@ -70,29 +71,10 @@ fn the_served_root_page_ships_the_decisions_progressive_disclosure_region() {
     assert_decisions_region_discloses_progressively(page);
 }
 
-/// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` twice -
-/// one live-poll cycle - to prove an operator-expanded decision stays open across the re-render.
-///
-/// The template-grep tests above are structurally blind to the RUNTIME behavior: `render()` re-runs
-/// every `POLL_MS` and wholesale-replaces the decisions region's `innerHTML`, which destroys and
-/// recreates the `<details>` subtree; a grep over the served string cannot see that a body the
-/// operator expanded snaps shut on the next poll. This harness executes the real page script under
-/// node's built-in `vm` (no npm, fully hermetic - `fetch`/`setTimeout` are inert so the live tail
-/// never touches the network), so it observes the actual open-state across two renders.
-///
-/// It shares the page script's lexical scope (appended after it), so it calls `render()`/`el()`
-/// directly. The DOM shim covers exactly what the render path touches: `getElementById`,
-/// `innerHTML`, `querySelectorAll("details.decision")`, `addEventListener`, and each `<details>`
-/// `open`/`data-did` state. Mutation-proven: removing the render-side `open` re-application (or the
-/// whole tracking mechanism) re-collapses `d-alpha` and the driver throws.
-const RENDER_TWICE_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-// Minimal DOM shim (vm-realm, prepended to the page script).
-const SHIM = String.raw`
+/// The DOM the render-twice driver runs in, its own rather than a [`DomShim`]: each element parses the
+/// `<details>` blocks written to its `innerHTML` into children carrying their `open` and
+/// `data-disclosure` state, and records the listeners bound on it.
+const RENDER_TWICE_DOM: &str = r#"
 const __els = {};
 function __El(id){ this.id=id; this._html=""; this._text=""; this._children=[]; this._listeners={}; this.open=false; this.dataset={}; }
 Object.defineProperty(__El.prototype, "innerHTML", {
@@ -103,9 +85,6 @@ Object.defineProperty(__El.prototype, "textContent", {
   get(){ return this._text; },
   set(v){ this._text = String(v); }
 });
-__El.prototype.querySelectorAll = function(sel){
-  return this._children.filter(function(c){ return /(^|\s)decision(\s|$)/.test(c.cls); });
-};
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 function __parseDecisions(html){
   const out = [];
@@ -114,11 +93,10 @@ function __parseDecisions(html){
     const open = /<details\b[^>]*\sopen(?=[\s>])/.test(blk);
     const clsM = blk.match(/<details\b[^>]*class="([^"]*)"/);
     const cls = clsM ? clsM[1] : "";
-    const didM = blk.match(/data-did="([^"]*)"/);
+    const keyM = blk.match(/data-disclosure="([^"]*)"/);
     const codeM = blk.match(/<code class="did">([^<]*)<\/code>/);
-    const did = didM ? didM[1] : (codeM ? codeM[1] : "");
-    out.push({ open: open, cls: cls, did: did, dataset: { did: didM ? didM[1] : undefined },
-      _listeners: {}, addEventListener: function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); } });
+    const did = codeM ? codeM[1] : "";
+    out.push({ open: open, cls: cls, did: did, dataset: { disclosure: keyM ? keyM[1] : undefined } });
   }
   return out;
 }
@@ -128,10 +106,25 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const fetch = function(){ return Promise.reject(new Error("no network in the render harness")); };
 const setTimeout = function(){ return 0; };
-`;
+"#;
 
-// Test driver (vm-realm, appended after the page script - shares its scope).
-const DRIVER = String.raw`
+/// A test driver (JavaScript source) that RUNS the served page's own `render()` twice -
+/// one live-poll cycle - to prove an operator-expanded decision stays open across the re-render.
+///
+/// The template-grep tests above are structurally blind to the RUNTIME behavior: `render()` re-runs
+/// every `POLL_MS` and wholesale-replaces the decisions region's `innerHTML`, which destroys and
+/// recreates the `<details>` subtree; a grep over the served string cannot see that a body the
+/// operator expanded snaps shut on the next poll. This driver executes the real page script under
+/// node's built-in `vm` (no npm, fully hermetic - `fetch`/`setTimeout` are inert so the live tail
+/// never touches the network), so it observes the actual open-state across two renders.
+///
+/// It shares the page script's lexical scope (appended after it), so it calls `render()`/`el()`
+/// directly. [`RENDER_TWICE_DOM`] covers exactly what the render path touches: `getElementById`,
+/// `innerHTML`, `addEventListener`, and each `<details>` `open`/`data-disclosure` state; the toggle
+/// the operator makes reaches the region's own listeners, as a browser's capture phase does.
+/// Mutation-proven: removing the render-side `open` re-application (or the whole tracking mechanism)
+/// re-collapses `d-alpha` and the driver throws.
+const RENDER_TWICE_DRIVER: &str = r#"
 ;(function(){
   const long = "d-alpha reasoning line one\nline two spans multiple lines and is long enough that the one-line preview truncates while the expandable body carries the whole thing so the operator can actually read it";
   const state = {
@@ -149,9 +142,9 @@ const DRIVER = String.raw`
   const a1 = dec._children.find(function(c){ return c.did === "d-alpha"; });
   if(!a1) throw new Error("render#1 produced no <details> for d-alpha");
 
-  // The operator expands d-alpha (native <details> toggle).
+  // The operator expands d-alpha (native <details> toggle, its event seen by the region it sits in).
   a1.open = true;
-  (a1._listeners.toggle || []).forEach(function(fn){ fn({}); });
+  (dec._listeners.toggle || []).forEach(function(fn){ fn({ target: a1 }); });
 
   // Poll render #2: the live poll re-renders the region (wholesale innerHTML swap).
   render(state);
@@ -162,12 +155,7 @@ const DRIVER = String.raw`
   if(b2 && b2.open === true) throw new Error("an untouched decision (d-beta) must stay collapsed across the poll");
   console.log("OK expanded-decision-survives-poll");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-render-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
@@ -180,49 +168,32 @@ rigger::test_cases! {
     /// `d-alpha` between the renders, and asserts it is still open after the second render while an
     /// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
     /// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
-    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(RENDER_TWICE_HARNESS, "OK expanded-decision-survives-poll");
+    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(&vm_harness(&[RENDER_TWICE_DOM], RENDER_TWICE_DRIVER, "dash-render-harness.js"), "OK expanded-decision-survives-poll");
 }
 
-/// A DOM shim + test driver (JavaScript source) that LOADS the served page's own script and RUNS
-/// its `preview()` helper on a multi-line, over-long summary, proving the always-visible `<summary>`
-/// line really collapses to ONE truncated line - the core c4 charter that a decision "collapses to
-/// one line but expands whole", so a multi-KB reasoning body is NEVER dumped inline (spec 30:36).
+/// The DOM the preview runs in: just enough for the page script to LOAD and run its load-time
+/// bootstrap harmlessly (`preview()` itself touches no DOM), with `fetch` and `setTimeout` inert so the
+/// load-time poll never touches the network.
+const PREVIEW_DOM: DomShim = DomShim {
+    fetch: Fetch::Refused(r#""no network in the preview harness""#),
+    ..DomShim::MARKUP
+};
+
+/// A test driver (JavaScript source) that LOADS the served page's own script and RUNS its `preview()`
+/// helper on a multi-line, over-long summary, proving the always-visible `<summary>` line really
+/// collapses to ONE truncated line - the core c4 charter that a decision "collapses to one line but
+/// expands whole", so a multi-KB reasoning body is NEVER dumped inline (spec 30:36).
 ///
 /// The template-grep tests above only prove the `.slice(`/`...` TOKENS exist in the shipped
 /// `preview()`; they are blind to what the function actually COMPUTES. A mutation that guts the
 /// truncation (raising the cap so no summary is ever cut) or drops the `/g` flag (so only the first
 /// whitespace run collapses and newlines survive) keeps every one of those tokens - so all three
 /// grep tests stay green while a multi-KB summary dumps inline on the always-visible line. This
-/// harness RUNS the real helper under node's built-in `vm` (no npm, hermetic; `fetch`/`setTimeout`
-/// are inert so the page's load-time poll never touches the network) and asserts the OUTPUT: a
-/// long, multi-line input yields a single line (no `\n`/`\r`/`\t`, no residual whitespace run)
+/// driver RUNS the real helper under node's built-in `vm` (no npm, hermetic) and asserts the OUTPUT:
+/// a long, multi-line input yields a single line (no `\n`/`\r`/`\t`, no residual whitespace run)
 /// truncated with an ellipsis, and a short one passes through untouched. Mutation-proven: raising
 /// the cap or dropping the `/g` flag makes the driver throw.
-const PREVIEW_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-// Minimal DOM shim (vm-realm, prepended to the page script): just enough for the page script to
-// LOAD and run its load-time bootstrap harmlessly. `preview()` itself touches no DOM.
-const SHIM = String.raw`
-const __els = {};
-function __El(id){ this.id=id; this._html=""; this._text=""; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.addEventListener = function(){};
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-// The page (spec 42 c5) installs its drag-pan handlers on the window global at load; a faithful
-// browser shim provides it (a no-op addEventListener; this harness only drives the decisions region).
-const window = { addEventListener: function(){} };
-const fetch = function(){ return Promise.reject(new Error("no network in the preview harness")); };
-const setTimeout = function(){ return 0; };
-`;
-
-// Test driver (vm-realm, appended after the page script - shares its scope, so `preview` is in scope).
-const DRIVER = String.raw`
+const PREVIEW_DRIVER: &str = r#"
 ;(function(){
   // A multi-LINE, over-long summary: hard newlines + doubled internal whitespace + a tab + a long
   // unbroken tail, exactly the multi-KB reasoning a decision carries. The one-line preview MUST
@@ -240,12 +211,7 @@ const DRIVER = String.raw`
   if(short !== "a tidy one-liner") throw new Error("preview() mangled a short single-line summary: " + JSON.stringify(short));
   console.log("OK preview-collapses-and-truncates");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-preview-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 30 c4's core charter (the summary is a PREVIEW, never an inline dump):
@@ -255,5 +221,5 @@ rigger::test_cases! {
     /// or dropping the `/g` flag (so only the first whitespace run collapses) leaves a multi-KB summary
     /// dumped inline on the always-visible line while every grep stays green. This drives the real
     /// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
-    the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: node_harness_passes(PREVIEW_HARNESS, "OK preview-collapses-and-truncates");
+    the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: node_harness_passes(&vm_harness(&[&PREVIEW_DOM.render()], PREVIEW_DRIVER, "dash-preview-harness.js"), "OK preview-collapses-and-truncates");
 }

@@ -22,17 +22,24 @@
 //! `--no-default-features` lane (the viz is not feature-gated), so this guards the served page in
 //! both lanes.
 //!
-//! BOTH wired call sites get their own dedicated harness ([`HULL_HARNESS`] for `renderKgOverview`,
-//! [`HULL_HARNESS_REPROJECTION`] for `renderReprojection`): each carries its own `groupOf`/`groupLabel`
+//! BOTH wired call sites get their own dedicated driver ([`HULL_DRIVER`] for `renderKgOverview`,
+//! [`HULL_REPROJECTION_DRIVER`] for `renderReprojection`): each carries its own `groupOf`/`groupLabel`
 //! ternary, so a mistake at ONE call site (a typo'd lens comparison, a dropped opt) would not redden
 //! the other's test - proving the overview alone would leave the re-projection panel's directory hulls
 //! (spec 55's subject x lens surface, e.g. a concept re-grained by files) structurally unguarded.
 
 use crate::common;
+use crate::vm_harness::{vm_harness, DomShim, Fetch};
 
 use common::served::node_harness_passes;
 
-/// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN renderers under node's built-in
+/// The DOM both hull drivers run in: the drivers call the renderers directly, so every fetch is refused.
+const HULL_DOM: DomShim = DomShim {
+    fetch: Fetch::Refused(r#""no network in this harness""#),
+    ..DomShim::PANEL
+};
+
+/// A test driver (JavaScript) that RUNS the served page's OWN renderers under node's built-in
 /// `vm` (no npm, hermetic). It drives `renderKgOverview` directly against a fixture `ClusterOverview` (no
 /// fetch involved - this criterion owns the RENDER, not the fetch dispatch spec 42 c4/c5 already proves),
 /// asserting in turn that: (a) under the default (files) lens, three file clusters split across two
@@ -41,38 +48,7 @@ use common::served::node_harness_passes;
 /// hull's `<rect>` renders BEFORE any node `<g class="kgn ...">` in the SVG markup (behind, never
 /// occluding); and (d) flipping to the CODE lens draws NO hull at all (directory grouping is a files-lens
 /// concept only - it must never leak onto a taxonomy that has no directory).
-const HULL_HARNESS: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-const fetch = function(){ return Promise.reject(new Error("no network in this harness")); };
-`;
-
-const DRIVER = String.raw`
+const HULL_DRIVER: &str = r#"
 ;(function(){
   // Three file clusters: two share "src/alpha" (a.rs, b.rs), one is "src/beta/c.rs", and one is a
   // repo-root file (no "/") - directory-less, so it must group under the (root) sentinel.
@@ -122,12 +98,7 @@ const DRIVER = String.raw`
 
   console.log("OK directory-hulls-draw-group-and-label-file-clusters-by-directory");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-hull-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for spec 63 c3's directory hulls (its own Done-when clause): the served page's OWN
@@ -135,52 +106,21 @@ rigger::test_cases! {
     /// under the default (files) lens - a repo-root file groups under `(root)`, every hull renders BEHIND
     /// the node circles, and the CODE lens (a different taxonomy, no directory concept) draws none. This
     /// is the behavioral proof a structural grep on the served bytes cannot make.
-    the_files_lens_draws_directory_hulls_behind_its_file_nodes: node_harness_passes(HULL_HARNESS, "OK directory-hulls-draw-group-and-label-file-clusters-by-directory");
+    the_files_lens_draws_directory_hulls_behind_its_file_nodes: node_harness_passes(&vm_harness(&[&HULL_DOM.render()], HULL_DRIVER, "dash-hull-harness.js"), "OK directory-hulls-draw-group-and-label-file-clusters-by-directory");
 }
 
-/// A DOM shim + test driver (JavaScript) proving the OTHER wired call site: `renderReprojection` (the
+/// A test driver (JavaScript) proving the OTHER wired call site: `renderReprojection` (the
 /// subject x lens re-projection panel, spec 55) gets the IDENTICAL `groupOf`/`groupLabel` directory-hull
 /// treatment as `renderKgOverview` under the files lens - a SEPARATE conditional at a SEPARATE call
 /// site, so a mistake there (a typo'd lens comparison, a dropped opt) would NOT redden
-/// [`HULL_HARNESS`] above, which drives only the overview. Drives `renderReprojection` directly against
+/// [`HULL_DRIVER`] above, which drives only the overview. Drives `renderReprojection` directly against
 /// a fixture `Reprojection` (no fetch, no route dispatch - this criterion owns the RENDER, not the
 /// subject/lens composition spec 55 already proves) with three file-keyed clusters split across two
 /// directories plus a root file, asserting: (a) three hull regions draw, correctly labelled
 /// ("DIR · <dir>" / "DIR · (root)"); (b) every hull renders BEFORE any node circle (behind, never
 /// occluding); and (c) flipping `kgLens` to `code` draws NO hull for this same renderer (directory
 /// grouping is a files-lens concept only, at EITHER call site).
-const HULL_HARNESS_REPROJECTION: &str = r##"
-"use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-
-const SHIM = String.raw`
-const __els = {};
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
-// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
-const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
-const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
-__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-const fetch = function(){ return Promise.reject(new Error("no network in this harness")); };
-`;
-
-const DRIVER = String.raw`
+const HULL_REPROJECTION_DRIVER: &str = r#"
 ;(function(){
   // The same three-directory shape as the overview harness, but as a Reprojection body (subject +
   // clusters + total + edges): two files share "src/alpha", one is "src/beta/c.rs", one is repo-root.
@@ -226,17 +166,12 @@ const DRIVER = String.raw`
 
   console.log("OK reprojection-draws-group-and-label-file-clusters-by-directory");
 })();
-`;
-
-const sandbox = { console: console };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-hull-reprojection-harness.js" });
-"##;
+"#;
 
 rigger::test_cases! {
     /// RUNTIME guard for the SECOND call site spec 63 c3's directory hulls wires: `renderReprojection`
     /// (the subject x lens re-projection panel) draws the identical directory-hull treatment as the
     /// overview - a defect at this call site alone (its own `groupOf`/`groupLabel` ternary) would not
     /// redden [`the_files_lens_draws_directory_hulls_behind_its_file_nodes`] above, which never calls it.
-    the_reprojection_view_draws_directory_hulls_behind_its_file_clusters: node_harness_passes(HULL_HARNESS_REPROJECTION, "OK reprojection-draws-group-and-label-file-clusters-by-directory");
+    the_reprojection_view_draws_directory_hulls_behind_its_file_clusters: node_harness_passes(&vm_harness(&[&HULL_DOM.render()], HULL_REPROJECTION_DRIVER, "dash-hull-reprojection-harness.js"), "OK reprojection-draws-group-and-label-file-clusters-by-directory");
 }

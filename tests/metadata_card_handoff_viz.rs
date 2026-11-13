@@ -25,32 +25,15 @@ use crate::common;
 
 use common::served::node_harness_passes;
 
-use crate::vm_harness;
-use vm_harness::vm_harness;
+use crate::vm_harness::{vm_harness, DomShim, Fields};
 
-/// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
-/// dataset / .hidden / addEventListener). Mirrors `subject_view_memory_rail_client.rs`'s shim
-/// verbatim - the same handful of surfaces every dash client-seam harness in this repo needs.
-const DOM_SHIM: &str = r#"
-const __els = {};
-function __Stub(){ this._attrs = {}; }
-__Stub.prototype.setAttribute = function(k,v){ this._attrs[k] = String(v); };
-__Stub.prototype.getAttribute = function(k){ return this._attrs[k]; };
-__Stub.prototype.addEventListener = function(){};
-__Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
-function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
-  this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300;
-  this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
-Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
-Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
-__El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.querySelector = function(){ return new __Stub(); };
-__El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
-const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
-const setTimeout = function(){ return 0; };
-"#;
+/// The DOM the client seam touches (node `vm`, no npm): the element surfaces innerHTML, dataset,
+/// .hidden and addEventListener, and a panel that does not measure a drawing slot.
+const DOM: DomShim = DomShim {
+    fields: Fields::Form,
+    slot: false,
+    ..DomShim::PANEL
+};
 
 /// The in-memory `/api/graph` fixture the `fetch` shims answer from: `card=<id>` serves one of
 /// three fixture cards (a code entity, its file, and the concept it realizes); a `seed=&lens=`
@@ -257,37 +240,37 @@ rigger::test_cases! {
     /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
     /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
     metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
     /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
     /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
     /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
     /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
     metadata_card_wiring_fires_at_every_render_and_drill_call_site:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
     /// RUNTIME guard that each view is drawn in the room its panes leave: the card's dock shows
     /// only when a card arrives, and the view is laid out once more when it does; a view drawn
     /// for another subject never keeps the last subject's card; and a card that lands after its
     /// view was left never opens over the next view - the latest card request is the only one
     /// drawn.
     every_view_is_drawn_in_the_room_its_panes_leave_and_a_late_card_is_dropped:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], PANES_DRIVER, HARNESS_FILE), "OK every-view-drawn-in-the-room-its-panes-leave");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], PANES_DRIVER, HARNESS_FILE), "OK every-view-drawn-in-the-room-its-panes-leave");
     /// RUNTIME guard that a shown card survives a re-render of the same subject: the overlay
     /// toggle and a tier toggle re-draw the seed from its body without hiding, blanking or
     /// re-fetching its card, and a re-read of the same subject under another tests filter keeps
     /// the card shown until the re-read card replaces it.
     a_shown_card_survives_a_re_render_of_the_same_subject:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], CARD_KEPT_DRIVER, HARNESS_FILE), "OK a-shown-card-survives-a-re-render");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], CARD_KEPT_DRIVER, HARNESS_FILE), "OK a-shown-card-survives-a-re-render");
     /// RUNTIME guard that a subject with no card never narrows the drawing: neither while its
     /// card is fetched nor after the answer names no card, and not when the subject before it
     /// had a card.
     a_subject_with_no_card_never_narrows_the_drawing:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], NO_CARD_DRIVER, HARNESS_FILE), "OK a-subject-with-no-card-never-narrows-the-drawing");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], NO_CARD_DRIVER, HARNESS_FILE), "OK a-subject-with-no-card-never-narrows-the-drawing");
     /// RUNTIME guard that each view sets or clears both panes for its own subject before it
     /// draws: a call walk or re-projection of the seed keeps the seed's rail and card; a call
     /// walk, drill or re-projection of another subject is drawn with neither and cards its own
     /// subject; and a view that cannot be read shows its message with both panes hidden.
     each_view_sets_both_panes_for_its_own_subject_before_it_draws:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH, DRAW_RECORDER], OWN_PANES_DRIVER, HARNESS_FILE), "OK each-view-sets-both-panes-for-its-own-subject");
+        node_harness_passes(&vm_harness(&[&DOM.render(), CARD_FIXTURE, RESOLVING_FETCH, DRAW_RECORDER], OWN_PANES_DRIVER, HARNESS_FILE), "OK each-view-sets-both-panes-for-its-own-subject");
 }
 
 /// A recorder of the drawings: from the call on, every write of `#kgpanel` records whether the

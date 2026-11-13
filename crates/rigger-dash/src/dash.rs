@@ -5654,14 +5654,22 @@ mod tests {
         }
 
         /// The explorer laid out with the rail and the card shown or hidden as given, in a
-        /// viewport `[width, height]` px: the body is as wide as the viewport less the margin,
-        /// border and padding of each box from the page's body down to the explorer body.
-        fn layout_at(&self, rail: bool, card: bool, viewport: [f64; 2]) -> ExplorerLayout<'_, 'a> {
+        /// viewport `[width, height]` px holding a page that `overflows` it or fits it: the body
+        /// is as wide as the viewport less the page's scrollbar ([`ExplorerLayout::scrollbar`])
+        /// and the margin, border and padding of each box from the page's body down to the
+        /// explorer body.
+        fn layout_at(
+            &self,
+            rail: bool,
+            card: bool,
+            viewport: [f64; 2],
+            overflows: bool,
+        ) -> ExplorerLayout<'_, 'a> {
             let mut layout = self.layout(rail, card, f64::NAN);
             layout.viewport = Some(viewport);
             let body = layout.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
             let chain = self.markup[body].ancestors.iter().copied().chain([body]);
-            layout.body = chain.fold(viewport[0], |width, at| {
+            layout.body = chain.fold(viewport[0] - layout.scrollbar(overflows), |width, at| {
                 ["left", "right"].iter().fold(width, |width, side| {
                     width - layout.px(at, &format!("margin-{side}")) - layout.edge(at, side)
                 })
@@ -5671,6 +5679,10 @@ mod tests {
             layout
         }
     }
+
+    /// The width a classic scrollbar takes beside what it scrolls (Firefox on Linux draws 12px,
+    /// other platforms up to 17px); an overlay scrollbar takes none. The pins hold for any width.
+    const SCROLLBAR: f64 = 12.0;
 
     /// The explorer laid out by the served stylesheet in one state - which panes show, and how
     /// wide the body (`.kgbody`, the panes' and the panel's parent) is, and, for the heights, the
@@ -5910,9 +5922,83 @@ mod tests {
                 .expect("a viewport length is read only in a layout made for a viewport")
         }
 
+        /// The value the stylesheet's last rule selecting the page's root (`html` or `:root`)
+        /// whose at-rule holds declares for `property`: a top-level rule, or one under `@media`
+        /// when the viewport's width meets it. The root is no box the layout model places, so a
+        /// rule under any other at-rule declaring it panics.
+        fn root(&self, property: &str) -> Option<String> {
+            let body = self.index_where(|e| e.tag == "body");
+            let mut value = None;
+            for rule in &self.style.rules {
+                if !rule
+                    .selectors
+                    .iter()
+                    .any(|s| matches!(*s, "html" | ":root"))
+                {
+                    continue;
+                }
+                for (name, declared) in &rule.declarations {
+                    if let Some(set) = longhand(name, declared, property) {
+                        assert!(
+                            rule.at.is_none_or(|at| at.starts_with("@media")),
+                            "the layout model reads the root's {property} at the top level or \
+                             under @media only: {:?}",
+                            rule.text
+                        );
+                        if self.condition_holds(rule, body) {
+                            value = Some(set);
+                        }
+                    }
+                }
+            }
+            value
+        }
+
+        /// How the page's viewport scrolls: by the root's overflow, or by the body's when the
+        /// root's is `visible` (the body's propagates), reading `visible` as `auto` and `clip` as
+        /// `hidden`.
+        fn viewport_overflow(&self) -> &'static str {
+            let body = self.index_where(|e| e.tag == "body");
+            let overflow = self
+                .root("overflow-y")
+                .filter(|o| o != "visible")
+                .or_else(|| self.value(body, "overflow-y"))
+                .unwrap_or_else(|| "visible".to_string());
+            match overflow.as_str() {
+                "scroll" => "scroll",
+                "auto" | "visible" => "auto",
+                "hidden" | "clip" => "hidden",
+                other => panic!("the layout model reads no overflow {other:?} on the viewport"),
+            }
+        }
+
+        /// The width the page's scrollbar takes from the viewport when the page `overflows` it or
+        /// fits it: a classic scrollbar's [`SCROLLBAR`] when the viewport shows one (it scrolls
+        /// by `scroll`, or by `auto` and the page overflows, [`Self::viewport_overflow`]) or when
+        /// the root keeps the gutter (`scrollbar-gutter: stable`), and none otherwise.
+        fn scrollbar(&self, overflows: bool) -> f64 {
+            let shows = match self.viewport_overflow() {
+                "scroll" => true,
+                "auto" => overflows,
+                _ => false,
+            };
+            let gutter = self.root("scrollbar-gutter");
+            let kept = match gutter.as_deref() {
+                None | Some("auto") => false,
+                Some(stable) if stable.starts_with("stable") => true,
+                Some(other) => panic!("the layout model reads no scrollbar-gutter {other:?}"),
+            };
+            if shows || kept {
+                SCROLLBAR
+            } else {
+                0.0
+            }
+        }
+
         /// The border-box height of each box from the page's body down to the panel and of each
-        /// box in flow beside them, when the panel holds `content` px of drawing or list, in the
-        /// viewport the layout was made for (`None` for a box it does not place). The body takes
+        /// box in flow beside them, when the panel holds `content` px of drawing or list and each
+        /// stacked pane `content` px of rows, in the viewport the layout was made for (`None` for
+        /// a box it does not place). The body takes
         /// its declared height, or else its content's; each box on the way down to the panel is a
         /// column flex container sharing its height among its children in flow ([`Self::flex`]);
         /// every other box is one row ([`Self::natural`]).
@@ -5981,19 +6067,17 @@ mod tests {
         }
 
         /// The content height of a box the layout model places as one row: `content` for the
-        /// panel, and for every other box a nominal height of the rows it holds (the header's
-        /// title, the instances strip, the explorer's title and its header's controls, a
-        /// stacked card or rail, the columns below the explorer). A box with none panics.
+        /// panel and for a stacked card or rail, and for every other box a nominal height of the
+        /// rows it holds (the header's title, the instances strip, the explorer's title and its
+        /// header's controls, the columns below the explorer). A box with none panics.
         fn nominal(&self, at: usize, content: f64) -> f64 {
             let element = &self.style.markup[at];
             match (element.tag.as_str(), element.id.as_str()) {
-                (_, "kgpanel") => content,
+                (_, "kgpanel" | "kgcard" | "kgrail") => content,
                 ("header", _) => 21.0,
                 (_, "landing") => 23.0,
                 ("h2", _) => 19.5,
                 (_, "kghead") => 21.5,
-                (_, "kgcard") => 320.0,
-                (_, "kgrail") => 420.0,
                 _ if element.classes.iter().any(|c| c == "columns") => 2400.0,
                 _ => panic!(
                     "the layout model has no content height for <{}> #{} {:?}",
@@ -6092,16 +6176,21 @@ mod tests {
                     .iter()
                     .any(|axis| self.value(child, axis).is_some_and(|o| o != "visible"));
                 let edges = self.vertical_edges(child);
+                let max = match self.value(child, "max-height").as_deref() {
+                    None | Some("none") => f64::INFINITY,
+                    Some(max) => height(child, max).unwrap_or(f64::INFINITY),
+                };
+                // A box's automatic minimum is its content's height or its declared one, the
+                // less, and never more than its maximum.
                 let min = match self.value(child, "min-height").as_deref() {
                     None | Some("auto") if clips => 0.0,
-                    None | Some("auto") => natural().min(declared.unwrap_or(f64::INFINITY)),
+                    None | Some("auto") => {
+                        natural().min(declared.unwrap_or(f64::INFINITY)).min(max)
+                    }
                     Some(min) => height(child, min).unwrap_or(0.0),
                 };
                 least.push(min.max(edges));
-                most.push(match self.value(child, "max-height").as_deref() {
-                    None | Some("none") => f64::INFINITY,
-                    Some(max) => height(child, max).unwrap_or(f64::INFINITY),
-                });
+                most.push(max);
                 let factor = |property: &str, otherwise: f64| {
                     self.value(child, property)
                         .map_or(otherwise, |f| f.parse().expect("a flex factor is a number"))
@@ -6576,25 +6665,135 @@ mod tests {
         );
     }
 
+    /// GIVEN the served page, WHEN the card, the rail or the call view's frontier list shows a
+    /// name with no break opportunity in it (a long path, an id), THEN the name wraps inside it and
+    /// never scrolls it, or the panel holding it, sideways: each wraps anywhere (`overflow-wrap:
+    /// anywhere`, which every row, chip and candidate its renderer writes inside it inherits, and
+    /// which, unlike `break-word`, lets an inline-block chip shrink to the pane's width), docked or
+    /// stacked, and no rule styling a part one's renderer writes (a `kgcard-`, `kgrail-` or `kgfr`
+    /// class) wraps it otherwise or keeps it on one line. The frontier list is a slot the page's
+    /// script writes into the panel, so the rule wrapping it is read where it selects the slot's
+    /// class, at the top level of the stylesheet. Layout is outside what the page harness can run,
+    /// so this reads these rules through the page's own stylesheet.
+    #[test]
+    fn a_long_name_wraps_inside_the_card_the_rail_and_the_frontier_list() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        for body in [400.0, 1400.0] {
+            let layout = style.layout(true, true, body);
+            for pane in ["kgcard", "kgrail"] {
+                assert_eq!(
+                    layout.value(layout.index(pane), "overflow-wrap").as_deref(),
+                    Some("anywhere"),
+                    "#{pane} in a {body}px body wraps a long name anywhere, so every chip and row \
+                     its renderer writes inside it wraps inside it"
+                );
+            }
+        }
+        let wraps_the_list = style_rules(&page).iter().any(|rule| {
+            rule.at.is_none()
+                && rule.selectors.contains(&".kgfrontier")
+                && rule
+                    .declarations
+                    .iter()
+                    .any(|(name, value)| name == "overflow-wrap" && value == "anywhere")
+        });
+        assert!(
+            wraps_the_list,
+            "the frontier list (.kgfrontier) wraps a long name anywhere, so every candidate its \
+             renderer writes inside it wraps inside the panel"
+        );
+        let mut parts = 0;
+        for rule in style_rules(&page) {
+            let styles_a_part = rule
+                .selectors
+                .iter()
+                .any(|s| s.contains(".kgcard-") || s.contains(".kgrail-") || s.contains(".kgfr"));
+            if !styles_a_part {
+                continue;
+            }
+            parts += 1;
+            for (name, value) in &rule.declarations {
+                let keeps_a_line = match name.as_str() {
+                    "overflow-wrap" | "word-wrap" => value != "anywhere",
+                    "white-space" => matches!(value.as_str(), "nowrap" | "pre"),
+                    "word-break" => value == "keep-all",
+                    _ => false,
+                };
+                assert!(
+                    !keeps_a_line,
+                    "{:?} sets {name}: {value} on a part of a pane, so a long name there does \
+                     not wrap as the pane does",
+                    rule.text
+                );
+            }
+        }
+        assert!(parts > 0, "some rule styles a part of a pane");
+    }
+
+    /// GIVEN the served page, WHEN the explorer draws, THEN no rule that may select the drawing's
+    /// svg (`<svg class="kgsvg">`, which the page's script writes into the panel) gives it a border
+    /// or padding, so its box is the drawing's surface: `kgDims` draws at that box's width, the
+    /// drawing is seen at a scale of 1, and the page harnesses' DOM shims hold the svg's box as
+    /// its surface. A rule may select it unless its last compound names another id, class or tag,
+    /// or a pseudo-element.
+    #[test]
+    fn the_drawing_svg_takes_no_border_or_padding() {
+        let page = live_page();
+        let may_select = |simple: &str| match simple {
+            s if s.starts_with('#') || s.starts_with("::") => false,
+            s if s.starts_with('.') => s == ".kgsvg",
+            s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => s == "svg",
+            _ => true,
+        };
+        let mut styled = 0;
+        for rule in style_rules(&page) {
+            let selects = rule.selectors.iter().any(|selector| {
+                compounds(selector)
+                    .last()
+                    .is_some_and(|(_, last)| simples(last).into_iter().all(may_select))
+            });
+            if !selects {
+                continue;
+            }
+            styled += 1;
+            for side in ["top", "right", "bottom", "left"] {
+                for property in [format!("border-{side}-width"), format!("padding-{side}")] {
+                    for (name, value) in &rule.declarations {
+                        if let Some(set) = longhand(name, value, &property) {
+                            assert!(
+                                matches!(set.as_str(), "0" | "0px"),
+                                "{:?} gives the drawing's svg {property} {set}, so its box is \
+                                 larger than the surface the drawing shows on",
+                                rule.text
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(styled > 0, "some rule styles the drawing's svg");
+    }
+
+    /// The narrowest content box, the drawing's surface, a docked pane leaves the panel while it
+    /// shows no scrollbar of its own: where the panes' columns would leave less, they stack above
+    /// the panel. A scrollbar the panel shows when what it holds overflows takes its width from
+    /// that box, and `kgDims` makes the drawing at whatever width is left.
+    const LEAST_DOCKED_CONTENT: f64 = 320.0;
+
     /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
-    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps at least
-    /// the width `kgDims` draws at: shown panes dock beside the panel (absolutely positioned, each
-    /// taking exactly its own column and inset from the panel's margin on its side) wherever
-    /// their columns leave the panel that width, and everywhere else every shown pane stacks above
-    /// the panel at the body's full width and the panel reserves no margin. Layout is outside what
-    /// the page harness can run, so this lays the explorer out by the page's own stylesheet
-    /// (selectors, cascade, container queries and lengths) at each width from 280px to 1400px.
+    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps its
+    /// content box at least `LEAST_DOCKED_CONTENT`: shown panes dock
+    /// beside the panel (absolutely positioned, each taking exactly its own column and inset from
+    /// the panel's margin on its side) wherever their columns leave the panel's content box that
+    /// width, and everywhere else every shown pane stacks above the panel at the body's full width
+    /// and the panel reserves no margin. Layout is outside what the page harness can run, so this
+    /// lays the explorer out by the page's own stylesheet (selectors, cascade, container queries
+    /// and lengths) at each width from 280px to 1400px.
     #[test]
     fn the_panel_keeps_the_drawing_width_beside_the_rail_and_the_card() {
         let page = live_page();
         let style = ExplorerStyle::read(&page);
-        let drawn: f64 = page[page
-            .find("function kgDims()")
-            .expect("the page sizes its drawing")..]
-            .split_once("Math.max(")
-            .and_then(|(_, rest)| rest.split_once(','))
-            .and_then(|(least, _)| least.trim().parse().ok())
-            .expect("kgDims draws at least a fixed width");
         let panel = explorer_index(&style.markup, "kgpanel");
         let body = *style.markup[panel]
             .ancestors
@@ -6619,7 +6818,10 @@ mod tests {
             for (shown, rail, card) in PANE_STATES {
                 let layout = style.layout(rail, card, width);
                 let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
-                let room = width - left - right;
+                // The panel's content box before any scrollbar of its own: its width less its
+                // margins, and its own border and padding on each side.
+                let edges = layout.edge(panel, "left") + layout.edge(panel, "right");
+                let content = width - left - right - edges;
                 let mut docked = Vec::new();
                 for (pane, side, margin) in [("kgcard", "left", left), ("kgrail", "right", right)] {
                     match layout.pane(pane, side) {
@@ -6650,15 +6852,15 @@ mod tests {
                 );
                 if docked.first() == Some(&true) {
                     assert!(
-                        room >= drawn,
-                        "with {shown} shown in a {width}px body the panel keeps {room}px, less \
-                         than the {drawn}px kgDims draws at"
+                        content >= LEAST_DOCKED_CONTENT,
+                        "with {shown} shown in a {width}px body the panel's content box keeps \
+                         {content}px, less than the {LEAST_DOCKED_CONTENT}px a docked pane leaves it"
                     );
                 }
-                laid_out.push((shown, rail, card, width, docked.first().copied()));
+                laid_out.push((shown, rail, card, width, edges, docked.first().copied()));
             }
         }
-        for (shown, rail, card, width, docked) in laid_out {
+        for (shown, rail, card, width, edges, docked) in laid_out {
             let Some(docked) = docked else { continue };
             let column = |pane: &str, on: bool| {
                 if on {
@@ -6669,12 +6871,13 @@ mod tests {
                     0.0
                 }
             };
-            let needs = drawn + column("kgrail", rail) + column("kgcard", card);
+            let needs =
+                LEAST_DOCKED_CONTENT + edges + column("kgrail", rail) + column("kgcard", card);
             assert_eq!(
                 docked,
                 width >= needs,
                 "with {shown} shown in a {width}px body the panes dock exactly where their \
-                 columns leave the panel {drawn}px (from {needs}px)"
+                 columns leave the panel's content box {LEAST_DOCKED_CONTENT}px (from {needs}px)"
             );
         }
     }
@@ -6707,7 +6910,7 @@ mod tests {
             for wide in 320..=1600 {
                 let wide = f64::from(wide);
                 for (shown, rail, card) in PANE_STATES {
-                    let layout = style.layout_at(rail, card, [wide, tall]);
+                    let layout = style.layout_at(rail, card, [wide, tall], true);
                     let [short, long] = [200.0, 333_000.0]
                         .map(|held| layout.heights(held)[panel].expect("the panel is laid out"));
                     // One height to a browser's layout unit (1/64 px): the flex arithmetic rounds
@@ -6728,6 +6931,111 @@ mod tests {
                             Some("auto" | "scroll")
                         ),
                         "the panel scrolls what does not fit inside it"
+                    );
+                }
+            }
+        }
+    }
+
+    /// GIVEN the served page, WHEN the rail, the card or both stack above the panel (a body too
+    /// narrow to dock them) holding rows of any length, in a viewport of any width from a phone's
+    /// to a wide screen's, THEN each stacked pane keeps the height of its rows up to the height a
+    /// docked pane's column runs, the body's height with no pane in its flow, and no more, so the
+    /// panel never sits more than that height per stacked pane below the explorer's header; the
+    /// rows past it scroll inside the pane (the rail's own overflow, the card's as
+    /// `a_card_taller_than_the_explorer_body_scrolls_inside_it` pins). Layout is outside what the
+    /// page harness can run, so this lays the page out by its own stylesheet at each viewport
+    /// width from 320px to 1600px.
+    #[test]
+    fn a_stacked_pane_is_capped_at_the_height_a_docked_one_spans() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        let mut stacked = 0;
+        for tall in [640, 900] {
+            let tall = f64::from(tall);
+            for wide in 320..=1600 {
+                let viewport = [f64::from(wide), tall];
+                let bare = style.layout_at(false, false, viewport, true);
+                let body = bare.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
+                let layouts = PANE_STATES.map(|(shown, rail, card)| {
+                    (shown, style.layout_at(rail, card, viewport, true))
+                });
+                for held in [200.0, 333_000.0] {
+                    let column = bare.heights(held)[body].expect("the body is laid out");
+                    for (shown, layout) in &layouts {
+                        let heights = layout.heights(held);
+                        for (pane, side) in [("kgrail", "right"), ("kgcard", "left")] {
+                            if layout.pane(pane, side) != Some(None) {
+                                continue;
+                            }
+                            stacked += 1;
+                            let at = layout.index(pane);
+                            let height = heights[at].expect("a stacked pane is laid out");
+                            let rows = held + layout.vertical_edges(at);
+                            assert!(
+                                (height - rows.min(column)).abs() < 1.0 / 64.0,
+                                "with {shown} shown in a {wide}x{tall} viewport a stacked #{pane} \
+                                 holding {held}px of rows takes {height}px, not its rows' {rows}px \
+                                 capped at the {column}px a docked pane's column runs"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(stacked > 0, "some viewport stacks a pane");
+    }
+
+    /// GIVEN the served page, WHEN it lays out in a viewport of any width from a phone's to a wide
+    /// screen's, with the rail, the card, both or neither shown, on a platform whose scrollbar
+    /// takes room beside what it scrolls ([`SCROLLBAR`]), THEN the explorer body's width, and
+    /// with it where each pane sits, is the same whether the page fits the viewport or overflows
+    /// it: where the page scrolls (the narrow layout, whose stacked panes can make it overflow)
+    /// the body's width is one function of the viewport's, so whether the panes dock never
+    /// depends on whether stacked panes made the page overflow, nor on the order a view and a
+    /// resize arrived in; and where the page never scrolls (the wide layout, 1400px among it) it
+    /// keeps no gutter for a scrollbar it never shows, so the page reads the whole viewport. The
+    /// media query choosing the layout reads the viewport's width with any scrollbar in it, so
+    /// the gutter one side of it keeps cannot move a viewport across it: the widths either side
+    /// of the boundary are among those laid out. Layout is outside what the page harness can
+    /// run, so this lays the page out by its own stylesheet at each viewport width from 320px
+    /// to 1600px.
+    #[test]
+    fn where_a_pane_sits_does_not_depend_on_whether_the_page_overflows() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        for tall in [640, 900] {
+            let tall = f64::from(tall);
+            for wide in 320..=1600 {
+                let wide = f64::from(wide);
+                for (shown, rail, card) in PANE_STATES {
+                    let [fits, overflows] = [false, true].map(|overflows| {
+                        let layout = style.layout_at(rail, card, [wide, tall], overflows);
+                        let sits = (
+                            layout.pane("kgrail", "right"),
+                            layout.pane("kgcard", "left"),
+                        );
+                        let scrolls = layout.viewport_overflow() != "hidden";
+                        (layout.body, sits, scrolls, layout.scrollbar(overflows))
+                    });
+                    assert_eq!(
+                        fits, overflows,
+                        "with {shown} shown in a {wide}x{tall} viewport the explorer body's width \
+                         and where its panes sit are the same whether the page fits the viewport \
+                         or overflows it"
+                    );
+                    let (.., scrolls, scrollbar) = fits;
+                    assert!(
+                        scrolls || scrollbar == 0.0,
+                        "with {shown} shown in a {wide}x{tall} viewport the page never scrolls, so \
+                         it keeps no gutter: it reads {} of the viewport's {wide}px",
+                        wide - scrollbar
+                    );
+                    assert!(
+                        wide != 1400.0 || (!scrolls && wide - scrollbar == 1400.0),
+                        "with {shown} shown in a 1400x{tall} viewport the wide layout never \
+                         scrolls and the page reads all 1400px, not {}",
+                        wide - scrollbar
                     );
                 }
             }
