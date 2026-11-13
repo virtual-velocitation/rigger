@@ -2182,6 +2182,7 @@ mod tests {
     use crate::test_support::read_text;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
+    use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
         ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
@@ -3070,15 +3071,6 @@ mod tests {
         );
     }
 
-    /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-    const ROLE_SEED_FILES: [&str; 5] = [
-        "adjudicator.md",
-        "adversary.md",
-        "architecture-reviewer.md",
-        "planner.md",
-        "sdet.md",
-    ];
-
     /// `init_project` over `sets` on a fresh project holding the root file `marker`, if any,
     /// writes the role seeds and `<id>.md` holding `persona` byte for byte and nothing else under
     /// `.rigger/agents`, reports exactly those as new, and writes a workflow whose implement and
@@ -3095,9 +3087,7 @@ mod tests {
             std::fs::write(root.join(marker), "").unwrap();
         }
         let report = init_project(root, sets).expect("init must scaffold");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push(format!("{id}.md"));
-        want.sort();
+        let want = agents_beside(&format!("{id}.md"));
         assert_eq!(
             sorted_dir_names(&root.join(RIGGER_DIR).join("agents")),
             want,
@@ -3117,10 +3107,7 @@ mod tests {
         );
         let cfg = config_store::load(root.to_str().unwrap()).expect("the scaffold loads");
         assert_eq!(
-            [
-                cfg.workflow.stages["implement"].agent.as_str(),
-                cfg.workflow.stages["checkin"].agent.as_str()
-            ],
+            stage_agents(&cfg),
             [id, id],
             "the implement and checkin stages run the implementer"
         );
@@ -3192,10 +3179,11 @@ mod tests {
         let mut reported = report.new_agents.clone();
         reported.sort();
         assert_eq!(reported, ROLE_SEED_FILES, "the agents reported new");
-        let mut want: Vec<String> = ROLE_SEED_FILES.map(String::from).to_vec();
-        want.push("rust-engineer.md".to_string());
-        want.sort();
-        assert_eq!(sorted_dir_names(&agents), want, "the agents on disk");
+        assert_eq!(
+            sorted_dir_names(&agents),
+            agents_beside("rust-engineer.md"),
+            "the agents on disk"
+        );
     }
 
     rigger::test_cases! {
