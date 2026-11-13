@@ -26,7 +26,8 @@ use crate::canary::{
 #[cfg(test)]
 use crate::canary::{is_batch_marker, latest_run};
 use crate::conductor::{
-    review_protocol, verdict_approves, AgentDriver, AgentResult, Error, SpawnHost, SpawnOpts,
+    review_protocol, reviewer_carries_build_cache, verdict_approves, AgentDriver, AgentResult,
+    Error, SpawnHost, SpawnOpts,
 };
 use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel, ReviewStep};
 use crate::contextgraph::query::referenced_id;
@@ -536,8 +537,9 @@ fn score_item(
 /// Run one agent of a lens or adversary step against a canary item under its step's `role`
 /// token and collect the findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
-/// token - without the build cache sentence, since a canary spawn's environment carries no
-/// build cache ([`canary_opts`]); the emit callback captures every `ReviewFinding` it emits (the cli driver
+/// token - its build cache flag read through the live loop's [`reviewer_carries_build_cache`]
+/// from the [`canary_opts`] dir, which owns no worktree, so the protocol carries no build cache
+/// sentence; the emit callback captures every `ReviewFinding` it emits (the cli driver
 /// bridges a subprocess reviewer's stdout findings through the same callback). The second
 /// element of the returned pair is the spawn's ACTUALLY-resolved model id (MODEL PINNING
 /// criterion), sourced from `AgentResult::resolved_model`.
@@ -550,12 +552,12 @@ fn run_review_tier(
     role: &str,
 ) -> Result<(Vec<Finding>, String), Error> {
     let agent = agent_of(cfg, agent_id, role)?;
+    let opts = canary_opts(item, role, agent, &cfg.instructions, host);
     let prompt = format!(
         "{}\n\n{}",
         review_header(item),
-        review_protocol(role, false)
+        review_protocol(role, reviewer_carries_build_cache(&opts.dir))
     );
-    let opts = canary_opts(item, role, agent, &cfg.instructions, host);
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
 }
@@ -2574,12 +2576,11 @@ mod tests {
     #[test]
     fn the_canary_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface::prompt_groups;
-        use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-        let header =
-            |names: &[&str]| rendered_groups(prompt_groups(), "canary_store::review_header", names);
-        let adjudicator = |names: &[&str]| {
-            rendered_groups(prompt_groups(), "canary_store::adjudicator_prompt", names)
-        };
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(prompt_groups());
+        let header = |names: &[&str]| picks.rendered("canary_store::review_header", names);
+        let adjudicator =
+            |names: &[&str]| picks.rendered("canary_store::adjudicator_prompt", names);
         let anchored = CanaryItem {
             anchor: "{file}".into(),
             review: "{review}".into(),
@@ -2590,7 +2591,7 @@ mod tests {
             ..anchored.clone()
         };
         // The anchorless header as the surface `pick` reads its groups from.
-        let unanchored_header = |pick: fn(&[&str]) -> String| {
+        let unanchored_header = |pick: &dyn Fn(&[&str]) -> String| {
             fill(
                 &pick(&["CANARY_REVIEW_HEADER"]),
                 &[("file", &pick(&["CANARY_NO_ANCHOR"]))],
@@ -2613,14 +2614,14 @@ mod tests {
             (
                 "the review header of an anchorless item",
                 review_header(&anchorless),
-                unanchored_header(header),
+                unanchored_header(&header),
             ),
             (
                 "the adjudicator prompt of an anchorless item and no finding",
                 adjudicator_prompt(&anchorless, &[]),
                 format!(
                     "{}{}",
-                    unanchored_header(adjudicator),
+                    unanchored_header(&adjudicator),
                     adjudicator(&[
                         "CANARY_FINDINGS_LEAD",
                         "CANARY_NO_FINDINGS",

@@ -436,16 +436,15 @@ mod tests {
     use super::*;
     use crate::agent::HelperCopy;
     use crate::prompt_surface::prompt_groups;
-    use crate::prompt_surface_fixtures::{assert_renders, rendered_groups};
-    use crate::test_support::{operator_helpers_agents_json, test_spawn_host};
+    use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+    use crate::test_support::{operator_helpers_agents_json, progress_frame, test_spawn_host};
     use rigger_domain::prompt_surface::fill;
 
     /// The progress frame's groups, `PROGRESS_FRAME` then `PROGRESS_LINE`, with `report` filled
     /// into the line's `{report}` slot: a process host's `framed` render over the placeholder
     /// fixture, given that host's report verb.
     pub(super) fn framed_groups(report: &str) -> String {
-        let groups = rendered_groups(
-            prompt_groups(),
+        let groups = GroupPicks::new(prompt_groups()).rendered(
             "driver::progress_framed",
             &["PROGRESS_FRAME", "PROGRESS_LINE"],
         );
@@ -460,6 +459,17 @@ mod tests {
             "the progress frame",
             &progress_framed("{task}", "{report}"),
             &framed_groups("{report}"),
+        );
+    }
+
+    /// `progress_framed` fills the task and the report verb in two passes, so a `{report}` the
+    /// task itself carries (a spec quoting a slot) stays verbatim while the line's own slot takes
+    /// the verb.
+    #[test]
+    fn a_task_carrying_a_report_slot_keeps_it_verbatim() {
+        assert_eq!(
+            progress_framed("a {report} b", "R"),
+            format!("a {{report}} b{}", progress_frame("R"))
         );
     }
 

@@ -7,7 +7,10 @@
 # `system-prompt-path`) - so a test can read back that a
 # prompt larger than the kernel's per-argument limit arrived intact. Each launch also goes on
 # record under `launches` there (`launch-args.sh`'s `record_launch`), so a test reads back what
-# every spawn of a run was started with, the spawns of a panel included. Both hosts drive it: under
+# every spawn of a run was started with, the spawns of a panel included. When the capture
+# directory holds a `writes` directory, each launch then copies that tree into its own working
+# directory, so a test stages a file that lands in the checkout as the first spawn runs. Both
+# hosts drive it: under
 # `--input-format` (the headless host, which keeps stdin open until a `result`) it takes the
 # first user message and answers in stream-json; otherwise (the cli host, `rigger canary`) it
 # takes stdin to its end and prints its answer. Checked in, never written at test time, for the
@@ -16,6 +19,9 @@
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
 record_launch "$PROMPT_CAPTURE_DIR/launches" "$@"
+if [ -d "$PROMPT_CAPTURE_DIR/writes" ]; then
+    cp -R "$PROMPT_CAPTURE_DIR/writes/." .
+fi
 sid=$(launched_session capture "$@")
 sp=$(system_prompt_file "$@")
 stream=0

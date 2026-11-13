@@ -311,7 +311,7 @@ impl Config {
         // structurally sound depth policy (a configured light tier names an adjudicator step).
         // The declared test author (`defaults.test_author`, spec 121) must name a real agent too
         // when set: the build seam spawns exactly the agent it names, so an id no agent defines
-        // is refused here rather than silently spawning no test author.
+        // is refused here, before any run reaches the seam.
         wf.defaults
             .review
             .validate_steps()
@@ -322,9 +322,10 @@ impl Config {
             .agent_ids()
             .into_iter()
             .map(|aid| ("review", aid));
-        let author = Some(&wf.defaults.test_author)
-            .filter(|aid| !aid.is_empty())
-            .map(|aid| ("test_author", aid.clone()));
+        let author = wf
+            .defaults
+            .declared_test_author()
+            .map(|aid| ("test_author", aid.to_string()));
         for (key, aid) in review.chain(author) {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
@@ -1520,7 +1521,7 @@ mod tests {
         // `.rigger/agents/sdet-author.md` with Edit/Write tools + `isolation: worktree`,
         // DISTINCT from the read-only `sdet` review lens (which has neither Edit nor Write).
         // Proven over the REAL committed files (read from the crate manifest dir), so this
-        // asserts the artifact the loop actually spawns, not a fixture.
+        // asserts the agent a workflow declaring `test_author: sdet-author` spawns, not a fixture.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let author = parse_agent(
             &std::fs::read(root.join(".rigger/agents/sdet-author.md"))
@@ -2274,47 +2275,27 @@ agent: worker\n";
         );
     }
 
-    /// `defaults.grep_guard` reads as written, and a workflow that does not write it declares
-    /// no guard.
+    /// `defaults.grep_guard` and `defaults.max_unit_added_lines` each read as written, and a
+    /// workflow that does not write one declares no guard or no unit size cap, the same 0 a
+    /// declared 0 cap reads as; a row writing one key leaves the other at its absent value.
     #[test]
-    fn grep_guard_parses_and_is_off_when_absent() {
+    fn the_guard_and_cap_defaults_parse_and_are_off_when_absent() {
         let rows = [
-            ("defaults:\n  grep_guard: true\n", true),
-            ("defaults:\n  grep_guard: false\n", false),
-            ("defaults:\n  budget: 10\n", false),
+            ("defaults:\n  grep_guard: true\n", (true, 0)),
+            ("defaults:\n  grep_guard: false\n", (false, 0)),
+            ("defaults:\n  max_unit_added_lines: 3000\n", (false, 3000)),
+            ("defaults:\n  max_unit_added_lines: 1\n", (false, 1)),
+            ("defaults:\n  max_unit_added_lines: 0\n", (false, 0)),
+            ("defaults:\n  budget: 10\n", (false, 0)),
         ];
-        let parsed: Vec<bool> = rows
+        let parsed: Vec<(bool, u32)> = rows
             .iter()
             .map(|(yaml, _)| {
-                serde_yaml::from_str::<Workflow>(yaml)
-                    .unwrap()
-                    .defaults
-                    .grep_guard
+                let defaults = serde_yaml::from_str::<Workflow>(yaml).unwrap().defaults;
+                (defaults.grep_guard, defaults.max_unit_added_lines)
             })
             .collect();
-        assert_eq!(parsed, rows.map(|(_, grep_guard)| grep_guard));
-    }
-
-    /// `defaults.max_unit_added_lines` reads as written, and a workflow that does not write it
-    /// declares no unit size cap, the same 0 a declared 0 reads as.
-    #[test]
-    fn max_unit_added_lines_parses_and_is_no_cap_when_absent() {
-        let rows = [
-            ("defaults:\n  max_unit_added_lines: 3000\n", 3000),
-            ("defaults:\n  max_unit_added_lines: 1\n", 1),
-            ("defaults:\n  max_unit_added_lines: 0\n", 0),
-            ("defaults:\n  budget: 10\n", 0),
-        ];
-        let parsed: Vec<u32> = rows
-            .iter()
-            .map(|(yaml, _)| {
-                serde_yaml::from_str::<Workflow>(yaml)
-                    .unwrap()
-                    .defaults
-                    .max_unit_added_lines
-            })
-            .collect();
-        assert_eq!(parsed, rows.map(|(_, cap)| cap));
+        assert_eq!(parsed, rows.map(|(_, declared)| declared));
     }
 
     /// Spec 121's THE TEST AUTHOR IS DECLARED, at load: `defaults.test_author` reads as written and

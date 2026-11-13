@@ -126,7 +126,10 @@ pub fn prompt_groups() -> &'static [Group] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prompt_surface_fixtures::registry_test;
+    use crate::prompt_surface_fixtures::{
+        assert_groups_name_the_consts, const_classes, registry_test, GroupPicks,
+    };
+    use crate::test_support::failure_message;
 
     /// THE CLASS TABLE's domain rows: each const and the class its doc comment opens with.
     const CLASS_TABLE: &[(&str, &str)] = &[
@@ -141,6 +144,140 @@ mod tests {
         every_domain_prompt_text_is_a_group_of_its_class_table_class,
         CLASS_TABLE
     );
+
+    /// The registry oracle refuses a `pub const` whose doc comment does not open with a class
+    /// word and its colon, naming the const and the doc's first line: a const with no doc, a
+    /// wrong word, a class word no colon follows, and a doc a blank line parts from its const.
+    #[test]
+    fn the_registry_oracle_refuses_a_const_whose_doc_opens_with_no_class_word() {
+        // (the case, the module source, the refusal)
+        let cases = [
+            (
+                "no doc",
+                "pub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"\"",
+            ),
+            (
+                "a wrong word",
+                "/// NOTE: a\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"NOTE: a\"",
+            ),
+            (
+                "a class word no colon follows",
+                "/// CONTRACTS: a\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"CONTRACTS: a\"",
+            ),
+            (
+                "a doc a blank line parts from its const",
+                "/// FRAMING: a\n\npub const A: &str = \"a\";\n",
+                "pub const A's doc opens with CONTRACT: or FRAMING:, not \"\"",
+            ),
+        ];
+        for (case, source, refusal) in cases {
+            assert_eq!(failure_message(|| const_classes(source)), refusal, "{case}");
+        }
+    }
+
+    /// An attribute line between a doc comment and its const keeps the doc, where a blank line
+    /// parts them.
+    #[test]
+    fn the_registry_oracle_reads_a_doc_across_an_attribute_line() {
+        assert_eq!(
+            const_classes("/// FRAMING: a\n#[doc(hidden)]\npub const A: &str = \"a\";\n"),
+            [("A".to_string(), "FRAMING".to_string())]
+        );
+    }
+
+    /// The registry oracle refuses groups that list one (surface, name) pair twice and names the
+    /// pair, while one const under two surfaces is two groups and passes.
+    #[test]
+    fn the_registry_oracle_refuses_a_surface_that_lists_a_const_twice() {
+        let source = "/// FRAMING: a\npub const A: &str = \"a\";\n";
+        let group = |surface| Group {
+            surface,
+            name: "A",
+            text: "a",
+        };
+        assert_groups_name_the_consts(source, &[group("s"), group("t")]);
+        assert_eq!(
+            failure_message(|| assert_groups_name_the_consts(source, &[group("s"), group("s")])),
+            "assertion `left == right` failed: no two groups share a surface and a name\n  \
+             left: [(\"s\", \"A\")]\n right: []"
+        );
+    }
+
+    /// One per-surface guard case: its name, each pick as its surface and names, and the
+    /// refusal, when the guard refuses.
+    type PicksCase<'a> = (&'a str, &'a [(&'a str, &'a [&'a str])], Option<&'a str>);
+
+    /// A concatenation test's picks end checked: every group a surface it picked from lists was
+    /// picked under that surface, else the test fails naming each unpicked (surface, name) pair
+    /// in registry order, while a surface it never picked from is outside the check and a test
+    /// already failing keeps its own message.
+    #[test]
+    fn group_picks_refuse_a_picked_surface_with_a_group_no_case_picks() {
+        let group = |surface, name| Group {
+            surface,
+            name,
+            text: name,
+        };
+        let groups = [
+            group("s", "A"),
+            group("s", "B"),
+            group("s", "C"),
+            group("t", "A"),
+            group("t", "D"),
+        ];
+        let refusal = |unpicked: &str| {
+            format!(
+                "assertion `left == right` failed: each group a surface lists is picked by a \
+                 case of that surface\n  left: [{unpicked}]\n right: []"
+            )
+        };
+        let one = refusal("(\"s\", \"B\")");
+        let two = refusal("(\"s\", \"A\"), (\"s\", \"C\")");
+        let other = refusal("(\"s\", \"A\")");
+        let misspelt = "assertion `left == right` failed: \"t\" holds each group the branch \
+                        renders\n  left: []\n right: [\"X\"]";
+        let cases: &[PicksCase] = &[
+            ("no pick", &[], None),
+            (
+                "each group of each surface, over several picks",
+                &[("s", &["A", "B"]), ("s", &["C"]), ("t", &["D", "A"])],
+                None,
+            ),
+            ("a surface no case picks", &[("s", &["A", "B", "C"])], None),
+            (
+                "a group picked twice",
+                &[("s", &["A", "B", "C"]), ("s", &["A"])],
+                None,
+            ),
+            ("a group no case picks", &[("s", &["A", "C"])], Some(&one)),
+            ("two groups no case picks", &[("s", &["B"])], Some(&two)),
+            (
+                "a group picked only under another surface",
+                &[("t", &["A", "D"]), ("s", &["B", "C"])],
+                Some(&other),
+            ),
+            (
+                "a failing pick after a pick that leaves a group, failing with its own message",
+                &[("s", &["A"]), ("t", &["X"])],
+                Some(misspelt),
+            ),
+        ];
+        for (case, picks, refused) in cases {
+            let run = || {
+                let recorder = GroupPicks::new(&groups);
+                for (surface, names) in *picks {
+                    recorder.rendered(surface, names);
+                }
+            };
+            match refused {
+                None => run(),
+                Some(refused) => assert_eq!(failure_message(run), *refused, "{case}"),
+            }
+        }
+    }
 
     /// One `fill` case: its name, the template, the slots passed and the filled text.
     type FillCase<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], &'a str);

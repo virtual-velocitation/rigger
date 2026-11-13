@@ -29,6 +29,11 @@ pub const PLANNING_POLICY: [&str; 6] = [
     "Only omit the id when you truly intend a new sub-unit.",
 ];
 
+/// How many times `text` states each sentence of the [`PLANNING_POLICY`], in its order.
+pub fn policy_counts(text: &str) -> [usize; 6] {
+    PLANNING_POLICY.map(|sentence| text.matches(sentence).count())
+}
+
 /// The plan protocol that closes a planner's task, as the planner is served it: the framing and
 /// contract sentences, `cap`'s [`unit_size_cap_then`] a space in its slot, `implementer` as the
 /// agent of the `UnitProposed` shape and `criteria` as the criteria block, with none of the

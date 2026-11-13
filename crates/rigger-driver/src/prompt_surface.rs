@@ -3,7 +3,8 @@
 //! (`driver::progress_framed`), each host's report verb filling its `{report}` slot, and the note
 //! the headless host opens a resumed session with (`interruption_note`), whose `{why}` slot takes
 //! one of three clauses. The registry types and `fill` are `rigger_domain::prompt_surface`'s. The
-//! module is pure consts and compiles in every lane.
+//! module holds the consts and their registry, [`prompt_groups`], both pure, so it compiles in
+//! every lane.
 
 /// FRAMING: the separator that closes the spawn's task, `{task}`, ahead of the progress line.
 pub const PROGRESS_FRAME: &str = "{task}\n\n--- rigger driver ---\n";

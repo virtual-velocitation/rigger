@@ -22,6 +22,21 @@ defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: symbols         # symbols | grep | nop
 
+  # The grep guard: every spawn's settings, and `rigger setup` in the operator's checkout, carry
+  # the PreToolUse hook that denies a grep not marked literal, so an agent asks the graph lookup
+  # first and a literal search is a deliberate, reported fallback.
+  grep_guard: true
+
+  # The unit size cap: the planner's protocol and every DAG critique round state that a unit
+  # expected to add more than this many lines is too large, so each unit stays one reviewable
+  # change.
+  max_unit_added_lines: 3000
+
+  # The agent that writes each unit's periphery tests at the build seam, after its implementer
+  # is green and before the gates (.rigger/agents/sdet-author.md). Absent, no test author runs
+  # and a unit's tests are only those its implementer wrote.
+  test_author: sdet-author
+
   # The spawn-budget circuit-breaker (§4.4, §8): the hard cap on agent spawns a
   # single unattended run may make. When spawns reach it the breaker records
   # BudgetExhausted and aborts the run, so a runaway loop (e.g. a unit a reviewer
@@ -117,9 +132,14 @@ gates:                      # the project's verification library, referenced by 
   # fmt, clippy and build cover every workspace crate, never the root package alone: a bare
   # `cargo clippy` or `cargo build` here reaches only the root package, so no crate's own code
   # would be linted or built under any unit (a bare `cargo fmt --check` already walked every
-  # member; `--all` says so). Clippy runs one lane, the default features, as it always has.
+  # member; `--all` says so). `clippy` lints the default features; `clippy-no-default` lints the
+  # same targets without them, the no-default lane's own lint command (.rigger/gates/lanes.sh), so
+  # a change that stops that lane compiling fails at its unit (the lane gates below say why).
   fmt:    { run: "cargo fmt --all --check",                              kind: core }
   clippy: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: core }
+  clippy-no-default:
+    run: "cargo clippy --workspace --all-targets --no-default-features -- -D warnings"
+    kind: core
   build:  { run: "cargo build --workspace",                              kind: core }
   # The test gate runs every workspace crate's tests, with the container runtime snippet
   # (.rigger/gates/container-env.sh) sourced first so the container-backed tests run instead of
@@ -131,11 +151,14 @@ gates:                      # the project's verification library, referenced by 
   # The lane gates: the no-default and core feature lanes, each through the one script CI runs
   # (.rigger/gates/lanes.sh), so a check-in never lands a tree CI then fails on a lane the gates
   # above never built. The script derives the core lane's members from the workspace and fails a
-  # test step that ran no test. Both lanes gate every implement round: they are the lanes a
-  # reviewer would otherwise rebuild by hand, and an instrument proves them once per tree instead,
-  # so a break in either lane surfaces at the unit that made it. The check-in gates both again on
-  # the merged tree. Each sources the container runtime snippet first, as `test` does, so container-backed tests run,
-  # not skip.
+  # test step that ran no test. Every implement round gates the core lane in full and the
+  # no-default lane's lint (`clippy-no-default` above), so a change that breaks either lane's
+  # build surfaces at the unit that made it. The no-default lane's tests run once, at the
+  # check-in, on the merged tree: they are the default lane's suite again under fewer features,
+  # so a unit whose no-default lint is green rarely fails them, and the check-in still stops that
+  # failure before the spec lands, for one suite run a spec instead of one per unit battery. These
+  # gates are where each lane is proven, so no reviewer runs a lane by hand. Each sources the
+  # container runtime snippet first, as `test` does, so container-backed tests run, not skip.
   lane-no-default:
     run: ". .rigger/gates/container-env.sh || exit 1; sh .rigger/gates/lanes.sh no-default"
     kind: core
@@ -191,6 +214,11 @@ gates:                      # the project's verification library, referenced by 
   # names an executable not on PATH. This gate declares no `requires` while it stays unwired;
   # #32 adds `requires: [cargo-mutants, cargo-nextest]` when it re-wires it.
   mutation: { run: "sh .rigger/gates/mutation.sh", kind: core }
+  # The self-evaluation gate: the format check over the newest run file under docs/evaluation/.
+  # The logic, and the why of every rule, live in `.rigger/gates/evaluate.sh`; the procedure is
+  # docs/evaluation/README.md. It is declared and wired to no stage: the operator runs the
+  # evaluation after a landing and before the next run, so it can never block or undo a landing.
+  evaluate: { run: "sh .rigger/gates/evaluate.sh check", kind: core }
 
 stages:
   # 1. Refine the spec's decomposition. The conductor itself creates one baseline
@@ -228,7 +256,8 @@ stages:
   #    unit, each in an isolated worktree, partitioned by blast-radius so the waves
   #    stay disjoint. Each unit's complete lifecycle runs inside this one stage:
   #    red -> green is enforced around the change, the full gate set
-  #    (fmt + clippy + build + test + the no-default and core lanes + style) must pass, THEN
+  #    (fmt + clippy with and without the default features + build + test + the core lane +
+  #    style) must pass, THEN
   #    the unit reviews ITSELF through `defaults.review`'s three tiers, and only on adjudicator-approve + green gates
   #    does it integrate (on_pass: merge). A reject or a gate failure feeds back into
   #    this same unit's remediation loop (re-ground, re-implement with the feedback)
@@ -239,7 +268,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, lane-no-default, lane-core, style, no-os-kill, boundary,
+    gates: [fmt, clippy, clippy-no-default, build, test, lane-core, style, no-os-kill, boundary,
              red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"

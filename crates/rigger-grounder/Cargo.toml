@@ -68,7 +68,7 @@ fst = { version = "0.4", features = ["levenshtein"] }
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-tantivy = { version = "0.24", default-features = false }
+tantivy = { version = "0.27", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
