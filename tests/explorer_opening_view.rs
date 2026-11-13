@@ -11,6 +11,12 @@
 //! its panel leaves below the toolbar that view shows, however many lines that toolbar wraps to on a
 //! narrow screen, so the panel's content never runs past its own height.
 //!
+//! And when the panel's size changes after a view is drawn (a window resize, or the instances strip
+//! above it growing after the first draw), the view redraws at the new size with no new request:
+//! re-fitted by the opening rule when the user has not panned or zoomed it, and when they have,
+//! keeping its transform and its marks while only its drawing surface takes the new size. One size
+//! observer drives it, redrawing at most once a frame and only when the measured size changed.
+//!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
 //! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
 //! browser lays them out at each viewport width) and records the transform the page applies to
@@ -27,12 +33,21 @@ use crate::vm_harness;
 use vm_harness::vm_harness;
 
 /// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
-/// `__geom` holds, and each markup it is given gets a fresh `svg` (recording its wheel listener, its
-/// slot boxed below that markup's toolbar) and a fresh `#kgzoom` (recording its transform), as a
-/// browser replaces them; every other element is a bare stand-in. Free of backticks and `${` so it
-/// embeds in the harness's `String.raw` template.
+/// `__geom` holds, and each markup it is given gets a fresh `svg` (its height and viewBox read from
+/// that markup and kept as attributes the page may set again, its listeners recorded, its slot boxed
+/// below that markup's toolbar as tall as its height) and a fresh `#kgzoom` (recording its
+/// transform), as a browser replaces them; every other element is a bare stand-in. `window` records its listeners, a
+/// size observer is recorded with what it watches for the driver to notify, and an animation frame
+/// waits in `__frames` until the driver runs it. Free of backticks and `${` so it embeds in the
+/// harness's `String.raw` template.
 const PANEL_SHIM: &str = r##"
 const __els = {};
+const __observers = [];
+function ResizeObserver(cb){ this._cb = cb; this._targets = []; __observers.push(this); }
+ResizeObserver.prototype.observe = function(t){ this._targets.push(t); };
+const __frames = [];
+const requestAnimationFrame = function(f){ __frames.push(f); return __frames.length; };
+const __winListeners = {};
 const __geom = { width: 800, height: 300, padTop: 10, padBottom: 10,
   toolbar: { overview: 24, reproject: 24, drill: 24, calls: 24 } };
 const __classList = { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){ return false; } };
@@ -57,10 +72,13 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   const html = String(v);
   this._html = html;
   this._zoom = new __Stub();
-  this._svg = new __Stub();
-  const high = html.match(/<svg class="kgsvg"[^>]* height="([^"]*)"/);
-  this._svg.getBoundingClientRect = function(){
-    return { left: 12, top: __slotTop(html), width: __geom.width - 24, height: high ? Number(high[1]) : 0 };
+  const svg = this._svg = new __Stub();
+  const tag = html.match(/<svg class="kgsvg"[^>]*>/);
+  const high = tag && tag[0].match(/ height="([^"]*)"/), box = tag && tag[0].match(/ viewBox="([^"]*)"/);
+  if (high) svg.setAttribute("height", high[1]);
+  if (box) svg.setAttribute("viewBox", box[1]);
+  svg.getBoundingClientRect = function(){
+    return { left: 12, top: __slotTop(html), width: __geom.width - 24, height: Number(svg.getAttribute("height") || 0) };
   };
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
@@ -74,7 +92,7 @@ __El.prototype.querySelector = function(sel){
 };
 __El.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
-const window = { addEventListener: function(){} };
+const window = { addEventListener: function(t, f){ (__winListeners[t] = __winListeners[t] || []).push(f); } };
 const setTimeout = function(){ return 0; };
 const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", paddingBottom: __geom.padBottom + "px" }; };
 "##;
@@ -83,8 +101,9 @@ const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", 
 /// file clusters in 32 directories (one at the repo root), the code lens's 200 communities, the
 /// concepts lens's 98 concepts - a subject's re-projection under each lens (40 files, a single
 /// community, 12 concepts), a drilled cluster's 12 members and a 4-layer call walk; a card or
-/// rationale read finds nothing.
+/// rationale read finds nothing. `__fetches` counts every request the page makes.
 const OVERVIEWS_FETCH: &str = r##"
+let __fetches = 0;
 function __chain(keys, step){
   const edges = [];
   keys.forEach(function(k, i){
@@ -146,27 +165,68 @@ function __graph(url){
   return __OVERVIEWS[lens];
 }
 const fetch = function(url){
+  __fetches++;
   if (String(url).indexOf("/api/graph") === -1) return Promise.reject(new Error("no network for " + url));
   return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__graph(url)); } });
 };
 "##;
 
-/// What both drivers read back from the page: settling its fetches, and the drawing the panel holds,
-/// refusing a message in its place and a drawing box that is not a finite, positive size.
+/// What every driver reads back from the page and does to it: settling its fetches; the drawing the
+/// panel holds, refusing a message in its place and a drawing box that is not a finite, positive
+/// size; the transform on that drawing and a wheel notch over it; and the drawing filling the room
+/// the panel leaves below its toolbar.
 const PAGE_READERS: &str = r##"
 // Let every pending promise the page chained settle (its fetches resolve on the microtask queue).
 function __flush(){ return (async function(){ for (let k = 0; k < 80; k++) await Promise.resolve(); })(); }
-// The drawing the panel holds: its viewBox size and its svg's height attribute, refusing a panel that
-// holds no drawing (a message such as "unavailable" in its place) and a viewBox that is not a finite,
-// positive size.
+// The drawing the panel holds: its markup, and its svg's viewBox size and height as the svg carries
+// them now, refusing a panel that holds no drawing (a message such as "unavailable" in its place) and
+// a viewBox that is not a finite, positive size.
 function __svgBox(what){
-  const html = el("kgpanel")._html;
-  const svg = html.match(/<svg class="kgsvg"[^>]* height="([^"]*)" viewBox="0 0 ([^ "]+) ([^ "]+)"/);
-  if (!svg) throw new Error(what + " drew no graph: " + html.slice(0, 300));
-  const height = Number(svg[1]), W = Number(svg[2]), H = Number(svg[3]);
+  const panel = el("kgpanel"), html = panel._html;
+  if (html.indexOf('<svg class="kgsvg"') === -1) throw new Error(what + " drew no graph: " + html.slice(0, 300));
+  const svg = panel._svg, high = svg.getAttribute("height"), box = svg.getAttribute("viewBox");
+  const vb = box && box.match(/^0 0 (\S+) (\S+)$/);
+  const height = Number(high), W = vb ? Number(vb[1]) : NaN, H = vb ? Number(vb[2]) : NaN;
   if (!(isFinite(W) && isFinite(H) && W > 0 && H > 0 && height === H))
-    throw new Error(what + " drew a degenerate drawing box " + svg[0]);
+    throw new Error(what + " drew a degenerate drawing box, height " + high + " and viewBox " + box);
   return { html: html, W: W, H: H, height: height };
+}
+// The marks the drawing holds: the markup of its #kgzoom group.
+function __marks(){
+  const html = el("kgpanel")._html, at = html.indexOf('<g id="kgzoom">');
+  return at === -1 ? "" : html.slice(at, html.lastIndexOf("</svg>"));
+}
+// The transform the page applied to the drawing's #kgzoom group.
+function __view(what){
+  const t = el("kgpanel")._zoom.getAttribute("transform");
+  const m = t && t.match(/^translate\(([^,]+),([^)]+)\) scale\(([^)]+)\)$/);
+  if (!m) throw new Error(what + " applied no opening transform: " + t);
+  return { x: Number(m[1]), y: Number(m[2]), k: Number(m[3]) };
+}
+// One wheel notch over the middle of the drawing (a negative deltaY zooms in); answers the scale.
+function __wheel(deltaY){
+  const svg = el("kgpanel")._svg, r = svg.getBoundingClientRect(), on = svg._listeners.wheel || [];
+  if (on.length !== 1) throw new Error("the drawn graph must carry one wheel listener, not " + on.length);
+  on[0]({ deltaY: deltaY, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, preventDefault: function(){} });
+  return __view("the wheel").k;
+}
+// The drawing of the mode view fills the room the panel leaves below the toolbar it is drawn under,
+// and never runs past it: the content (padding, toolbar, drawing, padding) stays inside the panel.
+// Below 200px of room the drawing keeps its 200px floor and the panel scrolls. Answers the drawing.
+function __fillsItsRoom(at, what, mode){
+  if (kgMode !== mode) throw new Error(at + "the " + what + " must draw, not leave kgMode " + kgMode);
+  const d = __svgBox(at + "the " + what);
+  const ch = __geom.height, bar = __geom.toolbar[mode];
+  const room = ch - __geom.padTop - bar - __geom.padBottom;
+  const content = __geom.padTop + bar + d.height + __geom.padBottom;
+  if (room >= 200 && !(d.height <= room && d.height > room - 1))
+    throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall below its " + bar
+      + "px toolbar where the panel leaves " + room + "px, so its " + content + "px of content "
+      + (content > ch ? "runs " + (content - ch) + "px past" : "falls " + (ch - content) + "px short of") + " the " + ch + "px panel");
+  if (room < 200 && d.height !== 200)
+    throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall where the panel leaves "
+      + room + "px, below the drawing's 200px floor, which it must keep");
+  return d;
 }
 "##;
 
@@ -204,17 +264,11 @@ const OPENING_DRIVER: &str = r##"
     }
     return { W: W, H: H, boxes: boxes, nodes: nodes, hulls: hulls };
   }
-  function view(what){
-    const t = el("kgpanel")._zoom.getAttribute("transform");
-    const m = t && t.match(/^translate\(([^,]+),([^)]+)\) scale\(([^)]+)\)$/);
-    if (!m) throw new Error(what + " applied no opening transform: " + t);
-    return { x: Number(m[1]), y: Number(m[2]), k: Number(m[3]) };
-  }
   function opensFitted(what, body, hulls){
     const d = drawn(what);
     if (d.nodes !== body.clusters.length || d.hulls !== hulls)
       throw new Error(what + " drew " + d.nodes + " clusters and " + d.hulls + " hulls, not " + body.clusters.length + " and " + hulls);
-    const t = view(what);
+    const t = __view(what);
     if (!(t.k > 0 && t.k <= 1)) throw new Error("REGRESSION: " + what + " opens at scale " + t.k + ", never past 1");
     const out = d.boxes.filter(function(o){ const b = o.b;
       return b.x0 * t.k + t.x < -TOL || b.x1 * t.k + t.x > d.W + TOL || b.y0 * t.k + t.y < -TOL || b.y1 * t.k + t.y > d.H + TOL; });
@@ -227,12 +281,6 @@ const OPENING_DRIVER: &str = r##"
     const handle = { dataset: { lens: lens } };
     const target = { closest: function(sel){ return sel === "[data-lens]" ? handle : null; } };
     (el("kgpanel")._listeners.click || []).forEach(function(fn){ fn({ target: target, preventDefault: function(){} }); });
-  }
-  function wheel(deltaY){
-    const svg = el("kgpanel")._svg, r = svg.getBoundingClientRect(), on = svg._listeners.wheel || [];
-    if (on.length !== 1) throw new Error("the drawn graph must carry one wheel listener, not " + on.length);
-    on[0]({ deltaY: deltaY, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, preventDefault: function(){} });
-    return view("the wheel").k;
   }
   const near = function(a, b){ return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)); };
   // The panel this case draws in, set before the page's own load draws (its fetch resolves after
@@ -251,15 +299,15 @@ const OPENING_DRIVER: &str = r##"
     if (kgMode !== "overview" || kgLens !== lens) throw new Error(at + "the " + lens + " tab must open the " + lens + " overview");
     const t = opensFitted(at + "the " + lens + " overview after a lens switch", __OVERVIEWS[lens], 0);
     scales.push(lens + " " + t.k.toFixed(3));
-    const zin = wheel(-1);
+    const zin = __wheel(-1);
     if (!near(zin, t.k * 1.1)) throw new Error("REGRESSION: " + at + "zooming in on the " + lens + " overview must continue from its opening scale " + t.k + ", got " + zin);
-    const back = wheel(1);
+    const back = __wheel(1);
     if (!near(back, t.k)) throw new Error(at + "zooming back out must return to the opening scale " + t.k + ", got " + back);
-    const outer = wheel(1);
+    const outer = __wheel(1);
     if (outer > t.k + 1e-12 || outer < Math.min(0.2, t.k) - 1e-12)
       throw new Error("REGRESSION: " + at + "zooming out past the opening scale " + t.k + " must not jump, got " + outer);
   }
-  wheel(-1);
+  __wheel(-1);
   pick("files");
   await __flush();
   const again = opensFitted(at + "the files overview after a lens switch from a zoomed view", __OVERVIEWS.files, dirs(__OVERVIEWS.files));
@@ -292,47 +340,276 @@ const PANEL_HEIGHT_DRIVER: &str = r##"
   const [cw, ch, bar] = __PANEL__;
   __geom.width = cw; __geom.height = ch; __geom.toolbar = bar;
   const at = cw + "x" + ch + " " + JSON.stringify(bar) + ": ";
-  // The drawing fills the room the panel leaves below the toolbar it is drawn under, and never runs
-  // past it: the content (padding, toolbar, drawing, padding) stays inside the panel. Below 200px of
-  // room the drawing keeps its 200px floor and the panel scrolls.
-  function fillsItsRoom(what, mode){
-    if (kgMode !== mode) throw new Error(at + "the " + what + " must draw, not leave kgMode " + kgMode);
-    const d = __svgBox(at + "the " + what);
-    const room = ch - __geom.padTop - bar[mode] - __geom.padBottom;
-    const content = __geom.padTop + bar[mode] + d.height + __geom.padBottom;
-    if (room >= 200 && !(d.height <= room && d.height > room - 1))
-      throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall below its " + bar[mode]
-        + "px toolbar where the panel leaves " + room + "px, so its " + content + "px of content "
-        + (content > ch ? "runs " + (content - ch) + "px past" : "falls " + (ch - content) + "px short of") + " the " + ch + "px panel");
-    if (room < 200 && d.height !== 200)
-      throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall where the panel leaves "
-        + room + "px, below the drawing's 200px floor, which it must keep");
-  }
   await __flush();
-  fillsItsRoom("files overview on load", "overview");
+  __fillsItsRoom(at, "files overview on load", "overview");
   // Each view in turn, each drawn after one whose toolbar stood at another height.
   reprojectSubject(__SUBJECT);
   await __flush();
-  fillsItsRoom("subject's re-projection", "reproject");
+  __fillsItsRoom(at, "subject's re-projection", "reproject");
   drillCluster(__CLUSTER);
   await __flush();
-  fillsItsRoom("drilled cluster", "drill");
+  __fillsItsRoom(at, "drilled cluster", "drill");
   seedCalls(__SUBJECT, "down");
   await __flush();
-  fillsItsRoom("call walk", "calls");
+  __fillsItsRoom(at, "call walk", "calls");
   loadKgOverview();
   await __flush();
-  fillsItsRoom("files overview after the call walk", "overview");
+  __fillsItsRoom(at, "files overview after the call walk", "overview");
   console.log("OK every-drawing-fits-below-its-toolbar");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// Runs `driver` in the panel `panel` describes, and claims it ends in `ok`.
-fn drive(driver: &str, panel: &str, ok: &str, claim: &str) {
+/// What the resize drivers do to the page: size the panel, resize it (the browser notifying each
+/// observer watching it), run the animation frames the page queued, and press on the drawing; and
+/// read back the overview the panel holds at the size it now has.
+const RESIZE_READERS: &str = r##"
+// The panel at a 1400px and at an 800px viewport: [clientWidth, clientHeight, toolbar height].
+const __WIDE = [1358, 294, 24], __NARROW = [758, 414, 44];
+// The panel takes the client box and toolbar height a [clientWidth, clientHeight, toolbar] row
+// gives; __resize then notifies each observer watching the panel, as a browser does.
+function __size(p){
+  __geom.width = p[0]; __geom.height = p[1];
+  __geom.toolbar = { overview: p[2], reproject: p[2], drill: p[2], calls: p[2] };
+}
+function __notify(){
+  const panel = el("kgpanel");
+  __observers.forEach(function(o){ if (o._targets.indexOf(panel) !== -1) o._cb([{ target: panel }], o); });
+}
+function __resize(p){ __size(p); __notify(); }
+// Run the animation frames the page queued; answers how many ran.
+function __frame(){ const run = __frames.splice(0); run.forEach(function(f){ f(0); }); return run.length; }
+// Press on the drawing, move the pointer by (dx, dy) when given, and release: a drag, or a click.
+function __press(dx, dy){
+  const down = el("kgpanel")._svg._listeners.mousedown || [];
+  if (down.length !== 1) throw new Error("the drawn graph must carry one mousedown listener, not " + down.length);
+  down[0]({ clientX: 100, clientY: 100 });
+  if (dx !== undefined) (__winListeners.mousemove || []).forEach(function(f){ f({ clientX: 100 + dx, clientY: 100 + dy }); });
+  (__winListeners.mouseup || []).forEach(function(f){ f({}); });
+}
+// The overview the panel holds, drawn at the size the panel now has: filling the room below its
+// toolbar, as wide as the panel. Answers its markup and its transform.
+function __overviewAt(at, what){
+  const d = __fillsItsRoom(at, what, "overview");
+  if (d.W !== __geom.width)
+    throw new Error("REGRESSION: " + at + "the " + what + " is drawn " + d.W + " wide in a " + __geom.width + "px wide panel");
+  return { html: d.html, t: JSON.stringify(__view(at + "the " + what)) };
+}
+"##;
+
+/// Driver: at a 1400px viewport the panel is 300px tall when the overview first draws, and the
+/// instances strip above it then grows, leaving it 294px. The overview redraws to the room the
+/// 294px panel leaves, with no new request, as the drawing and opening view a fresh draw there gives.
+const FIRST_DRAW_RESIZE_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px, the strip above growing after the first draw: ";
+  __size([1358, 300, 24]);
+  await __flush();
+  __overviewAt(at, "files overview on load");
+  const fetches = __fetches;
+  __resize(__WIDE);
+  __frame();
+  const resized = __overviewAt(at, "files overview after the strip grew");
+  if (__fetches !== fetches)
+    throw new Error("REGRESSION: " + at + "the redraw must make no request, it made " + (__fetches - fetches));
+  loadKgOverview();
+  await __flush();
+  const fresh = __overviewAt(at, "files overview drawn fresh in the 294px panel");
+  if (resized.html !== fresh.html || resized.t !== fresh.t)
+    throw new Error("REGRESSION: " + at + "the untouched overview must re-fit as a fresh draw at its size does, "
+      + resized.t + " against " + fresh.t);
+  console.log("OK the-first-draw-refits-to-the-panel-the-strip-leaves");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver: an overview no one has panned or zoomed (a click on it does neither) redraws on each
+/// resize from a 1400px viewport to 800px and back, with no new request: at 800px as the drawing and
+/// opening view a fresh draw there gives, and back at 1400px as the one it first opened as.
+const UNTOUCHED_RESIZE_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px to 800px and back, untouched: ";
+  __size(__WIDE);
+  await __flush();
+  const wide = __overviewAt(at, "files overview on load");
+  const fetches = __fetches;
+  __press();
+  __resize(__NARROW);
+  __frame();
+  const narrow = __overviewAt(at, "files overview resized to 800px");
+  __resize(__WIDE);
+  __frame();
+  const back = __overviewAt(at, "files overview resized back to 1400px");
+  if (back.html !== wide.html || back.t !== wide.t)
+    throw new Error("REGRESSION: " + at + "back at 1400px the overview must be the one it opened as, " + back.t + " against " + wide.t);
+  if (__fetches !== fetches)
+    throw new Error("REGRESSION: " + at + "a resize must make no request, it made " + (__fetches - fetches));
+  __resize(__NARROW);
+  __frame();
+  loadKgOverview();
+  await __flush();
+  const fresh = __overviewAt(at, "files overview drawn fresh at 800px");
+  if (narrow.html !== fresh.html || narrow.t !== fresh.t)
+    throw new Error("REGRESSION: " + at + "at 800px the untouched overview must re-fit as a fresh draw there does, "
+      + narrow.t + " against " + fresh.t);
+  console.log("OK an-untouched-view-refits-on-every-resize");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver: an overview the user has panned keeps its transform and its marks through a resize from
+/// a 1400px viewport to 800px and back, and through a change of its width alone and of its height
+/// alone and back, with no new request: only its drawing surface takes each new size, and its labels
+/// follow the scale it is then seen at. A panned call walk does the same. A
+/// fresh view after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px
+/// keeps its zoom through a resize to 1400px, where the fitted scale is larger, and the wheel zooms on
+/// from the kept scale, in and back, never jumping above it.
+const MOVED_RESIZE_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px to 800px and back, moved: ";
+  // The scale the page last chose the shown labels at, as it asks kgVisibleLabels for them.
+  let labelScale = null;
+  const visibleLabels = kgVisibleLabels;
+  kgVisibleLabels = function(nodes, pos, scale, radiusOf, labelOf){
+    labelScale = scale;
+    return visibleLabels(nodes, pos, scale, radiusOf, labelOf);
+  };
+  const near = function(a, b){ return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)); };
+  // A moved view, once the panel is resized to the row p and the frame has run: its transform as t
+  // was, its marks as they were, its surface filling the room the panel leaves; on a force view, the
+  // labels chosen at the scale the surface is now seen at. Answers the drawing.
+  function keptThrough(p, what, mode, t, marks){
+    labelScale = null;
+    __resize(p);
+    __frame();
+    const d = __fillsItsRoom(at, what, mode);
+    if (d.W !== __geom.width)
+      throw new Error("REGRESSION: " + at + "the " + what + " is drawn " + d.W + " wide in a " + __geom.width + "px wide panel");
+    const now = JSON.stringify(__view(at + "the " + what));
+    if (now !== t)
+      throw new Error("REGRESSION: " + at + "the " + what + " must keep its transform, " + now + " against " + t);
+    if (__marks() !== marks)
+      throw new Error("REGRESSION: " + at + "the " + what + " must keep its marks where they were, not draw them again");
+    const seen = (__geom.width - 24) / d.W * JSON.parse(t).k;
+    if (mode !== "calls" && !(labelScale !== null && near(labelScale, seen)))
+      throw new Error("REGRESSION: " + at + "the " + what + " must show the labels for the scale it is now seen at, "
+        + seen + ", not " + labelScale);
+    return d;
+  }
+  __size(__WIDE);
+  await __flush();
+  const wide = __overviewAt(at, "files overview on load");
+  const wideMarks = __marks();
+  const fetches = __fetches;
+  __press(40, 25);
+  const panned = JSON.stringify(__view(at + "the pan"));
+  if (panned === wide.t) throw new Error(at + "the drag must pan the overview");
+  keptThrough(__NARROW, "panned overview resized to 800px", "overview", panned, wideMarks);
+  keptThrough(__WIDE, "panned overview resized back to 1400px", "overview", panned, wideMarks);
+  // Each dimension alone, and back.
+  [[1200, 294, 24], __WIDE, [1358, 340, 24], __WIDE].forEach(function(p){
+    keptThrough(p, "panned overview resized to " + p[0] + "x" + p[1], "overview", panned, wideMarks);
+  });
+  if (__fetches !== fetches)
+    throw new Error("REGRESSION: " + at + "a resize must make no request, it made " + (__fetches - fetches));
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  __fillsItsRoom(at, "call walk", "calls");
+  const walk = __marks(), walkFetches = __fetches;
+  __press(-30, 15);
+  const walked = JSON.stringify(__view(at + "the pan on the call walk"));
+  keptThrough(__NARROW, "panned call walk resized to 800px", "calls", walked, walk);
+  keptThrough(__WIDE, "panned call walk resized back to 1400px", "calls", walked, walk);
+  if (__fetches !== walkFetches)
+    throw new Error("REGRESSION: " + at + "a resize of the call walk must make no request, it made " + (__fetches - walkFetches));
+  loadKgOverview();
+  await __flush();
+  const fresh = __overviewAt(at, "files overview drawn fresh after the kept pan");
+  if (fresh.t !== wide.t)
+    throw new Error("REGRESSION: " + at + "a fresh view must open fitted, not where a kept pan left it, " + fresh.t + " against " + wide.t);
+  __resize(__NARROW);
+  __frame();
+  const refit = __overviewAt(at, "fresh overview resized to 800px");
+  loadKgOverview();
+  await __flush();
+  const narrow800 = __overviewAt(at, "files overview drawn fresh at 800px");
+  if (refit.html !== narrow800.html || refit.t !== narrow800.t)
+    throw new Error("REGRESSION: " + at + "a fresh view after a kept pan is untouched, so a resize must re-fit it as a fresh draw there does, "
+      + refit.t + " against " + narrow800.t);
+  const marks800 = __marks();
+  const k = __wheel(-1);
+  const zoomed = JSON.stringify(__view(at + "the zoom"));
+  if (!(k < JSON.parse(wide.t).k))
+    throw new Error(at + "this case needs the 800px zoom " + k + " below the 1400px opening scale " + wide.t);
+  keptThrough(__WIDE, "zoomed 800px overview resized to 1400px", "overview", zoomed, marks800);
+  const zin = __wheel(-1);
+  if (Math.abs(zin - k * 1.1) > 1e-12)
+    throw new Error("REGRESSION: " + at + "the wheel must zoom on from the kept scale " + k + ", got " + zin);
+  const zback = __wheel(1);
+  const zout = __wheel(1);
+  if (Math.abs(zback - k) > 1e-12 || zout > k + 1e-12)
+    throw new Error("REGRESSION: " + at + "zooming back out from the kept scale " + k + " must return to it and go no higher, got "
+      + zback + " then " + zout);
+  console.log("OK a-moved-view-keeps-its-transform-and-marks-through-a-resize");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver: the page binds one size observer, on the panel, however many views it draws; a
+/// notification at the size the drawing was drawn at redraws nothing, while a change of width alone
+/// redraws; three size changes within a frame queue one redraw; and a panel holding a message, or the
+/// empty slot a draw that threw left, rather than a drawing keeps what it holds.
+const RESIZE_DISCIPLINE_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px: ";
+  __size(__WIDE);
+  await __flush();
+  reprojectSubject(__SUBJECT);
+  await __flush();
+  drillCluster(__CLUSTER);
+  await __flush();
+  loadKgOverview();
+  await __flush();
+  const panel = el("kgpanel");
+  const watching = __observers.map(function(o){ return o._targets.map(function(t){ return t.id; }).join("+"); });
+  if (JSON.stringify(watching) !== JSON.stringify(["kgpanel"]))
+    throw new Error("REGRESSION: " + at + "the page must bind one size observer, on the panel, not " + JSON.stringify(watching));
+  const svg = panel._svg;
+  __notify();
+  __frame();
+  if (panel._svg !== svg) throw new Error("REGRESSION: " + at + "a notification at the drawn size must redraw nothing");
+  __resize([1200, 294, 24]);
+  __frame();
+  __overviewAt(at, "overview after its panel narrowed alone");
+  __resize([1000, 294, 24]);
+  __resize([900, 294, 24]);
+  __resize(__NARROW);
+  const frames = __frame();
+  if (frames !== 1) throw new Error("REGRESSION: " + at + "three size changes in a frame must queue one redraw, not " + frames);
+  __overviewAt(at, "overview after three size changes in a frame");
+  const message = '<div class="empty">the knowledge graph is unavailable</div>';
+  showKgMessage(message);
+  __resize(__WIDE);
+  __frame();
+  if (panel._html !== message)
+    throw new Error("REGRESSION: " + at + "a panel holding a message must keep it through a resize, not " + panel._html.slice(0, 200));
+  loadKgOverview();
+  await __flush();
+  __overviewAt(at, "overview drawn before a draw that throws");
+  try { kgDraw("", function(){ throw new Error("a draw that throws"); }, ""); } catch (e) {}
+  const slot = panel._html;
+  if (slot.indexOf('<svg class="kgsvg"') === -1) throw new Error(at + "the draw that throws must leave the drawing's empty slot");
+  __resize([1200, 294, 24]);
+  __frame();
+  if (panel._html !== slot)
+    throw new Error("REGRESSION: " + at + "a panel holding the empty slot a draw that threw left must keep it through a resize, not "
+      + panel._html.slice(0, 200));
+  console.log("OK the-panel-redraws-once-a-frame-and-only-on-a-new-size");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Runs `driver`, and claims it ends in `ok`.
+fn drive(driver: &str, ok: &str, claim: &str) {
     node_harness_claims(
         &vm_harness(
-            &[PANEL_SHIM, OVERVIEWS_FETCH, PAGE_READERS],
-            &driver.replace("__PANEL__", panel),
+            &[PANEL_SHIM, OVERVIEWS_FETCH, PAGE_READERS, RESIZE_READERS],
+            driver,
             HARNESS_FILE,
         ),
         ok,
@@ -344,8 +621,7 @@ fn drive(driver: &str, panel: &str, ok: &str, claim: &str) {
 /// clientWidth, clientHeight, toolbar height]` row describes.
 fn opens_fitted(panel: &str) {
     drive(
-        OPENING_DRIVER,
-        panel,
+        &OPENING_DRIVER.replace("__PANEL__", panel),
         "OK every-overview-opens-fitted-to-its-panel",
         "every overview must open fitted to its panel",
     );
@@ -355,8 +631,7 @@ fn opens_fitted(panel: &str) {
 /// toolbar takes, 6px margin included}]` row describes.
 fn fits_below_its_toolbar(panel: &str) {
     drive(
-        PANEL_HEIGHT_DRIVER,
-        panel,
+        &PANEL_HEIGHT_DRIVER.replace("__PANEL__", panel),
         "OK every-drawing-fits-below-its-toolbar",
         "every drawing must fill the room its panel leaves below its toolbar, and no more",
     );
@@ -393,4 +668,29 @@ rigger::test_cases! {
     /// toolbar it leaves 194px, under the drawing's 200px floor.
     the_drawing_keeps_its_floor_below_a_tall_toolbar_in_a_short_panel:
         fits_below_its_toolbar(r#"[348, 294, {"overview": 62, "reproject": 80, "drill": 60, "calls": 80}]"#);
+    /// The instances strip grows after the first draw at 1400px, leaving 300px of content in a
+    /// 294px panel until the overview redraws.
+    the_first_draw_refits_when_the_strip_above_it_grows: drive(
+        FIRST_DRAW_RESIZE_DRIVER,
+        "OK the-first-draw-refits-to-the-panel-the-strip-leaves",
+        "the first drawing must redraw to the room the panel leaves once the strip above it grows",
+    );
+    /// A window resize from 1400px to 800px and back.
+    an_untouched_view_refits_on_a_resize_and_back: drive(
+        UNTOUCHED_RESIZE_DRIVER,
+        "OK an-untouched-view-refits-on-every-resize",
+        "an untouched view must redraw and re-fit on every resize",
+    );
+    /// The same resize after a pan, on an overview and a call walk, and after a zoom.
+    a_moved_view_keeps_its_transform_on_a_resize_and_back: drive(
+        MOVED_RESIZE_DRIVER,
+        "OK a-moved-view-keeps-its-transform-and-marks-through-a-resize",
+        "a panned or zoomed view must keep its transform and marks through a resize, only its surface resized",
+    );
+    /// One observer, one redraw a frame, none at an unchanged size or over a message or an empty slot.
+    the_panel_redraws_once_a_frame_and_only_on_a_new_size: drive(
+        RESIZE_DISCIPLINE_DRIVER,
+        "OK the-panel-redraws-once-a-frame-and-only-on-a-new-size",
+        "the panel must redraw at most once a frame, only on a new size, and never over a message or an empty slot",
+    );
 }
