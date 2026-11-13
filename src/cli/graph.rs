@@ -707,8 +707,9 @@ fn report_groupings(
         let attached =
             rigger_domain::test_view::TestAttachment::new(resolver.proof_calls(), clusters);
         let mut lines = vec![format!(
-            "graph {verb}: {} over {members} node(s) at resolution {resolution}",
-            counted(clusters.len())
+            "graph {verb}: {} over {members} node(s) at resolution {}",
+            counted(clusters.len()),
+            community::grain(resolution)
         )];
         for c in clusters {
             let n = attached.count(&c.id);

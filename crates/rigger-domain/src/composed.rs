@@ -366,7 +366,7 @@ pub(crate) fn joined(
             let attrs = [
                 ("hash", c.hash.clone()),
                 ("label", c.label.clone()),
-                ("resolution", format!("{}", c.resolution)),
+                ("resolution", crate::community::grain(c.resolution)),
             ];
             Node {
                 id: c.id.clone(),
