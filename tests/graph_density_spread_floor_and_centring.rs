@@ -14,10 +14,10 @@
 //!     lays out on the panel EXACTLY as before c2 (every node within the panel box, the enlarged-canvas
 //!     centring a no-op because the factor is 1), while the SAME graph through the 6-arg accessor path
 //!     grows past the panel - so it is the accessors, not the arg count, that drive the scaling; and
-//!   * the CENTRING translation - the enlarged canvas is centred on the panel so the reset pan/zoom
-//!     view opens on the MIDDLE of the drawing (the drawing's bounding-box centre sits on the panel
-//!     centre). The done-when proof measures only the EXTENT, which a translation leaves unchanged, so
-//!     it would stay green even if the centring were dropped and the drawing clumped to a corner.
+//!   * the CENTRING translation - the enlarged canvas is centred on the panel it was laid out for
+//!     (the drawing's bounding-box centre sits on the panel centre). The done-when proof measures only
+//!     the EXTENT, which a translation leaves unchanged, so it would stay green even if the centring
+//!     were dropped and the drawing clumped to a corner.
 //!
 //! The done-when proof never routes an absent/sparse graph through kgSpread, never calls the bare
 //! 4-arg forceLayout, and never asserts on the drawing's position on the panel, so these branches
@@ -208,10 +208,10 @@ rigger::test_cases! {
 }
 
 /// The CENTRING translation: the enlarged canvas is centred on the panel, so the drawing's bounding-box
-/// centre sits on the panel centre (W/2, H/2) - the reset pan/zoom view opens on the MIDDLE of the
-/// drawing. Non-vacuously on the enlarged path (the spread factor is proven > 1, so the centring is a
-/// real, non-zero translation). Without it the drawing would fill [pad, cw-pad] and its centre would be
-/// cw/2, far to the bottom-right of the panel - which the extent-only done-when proof cannot see.
+/// centre sits on the panel centre (W/2, H/2). Non-vacuously on the enlarged path (the spread factor
+/// is proven > 1, so the centring is a real, non-zero translation). Without it the drawing would fill
+/// [pad, cw-pad] and its centre would be cw/2, far to the bottom-right of the panel - which the
+/// extent-only done-when proof cannot see.
 const DRIVER_CENTRED_CANVAS: &str = r##";(function(){
   var W = 900, H = 520, maxCount = 40, N = 120;
   var nodes = [], edges = [];

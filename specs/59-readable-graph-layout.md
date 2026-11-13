@@ -21,7 +21,9 @@ build step), and the layout stays deterministic: the same graph renders identica
 - Spacing scales with density: repulsion and the layout extent grow with node count and total
   label area, so a 160-cluster overview spreads to the room its labels need instead of compressing
   into the panel's center. The panel pans and zooms already; a layout larger than the viewport is
-  fine - clarity beats fitting.
+  fine for what zooming in reaches - clarity beats fitting - but every view OPENS fitted: at the
+  opening transform each mark the drawing holds lies inside the panel, scaled down as far as that
+  needs and never up past 1, and pan and zoom continue from there.
 
 ### Adaptive labels (declutter by importance, reveal on demand)
 

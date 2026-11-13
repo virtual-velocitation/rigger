@@ -1566,14 +1566,18 @@ fn the_graph_routes_give_a_file_its_members_and_a_member_its_file_with_no_contai
 /// The DOM shim the graph header's harness touches: elements with text, `hidden` and a class list.
 const LABEL_SHIM: &str = r#"
 function __El(id){ this.id=id; this._html=""; this._text=""; this.hidden=true; this._classes={};
-  this._listeners={}; this.dataset={}; const self=this;
+  this._listeners={}; this.dataset={}; this.clientWidth=800; this.clientHeight=320; this.clientTop=0; const self=this;
   this.classList = { toggle: function(c,on){ if (on) self._classes[c]=true; else delete self._classes[c]; },
     add: function(c){ self._classes[c]=true; }, remove: function(c){ delete self._classes[c]; },
     contains: function(c){ return !!self._classes[c]; } }; }
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.querySelector = function(){ return new __El(""); };
+// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
+// 10px top padding and a one-line 24px toolbar, so a 320px panel leaves the drawing 276px.
+const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
+const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
+__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __El(""); };
 __El.prototype.setAttribute = function(){};
 __El.prototype.getAttribute = function(){ return null; };
 __El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
