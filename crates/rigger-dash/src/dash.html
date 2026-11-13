@@ -79,7 +79,9 @@
      at least the 320px kgDims draws at (see the @container rules after .kgcard); the body is a size
      container, so the room it actually has decides, whatever the viewport. Each pane's width is
      declared once here, and each precedes #kgpanel so the sibling selectors can read its hidden
-     state. A view sets its panes before it draws, so its drawing is laid out in the room they leave. */
+     state. A view sets its rail before it draws; the card's dock shows only when a card arrives, and
+     the view is laid out once more whenever the dock shows or hides, so a drawing always fills the
+     room the panes leave (see loadCard). */
   .kgbody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative;
     container: kgbody / inline-size; --kgrail-w: 260px; --kgcard-w: 280px; }
   .kgbody > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
@@ -1057,28 +1059,45 @@ function renderCard(card) {
     + '<div class="kgcard-prov">' + prov + '</div>' + rows + '</div>';
 }
 
-// The latest card request: a card that lands after a newer request (another subject carded, or
-// the card hidden) is dropped, so a slow card never opens over a later view.
+// The card request the dock answers: the latest request's number (a card that lands after a newer
+// request - another subject carded, or the card hidden - is dropped, so a slow card never opens over
+// a later view), the subject it asked for and under which graph-read params, and whether its answer
+// is still awaited.
 let kgCardAsk = 0;
+let kgCardSubject = null;
+let kgCardAsked = null;
+let kgCardAwaited = false;
 
-// Fetch subject `id`'s metadata card from GET /api/graph?card=<id> and render it (spec 63 c2). The
-// id is `encodeURIComponent`d like every other node id param. Until the card lands its dock shows
-// empty, so the column it takes from the panel (see .kgbody) is held before the view that asked
-// for it draws, and the drawing is laid out once beside it; a card that comes back null releases
-// the column, and the drawing re-centres in the wider box. A null `id` hides the card. A static
-// export / failed fetch / unknown id all degrade to hiding the card - never an error, never a
-// stale card left showing.
-async function loadCard(id) {
+// Card subject `id` for the view about to draw, from GET /api/graph?card=<id> (spec 63 c2; the id
+// `encodeURIComponent`d like every other node id param). The dock shows only when a card arrives:
+// a view of another subject drops the shown card before it draws, so it is drawn in the whole
+// panel, and when the arriving card shows (or the answer names none and a shown card hides) the
+// current view is laid out once more in the room the dock now leaves (see .kgbody). A view drawn
+// again for the SAME subject keeps the card it shows or awaits: a re-render (`fresh` false, the
+// same body) neither blanks nor re-asks it, and a re-read (`fresh`, a new body) asks again only
+// when no answer is awaited, keeping the shown card until the new one lands. A null `id` hides
+// the card. A static export / failed fetch / unknown id all hide the card - never an error, never
+// another subject's card left showing.
+async function loadCard(id, fresh) {
+  // The subject under the params every graph read carries now (the tests filter, the instance).
+  const asked = LIVE && id ? id + "\n" + apiUrl("/api/graph") : null;
+  if (asked !== null && asked === kgCardAsked && (kgCardAwaited || !fresh)) return;
   const ask = ++kgCardAsk;
-  if (!LIVE || !id) { renderCard(null); return; }
-  const dock = el("kgcard");
-  if (dock) { dock.hidden = false; dock.innerHTML = ""; }
+  if (asked === null || id !== kgCardSubject) renderCard(null);
+  kgCardSubject = asked === null ? null : id;
+  kgCardAsked = asked;
+  kgCardAwaited = asked !== null;
+  if (asked === null) return;
+  let card = null;
   try {
-    const body = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
-    if (ask === kgCardAsk) renderCard(body.card || null);
-  } catch (e) {
-    if (ask === kgCardAsk) renderCard(null);
-  }
+    card = (await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json()).card || null;
+  } catch (e) { /* no card: the dock hides */ }
+  if (ask !== kgCardAsk) return;
+  kgCardAwaited = false;
+  const dock = el("kgcard");
+  const shown = !!dock && !dock.hidden;
+  renderCard(card);
+  if (!!dock && !dock.hidden !== shown) rerenderCurrentView();
 }
 
 // The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
@@ -1122,14 +1141,14 @@ async function reprojectSubject(subject) {
 // (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
 // never confidently wrong. An empty member set degrades to a message, never an error.
 function renderReprojection(rp) {
-  holdKgView("reproject", rp);
+  const fresh = holdKgView("reproject", rp);
   showGrain(rp);
   const subject = (rp && rp.subject) || kgSubject || "";
   // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
   // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
   // (file/concepts/memory) or a file/concept subject's card (top entities / top evidence) tracks
   // whichever taxonomy is now focused.
-  loadCard(subject);
+  loadCard(subject, fresh);
   const clusters = (rp && rp.clusters) || [];
   const total = (rp && rp.total) || 0;
   const back = '<a class="kgback" href="#" data-kgclear="1">&larr; whole graph</a>';
@@ -1285,7 +1304,7 @@ function renderGraph(g) {
   kgLast = g;
   // Record which view is current + its body so the overlay toggle can re-render it in place (spec 55
   // c4). State only beside the header's tests state; it does NOT change this view's rendered output.
-  holdKgView("seed", g);
+  const fresh = holdKgView("seed", g);
   // The SUBJECT VIEW's docked memory rail (spec 63 c5): the seed's governing decisions/findings/
   // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
   // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
@@ -1293,7 +1312,7 @@ function renderGraph(g) {
   // The seed's METADATA CARD (spec 63 c2): a code-entity subject's file:line/degree/community/
   // concepts/memory-count peek, docked alongside the rail. A separate on-demand fetch (never
   // folded into `g`), so a plain neighborhood response stays byte-identical.
-  loadCard(g.seed);
+  loadCard(g.seed, fresh);
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -1435,11 +1454,14 @@ async function pathTo(target) {
 let kgMode = "overview";
 
 // Record the view the panel now holds and its body (so a toggle re-renders it in place), and bring
-// the header's tests state up to that view.
+// the header's tests state up to that view. Answers whether the body is a new one (a fresh read)
+// rather than the held one drawn again.
 function holdKgView(mode, body) {
+  const fresh = body !== kgViewData;
   kgMode = mode;
   kgViewData = body;
   syncTestsToggle();
+  return fresh;
 }
 
 // A deterministic per-kind colour, so a given graph yields one stable palette every poll (no
@@ -2198,10 +2220,10 @@ async function loadKgOverview() {
 // The FILES / CONCEPTS lens's own cluster IS a file / concept subject (criteria 3/4): card it
 // alongside its drill (its top entities / top evidence, spec 63 c2) - additive, the drill's own
 // markup is unchanged. A CODE lens cluster is a coupling COMMUNITY, which this design names no card
-// for, so it hides any stale card instead. The drill calls this right before the panel is drawn,
-// so the drill is laid out in the room the card leaves.
+// for, so it hides any stale card instead. The drill calls this after each read of the cluster,
+// right before the panel is drawn, so no other subject's card stays beside the drill.
 function cardCluster(key) {
-  loadCard(kgLens === "files" || kgLens === "concepts" ? key : null);
+  loadCard(kgLens === "files" || kgLens === "concepts" ? key : null, true);
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
