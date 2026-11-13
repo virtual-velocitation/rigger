@@ -1849,13 +1849,50 @@ pub struct CardResponse {
     pub card: Option<Card>,
 }
 
-/// A drawn view's body: the view, and the ids of its drawn nodes (its `nodes` and its
-/// `referenced_not_called` sidecar) that are test code, so the page marks them apart from product
-/// code. Omitted when none is - always so with tests hidden - leaving the body byte-identical.
+/// A body the explorer draws graph nodes from, by the ids of the nodes it draws.
+trait DrawsNodes: Serialize {
+    fn drawn(&self) -> Vec<&str>;
+}
+
+/// A neighborhood, a drill or a call walk draws its `nodes` and its `referenced_not_called` sidecar.
+impl DrawsNodes for Neighborhood {
+    fn drawn(&self) -> Vec<&str> {
+        (self.nodes.iter().chain(&self.referenced_not_called))
+            .map(|n| n.id.as_str())
+            .collect()
+    }
+}
+
+/// A re-projection draws its unresolved and shared members as rows; its buckets are groups.
+impl DrawsNodes for Reprojection {
+    fn drawn(&self) -> Vec<&str> {
+        (self.unresolved.iter().map(|u| u.id.as_str()))
+            .chain(self.shared.iter().map(String::as_str))
+            .collect()
+    }
+}
+
+/// A card draws its subject, the file it names and its member chips.
+impl DrawsNodes for CardResponse {
+    fn drawn(&self) -> Vec<&str> {
+        let Some(card) = &self.card else {
+            return Vec::new();
+        };
+        let members = card.top_entities.iter().chain(&card.top_evidence);
+        std::iter::once(card.id.as_str())
+            .chain(card.file.as_deref())
+            .chain(members.map(|m| m.id.as_str()))
+            .collect()
+    }
+}
+
+/// A drawn view's body: the view, and the ids of its drawn nodes ([`DrawsNodes::drawn`]) that are
+/// test code, so the page marks them apart from product code. Omitted when none is - always so
+/// with tests hidden - leaving the body byte-identical.
 #[derive(Serialize)]
-struct MarkedView<'v> {
+struct MarkedView<'v, V> {
     #[serde(flatten)]
-    view: &'v Neighborhood,
+    view: &'v V,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     test_nodes: Vec<&'v str>,
 }
@@ -1864,16 +1901,14 @@ struct MarkedView<'v> {
 /// nodes its answer read (`read`): the code graph marks a test entity's node, and a test file's,
 /// with a `test` attribute.
 fn view_json<'r>(
-    view: &Neighborhood,
+    view: &impl DrawsNodes,
     read: impl IntoIterator<Item = &'r Node>,
 ) -> serde_json::Result<String> {
     let tests: BTreeSet<&str> = (read.into_iter())
         .filter(|n| n.attrs.contains_key("test"))
         .map(|n| n.id.as_str())
         .collect();
-    let drawn = view.nodes.iter().chain(&view.referenced_not_called);
-    let test_nodes: BTreeSet<&str> = drawn
-        .map(|n| n.id.as_str())
+    let test_nodes: BTreeSet<&str> = (view.drawn().into_iter())
         .filter(|id| tests.contains(id))
         .collect();
     let test_nodes = test_nodes.into_iter().collect();
@@ -3455,7 +3490,7 @@ fn route_hiding(
                     card: card(graph, &subject),
                 };
                 let hits = withheld_reached(graph, withheld, &[subject], 1);
-                let response = match serde_json::to_string(&body) {
+                let response = match view_json(&body, &graph.nodes) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
@@ -3497,7 +3532,7 @@ fn route_hiding(
                             .collect()
                     });
                     (
-                        serde_json::to_string(&reproject(graph, &seed, &lens)),
+                        view_json(&reproject(graph, &seed, &lens), &graph.nodes),
                         Some(hits),
                     )
                 } else {

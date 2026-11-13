@@ -1010,14 +1010,18 @@ function chipLensForKind(kind) {
 // the MEMORY chip carries `data-seed` alone, so it falls through to the SAME plain re-seed
 // [`seedGraph`] already performs on a node click - reusing spec 63 c5's rail-and-reseed mechanism
 // rather than building a second one (no memory lens exists among this design's three named
-// lenses).
-function renderCard(card) {
+// lenses). `body` is the answer the card came in: its `test_nodes` mark the subject and each node
+// chip that is test code (kgTestMarks); a MEMORY chip seeds the subject itself and is never marked.
+function renderCard(card, body) {
   const box = el("kgcard");
   if (!box) return;
   if (!card) { box.hidden = true; box.innerHTML = ""; return; }
   box.hidden = false;
-  const chip = (id, label, lens) => '<a href="#" class="kgcard-chip" data-seed="' + esc(id) + '"'
-    + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>' + esc(label) + '</a>';
+  const marks = kgTestMarks(body);
+  const unmarked = kgTestMarks(null);
+  const chip = (id, label, lens, m = marks) => '<a href="#" class="kgcard-chip' + m.cls({ id: id })
+    + '" data-seed="' + esc(id) + '"' + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>'
+    + esc(label) + m.tag({ id: id }) + '</a>';
   const memberChip = e => chip(e.id, e.label, chipLensForKind(e.kind));
   const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
   // The PROOF row (spec 86 criterion 2): "proven by N tests" with the evidence file:lines on
@@ -1044,8 +1048,8 @@ function renderCard(card) {
   if (card.kind === "code-entity") {
     rows += row("FILE", card.file ? chip(card.file, card.file, "files") : "");
     rows += row("CONCEPTS", (card.concepts || []).map(c => chip(c.id, c.label, "concepts")).join(""));
-    const mem = (card.decisions ? chip(card.id, card.decisions + (card.decisions === 1 ? " decision" : " decisions")) : "")
-      + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings")) : "");
+    const mem = (card.decisions ? chip(card.id, card.decisions + (card.decisions === 1 ? " decision" : " decisions"), null, unmarked) : "")
+      + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings"), null, unmarked) : "");
     rows += row("MEMORY", mem);
     rows += proofRow(card);
   } else if (card.kind === "file") {
@@ -1055,7 +1059,7 @@ function renderCard(card) {
   }
   const dot = '<span class="kgcard-dot" style="background:' + esc(kindColor(card.kind)) + '"></span>';
   box.innerHTML = '<div class="kgcard-body">'
-    + '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'
+    + '<div class="kgcard-title' + marks.cls(card) + '">' + dot + esc(card.label) + marks.tag(card) + '</div>'
     + '<div class="kgcard-prov">' + prov + '</div>' + rows + '</div>';
 }
 
@@ -1088,15 +1092,15 @@ async function loadCard(id, fresh) {
   kgCardAsked = asked;
   kgCardAwaited = asked !== null;
   if (asked === null) return;
-  let card = null;
+  let answer = null;
   try {
-    card = (await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json()).card || null;
+    answer = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
   } catch (e) { /* no card: the dock hides */ }
   if (ask !== kgCardAsk) return;
   kgCardAwaited = false;
   const dock = el("kgcard");
   const shown = !!dock && !dock.hidden;
-  renderCard(card);
+  renderCard((answer && answer.card) || null, answer);
   if (!!dock && !dock.hidden !== shown) rerenderCurrentView();
 }
 
@@ -1139,9 +1143,11 @@ async function reprojectSubject(subject) {
 // (each bucket a data-cluster drill handle). Surfaces the honesty markers the body carries - the
 // documented empty-CELL message, the wide-cell "showing N of M" caption, the marked-unresolved members
 // (multi-candidate / undefined), and the shared-membership flag - so a re-grained cell is explained,
-// never confidently wrong. An empty member set degrades to a message, never an error.
+// never confidently wrong; each member row the answer names as test code carries the test marker
+// (kgTestMarks). An empty member set degrades to a message, never an error.
 function renderReprojection(rp) {
   const fresh = holdKgView("reproject", rp);
+  const marks = kgTestMarks(rp);
   showGrain(rp);
   const subject = (rp && rp.subject) || kgSubject || "";
   // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
@@ -1164,15 +1170,16 @@ function renderReprojection(rp) {
   const unresolved = (rp && rp.unresolved) || [];
   const unresolvedSection = unresolved.length
     ? '<div class="kgunresolved"><h3>unresolved (' + unresolved.length + ')</h3>'
-      + unresolved.map(u => '<div class="kgnode" data-seed="' + esc(u.id) + '"><span class="tlabel">'
+      + unresolved.map(u => '<div class="kgnode' + marks.cls(u) + '" data-seed="' + esc(u.id) + '"><span class="tlabel">'
         + esc(u.id) + '</span><span class="kgkind">' + (u.candidates || []).length + ' candidate'
-        + ((u.candidates || []).length === 1 ? '' : 's') + '</span></div>').join("")
+        + ((u.candidates || []).length === 1 ? '' : 's') + '</span>' + marks.badge(u) + '</div>').join("")
       + '</div>' : '';
   // The SHARED-membership flag (spec 55 c2): members realizing more than one concept, folded once.
   const shared = (rp && rp.shared) || [];
   const sharedSection = shared.length
     ? '<div class="kgsharedlist">shared members (fold once, realize multiple concepts): '
-      + shared.map(s => esc(s)).join(", ") + '</div>' : '';
+      + shared.map(s => '<span class="kgsharedmember' + marks.cls({ id: s }) + '">' + esc(s)
+        + marks.tag({ id: s }) + '</span>').join(", ") + '</div>' : '';
   if (!clusters.length) {
     el("kgpanel").innerHTML = toolbar
       + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')

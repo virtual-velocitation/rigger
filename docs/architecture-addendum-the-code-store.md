@@ -973,7 +973,8 @@ through and filtered the same way, with no fixture kind of its own.
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
     toggle sets it; each reply that draws nodes names the drawn ones that are test code
     (`test_nodes`, from their `test` attribute), and the explorer marks each apart from product
-    code;
+    code: a neighborhood's, a drill's and a call walk's nodes and its referenced-not-called list,
+    a re-projection's unresolved and shared members, and a card's subject, file and member chips;
   - the MCP tools and the CLI take `tests` / `--tests`.
 
 ---

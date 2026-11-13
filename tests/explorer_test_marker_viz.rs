@@ -136,11 +136,13 @@ const MARKER_DRIVER: &str = r#"
   const CASE = "tests/it.rs::case";
   __cardBodies[CASE] = { card: { id: CASE, kind: "code-entity", label: "case", file: F, line: "3", degree: 1,
     concepts: [], decisions: 1, findings: 0, proven_by: 0 }, test_nodes: [F, CASE] };
-  await loadCard("src/a.rs", true);
+  // Each card is the card of the view drawn for its subject.
+  const seed = async id => { renderGraph({ seed: id, depth: 1, nodes: [], edges: [] }); await flush(); };
+  await seed("src/a.rs");
   check("a file card's top entities", seeded("a", "kgcard"), T, P);
-  await loadCard(C, true);
+  await seed(C);
   check("a concept card's top evidence", seeded("a", "kgcard"), T, P);
-  await loadCard(CASE, true);
+  await seed(CASE);
   const card = el("kgcard")._html;
   const title = card.slice(card.indexOf('<div class="kgcard-title'), card.indexOf("</div>", card.indexOf('<div class="kgcard-title')));
   expectMarked("a test entity's card title", title, CASE);
