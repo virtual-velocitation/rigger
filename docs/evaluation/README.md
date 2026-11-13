@@ -80,6 +80,7 @@ A grep-fallbacks class is a habit gap when the graph could answer and the agent 
 - **Hours are bounded by what the log measured.** A proposal's `hours_saved` is at most its class's measured hours: for a failure class, the sum of its records' `rework_hours`; for a cost class, the hours its metric holds, or for a share, that share of `unit_elapsed_hours`. A grep fallback carries no duration in the log, so a grep-fallbacks proposal's `hours_saved` is null. `check` refuses a proposal over its bound.
 - **No class from what the log cannot show.** The evidence lists under `not_shown` what no event records, such as when a session made its first edit or whether it ended by running out of context; a repeat whose hours are null or 0 is no class either.
 - **Unmeasured and self-reported figures stay labelled.** `grounding_share` is always null: nothing in the log marks the end of an agent's orientation, so it is never estimated. `grep_fallbacks` counts only the fallbacks agents reported, and `grep_fallbacks_by_target` groups them by keyword. `relaunched_sessions` counts relaunches the log records, not their cause. Time shares follow the method only when `labels.time_shares` says so; otherwise they are approximate.
+- **The scorecard and `rigger stats` count differently.** The scorecard's first-pass figure counts criterion units, while `rigger stats` also counts plan units. The script times only fresh gate runs, while `rigger stats` counts cache hits too.
 
 ## Known departure
 
