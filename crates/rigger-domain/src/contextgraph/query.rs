@@ -27,7 +27,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::community;
+use crate::community::{self, COMMUNITY_ID_PREFIX};
+use crate::concepts::CONCEPT_ID_PREFIX;
 use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
@@ -524,7 +525,7 @@ impl<'g> Buckets<'g> {
                 defs_by_suffix = defs_by_entity_suffix(graph);
             }
             Lens::Code { resolution } => {
-                let prefix = format!("community/{resolution}/");
+                let prefix = format!("{COMMUNITY_ID_PREFIX}{resolution}/");
                 for e in &graph.edges {
                     if e.valid_to.is_none()
                         && e.rel == REL_IN_COMMUNITY
@@ -539,7 +540,7 @@ impl<'g> Buckets<'g> {
                 // member. The derivation records at most one membership per grain, but a later
                 // model-assisted refinement may realize a member under several concepts, so index them
                 // ALL and fold honestly rather than trust a single-membership assumption.
-                let prefix = format!("concept/{resolution}/");
+                let prefix = format!("{CONCEPT_ID_PREFIX}{resolution}/");
                 let mut realized: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
                 for e in &graph.edges {
                     if e.valid_to.is_none() && e.rel == REL_REALIZES && e.to.starts_with(&prefix) {
@@ -1561,7 +1562,7 @@ pub fn whole_graph_degree(graph: &Graph, id: &str) -> usize {
 /// Falls back to the community's own id when the derivation folded no explicit `label` attr for
 /// it, matching [`bucket_label_index`]'s own `filter(|l| !l.is_empty())` discipline.
 pub(crate) fn community_label(graph: &Graph, id: &str) -> Option<String> {
-    let prefix = format!("community/{DEFAULT_COMMUNITY_RESOLUTION}/");
+    let prefix = format!("{COMMUNITY_ID_PREFIX}{DEFAULT_COMMUNITY_RESOLUTION}/");
     let community_id = graph.edges.iter().find_map(|e| {
         (e.valid_to.is_none()
             && e.rel == REL_IN_COMMUNITY
