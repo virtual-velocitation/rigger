@@ -836,12 +836,17 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
     // FIRST, in a repository with a main checkout - see `resolve_run_checkout_or_refuse`'s doc
     // comment.
-    let cwd = cwd();
-    let repo = resolve_run_checkout_or_refuse(&cwd, command)?;
-    refuse_outside_a_project(&cwd, command)?;
+    let site = Site::here();
+    let cwd = site.located()?.to_path_buf();
+    let repo = resolve_run_checkout_or_refuse(&site, command)?;
+    // The project is the one governing the site ([`instruction_layer_root`]), so from below the
+    // root the run reads the root's definition and refuses on the root check below, never as
+    // though no project were set up.
+    let project = instruction_layer_root(&site)?;
+    refuse_outside_a_project(&project, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
-    let cfg = load_run_config(".")?;
+    let cfg = load_run_config(&project.to_string_lossy())?;
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);

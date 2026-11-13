@@ -82,9 +82,12 @@ fn parse_critique_args(args: &[String]) -> Result<CritiqueArgs, Box<dyn std::err
 /// union and the verdict it derives ([`answer`]), and exits 0 whatever the findings say.
 pub(crate) fn cmd_critique(args: &[String]) -> Res {
     let parsed = parse_critique_args(args)?;
-    let cwd = cwd();
-    let repo = resolve_main_worktree_or_refuse(&cwd, COMMAND)?;
-    let cfg = config_store::load(".")?;
+    let site = Site::here();
+    let cwd = site.located()?.to_path_buf();
+    let repo = resolve_main_worktree_or_refuse(&site, COMMAND)?;
+    // The definition of the project governing the site ([`instruction_layer_root`]), so from below
+    // the root the critique reads the root's and refuses on the root check below.
+    let cfg = config_store::load(&instruction_layer_root(&site)?.to_string_lossy())?;
     let critic = rigger::wave::critic_of(&cfg.workflow).ok_or_else(|| {
         format!(
             "{COMMAND}: refusing to critique {}: {}",

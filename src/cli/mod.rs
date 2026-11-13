@@ -1568,8 +1568,8 @@ impl Site {
 /// unchanged; a real repo where they differ - refuse; no repo reachable at all -
 /// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
 /// guards its own repo-only logic on; git refusing inside a repository - that refusal.
-fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
-    main_worktree_or_refuse(&Site::of(cwd), command)
+fn resolve_main_worktree_or_refuse(site: &Site, command: &str) -> Result<String, String> {
+    main_worktree_or_refuse(site, command)
 }
 
 /// A RUN NEEDS A MAIN CHECKOUT: `rigger run` resolves its main worktree as
@@ -1579,8 +1579,7 @@ fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, 
 /// would be its own root and hold a store of its own. The refusal names what is missing and the
 /// clone to run from instead; reads, setup, graph build and status work in that checkout as they
 /// are.
-fn resolve_run_checkout_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
-    let site = Site::of(cwd);
+fn resolve_run_checkout_or_refuse(site: &Site, command: &str) -> Result<String, String> {
     if let Some(repo) = site.repository()? {
         if repo.main_checkout().is_none() {
             return Err(format!(
@@ -1594,7 +1593,7 @@ fn resolve_run_checkout_or_refuse(cwd: &Path, command: &str) -> Result<String, S
             ));
         }
     }
-    main_worktree_or_refuse(&site, command)
+    main_worktree_or_refuse(site, command)
 }
 
 /// [`resolve_main_worktree_or_refuse`] over the site of the command's working directory.
@@ -7052,7 +7051,7 @@ mod tests {
             !expected.is_empty(),
             "the fixture is a real git repo, so git_repo_at must resolve a real toplevel"
         );
-        let got = resolve_main_worktree_or_refuse(root, "test-cmd")
+        let got = resolve_main_worktree_or_refuse(&Site::of(root), "test-cmd")
             .expect("a plain, non-linked worktree must never refuse");
         assert_eq!(
             got, expected,
@@ -7124,7 +7123,7 @@ mod tests {
             ("outer/sub", Ok("outer/sub")),
             ("sub-linked", Err(linked)),
         ] {
-            let got = resolve_run_checkout_or_refuse(&root.join(checkout), "rigger run");
+            let got = resolve_run_checkout_or_refuse(&Site::of(&root.join(checkout)), "rigger run");
             match answer {
                 Ok(top) => assert_eq!(
                     got,

@@ -204,7 +204,10 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
         .into());
     }
 
-    let cfg = config_store::load(".")?;
+    // The definition of the project governing the site ([`instruction_layer_root`]): the root's
+    // from a subdirectory or a linked worktree, as its store is.
+    let project = instruction_layer_root(&site)?;
+    let cfg = config_store::load(&project.to_string_lossy())?;
     let panel = cfg.workflow.defaults.review.clone();
     if panel.is_empty() {
         return Err("canary: defaults.review declares no review panel to measure".into());
@@ -214,7 +217,7 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     // an un-pinned tier's agent is byte-for-byte what the config declared.
     let cfg = canary_store::apply_model_pins(&cfg, &panel, &args.model_pins);
     // The host values every canary spawn carries, resolved once at the canary's start.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new("."))?;
+    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, &project)?;
 
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
     // so the canary stream lands under the same identity `stats --canary` reads.
