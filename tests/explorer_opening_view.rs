@@ -1002,6 +1002,25 @@ const VIEW_STATE_DRIVER: &str = r##"
       }
     }
   };
+  // The grain "2." typed as the grain writer types it, kept as a draft in the box an untouched view's
+  // redraw writes in its place, whose markup holds it, so the browser fires no change for it: then Enter
+  // after a window resize, leaving the box after a scrollbar's, with nothing more typed, commits it,
+  // read once.
+  WRITERS.draft = Object.assign({}, WRITERS.grain, {
+    async answer(){
+      const b = grainBox(), n = asked.length, how = ROW.resize === "window" ? "Enter" : "leaving the box";
+      if (ROW.pan !== "none") throw new Error("a draft is kept in the box an untouched view's redraw writes, so its row pans none");
+      if (b.value !== b.defaultValue)
+        throw new Error(at + "the redraw must write the draft into the box's markup, the box holds " + JSON.stringify(b.value)
+          + " over its markup's " + JSON.stringify(b.defaultValue));
+      if (ROW.resize === "window") enter(); else leave();
+      await __flush();
+      const reads = asked.slice(n).filter(function(u){ return u.indexOf("lens=code") !== -1; });
+      if (reads.length !== 1 || !/[?&]resolution=2\.(&|$)/.test(reads[0]))
+        throw new Error("REGRESSION: " + at + how + " with nothing more typed must commit the draft kept through the redraw, "
+          + "reading the code lens once at 2., the page asked " + JSON.stringify(asked.slice(n)));
+    }
+  });
   // The move, and the transform and marks it leaves, which a moved view keeps from then on: a drag on
   // the drawing, or a wheel notch while the grain box holds the focus, which a press on the drawing
   // would take from it (leaving the box, which commits the grain).
@@ -1207,6 +1226,13 @@ rigger::test_cases! {
     /// The same, the grain typed on an overview already panned.
     a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_before_it:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "before", "resize": "scrollbar"}"#);
+    /// A grain typed, kept as a draft in the box the untouched overview's redraw writes, then Enter
+    /// with nothing more typed: it commits the draft once.
+    a_drafted_grain_commits_on_enter_after_a_window_resize:
+        keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "window"}"#);
+    /// The same draft committed once by leaving the box after the scrollbar's redraw.
+    a_drafted_grain_commits_on_leaving_the_box_after_a_scrollbar:
+        keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "scrollbar"}"#);
 }
 
 /// What the panel shows of the view it holds, in the `{writer, pan, resize}` row `VIEW_STATE_DRIVER`
