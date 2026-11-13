@@ -4,7 +4,8 @@
 //! once by `tests/all.rs` and by `tests/boundary_audit.rs`, through `#[path]`, never through
 //! `tests/common/mod.rs`. Also the line-level
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
-//! and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
+//! which are comment lines ([`is_comment_line`], which `tests/prompt_surface_sweep.rs` reads
+//! too), and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
 //! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
 //! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
@@ -172,15 +173,19 @@ pub fn in_ranges(line: usize, ranges: &[(usize, usize)]) -> bool {
     ranges.iter().any(|&(s, e)| line >= s && line <= e)
 }
 
+/// Whether `line` is a comment line: its first non-blank characters are `//`, a line, doc or
+/// inner doc comment's opener.
+pub fn is_comment_line(line: &str) -> bool {
+    line.trim_start().starts_with("//")
+}
+
 /// Every `fn`-signature line (0-based, ascending order) that is NOT inside `excluded` and is
 /// not itself a comment line (a further guard against a doc comment that happens to embed a
 /// literal `fn ` code sample, on top of [`is_fn_sig_line`]'s own word-boundary check).
 pub fn fn_sig_lines(lines: &[&str], excluded: &[(usize, usize)]) -> Vec<usize> {
     (0..lines.len())
         .filter(|&i| {
-            !in_ranges(i, excluded)
-                && !lines[i].trim_start().starts_with("//")
-                && is_fn_sig_line(lines[i])
+            !in_ranges(i, excluded) && !is_comment_line(lines[i]) && is_fn_sig_line(lines[i])
         })
         .collect()
 }

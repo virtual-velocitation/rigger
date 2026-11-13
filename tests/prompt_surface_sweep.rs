@@ -15,7 +15,7 @@
 
 use crate::common::fixtures::production_files;
 use crate::common::repo::{repo_root, rs_files_under};
-use crate::source_audit::{tokenize, RawKind};
+use crate::source_audit::{is_comment_line, tokenize, RawKind};
 use std::collections::BTreeMap;
 
 /// Who reads an allow-listed literal, and so why it is no prompt text.
@@ -893,9 +893,8 @@ fn in_module(file: &str) -> bool {
 /// Whether the production `text` spells one of [`TOKENS`] on a line whose first non-blank
 /// characters are not `//`.
 fn prompt_bearing(text: &str) -> bool {
-    text.lines().any(|line| {
-        !line.trim_start().starts_with("//") && TOKENS.iter().any(|token| line.contains(token))
-    })
+    text.lines()
+        .any(|line| !is_comment_line(line) && TOKENS.iter().any(|token| line.contains(token)))
 }
 
 /// Each string literal of `text` of at least [`MIN_CHARS`] characters holding a space, as the
