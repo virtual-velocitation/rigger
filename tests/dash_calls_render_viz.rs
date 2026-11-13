@@ -335,7 +335,9 @@ const CALLS_DRIVER: &str = r#"
   const frontierTarget = { dataset: { candidates: "src/p.rs::new|src/q.rs::new" },
     closest: function(sel){ return sel === "[data-frontier]" ? this : null; } };
   clickHandlers.forEach(function(fn){ fn({ target: frontierTarget, preventDefault: function(){} }); });
-  const fr = el("kgfrontier")._html;
+  // The list shows in the call view's frontier slot, between its toolbar and its drawing.
+  const drawn = el("kgpanel")._html, slotAt = drawn.indexOf('<div id="kgfrontier"');
+  const fr = slotAt === -1 ? "" : drawn.slice(slotAt, drawn.indexOf("<svg", slotAt));
   if (fr.indexOf('data-candidate="src/p.rs::new"') === -1 || fr.indexOf('data-candidate="src/q.rs::new"') === -1)
     throw new Error("a frontier click did not expand its candidate definitions (data-candidate): " + fr);
 

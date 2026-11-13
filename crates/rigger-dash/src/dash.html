@@ -933,6 +933,12 @@ let kgRationale = {};
 // The current view's fetched body, so toggling the overlay re-renders the SAME view in place (with or
 // without badges) without a re-fetch. Set at the top of each renderer alongside kgMode.
 let kgViewData = null;
+// What the panel shows of the view it holds beyond that view's body, written by the view's one render
+// so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
+// view's frontier choice list, the candidates a clicked frontier node offers. A new view (holdKgView
+// given a new body) shows none of it.
+function kgShownNone() { return { choices: [] }; }
+let kgShown = kgShownNone();
 
 // Reflect the overlay toggle's on/off state on its static affordance (the label + the active ring).
 function syncOverlayToggle() {
@@ -1292,9 +1298,9 @@ async function setOverlay(on) {
   rerenderCurrentView();
 }
 
-// Re-render the CURRENT KG view in place from its cached body (used by the overlay toggle). Mirrors the
-// renderer the view was drawn by, so a toggle never changes WHICH view is shown - only whether its
-// nodes carry badges.
+// Re-render the CURRENT KG view in place from its cached body (the overlay toggle, the card docking, a
+// resize, a frontier node's choices). Mirrors the renderer the view was drawn by, so a redraw never
+// changes WHICH view is shown - only whether its nodes carry badges and what kgShown holds.
 function rerenderCurrentView() {
   if (!kgViewData) return;
   if (kgMode === "overview") renderKgOverview(kgViewData);
@@ -1479,11 +1485,12 @@ async function pathTo(target) {
 // Which view the panel currently holds ("overview" | "drill"); the seed view is spec 30's renderGraph.
 let kgMode = "overview";
 
-// Record the view the panel now holds and its body (so a toggle re-renders it in place), and bring
-// the header's tests state up to that view. Answers whether the body is a new one (a fresh read)
-// rather than the held one drawn again.
+// Record the view the panel now holds and its body (so a toggle re-renders it in place), drop what
+// the panel showed of a view it no longer holds, and bring the header's tests state up to that view.
+// Answers whether the body is a new one (a fresh read) rather than the held one drawn again.
 function holdKgView(mode, body) {
   const fresh = body !== kgViewData;
+  if (fresh) kgShown = kgShownNone();
   kgMode = mode;
   kgViewData = body;
   syncTestsToggle();
@@ -2436,7 +2443,7 @@ function renderKgCalls(cg) {
     + ' <a href="#" data-calls-both="' + esc(seed) + '">flow (both)</a>';
   const head = '<div class="kgtoolbar">' + back + ' &middot; ' + esc(dirLabel) + ' of <b>'
     + esc(seed) + '</b>' + switcher + '</div>'
-    + '<div id="kgfrontier" class="kgfrontier"></div>';
+    + '<div id="kgfrontier" class="kgfrontier">' + frontierChoices(kgShown.choices) + '</div>';
   if (!nodes.length) {
     el("kgpanel").innerHTML = head
       + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
@@ -2501,15 +2508,21 @@ function renderKgCalls(cg) {
 }
 
 // Expand a clicked FRONTIER node (spec 52 c5): a multi-candidate cross-file hop the walk did NOT
-// descend. Render its candidate definitions into the frontier slot, each a data-candidate handle;
-// choosing one RE-SEEDS the directed-call view on that definition (seedCalls), so the human picks the
-// definition and the graph never guesses. `raw` is the `|`-joined candidate ids the node carried.
+// descend. The call view it was drawn in shows its candidate definitions in the frontier slot from
+// now on, each a data-candidate handle; choosing one RE-SEEDS the directed-call view on that
+// definition (seedCalls), so the human picks the definition and the graph never guesses. `raw` is
+// the `|`-joined candidate ids the node carried; none clears the list.
 function showFrontierChoices(raw) {
-  const box = el("kgfrontier");
-  if (!box) return;
-  const cands = String(raw || "").split("|").filter(Boolean);
-  if (!cands.length) { box.innerHTML = ""; return; }
-  box.innerHTML = '<div class="kgfr-head">this name has ' + cands.length
+  if (kgMode !== "calls") return;
+  kgShown.choices = String(raw || "").split("|").filter(Boolean);
+  rerenderCurrentView();
+}
+
+// The frontier slot's content for the candidates `cands`: a head and each candidate a data-candidate
+// handle, or nothing when there are none.
+function frontierChoices(cands) {
+  if (!cands.length) return "";
+  return '<div class="kgfr-head">this name has ' + cands.length
     + ' definitions - choose one to continue the walk:</div>'
     + cands.map(c => '<a class="kgfr-cand" href="#" data-candidate="' + esc(c) + '">'
       + esc(c) + '</a>').join("");
