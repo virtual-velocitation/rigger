@@ -1,7 +1,7 @@
 //! The checks every crate's `prompt_surface` tests share (spec 121, criterion 16): the registry
 //! test over a module's source and its groups, which one macro generates in each crate, and the
-//! concatenation test's group pick and whitespace-normalized comparison. Each reads only the
-//! source text and the groups its caller passes, never a file at run time.
+//! concatenation test's group pick, per-surface guard and whitespace-normalized comparison. Each
+//! reads only the source text and the groups its caller passes, never a file at run time.
 
 use rigger_domain::prompt_surface::Group;
 use std::cell::RefCell;
@@ -102,7 +102,9 @@ pub fn assert_groups_name_the_consts(source: &str, groups: &[Group]) {
 }
 
 /// One concatenation test's picks over a crate's `groups`: each [`GroupPicks::rendered`] call is
-/// one branch's expected render, and the picks it records are what the test covers.
+/// one branch's expected render, and the picks it records are what the test covers. When the
+/// test ends, its drop is the per-surface guard: every group a surface the test picked from
+/// lists was picked under that surface.
 pub struct GroupPicks<'g> {
     groups: &'g [Group],
     picked: RefCell<Vec<(&'static str, &'static str)>>,
@@ -139,6 +141,29 @@ impl<'g> GroupPicks<'g> {
             .borrow_mut()
             .extend(picked.iter().map(|g| (g.surface, g.name)));
         picked.iter().map(|g| g.text).collect()
+    }
+}
+
+impl Drop for GroupPicks<'_> {
+    /// The per-surface guard: fails naming, in registry order, each (surface, name) pair of a
+    /// surface the test picked from that no pick covered. A surface the test never picked from is
+    /// outside the check, and a test already failing keeps its own message.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let picked = self.picked.borrow();
+        let unpicked: Vec<(&str, &str)> = self
+            .groups
+            .iter()
+            .map(|g| (g.surface, g.name))
+            .filter(|pair| picked.iter().any(|(s, _)| *s == pair.0) && !picked.contains(pair))
+            .collect();
+        assert_eq!(
+            unpicked,
+            Vec::<(&str, &str)>::new(),
+            "each group a surface lists is picked by a case of that surface"
+        );
     }
 }
 
