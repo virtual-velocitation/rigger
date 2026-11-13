@@ -53,7 +53,10 @@ use common::fixtures::edge;
 use common::fixtures::leaf_named_node;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
-use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
+use common::lens::{
+    assert_each_spelling_of_one_reads_grain_one, assert_overview_folds,
+    assert_underived_grain_is_the_empty_state,
+};
 use common::served::node_harness_passes;
 use common::served::served;
 use common::served::served_json;
@@ -152,6 +155,11 @@ fn lens_from_query_is_a_public_total_selector_including_concepts() {
             resolution: "1.5".to_string()
         },
         "an explicit resolution grain is honoured verbatim"
+    );
+    assert_eq!(
+        Lens::from_query(Some("concepts"), Some("1.0")),
+        concepts_default(),
+        "a grain is the number it names: 1.0 is the default grain 1, the spelling grouping ids carry"
     );
     assert_eq!(
         Lens::from_query(Some("bogus"), Some("9")),
@@ -579,6 +587,14 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
         served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "the concepts lens actually changes the served body (the back-compat equality is not vacuous)"
     );
+}
+
+/// A `resolution=` naming grain `1` in another spelling (`1.0`, `01`, `1e0`, `+1`) reads the derived
+/// grain `1`: the served concepts overview, the drill of a concept and its re-projection are those of
+/// `resolution=1`, never the underived empty state.
+#[test]
+fn every_spelling_of_grain_one_reads_the_derived_concept_grain() {
+    assert_each_spelling_of_one_reads_grain_one(&lens_graph(), "concepts", C0, C0);
 }
 
 // ---------------------------------------------------------------------------------------------------
