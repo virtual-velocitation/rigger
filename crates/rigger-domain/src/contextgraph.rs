@@ -211,15 +211,14 @@ pub const REL_CONTAINS: &str = "CONTAINS";
 /// tier is layered onto this edge by a later criterion; this criterion only makes the structural
 /// edge exist.
 pub const REL_REFERENCES: &str = "REFERENCES";
-/// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>`, folded from an
-/// `EdgeInferred` whose `caller` is set - the path of the enclosing definition the reference was
-/// attributed to - and that carries no `ref_kind` (a tagged reference folds no CALLS edge, spec
-/// 117).
+/// A caller-attributed call edge (spec 37): `<file>::<caller> --CALLS--> <callee>` from the
+/// definition enclosing the call, or `<file> --CALLS--> <callee>` from the file when the call sits
+/// outside every definition (a module-level call), so every call has a caller. A tagged reference
+/// (a top-level `use`/import) folds no CALLS edge (spec 117).
 /// It is added ALONGSIDE the file-level [`REL_REFERENCES`] edge (purely additive; the same callee
 /// resolution the REFERENCES edge uses), so one `subgraph` around a symbol answers "who calls it" by
-/// function, not merely "referenced from which file". A reference outside every definition
-/// (a top-level `use`/import) carries no caller and folds no CALLS edge. Re-extraction supersedes a
-/// file's CALLS edges under the same `fresh` batch boundary as its other structural edges (spec 29a).
+/// function or module, not merely "referenced from which file". Re-extraction supersedes a file's
+/// CALLS edges under the same `fresh` batch boundary as its other structural edges (spec 29a).
 pub const REL_CALLS: &str = "CALLS";
 /// A `design-doc` SPECIFIES (designs) a code node (spec 29b): the design-intent edge from a
 /// reference-architecture / `architecture.md` / addendum node to the subsystem it designs, so a
@@ -1096,15 +1095,24 @@ pub trait ContextGraph: Send + Sync {
         Ok(names)
     }
 
-    /// The code entities named `name` this graph answers, ordered by id: those of
-    /// How many distinct test entities the graph's `tests` filter hides prove a node of `ids`,
-    /// counted from the proofs read for those nodes: what an answer showing them says it leaves
-    /// out. None when tests are shown, the worktree cannot be compared, or by default (a graph
-    /// that holds no code, a test double).
-    fn hidden_provers(&self, _ids: &[String]) -> Result<usize, Error> {
-        Ok(0)
+    /// The distinct test entities the graph's `tests` filter hides that prove a node of `ids`,
+    /// in id order, read from the proofs read for those nodes: what an answer showing them says
+    /// it leaves out. None when tests are shown, the worktree cannot be compared, or by default
+    /// (a graph that holds no code, a test double).
+    fn hidden_provers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
     }
 
+    /// The distinct test entities the graph's `tests` filter hides whose calls land on a
+    /// placeholder bound to the leaf of a definition of `ids`, in id order: the hidden tests a
+    /// callers walk stepping from those nodes reaches through a placeholder rather than by a
+    /// proof. None when tests are shown, the worktree cannot be compared, or by default (a graph
+    /// that holds no code, a test double).
+    fn hidden_placeholder_callers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
+
+    /// The code entities named `name` this graph answers, ordered by id: those of
     /// [`Self::nodes_of_kind`] named `name`, read near the name. A hit it withholds is counted
     /// in its label as every withheld hit is.
     fn entities_named(&self, name: &str) -> Result<Vec<Node>, Error> {
@@ -1305,6 +1313,40 @@ pub struct Rows {
     pub incoming: Vec<Edge>,
 }
 
+/// How many test hits a show of `entity` that located `located` leaves out under a filter that
+/// hides tests, each counted once: the hidden tests the query names, by the rule
+/// [`crate::composed::locate`] names a shown definition by, and those proving the one node it
+/// locates ([`ContextGraph::hidden_provers`]). What `rigger graph --show` and the `rigger_graph` tool's
+/// `show` count under their label; none when tests are shown.
+pub fn show_tests_hidden(
+    graph: &dyn ContextGraph,
+    entity: &str,
+    located: &Located,
+) -> Result<usize, Error> {
+    let mut hidden = crate::composed::hidden_named(graph, entity)?;
+    if let Located::One(site) = located {
+        hidden.extend(graph.hidden_provers(std::slice::from_ref(&site.id))?);
+    }
+    hidden.sort_unstable();
+    hidden.dedup();
+    Ok(hidden.len())
+}
+
+/// The neighbourhood [`around`] answers.
+#[derive(Debug)]
+pub struct Around {
+    /// The nodes and edges it shows.
+    pub graph: Graph,
+    /// How many test hits it leaves out under a filter that hides tests, each counted once: the
+    /// hidden tests proving a node it shows ([`ContextGraph::hidden_provers`]) and those its
+    /// callers walk reaches through a placeholder from a node it steps from
+    /// ([`ContextGraph::hidden_placeholder_callers`]). The walk never steps from a hidden test,
+    /// so a test reaching a shown node only through another hidden test is not counted. What
+    /// `rigger graph --around` and the `rigger_graph` tool's `around` count under their label;
+    /// none when tests are shown.
+    pub tests_hidden: usize,
+}
+
 /// The neighborhood `rigger graph --around` and the `rigger_graph` tool's `around` serve: the
 /// undirected [`ContextGraph::subgraph`] within `depth` hops of `seed`, plus the seed's CALLERS up to
 /// the same depth ([`ContextGraph::calls`] `Up`, at the [`TIER_INFERRED`] floor), each node and edge
@@ -1312,9 +1354,13 @@ pub struct Rows {
 /// lands on a placeholder in its OWN file's namespace - so without the callers walk "who calls
 /// this" had no answer from the neighborhood (gap 104). The callers walk resolves those
 /// placeholders by name and stops at an ambiguous name rather than guessing.
-pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph, Error> {
+pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Around, Error> {
     let mut g = p.subgraph(seed, depth)?;
     let callers = p.calls(seed, Direction::Up, depth, TIER_INFERRED)?;
+    let stepped: Vec<String> = (callers.nodes.iter())
+        .filter(|c| c.layer < depth && c.frontier.is_none())
+        .map(|c| c.node.id.clone())
+        .collect();
     let mut node_ids: std::collections::BTreeSet<String> =
         g.nodes.iter().map(|n| n.id.clone()).collect();
     for c in callers.nodes {
@@ -1333,7 +1379,15 @@ pub fn around(p: &dyn ContextGraph, seed: &[String], depth: i64) -> Result<Graph
             g.edges.push(e);
         }
     }
-    Ok(g)
+    let shown: Vec<String> = node_ids.into_iter().collect();
+    let mut hidden = p.hidden_provers(&shown)?;
+    hidden.extend(p.hidden_placeholder_callers(&stepped)?);
+    hidden.sort_unstable();
+    hidden.dedup();
+    Ok(Around {
+        graph: g,
+        tests_hidden: hidden.len(),
+    })
 }
 
 /// The `CodeEntityExtracted` payload (spec 29a): one definition the extraction pass emits. It
@@ -2218,7 +2272,7 @@ mod around_neighborhood {
         let p = CallerProjection {
             requests: Mutex::new(Vec::new()),
         };
-        let g = around(&p, &["s.rs::open".to_string()], 2).unwrap();
+        let g = around(&p, &["s.rs::open".to_string()], 2).unwrap().graph;
         let ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["s.rs", "s.rs::open", "c.rs::run"], "got {ids:?}");
         assert!(

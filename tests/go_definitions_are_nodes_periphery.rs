@@ -39,9 +39,9 @@ rigger::test_cases! {
     /// `Gen`, `Ptr` and `Qual`, the generic one's type argument too; the named field's type from
     /// the field and that of the declaration naming two from `x`; the alias's name and its target
     /// from the alias; the call in the function-local const from its function; the interface
-    /// method's parameter type from the interface; and the method's receiver type from the method.
-    /// A reference no definition encloses (the parameter and receiver types of the two bodiless
-    /// declarations, both names of the alias named `_`) is no edge. Each edge hangs off the node of
+    /// method's parameter type from the interface; the method's receiver type from the method; and
+    /// each reference no definition encloses (the parameter and receiver types of the two bodiless
+    /// declarations, both names of the alias named `_`) from the file. Each edge hangs off the node of
     /// its caller's path, `<file>::<path>` (spec 119 criterion 8), so a field's or a method's is
     /// that definition's own node (`Shape.Gen`, `Shape.Ptr`, `Shape.Qual`, `Shape.side`,
     /// `Shape.x`, `Shape::area`), and the embedded field `Shape.Base`'s is its own, apart from the
@@ -81,6 +81,10 @@ rigger::test_cases! {
                 "probe",
             ],
             &[
+                ("f.go", "f.go::%Canvas"),
+                ("f.go", "f.go::%_"),
+                ("f.go", "f.go::Base"),
+                ("f.go", "f.go::Shape"),
                 ("f.go::Alias", "f.go::Alias"),
                 ("f.go::Alias", "f.go::Base"),
                 ("f.go::Drawer", "f.go::%Canvas"),

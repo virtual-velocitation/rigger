@@ -4,6 +4,7 @@
 //! node, but for the groupings, which stay the stamp's.
 
 use crate::common;
+use common::cli::repository_code_store;
 use common::fixtures::{git_commit_all, init_repo, write_files, write_text, RESOLVER_TREE};
 use rigger::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger::code_store::CodeStore;
@@ -83,7 +84,7 @@ fn the_overlaid_worktree_answers_what_a_commit_of_its_content_answers() {
     write_text(root, ".gitignore", "/.rigger/store/\n");
     write_files(root, RESOLVER_TREE);
     git_commit_all(root, "the resolver's tree");
-    let store = CodeStore::in_repository(root);
+    let store = repository_code_store(root);
     store.open(Mode::Write).expect("the store advances");
     let before = answers(&store, root, Compared::Overlaid(0));
 

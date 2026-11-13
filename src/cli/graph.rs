@@ -70,8 +70,9 @@ pub(crate) fn cmd_graph(args: &[String]) -> Res {
             "graph: --lookup <term>..., --around <id> or --show <entity> is required".into(),
         );
     }
-    let records = owning_graph_to_read()?;
-    let read = ReadGraph::new(&records, caller_tree()?);
+    let site = Site::here();
+    let records = owning_graph_to_read(&site)?;
+    let read = ReadGraph::new(&records, &site)?;
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
         exit_once_printed(print_around(graph, &around, depth))
     })
@@ -97,27 +98,25 @@ fn print_around(graph: &dyn ContextGraph, around: &str, depth: i64) -> Res {
     // the interface, an alias to its canonical id, else the query as typed. Its one site read
     // answers the queried node's unresolved leaves.
     let queried = graph.resolve(around)?.unwrap_or(around.to_string());
-    let g = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
+    let around_answer = contextgraph::around(graph, std::slice::from_ref(&queried), depth)?;
     let unresolved = match graph.locate(&queried)? {
         Located::One(site) => site.unresolved,
         _ => Vec::new(),
     };
     // The label heads the answer (6.1), counting what the reads above withheld.
     println!("{}", graph.stamp_label());
-    let shown: Vec<String> = g.nodes.iter().map(|n| n.id.clone()).collect();
-    print_tests_hidden(graph, &shown)?;
+    print_tests_hidden(around_answer.tests_hidden);
     println!("subgraph around {around:?} (depth {depth}):");
-    print_around_subgraph(&g, &queried, &unresolved);
+    print_around_subgraph(&around_answer.graph, &queried, &unresolved);
     Ok(())
 }
 
-/// The line under an answer's label saying how many test entities the tests filter hides prove
-/// the nodes `shown`, when any do.
-fn print_tests_hidden(graph: &dyn ContextGraph, shown: &[String]) -> Res {
-    if let Some(line) = tests_hidden_line(graph.hidden_provers(shown)?) {
+/// The line under an answer's label saying how many test hits the tests filter hid, when any
+/// did.
+fn print_tests_hidden(hidden: usize) {
+    if let Some(line) = tests_hidden_line(hidden) {
         println!("{line}");
     }
-    Ok(())
 }
 
 /// The number of newest governing decision/finding nodes `rigger graph --around` prints in full
@@ -264,9 +263,12 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 /// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
 /// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
 /// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
-/// with no store yet holds no such record.
-fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std::error::Error>> {
-    let Some((loc, selection)) = store_if_any()? else {
+/// with no store yet holds no such record. The store is the one `site` resolves.
+fn logged_site(
+    site: &Site,
+    id: &str,
+) -> Result<Option<contextgraph::EntitySite>, Box<dyn std::error::Error>> {
+    let Some((loc, selection)) = store_if_any_in(site)? else {
         return Ok(None);
     };
     over_the_run_store_at(&loc, &selection, |store| {
@@ -278,10 +280,11 @@ fn logged_site(id: &str) -> Result<Option<contextgraph::EntitySite>, Box<dyn std
 /// `lookup` serves, answered from the owning repository's graph and the caller's own tree.
 fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     use rigger::lookup::Lookup as _;
-    let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
-    match owning_graph_to_read() {
+    let site = Site::here();
+    let lookup = rigger::lookup::TreeLookup::new(site.tree()?);
+    match owning_graph_to_read(&site) {
         Ok(records) => {
-            let read = ReadGraph::new(&records, caller_tree()?);
+            let read = ReadGraph::new(&records, &site)?;
             contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
                 exit_once_printed(
                     lookup
@@ -303,27 +306,29 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
 }
 
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
-    let records = owning_graph_to_read()?;
-    let read = ReadGraph::new(&records, caller_tree()?);
+    let site = Site::here();
+    let records = owning_graph_to_read(&site)?;
+    let read = ReadGraph::new(&records, &site)?;
     contextgraph::answered(&read, ViewFilter { tests }, |graph| {
-        exit_once_printed(print_show(graph, entity))
+        exit_once_printed(print_show(&site, graph, entity))
     })
 }
 
-/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined.
-fn print_show(graph: &dyn ContextGraph, entity: &str) -> Res {
+/// `rigger graph --show`'s answer from `graph`: the label, then where `entity` is defined. A
+/// query that names only tests the filter hid answers with their count alone.
+fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
+    let hidden = contextgraph::show_tests_hidden(graph, entity, &located)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
-    if let Located::One(site) = &located {
-        print_tests_hidden(graph, std::slice::from_ref(&site.id))?;
-    }
+    print_tests_hidden(hidden);
     match located {
-        Located::None => match logged_site(entity)? {
+        Located::None => match logged_site(site, entity)? {
             Some(site) => {
                 print_entity_site(&site);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
+            None if hidden > 0 => {}
             None => println!(
                 "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
             ),
@@ -689,16 +694,12 @@ fn report_groupings(
     counted: impl Fn(usize) -> String,
 ) -> Res {
     let (resolution, tests) = report_options(verb, args)?;
-    let head = open_head(&caller_tree()?)?;
+    let site = Site::here();
+    let head = open_head(&site, &site.tree()?)?;
     let view = &*head.view;
     let lines = {
-        let computed;
-        let groupings = if resolution == community::DEFAULT_RESOLUTION {
-            view.groupings()
-        } else {
-            computed = rigger_domain::groupings::group_at(view, resolution);
-            &computed
-        };
+        let computed = rigger_domain::groupings::computed_at(view, resolution);
+        let groupings = computed.as_ref().unwrap_or_else(|| view.groupings());
         let clusters = pick(groupings);
         let members: usize = clusters.iter().map(|c| c.members.len()).sum();
         let resolver = rigger_domain::resolve::Resolver::new(view);
@@ -744,15 +745,8 @@ fn report_options(verb: &str, args: &[String]) -> Result<(f64, Tests), Box<dyn s
             "--resolution" => {
                 i += 1;
                 let raw = args.get(i).cloned().unwrap_or_default();
-                resolution = raw.parse::<f64>().map_err(|_| {
-                    format!("graph {verb}: --resolution expects a number, got {raw:?}")
-                })?;
-                if !(resolution.is_finite() && resolution > 0.0) {
-                    return Err(format!(
-                        "graph {verb}: --resolution must be a positive finite number, got {resolution}"
-                    )
-                    .into());
-                }
+                resolution = community::parse_resolution(&raw)
+                    .map_err(|bad| format!("graph {verb}: {bad}"))?;
             }
             "--tests" => {
                 i += 1;

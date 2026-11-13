@@ -50,7 +50,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
-pub(crate) const VERSION: u16 = 3;
+pub(crate) const VERSION: u16 = 4;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -370,7 +370,7 @@ impl Encoder {
                 .and_then(|(file, line)| Some((file, line.parse::<u32>().ok()?)))
                 .ok_or_else(|| format!("proof evidence {:?} is not file:line", call.evidence))?;
             self.pool.put(&mut out, &call.target)?;
-            self.pool.put(&mut out, &call.caller)?;
+            self.pool.put_opt(&mut out, call.caller.as_deref())?;
             self.pool.put(&mut out, file)?;
             put_u32(&mut out, line);
             by_file.push((file, narrow(row, "proof row")?));
@@ -616,12 +616,17 @@ impl Snapshot {
             (WF_RELATIONS, &[0, STR, 2 * STR]),
             (PROOFS, &[0, STR, P_FILE]),
         ];
+        // The strings a row may leave absent: a proof's caller, when test code inside a product
+        // entity makes the call.
+        let absent_allowed = [(PROOFS, STR)];
         for (kind, offsets) in strings {
             let table = self.table(kind);
             for i in 0..table.rows {
                 let row = self.row(table, i);
                 for &at in offsets {
-                    if pool_text(&self.pool, le32(row, at), le32(row, at + 4)).is_none() {
+                    let absent = le32(row, at) == NONE && absent_allowed.contains(&(kind, at));
+                    if !absent && pool_text(&self.pool, le32(row, at), le32(row, at + 4)).is_none()
+                    {
                         return Err(format!("section {kind} row {i}: a string outside the pool"));
                     }
                 }
@@ -931,7 +936,7 @@ impl Snapshot {
     fn proof(&self, row: &[u8]) -> ProofCall {
         ProofCall {
             target: self.text(row, 0).to_owned(),
-            caller: self.text(row, STR).to_owned(),
+            caller: (le32(row, STR) != NONE).then(|| self.text(row, STR).to_owned()),
             evidence: format!("{}:{}", self.text(row, P_FILE), le32(row, P_LINE)),
         }
     }

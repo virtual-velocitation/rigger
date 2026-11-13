@@ -18,6 +18,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::code_facts::Tip;
 use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
+use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
@@ -28,6 +29,7 @@ use crate::contextgraph::{
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
 };
+use crate::groupings::computed_at;
 use crate::resolve::{ProofCall, INTENT_KINDS};
 use crate::test_view::{join_tests, TestAttachment};
 
@@ -400,9 +402,13 @@ pub trait CodeHalf: Neighbors {
     fn entity_names(&self) -> Vec<String>;
     /// The test entities named `name` the filter hides, in id order.
     fn hidden_tests_named(&self, name: &str) -> Vec<Node>;
-    /// How many distinct test entities the filter hides prove a node of `ids`, counted from the
-    /// proofs the half read for them ([`ContextGraph::hidden_provers`]).
-    fn hidden_provers(&self, ids: &[String]) -> usize;
+    /// The distinct test entities the filter hides that prove a node of `ids`, in id order,
+    /// read from the proofs the half read for them ([`ContextGraph::hidden_provers`]).
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String>;
+    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder,
+    /// in order ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk
+    /// reaches through a placeholder bound to `leaf`.
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -417,18 +423,18 @@ pub trait CodeHalf: Neighbors {
     }
 }
 
-/// How many distinct provers of the `(proved, prover)` pairs `proofs` prove an id of `ids`: the
-/// one count of [`CodeHalf::hidden_provers`].
+/// The distinct provers of the `(proved, prover)` pairs `proofs` that prove an id of `ids`, in
+/// order: the one reading of [`CodeHalf::hidden_provers`].
 pub(crate) fn provers_of<'p>(
     proofs: impl Iterator<Item = (&'p str, &'p str)>,
     ids: &[String],
-) -> usize {
+) -> Vec<String> {
     let ids: FxHashSet<&str> = ids.iter().map(String::as_str).collect();
-    let provers: FxHashSet<&str> = proofs
+    let provers: BTreeSet<&str> = proofs
         .filter(|(proved, _)| ids.contains(proved))
         .map(|(_, prover)| prover)
         .collect();
-    provers.len()
+    provers.into_iter().map(str::to_string).collect()
 }
 
 /// The file `node`'s facts came from, the one rule withholding reads: a design or workflow node's
@@ -466,28 +472,61 @@ pub struct Whole {
     concept_members: BTreeMap<String, Vec<String>>,
     concepts_of: BTreeMap<String, Vec<String>>,
     hidden_tests: Vec<Node>,
-    /// The view's groupings and, per arm, the tests attached to them.
+    /// The view's stored groupings with those of the grain read beside them, and, per grain and
+    /// arm, the tests attached to them.
     groupings: Groupings,
-    attachments: [TestAttachment; 2],
+    attachments: Vec<TestAttachment>,
     /// The proof calls read to attach the tests, kept while the filter hides tests.
     proofs: Vec<ProofCall>,
+    /// The callers of the test calls to each leaf that land on a placeholder, in order, kept
+    /// while the filter hides tests.
+    placeholder_callers: BTreeMap<String, Vec<String>>,
 }
 
 impl Whole {
-    /// `view` resolved whole under `filter`.
+    /// `view` resolved whole under `filter`, its stored groupings joined on.
+    #[cfg(test)]
     pub(crate) fn new(view: &dyn CodeView, filter: ViewFilter) -> Self {
-        let groupings = view.groupings();
+        Self::at(view, filter, DEFAULT_RESOLUTION)
+    }
+
+    /// `view` resolved whole under `filter`, its stored groupings joined on and, beside them, the
+    /// groupings at `resolution` when that is not the stored grain: computed from this view as
+    /// the grouping reports compute them ([`computed_at`]), and never stored.
+    pub(crate) fn at(view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Self {
+        let computed = computed_at(view, resolution);
+        let grains: Vec<&Groupings> = std::iter::once(view.groupings())
+            .chain(computed.as_ref())
+            .collect();
         let code_graph = CodeGraph::new(view, filter);
         let resolved = code_graph.resolved();
-        let attachments = attachments(code_graph.resolver().proof_calls(), groupings);
-        let code = Indexed::new(
-            joined(resolved.graph, groupings, &attachments, filter.tests),
-            Vec::new(),
-        );
+        let mut graph = resolved.graph;
+        let mut attached = Vec::new();
+        for grain in &grains {
+            let grain_attachments = attachments(code_graph.resolver().proof_calls(), grain);
+            graph = joined(graph, grain, &grain_attachments, filter.tests);
+            attached.extend(grain_attachments);
+        }
+        let code = Indexed::new(graph, Vec::new());
+        let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (leaf, caller) in resolved.placeholder_calls {
+            placeholder_callers.entry(leaf).or_default().push(caller);
+        }
+        for callers in placeholder_callers.values_mut() {
+            callers.sort_unstable();
+            callers.dedup();
+        }
         let proofs = match filter.tests {
             Tests::Exclude => code_graph.into_proof_calls(),
             Tests::Include | Tests::Only => Vec::new(),
         };
+        let mut groupings = Groupings::default();
+        for grain in grains {
+            groupings
+                .communities
+                .extend(grain.communities.iter().cloned());
+            groupings.concepts.extend(grain.concepts.iter().cloned());
+        }
         let mut concept_members: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut concepts_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for c in &groupings.concepts {
@@ -504,9 +543,10 @@ impl Whole {
             concept_members,
             concepts_of,
             hidden_tests: resolved.hidden_tests,
-            groupings: groupings.clone(),
-            attachments,
+            groupings,
+            attachments: attached,
             proofs,
+            placeholder_callers,
         }
     }
 }
@@ -580,9 +620,18 @@ impl CodeHalf for Whole {
             .cloned()
             .collect()
     }
-    fn hidden_provers(&self, ids: &[String]) -> usize {
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let proofs = self.proofs.iter();
-        provers_of(proofs.map(|c| (c.target.as_str(), c.caller.as_str())), ids)
+        provers_of(
+            proofs.filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
+            ids,
+        )
+    }
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        self.placeholder_callers
+            .get(leaf)
+            .cloned()
+            .unwrap_or_default()
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -664,9 +713,21 @@ impl<'r> Composed<'r> {
         filter: ViewFilter,
         honesty: Honesty,
     ) -> Result<Self, Error> {
+        Self::at(records, view, filter, honesty, DEFAULT_RESOLUTION)
+    }
+
+    /// [`Self::new`] with the groupings at `resolution` joined on beside the stored ones
+    /// ([`Whole::at`]): the graph a reader of one grain reads.
+    pub fn at(
+        records: &'r dyn Neighbors,
+        view: &dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+        resolution: f64,
+    ) -> Result<Self, Error> {
         Self::over(
             records,
-            Whole::new(view, filter),
+            Whole::at(view, filter, resolution),
             &view.stamp().tip,
             honesty,
         )
@@ -1140,11 +1201,27 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             .filter(|n| !self.withholds_code(n))
             .collect())
     }
-    fn hidden_provers(&self, ids: &[String]) -> Result<usize, Error> {
+    fn hidden_provers(&self, ids: &[String]) -> Result<Vec<String>, Error> {
         if self.stale {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         Ok(self.code.hidden_provers(ids))
+    }
+    fn hidden_placeholder_callers(&self, ids: &[String]) -> Result<Vec<String>, Error> {
+        if self.stale {
+            return Ok(Vec::new());
+        }
+        let mut leaves = BTreeSet::new();
+        for id in ids {
+            leaves.extend(bound_leaf(self, id)?);
+        }
+        let mut hidden = Vec::new();
+        for leaf in &leaves {
+            hidden.extend(self.code.placeholder_callers(leaf));
+        }
+        hidden.sort_unstable();
+        hidden.dedup();
+        Ok(hidden)
     }
     fn whole(&self) -> Result<Graph, Error> {
         Neighbors::whole(self)
@@ -1258,21 +1335,29 @@ fn definitions(
             Admitted::Named => true,
             Admitted::CallTargets => is_call_target(n.attrs.get("kind").map(String::as_str)),
         })
-        .filter(|n| file.is_none_or(|f| n.id.starts_with(&entity_id(f, ""))))
         .map(|n| n.id)
+        .filter(|id| in_file(id, file))
         .collect();
     ids.sort();
     ids.dedup();
     Ok(ids)
 }
 
+/// Whether `id` is in `file`'s `<file>::` id range, any id when no file is given.
+fn in_file(id: &str, file: Option<&str>) -> bool {
+    file.is_none_or(|f| id.starts_with(&entity_id(f, "")))
+}
+
 /// Whether the named node `id` is a call target: `Some(true)` for a definition a call resolves
 /// onto, `Some(false)` for a named data member or declaration, `None` for a node with no name or
 /// no node.
 fn named_call_target(graph: &dyn Neighbors, id: &str) -> Result<Option<bool>, Error> {
-    Ok(graph.node(id)?.and_then(|n| {
-        node_name(&n).map(|_| is_call_target(n.attrs.get("kind").map(String::as_str)))
-    }))
+    Ok(graph.node(id)?.as_ref().and_then(call_target))
+}
+
+/// [`named_call_target`] of the node `n`.
+fn call_target(n: &Node) -> Option<bool> {
+    node_name(n).map(|_| is_call_target(n.attrs.get("kind").map(String::as_str)))
 }
 
 /// One resolved `CALLS` hop of a layered walk: the neighbor reached, the edge it was reached by
@@ -1312,14 +1397,20 @@ fn calls_at(edges: Vec<Edge>, end: impl Fn(&Edge) -> &String) -> Vec<Edge> {
     calls
 }
 
+/// The leaf whose placeholders an UP hop reaches `cur` through ([`callers_of`]): a call-target
+/// definition's leaf; none for any other node.
+fn bound_leaf(graph: &dyn Neighbors, cur: &str) -> Result<Option<String>, Error> {
+    let node = graph.node(cur)?.filter(|n| call_target(n) == Some(true));
+    Ok(node.as_ref().and_then(node_leaf).map(str::to_string))
+}
+
 /// The callers of `cur` for one UP hop: none for a named non-target; else the direct callers
 /// whose edge targets `cur`, and, for a definition, the callers through a placeholder bound to
-/// its leaf, a frontier when the leaf has more than one call-target definition.
+/// its leaf ([`bound_leaf`]), a frontier when the leaf has more than one call-target definition.
 fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
-    let definition = match named_call_target(graph, cur)? {
-        Some(false) => return Ok(Vec::new()),
-        target => target.is_some(),
-    };
+    if named_call_target(graph, cur)? == Some(false) {
+        return Ok(Vec::new());
+    }
     let mut hops: Vec<Hop> = calls_at(graph.incoming(cur)?, |e| &e.from)
         .into_iter()
         .map(|via| Hop {
@@ -1328,8 +1419,7 @@ fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
             frontier: None,
         })
         .collect();
-    let node = if definition { graph.node(cur)? } else { None };
-    if let Some(leaf) = node.as_ref().and_then(node_leaf) {
+    if let Some(leaf) = bound_leaf(graph, cur)?.as_deref() {
         let cands = definitions(graph, leaf, Admitted::CallTargets, None)?;
         let frontier = (cands.len() > 1).then_some(cands);
         let mut via_bare = Vec::new();
@@ -1541,16 +1631,27 @@ fn is_bare_flat_node(node: &Node) -> bool {
         && split_id(&node.id).1.is_some()
 }
 
-/// The definitions a show query names when no exact id answers it, sorted: the first non-empty of
-/// the query as a leaf, its path leaf filtered on the id suffix `::<query>`, and its rest half as
-/// a leaf in its file half.
+/// The definitions a show query names when no exact id answers it, sorted.
 fn shown_candidates(graph: &dyn Neighbors, query: &str) -> Result<Vec<String>, Error> {
-    let by_leaf = definitions(graph, query, Admitted::Named, None)?;
+    named_by(query, |leaf, file| {
+        definitions(graph, leaf, Admitted::Named, file)
+    })
+}
+
+/// The ids a show query names among those `named` reads by leaf (in a file's id range when one
+/// is given), sorted: the first non-empty of the query as a leaf, its path leaf filtered on the
+/// id suffix `::<query>`, and its rest half as a leaf in its file half. The one rule of what a
+/// show names, read over the shown definitions and over the hidden tests alike.
+fn named_by(
+    query: &str,
+    named: impl Fn(&str, Option<&str>) -> Result<Vec<String>, Error>,
+) -> Result<Vec<String>, Error> {
+    let by_leaf = named(query, None)?;
     if !by_leaf.is_empty() {
         return Ok(by_leaf);
     }
     let suffix = entity_id("", query);
-    let by_path: Vec<String> = definitions(graph, path_leaf(query), Admitted::Named, None)?
+    let by_path: Vec<String> = named(path_leaf(query), None)?
         .into_iter()
         .filter(|id| id.ends_with(&suffix))
         .collect();
@@ -1558,7 +1659,26 @@ fn shown_candidates(graph: &dyn Neighbors, query: &str) -> Result<Vec<String>, E
         return Ok(by_path);
     }
     let (file, rest) = split_id(query);
-    definitions(graph, rest.unwrap_or_default(), Admitted::Named, Some(file))
+    named(rest.unwrap_or_default(), Some(file))
+}
+
+/// The test entities the graph's `tests` filter hides that a show of `query` names, sorted: the
+/// one whose id is the query, else those [`named_by`] names among the hidden tests, as
+/// [`locate`] names a shown definition. None when tests are shown.
+pub(crate) fn hidden_named(graph: &dyn ContextGraph, query: &str) -> Result<Vec<String>, Error> {
+    let hidden = |leaf: &str, file: Option<&str>| -> Result<Vec<String>, Error> {
+        Ok((graph.hidden_tests_named(leaf)?.into_iter())
+            .map(|n| n.id)
+            .filter(|id| in_file(id, file))
+            .collect())
+    };
+    let exact: Vec<String> = (hidden(path_leaf(query), None)?.into_iter())
+        .filter(|id| id == query)
+        .collect();
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    named_by(query, hidden)
 }
 
 /// [`ContextGraph::locate`] over `graph`: an exact id (a bare flat node's only once no definition

@@ -63,7 +63,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // The dashboard only reads the graph: one that owes its rebuild is served as it stands, and
     // the dash says so once at start (spec 101).
     if let Some(note) = graph_rebuild_owed_note(&graph_db, &identity) {
-        eprintln!("{note}");
+        rigger::whole_line::say(format_args!("{note}"));
     }
     // The scratch root whose markers rigger stats to present each agent's liveness age (spec
     // 14). Resolved once; a repo-less invocation with no `RIGGER_TMPDIR`/configured `workdir`
@@ -160,10 +160,10 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
         // the dash's own project by default, an attached instance's LOCAL graph projection when
         // one is selected, or an empty graph for a since-gone selector - never an error.
-        move |instance: Option<&str>, tests: Tests| -> dash::GraphRead {
+        move |instance: Option<&str>, tests: Tests, resolution: f64| -> dash::GraphRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests),
-                DashAttach::Instance(inst) => dash_attach_graph(&inst, tests),
+                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests, resolution),
+                DashAttach::Instance(inst) => dash_attach_graph(&inst, tests, resolution),
                 DashAttach::Empty => dash::GraphRead {
                     label: Some(unattached(instance)),
                     ..dash::GraphRead::default()
@@ -562,17 +562,25 @@ fn dash_read<T>(
     tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
 ) -> Result<(T, Label), String> {
-    dash_open(graph_db, identity, tests, |graph| {
-        let answer = read(graph.as_ref())?;
-        Ok((answer, graph.stamp_label()))
-    })
+    dash_open(
+        graph_db,
+        identity,
+        tests,
+        community::DEFAULT_RESOLUTION,
+        |graph| {
+            let answer = read(graph.as_ref())?;
+            Ok((answer, graph.stamp_label()))
+        },
+    )
 }
 
-/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it.
+/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it,
+/// the groupings at `resolution` read beside the stored ones ([`ReadGraph::open_at`]).
 fn dash_open<T>(
     graph_db: &str,
     identity: &str,
     tests: Tests,
+    resolution: f64,
     read: impl FnOnce(Box<dyn ContextGraph + '_>) -> Result<(T, Label), contextgraph::Error>,
 ) -> Result<(T, Label), String> {
     let path = Path::new(graph_db);
@@ -585,11 +593,11 @@ fn dash_open<T>(
         .parent()
         .and_then(Path::parent)
         .unwrap_or(Path::new(""));
-    let worktree =
-        tree_of(checkout).map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
-    let read_graph = ReadGraph::new(&records, worktree);
+    let site = Site::of(checkout);
+    let read_graph = ReadGraph::new(&records, &site)
+        .map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
     let graph = read_graph
-        .open(ViewFilter { tests })
+        .open_at(ViewFilter { tests }, resolution)
         .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
     read(graph).map_err(|e| format!("the graph cannot be read: {}", e.0))
 }
@@ -617,9 +625,14 @@ fn unattached(instance: Option<&str>) -> dash::GraphLabel {
 /// `Graph::default()`, whereas this read still returns the code nodes and their edges. Best-effort
 /// like the run-seeded read: an absent graph (a grep-only run never builds one), an open error, or a
 /// query error all degrade to an empty graph, never an error, so the rest of the dash still serves.
-fn dash_read_whole_graph(graph_db: &str, identity: &str, tests: Tests) -> dash::GraphRead {
+fn dash_read_whole_graph(
+    graph_db: &str,
+    identity: &str,
+    tests: Tests,
+    resolution: f64,
+) -> dash::GraphRead {
     let ((graph, withheld, tests_hidden), label) =
-        described(dash_open(graph_db, identity, tests, |g| {
+        described(dash_open(graph_db, identity, tests, resolution, |g| {
             let tests_hidden = g.hidden_tests()?.len();
             let read = g.into_whole()?;
             Ok(((read.graph, read.withheld, tests_hidden), read.label))
@@ -857,12 +870,16 @@ fn dash_attach_inputs(inst: &rigger::registry::Instance) -> dash::DashInputs {
 /// `/api/graph` view's lazy read: that instance's LOCAL `graph.db` under its `.rigger`, read
 /// directly ([`dash_read_whole_graph`]) so it reaches any node the projection holds even when the
 /// run seeded none. Best-effort/empty-degrade like the local read.
-fn dash_attach_graph(inst: &rigger::registry::Instance, tests: Tests) -> dash::GraphRead {
+fn dash_attach_graph(
+    inst: &rigger::registry::Instance,
+    tests: Tests,
+    resolution: f64,
+) -> dash::GraphRead {
     let graph_db = instance_rigger_dir(inst)
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_whole_graph(&graph_db, &inst.project, tests)
+    dash_read_whole_graph(&graph_db, &inst.project, tests, resolution)
 }
 
 /// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
@@ -925,7 +942,8 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
         let identity = loc.identity()?;
         let graph = open_graph_for_write(&loc.file("graph.db"), &identity, selection)?;
         // `rigger_graph` reads the graph composed for the caller's own tree.
-        let context = ReadGraph::new(&graph, caller_tree()?);
+        let site = Site::here();
+        let context = ReadGraph::new(&graph, &site)?;
 
         // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
         // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
@@ -946,7 +964,7 @@ pub(crate) fn cmd_mcp(args: &[String]) -> Res {
             String::new()
         };
 
-        let lookup = rigger::lookup::TreeLookup::new(caller_tree()?);
+        let lookup = rigger::lookup::TreeLookup::new(site.tree()?);
         let mut server = mcpserver::Server::new(store, conductor::STREAM)
             .with_graph(&graph)
             .with_context(&context)
@@ -1016,7 +1034,13 @@ mod tests {
 
         // The fix: the graph provider reads the whole projection directly, so a real code node is
         // reachable with no run seeds at all.
-        let whole = dash_read_whole_graph(graph_path, identity, Tests::Exclude).graph;
+        let whole = dash_read_whole_graph(
+            graph_path,
+            identity,
+            Tests::Exclude,
+            community::DEFAULT_RESOLUTION,
+        )
+        .graph;
         assert!(
             whole
                 .nodes
@@ -1156,7 +1180,13 @@ mod tests {
         );
 
         // (a) The read degrades to an EMPTY graph, never an error.
-        let whole = dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph;
+        let whole = dash_read_whole_graph(
+            graph_db,
+            identity,
+            Tests::Exclude,
+            community::DEFAULT_RESOLUTION,
+        )
+        .graph;
         assert!(
             whole.nodes.is_empty() && whole.edges.is_empty(),
             "an absent projection reads as an empty graph, got {whole:?}"
@@ -1174,7 +1204,13 @@ mod tests {
         // `move || dash_read_whole_graph(..)` provider) honors the same read-only contract over the
         // absent path.
         let provider = || -> contextgraph::Graph {
-            dash_read_whole_graph(graph_db, identity, Tests::Exclude).graph
+            dash_read_whole_graph(
+                graph_db,
+                identity,
+                Tests::Exclude,
+                community::DEFAULT_RESOLUTION,
+            )
+            .graph
         };
         let via_provider = provider();
         assert!(

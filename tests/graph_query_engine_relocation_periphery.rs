@@ -40,9 +40,10 @@ use crate::common;
 
 use common::fixtures::edge;
 use common::fixtures::node_with_attrs as node;
+use rigger::community::{grain, DEFAULT_RESOLUTION};
 use rigger::contextgraph::query::{
     card, cluster_detail, clustered_overview, graph_load, graph_query, neighborhood, path, search,
-    Lens, SearchHit, DEFAULT_COMMUNITY_RESOLUTION, SEARCH_RESULT_LIMIT,
+    Lens, SearchHit, SEARCH_RESULT_LIMIT,
 };
 use rigger::contextgraph::{
     Edge, Graph, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, REL_CONTAINS, TIER_EXTRACTED,
@@ -184,7 +185,7 @@ fn graph_query_communities_threads_the_lens_param_to_the_direct_library_call() {
     let want = clustered_overview(
         &g,
         &Lens::Code {
-            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         },
     );
     assert_eq!(got, serde_json::to_value(&want).unwrap());

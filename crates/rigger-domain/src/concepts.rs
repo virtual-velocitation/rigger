@@ -134,7 +134,7 @@ pub struct Derivation {
 /// pure function of the log, so a rebuild re-derives it byte-identically.
 pub fn derive(g: &Graph, layer: &Coupling, resolution: f64) -> Derivation {
     let grouping = community::partition(layer, resolution);
-    let res_str = format!("{resolution}");
+    let res_str = community::grain(resolution);
     let nodes = layer.nodes();
     let degs = layer.degrees();
 

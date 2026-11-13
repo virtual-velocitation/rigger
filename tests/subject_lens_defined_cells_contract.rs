@@ -254,14 +254,15 @@ fn full_in_budget_graph() -> Graph {
 }
 
 /// When the three criterion-2 fields are at their default, the serialized body carries NONE of their
-/// keys, so a pre-criterion-2 consumer sees the byte-identical shape a plain files or full-derived
-/// cell already emitted. Holds under BOTH a files re-grain (fields never apply) and a full code
-/// re-grain (they apply but are cleared). This is the additive-not-breaking wire contract.
+/// keys, so a pre-criterion-2 consumer sees the shape a plain files or full-derived cell already
+/// emitted, a derived cell adding only the grain it displays. Holds under BOTH a files re-grain
+/// (fields never apply) and a full code re-grain (they apply but are cleared). This is the
+/// additive-not-breaking wire contract.
 #[test]
 fn a_full_in_budget_re_grain_omits_every_defaulted_criterion_2_field() {
     let graph = full_in_budget_graph();
 
-    for lens in [Lens::Files, lens("code")] {
+    for (lens, grain) in [(Lens::Files, None), (lens("code"), Some("1"))] {
         let re = reproject(&graph, PLAIN_CONCEPT, &lens);
         // Sanity: this really is a full, in-budget, non-shared cell (not accidentally empty).
         assert_eq!(
@@ -287,13 +288,21 @@ fn a_full_in_budget_re_grain_omits_every_defaulted_criterion_2_field() {
                 "a defaulted `{field}` is omitted from the wire under {lens:?} (back-compat): {obj:?}"
             );
         }
-        // The surviving keys are exactly the pre-criterion-2 shape.
-        let mut present: Vec<&String> = obj.keys().collect();
+        // The surviving keys are exactly the pre-criterion-2 shape, and the grain a derived lens
+        // displays.
+        let mut present: Vec<&str> = obj.keys().map(String::as_str).collect();
         present.sort();
+        let mut expected = vec!["clusters", "edges", "subject", "total"];
+        expected.extend(grain.map(|_| "grain"));
+        expected.sort();
         assert_eq!(
-            present,
-            vec![&"clusters".to_string(), &"edges".to_string(), &"subject".to_string(), &"total".to_string()],
-            "the defaulted body is the byte-identical pre-criterion-2 shape under {lens:?}: {obj:?}"
+            present, expected,
+            "the defaulted body is the pre-criterion-2 shape and the displayed grain under {lens:?}: {obj:?}"
+        );
+        assert_eq!(
+            obj.get("grain").and_then(|g| g.as_str()),
+            grain,
+            "a derived cell states the grain it displays under {lens:?}"
         );
     }
 }

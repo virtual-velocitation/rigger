@@ -111,7 +111,9 @@ fn register_run_instance(
     // The initial, synchronous registration. On failure, degrade to an inert guard rather than
     // spawn a heartbeat thread that could only fail the same way.
     if let Err(e) = rigger::registry::write(&dir, &inst) {
-        eprintln!("rigger: instance registry write skipped ({e}); discovery is unaffected");
+        rigger::whole_line::say(format_args!(
+            "rigger: instance registry write skipped ({e}); discovery is unaffected"
+        ));
         return RunRegistration::inert();
     }
     // The heartbeat thread re-stamps `inst` every interval until the guard drops
@@ -173,10 +175,10 @@ fn enforce_definition_pin(
             pinned,
             current,
         } => {
-            eprintln!(
+            rigger::whole_line::say(format_args!(
                 "rigger: --rebase-definition: recorded the definition supersession \
                  ({pinned} -> {current}) on run {run}; continuing on the new definition."
-            );
+            ));
             Ok(())
         }
         runscope::RunStart::Drifted {
@@ -590,21 +592,21 @@ fn warn_on_run_branch_divergence(
     base_explicit: bool,
 ) {
     match setup {
-        RunBranchSetup::CreatedFromHead => eprintln!(
+        RunBranchSetup::CreatedFromHead => rigger::whole_line::say(format_args!(
             "{cmd}: base {base:?} did not resolve, so the run branch {RUN_BRANCH:?} was anchored \
              on the current HEAD instead (unit isolation is intact, but not anchored on {base:?}). \
              Fetch the base or pass an existing ref as --base to anchor there."
-        ),
+        )),
         // The run branch already exists and was reused. Reusing the default base every
         // run is the expected steady state and stays silent; only an EXPLICIT --base
         // that got ignored (because re-anchoring would orphan integrated work) is worth a
         // word, so the operator is not left thinking their re-anchor took effect.
-        RunBranchSetup::Reused if base_explicit => eprintln!(
+        RunBranchSetup::Reused if base_explicit => rigger::whole_line::say(format_args!(
             "{cmd}: the run branch {RUN_BRANCH:?} already exists and was reused (its \
              integrated work is preserved); --base {base:?} was NOT applied. Re-anchoring an existing \
              run branch would discard integrated units; to anchor a run on {base:?}, start it on a \
              repo without {RUN_BRANCH:?} (or delete that branch first)."
-        ),
+        )),
         RunBranchSetup::Reused | RunBranchSetup::CreatedFromBase => {}
     }
 }
@@ -966,13 +968,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
-    let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
+    // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
+    // and its site the one the run's reads find their repository from, anew for each open.
+    let site = Site::of(Path::new(&repo));
+    let grounder = select_grounder(site.anew(), &cfg.workflow.defaults.grounder)?;
     let root = repo.clone();
-    // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at.
-    let code_store = run_code_store(&repo);
+    let code_store = run_code_store(&site)?;
     // The grounding reads compare with the operator checkout the run lands its merges on, named
     // as every reader names its worktree; a unit's read compares with the unit's own worktree.
-    let read_graph = ReadGraph::new(&graph, tree_of(Path::new(&repo))?);
+    let read_graph = ReadGraph::new(&graph, &site)?;
     let deps = Deps {
         store: &store,
         driver: &held,
@@ -1073,7 +1077,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         let m = metrics::project(&events);
         if let Some(line) = parallelism_retention_line(&m) {
             if m.parallelism_retention_warns() {
-                eprintln!("rigger: {line}");
+                rigger::whole_line::say(format_args!("rigger: {line}"));
             }
         }
     }
@@ -1278,11 +1282,11 @@ impl RunStartCritique<'_> {
         let path = review::normalize_spec_path(self.root, spec);
         let named = path.as_deref().unwrap_or(spec);
         let Some(critic) = rigger::wave::critic_of(self.workflow) else {
-            eprintln!(
+            rigger::whole_line::say(format_args!(
                 "{}: no spec critique for {named}: {}",
                 self.command,
                 rigger::wave::NO_CRITIC_CLAUSE
-            );
+            ));
             return Ok(());
         };
         let refusal = match &path {
@@ -1401,7 +1405,7 @@ pub(crate) fn load_criteria(
     let text =
         std::fs::read_to_string(spec_path).map_err(|e| format!("read spec {spec_path}: {e}"))?;
     for line in spec_lint_warning_lines(spec_path, &text) {
-        eprintln!("{line}");
+        rigger::whole_line::say(format_args!("{line}"));
     }
     let criteria = spec::extract_criteria(&text);
     if criteria.is_empty() {
@@ -1464,9 +1468,9 @@ fn start_run_dashboard(config_dash_enabled: bool, store: &dyn EventStore) -> Opt
             Some(guard)
         }
         Err(e) => {
-            eprintln!(
+            rigger::whole_line::say(format_args!(
                 "rigger: could not auto-start the dashboard ({e}); the run continues headless"
-            );
+            ));
             None
         }
     }
@@ -1718,7 +1722,7 @@ pub(crate) fn cmd_result(args: &[String]) -> Res {
             return Err(refusal.into());
         }
         for note in result_advisories(&prior, &res.id) {
-            eprintln!("{note}");
+            rigger::whole_line::say(format_args!("{note}"));
         }
         let kind = if res.is_error() {
             "error result"

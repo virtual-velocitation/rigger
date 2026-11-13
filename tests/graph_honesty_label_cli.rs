@@ -227,6 +227,257 @@ fn around_and_show_count_the_hidden_tests_proving_what_they_show() {
     }
 }
 
+/// GIVEN a built project whose tests hide under the default filter (`one` proving the product
+/// `alpha`, a test named `alpha`, one named `beta` beside two products so named, and an inline
+/// `gamma` proving the product it shares a name with), WHEN `rigger graph --show` names a hidden
+/// test by id or by leaf, a product beside same-named tests, or nothing, THEN the line under the
+/// label counts each test hit the filter hid once (the tests the query names and those proving
+/// the node it locates) and names the filter that shows them, the answer says there is no such
+/// entity only when no test hid, and `include` locates the test and counts nothing.
+#[test]
+fn show_counts_the_hidden_tests_its_query_names() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn alpha() {}\npub fn beta() {}\npub fn gamma() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn gamma() { super::gamma(); }\n}\n",
+    );
+    write_text(root, "src/other.rs", "pub fn beta() {}\n");
+    write_text(root, "tests/t.rs", "#[test]\nfn one() { alpha(); }\n");
+    write_text(
+        root,
+        "tests/u.rs",
+        "#[test]\nfn alpha() {}\n#[test]\nfn beta() {}\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let one = "1 test hit not shown; the tests filter (include or only) shows them";
+    let two = "2 test hits not shown; the tests filter (include or only) shows them";
+    let none = "show \"nothing\": no such entity in the graph";
+    // (the arguments, the line under the label when one counts hidden tests, a line it holds)
+    let cases: [(&[&str], Option<&str>, &str); 7] = [
+        (&["--show", "tests/t.rs::one"], Some(one), one),
+        (&["--show", "one"], Some(one), one),
+        (
+            &["--show", "tests/t.rs::one", "--tests", "include"],
+            None,
+            "show tests/t.rs::one",
+        ),
+        (&["--show", "alpha"], Some(two), "show src/lib.rs::alpha"),
+        (&["--show", "beta"], Some(one), "src/other.rs::beta"),
+        (&["--show", "gamma"], Some(one), "show src/lib.rs::gamma"),
+        (&["--show", "nothing"], None, none),
+    ];
+    for (args, line, holds) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        match line {
+            Some(line) => {
+                assert_eq!(out.lines().nth(1), Some(line), "{args:?}:\n{out}");
+                assert!(!out.contains("no such entity"), "{args:?}:\n{out}");
+            }
+            None => assert!(!out.contains("not shown"), "{args:?}:\n{out}"),
+        }
+    }
+}
+
+/// GIVEN a built project where `p` and `w` are each defined in two files, so a call to either
+/// from another file lands on that file's placeholder and proves neither, and the test `t` and
+/// the test helper `h` call `p` from a test file while the test `u` calls `h` and the test `v`
+/// calls `w`, WHEN `rigger graph --around` reads one `p` or one `w` under each `--tests` setting,
+/// THEN `exclude` counts the tests the callers walk reaches through a placeholder from a node it
+/// steps from, at any depth (never stepping from a test to reach `u`, nor counting `v` for the
+/// `w` that `p`'s file shows), and `include` shows them and counts nothing.
+#[test]
+fn around_counts_the_hidden_tests_calling_through_a_placeholder() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", "pub mod a;\npub mod b;\n");
+    write_text(root, "src/a.rs", "pub fn p() {}\npub fn w() {}\n");
+    write_text(root, "src/b.rs", "pub fn p() {}\npub fn w() {}\n");
+    write_text(
+        root,
+        "tests/t.rs",
+        "#[test]\nfn t() { p(); }\nfn h() { p(); }\n#[test]\nfn u() { h(); }\n#[test]\nfn v() { w(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let one = "1 test hit not shown; the tests filter (include or only) shows them";
+    let two = "2 test hits not shown; the tests filter (include or only) shows them";
+    // (the queried id, the depth and filter arguments, the line under the label when one counts
+    // hidden tests)
+    let cases: [(&str, &[&str], Option<&str>); 4] = [
+        ("src/a.rs::p", &["1"], Some(two)),
+        ("src/a.rs::p", &["2"], Some(two)),
+        ("src/a.rs::p", &["2", "--tests", "include"], None),
+        ("src/a.rs::w", &["1"], Some(one)),
+    ];
+    for (id, extra, line) in cases {
+        let args = [&["graph", "--around", id, "--depth"][..], extra].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        match line {
+            Some(line) => assert_eq!(out.lines().nth(1), Some(line), "{args:?}:\n{out}"),
+            None => {
+                assert!(!out.contains("not shown"), "{args:?}:\n{out}");
+                assert!(out.contains("node tests/t.rs::h"), "{args:?}:\n{out}");
+            }
+        }
+    }
+}
+
+/// GIVEN a built project where `helper` has a `#[cfg(test)]` twin calling `target` beside its
+/// product definition, so the one id `helper` is product code holding a test call, WHEN `rigger
+/// graph` reads the community, `target` and the file under each `--tests` setting, THEN the
+/// twin's call is shown as a test edge under `include` but names no test entity: the community
+/// lists no test and draws no `TESTS` edge, and no answer counts a hidden test for it.
+#[test]
+fn a_test_twin_of_a_product_definition_is_no_test_entity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn target() {}\n#[cfg(test)]\nfn helper() { target(); }\n#[cfg(not(test))]\nfn helper() {}\npub fn user() { helper(); }\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let file = ["--around", "src/lib.rs", "--depth", "1"];
+    // (the arguments, a line the answer holds, what it never holds)
+    let cases: [(&[&str], &str, &[&str]); 4] = [
+        (
+            &["communities", "--tests", "include"],
+            "community/1/0",
+            &["test src/lib.rs::helper", "1 test"],
+        ),
+        (
+            &["--show", "src/lib.rs::target"],
+            "show src/lib.rs::target",
+            &["not shown"],
+        ),
+        (&file, "node src/lib.rs::helper", &["not shown"]),
+        (
+            &[&file[..], &["--tests", "include"]].concat(),
+            "edge src/lib.rs::helper -CALLS-> src/lib.rs::target",
+            &["-TESTS->"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
+/// GIVEN a built project whose design doc links a product function and the inline test proving
+/// it, WHEN the graph reads the doc under each `--tests` setting, THEN the linked test is test code
+/// like any other: `exclude` hides it and its link, standing in no artifact and clustering it into
+/// no concept, while `include` shows it as the code entity it is and `only` shows the doc's link
+/// to it.
+#[test]
+fn a_design_link_to_an_inline_test_is_test_code() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(
+        root,
+        "src/lib.rs",
+        "pub fn run() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn checks() { super::run(); }\n}\n",
+    );
+    write_text(
+        root,
+        "docs/a.md",
+        "# Running\n\nThe entry is `src/lib.rs::run`, proved by `src/lib.rs::tests::checks`.\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let doc = ["--around", "docs/a.md", "--depth", "1"];
+    let link = "edge docs/a.md -SPECIFIES-> src/lib.rs::tests::checks";
+    // (the arguments, a line the answer holds, what it never holds)
+    let cases: [(&[&str], &str, &[&str]); 5] = [
+        (
+            &doc,
+            "edge docs/a.md -SPECIFIES-> src/lib.rs::run",
+            &["tests::checks", "artifact"],
+        ),
+        (
+            &["--show", "src/lib.rs::tests::checks"],
+            "not shown",
+            &["artifact"],
+        ),
+        (&["concepts"], "1 concept over 2 node(s)", &[]),
+        (
+            &[&doc[..], &["--tests", "include"]].concat(),
+            link,
+            &["artifact"],
+        ),
+        (
+            &[&doc[..], &["--tests", "only"]].concat(),
+            link,
+            &["artifact"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        assert!(out.contains(holds), "{args:?} holds {holds:?}:\n{out}");
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
+/// GIVEN a built project whose product module and test module each call a function at module
+/// level, outside every definition, WHEN the graph reads the function's neighbourhood under each
+/// `--tests` setting, THEN each call is its file's: the product module calls the function, and the
+/// test module's call shows under `include` and is the hidden test hit under `exclude`.
+#[test]
+fn a_call_outside_every_definition_is_its_files_call() {
+    let dir = temp_project();
+    let root = dir.path();
+    let call = "from y import f\n\nf()\n";
+    write_text(root, "y.py", "def f():\n    return 1\n");
+    write_text(root, "z.py", call);
+    write_text(root, "test_y.py", call);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let around = ["--around", "y.py::f", "--depth", "1"];
+    // (the arguments, the lines the answer holds, what it never holds)
+    let cases: [(&[&str], &[&str], &[&str]); 2] = [
+        (
+            &around,
+            &["edge z.py -CALLS-> y.py::f", "1 test hit not shown"],
+            &["test_y.py"],
+        ),
+        (
+            &[&around[..], &["--tests", "include"]].concat(),
+            &[
+                "edge z.py -CALLS-> y.py::f",
+                "edge test_y.py -CALLS-> y.py::f",
+            ],
+            &["not shown"],
+        ),
+    ];
+    for (args, holds, lacks) in cases {
+        let args = [&["graph"][..], args].concat();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{args:?} answers; stderr:\n{err}");
+        for hold in holds {
+            assert!(out.contains(hold), "{args:?} holds {hold:?}:\n{out}");
+        }
+        for lack in lacks {
+            assert!(!out.contains(lack), "{args:?} never holds {lack:?}:\n{out}");
+        }
+    }
+}
+
 /// GIVEN a built project whose one community has a test proving it, WHEN `rigger graph
 /// communities` reads it under each `--tests` setting, THEN the community shows its attached test
 /// count; `include` also lists the test beneath it, and `only` reports the tests alone.

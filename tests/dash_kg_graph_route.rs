@@ -1408,7 +1408,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
         let graph_provider =
-            move |_instance: Option<&str>, _tests: rigger::code_view::Tests| -> Graph {
+            move |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| -> Graph {
                 hits_for_provider.fetch_add(1, Ordering::SeqCst);
                 lazy_graph.clone()
             };
@@ -1585,10 +1585,12 @@ const setTimeout = function(){ return 0; };
 const setInterval = function(){ return 0; };
 // A driver answers graph reads itself by replacing __reply(url); by default a read is an empty overview.
 let __reply = function(){ return { clusters: [], edges: [], total: 0 }; };
-// Each graph reply carries the headers its URL names: label= a label, error= an error, else none.
+// Each graph reply carries the headers a driver sets in __headers, plus those its URL names: label=
+// a label, error= an error.
+let __headers = {};
 const fetch = function(url){
   const u = String(url);
-  const sent = {};
+  const sent = Object.assign({}, __headers);
   const at = function(k){ const m = u.match(new RegExp("[?&]" + k + "=([^&]*)")); return m ? m[1] : null; };
   if (at("label") !== null) sent["X-Rigger-Graph-Label"] = at("label");
   if (at("error") !== null) sent["X-Rigger-Graph-Error"] = at("error");
@@ -1626,6 +1628,188 @@ rigger::test_cases! {
     /// label in the explorer's header, decoded, or the reason no graph could be read, marked as an
     /// error; a reply stating neither leaves the header as it was.
     the_graph_header_shows_what_each_read_describes: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, LABEL_DRIVER, "dash-graph-label-harness.js"), "OK the-graph-header-shows-what-each-read-describes");
+}
+
+/// Driver: each graph view loads through its own loader over a read that answers an empty body,
+/// first under replies stating the graph could not be read (an error alone, then an error beside a
+/// label, as a read over two stores sends), then under a reply stating a read graph. Under an unread
+/// graph the panel states the header's reason and none of the view's own empty captions (the
+/// generic one nor the body's `empty_state`); under a read graph each view keeps its own caption.
+const UNREAD_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const reason = "no graph has been built at g.db", underived = "code lens not derived yet";
+  const empty = { clusters: [], edges: [], total: 0 };
+  const views = [
+    ["the files overview", function(){ kgLens = "files"; return loadKgOverview(); }, empty,
+     "empty graph - nothing to explore yet"],
+    ["the code-lens overview", function(){ kgLens = "code"; return loadKgOverview(); },
+     Object.assign({ empty_state: underived }, empty), underived],
+    ["the subject re-projection", function(){ kgLens = "code"; return reprojectSubject("src/a.rs"); },
+     Object.assign({ subject: "src/a.rs", empty_state: "no derived communities" }, empty), "no derived communities"],
+    ["the subject re-projection with no empty state", function(){ kgLens = "files"; return reprojectSubject("src/a.rs"); },
+     Object.assign({ subject: "src/a.rs" }, empty), "this subject has no members under this lens"],
+    ["the seeded neighborhood", function(){ return seedGraph("src/a.rs::f"); },
+     { seed: "src/a.rs::f", depth: 2, nodes: [], edges: [] }, "no knowledge-graph neighborhood for this node"],
+    ["the cluster drill", function(){ kgLens = "files"; return drillCluster("src"); },
+     { seed: "src", depth: 0, nodes: [], edges: [] }, "this cluster has no members to show"],
+    ["the call walk", function(){ return seedCalls("src/a.rs::f", "down"); },
+     { seed: "src/a.rs::f", dir: "down", depth: 6, nodes: [], edges: [] }, "no calls for this node in this direction"],
+  ];
+  const error = { "X-Rigger-Graph-Error": encodeURIComponent(reason) };
+  const label = { "X-Rigger-Graph-Label": "describes%20g" };
+  const replies = [["an error", error, true], ["an error beside a label", Object.assign({}, label, error), true],
+    ["a label", label, false]];
+  for (const [sent, headers, unread] of replies) {
+    __headers = headers;
+    for (const [view, load, body, caption] of views) {
+      __reply = function(u){ return u.indexOf("card=") !== -1 ? {} : body; };
+      el("kgpanel").innerHTML = "";
+      await load();
+      await flush();
+      const html = el("kgpanel")._html;
+      if (unread && (html.indexOf(reason) === -1 || html.indexOf(caption) !== -1))
+        throw new Error("REGRESSION: " + view + " under a reply carrying " + sent + " must state why no graph was read, never its empty caption " + JSON.stringify(caption) + ": " + html);
+      if (!unread && (html.indexOf(caption) === -1 || html.indexOf(reason) !== -1))
+        throw new Error("REGRESSION: " + view + " over a read graph that draws nothing must keep its own caption " + JSON.stringify(caption) + ": " + html);
+    }
+  }
+  console.log("OK a-view-over-an-unread-graph-states-why");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard (the code store's stated-error rule): a graph view whose read could not read a
+    /// graph states the reason the header states in its panel, never the view's empty caption or the
+    /// body's `empty_state`, so an unread graph never reads as an empty one; a read graph that draws
+    /// nothing keeps each view's own caption.
+    a_view_over_a_graph_that_could_not_be_read_states_why_never_an_empty_graph: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, UNREAD_DRIVER, "dash-graph-unread-harness.js"), "OK a-view-over-an-unread-graph-states-why");
+}
+
+/// Driver: the overview and a re-projection under each derived lens, asked for a grain in a
+/// spelling other than its own (`2.0`), then for a text that names no grain. The grain input shows
+/// the grain the reply says it displays (`2`), and, when the reply displays none, the text as
+/// asked, beside the reply's empty state.
+const GRAIN_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const asked = [];
+  const shown = function(){
+    const m = el("kgpanel")._html.match(/class="kgres"[^>]*value="([^"]*)"/);
+    return m ? m[1] : null;
+  };
+  for (const lens of ["code", "concepts"]) {
+    const views = [
+      ["overview", function(){ return loadKgOverview(); }],
+      ["re-projection", function(){ return reprojectSubject("src/a.rs"); }],
+    ];
+    for (const [view, load] of views) {
+      for (const [text, grain, want] of [["2.0", "2", "2"], ["abc", null, "abc"]]) {
+        kgLens = lens;
+        kgResolution = text;
+        __reply = function(u){
+          if (u.indexOf("card=") !== -1) return {};
+          asked.push(u);
+          const body = { subject: "src/a.rs", clusters: [], edges: [], total: 0 };
+          if (grain) {
+            body.clusters = [{ key: lens.replace("code", "community").replace("concepts", "concept") + "/2/0", count: 1, kind: "code-entity" }];
+            body.total = 1;
+            body.grain = grain;
+          } else {
+            body.empty_state = 'resolution "' + text + '" is not a grain';
+          }
+          return body;
+        };
+        await load();
+        await flush();
+        const last = asked[asked.length - 1] || "";
+        if (last.indexOf("resolution=" + encodeURIComponent(text)) === -1)
+          throw new Error(lens + " " + view + ": the read did not ask for " + text + ": " + last);
+        if (shown() !== want)
+          throw new Error("REGRESSION: the " + lens + " " + view + " asked for " + JSON.stringify(text)
+            + " shows grain " + JSON.stringify(shown()) + ", not the grain it displays " + JSON.stringify(want));
+      }
+    }
+  }
+  console.log("OK the-grain-input-shows-the-grain-displayed");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+rigger::test_cases! {
+    /// RUNTIME guard: the explorer shows the grain a derived view displays, as the reply states it,
+    /// never only the text the operator typed; a text naming no grain stays as typed beside the
+    /// reply's empty state.
+    the_grain_input_shows_the_grain_the_view_displays: node_harness_passes(&common::served::vm_harness(LABEL_SHIM, GRAIN_DRIVER, "dash-grain-shown-harness.js"), "OK the-grain-input-shows-the-grain-displayed");
+}
+
+/// Driver: on a fresh page, the derived read `__FIRST__` names comes first, then the operator
+/// empties the code overview's grain box. Neither read names a grain: the server reads its default
+/// grain, its reply names the grain it displays (`7` here, a grain no copy in the page could hold),
+/// and the box shows that grain.
+const DEFAULT_GRAIN_DRIVER: &str = r#"
+;(async function(){
+  function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  await flush();
+  const SERVED = "7";
+  const asked = [];
+  const named = function(u){ const m = u.match(/[?&]resolution=([^&]*)/); return m ? decodeURIComponent(m[1]) : ""; };
+  __reply = function(u){
+    if (u.indexOf("card=") !== -1) return {};
+    if (u.indexOf("lens=") === -1) return { clusters: [], edges: [], total: 0 };
+    asked.push(u);
+    const grain = named(u) || SERVED;
+    const key = (u.indexOf("lens=concepts") !== -1 ? "concept/" : "community/") + grain + "/0";
+    return { subject: "src/a.rs", clusters: [{ key: key, count: 1, kind: "code-entity" }], edges: [],
+      total: 1, grain: grain };
+  };
+  const shown = function(){
+    const m = el("kgpanel")._html.match(/class="kgres"[^>]*value="([^"]*)"/);
+    return m ? m[1] : null;
+  };
+  const emptied = async function(){
+    kgLens = "code";
+    const box = { value: "", dataset: {}, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
+    el("kgpanel")._listeners.change.forEach(function(fn){ fn({ target: box }); });
+    await flush();
+  };
+  const steps = [__FIRST__, ["the code overview with its grain box emptied", emptied, SERVED]];
+  for (const [step, act, box] of steps) {
+    const before = asked.length;
+    await act();
+    await flush();
+    if (asked.length === before) throw new Error(step + ": no derived read was asked");
+    const u = asked[asked.length - 1];
+    if (named(u) !== "")
+      throw new Error("REGRESSION: " + step + " asked for grain " + JSON.stringify(named(u))
+        + ", which the operator never chose: " + u);
+    if (box !== null && shown() !== box)
+      throw new Error("REGRESSION: after " + step + " the grain box shows " + JSON.stringify(shown())
+        + ", not the grain the reply displays " + JSON.stringify(box));
+  }
+  console.log("OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// The [`DEFAULT_GRAIN_DRIVER`] harness whose first derived read is `first`, a `[step, act, box]`
+/// row whose `box` is the grain the box then shows, or `null` for a view that draws no box.
+fn default_grain_harness(first: &str) -> String {
+    common::served::vm_harness(
+        LABEL_SHIM,
+        &DEFAULT_GRAIN_DRIVER.replace("__FIRST__", first),
+        "dash-default-grain-harness.js",
+    )
+}
+
+rigger::test_cases! {
+    /// RUNTIME guard: the derived lenses' default grain has one definition, the server's. A fresh
+    /// page's first overview and an emptied grain box ask for no grain, and the box shows the grain
+    /// the reply displays.
+    a_fresh_page_s_first_derived_overview_asks_for_no_grain: node_harness_passes(&default_grain_harness(r#"["the first code overview of a fresh page", function(){ kgLens = "code"; return loadKgOverview(); }, SERVED]"#), "OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
+    /// RUNTIME guard: a fresh page's first re-projection under a derived lens asks for no grain
+    /// either.
+    a_fresh_page_s_first_derived_re_projection_asks_for_no_grain: node_harness_passes(&default_grain_harness(r#"["the first concepts re-projection of a fresh page", function(){ kgLens = "concepts"; return reprojectSubject("src/a.rs"); }, null]"#), "OK a-derived-read-asks-for-no-grain-the-operator-did-not-choose");
 }
 
 /// A node program loading the served page into a fresh realm per load over a browser store the
@@ -1822,7 +2006,8 @@ type Touch = (&'static str, &'static str, &'static str);
 
 /// WITH TESTS SHOWN, A TEST'S CALLS ARE ITS EDGES: under `include` and `only`, a product entity's
 /// neighbourhood holds every test entity that calls it, from its own file or another, by its CALLS
-/// edge, and a call at a test file's top level by the file's REFERENCES edge; under `exclude` none.
+/// edge, and a call at a test file's top level by the file's CALLS edge beside its REFERENCES
+/// edge; under `exclude` none.
 /// A test calling its own helper keeps that edge, and a product caller's edge is the same under
 /// every filter. Read through the store's walk and through the explorer's seeded route.
 #[cfg(feature = "symbols")]
@@ -1843,6 +2028,7 @@ fn a_product_entity_s_neighbourhood_holds_the_shown_tests_that_call_it() {
         ("tests/t.rs::from_outside", "CALLS", "inferred"),
     ];
     let gadget_in_by_tests: &[Touch] = &[
+        ("tests/test_p.py", "CALLS", "inferred"),
         ("tests/test_p.py", "REFERENCES", "inferred"),
         ("tests/test_p.py::test_gadget", "CALLS", "inferred"),
     ];

@@ -354,8 +354,8 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | IDX_NAME   leaf -> [mention row]   (sorted by leaf; binary search)            |
  | GROUPINGS  communities at the default grain, their labels; concepts, their    |
  |            labels and REALIZES members      (computed over the production view)|
- | PROOFS     target, caller, file, line       (proof order: by target; binary   |
- |            search)                                                            |
+ | PROOFS     target, caller or none, file, line    (proof order: by target;     |
+ |            binary search)                                                     |
  | IDX_PROOF_FILE  [proof row]                 (by file, then proof order)       |
  +-------------------------------------------------------------------------------+
 ```
@@ -463,7 +463,9 @@ code::open_current(root) -> CodeView
 | any reader | when HEAD moved without the conductor (a hand commit, a pull) | advances before it answers |
 
 `root` is always the project root that owns `.rigger/`, which is the operator checkout. A caller
-inside a unit worktree resolves `root` through git's common directory to that main worktree.
+inside a unit worktree resolves `root` through git's common directory to that main worktree. A
+checkout whose common directory is its own administrative directory kept apart from it, as a
+submodule's is, is its own root.
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.
@@ -531,7 +533,7 @@ so it runs once per advance and is stored in the snapshot:
     closure. Without it every reader read the facts of each file declaring a module and grew
     the closure before it resolved anything.
   - **proofs:** every test call that proves a product definition (`PROOFS`: target, calling test
-    entity, file, line), in proof order, so the proofs of one definition are a binary search,
+    entity or none (section 8.1), file, line), in proof order, so the proofs of one definition are a binary search,
     and indexed by file, so the calls one test entity makes are the rows of its file. A whole
     read reads them instead of walking every test mention; a neighbourhood reads a
     definition's proofs and a test's attachment from them instead of resolving each mention of
@@ -542,7 +544,10 @@ so it runs once per advance and is stored in the snapshot:
   generation, and a golden test pins it beside a digest of the rows over a fixture. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
-- A grain other than the default is computed on demand at read (~2 s) and is not stored.
+- A grain other than the default is computed at read, on each open that asks for it, and is
+  not stored: the reports and the dash's views go through the one rule (`groupings::computed_at`),
+  so a dash view at grain 2 shows the groupings `--resolution 2` reports, joined on beside the
+  stored ones, and states the grain it shows.
 - `rigger graph communities` and `rigger graph concepts` become read-only reports over the
   current snapshot. Nothing writes groupings anywhere else.
 
@@ -582,6 +587,8 @@ reference.
 
 ```
 open(caller worktree W, filter)
+  repo  <- discover(the caller's directory)                       (once per open: git's files,
+                                                                   else one rev-parse)
   view  <- code::open_current(root)                               (read CURRENT-<fp>, read snap,
                                                                    verify crc: ~ 10 ms)
   diff  <- source.changed_against_worktree(view.stamp.tip.tree, W)  (git diff --raw + the
@@ -628,8 +635,15 @@ a git failure inside a repository is an error. Every reader names it by that one
 ground, lookup, MCP, dash), so a read from a subdirectory counts the whole worktree's differing
 files and its label names the top-level.
 
+A read asks where the repository lies once per open. The reader's site discovers it once, from
+git's files, else in one `rev-parse` where the files cannot answer, and every rule that names a
+root, a tree, a store or an identity from that site reads the one answer: the store walk, the
+store selection, the identity, W, `root` and the tree source. A reader that answers many opens
+(the MCP session, a run, either's grounder) asks anew for each open after its first, so it holds
+no discovery between opens; the head, the diff and the listing are read per open.
+
 The check never writes W's index. Every git the source starts itself passes
-`--no-optional-locks` (discovery's `rev-parse`, which finds W's git dir, reads no index), and
+`--no-optional-locks` (discovery's `rev-parse`, where it is asked, reads no index), and
 since git still rewrites an index whose entries only a stat change has dirtied, the diff reads a
 private copy of W's index instead: the index in W's own git dir (a linked worktree's included),
 copied into a directory of its own in the OS temp directory with the index's mtime kept, so git
@@ -658,7 +672,8 @@ and the label travels with every answer:
 - the MCP tools return it as a field;
 - the dash sends it beside every graph reply (`X-Rigger-Graph-Label`, from the same open as the
   body) and shows it in the explorer's header; a graph it cannot read (none built, a store that
-  cannot be opened) is a stated error (`X-Rigger-Graph-Error`) shown there, never an empty graph;
+  cannot be opened, an instance not registered) is a stated error (`X-Rigger-Graph-Error`) shown
+  there and in place of any view's empty caption, never an empty graph;
   the polled run snapshot (`/api/state`, and the static export built from it) carries the same
   label or reason as `graph.label` and shows it over the decision history.
 
@@ -703,6 +718,10 @@ Which definitions a mention may resolve to depends on whether the mention is tes
   proof credits, so a shown test's call edge and the proof it adds name one definition. Under
   `exclude` it produces no edge.
 
+A call in file F yields two edges to the one target the call rule below resolves: CALLS from its
+enclosing definition, or from F when the call sits outside every definition (a module-level
+call), and REFERENCES from F.
+
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
@@ -714,12 +733,12 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 | tagged reference | Mention `Tagged(k)` | candidates restricted to `reference_candidate_kinds(k)`: exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file |
+| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
 | test-ness | an entity | section 8.1 | `test` attribute; drives the filter |
-| design link | DocLink as written | the existing design-target rule, moved | SPECIFIES / CONSTRAINS / GOVERNS / explains / references |
+| design link | DocLink as written | the existing design-target rule, moved | SPECIFIES / CONSTRAINS / GOVERNS / explains / references, marked `test` when an end is test code: an id in a test file or a test entity (section 8.1) |
 | workflow relation | WfRelation as written | the existing workflow rule, moved | RUNS / NEEDS / REVIEWS |
 
 Which facts live where:
@@ -754,7 +773,10 @@ edge has no log position, and readers only ever skip closed edges. The history o
 ```
 
 A neighbourhood's test files are each FILES row's test flag, so opening one reads no
-declaration and grows no closure (section 5.4).
+declaration and grows no closure (section 5.4). Its design links and workflow relations are read
+as written from every file holding them, and whether one is test code (section 6.2) is settled
+only for those touching a node it resolves, so a link to a node the neighbourhood never reaches
+reads no definition.
 
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
@@ -769,11 +791,11 @@ reached.
 
 | Query | Work | Budget (through the binary) |
 |---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls | inside the budgets below |
+| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git) | inside the budgets below |
 | `--around <entity>` | the mentions of one leaf | <= 50 ms |
 | whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
 | whole view with tests | 164,734 mentions | <= 300 ms |
-| non-default community grain | groupings on demand | ~ 2 s |
+| whole view at a non-default grain (dash) | the default view plus groupings on demand | ~ 270 ms |
 
 The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
 does it in less, so no cache is kept: each view open resolves what its query needs.
@@ -941,6 +963,13 @@ items in product files. An entity counts as a test entity when any of these hold
 A fixture is a test entity like any other: a definition these rules mark test is held, proved
 through and filtered the same way, with no fixture kind of its own.
 
+A test call names the test entity that makes it: its enclosing definition when that id is a test
+entity, else its file when the call sits at file level of a test file. Test code inside a product
+entity (a `#[cfg(test)]` twin of a product definition, which shares the product's id) names
+none. It is test code all the same: the filter hides its edges and its calls prove what they
+reach. But no test entity holds it alone, so it is attached to no grouping and counted as no
+hidden test.
+
 ### 8.2 How it is filtered
 
 ```
@@ -953,7 +982,8 @@ through and filtered the same way, with no fixture kind of its own.
  concept evidence        product; "N tests hidden"      both                  tests
  lookups (CLI, MCP)      product hits; test hits as     all hits, marked      test hits
                          a separate count
- explorer code view      product; "Show tests" toggle   product + tests       tests
+ explorer code view      product; "Show tests" toggle   product + tests;      tests, each
+                                                        each test marked      marked
  proofs (proven_by,      always computed from test      same                  same
  proof_evidence)         mentions
 ```
@@ -964,9 +994,19 @@ through and filtered the same way, with no fixture kind of its own.
   that community's "tests" group, with its count, and never as a member.
 - **The proof count per product entity stays,** with the same attributes as today. Proofs read
   test mentions whatever the filter is, so excluding tests never zeroes a proof count.
+- **An answer counts the test hits it hides,** each once, on a line under its label naming the
+  filter that shows them:
+  - a show counts the hidden tests its query names and those proving the node it locates;
+  - a neighbourhood counts the hidden tests proving a node it shows and, for a definition its
+    callers walk steps from, the callers of the test calls that land on a placeholder bound to
+    its leaf. A walk never steps from a hidden test, so a test reaching a shown node only through
+    another hidden test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
-    toggle sets it;
+    toggle sets it; each reply that draws nodes names the drawn ones that are test code
+    (`test_nodes`, from their `test` attribute), and the explorer marks each apart from product
+    code: a neighborhood's, a drill's and a call walk's nodes and its referenced-not-called list,
+    a re-projection's unresolved and shared members, and a card's subject, file and member chips;
   - the MCP tools and the CLI take `tests` / `--tests`.
 
 ---
@@ -1324,7 +1364,7 @@ a reader holding one open (or mapped) never blocks a writer.
 - **Process-agnostic.** The store knows nothing of runs, units or gates. It describes a commit,
   and whoever moves HEAD calls `open_current`.
 - **No external systems.** Git is read through the existing worktree crate, and no new
-  dependency is added. Discovery (`rigger_worktree_git::discover::rev_parse`) alone decides that
+  dependency is added. Discovery (`rigger_worktree_git::discover::discover`) alone decides that
   no repository encloses a directory, which then uses `DirTreeSource`; git refusing inside a
   repository is an error wherever a repository is resolved, never a directory store.
 

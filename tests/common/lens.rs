@@ -5,6 +5,7 @@ use rigger::contextgraph::{Graph, KIND_CODE_ENTITY, KIND_CONCEPT, REL_REALIZES, 
 use rigger::dash::{clustered_overview, reproject, Cluster, ClusterEdge, Lens};
 
 use super::fixtures::{edge, node_with_attrs, node_with_optional_attrs};
+use super::served::{served, served_json};
 
 /// The files lens over `graph`, whole and re-grained to `subject`, whose `members` it asserts:
 /// the `whole <key> <count>` of each whole-graph cluster and the `whole <from> -- <to> <weight>`
@@ -110,11 +111,12 @@ pub fn assert_overview_folds(
 }
 
 /// `lens` at a resolution grain with NO derived assignments over `graph` folds nothing, still
-/// reports all `total` graph nodes, and carries the documented `empty_state` prompt - never an
-/// error and never a bare kind-bucket view.
+/// reports all `total` graph nodes, states `grain`, the grain it was asked for, and carries the
+/// documented `empty_state` prompt - never an error and never a bare kind-bucket view.
 pub fn assert_underived_grain_is_the_empty_state(
     graph: &Graph,
     lens: &Lens,
+    grain: &str,
     total: usize,
     empty_state: &str,
 ) {
@@ -132,4 +134,101 @@ pub fn assert_underived_grain_is_the_empty_state(
         Some(empty_state),
         "an underived grain carries the documented empty-state message, never an error"
     );
+    assert_eq!(
+        underived.grain.as_deref(),
+        Some(grain),
+        "an underived grain still states the grain it was asked for: {underived:?}"
+    );
+}
+
+/// Texts a hand-written `resolution=` may carry that name no grain: no number, zero, a negative
+/// number, an infinity and NaN.
+pub const NOT_A_GRAIN: [&str; 5] = ["abc", "0", "-1", "inf", "NaN"];
+
+/// What the dash and the CLI say of a `resolution` text `raw` that names no grain.
+pub fn not_a_grain(raw: &str) -> String {
+    format!("resolution \"{raw}\" is not a grain - a grain is a positive, finite number such as 1 or 1.5")
+}
+
+/// Lens `name` at each `resolution=` of [`NOT_A_GRAIN`] answers 200 with an empty overview, an
+/// empty drill of `cluster` and an empty re-projection of `subject`, each saying the text is not a
+/// grain and what a grain is, never a command to run.
+pub fn assert_not_a_grain_is_said(graph: &Graph, name: &str, cluster: &str, subject: &str) {
+    for raw in NOT_A_GRAIN {
+        let at = format!("/api/graph?lens={name}&resolution={raw}");
+        for (view, drawn) in [
+            (at.clone(), "clusters"),
+            (
+                format!("{at}&cluster={}", cluster.replace('/', "%2F")),
+                "nodes",
+            ),
+            (
+                format!("{at}&seed={}", subject.replace('/', "%2F")),
+                "clusters",
+            ),
+        ] {
+            let body = served_json(graph, &view);
+            assert!(
+                body[drawn].as_array().is_some_and(Vec::is_empty)
+                    && body["edges"].as_array().is_some_and(Vec::is_empty),
+                "{view} draws nothing at a text that is not a grain: {body}"
+            );
+            assert_eq!(
+                body["empty_state"].as_str(),
+                Some(not_a_grain(raw).as_str()),
+                "{view} says {raw:?} is not a grain and what a grain is: {body}"
+            );
+        }
+    }
+}
+
+/// Spellings of the number `1` a hand-written `resolution=` may carry, each grain `1` (`%2B` is `+`).
+pub const ONE_SPELLINGS: [&str; 5] = ["1.0", "1.00", "01", "1e0", "%2B1"];
+
+/// Lens `name` over `graph` reads grain `1` whatever spelling of the number `1` its `resolution=`
+/// carries: the served overview, the drill of `cluster` and the re-projection of `subject` at each
+/// of [`ONE_SPELLINGS`] are byte-identical to the same view at `resolution=1`, which folds `cluster`
+/// (no empty state) and drills it to its members.
+pub fn assert_each_spelling_of_one_reads_grain_one(
+    graph: &Graph,
+    name: &str,
+    cluster: &str,
+    subject: &str,
+) {
+    let views = |grain: &str| {
+        let at = format!("/api/graph?lens={name}&resolution={grain}");
+        [
+            at.clone(),
+            format!("{at}&cluster={}", cluster.replace('/', "%2F")),
+            format!("{at}&seed={}", subject.replace('/', "%2F")),
+        ]
+    };
+    let [overview, drill, reprojection] = views("1").map(|v| served_json(graph, &v));
+    assert!(
+        overview["empty_state"].is_null()
+            && (overview["clusters"].as_array().into_iter().flatten())
+                .any(|c| c["key"].as_str() == Some(cluster)),
+        "grain 1 is derived and folds {cluster}: {overview}"
+    );
+    assert!(
+        drill["nodes"].as_array().is_some_and(|n| !n.is_empty()),
+        "grain 1 drills {cluster} to its members: {drill}"
+    );
+    assert!(
+        reprojection["empty_state"].is_null()
+            && reprojection["clusters"]
+                .as_array()
+                .is_some_and(|c| !c.is_empty()),
+        "grain 1 re-grains {subject} into derived buckets: {reprojection}"
+    );
+    let at_one = views("1").map(|v| served(graph, &v).body);
+    for spelling in ONE_SPELLINGS {
+        for (view, one) in views(spelling).iter().zip(&at_one) {
+            assert_eq!(
+                String::from_utf8_lossy(&served(graph, view).body),
+                String::from_utf8_lossy(one),
+                "{view} names grain 1, so it serves what resolution=1 serves"
+            );
+        }
+    }
 }

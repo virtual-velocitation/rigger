@@ -17,15 +17,15 @@
 //! subject keeps its kind bucket) still holds, pinned by `tests/subject_lens_reprojection_contract.rs`.
 //!
 //! These run OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::{Lens, from_query,
-//! clustered_overview, cluster_detail, route, ...}` + the two lens consts), so they guard the exact
+//! clustered_overview, cluster_detail, route, ...}` + the default grain), so they guard the exact
 //! boundaries the inside-out unit test (`crates/rigger-dash/src/dash.rs mod tests`, which reaches the same functions via
 //! `super::` and calls the folds in-process) is structurally blind to:
 //!
 //!  - PUBLIC REACHABILITY. The unit test proves the code-lens BEHAVIOUR but never that `Lens`, its
 //!    variants, `Lens::from_query`, the changed-signature `clustered_overview` / `cluster_detail`,
-//!    and the `DEFAULT_COMMUNITY_RESOLUTION` / `CODE_LENS_UNDERIVED` consts are all `pub` and
-//!    reachable as `rigger::dash::...`. If any were accidentally crate-private, only a crate-external
-//!    test fails to COMPILE - the inside-out test would stay green.
+//!    the default grain (`community::grain(DEFAULT_RESOLUTION)`) and `CODE_LENS_UNDERIVED` are all
+//!    `pub` and reachable as `rigger::...`. If any were accidentally crate-private, only a
+//!    crate-external test fails to COMPILE - the inside-out test would stay green.
 //!  - THE SERVED ROUTE END-TO-END. The unit test calls `clustered_overview` / `cluster_detail`
 //!    directly and NEVER through `route`'s `lens=` / `resolution=` query parsing (`from_query` wired
 //!    to `query_param` + `percent_decode`). A regression that forgot to thread the lens into the
@@ -34,7 +34,7 @@
 //!  - THE SERIALIZED WIRE-SHAPE back-compat. `Cluster.label` and `ClusterOverview.empty_state` are
 //!    both `#[serde(skip_serializing_if = "Option::is_none")]`, so the files overview an external JS
 //!    panel reads stays BYTE-IDENTICAL (no `label`, no `empty_state` key), while the code overview
-//!    gains a community `label` and an underived grain gains `empty_state`. The unit test asserts
+//!    gains a community `label` and a grain nothing can be computed at gains `empty_state`. The unit test asserts
 //!    Rust struct equality, never the JSON keys' presence / absence.
 //!
 //! `dash` + `contextgraph` compile on BOTH the default and the `--no-default-features` lane (neither
@@ -47,16 +47,20 @@ use std::collections::BTreeSet;
 use common::fixtures::edge;
 use common::fixtures::node_with_optional_attrs;
 use common::fixtures::plain;
-use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
+use common::lens::{
+    assert_each_spelling_of_one_reads_grain_one, assert_not_a_grain_is_said, assert_overview_folds,
+    assert_underived_grain_is_the_empty_state,
+};
 use common::served::served;
 use common::served::served_json;
+use rigger::community::{grain, DEFAULT_RESOLUTION};
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
     REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CODE_LENS_UNDERIVED,
-    DEFAULT_COMMUNITY_RESOLUTION, WHOLE_GRAPH_FILES_UNRESOLVED,
+    WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 
 // The two default-grain community ids (`community/<resolution>/<n>`) the fixture derives.
@@ -107,20 +111,20 @@ fn lens_graph() -> Graph {
     }
 }
 
-/// The default code lens (`resolution = DEFAULT_COMMUNITY_RESOLUTION`), reachable as a public type.
+/// The default code lens (the grain of `DEFAULT_RESOLUTION`), reachable as a public type.
 fn code_default() -> Lens {
     Lens::Code {
-        resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+        resolution: grain(DEFAULT_RESOLUTION),
     }
 }
 
 /// THE PUBLIC SELECTOR PARSER (`Lens::from_query`) at the crate boundary. An external caller (the
 /// route) relies on it being TOTAL and INFALLIBLE: `lens=code` selects the code fold at `resolution=`
-/// (defaulting to `DEFAULT_COMMUNITY_RESOLUTION` when absent OR empty), and every other value - an
+/// (defaulting to the grain of `DEFAULT_RESOLUTION` when absent OR empty), and every other value - an
 /// explicit `files`, an unknown lens, or an absent one - falls back to the byte-identical
 /// `Lens::Files`, so a hostile selector can never error the route. The inside-out test asserts the
-/// same table via `super::`; this pins that `Lens`, its variants, `from_query`, and the default-grain
-/// const are all reachable as `rigger::dash::...` - a boundary a same-crate test cannot prove.
+/// same table via `super::`; this pins that `Lens`, its variants, `from_query`, and the default
+/// grain are all reachable as `rigger::...` - a boundary a same-crate test cannot prove.
 #[test]
 fn lens_from_query_is_a_public_total_selector_that_falls_back_to_files() {
     assert_eq!(
@@ -139,6 +143,11 @@ fn lens_from_query_is_a_public_total_selector_that_falls_back_to_files() {
             resolution: "1.5".to_string()
         },
         "an explicit resolution grain is honoured verbatim"
+    );
+    assert_eq!(
+        Lens::from_query(Some("code"), Some("1.0")),
+        code_default(),
+        "a grain is the number it names: 1.0 is the default grain 1, the spelling grouping ids carry"
     );
     assert_eq!(
         Lens::from_query(None, None),
@@ -377,6 +386,7 @@ rigger::test_cases! {
             &Lens::Code {
                 resolution: "2".to_string(),
             },
+            "2",
             8,
             CODE_LENS_UNDERIVED,
         );
@@ -505,7 +515,8 @@ fn the_serialized_overview_skips_label_and_carries_the_accurate_empty_state_off_
 ///   * `?lens=code&cluster=<id>` drills that community to exactly its members (the lens reaches the
 ///     DRILL branch too, not just the overview);
 ///   * `?lens=code&resolution=` (empty) defaults to the same derived grain as an explicit `1`;
-///   * `?lens=code&resolution=2` (underived) carries the `empty_state` prompt, never an error;
+///   * `?lens=code&resolution=2` over a served graph that holds no membership at grain 2 and
+///     has no code view to compute one from carries the `empty_state` prompt, never an error;
 ///   * an absent lens, `?lens=files`, and a hostile `?lens=bogus` are ALL byte-identical (the
 ///     spec-42 default the browser and every spec-30/42 request already receive).
 #[test]
@@ -556,7 +567,8 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
         "the served community drill yields exactly its members: {drill}"
     );
 
-    // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
+    // --- A grain nothing can be computed at (a fixed graph, no code view) via the route: the
+    // empty_state prompt, never a 500 ---
     let underived = served_json(&lens_graph(), "/api/graph?lens=code&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),
@@ -582,4 +594,20 @@ fn the_served_graph_route_threads_the_lens_selector_into_overview_and_drill() {
         served(&lens_graph(), "/api/graph?lens=code&resolution=1").body,
         "the code lens actually changes the served body (the back-compat equality is not vacuous)"
     );
+}
+
+/// A `resolution=` naming grain `1` in another spelling (`1.0`, `01`, `1e0`, `+1`) reads the derived
+/// grain `1`: the served code overview, the drill of a community and its re-projection are those of
+/// `resolution=1`, never the underived empty state.
+#[test]
+fn every_spelling_of_grain_one_reads_the_derived_community_grain() {
+    assert_each_spelling_of_one_reads_grain_one(&lens_graph(), "code", C0, C0);
+}
+
+/// A `resolution=` that names no grain empties the served code overview, drill and re-projection
+/// with the one sentence saying so, never the underived prompt to run a command that cannot change
+/// it.
+#[test]
+fn a_resolution_that_is_not_a_grain_is_said_to_be_none() {
+    assert_not_a_grain_is_said(&lens_graph(), "code", C0, C0);
 }
