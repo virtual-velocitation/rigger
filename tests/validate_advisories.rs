@@ -385,12 +385,6 @@ fn validate_creates_no_event_log_in_order_to_count_its_derived_events() {
 const SUBSCRIPTION_LOGIN_REPORT: &str =
     include_str!("fixtures/claude-auth-status-subscription.json");
 
-/// The line `rigger validate` warns on when the session rides a subscription login.
-#[cfg(unix)]
-const EXPIRING_LOGIN_WARNING: &str = "warning: claude login: claude.ai is an interactive \
-     subscription login, which can expire under a long run; run `claude setup-token` and set the \
-     long-lived token it prints as CLAUDE_CODE_OAUTH_TOKEN where rigger runs.";
-
 /// The one line `rigger validate` warns on when it read no login report.
 #[cfg(unix)]
 const NO_LOGIN_REPORT_WARNING: &str = "warning: claude login: `claude auth status --json` gave \
@@ -462,13 +456,12 @@ fn the_recorded_subscription_login_keeps_only_the_key_the_pin_reads() {
 
 /// Given a project, when the operator runs `rigger validate` with a stand-in `claude` first on
 /// PATH, or none on it, then validate reads `claude auth status --json` once, reports on stdout
-/// the auth method it names, warns of a subscription login naming its long-lived token and of no
-/// other auth method, one only sharing its prefix or its suffix included, prints one warning in
+/// the auth method it names, warns of no auth method (the subscription login included), prints one warning in
 /// place of the report when none came by its 5 s bound, leaves no process of the stand-in behind
 /// and exits 0 on every row.
 #[cfg(unix)]
 #[test]
-fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_report() {
+fn validate_reports_the_claude_login_and_warns_only_when_it_gives_no_report() {
     use common::fixtures::{
         assert_no_sleeper_left, printing, recorded_argv, sleeping, LOGGED_OUT_STATUS,
     };
@@ -488,7 +481,7 @@ fn validate_reports_the_claude_login_and_warns_when_it_expires_or_gives_no_repor
             "the recorded subscription login",
             Some(printing(SUBSCRIPTION_LOGIN_REPORT)),
             reported("claude.ai"),
-            vec![EXPIRING_LOGIN_WARNING],
+            vec![],
             quick,
             0,
         ),
@@ -626,7 +619,7 @@ fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() 
             "the recorded subscription login",
             Some(printing(SUBSCRIPTION_LOGIN_REPORT)),
             reported("claude.ai"),
-            vec![EXPIRING_LOGIN_WARNING],
+            vec![],
         ),
         (
             "a long-lived token",
