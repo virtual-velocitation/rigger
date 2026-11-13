@@ -19,7 +19,9 @@
 //!
 //! Every drawing is made at its surface's own size (the svg's box, which takes no border and no
 //! padding), so it is seen at a scale of 1 on both axes: an opened view shows at its fit, and a moved
-//! view's nodes keep their places on screen through a resize.
+//! view's nodes keep their places on screen through a resize. That size is the one the surface has
+//! with the drawing in place, beside the scrollbar the panel shows when what it holds runs past its
+//! height (a drawing kept at its 200px floor, notes below the drawing).
 //!
 //! Driven by the served page's own script under node's built-in `vm` (hermetic, no npm), through a
 //! DOM shim that keeps the panel's geometry (its client box, padding and toolbar heights, as a
@@ -40,7 +42,10 @@ use vm_harness::vm_harness;
 /// `__geom` holds, and each markup it is given gets a fresh `svg` (its height and viewBox read from
 /// that markup and kept as attributes the page may set again, its listeners recorded, its slot boxed
 /// below that markup's toolbar as tall as its height) and a fresh `#kgzoom` (recording its
-/// transform), as a browser replaces them; every other element is a bare stand-in. `window` records its listeners, a
+/// transform), as a browser replaces them; every other element is a bare stand-in. The panel shows a
+/// 12px scrollbar of its own, narrowing its client box and the svg's slot, while what it holds - its
+/// padding, the toolbar, the svg at the height it has now and any markup below the svg, 40px of it -
+/// runs past its height, as a classic scrollbar does. `window` records its listeners, a
 /// size observer is recorded with what it watches for the driver to notify, and an animation frame
 /// waits in `__frames` until the driver runs it. Free of backticks and `${` so it embeds in the
 /// harness's `String.raw` template.
@@ -52,8 +57,11 @@ ResizeObserver.prototype.observe = function(t){ this._targets.push(t); };
 const __frames = [];
 const requestAnimationFrame = function(f){ __frames.push(f); return __frames.length; };
 const __winListeners = {};
+// The panel's client box with no scrollbar of its own, its padding, the height each view's toolbar
+// takes, the width of the scrollbar it shows while what it holds overflows, and the height of the
+// markup a view puts below its drawing.
 const __geom = { width: 800, height: 300, padTop: 10, padBottom: 10, padSide: 12,
-  toolbar: { overview: 24, reproject: 24, drill: 24, calls: 24 } };
+  toolbar: { overview: 24, reproject: 24, drill: 24, calls: 24 }, scrollbar: 12, below: 40 };
 const __classList = { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){ return false; } };
 function __Stub(){ this._attrs = {}; this._listeners = {}; this.dataset = {}; this.classList = __classList; }
 __Stub.prototype.setAttribute = function(k, v){ this._attrs[k] = String(v); };
@@ -67,13 +75,23 @@ function __viewOf(html){
   return "overview";
 }
 function __slotTop(html){ return __geom.padTop + __geom.toolbar[__viewOf(html)]; }
+// The width of the scrollbar the panel shows now: what it holds - its padding, the toolbar, the svg at
+// the height it has now and the markup below the svg - runs past its height, or it shows none.
+function __scrollbar(panel){
+  const html = panel._html, end = html.lastIndexOf("</svg>");
+  if (html.indexOf('<svg class="kgsvg"') === -1) return 0;
+  const below = html.slice(end + "</svg>".length).trim() === "" ? 0 : __geom.below;
+  const holds = __slotTop(html) + Number(panel._svg.getAttribute("height") || 0) + below + __geom.padBottom;
+  return holds > __geom.height ? __geom.scrollbar : 0;
+}
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
   this.hidden = false; this.className = ""; this.checked = false; this.classList = __classList;
   this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); }
-Object.defineProperty(__El.prototype, "clientWidth", { get(){ return __geom.width; } });
+Object.defineProperty(__El.prototype, "clientWidth", { get(){
+  return __geom.width - (this.id === "kgpanel" ? __scrollbar(this) : 0); } });
 Object.defineProperty(__El.prototype, "clientHeight", { get(){ return __geom.height; } });
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){
-  const html = String(v);
+  const html = String(v), panel = this;
   this._html = html;
   this._zoom = new __Stub();
   const svg = this._svg = new __Stub();
@@ -82,7 +100,8 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   if (high) svg.setAttribute("height", high[1]);
   if (box) svg.setAttribute("viewBox", box[1]);
   svg.getBoundingClientRect = function(){
-    return { left: __geom.padSide, top: __slotTop(html), width: __geom.width - 2 * __geom.padSide, height: Number(svg.getAttribute("height") || 0) };
+    return { left: __geom.padSide, top: __slotTop(html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
+      height: Number(svg.getAttribute("height") || 0) };
   };
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
@@ -243,7 +262,8 @@ function __wheel(deltaY){
 }
 // The drawing of the mode view fills the room the panel leaves below the toolbar it is drawn under,
 // and never runs past it: the content (padding, toolbar, drawing, padding) stays inside the panel.
-// Below 200px of room the drawing keeps its 200px floor and the panel scrolls. Answers the drawing.
+// Below 200px of room the drawing keeps its 200px floor and the panel scrolls. Either way it is made
+// at its surface's own size, beside any scrollbar the panel then shows. Answers the drawing.
 function __fillsItsRoom(at, what, mode){
   if (kgMode !== mode) throw new Error(at + "the " + what + " must draw, not leave kgMode " + kgMode);
   const d = __svgBox(at + "the " + what);
@@ -257,7 +277,7 @@ function __fillsItsRoom(at, what, mode){
   if (room < 200 && d.height !== 200)
     throw new Error("REGRESSION: " + at + "the " + what + " draws " + d.height + "px tall where the panel leaves "
       + room + "px, below the drawing's 200px floor, which it must keep");
-  return d;
+  return __atItsSurface(at + "the " + what);
 }
 "##;
 
@@ -362,9 +382,11 @@ const OPENING_DRIVER: &str = r##"
 "##;
 
 /// Driver, in the panel `__PANEL__` names: the files overview the page loads, the subject's
-/// re-projection, a drilled cluster, a call walk and the overview again each draw a drawing that fills
-/// the room the panel leaves below that view's own toolbar and never runs past it, each after a view
-/// whose toolbar stood at another height; below 200px of room the drawing keeps its 200px floor.
+/// re-projection, a drilled cluster, the same drill with the rationale overlay's notes below it, a
+/// call walk and the overview again each draw a drawing that fills the room the panel leaves below
+/// that view's own toolbar and never runs past it, each after a view whose toolbar stood at another
+/// height; below 200px of room the drawing keeps its 200px floor. Each is made at its surface's own
+/// size, beside the scrollbar the panel shows when the floor or the notes below run past its height.
 const PANEL_HEIGHT_DRIVER: &str = r##"
 ;(async function(){
   // The panel this case draws in, set before the page's own load draws (its fetch resolves after
@@ -382,6 +404,17 @@ const PANEL_HEIGHT_DRIVER: &str = r##"
   drillCluster(__CLUSTER);
   await __flush();
   __fillsItsRoom(at, "drilled cluster", "drill");
+  // The rationale overlay on, with a reason recorded for the drill's first member, puts its notes
+  // below the drawing.
+  kgOverlay = true;
+  kgRationale = {};
+  kgRationale[kgViewData.nodes[0].id] = [{ kind: "decision", summary: "a recorded reason" }];
+  rerenderCurrentView();
+  if (el("kgpanel")._html.indexOf('<div class="kgwhy-notes">') === -1)
+    throw new Error(at + "the overlay must put its notes below the drill");
+  __fillsItsRoom(at, "drilled cluster with the rationale overlay's notes below it", "drill");
+  kgOverlay = false;
+  kgRationale = {};
   seedCalls(__SUBJECT, "down");
   await __flush();
   __fillsItsRoom(at, "call walk", "calls");
@@ -428,7 +461,6 @@ function __press(dx, dy){
 // toolbar, at its surface's own size. Answers its markup and its transform.
 function __overviewAt(at, what){
   const d = __fillsItsRoom(at, what, "overview");
-  __atItsSurface(at + "the " + what);
   return { html: d.html, t: JSON.stringify(__view(at + "the " + what)) };
 }
 "##;
@@ -494,8 +526,10 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 /// Driver: an overview the user has panned keeps its transform and its marks, each node where it
 /// shows on screen, through a resize from a 1400px viewport to 800px and back, and through a change
 /// of its width alone and of its height alone and back, with no new request: only its drawing
-/// surface takes each new size, and its labels follow the scale it is then seen at. A panned call
-/// walk does the same, through 800px and a phone's panel beside the page's scrollbar. A fresh view
+/// surface takes each new size, and its labels follow the scale it is then seen at. It is seen at a
+/// scale of 1 once the one frame has run, even where the drawing at its old height ran past a
+/// shorter panel until that frame. A panned call walk does the same, through 800px and a phone's panel beside the page's
+/// scrollbar. A fresh view
 /// after it opens fitted and, untouched, re-fits on a resize. One the user zooms at 800px keeps its
 /// zoom through a resize to a 1400px viewport whose panel is taller, where the fitted scale is
 /// larger, and the wheel zooms on from the kept scale, in and back, never jumping above it.
@@ -522,7 +556,6 @@ const MOVED_RESIZE_DRIVER: &str = r##"
     __resize(p);
     __frame();
     const d = __fillsItsRoom(at, what, mode);
-    __atItsSurface(at + "the " + what);
     const now = JSON.stringify(__view(at + "the " + what));
     if (now !== t)
       throw new Error("REGRESSION: " + at + "the " + what + " must keep its transform, " + now + " against " + t);
@@ -719,7 +752,8 @@ rigger::test_cases! {
     the_drawing_fits_below_a_fractional_toolbar:
         fits_below_its_toolbar(r#"[348, 414, {"overview": 42.5, "reproject": 60.5, "drill": 42.5, "calls": 60.5}]"#);
     /// A phone held in a 640px-tall viewport: the 46vh panel is 294px, and below a four-line
-    /// toolbar it leaves 194px, under the drawing's 200px floor.
+    /// toolbar it leaves 194px, under the drawing's 200px floor, so the panel scrolls and shows a
+    /// scrollbar of its own, which leaves the drawing's surface 312px.
     the_drawing_keeps_its_floor_below_a_tall_toolbar_in_a_short_panel:
         fits_below_its_toolbar(r#"[348, 294, {"overview": 62, "reproject": 80, "drill": 60, "calls": 80}]"#);
     /// The instances strip grows after the first draw at 1400px, leaving 300px of content in a
