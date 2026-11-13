@@ -68,17 +68,21 @@ library, honoring the dash charter):
   line reports "N nodes in M clusters - click a cluster to drill in".
 - **Drill render.** A cluster's member nodes, each clickable to SEED spec 30's neighborhood
   (`data-seed`), god-nodes emphasized; a "<- overview" back link; the truncated caption when capped.
-- **Pan + zoom.** Scroll zooms toward the cursor, drag pans, transforming a `#kgzoom` group; a fresh
-  render (drill / back) rebinds and opens the view fitted by spec 59's opening rule. When the
-  panel's size changes (a window resize, the strip above it growing), the page redraws the view it
-  holds at the new size with no new request, at most once a frame and only when the measured size
-  changed: a view not panned or zoomed since it opened re-fits by that rule, and a moved one keeps
-  its transform and its marks where they are, only the drawing surface taking the new size. The
-  redraw keeps everything the panel was showing: a frontier choice list, an opened rationale
-  disclosure, a grain being typed with its box's focus and caret (Enter or leaving the box commits
-  it). Every redraw of the view the panel holds, for its size or for what the panel shows of it,
-  keeps a moved view's transform and marks. Drag handlers live on `window` (installed once) so a
-  drag that leaves the svg still tracks.
+- **Pan + zoom.** Scroll zooms toward the cursor, a drag pans once it travels past a few pixels (a
+  click's wobble moves nothing), transforming a `#kgzoom` group; a fresh render (drill / back)
+  rebinds and opens the view fitted by spec 59's opening rule. When the panel's size changes (a
+  window resize, the strip above it growing), the page redraws the view it holds at the new size
+  with no new request, at most once a frame and only when the measured size changed: a view not
+  panned or zoomed since it opened re-fits by that rule, and a moved one keeps its transform and its
+  marks where they are, only the drawing surface taking the new size. The redraw keeps everything
+  the panel was showing: a frontier choice list, an opened rationale disclosure, a grain being typed
+  with its box's focus and caret (Enter outside an input method's composition, or leaving the box,
+  commits it, and the text typed in a focused box outlives the reply to a new view). Every write of
+  the panel keeps its scroll, as far as the new markup reaches, and the keyboard focus on a control
+  it writes again (a lens tab, a tier checkbox, a back link, the grain box). Every redraw of the
+  view the panel holds, for its size or for what the panel shows of it, keeps a moved view's
+  transform and marks. Drag handlers live on `window` (installed once) so a drag that leaves the svg
+  still tracks.
 - **Wiring that survives re-render.** The existing spec-30 delegated click listeners on the stable
   `tree` and `kgpanel` containers gain `data-cluster` (drill) and `data-kgback` (overview) handling
   alongside the existing `data-seed` (seed) - so select-to-drill and select-to-seed survive the
@@ -86,7 +90,8 @@ library, honoring the dash charter):
   overview (`loadKgOverview`).
 - **Graceful degradation.** An empty graph renders an "empty graph" message, not an error; the static
   export (non-LIVE) says the graph is available in the live dash; a failed fetch says the graph is
-  unavailable. The panel never throws.
+  unavailable. A message replaces the view it shows over, so nothing redraws that view on top of it,
+  and a view read superseded by a later one is dropped when it lands. The panel never throws.
 
 ## Global constraints
 
