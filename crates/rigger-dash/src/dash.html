@@ -320,6 +320,7 @@
      graph could be read, which reads as an error rather than an empty graph. */
   .kglabel[hidden] { display: none; }
   .kglabel.kglabel-error { color: var(--warn); }
+  .empty.kgunread { color: var(--warn); }
   .kgtoggle { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: auto;
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 7px; white-space: nowrap; }
   .kgtoggle:hover { text-decoration: underline; }
@@ -592,12 +593,23 @@ async function graphFetch(path) {
   const label = resp.headers.get("X-Rigger-Graph-Label");
   const error = resp.headers.get("X-Rigger-Graph-Error");
   if (label !== null || error !== null) {
+    kgUnread = error !== null ? decodeURIComponent(error) : null;
     const box = el("kglabel");
     box.textContent = decodeURIComponent(error !== null ? error : label);
     box.classList.toggle("kglabel-error", error !== null);
     box.hidden = false;
   }
   return resp;
+}
+
+// Why the graph on show could not be read, as the header states it, or null when it was read; set
+// with the header, so the two never disagree.
+let kgUnread = null;
+
+// What a graph view draws when its answer draws nothing: when no graph could be read, the reason the
+// header states, never a claim that the graph or the view is empty; else `own`, its own caption.
+function kgNothingDrawn(own) {
+  return kgUnread === null ? own : '<div class="empty kgunread">' + esc(kgUnread) + '</div>';
 }
 
 function apiUrl(path) {
@@ -1120,7 +1132,7 @@ function renderReprojection(rp) {
       + shared.map(s => esc(s)).join(", ") + '</div>' : '';
   if (!clusters.length) {
     el("kgpanel").innerHTML = toolbar
-      + (emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+      + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
       + unresolvedSection + sharedSection;
     return;
   }
@@ -1292,7 +1304,7 @@ function renderGraph(g) {
     + '</div>' + callsOffer;
   if (!nodes.length && !edges.length) {
     el("kgpanel").innerHTML = head
-      + '<div class="empty">no knowledge-graph neighborhood for this node</div>';
+      + kgNothingDrawn('<div class="empty">no knowledge-graph neighborhood for this node</div>');
     return;
   }
   // c7 TIER FILTER: one checkbox per confidence tier, checked when that tier is currently VISIBLE.
@@ -2016,12 +2028,12 @@ function renderKgOverview(ov) {
   // and keep the lens selector so the operator can switch back to files or another grain.
   if (ov && ov.empty_state) {
     el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + '<div class="empty">' + esc(ov.empty_state) + '</div>';
+      + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
     return;
   }
   if (!clusters.length) {
     el("kgpanel").innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-      + '<div class="empty">empty graph - nothing to explore yet</div>';
+      + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
     return;
   }
   const dims = kgDims();
@@ -2085,7 +2097,7 @@ function renderKgDrill(nb) {
   const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
   if (!nodes.length) {
     el("kgpanel").innerHTML = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
-      + '</b></div><div class="empty">this cluster has no members to show</div>';
+      + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>');
     return;
   }
   const dims = kgDims();
@@ -2249,7 +2261,8 @@ function renderKgCalls(cg) {
     + esc(seed) + '</b>' + switcher + '</div>'
     + '<div id="kgfrontier" class="kgfrontier"></div>';
   if (!nodes.length) {
-    el("kgpanel").innerHTML = head + '<div class="empty">no calls for this node in this direction</div>';
+    el("kgpanel").innerHTML = head
+      + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
     return;
   }
   const dims = kgDims();

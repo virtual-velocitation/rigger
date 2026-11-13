@@ -658,7 +658,8 @@ and the label travels with every answer:
 - the MCP tools return it as a field;
 - the dash sends it beside every graph reply (`X-Rigger-Graph-Label`, from the same open as the
   body) and shows it in the explorer's header; a graph it cannot read (none built, a store that
-  cannot be opened) is a stated error (`X-Rigger-Graph-Error`) shown there, never an empty graph;
+  cannot be opened, an instance not registered) is a stated error (`X-Rigger-Graph-Error`) shown
+  there and in place of any view's empty caption, never an empty graph;
   the polled run snapshot (`/api/state`, and the static export built from it) carries the same
   label or reason as `graph.label` and shows it over the decision history.
 
