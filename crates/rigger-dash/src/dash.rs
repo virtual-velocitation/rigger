@@ -5654,14 +5654,22 @@ mod tests {
         }
 
         /// The explorer laid out with the rail and the card shown or hidden as given, in a
-        /// viewport `[width, height]` px: the body is as wide as the viewport less the margin,
-        /// border and padding of each box from the page's body down to the explorer body.
-        fn layout_at(&self, rail: bool, card: bool, viewport: [f64; 2]) -> ExplorerLayout<'_, 'a> {
+        /// viewport `[width, height]` px holding a page that `overflows` it or fits it: the body
+        /// is as wide as the viewport less the page's scrollbar ([`ExplorerLayout::scrollbar`])
+        /// and the margin, border and padding of each box from the page's body down to the
+        /// explorer body.
+        fn layout_at(
+            &self,
+            rail: bool,
+            card: bool,
+            viewport: [f64; 2],
+            overflows: bool,
+        ) -> ExplorerLayout<'_, 'a> {
             let mut layout = self.layout(rail, card, f64::NAN);
             layout.viewport = Some(viewport);
             let body = layout.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
             let chain = self.markup[body].ancestors.iter().copied().chain([body]);
-            layout.body = chain.fold(viewport[0], |width, at| {
+            layout.body = chain.fold(viewport[0] - layout.scrollbar(overflows), |width, at| {
                 ["left", "right"].iter().fold(width, |width, side| {
                     width - layout.px(at, &format!("margin-{side}")) - layout.edge(at, side)
                 })
@@ -5670,7 +5678,39 @@ mod tests {
             layout.values.get_mut().clear();
             layout
         }
+
+        /// The value the stylesheet's last top-level rule selecting the page's root (`html` or
+        /// `:root`) declares for `property`. The root is no box the layout model places, so a
+        /// rule under an at-rule declaring it panics.
+        fn root(&self, property: &str) -> Option<String> {
+            let mut value = None;
+            for rule in &self.rules {
+                if !rule
+                    .selectors
+                    .iter()
+                    .any(|s| matches!(*s, "html" | ":root"))
+                {
+                    continue;
+                }
+                for (name, declared) in &rule.declarations {
+                    if let Some(set) = longhand(name, declared, property) {
+                        assert!(
+                            rule.at.is_none(),
+                            "the layout model reads the root's {property} at the top level only: \
+                             {:?}",
+                            rule.text
+                        );
+                        value = Some(set);
+                    }
+                }
+            }
+            value
+        }
     }
+
+    /// The width a classic scrollbar takes beside what it scrolls (Firefox on Linux draws 12px,
+    /// other platforms up to 17px); an overlay scrollbar takes none. The pins hold for any width.
+    const SCROLLBAR: f64 = 12.0;
 
     /// The explorer laid out by the served stylesheet in one state - which panes show, and how
     /// wide the body (`.kgbody`, the panes' and the panel's parent) is, and, for the heights, the
@@ -5908,6 +5948,39 @@ mod tests {
         fn viewport(&self) -> [f64; 2] {
             self.viewport
                 .expect("a viewport length is read only in a layout made for a viewport")
+        }
+
+        /// The width the page's scrollbar takes from the viewport when the page `overflows` it or
+        /// fits it: the viewport scrolls by the root's overflow, or by the body's when the root's
+        /// is `visible` (the body's propagates), reading `visible` as `auto` and `clip` as
+        /// `hidden`; it takes a classic scrollbar's [`SCROLLBAR`] when it shows one (`scroll`, or
+        /// `auto` and the page overflows) or when the root keeps the gutter (`scrollbar-gutter:
+        /// stable`), and none otherwise.
+        fn scrollbar(&self, overflows: bool) -> f64 {
+            let body = self.index_where(|e| e.tag == "body");
+            let overflow = self
+                .style
+                .root("overflow-y")
+                .filter(|o| o != "visible")
+                .or_else(|| self.value(body, "overflow-y"))
+                .unwrap_or_else(|| "visible".to_string());
+            let shows = match overflow.as_str() {
+                "scroll" => true,
+                "auto" | "visible" => overflows,
+                "hidden" | "clip" => false,
+                other => panic!("the layout model reads no overflow {other:?} on the viewport"),
+            };
+            let gutter = self.style.root("scrollbar-gutter");
+            let kept = match gutter.as_deref() {
+                None | Some("auto") => false,
+                Some(stable) if stable.starts_with("stable") => true,
+                Some(other) => panic!("the layout model reads no scrollbar-gutter {other:?}"),
+            };
+            if shows || kept {
+                SCROLLBAR
+            } else {
+                0.0
+            }
         }
 
         /// The border-box height of each box from the page's body down to the panel and of each
@@ -6759,7 +6832,7 @@ mod tests {
             for wide in 320..=1600 {
                 let wide = f64::from(wide);
                 for (shown, rail, card) in PANE_STATES {
-                    let layout = style.layout_at(rail, card, [wide, tall]);
+                    let layout = style.layout_at(rail, card, [wide, tall], true);
                     let [short, long] = [200.0, 333_000.0]
                         .map(|held| layout.heights(held)[panel].expect("the panel is laid out"));
                     // One height to a browser's layout unit (1/64 px): the flex arithmetic rounds
@@ -6804,10 +6877,11 @@ mod tests {
             let tall = f64::from(tall);
             for wide in 320..=1600 {
                 let viewport = [f64::from(wide), tall];
-                let bare = style.layout_at(false, false, viewport);
+                let bare = style.layout_at(false, false, viewport, true);
                 let body = bare.index_where(|e| e.classes.iter().any(|c| c == "kgbody"));
-                let layouts = PANE_STATES
-                    .map(|(shown, rail, card)| (shown, style.layout_at(rail, card, viewport)));
+                let layouts = PANE_STATES.map(|(shown, rail, card)| {
+                    (shown, style.layout_at(rail, card, viewport, true))
+                });
                 for held in [200.0, 333_000.0] {
                     let column = bare.heights(held)[body].expect("the body is laid out");
                     for (shown, layout) in &layouts {
@@ -6832,6 +6906,42 @@ mod tests {
             }
         }
         assert!(stacked > 0, "some viewport stacks a pane");
+    }
+
+    /// GIVEN the served page, WHEN it lays out in a viewport of any width from a phone's to a wide
+    /// screen's, with the rail, the card, both or neither shown, on a platform whose scrollbar
+    /// takes room beside what it scrolls ([`SCROLLBAR`]), THEN the explorer body's width, and
+    /// with it where each pane sits, is the same whether the page fits the viewport or overflows
+    /// it: the body's width is one function of the viewport's, so whether the panes dock never
+    /// depends on whether stacked panes made the page overflow, nor on the order a view and a
+    /// resize arrived in. Layout is outside what the page harness can run, so this lays the page
+    /// out by its own stylesheet at each viewport width from 320px to 1600px.
+    #[test]
+    fn where_a_pane_sits_does_not_depend_on_whether_the_page_overflows() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        for tall in [640, 900] {
+            let tall = f64::from(tall);
+            for wide in 320..=1600 {
+                let wide = f64::from(wide);
+                for (shown, rail, card) in PANE_STATES {
+                    let [fits, overflows] = [false, true].map(|overflows| {
+                        let layout = style.layout_at(rail, card, [wide, tall], overflows);
+                        let sits = (
+                            layout.pane("kgrail", "right"),
+                            layout.pane("kgcard", "left"),
+                        );
+                        (layout.body, sits)
+                    });
+                    assert_eq!(
+                        fits, overflows,
+                        "with {shown} shown in a {wide}x{tall} viewport the explorer body's width \
+                         and where its panes sit are the same whether the page fits the viewport \
+                         or overflows it"
+                    );
+                }
+            }
+        }
     }
 
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
