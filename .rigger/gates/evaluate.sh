@@ -58,10 +58,15 @@
 #     a measured number in the scorecard (a top-level key, or `<map>.<key>` of a by-map);
 #   - hours_saved exceeds what the log measured for the class: a failure class's rework
 #     (failure_rework_hours of its evidence), a cost class's metric. A cost class's metric is a
-#     time measure its predicted_move lowers by at most its value; a scheduling class names
-#     serial_hours (live wall hours). A grep-fallbacks class's
+#     time measure its predicted_move lowers by at most its value. A grep-fallbacks class's
 #     metric is grep_fallbacks or grep_fallbacks_by_target.<target>, and its hours_saved is null
 #     (the log holds no duration for a fallback), ranked after every proposal with hours;
+#   - a cost proposal claims scheduling hours (live wall hours) its kind cannot remove:
+#     queued_hours other than by a change to the width bound (surface workflow, path
+#     .rigger/workflow.yml, a change naming max_parallel_units), chain_hours other than on the
+#     planning surface (persona at .rigger/agents/planner.md, or spec-skill), or serial_hours
+#     while radii_recorded_before_start is 0: no wave applied the radius rule, so no radius held a
+#     unit back;
 #   - a persona or spec-skill proposal is not of form `instruction` (text is all those surfaces
 #     hold), or a proposal for a class the previous run file also diagnosed is not of form
 #     `check` or `gate`: instruction text already failed to remove that cause once;
@@ -132,11 +137,27 @@ BY_MAPS = ("failures_by_cause", "reject_items_by_class", "rejects_by_cause",
            "time_shares", "hours_by_label", "gate_hours_by_gate", "repeated_hours",
            "grep_fallbacks_by_target", "slot_hours")
 # The metrics a cost class may name: hours by-maps and top-level hours, or shares of unit elapsed
-# time, which the bound on hours_saved converts to hours. Of the scheduling figures only
-# serial_hours: queued_hours and chain_hours are measured and compared, never claimed.
+# time, which the bound on hours_saved converts to hours.
 COST_HOURS = ("hours_by_label", "gate_hours_by_gate", "repeated_hours", "unit_elapsed_hours",
-              "serial_hours")
+              "serial_hours", "queued_hours", "chain_hours")
 COST_SHARES = ("time_shares", "gates_share", "post_merge_gates_share")
+# The scheduling hours only one kind of proposal may claim, each as (that kind, whether a proposal
+# is one). queued_hours is time the width bound held a ready unit back, which only a change to the
+# bound removes; chain_hours is time every unit not started waited on its needs, which only the
+# planning surface shapes: the planner's decomposition guidance, or the spec-writing skills that
+# shape a spec's needs.
+SCHEDULING_CLAIMS = {
+    "queued_hours": ("a change to the width bound: surface workflow, path .rigger/workflow.yml and "
+                     "a change naming max_parallel_units",
+                     lambda p: p.get("surface") == "workflow"
+                     and path_of(p) == ".rigger/workflow.yml"
+                     and "max_parallel_units" in str(p.get("change") or "")),
+    "chain_hours": ("a change to the planning surface: surface persona with path "
+                    ".rigger/agents/planner.md, or surface spec-skill",
+                    lambda p: p.get("surface") == "persona"
+                    and path_of(p) == ".rigger/agents/planner.md"
+                    or p.get("surface") == "spec-skill"),
+}
 GREP_METRICS = ("grep_fallbacks", "grep_fallbacks_by_target")
 COMPARED = ("units_integrated", "first_pass_rate", "attempts_per_unit", "rejects_per_unit",
             "gate_fails_per_unit", "escalations", "agent_busy_hours_per_unit",
@@ -1456,6 +1477,10 @@ def nonempty_strings(value):
         isinstance(v, str) and v.strip() for v in value)
 
 
+def path_of(p):
+    return str(p.get("path") or "").strip()
+
+
 # The most hours a proposal for class `c` can claim, from measured numbers only: for a failure
 # class, the rework of the failures it lists; for a cost class, the hours its metric holds (a
 # share converted through unit_elapsed_hours). None when the file measures no such bound.
@@ -1529,6 +1554,12 @@ def check_proposal(i, p, slugs, recurring, card, problems):
         if is_number(value) and is_number(move) and not -value <= move < 0:
             problems.append(f"{name}: a cost class's predicted_move lowers its metric by at most "
                             f"the {value} it measures")
+        if head in SCHEDULING_CLAIMS and not SCHEDULING_CLAIMS[head][1](p):
+            problems.append(f"{name}: {head} is claimed only by {SCHEDULING_CLAIMS[head][0]}")
+        if head == "serial_hours" and card.get("radii_recorded_before_start") == 0:
+            problems.append(f"{name}: serial_hours is claimed only when radii_recorded_before_start "
+                            "is above 0; at 0 no wave applied the radius rule, so no radius held a "
+                            "unit back")
     if source == "grep-fallbacks":
         if head not in GREP_METRICS:
             problems.append(f"{name}: a grep-fallbacks class's metric is grep_fallbacks or "
