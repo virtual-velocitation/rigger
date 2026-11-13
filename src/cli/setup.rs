@@ -4834,8 +4834,8 @@ mod tests {
     fn every_persona_and_scaffold_seed_runs_on_opus_and_may_fan_out() {
         assert_eq!(
             committed_personas().len(),
-            8,
-            "the committed fleet is eight personas"
+            9,
+            "the committed fleet is nine personas"
         );
         for (at, text) in every_shipped_persona() {
             let def = config::parse_agent(text.as_bytes())
