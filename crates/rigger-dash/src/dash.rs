@@ -12326,7 +12326,7 @@ mod subject_view_c5 {
     }
 
     /// A node with no governing memory at all returns an entirely empty rail (every list empty),
-    /// never an error - the graceful degrade the panel's per-section "none" state expects.
+    /// never an error - the answer on which the explorer shows no rail.
     #[test]
     fn memory_rail_is_empty_for_a_node_with_no_governing_memory() {
         let g = subject_graph();

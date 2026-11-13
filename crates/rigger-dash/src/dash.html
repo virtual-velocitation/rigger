@@ -961,14 +961,16 @@ function syncSubjectLens() {
 // #kgsubjectlens), so populating it never touches the neighborhood's own rendered nodes/edges -
 // it is pure metadata. Showing it takes its column from the panel (see .kgbody), and each view sets
 // it before drawing (setSubjectPanes), so the view is laid out once beside it. `memory` is the seeded
-// neighborhood's `memory` field (`{decisions, findings, concepts}`, each possibly empty); `null`
-// (no subject focused, or a static export with no live memory to fetch) hides the rail entirely.
-// Each section renders its documented "none" state rather than disappearing, so an all-empty
-// memory rail still reads as "checked, and there is none" rather than looking broken.
+// neighborhood's `memory` field (`{decisions, findings, concepts}`, each possibly empty). The rail
+// shows only for a subject with an entry to list: `null` (no subject focused, or a static export
+// with no live memory to fetch) and a memory with every section empty (a seed the graph does not
+// hold, or a subject nothing governs) hide it, so it never takes the panel's room to say nothing.
+// A shown rail lists every section, an empty one reading "none".
 function renderMemoryRail(memory) {
   const rail = el("kgrail");
   if (!rail) return;
-  if (!memory) { rail.hidden = true; rail.innerHTML = ""; return; }
+  const listed = !!memory && ["decisions", "findings", "concepts"].some(k => (memory[k] || []).length);
+  if (!listed) { rail.hidden = true; rail.innerHTML = ""; return; }
   rail.hidden = false;
   const section = (title, items, card) => '<div class="kgrail-section"><h3>' + esc(title)
     + ' (' + items.length + ')</h3>'
