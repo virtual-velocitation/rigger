@@ -241,6 +241,7 @@ mod store_resolution_cli;
 mod store_secrets;
 mod store_secrets_periphery;
 mod store_topology_periphery;
+mod store_writers_root_periphery;
 mod subject_lens_defined_cells;
 mod subject_lens_defined_cells_contract;
 mod subject_lens_overlay_client_arms;
