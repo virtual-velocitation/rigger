@@ -1061,6 +1061,8 @@ pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
         path: Vec::new(),
         explain: None,
         truncated,
+        // A grain text that names no grain folds no member; the drill says why.
+        empty_state: lens.not_a_grain().map(|bad| bad.to_string()),
         // A cluster drill is not a directed-call view (spec 52 c4).
         dir: None,
         referenced_not_called: Vec::new(),
@@ -1310,6 +1312,8 @@ pub fn neighborhood_of(
         explain: None,
         // A seeded neighborhood is a COMPLETE node set (never capped); only `cluster_detail` sets this.
         truncated: None,
+        // A seeded neighborhood reads no grain, so no grain text can leave it empty.
+        empty_state: None,
         // A plain neighborhood is not a directed-call view (spec 52 c4): no direction, no
         // referenced-but-not-called sidecar. Absent, these keep the neighborhood byte-identical.
         dir: None,
@@ -1783,6 +1787,11 @@ pub struct Neighborhood {
     /// COMPLETE node set - a plain [`neighborhood`] and a drill at/under the budget.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<usize>,
+    /// Why a drill draws nothing: [`community::NotAGrain`]'s sentence when [`cluster_detail`]'s
+    /// derived lens names no grain, as the overview and the re-projection say it. Omitted (`None`)
+    /// for every other drill and every other view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_state: Option<String>,
     /// The DIRECTED-CALL view marker (spec 52 c4): the direction the `view=calls` walk ran -
     /// `"down"` (execution path / callees), `"up"` (call sites / callers), or `"both"` (the flow
     /// through a centered seed). Set ONLY on a call view; omitted (`None`) for every neighborhood /

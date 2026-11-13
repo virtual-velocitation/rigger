@@ -2126,6 +2126,7 @@ fn calls_view(
         path: Vec::new(),
         explain: None,
         truncated: None,
+        empty_state: None,
         dir: Some(dir.to_string()),
         referenced_not_called,
         // A directed-call view is not the plain seeded neighborhood; no memory rail (spec 63 c5).
