@@ -672,15 +672,15 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
     // The documented empty states (spec 53 c4 / spec 54 c3): a derived lens whose grain text names
     // no grain, or whose selected grain has NO assignments AT ALL. Return an empty overview carrying
     // why ([`Buckets::unread`]) instead of an error or a bare kind-bucket view. `total` still reports
-    // the whole graph size. This is NOT the only path to the underived empty state - see the
-    // post-fold re-check below.
+    // the whole graph size, and `grain` the grain asked for (none for a text that names none). This
+    // is NOT the only path to the underived empty state - see the post-fold re-check below.
     if let Some(empty_state) = buckets.unread() {
         return ClusterOverview {
             clusters: Vec::new(),
             edges: Vec::new(),
             total: graph.nodes.len(),
             empty_state: Some(empty_state),
-            grain: None,
+            grain: lens.grain(),
             tests_hidden: 0,
         };
     }
@@ -1936,8 +1936,9 @@ pub struct ClusterOverview {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
     /// The grain a derived lens displays ([`Lens::grain`]), read from the store or computed at
-    /// read when the store holds another; absent under [`Lens::Files`] and when the lens's text
-    /// names no grain, so the files overview stays byte-identical.
+    /// read when the store holds another, and stated beside an empty state when nothing can be
+    /// computed at it; absent under [`Lens::Files`] and when the lens's text names no grain, so the
+    /// files overview stays byte-identical.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grain: Option<String>,
     /// How many test entities the read hid, attached to a cluster or not: the caller sets it from
