@@ -42,7 +42,7 @@ Walk this checklist in order:
    When it lists `also`, the other metrics the adopted change was predicted to move, say for each whether its `actual_move` has the predicted sign.
 5. Propose at most three changes across all three sources, at most one per class, for the classes that cost the most hours. Rank them by `hours_saved`, highest first. `hours_saved` is the hours per run the change removes. It is never more than the class's measured hours from step 4, and `check` refuses it when it is. A grep-fallbacks proposal has `hours_saved` null, since the log holds no duration for a fallback, and ranks after every proposal with hours. Each proposal names:
    - `class`
-   - `change`, in one sentence
+   - `change`, in one sentence stating one decision, never an either-or: the operator's `emit` records the adopted proposal's `change` as a decision in the graph
    - `evidence`
    - `surface`:
      - `persona` for a file under .rigger/agents/

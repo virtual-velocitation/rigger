@@ -10,13 +10,13 @@ Run these from the operator checkout, after the check-in has merged and before t
 
 1. `sh .rigger/gates/evaluate.sh run` measures the landed run into a new file here. It then runs the evaluator (`.rigger/agents/evaluator.md`) through `$EVALUATE_AGENT` and checks the result.
    - With `EVALUATE_AGENT` unset, it stops after measuring. Run the evaluator on the file by hand, then run `sh .rigger/gates/evaluate.sh check <file>`.
-2. Commit the file on the run branch.
-3. Run `sh .rigger/gates/evaluate.sh emit <file>`. It records each proposal as a finding about the file its change touches, so the next run reaches it from that file.
-4. Adopt at most one proposal:
+2. Adopt at most one proposal:
    - Set `"adopted"` in the proposals block to its id, or to `"none"`.
-   - Make the change and commit both. A `binary` or `spec-skill` change is the spec its `path` names, run like any other spec.
-   - When the adopted change differs from the proposal, rewrite its `change`, `predicted_move` and `hours_saved` to match what was made, and list under `also` each other metric the change is predicted to move, such as the cost of a gate it adds.
+   - Make the change. A `binary` or `spec-skill` change is the spec its `path` names, run like any other spec.
+   - When the adopted change differs from the proposal, rewrite its `change`, `predicted_move` and `hours_saved` to match what was made, and list under `also` each other metric the change is predicted to move, such as the cost of a gate it adds. The `change` states one decision, never an either-or, because `emit` records it as the decision.
    - The next run's file scores it.
+3. Commit the file and the change on the run branch.
+4. Run `sh .rigger/gates/evaluate.sh emit <file>`. It records the adopted proposal as one decision, `eval-<run8>-adopted`, governing the file its change touches, so the next run reaches it from that file. Re-emitting updates the same decision, and with no proposal adopted it records nothing. It records no finding, so an evaluation never appears as a reviewer in the run it evaluates; the proposals not adopted stay in the committed run file, which the graph holds as a document.
 
 `measure` and `evidence` also read a run that has not landed; the scorecard's `labels.run` then reads `interim`. While a run is live, point `EVALUATE_DB` and `EVALUATE_PROGRESS` at a copy of the store files (each database with its `-wal` and `-shm`, copied together), never at the live stores.
 
@@ -57,7 +57,7 @@ A grep-fallbacks class is a habit gap when the graph could answer and the agent 
 |---|---|
 | `id` | `P1` to `P3`, in rank order |
 | `class` | one of the file's classes |
-| `change` | the change, in one sentence |
+| `change` | the change, in one sentence stating one decision, never an either-or |
 | `evidence` | the records that show the class |
 | `surface` | `persona`, `gate`, `workflow`, `spec-skill` or `binary`. A binary change becomes an ordinary spec. So does a spec-skill change: the spec-writing skills ship to every project that uses rigger, so a change to them is reviewed like a change to the binary. A binary change is to rigger's own code and tests: rigger is language and process agnostic, so the binary never gains a gate, a mandatory step or a language rule. |
 | `path` | the file to change, or the spec to write |

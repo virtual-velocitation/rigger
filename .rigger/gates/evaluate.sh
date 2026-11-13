@@ -25,8 +25,9 @@
 #                        fallbacks grouped by what they searched for. Never committed.
 #   check [file]         grade a run file's format (default: the newest run file); exit 1 with
 #                        one line per problem. It never judges content.
-#   emit [file]          once check passes, record each proposal as a ReviewFinding through
-#                        `rigger emit`, about the surface it changes and the run file.
+#   emit [file]          once check passes, record the adopted proposal as one DecisionMade
+#                        (`eval-<run8>-adopted`) through `rigger emit`, governing the file its
+#                        change touches; re-emitting updates it. With none adopted, record nothing.
 #   run [run]            measure, then the evaluator through $EVALUATE_AGENT, then check.
 # [run] is `latest` (the default: the last RunStarted on the run stream), a run id, or a unique
 # prefix of one.
@@ -1286,19 +1287,26 @@ def check(arg):
 
 
 def emit(arg):
+    # An evaluation never appears as a reviewer in the run it evaluates, so it records no
+    # finding: only the adopted proposal becomes a decision, governing the file its change
+    # touches, and the proposals not adopted stay in the committed run file the graph holds.
     path = chosen_file(arg)
     problems, blocks = problems_of(path)
     if problems:
         refuse(f"{path.name} fails check; run check and fix it before emitting")
-    record = shown(path)
+    adopted = blocks["proposals"]["adopted"]
+    if adopted in (None, "none"):
+        print(f"evaluate: {path.name} adopts no proposal, so emit records nothing", file=sys.stderr)
+        return
+    p = next(p for p in blocks["proposals"]["proposals"] if p["id"] == adopted)
     run8 = blocks["scorecard"]["run"][:8]
-    for p in blocks["proposals"]["proposals"]:
-        saved = (f"about {p['hours_saved']} h saved per run" if p["hours_saved"] is not None
-                 else "hours saved not measured")
-        summary = (f"[{p['class']}] {p['change']} Moves {p['metric']} by {p['predicted_move']}; "
-                   f"{saved}. Surface: {p['surface']} ({p['form']}).")
-        print(json.dumps({"id": f"eval-{run8}-{p['id']}", "by": "evaluator",
-                          "summary": summary, "about": [p["path"], record]}))
+    moves = " and ".join(f"{m['metric']} by {m['predicted_move']:+}"
+                         for m in [p] + (p.get("also") or []))
+    change = p["change"].strip()
+    summary = (f"{change if change.endswith('.') else change + '.'} Adopted from the evaluation "
+               f"of run {run8} ({shown(path)}) for the class {p['class']}, it changes {p['path']} "
+               f"and is predicted to move {moves}.")
+    print(json.dumps({"id": f"eval-{run8}-adopted", "summary": summary, "governs": [p["path"]]}))
 
 
 def persona():
@@ -1332,12 +1340,10 @@ measure | evidence | check)
     evaluate_py "$@"
     ;;
 emit)
-    findings=$(evaluate_py emit "${2:-}") || { echo "$findings"; exit 1; }
-    printf '%s\n' "$findings" | while IFS= read -r finding; do
-        test -n "$finding" || continue
-        echo "+ rigger emit ReviewFinding $finding"
-        rigger emit ReviewFinding "$finding" || exit 1
-    done || exit 1
+    decision=$(evaluate_py emit "${2:-}") || { echo "$decision"; exit 1; }
+    test -n "$decision" || exit 0
+    echo "+ rigger emit DecisionMade $decision"
+    rigger emit DecisionMade "$decision" || exit 1
     ;;
 run)
     file=$(evaluate_py measure "${2:-latest}") || { echo "$file"; exit 1; }
@@ -1356,6 +1362,6 @@ run)
     rm -rf "$scratch"
     test "$status" -eq 0 || { echo "evaluate: the evaluator exited $status"; exit 1; }
     evaluate_py check "$file" || exit 1
-    echo "evaluate: commit $file, then: sh .rigger/gates/evaluate.sh emit $file"
+    echo "evaluate: adopt at most one proposal in $file, commit it, then: sh .rigger/gates/evaluate.sh emit $file"
     ;;
 esac
