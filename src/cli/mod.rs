@@ -5615,50 +5615,65 @@ mod tests {
     }
 
     /// A reader that answers many opens (the MCP session, a run, either's grounder) holds no
-    /// discovery between them: an open after the directory it stands in became a repository reads
-    /// that repository's head.
+    /// discovery from its build to its first open or between two opens: an open after the
+    /// directory it stands in became a repository reads that repository's head.
     #[test]
-    fn a_reader_asks_where_its_repository_lies_anew_for_each_later_open() {
+    fn a_reader_asks_where_its_repository_lies_anew_for_each_open() {
         let records = Projector::open(":memory:", "test").unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let site = Site::of(dir.path());
-        let read = ReadGraph::new(&records, &site).unwrap();
-        // (reader, the commit the head its next open reads names)
+        // (when the directory becomes a repository, the directory)
+        let moments = [
+            ("before the first open", tempfile::tempdir().unwrap()),
+            ("between two opens", tempfile::tempdir().unwrap()),
+        ];
+        let sites = moments.each_ref().map(|(_, dir)| Site::of(dir.path()));
+        let reads = sites
+            .each_ref()
+            .map(|site| ReadGraph::new(&records, site).unwrap());
+        // (reader, when its directory becomes a repository, the directory, its next open's commit)
         type NextOpen<'a> = Box<dyn Fn() -> Option<String> + 'a>;
-        let readers: &[(&str, NextOpen<'_>)] = &[
-            (
+        let mut readers: Vec<(&str, &str, &Path, NextOpen<'_>)> = Vec::new();
+        for ((moment, dir), read) in moments.iter().zip(&reads) {
+            readers.push((
                 "the graph reader",
-                Box::new(|| read.head().unwrap().view.stamp().tip.commit.clone()),
-            ),
+                moment,
+                dir.path(),
+                Box::new(move || read.head().unwrap().view.stamp().tip.commit.clone()),
+            ));
             #[cfg(feature = "symbols")]
-            ("a grounder's heads", {
+            readers.push(("a grounder's heads", moment, dir.path(), {
                 use rigger_domain::code_view::OpenCodeView;
-                let heads = SiteOpens::new(Site::of(dir.path()));
-                let worktree = dir.path().to_path_buf();
+                // Its site has named the worktree, as `select_grounder` names it first.
+                let site = Site::of(dir.path());
+                let worktree = site.tree().unwrap();
+                let heads = SiteOpens::new(site);
                 Box::new(move || {
                     let head = heads.head(&worktree).unwrap();
                     head.view.stamp().tip.commit.clone()
                 })
-            }),
-        ];
-        for (reader, next_open) in readers {
-            assert_eq!(
-                next_open(),
-                None,
-                "{reader}: a directory's head names no commit"
+            }));
+        }
+        for (reader, moment, _, next_open) in &readers {
+            if *moment == "between two opens" {
+                assert_eq!(
+                    next_open(),
+                    None,
+                    "{reader}: a directory's head names no commit"
+                );
+            }
+        }
+        for (_, dir) in &moments {
+            git_init_quiet(dir.path());
+            crate::test_support::git_ok_with_identity(
+                dir.path(),
+                &["commit", "-q", "--allow-empty", "-m", "i"],
             );
         }
-        git_init_quiet(dir.path());
-        crate::test_support::git_ok_with_identity(
-            dir.path(),
-            &["commit", "-q", "--allow-empty", "-m", "i"],
-        );
-        let sha = crate::test_support::git_out(dir.path(), &["rev-parse", "HEAD"]);
-        for (reader, next_open) in readers {
+        for (reader, moment, dir, next_open) in &readers {
+            let sha = crate::test_support::git_out(dir, &["rev-parse", "HEAD"]);
             assert_eq!(
                 next_open(),
-                Some(sha.clone()),
-                "{reader}: a later open reads the repository the directory became"
+                Some(sha),
+                "{reader}, the directory becoming a repository {moment}: the open after reads it"
             );
         }
     }
