@@ -1312,11 +1312,6 @@ struct StoreWalk {
 /// home). The sanctioned set there is exactly `{start, boundary}` - no ancestors between
 /// them are ever consulted, mirroring the "outside git context" case's own "only `start`
 /// counts" discipline for the part of the path this repo does not govern.
-fn walk_stores_from(start: &Path) -> Result<StoreWalk, String> {
-    walk_stores_in(&Site::of(start))
-}
-
-/// [`walk_stores_from`] the directory of `site`, bounded at the main root its one discovery names.
 fn walk_stores_in(site: &Site) -> Result<StoreWalk, String> {
     let start = site.dir.as_path();
     let boundary = site.main_root()?;
@@ -1373,13 +1368,6 @@ fn walk_stores_in(site: &Site) -> Result<StoreWalk, String> {
     })
 }
 
-/// The OUTERMOST store directory within the bounded walk scope from `start`, or `None`
-/// when scope holds none. Thin wrapper over [`walk_stores_from`] for the read-only callers
-/// (residue/validate) that only need the chosen store, not the bypassed-shadow report.
-fn find_store_dir_from(start: &Path) -> Result<Option<PathBuf>, String> {
-    Ok(walk_stores_from(start)?.dir)
-}
-
 /// The store [`require_store_dir`] resolves, or `None` when no store exists yet
 /// ([`NoStoreFound`], a project set up before any run); every other resolution failure
 /// propagates.
@@ -1391,7 +1379,14 @@ fn store_if_any() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std
 fn store_if_any_in(
     site: &Site,
 ) -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>> {
-    match require_store_dir_in(site) {
+    if_any(require_store_dir_in(site))
+}
+
+/// `found`, or `None` where it found no store ([`NoStoreFound`]); every other failure propagates.
+fn if_any<T>(
+    found: Result<T, Box<dyn std::error::Error>>,
+) -> Result<Option<T>, Box<dyn std::error::Error>> {
+    match found {
         Ok(found) => Ok(Some(found)),
         Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => Ok(None),
         Err(e) => Err(e),
@@ -1400,27 +1395,32 @@ fn store_if_any_in(
 
 /// The operator instruction layer the instruction reporters (`rigger prime`, `rigger
 /// instructions`) report, read at the project governing the cwd ([`instruction_layer_root`]). A
-/// cwd that cannot be read ([`cwd`]) holds no layer, so the reporters report the built-ins alone.
-/// The resolved store is never consulted: under the gate store fence it is a scratch store whose
-/// parent is no project.
+/// cwd that cannot be read ([`Site::of`]) holds no layer, so the reporters report the built-ins
+/// alone. The resolved store is never consulted: under the gate store fence it is a scratch store
+/// whose parent is no project.
 fn project_instruction_layer() -> Result<Vec<instructions::Instruction>, Box<dyn std::error::Error>>
 {
     Ok(config_store::load_instructions(&instruction_layer_root(
-        &cwd(),
+        &Site::here(),
     )?)?)
 }
 
-/// The directory whose instruction layer governs `start`: the nearest one holding a workflow
-/// definition ([`WORKFLOW_FILE`]), walking from `start`'s position mapped into the main checkout
-/// ([`worktree_prefix`] under [`Site::project_root`]) up to the project root, else the project root. So
-/// a project set up below the repository root reports the layer `rigger validate` reports there,
-/// from that directory and from below it; a subdirectory holding no workflow definition reports
-/// the project's layer, never its own; and a linked or nested worktree reports the main checkout's
-/// layer, since the walk never reads the worktree's own files. Outside git it is `start`; git
-/// refusing inside a repository is an error.
-fn instruction_layer_root(start: &Path) -> Result<PathBuf, String> {
-    let root = Site::of(start).project_root()?;
-    Ok(worktree_prefix(start)?
+/// The directory whose instruction layer governs `site`: its project under the main checkout
+/// ([`project_under`] [`Site::project_root`]). So a project set up below the repository root
+/// reports the layer `rigger validate` reports there, from that directory and from below it; a
+/// subdirectory holding no workflow definition reports the project's layer, never its own; and a
+/// linked or nested worktree reports the main checkout's layer, since the walk never reads the
+/// worktree's own files. Outside git it is the site's directory; git refusing inside a repository
+/// is an error.
+fn instruction_layer_root(site: &Site) -> Result<PathBuf, String> {
+    project_under(site, site.project_root()?)
+}
+
+/// The project governing `site` under `root`: the nearest directory holding a workflow definition
+/// ([`WORKFLOW_FILE`]), walking from the site's position mapped under `root` ([`worktree_prefix`])
+/// up to `root`, else `root`. The one rule a project is found by, whichever tree `root` tops.
+fn project_under(site: &Site, root: PathBuf) -> Result<PathBuf, String> {
+    Ok(worktree_prefix(&site.dir)?
         .ancestors()
         .map(|prefix| root.join(prefix))
         .find(|dir| dir.join(RIGGER_DIR).join(WORKFLOW_FILE).is_file())
@@ -1713,7 +1713,7 @@ impl StoreLocation {
 
     /// The repo root this store lives under (spec 83, criterion 2): the SAME OWNING root
     /// [`identity`](Self::identity) binds to (the parent of the resolved `.rigger/`), NEVER
-    /// the process's raw cwd (`git_repo()`). A courier invoked from a nested unit worktree -
+    /// the process's raw cwd. A courier invoked from a nested unit worktree -
     /// the documented, walk-up-supported shape [`require_store_dir`] exists for - has a
     /// DIFFERENT git toplevel than the main repo whose scratch root the `rigger run` host
     /// (always run from the repo root) touches a spawn's liveness marker under; resolving the
@@ -1776,8 +1776,15 @@ fn server_store_location(site: &Site) -> Result<StoreLocation, String> {
 /// (and every OTHER failure `--line` itself can hit) still propagates it exactly as the plain
 /// error it replaces - only the message text moved into a named type, byte-for-byte.
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-struct NoStoreFound(String);
+#[error("{message}")]
+struct NoStoreFound {
+    /// Why no store was found, as the command says it.
+    message: String,
+    /// The `.rigger/` at the project root a reader reads as the empty store it is, where it is
+    /// made or the command runs at the root itself; `None` below a root that holds none, where the
+    /// message is the one sentence naming `rigger setup` there ([`no_store_at_the_root`]).
+    root_store: Option<PathBuf>,
+}
 
 /// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`) must
 /// use, REFUSING rather than fabricating a fresh empty store when neither
@@ -1796,7 +1803,10 @@ struct NoStoreFound(String);
 /// binds identity to the resolved root, so a walked-up write lands in the stream the
 /// conductor reads (see [`StoreLocation::identity`]). The run driver (`rigger run`) is
 /// deliberately NOT routed through here: it legitimately BOOTSTRAPS the store on the first
-/// run of a fresh project.
+/// run of a fresh project. Below a project root that holds no `.rigger/` at all it refuses in
+/// the one sentence a writer refuses with there ([`no_store_at_the_root`]), naming `rigger setup`
+/// at the root; a reader that answers without a store ([`store_if_any`]) reads either refusal as
+/// no store.
 fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     require_store_dir_in(&Site::here())
 }
@@ -1824,16 +1834,29 @@ fn require_store_dir_in(
         return Ok((server_store_location(site)?, sel));
     }
     let walk = walk_stores_in(site)?;
-    let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
-        Box::new(NoStoreFound(format!(
-            "no rigger store found: neither {} nor any parent directory has an initialized \
-             {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
-             directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
-             Run it from the project root that owns the run; refusing to fabricate a fresh \
-             empty store here.",
-            cwd.display()
-        )))
-    })?;
+    let Some(dir) = walk.dir else {
+        // Below a root that holds no `.rigger/` at all, the store this resolves to is one
+        // `rigger setup` has not made: said in the one sentence a writer refuses with there.
+        let root = site.project_root()?;
+        let root_store = root.join(RIGGER_DIR);
+        if !at_the_root(cwd, &root) && !root_store.is_dir() {
+            return Err(Box::new(NoStoreFound {
+                message: no_store_at_the_root(cwd, &root),
+                root_store: None,
+            }));
+        }
+        return Err(Box::new(NoStoreFound {
+            message: format!(
+                "no rigger store found: neither {} nor any parent directory has an initialized \
+                 {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
+                 directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
+                 Run it from the project root that owns the run; refusing to fabricate a fresh \
+                 empty store here.",
+                cwd.display()
+            ),
+            root_store: Some(root_store),
+        }));
+    };
     // Outermost store wins (spec 08 item 6): a NEARER shadow `events.db` (inside a unit
     // worktree or a scratch dir) must never SILENTLY eclipse the repo root's real run
     // stream. When the bounded walk bypassed one, name BOTH the bypassed shadow and the
@@ -1890,7 +1913,7 @@ fn store_to_write_in(
 ) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
     let here = site.located()?;
     let root = site.project_root()?;
-    let dir = if canonical_or_spelled(here) == canonical_or_spelled(&root) {
+    let dir = if at_the_root(here, &root) {
         let dir = PathBuf::from(RIGGER_DIR);
         std::fs::create_dir_all(&dir)?;
         dir
@@ -1899,18 +1922,50 @@ fn store_to_write_in(
     } else {
         let dir = root.join(RIGGER_DIR);
         if !dir.is_dir() {
-            return Err(format!(
-                "no rigger store at {}, the one store {} resolves to: run `rigger setup` in {} to \
-                 make it; no command makes a store anywhere else",
-                dir.display(),
-                here.display(),
-                root.display()
-            )
-            .into());
+            return Err(no_store_at_the_root(here, &root).into());
         }
         dir
     };
     Ok((StoreLocation { dir }, store_selection_in(site, None, None)?))
+}
+
+/// The store a command that only READS it opens, resolved from `site`: the store
+/// [`require_store_dir_in`] resolves, else, where none holds a log yet, the `.rigger/` at the
+/// site's project root ([`Site::project_root`]), whose absent log a reader reads as the empty one
+/// it is. Below a root that holds no `.rigger/` at all it refuses as [`require_store_dir_in`]
+/// does, naming `rigger setup` at the root; it never reads a store in the directory it runs in.
+fn store_to_read_in(
+    site: &Site,
+) -> Result<(StoreLocation, StoreSelection), Box<dyn std::error::Error>> {
+    match require_store_dir_in(site) {
+        Err(e) => match e
+            .downcast_ref::<NoStoreFound>()
+            .and_then(|n| n.root_store.clone())
+        {
+            Some(dir) => Ok((StoreLocation { dir }, store_selection_in(site, None, None)?)),
+            None => Err(e),
+        },
+        found => found,
+    }
+}
+
+/// Whether `here` is the project `root` itself, compared as the filesystem resolves both.
+fn at_the_root(here: &Path, root: &Path) -> bool {
+    canonical_or_spelled(here) == canonical_or_spelled(root)
+}
+
+/// The one sentence a command run at `here`, below a project `root` that holds no `.rigger/`,
+/// refuses with: the store it resolves to is the root's, which `rigger setup` makes there, and
+/// no command makes one anywhere else. Every store resolution (the readers' and the writers')
+/// words it here.
+fn no_store_at_the_root(here: &Path, root: &Path) -> String {
+    format!(
+        "no rigger store at {}, the one store {} resolves to: run `rigger setup` in {} to make \
+         it; no command makes a store anywhere else",
+        root.join(RIGGER_DIR).display(),
+        here.display(),
+        root.display()
+    )
 }
 
 /// `dir` as the filesystem resolves it (symbolic links and `..` segments followed), or as spelled
@@ -1961,15 +2016,11 @@ fn on_the_run(act: impl FnOnce(&StoreLocation, &dyn EventStore) -> Res) -> Res {
 /// from a linked worktree so answers from the owning repository's graph, and one run under the
 /// gate store fence from the fence - never from a `graph.db` opened in the working directory,
 /// which a worktree does not carry and which would answer every lookup empty. A project with no
-/// store yet (set up before any run) reads its own `.rigger/`, so a lookup there still answers
-/// its not-found note instead of refusing; every other resolution failure propagates.
+/// store yet (set up before any run) reads its root's `.rigger/` ([`store_to_read_in`]), so a
+/// lookup there still answers its not-found note instead of refusing; every other resolution
+/// failure propagates.
 fn owning_graph_to_read(site: &Site) -> Result<Projector, Box<dyn std::error::Error>> {
-    let loc = match store_if_any_in(site)? {
-        Some((loc, _selection)) => loc,
-        None => StoreLocation {
-            dir: site.located()?.join(RIGGER_DIR),
-        },
-    };
+    let (loc, _selection) = store_to_read_in(site)?;
     open_graph_to_read(&loc.file("graph.db"), &loc.identity_in(site)?)
 }
 
@@ -2904,20 +2955,23 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
     let (run_id, rev) = parse_replay_args(args)?;
 
     // The candidate config lives at a git rev, so a replay needs a repo. The baseline is
-    // read from THIS project's namespaced run stream (read-only).
-    let repo = git_repo()?;
-    if repo.is_empty() {
+    // read from THIS project's namespaced run stream (read-only), in the store every reader
+    // reads ([`store_to_read_in`]); the repository the rev is read in is that store's owning
+    // root, the one every worktree of it shares.
+    let site = Site::here();
+    if site.toplevel()?.is_empty() {
         return Err(
             "rigger replay: needs a git repo - the candidate config is read at the \
                     git rev given to --against, and this project is not inside one"
                 .into(),
         );
     }
+    let (loc, selection) = store_to_read_in(&site)?;
+    let repo = loc.repo_root();
 
     // 1. Lift the baseline: read (never write) this project's run stream and slice the
     //    requested run. `metrics::project` folds it into the recorded baseline.
-    let db = db_path("events.db");
-    let selection = store_selection(None, None)?;
+    let db = loc.file("events.db");
     if selection.log_absent(&db) {
         return Err(format!(
             "rigger replay: no runs recorded yet for this project (no {db}); run `rigger run` first"
@@ -2925,7 +2979,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
         .into());
     }
     let backend = resolve_store(&selection, &db)?;
-    let real = Namespaced::new(backend.as_ref(), &project_identity()?);
+    let real = Namespaced::new(backend.as_ref(), &loc.identity()?);
     let events = real.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let baseline = baseline_run_slice(&events, &run_id).ok_or_else(|| {
         format!(
@@ -2956,11 +3010,8 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
     //    the fourth call site still on the old pattern, silently zeroing a configured
     //    `defaults.workdir` (this THROWAWAY scratch placement, never the candidate's own
     //    config at `<rev>`, which `materialize_config_at_rev` loads separately below) whenever
-    //    `Config::validate` failed for an unrelated reason. Anchored at `repo` (the resolved
-    //    git top-level, not raw cwd), matching `StoreLocation::dir`'s own convention.
-    let (workdir, _max_retries) = scratch_defaults(&StoreLocation {
-        dir: Path::new(&repo).join(RIGGER_DIR),
-    });
+    //    `Config::validate` failed for an unrelated reason. Read from the store's own `loc`.
+    let (workdir, _max_retries) = scratch_defaults(&loc);
     let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
     std::fs::create_dir_all(&scratch_root)?;
     let (candidate_cfg, candidate_definition, spawn_host) =
@@ -3317,7 +3368,7 @@ fn recorded_dash_url(loc: &StoreLocation) -> Option<String> {
 /// reads wall-clock age, so an open hold cannot hide a dead supervisor from it.
 ///
 /// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
-/// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
+/// cwd read: a courier invoked from a nested unit worktree (the documented,
 /// walk-up-supported shape [`require_store_dir`] exists for) has a DIFFERENT git toplevel than
 /// the main repo whose scratch root the `rigger run` host (which always runs from the repo
 /// root) touches the marker under, so resolving the scratch root from the raw cwd silently
@@ -4906,27 +4957,6 @@ fn footprint_reclaim_lines(reclaims: &[FootprintReclaim]) -> Vec<String> {
     lines
 }
 
-/// The repo root that owns the CURRENT store scope from `cwd`: the store's OWNING root
-/// when a store exists (walking up as the couriers do), else the cwd's git top-level, else
-/// the cwd itself; an error when git refuses inside a repository. The SINGLE authority
-/// [`residue_advisories`] and [`footprint_report_for`] both resolve their scratch root from, so
-/// `rigger validate`'s two disk-accounting surfaces can never scan two different scratch roots
-/// for what is nominally the same run.
-fn owning_repo_root(cwd: &Path) -> Result<String, String> {
-    if let Some(root) = find_store_dir_from(cwd)?
-        .and_then(|d| d.parent().map(|p| p.to_string_lossy().into_owned()))
-        .filter(|s| !s.is_empty())
-    {
-        return Ok(root);
-    }
-    let top = git_repo_at(cwd)?;
-    Ok(if top.is_empty() {
-        cwd.to_string_lossy().into_owned()
-    } else {
-        top
-    })
-}
-
 /// `entry` under the project's `.rigger/` directory: `<root>/.rigger/<entry>`.
 fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
     root.join(RIGGER_DIR).join(entry)
@@ -5703,10 +5733,6 @@ fn configured_grounder(
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     select_grounder(opens(site), &name)
-}
-
-fn git_repo() -> Result<String, String> {
-    git_repo_at(&cwd())
 }
 
 /// The git top-level directory *containing `root`*, resolved with `git -C <root>` so the
@@ -8362,7 +8388,7 @@ mod tests {
     }
 
     #[test]
-    fn owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel() {
+    fn the_stores_owning_root_wins_over_the_git_toplevel() {
         // The doc comment's stated precedence: the STORE's owning root (found by the
         // `.rigger`-holding walk-up) wins over the git top-level when the two differ - the
         // store lives in `child`, one level below the git root `grandparent`, so a fixture
@@ -8378,8 +8404,9 @@ mod tests {
         let deep = child.join("src").join("deep");
         std::fs::create_dir_all(&deep).unwrap();
 
+        let dir = walk_stores_in(&Site::of(&deep)).unwrap().dir.unwrap();
         assert_eq!(
-            owning_repo_root(&deep).unwrap(),
+            StoreLocation { dir }.repo_root(),
             child.to_string_lossy().into_owned(),
             "must resolve to the store's own root (child), not the outer git toplevel \
              (grandparent) - proving the store-root branch actually wins over the fallback"
@@ -8677,18 +8704,18 @@ mod tests {
     // ---- store-open hardening: walk up to an existing store, never fabricate one ----
 
     #[test]
-    fn find_store_dir_from_returns_the_dir_that_holds_the_store() {
+    fn the_store_walk_returns_the_dir_that_holds_the_store() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         plant_store(root);
         assert_eq!(
-            find_store_dir_from(root).unwrap(),
+            walk_stores_in(&Site::of(root)).unwrap().dir,
             Some(root.join(RIGGER_DIR))
         );
     }
 
     #[test]
-    fn find_store_dir_from_walks_up_from_a_subdirectory() {
+    fn the_store_walk_walks_up_from_a_subdirectory() {
         // A courier run from a SUBDIR of the project root still resolves the root's
         // store. The root is a git repo: the walk is bounded at the main-repo root, so
         // only git-governed ancestry is walkable (adv9-walkup-cross-project).
@@ -8699,7 +8726,7 @@ mod tests {
         let sub = root.join("src").join("deep");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(
-            find_store_dir_from(&sub).unwrap(),
+            walk_stores_in(&Site::of(&sub)).unwrap().dir,
             Some(root.join(RIGGER_DIR))
         );
     }
@@ -8726,7 +8753,7 @@ mod tests {
     }
 
     #[test]
-    fn find_store_dir_from_never_escapes_the_repo_into_a_parent_store() {
+    fn the_store_walk_never_escapes_the_repo_into_a_parent_store() {
         // adv9-walkup-cross-project: a courier in a storeless NESTED repo (an
         // agent-scratch probe under the parent's .rigger/tmp, say) must NOT bind to the
         // parent project's store - that writes into a foreign run stream. The walk stops
@@ -8746,7 +8773,7 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         git_init_quiet(&nested);
         assert_eq!(
-            find_store_dir_from(&nested).unwrap(),
+            walk_stores_in(&Site::of(&nested)).unwrap().dir,
             None,
             "a storeless nested repo must refuse, never bind the parent's store"
         );
@@ -8757,7 +8784,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         plant_store(bare.path());
         assert_eq!(
-            find_store_dir_from(&sub).unwrap(),
+            walk_stores_in(&Site::of(&sub)).unwrap().dir,
             None,
             "without a git scope the walk is unsanctioned"
         );
@@ -8771,7 +8798,7 @@ mod tests {
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(repo.join(start)).unwrap();
         git_init_quiet(&repo);
-        walk_stores_from(&repo.join(start)).unwrap().dir
+        walk_stores_in(&Site::of(&repo.join(start))).unwrap().dir
     }
 
     // GIVEN a store above a storeless repository, WHEN the walk starts anywhere inside the
@@ -8818,7 +8845,7 @@ mod tests {
     }
 
     #[test]
-    fn find_store_dir_from_refuses_the_worktree_shape_with_no_events_db() {
+    fn the_store_walk_refuses_the_worktree_shape_with_no_events_db() {
         // The unit-worktree shape: a `.rigger/` (tracked workflow.yml/agents) with NO
         // machine-local events.db must NOT count as a store, so a courier there refuses
         // rather than fabricating a fresh empty store - the exact defect this unit closes.
@@ -8828,17 +8855,17 @@ mod tests {
         std::fs::write(root.join(RIGGER_DIR).join("workflow.yml"), "stages: []\n").unwrap();
         let sub = root.join("nested");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(find_store_dir_from(&sub).unwrap(), None);
+        assert_eq!(walk_stores_in(&Site::of(&sub)).unwrap().dir, None);
     }
 
     #[test]
-    fn find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above() {
+    fn the_store_walk_walks_past_a_storeless_rigger_to_the_real_store_above() {
         // The REAL production topology: a git-linked unit worktree nested under the repo
         // carries a TRACKED but storeless `.rigger/` (workflow.yml + agents, no machine-
         // local events.db), while the repo root above it holds the real store. A courier
         // run from inside that worktree must walk PAST its own storeless `.rigger/` and
         // resolve the repo's real store - not stop at (nor fabricate under) the storeless
-        // one. `find_store_dir_from` keys on `.rigger/events.db` as a FILE, so the storeless
+        // one. the store walk keys on `.rigger/events.db` as a FILE, so the storeless
         // intermediate `.rigger/` is correctly skipped; a regression that refused at the
         // first `.rigger/` dir would strand every worker in a real rigger worktree.
         let dir = tempfile::tempdir().unwrap();
@@ -8856,20 +8883,20 @@ mod tests {
         .unwrap();
         // A courier running from inside the storeless worktree resolves the root's store.
         assert_eq!(
-            find_store_dir_from(&worktree).unwrap(),
+            walk_stores_in(&Site::of(&worktree)).unwrap().dir,
             Some(root.join(RIGGER_DIR)),
             "must walk past the storeless worktree `.rigger/` to the repo's real store"
         );
     }
 
     #[test]
-    fn find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it() {
+    fn the_store_walk_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it() {
         // Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): a unit's real
         // git-linked worktree does not nest under `<repo>/.rigger/tmp` - it lives wherever
         // the relocated (cache-home) scratch root resolves, which is OUTSIDE the repo's own
         // directory tree entirely. A worker's own courier calls (`rigger
         // result`/`emit`/`progress`/`peers`) run from INSIDE that worktree, so
-        // `find_store_dir_from` must still resolve the repo's real store even though a plain
+        // the store walk must still resolve the repo's real store even though a plain
         // filesystem `.parent()` climb from the worktree never physically passes through the
         // repo root - the exact regression a naive relocation would otherwise ship silently (every
         // courier call from a real relocated worktree would refuse "no rigger store found").
@@ -8885,7 +8912,7 @@ mod tests {
         add_worktree(root, &worktree, "rigger/u/x");
 
         assert_eq!(
-            find_store_dir_from(&worktree).unwrap(),
+            walk_stores_in(&Site::of(&worktree)).unwrap().dir,
             Some(root.join(RIGGER_DIR)),
             "a courier inside a worktree the relocated scratch root put OUTSIDE the repo \
              must still resolve the repo's real store"
@@ -8893,7 +8920,7 @@ mod tests {
     }
 
     #[test]
-    fn find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store(
+    fn the_store_walk_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store(
     ) {
         // The adv9-walkup-cross-project hazard, re-proven for the relocated (non-nested)
         // case: when the worktree lives OUTSIDE the repo, this must NOT fall back to a
@@ -8917,7 +8944,7 @@ mod tests {
         add_worktree(root, &worktree, "rigger/u/y");
 
         assert_eq!(
-            find_store_dir_from(&worktree).unwrap(),
+            walk_stores_in(&Site::of(&worktree)).unwrap().dir,
             Some(root.join(RIGGER_DIR)),
             "must resolve the REAL owning repo's store, never the foreign one sitting at an \
              ancestor of the relocated worktree"
@@ -8925,7 +8952,7 @@ mod tests {
     }
 
     #[test]
-    fn walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow() {
+    fn the_store_walk_prefers_the_outermost_store_over_a_nearer_shadow() {
         // Spec 08 item 6: within the bounded walk scope the OUTERMOST store wins. A nested
         // subdir carries its own shadow `.rigger/events.db`; a courier there must bind the
         // repo root's real store, and the walk must REPORT the bypassed shadow so the
@@ -8939,7 +8966,7 @@ mod tests {
         let nested = root.join("sub").join("deep");
         plant_store(&nested);
 
-        let walk = walk_stores_from(&nested).unwrap();
+        let walk = walk_stores_in(&Site::of(&nested)).unwrap();
         assert_eq!(
             walk.dir,
             Some(root.join(RIGGER_DIR)),
@@ -8953,7 +8980,7 @@ mod tests {
     }
 
     #[test]
-    fn walk_stores_from_reports_no_shadow_for_a_single_store() {
+    fn the_store_walk_reports_no_shadow_for_a_single_store() {
         // The normal topology - exactly one store in scope - bypasses nothing, so no
         // warning ever fires. Guards against a spurious shadow warning on every courier.
         let dir = tempfile::tempdir().unwrap();
@@ -8963,7 +8990,7 @@ mod tests {
         let sub = root.join("crate").join("src");
         std::fs::create_dir_all(&sub).unwrap();
 
-        let walk = walk_stores_from(&sub).unwrap();
+        let walk = walk_stores_in(&Site::of(&sub)).unwrap();
         assert_eq!(walk.dir, Some(root.join(RIGGER_DIR)));
         assert!(
             walk.shadows.is_empty(),
@@ -12125,8 +12152,7 @@ mod tests {
     ///
     /// This test never touches the process's real cwd (which would race every other parallel
     /// test) - it points a fabricated `StoreLocation` at a tempdir wholly unrelated to wherever
-    /// `cargo test` itself runs from, so ANY cwd-based resolution (this crate's own
-    /// `git_repo()`) necessarily disagrees with it, exactly reproducing the divergence live
+    /// `cargo test` itself runs from, so ANY cwd-based resolution necessarily disagrees with it, exactly reproducing the divergence live
     /// rigger hit - pinned at the real writer (`scratch_root_from_env` + `marker_path`, the
     /// SAME functions `rigger run` resolves its scratch root with and its host touches a
     /// spawn's marker at) and the real reader

@@ -78,7 +78,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
         // dependency of its own (spec 77 c4 review history: the identical composition defect an
         // earlier attempt at this feature was caught for, reproduced independently before this
         // fix landed).
-        reset_build_cache(ResetEnv::resolved(&mut env, &loc)?)?;
+        reset_build_cache(&loc, &selection, ResetEnv::resolved(&mut env, &loc)?)?;
     }
     if modes.scratch_orphans {
         reset_scratch_orphans()?;
@@ -415,14 +415,15 @@ fn reset_scratch_orphans() -> Res {
 /// authority over this resource, and reports what happened via
 /// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
 /// refusal when a rigger-launched shared-cache build holds the guard.
-fn reset_build_cache(env: &ResetEnv) -> Res {
+fn reset_build_cache(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -> Res {
     let scratch = PathBuf::from(&env.scratch_root);
     // Every dead class the footprint accounting names with this verb first (gap 96), so a
     // busy shared cache below never keeps the rest from being reclaimed - unless the run log
     // cannot be read: then nothing says which units and spawns are live, and every
     // liveness-dependent class is left alone (FAIL CLOSED), reported after the shared cache,
     // whose own guard lock decides it independently.
-    let (categories, liveness_unknown) = super::validate::measure_footprint(&cwd(), &env.workdir)?;
+    let (categories, liveness_unknown) =
+        super::validate::measure_footprint(loc, selection, &env.workdir)?;
     if liveness_unknown.is_none() {
         for line in footprint_reclaim_lines(&reclaim_dead_footprint(&categories)) {
             println!("{line}");

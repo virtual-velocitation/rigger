@@ -17673,7 +17673,7 @@ fn a_dash_graph_reply_states_what_it_describes() {
             "no graph built",
             false,
             |_| {},
-            "X-Rigger-Graph-Error: no graph has been built at .rigger/graph.db",
+            "X-Rigger-Graph-Error: no graph has been built at {w}/.rigger/graph.db",
         ),
     ];
     for (case, built, spoil, expected) in cases {

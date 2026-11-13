@@ -318,6 +318,8 @@ fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
 /// query that names only tests the filter hid answers with their count alone.
 fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
+    // A body is read from the caller's own tree ([`Site::tree`]), as every lookup answers.
+    let tree = site.tree();
     let hidden = contextgraph::show_tests_hidden(graph, entity, &located)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
@@ -325,7 +327,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     match located {
         Located::None => match logged_site(site, entity)? {
             Some(site) => {
-                print_entity_site(&site);
+                print_entity_site(&tree, &site);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
             None if hidden > 0 => {}
@@ -342,7 +344,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
                 println!("  {}   ({})", c.id, c.file);
             }
         }
-        Located::One(site) => print_entity_site(&site),
+        Located::One(site) => print_entity_site(&tree, &site),
     }
     Ok(())
 }
@@ -365,7 +367,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// "no production definition named" note with its id in place of the name, here, ahead of the
 /// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
 /// keeps [`definition_body`]'s `source unavailable`.
-fn print_entity_site(site: &contextgraph::EntitySite) {
+fn print_entity_site(tree: &Result<PathBuf, String>, site: &contextgraph::EntitySite) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
         println!("  kind {}   degree {}", site.kind, site.degree);
@@ -384,6 +386,7 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
         // A named node, or a nameless one at line 0, which `definition_body` refuses before it
         // reads a name.
         name => definition_body(
+            tree,
             file,
             site.line,
             name.unwrap_or_default(),
@@ -498,9 +501,9 @@ enum ShowBody {
 }
 
 /// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
-/// (spec 58; spec 92 criterion 1, FRESH ON EVERY INTEGRATION). The file is read relative to the git
-/// top-level (so a `--show` launched from a subdirectory still finds it), falling back to the cwd
-/// outside a git context.
+/// (spec 58; spec 92 criterion 1, FRESH ON EVERY INTEGRATION). The file is read relative to `tree`,
+/// the caller's own tree ([`Site::tree`]: its git top-level, so a `--show` launched from a
+/// subdirectory still finds it, else the directory outside a git context).
 ///
 /// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
 /// per-language lexer: [`locate_definition_extent`] resolves the file's grammar via the symbols
@@ -519,6 +522,7 @@ enum ShowBody {
 /// light, `--no-default-features` lane). It never GUESSES a body from a structural
 /// next-definition bound.
 fn definition_body(
+    tree: &Result<PathBuf, String>,
     file: &str,
     start: u32,
     name: &str,
@@ -532,14 +536,9 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    let root = match git_repo() {
-        Ok(root) => root,
+    let path = match tree {
+        Ok(root) => root.join(file),
         Err(why) => return ShowBody::Note(format!("source unavailable at {file}:{start}: {why}")),
-    };
-    let path = if root.is_empty() {
-        std::path::PathBuf::from(file)
-    } else {
-        std::path::Path::new(&root).join(file)
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return ShowBody::Note(format!(

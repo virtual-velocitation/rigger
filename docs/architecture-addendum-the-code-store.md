@@ -507,6 +507,12 @@ the `.rigger/` of the directory it runs in. `rigger init` and `rigger setup` sti
 directory they run in, so a project below the repository root keeps its own instruction layer;
 its store is `root`'s.
 
+Every command that reads the run store (`stats`, `replay`, `dash`, `mcp`, `graph`, the store
+advisories of `validate`) reads `root`'s `.rigger/` from a subdirectory or a linked worktree,
+answering as it answers at `root`. Below a `root` that holds no `.rigger/` it refuses in the
+writers' one sentence; a command that answers without a store (`prime`, `status --line`,
+`validate`) reads that as no store yet.
+
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.
