@@ -858,6 +858,13 @@ let kgSeed = null;
 let kgLens = "files";
 let kgResolution = "1";
 
+// The grain a derived view's reply says it displays becomes the grain the toolbar shows, so the
+// input names what is drawn (`2` for a typed `2.0`); a reply displaying no grain (a text that names
+// none, or the files lens) leaves the text as typed beside its empty state.
+function showGrain(body) {
+  if (body && body.grain) kgResolution = body.grain;
+}
+
 // The three confidence tiers (spec 29a) the c7 filter toggles, in precise->ambiguous order.
 const KG_TIERS = ["extracted", "inferred", "ambiguous"];
 // c7 tier filter: the set of currently-VISIBLE tiers (all shown by default) and the last-rendered
@@ -1100,6 +1107,7 @@ async function reprojectSubject(subject) {
 // never confidently wrong. An empty member set degrades to a message, never an error.
 function renderReprojection(rp) {
   holdKgView("reproject", rp);
+  showGrain(rp);
   const subject = (rp && rp.subject) || kgSubject || "";
   // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
   // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
@@ -2020,6 +2028,7 @@ function bindKgView() {
 // degrades to an empty-graph message, never an error.
 function renderKgOverview(ov) {
   holdKgView("overview", ov);
+  showGrain(ov);
   const clusters = (ov && ov.clusters) || [];
   const total = (ov && ov.total) || 0;
   const controls = lensControls();
