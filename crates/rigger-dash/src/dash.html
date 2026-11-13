@@ -404,10 +404,11 @@
      the sections below. */
   .kgcard { top: 8px; bottom: 8px; left: 8px; display: flex; flex-direction: column; }
   .kgcard[hidden] { display: none; }
-  /* Every name either pane shows, a title, a provenance, a chip or a rail card, breaks inside the
-     pane's content box when it has no break of its own, so a long one never scrolls the pane
-     sideways; the rows and chips inherit this one rule. */
-  .kgrail, .kgcard { overflow-wrap: anywhere; }
+  /* Every name either pane or the call view's frontier list shows, a title, a provenance, a chip, a
+     rail card or a candidate definition, breaks inside its content box when it has no break of its
+     own, so a long one never scrolls the pane, or the panel holding the list, sideways; the rows,
+     chips and candidates inherit this one rule. */
+  .kgrail, .kgcard, .kgfrontier { overflow-wrap: anywhere; }
   /* DOCKING (see .kgbody): a lone rail docks from a 604px body (a 320px content box, the panel's
      12px padding on each side and the rail's 260px column), a lone card from 632px (344 plus its
      8px inset and 280px width), the two together from 892px; below that every shown pane stays
