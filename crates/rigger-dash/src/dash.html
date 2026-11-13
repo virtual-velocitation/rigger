@@ -1186,12 +1186,11 @@ function renderReprojection(rp) {
       + unresolvedSection + sharedSection;
     return;
   }
-  const dims = kgDims();
   const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
   const edges = ((rp && rp.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
   const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
   const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
-  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+  const draw = dims => kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => 7 + 22 * (Math.sqrt(n.count) / Math.sqrt(maxCount)),
     fill: n => kindColor(n.kind),
     nodeClass: () => "kgcluster",
@@ -1203,8 +1202,7 @@ function renderReprojection(rp) {
     groupOf: kgLens === "files" ? (n => kgFilesDirOf(n.id)) : undefined,
     groupLabel: kgLens === "files" ? (key => "DIR · " + key) : undefined
   });
-  el("kgpanel").innerHTML = toolbar + emptyCell + svg + unresolvedSection + sharedSection + overlayNotes(nodes);
-  bindKgView();
+  kgDraw(toolbar + emptyCell, draw, unresolvedSection + sharedSection + overlayNotes(nodes));
 }
 
 // Fetch the rationale for a view's nodes when the overlay is ON (a no-op when off), so a freshly
@@ -1485,13 +1483,27 @@ function kindColor(kind) {
   return "hsl(" + (h % 360) + ",55%,62%)";
 }
 
-// The live drawing box: the panel's own width/height (minus the toolbar), so the viz fills whatever
-// size the responsive shell and the docked panes leave it (it reads the aspect ratio at render time).
+// The live drawing box: the panel's own width, and the height its content box leaves below what the
+// view puts above the drawing - its toolbar, wrapped to however many lines the width needs, and any
+// caption - measured off the drawing's slot, which kgDraw puts in place first. So the viz fills
+// whatever size the responsive shell and the docked panes leave it and never runs past the panel; a
+// room under 200px keeps a 200px drawing, and the panel scrolls.
 function kgDims() {
   const p = el("kgpanel");
   const w = Math.max(320, p.clientWidth || 800);
-  const h = Math.max(200, (p.clientHeight || 320) - 44);
+  const slot = p.querySelector(".kgsvg").getBoundingClientRect();
+  const above = slot.top - (p.getBoundingClientRect().top + p.clientTop);
+  const h = Math.max(200, Math.floor(p.clientHeight - parseFloat(getComputedStyle(p).paddingBottom) - above));
   return { w: w, h: h };
+}
+
+// Draw a view into the panel: the markup `above` the drawing, then the drawing `draw` makes at the box
+// kgDims measures with that markup already in place, then the markup `below` it; the view opens fitted.
+function kgDraw(above, draw, below) {
+  const panel = el("kgpanel");
+  panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>';
+  panel.innerHTML = above + draw(kgDims()) + below;
+  bindKgView();
 }
 
 // Union-find (path-compressed) over node ids, so a DISCONNECTED graph (a drilled cluster's separate
@@ -2119,7 +2131,6 @@ function renderKgOverview(ov) {
       + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
     return;
   }
-  const dims = kgDims();
   // A code-lens community super-node carries its deterministic display `label` (its highest-degree
   // member); every other bucket names itself by `key`. The files lens carries no label, so `n.label`
   // is undefined there and the key is used - byte-identical to before.
@@ -2127,7 +2138,7 @@ function renderKgOverview(ov) {
   const edges = ((ov && ov.edges) || []).map(e => ({ from: e.from, to: e.to, weight: e.weight }));
   const maxCount = clusters.reduce((m, c) => Math.max(m, c.count), 1);
   const maxW = edges.reduce((m, e) => Math.max(m, e.weight), 1);
-  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+  const draw = dims => kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => 7 + 22 * (Math.sqrt(n.count) / Math.sqrt(maxCount)),
     fill: n => kindColor(n.kind),
     nodeClass: () => "kgcluster",
@@ -2144,8 +2155,7 @@ function renderKgOverview(ov) {
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
     + (ov.tests_hidden ? " &middot; " + ov.tests_hidden + " tests hidden" : "")
     + " - click a cluster to drill in</div>";
-  el("kgpanel").innerHTML = toolbar + svg;
-  bindKgView();
+  kgDraw(toolbar, draw, "");
 }
 
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
@@ -2187,7 +2197,6 @@ function renderKgDrill(nb) {
       + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>');
     return;
   }
-  const dims = kgDims();
   const cap = (nb && nb.truncated)
     ? " &middot; showing the " + nodes.length + " most-connected of " + nb.truncated
     : "";
@@ -2195,7 +2204,7 @@ function renderKgDrill(nb) {
     + nodes.length + " member" + (nodes.length === 1 ? "" : "s") + cap + ")</div>";
   const maxDeg = nodes.reduce((m, n) => Math.max(m, n.degree || 0), 1);
   const marks = kgTestMarks(nb);
-  const svg = kgSvg(nodes, edges, dims.w, dims.h, {
+  const draw = dims => kgSvg(nodes, edges, dims.w, dims.h, {
     radius: n => (n.god ? 9 : 5) + 6 * (Math.sqrt(n.degree || 0) / Math.sqrt(maxDeg)),
     fill: n => kindColor(n.kind),
     // Flag classes mirror the god-node pattern: a hub keeps its `kggodnode` ring, and a multi-concept
@@ -2216,8 +2225,7 @@ function renderKgDrill(nb) {
   });
   // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
   // is off; when on, the drilled members that carry rationale, each a badge-and-expand.
-  el("kgpanel").innerHTML = toolbar + svg + overlayNotes(nodes);
-  bindKgView();
+  kgDraw(toolbar, draw, overlayNotes(nodes));
 }
 
 // The SUBJECT PANES of the view about to draw, set by every view before it draws, so no view is
@@ -2353,7 +2361,6 @@ function renderKgCalls(cg) {
       + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
     return;
   }
-  const dims = kgDims();
   // HIGH FAN-OUT cap (spec 52 c5): a single layer with more callees/callers than the render budget
   // would overplot into an unreadable smear, so each layer keeps its first budget nodes (id-sorted,
   // deterministic) and a "+K more" caption reports the rest the layer holds back; an edge to a
@@ -2380,7 +2387,7 @@ function renderKgCalls(cg) {
     ? '<div class="kgcap">+' + heldBack + ' more held back (a layer exceeded the render budget of '
       + LAYER_FANOUT_BUDGET + ' - re-seed on a node to expand it)</div>'
     : "";
-  const svg = kgSvg(shown, shownEdges, dims.w, dims.h, {
+  const draw = dims => kgSvg(shown, shownEdges, dims.w, dims.h, {
     layout: layeredLayout,
     marker: true,
     edgeBack: e => !!e.back,
@@ -2409,8 +2416,7 @@ function renderKgCalls(cg) {
     : "";
   // The rationale-overlay companion "why" section (spec 55 c4): empty (byte-identical) when the overlay
   // is off; when on, the SHOWN call nodes that carry rationale, each a badge-and-expand.
-  el("kgpanel").innerHTML = head + capNote + svg + refSection + overlayNotes(shown);
-  bindKgView();
+  kgDraw(head + capNote, draw, refSection + overlayNotes(shown));
 }
 
 // Expand a clicked FRONTIER node (spec 52 c5): a multi-candidate cross-file hop the walk did NOT

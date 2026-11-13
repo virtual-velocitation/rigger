@@ -254,12 +254,16 @@ __Stub.prototype.addEventListener = function(){};
 __Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
 function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
   this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300;
+  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
   this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.querySelector = function(){ return new __Stub(); };
+// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
+// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
+const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
+const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
+__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
 const window = { addEventListener: function(){}, };
@@ -473,12 +477,16 @@ __Stub.prototype.addEventListener = function(){};
 __Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; };
 function __El(id){ this.id=id; this._html=""; this._text=""; this._listeners={}; this.dataset={};
   this.hidden=false; this.className=""; this.checked=false;
-  this.clientWidth = 800; this.clientHeight = 300;
+  this.clientWidth = 800; this.clientHeight = 300; this.clientTop = 0;
   this.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 800, height: 300 }; }; }
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){ this._html = String(v); } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.querySelectorAll = function(){ return []; };
-__El.prototype.querySelector = function(){ return new __Stub(); };
+// The drawing's slot: kgDims sizes the drawing to the room below it, here under the panel's
+// 10px top padding and a one-line 24px toolbar, so a 300px panel leaves the drawing 256px.
+const __slot = { getBoundingClientRect: function(){ return { left: 12, top: 34, width: 776, height: 0 }; } };
+const getComputedStyle = function(){ return { paddingBottom: "10px" }; };
+__El.prototype.querySelector = function(sel){ return sel === ".kgsvg" ? __slot : new __Stub(); };
 __El.prototype.addEventListener = function(t,f){ (this._listeners[t]=this._listeners[t]||[]).push(f); };
 const document = { getElementById: function(id){ return __els[id] || (__els[id] = new __El(id)); } };
 const window = { addEventListener: function(){} };
