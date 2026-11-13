@@ -17578,6 +17578,63 @@ fn a_dash_reads_an_unstored_grain_as_the_report_computes_it() {
     }
 }
 
+/// GIVEN a committed project with no code whose code store is built, WHEN `rigger dash` serves
+/// the code and concepts overviews at the default grain and at grain 2, THEN each answers its
+/// lens's not-derived-yet empty state, which names no command to run: no grain can be computed
+/// from such a graph, and the `rigger graph communities` and `rigger graph concepts` reports leave
+/// every served answer as it was.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_dash_lens_with_nothing_to_derive_names_no_command_to_run() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::write(root.join("README.md"), "# notes\n").unwrap();
+    common::fixtures::git_commit_all(root, "notes");
+    run_rigger_ok(root, &["graph", "build"]);
+    let views = [
+        (
+            "code lens not derived yet",
+            "/api/graph?lens=code&resolution=",
+        ),
+        (
+            "code lens not derived yet",
+            "/api/graph?lens=code&resolution=2",
+        ),
+        (
+            "concepts not derived yet",
+            "/api/graph?lens=concepts&resolution=",
+        ),
+        (
+            "concepts not derived yet",
+            "/api/graph?lens=concepts&resolution=2",
+        ),
+    ];
+    let read = || -> Vec<serde_json::Value> {
+        let port = free_loopback_port();
+        let dash = serving_dash(root, port);
+        let bodies = (views.iter())
+            .map(|(_, view)| served_ok_json(view, http_get_path(port, view)))
+            .collect();
+        drop(dash);
+        bodies
+    };
+    let before = read();
+    for ((lead, view), body) in views.iter().zip(&before) {
+        let empty = body["empty_state"].as_str().unwrap_or_default();
+        assert!(
+            empty.starts_with(lead) && !empty.contains("rigger "),
+            "{view} says {lead:?} and names no command to run: {body}"
+        );
+    }
+    run_rigger_ok(root, &["graph", "communities"]);
+    run_rigger_ok(root, &["graph", "concepts"]);
+    assert_eq!(
+        read(),
+        before,
+        "the reports leave every served answer as it was"
+    );
+}
+
 /// GIVEN a committed project, WHEN `rigger dash` serves its graph route from the project's own
 /// directory over a graph built and read from a clean worktree, an edited file, an unreadable git
 /// index, a code store that cannot be opened, and no graph built at all, THEN the reply states
