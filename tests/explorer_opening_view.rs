@@ -40,6 +40,8 @@ use crate::common;
 use common::served::node_harness_claims;
 
 use crate::vm_harness;
+use common::served::page_script;
+use rigger::dash;
 use vm_harness::{vm_harness, EVENT_PHASES};
 
 /// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
@@ -1091,7 +1093,8 @@ const DRAFT_REPLY_DRIVER: &str = r##"
 /// that writes it again, found again by its data attributes: the overview's code tab through a window
 /// resize from 1400px to 800px and through the code overview its Enter asks for, a drill's back link
 /// through a resize back to 1400px, and a neighborhood's tier checkbox through the redraw its toggle
-/// makes, drawn unchecked.
+/// makes, drawn unchecked. A control outside the panel carrying the same data attribute as one in it
+/// (the header's code tab) keeps the focus through a redraw of the panel.
 const CONTROL_FOCUS_DRIVER: &str = r##"
 ;(async function(){
   const at = "a control holding the keyboard focus: ";
@@ -1115,6 +1118,14 @@ const CONTROL_FOCUS_DRIVER: &str = r##"
   function redraw(size){ __resize(size); __frame(); }
   __size(__WIDE);
   await __flush();
+  const header = { localName: "a", attributes: [{ name: "data-lens", value: "code" }], dataset: { lens: "code" },
+    _panel: el("kghead"), isConnected: true };
+  document.activeElement = header;
+  redraw(__NARROW);
+  if (document.activeElement !== header)
+    throw new Error("REGRESSION: " + at + "the header's code tab must keep the focus through a redraw of the panel, the focus is on "
+      + (document.activeElement ? JSON.stringify(document.activeElement.dataset) + " in the panel" : "nothing"));
+  redraw(__WIDE);
   const tab = 'a[data-lens="code"]';
   panel.querySelector(tab).focus();
   redraw(__NARROW);
@@ -1639,6 +1650,61 @@ rigger::test_cases! {
     /// The same draft committed once by leaving the box after the scrollbar's redraw.
     a_drafted_grain_commits_on_leaving_the_box_after_a_scrollbar:
         keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "scrollbar"}"#);
+}
+
+/// The page writes the panel's markup only through the wrapper that keeps what the user holds in it
+/// (`kgKeepingPlace`): no code assigns the panel's markup, by `el("kgpanel")` or by any name it binds
+/// the panel to, outside `kgWritePanel` and `kgDraw`, the two functions that hand it that wrapper.
+#[test]
+fn the_panel_markup_is_written_only_through_the_keeping_wrapper() {
+    let page = dash::live_page();
+    let script = page_script(&page);
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut holders = vec![r#"el("kgpanel")"#.to_string()];
+    let bind = r#"= el("kgpanel")"#;
+    for (at, _) in script.match_indices(bind) {
+        if !script[at + bind.len()..].starts_with([';', ',']) {
+            continue;
+        }
+        let before = script[..at].trim_end();
+        let name = &before[before.trim_end_matches(ident).len()..];
+        assert!(
+            !name.is_empty(),
+            "a binding of the panel must name it: {}",
+            &before[before.len().saturating_sub(60)..]
+        );
+        holders.push(name.to_string());
+    }
+    let span = |name: &str| {
+        let from = script
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("the page must define {name}"));
+        let to = from
+            + script[from..]
+                .find("\n}\n")
+                .unwrap_or_else(|| panic!("{name} must end"));
+        from..to
+    };
+    let through = [span("kgWritePanel"), span("kgDraw")];
+    for holder in &holders {
+        let write = format!("{holder}.innerHTML");
+        for (at, _) in script.match_indices(&write) {
+            if script[..at].ends_with(ident) {
+                continue;
+            }
+            let rest = script[at + write.len()..].trim_start();
+            if !rest.starts_with('=') || rest.starts_with("==") {
+                continue;
+            }
+            let line = script[..at].matches('\n').count() + 1;
+            assert!(
+                through.iter().any(|f| f.contains(&at)),
+                "the page writes the panel's markup at script line {line} outside kgWritePanel and kgDraw, so the \
+                 write keeps neither the panel's scroll nor the control holding the focus: {}",
+                script[at..].lines().next().unwrap_or("")
+            );
+        }
+    }
 }
 
 /// What the panel shows of the view it holds, in the `{writer, pan, resize}` row `VIEW_STATE_DRIVER`
