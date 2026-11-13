@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::community;
 use crate::contextgraph::{
     is_call_target, Edge, Error, Graph, Node, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING,
@@ -418,26 +419,34 @@ pub enum Lens {
 
 impl Lens {
     /// Resolve the lens from the `/api/graph` selector params: `lens=code` selects the code fold and
-    /// `lens=concepts` the concepts fold, each at `resolution=` (defaulting to the derivation's
-    /// default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] / [`DEFAULT_CONCEPT_RESOLUTION`] - when absent
-    /// or empty); every other value - `lens=files`, an unknown lens, or an absent one - resolves to
-    /// [`Lens::Files`], the byte-identical default. Total and infallible, so a hostile selector can
-    /// never error the route; it just falls back to the files view.
+    /// `lens=concepts` the concepts fold, each at the grain `resolution=` selects ([`selected_grain`]:
+    /// the derivation's default grain - [`DEFAULT_COMMUNITY_RESOLUTION`] /
+    /// [`DEFAULT_CONCEPT_RESOLUTION`] - when absent or empty); every other value - `lens=files`, an
+    /// unknown lens, or an absent one - resolves to [`Lens::Files`], the byte-identical default. Total
+    /// and infallible, so a hostile selector can never error the route; it just falls back to the
+    /// files view.
     pub fn from_query(lens: Option<&str>, resolution: Option<&str>) -> Lens {
         match lens {
             Some("code") => Lens::Code {
-                resolution: resolution
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or(DEFAULT_COMMUNITY_RESOLUTION)
-                    .to_string(),
+                resolution: selected_grain(resolution, DEFAULT_COMMUNITY_RESOLUTION),
             },
             Some("concepts") => Lens::Concepts {
-                resolution: resolution
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or(DEFAULT_CONCEPT_RESOLUTION)
-                    .to_string(),
+                resolution: selected_grain(resolution, DEFAULT_CONCEPT_RESOLUTION),
             },
             _ => Lens::Files,
+        }
+    }
+}
+
+/// The grain a `resolution=` selects: `default` when absent or empty; a resolution in any spelling
+/// ([`community::parse_resolution`]) as the grain segment derivation mints for it
+/// ([`community::grain`]), so `1.0` reads grain `1`; any other text as written, a grain nothing is
+/// derived at, so its lens reads the underived empty state.
+fn selected_grain(raw: Option<&str>, default: &str) -> String {
+    match raw.filter(|r| !r.is_empty()) {
+        None => default.to_string(),
+        Some(raw) => {
+            community::parse_resolution(raw).map_or_else(|_| raw.to_string(), community::grain)
         }
     }
 }

@@ -55,6 +55,33 @@ pub const DEFAULT_RESOLUTION: f64 = 1.0;
 /// What every community id begins with: `community/<resolution>/<number>`, minted by [`detect`].
 pub const COMMUNITY_ID_PREFIX: &str = "community/";
 
+/// Why a written resolution grain names no grain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BadResolution {
+    /// The text is not a number.
+    NotANumber,
+    /// A number, but not a positive, finite one.
+    NotPositiveFinite(f64),
+}
+
+/// The resolution `raw` writes: a positive, finite number in any spelling a float reads, so `1`,
+/// `1.0`, `01`, `1e0` and `+1` all write resolution 1. The one parser every grain a user writes
+/// goes through.
+pub fn parse_resolution(raw: &str) -> Result<f64, BadResolution> {
+    let resolution = raw.parse::<f64>().map_err(|_| BadResolution::NotANumber)?;
+    if resolution.is_finite() && resolution > 0.0 {
+        Ok(resolution)
+    } else {
+        Err(BadResolution::NotPositiveFinite(resolution))
+    }
+}
+
+/// The grain segment of the `community/<grain>/<n>` and `concept/<grain>/<n>` ids minted at
+/// `resolution`: its shortest float display, so one number names one grain (`1.0` is `1`).
+pub fn grain(resolution: f64) -> String {
+    format!("{resolution}")
+}
+
 /// The strict-improvement threshold a local move must clear. Real modularity gains from
 /// integer-weight coupling edges differ by at least `~1/2m` (far above this), while floating-point
 /// noise sits far below it, so this cleanly separates a genuine improvement from numeric zero -
@@ -259,7 +286,7 @@ pub struct Grouping {
 /// lens both call this, so the SAME detection groups either input layer. An empty coupling graph
 /// yields an empty grouping.
 pub fn partition(coupling: &Coupling, resolution: f64) -> Grouping {
-    let res_str = format!("{resolution}");
+    let res_str = grain(resolution);
     // The pass hash covers the canonical edge set AND the resolution, so distinct grains hash apart.
     let hash = fnv1a_hex(&format!("{}\n{res_str}", coupling.canon));
 
@@ -280,7 +307,7 @@ pub fn partition(coupling: &Coupling, resolution: f64) -> Grouping {
 /// assignments, and every community is internally connected. An empty coupling graph yields an empty
 /// assignment.
 pub fn detect(coupling: &Coupling, resolution: f64) -> Assignment {
-    let res_str = format!("{resolution}");
+    let res_str = grain(resolution);
     let g = partition(coupling, resolution);
     let members: Vec<(String, String)> = coupling
         .nodes
@@ -724,6 +751,34 @@ mod tests {
             Coupling::layer(&module_graph(), str::to_string).nodes,
             [DECLARING_FILE, MOD_NODE]
         );
+    }
+
+    /// `raw` writes resolution `want`, whose grain segment is `segment`.
+    fn reads_grain(raw: &str, want: f64, segment: &str) {
+        assert_eq!(parse_resolution(raw), Ok(want), "{raw:?} writes {want}");
+        assert_eq!(grain(want), segment, "{want} names grain {segment:?}");
+    }
+
+    crate::test_cases! {
+        /// Every spelling of one number writes that number, and it names the grain detection mints.
+        one_written_plain_reads_grain_1: reads_grain("1", 1.0, "1");
+        one_written_with_a_point_reads_grain_1: reads_grain("1.0", 1.0, "1");
+        one_written_with_trailing_zeros_reads_grain_1: reads_grain("1.00", 1.0, "1");
+        one_written_with_a_leading_zero_reads_grain_1: reads_grain("01", 1.0, "1");
+        one_written_with_an_exponent_reads_grain_1: reads_grain("1e0", 1.0, "1");
+        one_written_with_a_sign_reads_grain_1: reads_grain("+1", 1.0, "1");
+        a_fraction_reads_its_own_grain: reads_grain("1.50", 1.5, "1.5");
+        a_large_exponent_reads_its_digits: reads_grain("2e3", 2000.0, "2000");
+    }
+
+    crate::test_cases! {
+        /// A grain that is no number, or no positive, finite one, is refused with why.
+        a_word_is_no_resolution: assert_eq!(parse_resolution("abc"), Err(BadResolution::NotANumber));
+        an_empty_text_is_no_resolution: assert_eq!(parse_resolution(""), Err(BadResolution::NotANumber));
+        zero_is_no_resolution: assert_eq!(parse_resolution("0"), Err(BadResolution::NotPositiveFinite(0.0)));
+        a_negative_is_no_resolution: assert_eq!(parse_resolution("-1"), Err(BadResolution::NotPositiveFinite(-1.0)));
+        infinity_is_no_resolution: assert_eq!(parse_resolution("inf"), Err(BadResolution::NotPositiveFinite(f64::INFINITY)));
+        nan_is_no_resolution: assert!(matches!(parse_resolution("NaN"), Err(BadResolution::NotPositiveFinite(r)) if r.is_nan()));
     }
 
     #[test]
