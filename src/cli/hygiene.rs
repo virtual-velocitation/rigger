@@ -958,17 +958,21 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // a VACUUM the file stays as LARGE on disk as before even though the dead rows are gone.
         // VACUUM reclaims disk ONLY - it changes no query result and gives no query or fold
         // speedup; it rebuilds only the rebuildable projection and the event log is untouched.
-        let reclaimed_bytes = graph.compact()?;
+        let reclaimed = match graph.compact()? {
+            Some(bytes) => format!("reclaimed {bytes} byte(s) on disk"),
+            None => "a concurrent reader held its write-ahead log, so the freed pages land at \
+                     the next checkpoint and the bytes reclaimed are unmeasured"
+                .to_string(),
+        };
         println!(
-            "reset --runs: {} from the context graph, then compacted the graph file (reclaimed {} \
-             byte(s) on disk) - every \
+            "reset --runs: {} from the context graph, then compacted the graph file ({reclaimed}) \
+             - every \
              lesson, the active run, and every live edge are preserved; this prune deletes no event \
              from the log. The one thing `rigger reset` writes there is the one-time identity \
              migration it runs first: on a store still under the legacy basename namespace that \
              renames its streams and records one DecisionMade, and it prints its own line when it \
              does",
             pruned_line(&removed),
-            reclaimed_bytes
         );
         Ok(())
     })

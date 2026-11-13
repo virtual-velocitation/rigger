@@ -1042,8 +1042,8 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
 
 /// `Projector::compact()` is the new PUBLIC graph-mutation API (spec 46, criterion 3); this drives
 /// it DIRECTLY (the CLI tests reach it only through `rigger reset --runs`) to pin its return-value
-/// contract at the port edge: (1) after a `prune` frees pages onto the freelist, `compact()` returns
-/// a POSITIVE byte count that EXACTLY equals the on-disk file-size drop it caused - the reported
+/// contract at the port edge: (1) after a `prune` frees pages onto the freelist, `compact()`, no
+/// reader holding the write-ahead log, returns a POSITIVE byte count that EXACTLY equals the on-disk file-size drop it caused - the reported
 /// reclamation is the truth on disk, not an estimate (this also fails closed if the internal
 /// `wal_checkpoint(TRUNCATE)` is removed: with the connection still open the main file has not
 /// shrunk, so `reclaimed > 0` and `reclaimed == before - after` cannot both hold); (2) it never
@@ -1150,7 +1150,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
     );
 
     // The API under test: compact and read back the reclaimed byte count.
-    let reclaimed = graph.compact().unwrap();
+    let reclaimed = graph.compact().unwrap().expect("no reader holds the log");
     let after = file_len(&graph_path);
 
     assert!(
@@ -1178,7 +1178,7 @@ fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_que
     );
 
     // A second compaction freed nothing: it reclaims exactly 0 bytes and does not shrink further.
-    let reclaimed_again = graph.compact().unwrap();
+    let reclaimed_again = graph.compact().unwrap().expect("no reader holds the log");
     let after_again = file_len(&graph_path);
     assert_eq!(
         reclaimed_again, 0,

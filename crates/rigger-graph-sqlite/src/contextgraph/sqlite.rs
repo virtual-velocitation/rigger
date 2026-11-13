@@ -1454,13 +1454,16 @@ impl Projector {
         })
     }
 
-    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed (spec 46,
-    /// criterion 3). [`prune`] drops superseded projection ROWS, but SQLite keeps the freed pages
-    /// inside `graph.db` on a freelist for reuse, so the file stays as LARGE on disk as before the
-    /// prune even though those rows are gone. `VACUUM` rebuilds the database without those free
-    /// pages, then a `TRUNCATE` checkpoint folds the WAL side-file back so the MAIN file actually
-    /// shrinks on disk immediately (not only at the next checkpoint), which is what a consumer
-    /// inspecting the file then sees.
+    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed, or `None`
+    /// when a reader held the write-ahead log (spec 46, criterion 3). [`prune`] drops superseded
+    /// projection ROWS, but SQLite keeps the freed pages inside `graph.db` on a freelist for
+    /// reuse, so the file stays as LARGE on disk as before the prune even though those rows are
+    /// gone. `VACUUM` rebuilds the database without those free pages, then a `TRUNCATE`
+    /// checkpoint ([`truncate_log`]) folds the WAL side-file back so the MAIN file actually
+    /// shrinks on disk immediately, which is what a consumer inspecting the file then sees. A
+    /// reader holding a snapshot of the log declines that checkpoint, so the shrink lands only at
+    /// a later one and the bytes reclaimed are unmeasured: `None`, never a count the file on disk
+    /// contradicts.
     ///
     /// This reclaims DISK ONLY. `VACUUM` changes NO query result and gives NO query or fold
     /// speedup: the row-count reduction that speeds reads is [`prune`]'s job, not `compact`'s. The
@@ -1475,7 +1478,7 @@ impl Projector {
     /// result, only the file size, so it is safe to run unconditionally after every prune. The
     /// reclaimed byte count is the drop in `page_count * page_size` across the `VACUUM`; a
     /// no-op-shaped compaction (nothing was freed) simply reclaims 0 bytes.
-    pub fn compact(&self) -> Result<u64, Error> {
+    pub fn compact(&self) -> Result<Option<u64>, Error> {
         let conn = self.conn.lock().unwrap();
         let page_size: i64 = conn
             .query_row("PRAGMA page_size", [], |r| r.get(0))
@@ -1487,14 +1490,16 @@ impl Projector {
             .map_err(be)?;
         conn.execute_batch("VACUUM").map_err(be)?;
         // Fold the WAL back into the main file so the shrink lands on disk now, not at some later
-        // checkpoint - the reported reclamation must match the file size on disk.
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-            .map_err(be)?;
+        // checkpoint - the reported reclamation must match the file size on disk, so a checkpoint
+        // a reader declined reports none.
+        if !truncate_log(&conn).map_err(be)? {
+            return Ok(None);
+        }
         let after: i64 = conn
             .query_row("PRAGMA page_count", [], |r| r.get(0))
             .map_err(be)?;
         let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
-        Ok(reclaimed_pages * page_size.max(0) as u64)
+        Ok(Some(reclaimed_pages * page_size.max(0) as u64))
     }
 
     /// Re-scope every row tagged `from` to `to` - every node and edge, and every row of each
@@ -3850,8 +3855,9 @@ mod tests {
     }
 
     /// THE COMPACTION REPORTS ONLY BYTES THE DISK LOST: the byte count `compact` reports is the
-    /// drop in the file's size on disk. Each row: whether a reader holds a snapshot of the log
-    /// across the compaction, which its truncating checkpoint then cannot fold back.
+    /// drop in the file's size on disk, and it reports none while a reader holds a snapshot of
+    /// the log, which its truncating checkpoint then cannot fold back. Each row: whether a reader
+    /// holds the log across the compaction.
     #[test]
     fn a_compaction_reports_only_the_bytes_the_file_lost_on_disk() {
         for held in [false, true] {
@@ -3881,8 +3887,13 @@ mod tests {
             let before = size();
             let reported = p.compact().unwrap();
             let lost = before.saturating_sub(size());
+            assert!(
+                held || lost > 0,
+                "the compaction frees the dropped table's pages"
+            );
             assert_eq!(
-                reported, lost,
+                reported,
+                (!held).then_some(lost),
                 "held {held}: the reported bytes against the file's drop on disk"
             );
         }
