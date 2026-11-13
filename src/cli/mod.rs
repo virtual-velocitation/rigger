@@ -1433,8 +1433,10 @@ fn project_root(start: &Path) -> Result<PathBuf, String> {
 /// The MAIN repo root governing `start`: the parent of `git rev-parse --git-common-dir`
 /// run from `start`. For a linked worktree the common dir is the main repo's `.git`, so
 /// this resolves to the main checkout's root - exactly the outermost directory the
-/// store walk-up is sanctioned to reach. `None` when discovery finds no repository enclosing
-/// `start`; an error when git refuses inside one.
+/// store walk-up is sanctioned to reach. A common dir git names absolutely that is `start`'s
+/// own administrative directory lies wherever the checkout keeps it (a git directory kept
+/// apart, a submodule's), so the root is `start`'s own top-level. `None` when discovery finds
+/// no repository enclosing `start`; an error when git refuses inside one.
 fn main_repo_root(start: &Path) -> Result<Option<PathBuf>, String> {
     let Some(common) = rev_parse(start, Location::CommonDir)? else {
         return Ok(None);
@@ -1443,12 +1445,13 @@ fn main_repo_root(start: &Path) -> Result<Option<PathBuf>, String> {
         return Ok(None);
     }
     let common_path = Path::new(&common);
-    let abs = if common_path.is_absolute() {
-        common_path.to_path_buf()
-    } else {
-        start.join(common_path)
-    };
-    Ok(abs.parent().map(|p| p.to_path_buf()))
+    if !common_path.is_absolute() {
+        return Ok(start.join(common_path).parent().map(Path::to_path_buf));
+    }
+    if rev_parse(start, Location::GitDir)?.as_deref() == Some(common.as_str()) {
+        return Ok(rev_parse(start, Location::Toplevel)?.map(PathBuf::from));
+    }
+    Ok(common_path.parent().map(Path::to_path_buf))
 }
 
 /// THE RUN RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger run` and `rigger critique`

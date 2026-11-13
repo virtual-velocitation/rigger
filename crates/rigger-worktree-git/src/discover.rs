@@ -1,19 +1,23 @@
 //! Where a directory's git repository lies and what its checkout holds, read from the files git
-//! keeps rather than asked of a git process. Two plain shapes are read: a checkout holding a
-//! `.git` directory, and a linked worktree whose `.git` file names its administrative directory
-//! by an absolute path. Anything else is left to git, so every answer is the one git gives: a
-//! bare repository, a relative `gitdir`, a configured work tree or worktree configuration, an
-//! environment that narrows or widens git's walk, a repository this user does not own, an OS
-//! whose ownership is not read here, or refs held in a reftable. A directory lies in no
-//! repository only when a walk up from it, stopping where git's own walk stops, meets neither a
-//! `.git` entry nor a bare repository; git refusing anywhere else is a failure, never that none
-//! is there.
+//! keeps, as git itself reads them to set a repository up, rather than asked of a git process.
+//! Every layout git finds a checkout in is read: a `.git` directory or a symlink to one, and a
+//! `.git` file naming its administrative directory by an absolute or a relative path (a linked
+//! worktree, a git directory kept apart, a submodule), under per-worktree configuration, a work
+//! tree configured where the `.git` lies, and the ceilings and device rule the environment sets
+//! for git's walk. What the files cannot answer as git does is left to git, so every answer is
+//! the one git gives: a bare repository, a work tree configured elsewhere, a configuration git
+//! refuses or reads in a form not read here (a number with a unit or a base), a repository
+//! format or extension git may refuse, a `.git` directory naming a common directory, a
+//! repository this user does not own, an OS whose ownership is not read here, or refs held in a
+//! reftable. A directory lies in no repository only when a walk up from it, stopping where git's
+//! own walk stops, meets neither a `.git` entry nor a bare repository; git refusing anywhere else
+//! is a failure, never that none is there.
 
 use crate::worktree::{git_failure, git_output, GitOutput};
 use rigger_process::file_trust::{device_of, owned_by_this_user};
 use std::ffi::OsString;
 use std::io::ErrorKind;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// The directories git's walk up from a directory never enters.
 const CEILINGS: &str = "GIT_CEILING_DIRECTORIES";
@@ -21,22 +25,36 @@ const CEILINGS: &str = "GIT_CEILING_DIRECTORIES";
 /// Whether git's walk up from a directory crosses devices.
 const ACROSS_DEVICES: &str = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
 
-/// The variables that narrow or widen git's walk up from a directory, under which no answer is
-/// read from the files.
-const WALK_VARIABLES: [&str; 2] = [CEILINGS, ACROSS_DEVICES];
-
 /// The repository a directory lies in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repository {
     /// The physical top of the worktree the directory lies in.
     pub toplevel: PathBuf,
-    /// The worktree's administrative directory: the `.git` directory, or the one a `.git` file
-    /// names.
+    /// The worktree's administrative directory, physical: the `.git` directory, or the one a
+    /// `.git` file names.
     pub git_dir: PathBuf,
-    /// The directory every worktree of the repository shares.
+    /// The directory every worktree of the repository shares, physical.
     pub common_dir: PathBuf,
     /// The physical directory's path below `toplevel`.
     prefix: PathBuf,
+    /// How git shows `common_dir`.
+    shown: CommonShown,
+}
+
+/// How `git rev-parse --git-common-dir` shows a repository's common directory, which follows
+/// from how git set the repository up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommonShown {
+    /// Relative to the directory asked from: git found a `.git` directory and works from the top
+    /// of the checkout, where it names it `.git`.
+    Relative,
+    /// `.git` at the top of the checkout and absolute below it: git found a `.git` directory
+    /// under a configured work tree, which it takes to its physical path when the directory
+    /// asked from lies below the top.
+    RelativeAtTop,
+    /// Absolute: a `.git` file names the administrative directory, which git takes to its
+    /// physical path.
+    Absolute,
 }
 
 /// What `git rev-parse` answers about where a directory's repository lies.
@@ -44,8 +62,8 @@ pub struct Repository {
 pub enum Location {
     /// `--show-toplevel`: the physical top of the worktree.
     Toplevel,
-    /// `--git-common-dir`: the common directory, relative to the directory asked from in a main
-    /// checkout and absolute in a linked worktree.
+    /// `--git-common-dir`: the common directory, relative to the directory asked from in a
+    /// checkout holding a `.git` directory and absolute where a `.git` file names it.
     CommonDir,
     /// `--show-prefix`: the directory's path below the top of its worktree, each part followed
     /// by `/`; empty at the top.
@@ -68,12 +86,18 @@ impl Location {
 impl Repository {
     /// What `git rev-parse` answers for `ask` from the directory this repository was read from.
     pub fn answer(&self, ask: Location) -> String {
+        let at_top = self.prefix.as_os_str().is_empty();
         match ask {
             Location::Toplevel => self.toplevel.to_string_lossy().into_owned(),
-            Location::CommonDir if self.git_dir == self.common_dir => {
-                format!("{}.git", "../".repeat(self.prefix.components().count()))
-            }
-            Location::CommonDir => self.common_dir.to_string_lossy().into_owned(),
+            Location::CommonDir => match self.shown {
+                CommonShown::Relative => {
+                    format!("{}.git", "../".repeat(self.prefix.components().count()))
+                }
+                CommonShown::RelativeAtTop if at_top => ".git".to_owned(),
+                CommonShown::RelativeAtTop | CommonShown::Absolute => {
+                    self.common_dir.to_string_lossy().into_owned()
+                }
+            },
             Location::Prefix => self
                 .prefix
                 .iter()
@@ -109,18 +133,25 @@ struct Reach {
     /// to its physical path up to the first empty entry and taken as written after it, as git
     /// takes them. An entry that cannot be resolved is none.
     ceilings: Vec<PathBuf>,
-    /// Whether the walk crosses devices ([`ACROSS_DEVICES`]). Any value set is taken to let it,
-    /// which can only lengthen the walk.
+    /// Whether the walk crosses devices ([`ACROSS_DEVICES`], read as git reads a boolean).
     across_devices: bool,
 }
 
 impl Reach {
-    /// The reach this process's environment sets.
-    fn from_env() -> Self {
-        Self::of(
-            std::env::var_os(CEILINGS),
-            std::env::var_os(ACROSS_DEVICES).is_some(),
-        )
+    /// The reach this process's environment sets, as git reads it: None when git refuses its
+    /// [`ACROSS_DEVICES`] value or reads it in a form not read here ([`git_bool`]).
+    fn from_env() -> Option<Self> {
+        let across_devices = match std::env::var_os(ACROSS_DEVICES) {
+            Some(value) => git_bool(Some(value.to_str()?.as_bytes()))?,
+            None => false,
+        };
+        Some(Self::of(std::env::var_os(CEILINGS), across_devices))
+    }
+
+    /// The longest reach this process's environment may set: [`Reach::from_env`], crossing
+    /// devices where it gives none.
+    fn longest_from_env() -> Self {
+        Self::from_env().unwrap_or_else(|| Self::of(std::env::var_os(CEILINGS), true))
     }
 
     /// The reach a [`CEILINGS`] value and an [`ACROSS_DEVICES`] setting give.
@@ -152,15 +183,16 @@ impl Reach {
 /// What a walk up from a directory, stopping where git's own walk stops, meets first.
 #[derive(Debug, PartialEq, Eq)]
 enum Met {
-    /// A `.git` directory, or a `.git` file when `file`, in `toplevel`, `prefix` below which
-    /// the start lies.
+    /// A `.git` directory, or a `.git` file when `file`, each itself or the target of a symlink,
+    /// in `toplevel`, `prefix` below which the start lies.
     Dot {
         toplevel: PathBuf,
         prefix: PathBuf,
         file: bool,
     },
     /// What git may take for a repository and this reading does not follow: a `.git` that is
-    /// neither a file nor a directory, a bare repository's shape, or an entry it cannot read.
+    /// neither a file nor a directory, a symlink to nothing, a bare repository's shape, or an
+    /// entry it cannot read.
     Unread,
     /// Nothing: the walk reached a ceiling, a device boundary or the root, or the start does
     /// not exist.
@@ -206,17 +238,23 @@ fn walk(start: &Path, reach: &Reach) -> Met {
         }
         let dot = dir.join(".git");
         match std::fs::symlink_metadata(&dot) {
-            Ok(meta) if meta.is_dir() || meta.is_file() => {
+            Ok(_) => {
+                // git reads a `.git` symlink as what it points to.
+                let Ok(meta) = std::fs::metadata(&dot) else {
+                    return Met::Unread;
+                };
                 let Ok(prefix) = physical.strip_prefix(dir) else {
                     return Met::Unread;
                 };
+                if !meta.is_dir() && !meta.is_file() {
+                    return Met::Unread;
+                }
                 return Met::Dot {
                     toplevel: dir.to_path_buf(),
                     prefix: prefix.to_path_buf(),
                     file: meta.is_file(),
                 };
             }
-            Ok(_) => return Met::Unread,
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(_) => return Met::Unread,
         }
@@ -230,85 +268,386 @@ fn walk(start: &Path, reach: &Reach) -> Met {
 /// The repository `start` lies in, read from git's files: `Some(Some(_))` when found,
 /// `Some(None)` when `start` lies in none, and `None` when the files leave the answer to git.
 pub fn read_repository(start: &Path) -> Option<Option<Repository>> {
-    if WALK_VARIABLES
-        .iter()
-        .any(|variable| std::env::var_os(variable).is_some())
-    {
-        return None;
-    }
-    match walk(start, &Reach::default()) {
+    read_repository_within(start, &Reach::from_env()?)
+}
+
+/// [`read_repository`], git's walk up from `start` stopping where `reach` stops it.
+fn read_repository_within(start: &Path, reach: &Reach) -> Option<Option<Repository>> {
+    match walk(start, reach) {
         Met::Dot {
             toplevel,
             prefix,
-            file: false,
-        } => main_checkout(&toplevel, prefix).map(Some),
-        Met::Dot {
-            toplevel,
-            prefix,
-            file: true,
-        } => linked_worktree(&toplevel, prefix).map(Some),
+            file,
+        } => checkout(&toplevel, prefix, file).map(Some),
         Met::Unread => None,
         Met::Nothing => Some(None),
     }
 }
 
-/// The main checkout at `toplevel`, `prefix` below which the start lies.
-fn main_checkout(toplevel: &Path, prefix: PathBuf) -> Option<Repository> {
+/// The checkout at `toplevel`, whose `.git` is a file naming its administrative directory when
+/// `file` and that directory itself otherwise, `prefix` below which the start lies, set up as git
+/// sets it up: None where the files leave it to git. The administrative directory is the one the
+/// `.git` file names, relative to the `.git` file unless absolute, and the common directory the
+/// one its `commondir` names, relative to it unless absolute, else itself; both physical. Both
+/// hold what git requires of a repository, a `HEAD` in the one and `objects` and `refs` in the
+/// other. The configuration git reads the format from is the common directory's, and its
+/// `core.bare` and `core.worktree` apply only where no `commondir` is named or per-worktree
+/// configuration is on, which the worktree's `config.worktree` then overrides. A checkout set up
+/// bare, or with a work tree other than `toplevel`, is left to git.
+fn checkout(toplevel: &Path, prefix: PathBuf, file: bool) -> Option<Repository> {
     let dot = toplevel.join(".git");
-    let plain = dot.join("HEAD").is_file()
-        && dot.join("objects").is_dir()
-        && !dot.join("commondir").exists()
-        && plain_config(&dot, &dot)
-        && owned(&[toplevel, &dot]);
-    plain.then(|| Repository {
-        toplevel: toplevel.to_path_buf(),
-        git_dir: dot.clone(),
-        common_dir: dot,
-        prefix,
-    })
-}
-
-/// The linked worktree at `toplevel`, whose `.git` file names its administrative directory,
-/// `prefix` below which the start lies.
-fn linked_worktree(toplevel: &Path, prefix: PathBuf) -> Option<Repository> {
-    let dot = toplevel.join(".git");
-    let text = std::fs::read_to_string(&dot).ok()?;
-    let git_dir = PathBuf::from(
-        text.strip_prefix("gitdir: ")?
-            .trim_end_matches(['\n', '\r']),
-    );
-    if !git_dir.is_absolute() || !git_dir.join("HEAD").is_file() {
+    let git_dir = if file {
+        let text = std::fs::read(&dot).ok()?;
+        let named = path_of(line_of(text.strip_prefix(b"gitdir: ")?))?;
+        std::fs::canonicalize(toplevel.join(named)).ok()?
+    } else {
+        std::fs::canonicalize(&dot).ok()?
+    };
+    // A `.git` directory naming a common directory is no layout git makes.
+    let common_dir = match std::fs::read(git_dir.join("commondir")) {
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Ok(named) if file => {
+            Some(std::fs::canonicalize(git_dir.join(path_of(line_of(&named))?)).ok()?)
+        }
+        _ => return None,
+    };
+    let shared = common_dir.is_some();
+    let common_dir = common_dir.unwrap_or_else(|| git_dir.clone());
+    let repository = has_head(&git_dir)
+        && common_dir.join("objects").is_dir()
+        && common_dir.join("refs").is_dir();
+    if !repository {
         return None;
     }
-    let common = std::fs::read_to_string(git_dir.join("commondir")).ok()?;
-    let common_dir = normalized(&git_dir.join(common.trim_end_matches(['\n', '\r'])));
-    let plain = common_dir.join("objects").is_dir()
-        && plain_config(&git_dir, &common_dir)
-        && owned(&[toplevel, &dot, &git_dir, &common_dir]);
-    plain.then(|| Repository {
+    let mut format = read_format(&std::fs::read(common_dir.join("config")).ok()?)?;
+    if format.worktree_config {
+        match std::fs::read(git_dir.join("config.worktree")) {
+            Ok(text) => {
+                for (name, value) in config_entries(&text)? {
+                    format.take(&name, value)?;
+                }
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    let (bare, worktree) = if !shared || format.worktree_config {
+        (format.bare, format.worktree)
+    } else {
+        (None, None)
+    };
+    if bare == Some(true) {
+        return None;
+    }
+    if let Some(worktree) = &worktree {
+        if std::fs::canonicalize(git_dir.join(worktree)).ok()? != toplevel {
+            return None;
+        }
+    }
+    let shown = match (file, worktree.is_some()) {
+        (true, _) => CommonShown::Absolute,
+        (false, true) => CommonShown::RelativeAtTop,
+        (false, false) => CommonShown::Relative,
+    };
+    owned(&[toplevel, &dot, &git_dir, &common_dir]).then(|| Repository {
         toplevel: toplevel.to_path_buf(),
         git_dir,
         common_dir,
         prefix,
+        shown,
     })
 }
 
-/// Whether the repository's configuration leaves the worktree where its `.git` lies: no
-/// per-worktree configuration, and in the shared one no included file, no line naming a work
-/// tree and no `bare` key set other than false. A configuration that cannot be read is not plain.
-fn plain_config(git_dir: &Path, common_dir: &Path) -> bool {
-    if git_dir.join("config.worktree").exists() {
-        return false;
-    }
-    std::fs::read_to_string(common_dir.join("config")).is_ok_and(|config| {
-        config.lines().all(|line| {
-            let line = line.trim().to_ascii_lowercase();
-            let (key, value) = line.split_once('=').unwrap_or((&line, "true"));
-            !line.contains("worktree")
-                && !line.contains("include")
-                && (key.trim() != "bare" || matches!(value.trim(), "false" | "no" | "off" | "0"))
+/// `text` without the line ends git trims from a file naming a path.
+fn line_of(text: &[u8]) -> &[u8] {
+    let end = text
+        .iter()
+        .rposition(|&c| c != b'\n' && c != b'\r')
+        .map_or(0, |last| last + 1);
+    &text[..end]
+}
+
+/// The path `text` spells: None when it is empty or not UTF-8.
+fn path_of(text: &[u8]) -> Option<PathBuf> {
+    let text = std::str::from_utf8(text).ok()?;
+    (!text.is_empty()).then(|| PathBuf::from(text))
+}
+
+/// Whether `git_dir` holds a `HEAD` git takes for a repository's: a file naming a ref under
+/// `refs/` or holding an object id.
+fn has_head(git_dir: &Path) -> bool {
+    let head = git_dir.join("HEAD");
+    std::fs::symlink_metadata(&head).is_ok_and(|meta| meta.is_file())
+        && std::fs::read_to_string(&head).is_ok_and(|text| {
+            let text = text.trim_end_matches(['\n', '\r']);
+            text.strip_prefix("ref: ")
+                .map_or_else(|| is_object_id(text), |name| name.starts_with("refs/"))
         })
-    })
+}
+
+/// What a repository's configuration tells git about where its checkout lies ([`read_format`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Format {
+    /// Whether `extensions.worktreeConfig` is on: the worktree's own `config.worktree` is read,
+    /// and the `core.bare` and `core.worktree` it settles apply to it.
+    worktree_config: bool,
+    /// `core.bare`, where set.
+    bare: Option<bool>,
+    /// `core.worktree`, where set.
+    worktree: Option<PathBuf>,
+}
+
+impl Format {
+    /// Take the entry `name`, a lowercased configuration name, set to `value`, where it is
+    /// `core.bare` or `core.worktree`: None where git refuses its value or reads it in a form
+    /// not read here.
+    fn take(&mut self, name: &str, value: Option<Vec<u8>>) -> Option<()> {
+        match name {
+            "core.bare" => self.bare = Some(git_bool(value.as_deref())?),
+            "core.worktree" => self.worktree = Some(path_of(&value?)?),
+            _ => {}
+        }
+        Some(())
+    }
+}
+
+/// The format a repository's configuration `text` gives, as git reads it to set the repository
+/// up: None where git may refuse it, as for a format version other than 0 or 1, none at all, or
+/// an extension that version cannot carry or git may not know, or where a value it reads is in a
+/// form not read here.
+fn read_format(text: &[u8]) -> Option<Format> {
+    let mut format = Format::default();
+    let mut version = None;
+    let mut extensions = Vec::new();
+    for (name, value) in config_entries(text)? {
+        if name == "core.repositoryformatversion" {
+            version = Some(decimal(value.as_deref()?)?);
+        } else if let Some(extension) = name.strip_prefix("extensions.") {
+            extensions.push((extension.to_owned(), value));
+        } else {
+            format.take(&name, value)?;
+        }
+    }
+    let version_1 = match version? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    for (extension, value) in extensions {
+        match extension.as_str() {
+            "noop" => {}
+            "preciousobjects" => {
+                git_bool(value.as_deref())?;
+            }
+            "partialclone" => {
+                value?;
+            }
+            "worktreeconfig" => format.worktree_config = git_bool(value.as_deref())?,
+            "noop-v1" if version_1 => {}
+            "objectformat" | "compatobjectformat"
+                if version_1 && matches!(value.as_deref(), Some(b"sha1" | b"sha256")) => {}
+            _ => return None,
+        }
+    }
+    Some(format)
+}
+
+/// Every entry of a configuration file's `text`, in order, as git's own reading of a file gives
+/// it: the name `section.key` or `section.subsection.key` (a key before any section stands
+/// alone), lowercased but for a subsection; the value none for a key written without `=`. None
+/// where git refuses the file.
+fn config_entries(text: &[u8]) -> Option<Vec<(String, Option<Vec<u8>>)>> {
+    let mut source = Source {
+        text: text.strip_prefix(b"\xef\xbb\xbf").unwrap_or(text),
+        at: 0,
+        ended: false,
+    };
+    let (mut entries, mut section, mut comment) = (Vec::new(), None::<String>, false);
+    loop {
+        let c = source.next();
+        match c {
+            b'\n' if source.ended => return Some(entries),
+            b'\n' => comment = false,
+            _ if comment || is_space(c) => {}
+            b'#' | b';' => comment = true,
+            b'[' => section = Some(source.section()?),
+            _ if c.is_ascii_alphabetic() => {
+                let (key, value) = source.entry(c)?;
+                let name = match &section {
+                    Some(section) => format!("{section}.{key}"),
+                    None => key,
+                };
+                entries.push((name, value));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// A configuration file's text read a byte at a time as git's own parser reads it: `\r\n` as
+/// `\n`, and the end as a `\n` that sets `ended`.
+struct Source<'t> {
+    text: &'t [u8],
+    at: usize,
+    ended: bool,
+}
+
+impl Source<'_> {
+    fn next(&mut self) -> u8 {
+        let Some(&c) = self.text.get(self.at) else {
+            self.ended = true;
+            return b'\n';
+        };
+        self.at += 1;
+        if c == b'\r' && self.text.get(self.at) == Some(&b'\n') {
+            self.at += 1;
+            return b'\n';
+        }
+        c
+    }
+
+    /// A section header's name, read from after its `[`: lowercased, and for a header naming a
+    /// subsection in quotes followed by `.` and the subsection as written. None where git
+    /// refuses the header.
+    fn section(&mut self) -> Option<String> {
+        let mut name = String::new();
+        loop {
+            match self.next() {
+                b']' if !name.is_empty() => return Some(name),
+                c if is_space(c) => return self.subsection(name, c),
+                c if is_key_char(c) || c == b'.' => name.push(char::from(c.to_ascii_lowercase())),
+                _ => return None,
+            }
+        }
+    }
+
+    /// The section `name` followed by `.` and the quoted subsection a header names, read from
+    /// `c`, the white space after the name. None where git refuses the header.
+    fn subsection(&mut self, mut name: String, mut c: u8) -> Option<String> {
+        while is_space(c) {
+            if c == b'\n' {
+                return None;
+            }
+            c = self.next();
+        }
+        if c != b'"' {
+            return None;
+        }
+        let mut subsection = Vec::new();
+        loop {
+            let mut c = self.next();
+            if c == b'"' {
+                break;
+            }
+            if c == b'\\' {
+                c = self.next();
+            }
+            if c == b'\n' {
+                return None;
+            }
+            subsection.push(c);
+        }
+        if self.next() != b']' {
+            return None;
+        }
+        name.push('.');
+        name.push_str(&String::from_utf8_lossy(&subsection));
+        Some(name)
+    }
+
+    /// A key beginning with `first`, lowercased, and its value: none for a key written without
+    /// `=`. None where git refuses the line.
+    fn entry(&mut self, first: u8) -> Option<(String, Option<Vec<u8>>)> {
+        let mut key = String::from(char::from(first.to_ascii_lowercase()));
+        let mut c = self.next();
+        while is_key_char(c) {
+            key.push(char::from(c.to_ascii_lowercase()));
+            c = self.next();
+        }
+        while c == b' ' || c == b'\t' {
+            c = self.next();
+        }
+        match c {
+            b'\n' => Some((key, None)),
+            b'=' => Some((key, Some(self.value()?))),
+            _ => None,
+        }
+    }
+
+    /// A value, read from after its `=` to the end of its line: quotes kept out, escapes and a
+    /// line continued by `\` taken as git takes them, a comment outside quotes dropped, white
+    /// space outside quotes dropped at either end and each run inside taken as that many
+    /// spaces. None where git refuses it.
+    fn value(&mut self) -> Option<Vec<u8>> {
+        let (mut value, mut quoted, mut comment, mut spaces) = (Vec::new(), false, false, 0);
+        loop {
+            let c = self.next();
+            match c {
+                b'\n' if quoted => return None,
+                b'\n' => return Some(value),
+                _ if comment => {}
+                _ if is_space(c) && !quoted => spaces += usize::from(!value.is_empty()),
+                b'#' | b';' if !quoted => comment = true,
+                _ => {
+                    value.resize(value.len() + spaces, b' ');
+                    spaces = 0;
+                    match c {
+                        b'\\' => value.push(match self.next() {
+                            b'\n' => continue,
+                            b't' => b'\t',
+                            b'b' => 8,
+                            b'n' => b'\n',
+                            c @ (b'\\' | b'"') => c,
+                            _ => return None,
+                        }),
+                        b'"' => quoted = !quoted,
+                        _ => value.push(c),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether git's configuration parser takes `c` for white space.
+fn is_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// Whether `c` may stand in a configuration section or key name.
+fn is_key_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-'
+}
+
+/// A value read as git reads a boolean: true for a key written without one, a word git takes
+/// for true or false in any case, or a decimal integer, true unless zero ([`decimal`]). None for
+/// any other value, which git refuses or reads in a form not read here.
+fn git_bool(value: Option<&[u8]>) -> Option<bool> {
+    let Some(value) = value else {
+        return Some(true);
+    };
+    match value.to_ascii_lowercase().as_slice() {
+        b"true" | b"yes" | b"on" => Some(true),
+        b"" | b"false" | b"no" | b"off" => Some(false),
+        _ => decimal(value).map(|n| n != 0),
+    }
+}
+
+/// `value` read as git reads an integer, where it is a decimal integer within git's range with
+/// an optional sign and no leading zero. None for any other value, which git refuses or reads
+/// in a form not read here (a unit after it, or a base: a leading `0x` or `0`).
+fn decimal(value: &[u8]) -> Option<i32> {
+    let digits = value
+        .strip_prefix(b"-")
+        .or_else(|| value.strip_prefix(b"+"))
+        .unwrap_or(value);
+    let plain = !digits.is_empty()
+        && digits.iter().all(u8::is_ascii_digit)
+        && (digits.len() == 1 || digits[0] != b'0');
+    if !plain {
+        return None;
+    }
+    std::str::from_utf8(value).ok()?.parse().ok()
 }
 
 /// Whether this user owns every one of `paths`, as git requires before it trusts a repository.
@@ -316,21 +655,6 @@ fn owned(paths: &[&Path]) -> bool {
     paths
         .iter()
         .all(|path| owned_by_this_user(path) == Some(true))
-}
-
-/// `path` with its `.` and `..` components resolved lexically.
-fn normalized(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// The object id `packed` (a `packed-refs` file's text) holds for the ref `name`.
@@ -353,8 +677,8 @@ fn is_object_id(text: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// `git -C <start> rev-parse <ask>`'s trimmed answer: read from git's files for a plain
-/// repository ([`read_repository`]), else asked of git. None when `start` lies in no repository;
+/// `git -C <start> rev-parse <ask>`'s trimmed answer: read from git's files where they answer it
+/// ([`read_repository`]), else asked of git. None when `start` lies in no repository;
 /// a failure naming git's refusal when git refuses where a walk up from `start` meets a `.git`
 /// entry or a bare repository ([`walk`]), as in a worktree whose administrative directory is
 /// gone or a repository this user does not own.
@@ -367,7 +691,7 @@ pub fn rev_parse(start: &Path, ask: Location) -> Result<Option<String>, String> 
         start,
         &args,
         git_output(start, &args, GitOutput::Stdout),
-        || walk(start, &Reach::from_env()),
+        || walk(start, &Reach::longest_from_env()),
     )
 }
 
@@ -390,8 +714,8 @@ fn asked(
 /// The checkout `start` lies in, read from git's files: the short name of the branch its `HEAD`
 /// names (`HEAD` when detached) and the commit it is at (none on a branch with no commit yet), as
 /// `git symbolic-ref --short -q HEAD` and `git rev-parse --verify -q HEAD^{commit}` answer them.
-/// None when the files leave it to git: a repository that is not plain, refs in a reftable, a
-/// `HEAD` naming a ref outside the branches, a branch name another ref also spells (which git
+/// None when the files leave it to git: a repository they leave to git ([`read_repository`]), refs
+/// in a reftable, a `HEAD` naming a ref outside the branches, a branch name another ref also spells (which git
 /// would not shorten), or a symbolic branch ref.
 pub fn read_head(start: &Path) -> Option<(String, Option<String>)> {
     read_head_with(start, &mut |path| std::fs::read_to_string(path))
@@ -534,9 +858,10 @@ mod tests {
     /// checkout (`sparse`), a main checkout and a linked worktree under per-worktree
     /// configuration (`wtc`, `wtc-linked`), a bare repository's linked worktree (`bare-wt`), a
     /// configuration including a file and naming worktrees in a remote (`configured`), a work
-    /// tree configured where its `.git` lies (`selfwt`); and what git alone answers: a work tree
-    /// configured elsewhere (`elsewhere`), a `.git` configured bare (`baremain`) and a `bare`
-    /// value written quoted (`quoted`).
+    /// tree configured where its `.git` lies (`selfwt`), a `bare` value written quoted beside a
+    /// comment (`quoted`); and what git alone answers: a work tree configured elsewhere
+    /// (`elsewhere`), a `.git` configured bare (`baremain`) and a `bare` value written as a
+    /// number with a unit (`suffixed`).
     fn layouts(root: &Path) {
         let main = root.join("main");
         git_ok(
@@ -615,11 +940,14 @@ mod tests {
             init_repo(root.join(repo));
             git_ok(root.join(repo), &["config", key, value.to_str().unwrap()]);
         }
-        std::fs::create_dir_all(root.join("quoted")).unwrap();
-        init_repo(root.join("quoted"));
-        let config = root.join("quoted/.git/config");
-        let text = std::fs::read_to_string(&config).unwrap();
-        std::fs::write(&config, text.replace("bare = false", "bare = \"false\"")).unwrap();
+        for (repo, bare) in [("quoted", "\"false\" ; quoted"), ("suffixed", "0k")] {
+            std::fs::create_dir_all(root.join(repo)).unwrap();
+            init_repo(root.join(repo));
+            let config = root.join(repo).join(".git/config");
+            let text = std::fs::read_to_string(&config).unwrap();
+            let text = text.replace("bare = false", &format!("bare = {bare}"));
+            std::fs::write(&config, text).unwrap();
+        }
     }
 
     /// [`rev_parse`]'s answer from `start` for `ask`, checked against git's: git's own answer
@@ -670,6 +998,7 @@ mod tests {
             ("configured/d", true, true),
             ("selfwt", true, true),
             ("selfwt/d", true, true),
+            ("quoted", true, true),
             ("main/.git", false, true),
             ("main/.git/refs", false, true),
             ("missing", true, false),
@@ -678,7 +1007,7 @@ mod tests {
             ("bare.git", false, true),
             ("elsewhere", false, true),
             ("baremain", false, true),
-            ("quoted", false, true),
+            ("suffixed", false, true),
         ];
         let asks = [
             Location::Toplevel,
@@ -770,7 +1099,8 @@ mod tests {
     /// under the shapes, but for an empty entry and a relative one), and whether a repository is
     /// found from it under them. A walk up from the directory meets one exactly when git does:
     /// git never enters a ceiling that is a proper ancestor, resolves an entry to its physical
-    /// path up to the first empty entry, and ignores a relative entry.
+    /// path up to the first empty entry, and ignores a relative entry; and the repository read
+    /// from the files under them is the one git names.
     #[test]
     fn the_walk_stops_at_the_ceilings_git_stops_at() {
         let dir = shapes();
@@ -788,19 +1118,25 @@ mod tests {
         for (path, entries, found) in cases {
             let start = dir.path().join(path);
             let value = std::env::join_paths(&entries).unwrap();
-            let git_finds = crate::subprocess::git_in(&start)
+            let out = crate::subprocess::git_in(&start)
                 .env(CEILINGS, &value)
-                .args(["rev-parse", "--git-dir"])
+                .args(["rev-parse", Location::Toplevel.flag()])
                 .output()
-                .unwrap()
+                .unwrap();
+            let git_finds = out
                 .status
-                .success();
-            let met = walk(&start, &Reach::of(Some(value.clone()), false));
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned());
+            let reach = Reach::of(Some(value.clone()), false);
+            let met = walk(&start, &reach);
             assert_eq!(
-                (met != Met::Nothing, git_finds),
+                (met != Met::Nothing, git_finds.is_some()),
                 (found, found),
                 "{path} under {value:?}: {met:?}"
             );
+            let read = read_repository_within(&start, &reach)
+                .map(|found| found.map(|repo| repo.answer(Location::Toplevel)));
+            assert_eq!(read, Some(git_finds), "{path} under {value:?}: read");
         }
     }
 
@@ -848,6 +1184,85 @@ mod tests {
         assert_eq!(empty, read_head(Path::new(".")), "an empty start");
         if let Some(head) = empty {
             assert_eq!(head, git_head(Path::new("")), "an empty start");
+        }
+    }
+
+    /// git's own reading of the configuration file `text`: each entry's name and value, none for
+    /// a key written without one; None when git refuses the file.
+    fn git_reads(text: &str) -> Option<Vec<(String, Option<Vec<u8>>)>> {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config");
+        std::fs::write(&file, text).unwrap();
+        let out = run_git(dir.path(), &["config", "-z", "--list", "-f", "config"]);
+        let entries = out
+            .stdout
+            .split(|&c| c == 0)
+            .filter(|entry| !entry.is_empty());
+        let entries = entries.map(|entry| match entry.iter().position(|&c| c == b'\n') {
+            Some(at) => (
+                String::from_utf8_lossy(&entry[..at]).into_owned(),
+                Some(entry[at + 1..].to_vec()),
+            ),
+            None => (String::from_utf8_lossy(entry).into_owned(), None),
+        });
+        out.status.success().then(|| entries.collect())
+    }
+
+    /// Each row: a configuration file's text. Its entries are read as git reads them, and a
+    /// file git refuses is refused.
+    #[test]
+    fn a_configuration_is_read_as_git_reads_it() {
+        let cases = [
+            "[core]\n\trepositoryformatversion = 0\n\tbare = false\n",
+            "[Core] Bare\n[core]bare=1\n",
+            "k = v\n",
+            "[ \"x\"]\nk=1\n",
+            "[remote \"o\\\"r]i\\gin\"]\n\turl = a ; b\n\tfetch = x # y\n",
+            "[a.B]\nk = \"t\\tx\" y  z \nl = \"\" m\t n\n",
+            "[core]\r\n\tworktree = /a\\\n/b\r\n",
+            "\u{feff}[core]\nbare = \"false\"\n",
+            "# c\n; d\n\n[core] ; e\n  bare = no\n",
+            "[]\nk=1\n",
+            "[core]\nbare = \"un\n",
+            "[core]\nbare = x\\q\n",
+            "[core]\n1k = 2\n",
+            "[core]\nk # c\n",
+            "[core \"x\n\"]\n",
+            "[core x]\n",
+            "[core]\n\tbare = 1\\",
+        ];
+        for text in cases {
+            assert_eq!(config_entries(text.as_bytes()), git_reads(text), "{text:?}");
+        }
+    }
+
+    /// Each row: a configuration value, and how git reads it as a boolean where it reads it in
+    /// a form read here: a value read here is the one git gives, and one it refuses is refused.
+    #[test]
+    fn a_boolean_is_read_as_git_reads_it() {
+        let cases: [(Option<&str>, Option<bool>); 12] = [
+            (None, Some(true)),
+            (Some(""), Some(false)),
+            (Some("TRUE"), Some(true)),
+            (Some("Off"), Some(false)),
+            (Some("yes"), Some(true)),
+            (Some("0"), Some(false)),
+            (Some("-2"), Some(true)),
+            (Some("+0"), Some(false)),
+            (Some("0k"), None),
+            (Some("0x1"), None),
+            (Some("010"), None),
+            (Some("maybe"), None),
+        ];
+        for (value, read) in cases {
+            assert_eq!(git_bool(value.map(str::as_bytes)), read, "{value:?}");
+            if let Some(read) = read {
+                let dir = tempfile::tempdir().unwrap();
+                let line = value.map_or("k".to_owned(), |value| format!("k = {value}"));
+                std::fs::write(dir.path().join("config"), format!("[s]\n{line}\n")).unwrap();
+                let git = git_out(dir.path(), &["config", "-f", "config", "--bool", "s.k"]);
+                assert_eq!(git, read.to_string(), "{value:?}");
+            }
         }
     }
 

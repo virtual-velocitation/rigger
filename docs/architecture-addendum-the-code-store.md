@@ -463,7 +463,9 @@ code::open_current(root) -> CodeView
 | any reader | when HEAD moved without the conductor (a hand commit, a pull) | advances before it answers |
 
 `root` is always the project root that owns `.rigger/`, which is the operator checkout. A caller
-inside a unit worktree resolves `root` through git's common directory to that main worktree.
+inside a unit worktree resolves `root` through git's common directory to that main worktree. A
+checkout whose common directory is its own administrative directory kept apart from it, as a
+submodule's is, is its own root.
 `source.head()` reads `root`'s HEAD, never the caller's. A reader in a unit worktree therefore
 never advances the shared store to its own branch. Its own commit reaches it only through the
 overlay (13), which reads the files its branch differs in from its worktree.
