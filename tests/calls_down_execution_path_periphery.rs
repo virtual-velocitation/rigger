@@ -47,7 +47,7 @@
 
 use crate::common;
 
-use common::fixtures::{call_edge_pairs, call_layer, call_node_ids, planted_file};
+use common::fixtures::{call_edge_pairs, call_layer, call_node_ids, planted_file, with_uses};
 use rigger::code_facts::FileFacts;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
@@ -450,15 +450,15 @@ fn the_up_walk_lists_referenced_but_not_called_files_at_the_public_boundary_and_
     // Two CALLERS. A caller-attributed reference folds BOTH a file-level REFERENCES edge AND a
     // `<file>::<caller> --CALLS--> target` edge, so its file is a CALLER (in the DAG) - never a
     // "referenced but not called" site.
-    // Two IMPORT-ONLY files: a top-level reference with NO enclosing caller folds ONLY the file-level
+    // Two IMPORT-ONLY files: a file-level `use` of the seed's name folds ONLY the file-level
     // REFERENCES edge (no CALLS twin) - exactly the "referenced but not called" site. e.rs is folded
     // BEFORE d.rs so the natural row order would be [e, d]; only the builder's sort yields [d, e].
     let (records, view) = tree(vec![
         // the SEED, and its same-file caller
         fns("src/a.rs", &["target", "local"], &[("local", "target")]),
         fns("src/b.rs", &["mid"], &[("mid", "target")]), // cross-file caller
-        planted_file("src/e.rs", &[], &[], &["target"]), // a caller-less reference
-        planted_file("src/d.rs", &[], &[], &["target"]), // a caller-less reference
+        with_uses(planted_file("src/e.rs", &[], &[], &[]), &[("", "target")]), // an import
+        with_uses(planted_file("src/d.rs", &[], &[], &[]), &[("", "target")]), // an import
     ]);
     let p = common::fixtures::view_graph(&records, &view);
 

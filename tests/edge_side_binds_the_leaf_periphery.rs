@@ -9,7 +9,8 @@
 //!    `operator %` seed among them, and never through a longer sigiled leaf;
 //!  - the reference tier, inferred while a definition of the leaf stands and ambiguous when none
 //!    does;
-//!  - the referenced-but-not-called sidecar, through both spellings, and a seed with no leaf.
+//!  - the referenced-but-not-called sidecar, a reference and a call each through both spellings
+//!    and never a longer sigiled leaf, and a seed with no leaf.
 //!
 //! A reference with no one call target of its leaf in its own file lands on the placeholder
 //! `<file>::%<leaf>` (criterion 3), so a mention naming `new` spells `%new` and one naming `%new`
@@ -20,7 +21,7 @@ use crate::common;
 
 use common::fixtures::{
     call_frontiers, call_node_ids, call_walk, edge_tier, planted_file, referenced_not_called_ids,
-    view_graph,
+    view_graph, with_uses,
 };
 use rigger::code_facts::FileFacts;
 use rigger::code_view::FactsView;
@@ -140,24 +141,32 @@ fn a_sigiled_reference_follows_a_definition_of_its_leaf_in_and_out() {
     );
 }
 
-/// GIVEN `src/a.rs` defines `new`, `src/d.rs` references it, landing on `src/d.rs::%new`,
-/// `src/e.rs` defines its own `new` and references it, landing on `src/e.rs::new`, `src/f.rs`
-/// references `%new`, landing on `src/f.rs::%%new`, and `src/g.rs` references and calls `new`
-/// from `run`, WHEN the UP view is built from `src/a.rs::new`, THEN `src/d.rs` and `src/e.rs` are
-/// referenced but not called, `src/f.rs` binds no leaf of the seed and `src/g.rs` calls it.
+/// GIVEN `src/a.rs` defines `new`; `src/d.rs`'s `go` uses `new`, landing on `src/a.rs::new`, and
+/// calls it, landing on `src/d.rs::%new`; `src/e.rs` uses `new` at file level; `src/f.rs` uses
+/// `new` at file level and its `far` calls `%new`, landing on `src/f.rs::%%new`; and `src/g.rs`
+/// calls `new` from `run`, WHEN the UP view is built from `src/a.rs::new`, THEN `src/e.rs` and
+/// `src/f.rs` are referenced but not called: `src/d.rs` calls it through the sigiled leaf,
+/// `src/f.rs`'s call binds no leaf of the seed and `src/g.rs` calls it.
 #[test]
-fn referenced_not_called_counts_a_file_level_reference_through_both_spellings() {
+fn referenced_not_called_binds_a_reference_and_a_call_through_both_spellings() {
     let (records, view) = tree(vec![
         fns("src/a.rs", &["new"], &[], &[]),
         fns("src/g.rs", &["run"], &[("run", "new")], &[]),
-        fns("src/d.rs", &[], &[], &["new"]),
-        fns("src/e.rs", &["new"], &[], &["new"]),
-        fns("src/f.rs", &[], &[], &["%new"]),
+        with_uses(
+            fns("src/d.rs", &["go"], &[("go", "new")], &[]),
+            &[("go", "new")],
+        ),
+        with_uses(fns("src/e.rs", &[], &[], &[]), &[("", "new")]),
+        with_uses(
+            fns("src/f.rs", &["far"], &[("far", "%new")], &[]),
+            &[("", "new")],
+        ),
     ]);
     assert_eq!(
         referenced_not_called_ids(&view_graph(&records, &view), SEED),
-        ["src/d.rs", "src/e.rs"],
-        "both spellings count as a reference, and as a call"
+        ["src/e.rs", "src/f.rs"],
+        "a reference through the definition's spelling and a call through the sigiled leaf, \
+         never a longer one"
     );
 }
 

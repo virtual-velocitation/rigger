@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
-use crate::code_view::{CodeView, DefRef, Proofs, Settled};
+use crate::code_view::{CodeView, DefRef, MentionRef, Proofs, Settled};
 use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id, split_id};
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
@@ -42,7 +42,7 @@ use crate::contextgraph::{
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
 /// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
 /// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 2;
+pub const SETTLED_GENERATION: u64 = 3;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -160,9 +160,11 @@ pub struct Link {
 pub struct ProofCall {
     /// The product definition proved.
     pub target: String,
-    /// The test entity that calls it: the enclosing definition of the call, or the file's own id
-    /// when the call sits at file level.
-    pub caller: String,
+    /// The test entity that calls it: the enclosing definition of the call when its id is test
+    /// code, or the file's own id when the call sits at file level. None for test code inside
+    /// a product entity (a `#[cfg(test)]` twin of a product definition), which proves what it
+    /// calls but is no test entity of its own.
+    pub caller: Option<String>,
     /// The call's `file:line`.
     pub evidence: String,
 }
@@ -182,8 +184,14 @@ pub struct IntentNode {
     pub title: String,
     /// The file it is read from.
     pub doc: String,
-    /// Whether its path is test code.
-    pub test: bool,
+}
+
+/// One edge a design or workflow file writes, its ends as written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntentLink {
+    pub from: String,
+    pub rel: &'static str,
+    pub to: String,
 }
 
 /// The one of `defs` sharing an id that gives the id its kind and line: the first by
@@ -225,19 +233,16 @@ fn one_here_else_one_anywhere<'c, 'v>(
 /// `calls` in proof order: by the definition proved, then the calling file, then the evidence
 /// `file:line` as text, then the caller.
 fn proof_order(mut calls: Vec<ProofCall>) -> Vec<ProofCall> {
-    fn key(c: &ProofCall) -> (&str, &str, &str, &str) {
-        (&c.target, c.file().unwrap_or(""), &c.evidence, &c.caller)
+    fn key(c: &ProofCall) -> (&str, &str, &str, Option<&str>) {
+        (
+            &c.target,
+            c.file().unwrap_or(""),
+            &c.evidence,
+            c.caller.as_deref(),
+        )
     }
     calls.sort_by(|a, b| key(a).cmp(&key(b)));
     calls
-}
-
-/// The test entity making a call in `facts` whose enclosing definition is `enclosing`: that
-/// definition, or the file itself when the call sits at file level.
-fn caller_of(facts: &FileFacts, enclosing: Option<u32>) -> String {
-    enclosing
-        .and_then(|i| facts.defs.get(i as usize))
-        .map_or_else(|| facts.path.clone(), |d| entity_id(&facts.path, &d.local))
 }
 
 /// Grows `set` to its fixed point: the target of every declaration `admits` takes, given the set
@@ -257,6 +262,15 @@ fn grow<'v>(
             }
         }
     }
+}
+
+/// The names a definition whose local path is `local` may carry as its leaf: the path itself,
+/// then each text after one of its `::`, the shortest last.
+pub(crate) fn local_leaves(local: &str) -> impl Iterator<Item = &str> {
+    let suffixes = local
+        .match_indices("::")
+        .map(move |(at, sep)| &local[at + sep.len()..]);
+    std::iter::once(local).chain(suffixes)
 }
 
 /// The leaves of the definitions in `facts` whose local is `local`, each once, in source order:
@@ -374,9 +388,22 @@ impl<'v> Resolver<'v> {
         files
     }
 
-    /// Whether the node `id` is test code: it lies in a test file, whatever fact names it.
+    /// Whether the node `id` is test code, whatever fact names it: it lies in a test file, or it
+    /// is a test entity of a code file (section 8.1), as [`Self::candidates`] settles the id.
     pub fn is_test_id(&self, id: &str) -> bool {
-        file_of(id).is_some_and(|file| self.is_test_file(file))
+        if file_of(id).is_some_and(|file| self.is_test_file(file)) {
+            return true;
+        }
+        let Some(local) = split_id(id).1 else {
+            return false;
+        };
+        local_leaves(local).any(|leaf| (self.candidates(leaf).iter()).any(|c| c.id == id && c.test))
+    }
+
+    /// Whether the design or workflow edge `from` -> `to` is test code: an end of it is
+    /// ([`Self::is_test_id`]).
+    pub fn is_test_link(&self, from: &str, to: &str) -> bool {
+        self.is_test_id(from) || self.is_test_id(to)
     }
 
     /// Whether `path` is a code-half file of the view.
@@ -628,9 +655,7 @@ impl<'v> Resolver<'v> {
                 continue;
             }
             let (to, tier) = self.call_edge(file, &m.leaf, test);
-            if let Some(caller) = m.enclosing.and_then(entity) {
-                sink(caller, REL_CALLS, &to, tier, test);
-            }
+            sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
             match referenced.get_mut(&to) {
                 Some(product) => *product |= !test,
@@ -677,10 +702,14 @@ impl<'v> Resolver<'v> {
             None => file.to_string(),
         };
         for decl in &facts.modules {
-            let test = decl.test || file_test;
-            let Some(target) = self.module_target(decl).filter(|_| tests || !test) else {
+            let Some(target) = self.module_target(decl) else {
                 continue;
             };
+            // A declaration reaching a test file is test code wherever it is written.
+            let test = decl.test || file_test || self.is_test_file(target);
+            if test && !tests {
+                continue;
+            }
             sink(
                 &from_of(Some(decl.def)),
                 REL_CONTAINS,
@@ -733,6 +762,7 @@ impl<'v> Resolver<'v> {
     /// The proofs of the test calls in `facts`, a code file, unordered.
     pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
         let path = facts.path.as_str();
+        let test_entity = self.test_entity_of(facts);
         facts
             .mentions
             .iter()
@@ -741,11 +771,63 @@ impl<'v> Resolver<'v> {
                 let target = self.proof(path, &m.leaf)?;
                 Some(ProofCall {
                     target,
-                    caller: caller_of(facts, m.enclosing),
+                    caller: test_entity(m.enclosing),
                     evidence: format!("{path}:{}", m.line),
                 })
             })
             .collect()
+    }
+
+    /// The test entity a test mention of `facts` belongs to, by its enclosing definition: that
+    /// definition's id when the id is test code by the rule settling ids ([`Self::winners`]), the
+    /// file's own id when the mention sits at file level of a test file. None for test code
+    /// inside a product entity (a `#[cfg(test)]` twin of a product definition): the id is
+    /// product, and no entity holds the test code alone.
+    fn test_entity_of<'a>(
+        &'a self,
+        facts: &'a FileFacts,
+    ) -> impl Fn(Option<u32>) -> Option<String> + use<'a, 'v> {
+        let file_test = self.is_test_file(&facts.path);
+        let test_ids: std::cell::OnceCell<FxHashSet<&str>> = std::cell::OnceCell::new();
+        move |enclosing| {
+            let Some(d) = enclosing.and_then(|i| facts.defs.get(i as usize)) else {
+                return file_test.then(|| facts.path.clone());
+            };
+            let test = file_test
+                || test_ids
+                    .get_or_init(|| {
+                        (self.winners(facts, true).into_iter())
+                            .filter(|&(_, _, test)| test)
+                            .map(|(local, _, _)| local)
+                            .collect()
+                    })
+                    .contains(d.local.as_str());
+            test.then(|| entity_id(&facts.path, &d.local))
+        }
+    }
+
+    /// [`Self::test_entity_of`] each test mention at (path, enclosing definition) of `at`,
+    /// reading each file once and only when a mention in it sits in a definition.
+    fn test_entities_at<'p>(
+        &self,
+        at: BTreeMap<&'p str, BTreeSet<Option<u32>>>,
+    ) -> BTreeMap<(&'p str, Option<u32>), Option<String>> {
+        let mut entities = BTreeMap::new();
+        for (path, enclosing) in at {
+            let facts = (enclosing.iter().any(Option::is_some))
+                .then(|| self.view.file(path))
+                .flatten();
+            let file_test = self.is_test_file(path);
+            let test_entity = facts.as_deref().map(|f| self.test_entity_of(f));
+            for e in enclosing {
+                let entity = match &test_entity {
+                    Some(test_entity) => test_entity(e),
+                    None => file_test.then(|| path.to_string()),
+                };
+                entities.insert((path, e), entity);
+            }
+        }
+        entities
     }
 
     /// The proof calls in the file at `path`, in proof order: the view's settled rows, else
@@ -774,31 +856,89 @@ impl<'v> Resolver<'v> {
             .then(|| self.view.file(file))
             .flatten();
         let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
-        let mut calls = Vec::new();
+        let mut proving = Vec::new();
+        let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for leaf in leaves.iter().map(String::as_str) {
-            for m in self.view.mentions_named(leaf) {
+            for m in self.proving_calls(id, leaf) {
                 let path = m.file.path;
-                let test = self.is_test(m.test, path);
-                if m.file.half != Half::Code || m.kind != MentionKind::Call || !test {
-                    continue;
-                }
-                if self.proof(path, leaf).as_deref() == Some(id) {
-                    let caller = match m.enclosing {
-                        Some(_) => self
-                            .view
-                            .file(path)
-                            .map_or_else(|| path.to_string(), |f| caller_of(&f, m.enclosing)),
-                        None => path.to_string(),
-                    };
-                    calls.push(ProofCall {
-                        target: id.to_string(),
-                        caller,
-                        evidence: format!("{path}:{}", m.line),
-                    });
-                }
+                enclosing.entry(path).or_default().insert(m.enclosing);
+                proving.push((path, m.enclosing, m.line));
             }
         }
+        let entities = self.test_entities_at(enclosing);
+        let calls = (proving.into_iter())
+            .map(|(path, e, line)| ProofCall {
+                target: id.to_string(),
+                caller: entities[&(path, e)].clone(),
+                evidence: format!("{path}:{line}"),
+            })
+            .collect();
         proof_order(calls)
+    }
+
+    /// The test calls to `leaf` in code files that the proof rule credits to `id`, read from the
+    /// mentions of `leaf` alone. The rule credits a call by its file and leaf, so each file is
+    /// asked once.
+    pub(crate) fn proving_calls<'s>(
+        &'s self,
+        id: &'s str,
+        leaf: &'s str,
+    ) -> impl Iterator<Item = MentionRef<'v>> + 's {
+        let mut credits: FxHashMap<&'v str, bool> = FxHashMap::default();
+        self.test_calls_named(leaf).filter(move |m| {
+            *(credits.entry(m.file.path))
+                .or_insert_with(|| self.proof(m.file.path, leaf).as_deref() == Some(id))
+        })
+    }
+
+    /// The test calls to `leaf` in code files, read from the mentions of `leaf` alone.
+    fn test_calls_named<'s>(&'s self, leaf: &'s str) -> impl Iterator<Item = MentionRef<'v>> + 's {
+        self.view.mentions_named(leaf).filter(|m| {
+            m.file.half == Half::Code
+                && m.kind == MentionKind::Call
+                && self.is_test(m.test, m.file.path)
+        })
+    }
+
+    /// Whether a test call to `leaf` from `file` lands on a placeholder ([`Self::call_edge`]):
+    /// the call rule resolves it in no one definition in `file` and the proof rule credits none.
+    fn lands_on_placeholder(&self, file: &str, leaf: &str) -> bool {
+        leaf_of(&self.call_edge(file, leaf, true).0).is_some()
+    }
+
+    /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
+    /// pairs, unordered: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where
+    /// a call lands depends only on its file and leaf, so each leaf is resolved once.
+    pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
+        let path = facts.path.as_str();
+        let test_entity = self.test_entity_of(facts);
+        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
+        (facts.mentions.iter())
+            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+            .filter(|m| {
+                *(lands.entry(&m.leaf)).or_insert_with(|| self.lands_on_placeholder(path, &m.leaf))
+            })
+            .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
+            .collect()
+    }
+
+    /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
+    /// test entities ([`Self::test_entity_of`]) a callers walk reaches through a placeholder bound
+    /// to `leaf` and no proof names, read from the mentions of `leaf` alone. Where a call lands
+    /// depends only on its file and leaf, so each file is resolved once.
+    pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
+        let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
+        for m in self.test_calls_named(leaf) {
+            let path = m.file.path;
+            if *(lands.entry(path)).or_insert_with(|| self.lands_on_placeholder(path, leaf)) {
+                enclosing.entry(path).or_default().insert(m.enclosing);
+            }
+        }
+        let callers: BTreeSet<String> = (self.test_entities_at(enclosing).into_values())
+            .flatten()
+            .collect();
+        callers.into_iter().collect()
     }
 
     /// Holds `calls`, the [`Self::file_proofs`] of every code file, as this resolver's proof calls
@@ -851,8 +991,9 @@ impl<'v> Resolver<'v> {
     }
 
     /// The design and workflow nodes and edges of `facts`, of the kinds and relations they may
-    /// name; a link's ends are as written, and a node or link is test code by its paths.
-    pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<Link>) {
+    /// name, as written: whether one is test code is settled by its ids where it is asserted
+    /// ([`Self::is_test_id`], [`Self::is_test_link`]).
+    pub fn intent(&self, facts: &FileFacts) -> (Vec<IntentNode>, Vec<IntentLink>) {
         let kind_of = |k: &str| INTENT_KINDS.into_iter().find(|known| *known == k);
         let rel_of = |r: &str| INTENT_RELS.into_iter().find(|known| *known == r);
         let concepts = facts
@@ -867,7 +1008,6 @@ impl<'v> Resolver<'v> {
                     kind: kind_of(kind)?,
                     title: title.clone(),
                     doc: facts.path.clone(),
-                    test: self.is_test_id(id),
                 })
             })
             .collect();
@@ -878,12 +1018,10 @@ impl<'v> Resolver<'v> {
             .chain(facts.wf_relations.iter().map(|r| (&r.from, &r.rel, &r.to)));
         let links = relations
             .filter_map(|(from, rel, to)| {
-                Some(Link {
+                Some(IntentLink {
                     from: from.clone(),
                     rel: rel_of(rel)?,
                     to: to.clone(),
-                    tier: TIER_EXTRACTED,
-                    test: self.is_test_id(from) || self.is_test_id(to),
                 })
             })
             .collect();
@@ -1031,9 +1169,9 @@ pub(crate) mod tests {
     }
 
     /// A tree holding a case of every rule: same-file, cross-file, ambiguous and unknown calls,
-    /// tagged references (one held by a call), out-of-line and test-only module declarations, a
-    /// test module and a test helper sharing product leaves, a second language, and design and
-    /// workflow facts.
+    /// calls outside every definition, tagged references (one held by a call), out-of-line and
+    /// test-only module declarations, a test module and a test helper sharing product leaves, a
+    /// second language, and design and workflow facts.
     pub(crate) fn fixture() -> FactsView {
         let mut a = code(
             "src/a.rs",
@@ -1145,7 +1283,10 @@ pub(crate) mod tests {
                 def("Shape", "type", 1, None, false),
                 def("assist", "function", 4, None, false),
             ],
-            vec![call("compute", Some(1), 5, false)],
+            vec![
+                call("compute", Some(1), 5, false),
+                call("compute", None, 7, false),
+            ],
         );
         let doc = FileFacts {
             path: "docs/d.md".into(),
@@ -1183,6 +1324,11 @@ pub(crate) mod tests {
                     from: "docs/d.md".into(),
                     rel: REL_SPECIFIES.into(),
                     to: "src/a_tests.rs".into(),
+                },
+                DocLink {
+                    from: "docs/d.md".into(),
+                    rel: REL_SPECIFIES.into(),
+                    to: "src/a.rs::tests::checks".into(),
                 },
             ],
             ..Default::default()
@@ -1268,12 +1414,13 @@ pub(crate) mod tests {
                 let (nodes, links) = r.intent(&view.file(path).unwrap());
                 let mark = |test: bool| if test { " test" } else { "" };
                 let nodes = nodes.iter().map(|n| {
-                    let test = mark(n.test);
+                    let test = mark(r.is_test_id(&n.id));
                     format!("node {} [{}] {} {}{test}", n.id, n.kind, n.title, n.doc)
                 });
-                let links = links
-                    .iter()
-                    .map(|l| format!("{}{}", render_link(l), mark(l.test)));
+                let links = links.iter().map(|l| {
+                    let test = mark(r.is_test_link(&l.from, &l.to));
+                    format!("{} -{}/{TIER_EXTRACTED}-> {}{test}", l.from, l.rel, l.to)
+                });
                 nodes.chain(links).collect()
             }
         }
@@ -1406,15 +1553,22 @@ pub(crate) mod tests {
                 &[],
             ),
             (
-                "call: no candidate is an ambiguous placeholder from the file",
+                "call: no candidate is an ambiguous placeholder, outside every definition the \
+                 file's call",
                 Ask::Links("src/a.rs", false),
-                &["src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish"],
-                &["CALLS/ambiguous"],
+                &[
+                    "src/a.rs -REFERENCES/ambiguous-> src/a.rs::%vanish",
+                    "src/a.rs -CALLS/ambiguous-> src/a.rs::%vanish",
+                ],
+                &[],
             ),
             (
-                "call: candidates of any language",
+                "call: candidates of any language, a definition's call or its file's",
                 Ask::Links("scripts/t.py", false),
-                &["scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute"],
+                &[
+                    "scripts/t.py::assist -CALLS/inferred-> scripts/t.py::%compute",
+                    "scripts/t.py -CALLS/inferred-> scripts/t.py::%compute",
+                ],
                 &[],
             ),
             (
@@ -1469,10 +1623,14 @@ pub(crate) mod tests {
                 &["Widget"],
             ),
             (
-                "held: a tagged reference the call rule already references writes no edge",
+                "held: a tagged reference the call rule already references writes no edge, and \
+                 no call from its file",
                 Ask::Links("src/a.rs", false),
                 &["src/a.rs -REFERENCES/inferred-> src/a.rs::%compute"],
-                &["src/b.rs::compute"],
+                &[
+                    "src/b.rs::compute",
+                    "src/a.rs -CALLS/inferred-> src/a.rs::%compute",
+                ],
             ),
             (
                 "module: the first candidate that is a code file",
@@ -1545,7 +1703,7 @@ pub(crate) mod tests {
     /// is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (2, "4cf253b08ef03faa");
+        const PINNED: (u64, &str) = (3, "6126b9cf9571d2f0");
         let view = fixture();
         let resolver = Resolver::new(&view);
         let test_files: Vec<&str> = (view.files())
@@ -1565,6 +1723,82 @@ pub(crate) mod tests {
              differ from the pinned pair: a change to what a store settles ships with a bump, so \
              bump `SETTLED_GENERATION` and re-pin the pair to this build's values together"
         );
+    }
+
+    /// A PROOF NAMES ITS TEST ENTITY: a test call's caller is its enclosing definition when that
+    /// id is test code (an inline test, or twins that are both test), or its test file at file
+    /// level; test code inside a product entity (the `#[cfg(test)]` twin of the product `helper`)
+    /// still proves what it calls but names no caller, and no test entity reaches a placeholder
+    /// through it. Every reader of proofs and of placeholder callers says alike.
+    #[test]
+    fn a_proof_names_its_test_entity_and_none_for_test_code_inside_a_product_entity() {
+        let p = code(
+            "src/p.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("target", "function", 1, None, false),
+                def("helper", "function", 3, None, true),
+                def("helper", "function", 5, None, false),
+                def("tests", "module", 7, None, true),
+                def("tests::check", "function", 8, Some(3), true),
+                def("both", "function", 11, None, true),
+                def("both", "function", 13, None, true),
+            ],
+            vec![
+                call("target", Some(1), 3, true),
+                call("draw", Some(1), 4, true),
+                call("target", Some(4), 8, true),
+                call("draw", Some(4), 9, true),
+                call("target", Some(5), 11, true),
+            ],
+        );
+        let t = code(
+            "tests/t.rs",
+            "rust",
+            Scope::Test,
+            vec![],
+            vec![call("target", None, 1, true)],
+        );
+        let draws = ["src/d1.rs", "src/d2.rs"].map(|path| {
+            let draw = vec![def("draw", "function", 1, None, false)];
+            code(path, "rust", Scope::Product, draw, vec![])
+        });
+        let view = FactsView::new(stamp(), [vec![p, t], draws.to_vec()].concat());
+        let resolver = Resolver::new(&view);
+        let calls = |calls: Vec<ProofCall>| -> Vec<String> {
+            (calls.into_iter())
+                .map(|c| format!("{} {:?}", c.evidence, c.caller))
+                .collect()
+        };
+        let facts = view.file("src/p.rs").unwrap();
+        // (the reader, what it answers)
+        let cases: [(&str, Vec<String>); 4] = [
+            ("proof calls", calls(resolver.proof_calls().to_vec())),
+            ("proofs of", calls(resolver.proofs_of("src/p.rs::target"))),
+            ("placeholder callers", resolver.placeholder_callers("draw")),
+            (
+                "file placeholder calls",
+                (resolver.file_placeholder_calls(&facts).into_iter())
+                    .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                    .collect(),
+            ),
+        ];
+        let proofs = [
+            "src/p.rs:11 Some(\"src/p.rs::both\")",
+            "src/p.rs:3 None",
+            "src/p.rs:8 Some(\"src/p.rs::tests::check\")",
+            "tests/t.rs:1 Some(\"tests/t.rs\")",
+        ];
+        let wants: [&[&str]; 4] = [
+            &proofs,
+            &proofs,
+            &["src/p.rs::tests::check"],
+            &["draw src/p.rs::tests::check"],
+        ];
+        for ((reader, got), want) in cases.into_iter().zip(wants) {
+            assert_eq!(got, want, "{reader}");
+        }
     }
 
     #[test]
@@ -1678,11 +1912,12 @@ pub(crate) mod tests {
                 &["deeper"],
             ),
             (
-                "a design link's end by its path",
+                "a design link's end by its path or its test entity",
                 Ask::Intent("docs/d.md"),
                 &[
                     "docs/d.md -SPECIFIES/extracted-> tests/it.rs test",
                     "docs/d.md -SPECIFIES/extracted-> src/a_tests.rs test",
+                    "docs/d.md -SPECIFIES/extracted-> src/a.rs::tests::checks test",
                     "docs/d.md -SPECIFIES/extracted-> src/b.rs",
                 ],
                 &[],
@@ -1823,6 +2058,94 @@ pub(crate) mod tests {
                 .collect();
             got.sort_unstable();
             assert_eq!(&got, want, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_module_edge_into_a_test_file_is_test_code() {
+        // Each file: its path, its scope, and its module declarations as (test mark, target).
+        type File = (&'static str, Scope, &'static [(bool, &'static str)]);
+        // Each row: the case, the view's files, the file asked, and its module edges under
+        // exclude, then under include, each followed by its test flag.
+        type Case = (
+            &'static str,
+            &'static [File],
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+        );
+        let cases: &[Case] = &[
+            (
+                "a product declaration of a product file is product",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(false, "src/m.rs")]),
+                    ("src/m.rs", Scope::Product, &[]),
+                ],
+                "src/lib.rs",
+                &["src/lib.rs -CONTAINS-> src/m.rs product"],
+                &["src/lib.rs -CONTAINS-> src/m.rs product"],
+            ),
+            (
+                "a product declaration of a Test-scope file is test",
+                &[
+                    (
+                        "src/lib.rs",
+                        Scope::Product,
+                        &[(false, "src/examples/mod.rs")],
+                    ),
+                    ("src/examples/mod.rs", Scope::Test, &[]),
+                ],
+                "src/lib.rs",
+                &[],
+                &["src/lib.rs -CONTAINS-> src/examples/mod.rs test"],
+            ),
+            (
+                "a declaration in a test file is test",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(false, "tests/common.rs")]),
+                    ("tests/common.rs", Scope::Test, &[(false, "src/c.rs")]),
+                    ("src/c.rs", Scope::Product, &[]),
+                ],
+                "tests/common.rs",
+                &[],
+                &["tests/common.rs -CONTAINS-> src/c.rs test"],
+            ),
+            (
+                "a test-only declaration is test",
+                &[
+                    ("src/lib.rs", Scope::Product, &[(true, "src/t.rs")]),
+                    ("src/t.rs", Scope::Product, &[]),
+                ],
+                "src/lib.rs",
+                &[],
+                &["src/lib.rs -CONTAINS-> src/t.rs test"],
+            ),
+        ];
+        for (name, files, asked, exclude, include) in cases {
+            let facts = files
+                .iter()
+                .map(|(path, scope, decls)| {
+                    let mut f = code(path, "rust", *scope, vec![], vec![]);
+                    f.modules = decls
+                        .iter()
+                        .map(|(test, target)| decl("m", 0, *test, &[target]))
+                        .collect();
+                    f
+                })
+                .collect();
+            let view = FactsView::new(stamp(), facts);
+            let r = Resolver::new(&view);
+            for (tests, want) in [(false, exclude), (true, include)] {
+                let got: Vec<String> = r
+                    .links(&view.file(asked).unwrap(), tests)
+                    .iter()
+                    .map(|l| {
+                        let flag = if l.test { "test" } else { "product" };
+                        format!("{} -{}-> {} {flag}", l.from, l.rel, l.to)
+                    })
+                    .collect();
+                assert_eq!(&got, want, "{name}, tests {tests}");
+            }
         }
     }
 }

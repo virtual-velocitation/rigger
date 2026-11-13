@@ -548,10 +548,10 @@ pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapsho
 /// escape - the caller must no-op on `None`.
 fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> {
     let refuse = |root_display: &str| {
-        eprintln!(
+        crate::whole_line::say(format_args!(
             "rigger: reap refused: {} is not strictly under {root_display}",
             base_dir.display()
-        );
+        ));
         None
     };
 

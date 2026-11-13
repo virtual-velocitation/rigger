@@ -7,7 +7,7 @@
 //!
 //! The view filter decides test code: excluded by default, shown beside product code, or shown
 //! alone with the nodes its edges reach. A node only test code asserts carries `test=true`, and a
-//! node in a test file is test code whatever fact names it.
+//! node in a test file, or a test entity, is test code whatever fact names it.
 //! Product edges are the same under every filter.
 
 use rustc_hash::FxHashMap;
@@ -16,8 +16,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::leaf_of;
-use crate::contextgraph::{Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE};
-use crate::resolve::{Entity, ProofCall, Resolver};
+use crate::contextgraph::{
+    Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
+};
+use crate::resolve::{Entity, IntentLink, IntentNode, ProofCall, Resolver};
 
 /// The attribute naming the file a design or workflow node's facts came from.
 pub(crate) const DOC_ATTR: &str = "doc";
@@ -227,6 +229,10 @@ pub struct Resolved {
     /// The test code entities a filter that excludes tests leaves out, in id order; none when
     /// tests are shown.
     pub hidden_tests: Vec<Node>,
+    /// The test calls landing on a placeholder ([`Resolver::file_placeholder_calls`]) as
+    /// (leaf, caller) pairs, unordered, while a filter that excludes tests leaves them out; none
+    /// when tests are shown.
+    pub placeholder_calls: Vec<(String, String)>,
 }
 
 /// The attributes a code entity node carries.
@@ -270,6 +276,7 @@ impl<'v> CodeGraph<'v> {
         let tests = self.filter.tests != Tests::Exclude;
         let mut b = Builder::default();
         let mut hidden_tests = Vec::new();
+        let mut placeholder_calls = Vec::new();
         // A view holding its proof calls settled is read, not walked.
         let walk = !self.resolver.proofs_settled();
         let mut proofs = Vec::new();
@@ -281,6 +288,9 @@ impl<'v> CodeGraph<'v> {
                 self.code(&facts, tests, &mut b, Some(&mut hidden_tests));
                 if walk {
                     proofs.extend(self.resolver.file_proofs(&facts));
+                }
+                if !tests {
+                    placeholder_calls.extend(self.resolver.file_placeholder_calls(&facts));
                 }
             }
             self.intent(&facts, &mut b);
@@ -295,6 +305,7 @@ impl<'v> CodeGraph<'v> {
         Resolved {
             graph: b.into_graph(self.filter.tests),
             hidden_tests,
+            placeholder_calls,
         }
     }
 
@@ -380,17 +391,26 @@ impl<'v> CodeGraph<'v> {
     /// The design and workflow nodes and edges of `facts`, asserted to `b`.
     pub(crate) fn intent(&self, facts: &FileFacts, b: &mut impl Asserts) {
         let (nodes, links) = self.resolver.intent(facts);
-        for n in nodes {
-            b.node(
-                &n.id,
-                n.kind,
-                [("title", n.title), (DOC_ATTR, n.doc)],
-                n.test,
-            );
+        for n in &nodes {
+            self.intent_node(n, b);
         }
-        for l in links {
-            b.link(&l.from, l.rel, &l.to, l.tier, l.test);
+        for l in &links {
+            self.intent_link(l, b);
         }
+    }
+
+    /// The design or workflow node `n` asserted to `b`, test code by its id
+    /// ([`Resolver::is_test_id`]).
+    pub(crate) fn intent_node(&self, n: &IntentNode, b: &mut impl Asserts) {
+        let attrs = [("title", n.title.clone()), (DOC_ATTR, n.doc.clone())];
+        b.node(&n.id, n.kind, attrs, self.resolver.is_test_id(&n.id));
+    }
+
+    /// The design or workflow edge `l` asserted to `b` as extracted, test code by its ends
+    /// ([`Resolver::is_test_link`]).
+    pub(crate) fn intent_link(&self, l: &IntentLink, b: &mut impl Asserts) {
+        let test = self.resolver.is_test_link(&l.from, &l.to);
+        b.link(&l.from, l.rel, &l.to, TIER_EXTRACTED, test);
     }
 
     /// The test entities of every code file, which a filter that excludes tests hides, in id
@@ -508,6 +528,7 @@ mod tests {
                     "edge src/a.rs::tests::checks -CALLS/extracted-> src/a.rs::run",
                     "edge src/a.rs::run -CALLS/extracted-> src/a.rs::helper",
                     "edge docs/d.md -SPECIFIES/extracted-> tests/it.rs",
+                    "edge docs/d.md -SPECIFIES/extracted-> src/a.rs::tests::checks",
                 ],
                 &[],
             ),
@@ -518,6 +539,7 @@ mod tests {
                     "node src/a.rs::run",
                     "edge src/a.rs::tests::checks -CALLS/extracted-> src/a.rs::run",
                     "edge docs/d.md -SPECIFIES/extracted-> tests/it.rs",
+                    "edge docs/d.md -SPECIFIES/extracted-> src/a.rs::tests::checks",
                 ],
                 &["edge src/a.rs::run -", "node src/c.rs", "-> src/b.rs"],
             ),

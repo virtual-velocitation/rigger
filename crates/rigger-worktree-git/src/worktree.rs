@@ -2144,7 +2144,7 @@ pub fn sweep_terminal(
         live_branches,
         declared_units,
         events,
-        &mut |line| eprintln!("{line}"),
+        &mut |line| rigger_process::whole_line::say(format_args!("{line}")),
     )
 }
 

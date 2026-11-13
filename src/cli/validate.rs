@@ -809,7 +809,7 @@ fn read_run_units_or_why(
         };
         StoreLocation { dir }
     } else {
-        server_store_location(cwd)?
+        server_store_location(&Site::of(cwd))?
     };
     // A store-ACCESS miss (an unreachable configured server, a corrupt local log) degrades to no
     // live units - best-effort, distinct from the selection FAILURE surfaced above: the store WAS

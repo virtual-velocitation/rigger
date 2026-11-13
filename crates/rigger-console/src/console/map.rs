@@ -42,11 +42,7 @@ use crate::contextgraph::{
     Graph, Node, CODE_KIND_CONSTANT, CODE_KIND_FUNCTION, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
 };
-
-/// The community-detection resolution grain the map reads (mirrors
-/// [`crate::contextgraph::query::DEFAULT_COMMUNITY_RESOLUTION`] - the code lens's default grain,
-/// the ONLY grain spec 84 addresses).
-pub const RESOLUTION: &str = "1";
+use rigger_domain::community;
 
 /// The curated MODULE -> PURPOSE table (Design, DISTRICTS): a hand-maintained mapping from this
 /// project's own module vocabulary to the subsystem purpose a district's pill names, e.g.
@@ -163,8 +159,9 @@ pub struct District {
 
 /// The built map: every entity and district, positioned in world space, plus the coupling edges
 /// among entities the map may draw (a from/to/rel triple; [`frame`] filters this to the edges whose
-/// BOTH endpoints are actually drawn that frame). [`RESOLUTION`]-scoped; entities with no live
-/// community membership at that grain are excluded entirely (mirrors
+/// BOTH endpoints are actually drawn that frame). Scoped to the code lens's default grain, the ONLY
+/// grain spec 84 addresses; entities with no live community membership at that grain are excluded
+/// entirely (mirrors
 /// [`crate::contextgraph::query::whole_graph_lens_key`]'s own `Lens::Code` arm: a membership-less
 /// code entity gets no bucket there either).
 pub struct MapModel {
@@ -228,11 +225,11 @@ fn entity_label(node: &Node) -> String {
 /// sharing a purpose fold into ONE district.
 pub fn build(graph: &Graph) -> MapModel {
     let deg = degree_map(graph);
-    // Community membership at RESOLUTION comes from the SAME single fold authority the code
+    // Community membership at the default grain comes from the SAME single fold authority the code
     // lens itself uses (`Buckets`'s own doc: "ONE bucket-fold authority, never two") - never a
     // second, independently-maintained `IN_COMMUNITY` scan reconciled after the fact.
     let lens = Lens::Code {
-        resolution: RESOLUTION.to_string(),
+        resolution: community::grain(community::DEFAULT_RESOLUTION),
     };
     let comm = Buckets::new(graph, &lens);
 

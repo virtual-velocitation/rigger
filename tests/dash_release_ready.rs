@@ -76,7 +76,7 @@ fn served_state(events: Vec<Event>) -> Value {
     // The lazy `/api/graph` provider (spec 45, criterion 1): this test drives the state poll, which
     // never consults it, so an empty graph provider satisfies `serve`'s `Fn() -> Graph` bound.
     let graph_provider =
-        |_instance: Option<&str>, _tests: rigger::code_view::Tests| Graph::default();
+        |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| Graph::default();
     let calls_provider =
         |_: Option<&str>,
          _: &[String],

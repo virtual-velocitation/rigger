@@ -60,9 +60,8 @@ pub use crate::contextgraph::query::{
     node_rationale, path, Card, CardRef, Cluster, ClusterEdge, ClusterOverview, ConceptRef,
     Explanation, Lens, MemoryRail, Neighborhood, NeighborhoodEdge, NeighborhoodNode,
     ProvenanceEdge, RationaleLeaf, CLUSTER_RENDER_BUDGET, CLUSTER_ROOT, CODE_LENS_UNDERIVED,
-    CONCEPTS_LENS_UNDERIVED, DEFAULT_COMMUNITY_RESOLUTION, DEFAULT_CONCEPT_RESOLUTION,
-    DEFAULT_GRAPH_DEPTH, GOD_NODE_DEGREE_THRESHOLD, MAX_GRAPH_DEPTH, REPROJECT_NO_COMMUNITY,
-    REPROJECT_NO_CONCEPT, WHOLE_GRAPH_FILES_UNRESOLVED,
+    CONCEPTS_LENS_UNDERIVED, DEFAULT_GRAPH_DEPTH, GOD_NODE_DEGREE_THRESHOLD, MAX_GRAPH_DEPTH,
+    REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT, WHOLE_GRAPH_FILES_UNRESOLVED,
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
@@ -1232,11 +1231,17 @@ pub struct Reprojection {
     /// 4's purity is TOTAL - no own-kind fallback - so whenever this fires `clusters` is genuinely
     /// empty, the caption the ONLY explanation for the blank cell there, not merely additive), or
     /// [`REPROJECT_FILES_UNRESOLVED`] under [`Lens::Files`] (spec 63 c3, when every member is
-    /// unresolvable and `clusters` is genuinely empty). Absent (`None`, omitted from the JSON) whenever
-    /// any member DID fold into a bucket, and for an UNKNOWN subject (an empty member set) under every
-    /// lens - a different, already-documented degenerate-but-defined cell.
+    /// unresolvable and `clusters` is genuinely empty). Under a derived lens whose grain text names no
+    /// grain, [`rigger_domain::community::NotAGrain`]'s sentence, with no cluster, whatever the
+    /// subject. Otherwise absent (`None`, omitted from the JSON) whenever any member DID fold into a
+    /// bucket, and for an UNKNOWN subject (an empty member set) under every lens - a different,
+    /// already-documented degenerate-but-defined cell.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empty_state: Option<String>,
+    /// The grain a derived lens displays ([`Lens::grain`]), as the overview states it; absent under
+    /// [`Lens::Files`] and when the lens's text names no grain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grain: Option<String>,
 }
 
 /// One MARKED-UNRESOLVED member of a FILES re-projection (spec 55 c1): a bare placeholder
@@ -1572,6 +1577,7 @@ pub fn reproject(graph: &Graph, subject: &str, lens: &Lens) -> Reprojection {
     // a re-grain over a huge subject (e.g. a concept whose members span hundreds of files) renders at
     // any size. `total` (the member-set size) is untouched; `truncated` carries the full bucket count.
     re.truncated = cap_clusters(&mut re.clusters, &mut re.edges);
+    re.grain = lens.grain();
     re
 }
 
@@ -1638,8 +1644,11 @@ fn reprojection_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
 fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node]) -> Reprojection {
     let buckets = Buckets::new(graph, lens);
     let bucket_label = bucket_label_index(graph, &buckets);
+    // A grain text that names no grain folds no member; the empty state says why.
+    let not_a_grain = lens.not_a_grain();
+    let folded: &[&Node] = if not_a_grain.is_some() { &[] } else { members };
     let (mut clusters, edges) = fold_buckets(
-        members.iter().copied(),
+        folded.iter().copied(),
         &graph.edges,
         |n| reprojection_lens_key(&buckets, n),
         // Every node of the subject's member set is a member of the bucket it folds to.
@@ -1655,17 +1664,20 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
     // under `Lens::Code`) contributes NO cluster at all, so its raw `buckets.membership` entry must not
     // count here either, or a sole purity-excluded realizer's genuine membership would wrongly read as
     // "full" while `clusters` stays empty - a blank, unexplained cell (round 2's own regression).
-    let has_derived_bucket = members.iter().any(|m| {
+    let has_derived_bucket = folded.iter().any(|m| {
         reprojection_lens_key(&buckets, m).is_some()
             && buckets.membership.contains_key(m.id.as_str())
     });
-    let empty_state = (!has_derived_bucket)
-        .then(|| buckets.derived_texts().map(|t| t.no_membership.to_string()))
-        .flatten();
+    let empty_state = match not_a_grain {
+        Some(bad) => Some(bad.to_string()),
+        None => (!has_derived_bucket)
+            .then(|| buckets.derived_texts().map(|t| t.no_membership.to_string()))
+            .flatten(),
+    };
     // Spec 55 c2, the SHARED member: a member realizing MORE THAN ONE concept folds under its PRIMARY
     // bucket above (appears once) and is flagged here. `members` is ascending-id ordered (member_set),
     // so the flagged list is sorted by construction; only the concepts lens ever populates it.
-    let shared: Vec<String> = members
+    let shared: Vec<String> = folded
         .iter()
         .filter(|m| buckets.is_shared(m.id.as_str()))
         .map(|m| m.id.clone())
@@ -1677,9 +1689,10 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
         total: members.len(),
         unresolved: Vec::new(),
         shared,
-        // The wide-cell cap runs once, uniformly, in `reproject`.
+        // The wide-cell cap and the grain are set once, uniformly, in `reproject`.
         truncated: None,
         empty_state,
+        grain: None,
     }
 }
 
@@ -1797,10 +1810,11 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
         total: members.len(),
         unresolved,
         // A files re-grain never shares, so the spec 55 c2 shared flag never applies here; the
-        // wide-cell cap runs once, uniformly, in `reproject`.
+        // wide-cell cap and the grain are set once, uniformly, in `reproject`.
         shared: Vec::new(),
         truncated: None,
         empty_state,
+        grain: None,
     }
 }
 
@@ -1832,6 +1846,72 @@ pub fn rationale_batch(graph: &Graph, nodes: &[String]) -> Vec<NodeRationale> {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct CardResponse {
     pub card: Option<Card>,
+}
+
+/// A body the explorer draws graph nodes from, by the ids of the nodes it draws.
+trait DrawsNodes: Serialize {
+    fn drawn(&self) -> Vec<&str>;
+}
+
+/// A neighborhood, a drill or a call walk draws its `nodes` and its `referenced_not_called` sidecar.
+impl DrawsNodes for Neighborhood {
+    fn drawn(&self) -> Vec<&str> {
+        (self.nodes.iter().chain(&self.referenced_not_called))
+            .map(|n| n.id.as_str())
+            .collect()
+    }
+}
+
+/// A re-projection draws its unresolved and shared members as rows; its buckets are groups.
+impl DrawsNodes for Reprojection {
+    fn drawn(&self) -> Vec<&str> {
+        (self.unresolved.iter().map(|u| u.id.as_str()))
+            .chain(self.shared.iter().map(String::as_str))
+            .collect()
+    }
+}
+
+/// A card draws its subject, the file it names and its member chips.
+impl DrawsNodes for CardResponse {
+    fn drawn(&self) -> Vec<&str> {
+        let Some(card) = &self.card else {
+            return Vec::new();
+        };
+        let members = card.top_entities.iter().chain(&card.top_evidence);
+        std::iter::once(card.id.as_str())
+            .chain(card.file.as_deref())
+            .chain(members.map(|m| m.id.as_str()))
+            .collect()
+    }
+}
+
+/// A drawn view's body: the view, and the ids of its drawn nodes ([`DrawsNodes::drawn`]) that are
+/// test code, so the page marks them apart from product code. Omitted when none is - always so
+/// with tests hidden - leaving the body byte-identical.
+#[derive(Serialize)]
+struct MarkedView<'v, V> {
+    #[serde(flatten)]
+    view: &'v V,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    test_nodes: Vec<&'v str>,
+}
+
+/// Serialize `view` as a [`MarkedView`], naming its drawn nodes that are test code by the graph
+/// nodes its answer read (`read`): the code graph marks a test entity's node, and a test file's,
+/// with a `test` attribute.
+fn view_json<'r>(
+    view: &impl DrawsNodes,
+    read: impl IntoIterator<Item = &'r Node>,
+) -> serde_json::Result<String> {
+    let tests: BTreeSet<&str> = (read.into_iter())
+        .filter(|n| n.attrs.contains_key("test"))
+        .map(|n| n.id.as_str())
+        .collect();
+    let test_nodes: BTreeSet<&str> = (view.drawn().into_iter())
+        .filter(|id| tests.contains(id))
+        .collect();
+    let test_nodes = test_nodes.into_iter().collect();
+    serde_json::to_string(&MarkedView { view, test_nodes })
 }
 
 /// The `/api/graph` response body: the seeded [`neighborhood`] as JSON. When BOTH `from` and `to`
@@ -1870,7 +1950,7 @@ pub fn graph_json(
     // `effective_seeds` is exactly `[requested_seed]` in that case, so this is byte-identical to
     // the old single-node call.
     n.memory = Some(memory_rail_of(graph, effective_seeds));
-    serde_json::to_string(&n)
+    view_json(&n, &graph.nodes)
 }
 
 // ---------------------------------------------------------------------------
@@ -2046,6 +2126,7 @@ fn calls_view(
         path: Vec::new(),
         explain: None,
         truncated: None,
+        empty_state: None,
         dir: Some(dir.to_string()),
         referenced_not_called,
         // A directed-call view is not the plain seeded neighborhood; no memory rail (spec 63 c5).
@@ -2103,10 +2184,15 @@ where
         &seed,
         depth,
     );
+    // The walks' own nodes and sidecar files are the graph nodes this answer read.
+    let read = [&down, &up].into_iter().flatten().flat_map(|r| {
+        (r.calls.nodes.iter().map(|c| &c.node)).chain(&r.calls.referenced_not_called)
+    });
+    let body = view_json(&view, read);
     let labels = [down, up].into_iter().flatten().filter_map(|r| r.label);
     // Serializing these plain view DTOs cannot realistically fail; degrade a serialization error to
     // a 500 with the same shape the neighborhood route uses, so the panel never sees a torn body.
-    let response = match serde_json::to_string(&view) {
+    let response = match body {
         Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
         Err(e) => Response::text(500, &format!("dash: calls projection failed: {e}")),
     };
@@ -3404,7 +3490,7 @@ fn route_hiding(
                     card: card(graph, &subject),
                 };
                 let hits = withheld_reached(graph, withheld, &[subject], 1);
-                let response = match serde_json::to_string(&body) {
+                let response = match view_json(&body, &graph.nodes) {
                     Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
                     Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
                 };
@@ -3413,12 +3499,7 @@ fn route_hiding(
             // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
             // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
             // untouched. The seeded neighborhood below is lens-independent and ignores it.
-            let lens = Lens::from_query(
-                query_param(target, "lens").map(percent_decode).as_deref(),
-                query_param(target, "resolution")
-                    .map(percent_decode)
-                    .as_deref(),
-            );
+            let lens = request_lens(target);
             let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
                 let key = percent_decode(raw_cluster);
                 let hits = count_withheld(withheld, || {
@@ -3427,7 +3508,7 @@ fn route_hiding(
                         .collect()
                 });
                 (
-                    serde_json::to_string(&cluster_detail(graph, &key, &lens)),
+                    view_json(&cluster_detail(graph, &key, &lens), &graph.nodes),
                     Some(hits),
                 )
             } else {
@@ -3451,7 +3532,7 @@ fn route_hiding(
                             .collect()
                     });
                     (
-                        serde_json::to_string(&reproject(graph, &seed, &lens)),
+                        view_json(&reproject(graph, &seed, &lens), &graph.nodes),
                         Some(hits),
                     )
                 } else {
@@ -3488,6 +3569,25 @@ fn tests_param(target: &str) -> Result<Tests, String> {
     query_param(target, "tests")
         .map(percent_decode)
         .map_or(Ok(Tests::Exclude), |spelled| spelled.parse())
+}
+
+/// The overview/drill bucket lens a request names (spec 53 c4), from `lens=` and `resolution=`:
+/// absent or unknown `lens` reads [`Lens::Files`], byte-identical.
+fn request_lens(target: &str) -> Lens {
+    Lens::from_query(
+        query_param(target, "lens").map(percent_decode).as_deref(),
+        query_param(target, "resolution")
+            .map(percent_decode)
+            .as_deref(),
+    )
+}
+
+/// The grain a request's graph is read at ([`request_lens`]'s): the stored grain unless a derived
+/// lens names another, which the read computes beside it.
+fn request_resolution(target: &str) -> f64 {
+    (request_lens(target).resolution())
+        .and_then(Result::ok)
+        .unwrap_or(rigger_domain::community::DEFAULT_RESOLUTION)
 }
 
 /// Percent-decode a URL query value (`%XX` -> the byte; every other byte verbatim). The client
@@ -3602,7 +3702,7 @@ pub fn serve_on<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> R,
+    G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
@@ -3661,7 +3761,7 @@ fn handle_conn<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
-    G: Fn(Option<&str>, Tests) -> R,
+    G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str, Tests) -> C,
@@ -3800,7 +3900,12 @@ where
                             // provider yields (spec 45, criterion 1). Both open the SELECTED
                             // instance's store (spec 50, criterion 3).
                             let read: GraphRead = if path == "/api/graph" {
-                                graph_provider(instance, tests.unwrap_or_default()).into()
+                                graph_provider(
+                                    instance,
+                                    tests.unwrap_or_default(),
+                                    request_resolution(&target),
+                                )
+                                .into()
                             } else {
                                 polled_graph
                             };
@@ -4093,27 +4198,8 @@ mod tests {
     use crate::test_support::ev;
     use crate::test_support::positioned;
     use crate::test_support::star_graph;
-
-    /// The writes a stream took, each as the bytes it carried.
-    #[derive(Default)]
-    struct Writes(Vec<Vec<u8>>);
-
-    impl Write for Writes {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0.push(buf.to_vec());
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// The writes `say` hands its stream, each as the bytes it carried.
-    fn writes_of(say: impl FnOnce(&mut dyn Write) -> io::Result<()>) -> Vec<Vec<u8>> {
-        let mut out = Writes::default();
-        say(&mut out).unwrap();
-        out.0
-    }
+    use rigger_domain::community::{grain, DEFAULT_RESOLUTION};
+    use rigger_process::whole_line::writes_of;
 
     // GIVEN a line the dash, or the run that started it, says on the stderr they share, WHEN it
     // is said, THEN the line and its newline reach the stream in one write, which a pipe keeps
@@ -4739,7 +4825,7 @@ mod tests {
                 HashMap::new(),
             ))
         };
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let instances_provider = Vec::new;
         let calls_provider =
             |_: Option<&str>,
@@ -5158,12 +5244,28 @@ mod tests {
         );
     }
 
-    /// One element of the explorer section's markup: its id, its classes and the indices of its
-    /// ancestors within the section, outermost first.
+    /// One element of the explorer section's markup: its tag, id and classes, whether it carries
+    /// the `hidden` attribute, and the indices of its ancestors within the section, outermost
+    /// first.
     struct Element {
+        tag: String,
         id: String,
         classes: Vec<String>,
+        hidden: bool,
         ancestors: Vec<usize>,
+    }
+
+    impl Element {
+        /// An element outside the markup that carries only `class`, to read the rules naming it.
+        fn of_class(class: &str) -> Self {
+            Element {
+                tag: String::new(),
+                id: String::new(),
+                classes: vec![class.to_string()],
+                hidden: false,
+                ancestors: Vec::new(),
+            }
+        }
     }
 
     /// The explorer section's (`#kg`) elements in document order, read by a tag scan of the served
@@ -5200,10 +5302,18 @@ mod tests {
                 continue;
             }
             elements.push(Element {
+                tag: tag[1..]
+                    .split(|c: char| c.is_whitespace() || c == '>')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
                 id: attr(tag, "id").unwrap_or_default(),
                 classes: attr(tag, "class")
                     .map(|c| c.split_whitespace().map(str::to_string).collect())
                     .unwrap_or_default(),
+                hidden: tag
+                    .split_whitespace()
+                    .any(|word| word.trim_end_matches('>') == "hidden"),
                 ancestors: open.clone(),
             });
             open.push(elements.len() - 1);
@@ -5219,23 +5329,611 @@ mod tests {
             .filter(|_| !element.id.is_empty())
             .chain(element.classes.iter().map(|c| format!(".{c}")))
             .collect();
+        rules_selecting(page, |selector| names.iter().any(|name| selector == name))
+    }
+
+    /// The top-level CSS rules whose selector list holds a selector `picks` accepts (each
+    /// selector trimmed), from the selector list to its closing `}`. A rule inside an at-rule
+    /// applies only under that rule's condition, so it is left to [`ExplorerLayout`], which
+    /// reads conditions.
+    fn rules_selecting(page: &str, picks: impl Fn(&str) -> bool) -> Vec<&str> {
+        style_rules(page)
+            .into_iter()
+            .filter(|rule| rule.at.is_none() && rule.selectors.iter().any(|s| picks(s)))
+            .map(|rule| rule.text)
+            .collect()
+    }
+
+    /// One style rule of the served page's stylesheet: the prelude of the at-rule it sits in
+    /// (`None` at the top level), its selectors, its declarations in source order (comments
+    /// dropped) and its text from the selector list to its closing `}`.
+    struct StyleRule<'a> {
+        at: Option<&'a str>,
+        selectors: Vec<&'a str>,
+        declarations: Vec<(String, String)>,
+        text: &'a str,
+    }
+
+    /// The served page's style rules in source order, read from its `<style>` block. A rule
+    /// inside an at-rule carries that at-rule's prelude; a block nested any deeper panics, since
+    /// the pins reading the rules model one level.
+    fn style_rules(page: &str) -> Vec<StyleRule<'_>> {
+        let start = page.find("<style>").expect("the page has a stylesheet") + "<style>".len();
+        let end = start
+            + page[start..]
+                .find("</style>")
+                .expect("the stylesheet closes");
         let mut rules = Vec::new();
-        let mut at = 0;
-        for line in page.split_inclusive('\n') {
-            let trimmed = line.trim_start();
-            let named = trimmed.split_once('{').is_some_and(|(selectors, _)| {
-                selectors
-                    .split(',')
-                    .any(|selector| names.iter().any(|name| selector.trim() == name))
-            });
-            if named {
-                let open = at + line.len() - trimmed.len();
-                let close = page[open..].find('}').map_or(page.len(), |i| open + i + 1);
-                rules.push(&page[open..close]);
+        let mut at = None;
+        let mut i = start;
+        loop {
+            let rest = &page[i..end];
+            let next = rest.trim_start();
+            i += rest.len() - next.len();
+            if next.is_empty() {
+                break;
             }
-            at += line.len();
+            if let Some(comment) = next.strip_prefix("/*") {
+                i += 2 + comment.find("*/").expect("the comment closes") + 2;
+            } else if next.starts_with('}') {
+                assert!(
+                    at.take().is_some(),
+                    "a `}}` closes no block: {:?}",
+                    &next[..40]
+                );
+                i += 1;
+            } else {
+                let open = i + next.find('{').expect("a rule opens its block");
+                let prelude = page[i..open].trim();
+                assert!(!prelude.contains("/*"), "a comment inside {prelude:?}");
+                if prelude.starts_with('@') {
+                    assert!(
+                        at.replace(prelude).is_none(),
+                        "{prelude:?} nests in an at-rule"
+                    );
+                    i = open + 1;
+                    continue;
+                }
+                let close = open + page[open..].find('}').expect("the rule closes");
+                let mut block = page[open + 1..close].to_string();
+                while let Some(from) = block.find("/*") {
+                    let to = from + block[from..].find("*/").expect("the comment closes") + 2;
+                    block.replace_range(from..to, "");
+                }
+                assert!(
+                    !block.contains('{'),
+                    "the rule {prelude:?} holds a nested block"
+                );
+                rules.push(StyleRule {
+                    at,
+                    selectors: split_top(prelude, ','),
+                    declarations: block
+                        .split(';')
+                        .filter_map(|declaration| declaration.split_once(':'))
+                        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+                        .collect(),
+                    text: &page[i..=close],
+                });
+                i = close + 1;
+            }
         }
+        assert!(at.is_none(), "an at-rule never closes");
         rules
+    }
+
+    /// `text` split at each `separator` outside parentheses and brackets, each piece trimmed and
+    /// empty pieces dropped.
+    fn split_top(text: &str, separator: char) -> Vec<&str> {
+        let mut pieces = Vec::new();
+        let (mut depth, mut from) = (0usize, 0);
+        for (i, c) in text.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                c if c == separator && depth == 0 => {
+                    pieces.push(text[from..i].trim());
+                    from = i + c.len_utf8();
+                }
+                _ => {}
+            }
+        }
+        pieces.push(text[from..].trim());
+        pieces.retain(|piece| !piece.is_empty());
+        pieces
+    }
+
+    /// The compound selectors of one complex selector, left to right, each with the combinator
+    /// before it (`' '` for a descendant, and for the first).
+    fn compounds(selector: &str) -> Vec<(char, &str)> {
+        let mut parts = Vec::new();
+        let (mut depth, mut from, mut combinator) = (0usize, 0, ' ');
+        for (i, c) in selector.char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ' ' | '>' | '~' | '+' if depth == 0 => {
+                    if from < i {
+                        parts.push((combinator, &selector[from..i]));
+                        combinator = ' ';
+                    }
+                    if c != ' ' {
+                        combinator = c;
+                    }
+                    from = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if from < selector.len() {
+            parts.push((combinator, &selector[from..]));
+        }
+        parts
+    }
+
+    /// The simple selectors of one compound selector, each with its leading sigil (`#`, `.`,
+    /// `[`, `:` or `::`), `*`, or a type name.
+    fn simples(compound: &str) -> Vec<&str> {
+        let name_end = |from: usize| {
+            compound[from..]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .map_or(compound.len(), |k| from + k)
+        };
+        let mut parts = Vec::new();
+        let mut i = 0;
+        while i < compound.len() {
+            let rest = &compound[i..];
+            let end = if rest.starts_with('[') {
+                i + rest.find(']').expect("an attribute selector closes") + 1
+            } else if rest.starts_with("::") {
+                name_end(i + 2)
+            } else if rest.starts_with(['#', '.', ':']) {
+                let name = name_end(i + 1);
+                if compound[name..].starts_with('(') {
+                    let mut depth = 0usize;
+                    let close = compound[name..]
+                        .char_indices()
+                        .find(|&(_, c)| {
+                            match c {
+                                '(' => depth += 1,
+                                ')' => depth -= 1,
+                                _ => {}
+                            }
+                            depth == 0
+                        })
+                        .expect("a pseudo-class's arguments close")
+                        .0;
+                    name + close + 1
+                } else {
+                    name
+                }
+            } else if rest.starts_with('*') {
+                i + 1
+            } else {
+                name_end(i)
+            };
+            assert!(
+                end > i,
+                "{compound:?} holds a part the layout model cannot split: {rest:?}"
+            );
+            parts.push(&compound[i..end]);
+            i = end;
+        }
+        parts
+    }
+
+    /// A selector's specificity: its id, class-like and type counts.
+    type Weight = (usize, usize, usize);
+
+    /// The specificity of a complex selector, a `:not()` or `:has()` counting as its argument.
+    fn specificity(selector: &str) -> Weight {
+        compounds(selector)
+            .iter()
+            .flat_map(|(_, compound)| simples(compound))
+            .map(|simple| match simple {
+                "*" => (0, 0, 0),
+                s if s.starts_with(":not(") || s.starts_with(":has(") => specificity(
+                    s[5..s.len() - 1]
+                        .trim()
+                        .trim_start_matches(['~', '>', '+'])
+                        .trim(),
+                ),
+                s if s.starts_with("::") => (0, 0, 1),
+                s if s.starts_with('#') => (1, 0, 0),
+                s if s.starts_with(['.', '[', ':']) => (0, 1, 0),
+                _ => (0, 0, 1),
+            })
+            .fold((0, 0, 0), |(a, b, c), (x, y, z)| (a + x, b + y, c + z))
+    }
+
+    /// The served stylesheet's rules and the explorer's markup, with, for each element, the rules
+    /// holding a selector whose last compound names nothing the element lacks (an id, a class, a
+    /// type): the only rules that can select it in any state.
+    struct ExplorerStyle<'a> {
+        rules: Vec<StyleRule<'a>>,
+        markup: Vec<Element>,
+        candidates: Vec<Vec<usize>>,
+    }
+
+    impl<'a> ExplorerStyle<'a> {
+        fn read(page: &'a str) -> Self {
+            let rules = style_rules(page);
+            let markup = explorer_markup(page);
+            let candidates = markup
+                .iter()
+                .map(|element| {
+                    let named = |simple: &str| match simple {
+                        s if s.starts_with('#') => element.id == s[1..],
+                        s if s.starts_with('.') => element.classes.iter().any(|c| *c == s[1..]),
+                        s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => element.tag == s,
+                        _ => true,
+                    };
+                    (0..rules.len())
+                        .filter(|&r| {
+                            rules[r].selectors.iter().any(|selector| {
+                                compounds(selector)
+                                    .last()
+                                    .is_some_and(|(_, last)| simples(last).into_iter().all(&named))
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
+            ExplorerStyle {
+                rules,
+                markup,
+                candidates,
+            }
+        }
+
+        /// The explorer laid out with the rail and the card shown or hidden as given, in a body
+        /// `body` px wide.
+        fn layout(&self, rail: bool, card: bool, body: f64) -> ExplorerLayout<'_, 'a> {
+            let hidden = self
+                .markup
+                .iter()
+                .map(|e| match e.id.as_str() {
+                    "kgrail" => !rail,
+                    "kgcard" => !card,
+                    _ => e.hidden,
+                })
+                .collect();
+            ExplorerLayout {
+                style: self,
+                hidden,
+                body,
+            }
+        }
+    }
+
+    /// The explorer laid out by the served stylesheet in one state - which panes show, and how
+    /// wide the body (`.kgbody`, the panes' and the panel's parent) is - reading only what places
+    /// the panes and the panel: the cascade of the rules selecting them (selectors, specificity,
+    /// source order, container queries) and the lengths those rules declare. Anything it would
+    /// have to read and cannot - a selector part, an at-rule, a length form - panics, so a pin
+    /// built on it fails loudly instead of reading past a rule it does not understand.
+    struct ExplorerLayout<'s, 'a> {
+        style: &'s ExplorerStyle<'a>,
+        hidden: Vec<bool>,
+        body: f64,
+    }
+
+    impl ExplorerLayout<'_, '_> {
+        fn index(&self, id: &str) -> usize {
+            explorer_index(&self.style.markup, id)
+        }
+
+        /// The elements after `at` sharing its parent, or before it when `before`.
+        fn siblings(&self, at: usize, before: bool) -> Vec<usize> {
+            let parent = &self.style.markup[at].ancestors;
+            let range = if before {
+                0..at
+            } else {
+                at + 1..self.style.markup.len()
+            };
+            range
+                .filter(|&j| self.style.markup[j].ancestors == *parent)
+                .collect()
+        }
+
+        fn selects(&self, selector: &str, at: usize) -> bool {
+            let parts = compounds(selector);
+            self.selects_from(&parts, parts.len() - 1, at)
+        }
+
+        fn selects_from(&self, parts: &[(char, &str)], k: usize, at: usize) -> bool {
+            if !self.compound_selects(parts[k].1, at) {
+                return false;
+            }
+            if k == 0 {
+                return true;
+            }
+            let ancestors = &self.style.markup[at].ancestors;
+            let candidates: Vec<usize> = match parts[k].0 {
+                ' ' => ancestors.clone(),
+                '>' => ancestors.last().copied().into_iter().collect(),
+                '~' => self.siblings(at, true),
+                '+' => self
+                    .siblings(at, true)
+                    .last()
+                    .copied()
+                    .into_iter()
+                    .collect(),
+                other => panic!("the layout model reads no {other:?} combinator"),
+            };
+            candidates
+                .into_iter()
+                .any(|c| self.selects_from(parts, k - 1, c))
+        }
+
+        fn compound_selects(&self, compound: &str, at: usize) -> bool {
+            let element = &self.style.markup[at];
+            let mut unread = None;
+            for simple in simples(compound) {
+                let read = match simple {
+                    "*" => Some(true),
+                    "[hidden]" => Some(self.hidden[at]),
+                    ":root" | ":hover" | ":focus" | ":active" | ":visited" | ":focus-visible"
+                    | ":focus-within" => Some(false),
+                    s if s.starts_with("::") => Some(false),
+                    s if s.starts_with('#') => Some(element.id == s[1..]),
+                    s if s.starts_with('.') => Some(element.classes.iter().any(|c| *c == s[1..])),
+                    s if s.starts_with(":not(") => {
+                        Some(!self.compound_selects(&s[5..s.len() - 1], at))
+                    }
+                    s if s.starts_with(":has(") => {
+                        s[5..s.len() - 1].trim().strip_prefix('~').map(|later| {
+                            self.siblings(at, false)
+                                .into_iter()
+                                .any(|j| self.compound_selects(later.trim(), j))
+                        })
+                    }
+                    s if s.starts_with(|c: char| c.is_ascii_alphabetic()) => Some(element.tag == s),
+                    _ => None,
+                };
+                match read {
+                    Some(false) => return false,
+                    Some(true) => {}
+                    None => unread = Some(simple),
+                }
+            }
+            if let Some(simple) = unread {
+                panic!(
+                    "the layout model cannot read {simple:?} in {compound:?}, which may select \
+                     #{} {:?}",
+                    element.id, element.classes
+                );
+            }
+            true
+        }
+
+        /// Whether `rule`'s at-rule holds for element `at`: always at the top level; under
+        /// `@container`, when the element's nearest query container of that name is the body and
+        /// the body's width meets every condition.
+        fn condition_holds(&self, rule: &StyleRule<'_>, at: usize) -> bool {
+            let Some(prelude) = rule.at else {
+                return true;
+            };
+            let element = &self.style.markup[at];
+            let query = prelude
+                .strip_prefix("@container")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the layout model reads no {prelude:?} rule, and one selects #{} {:?}",
+                        element.id, element.classes
+                    )
+                })
+                .trim();
+            let (name, condition) = match query.split_once(' ') {
+                Some((name, condition)) if !name.starts_with('(') => (Some(name), condition),
+                _ => (None, query),
+            };
+            let container = element.ancestors.iter().rev().copied().find(|&a| {
+                assert!(
+                    self.value(a, "container-type").is_none()
+                        && self.value(a, "container-name").is_none(),
+                    "the layout model reads the container shorthand only"
+                );
+                self.value(a, "container").is_some_and(|declared| {
+                    let (names, kind) = declared.split_once('/').unwrap_or(("", declared.as_str()));
+                    kind.trim() != "normal"
+                        && name.is_none_or(|n| names.split_whitespace().any(|m| m == n))
+                })
+            });
+            let Some(container) = container else {
+                return false;
+            };
+            assert!(
+                self.style.markup[container]
+                    .classes
+                    .iter()
+                    .any(|c| c == "kgbody"),
+                "the layout model knows only the explorer body's width"
+            );
+            assert!(
+                !condition.contains(" or ") && !condition.starts_with("not"),
+                "the layout model reads `and`-joined width conditions only: {condition:?}"
+            );
+            condition.split(" and ").all(|feature| {
+                let feature = feature
+                    .trim()
+                    .strip_prefix('(')
+                    .and_then(|f| f.strip_suffix(')'))
+                    .unwrap_or_else(|| panic!("a parenthesised feature: {feature:?}"));
+                let px = |v: &str| self.length(container, v);
+                if let Some(v) = feature.strip_prefix("min-width:") {
+                    return self.body >= px(v);
+                }
+                if let Some(v) = feature.strip_prefix("max-width:") {
+                    return self.body <= px(v);
+                }
+                let range = feature
+                    .strip_prefix("width")
+                    .unwrap_or_else(|| panic!("a width feature: {feature:?}"))
+                    .trim();
+                if let Some(v) = range.strip_prefix(">=") {
+                    self.body >= px(v)
+                } else if let Some(v) = range.strip_prefix("<=") {
+                    self.body <= px(v)
+                } else if let Some(v) = range.strip_prefix('>') {
+                    self.body > px(v)
+                } else if let Some(v) = range.strip_prefix('<') {
+                    self.body < px(v)
+                } else {
+                    panic!("the layout model cannot read the width feature {feature:?}")
+                }
+            })
+        }
+
+        /// The value the cascade gives `property` on element `at`: the latest declaration of the
+        /// most specific, then latest, rule selecting it whose at-rule holds. A `margin`
+        /// declaration counts toward each side.
+        fn value(&self, at: usize, property: &str) -> Option<String> {
+            let mut best: Option<(Weight, usize, usize, String)> = None;
+            for &r in &self.style.candidates[at] {
+                let rule = &self.style.rules[r];
+                let Some(weight) = rule
+                    .selectors
+                    .iter()
+                    .filter(|selector| self.selects(selector, at))
+                    .map(|selector| specificity(selector))
+                    .max()
+                else {
+                    continue;
+                };
+                if !self.condition_holds(rule, at) {
+                    continue;
+                }
+                for (d, (name, value)) in rule.declarations.iter().enumerate() {
+                    let side = property
+                        .strip_prefix("margin-")
+                        .filter(|_| name == "margin")
+                        .map(|side| {
+                            let values = split_top(value, ' ');
+                            let pick = match (values.len(), side) {
+                                (1, _) => 0,
+                                (2 | 3, "left" | "right") => 1,
+                                (4, "right") => 1,
+                                (4, "left") => 3,
+                                (_, "top") => 0,
+                                (2, "bottom") => 0,
+                                _ => 2,
+                            };
+                            values[pick].to_string()
+                        });
+                    let Some(value) = (name == property).then(|| value.to_string()).or(side) else {
+                        continue;
+                    };
+                    assert!(!value.contains("!important"), "an !important {name}");
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| (b.0, b.1, b.2) <= (weight, r, d))
+                    {
+                        best = Some((weight, r, d, value));
+                    }
+                }
+            }
+            best.map(|(.., value)| value)
+        }
+
+        /// The px a length declared on element `at` resolves to, a percentage of the body's
+        /// width (the containing block of every box the model places).
+        fn length(&self, at: usize, value: &str) -> f64 {
+            let value = value.trim();
+            let call = |name: &str| {
+                value
+                    .strip_prefix(name)
+                    .and_then(|v| v.strip_prefix('('))
+                    .and_then(|v| v.strip_suffix(')'))
+            };
+            if value == "0" {
+                0.0
+            } else if let Some(px) = value.strip_suffix("px").and_then(|n| n.parse::<f64>().ok()) {
+                px
+            } else if let Some(pc) = value.strip_suffix('%').and_then(|n| n.parse::<f64>().ok()) {
+                pc * self.body / 100.0
+            } else if let Some(args) = call("var") {
+                let (name, fallback) = args
+                    .split_once(',')
+                    .map_or((args, None), |(n, f)| (n.trim(), Some(f.trim())));
+                let found = std::iter::once(at)
+                    .chain(self.style.markup[at].ancestors.iter().rev().copied())
+                    .find_map(|a| self.value(a, name));
+                let declared = found.as_deref().or(fallback);
+                self.length(
+                    at,
+                    declared.unwrap_or_else(|| panic!("{name} is declared on no box it reads")),
+                )
+            } else if let Some(args) = call("min") {
+                split_top(args, ',')
+                    .into_iter()
+                    .map(|a| self.length(at, a))
+                    .fold(f64::INFINITY, f64::min)
+            } else if let Some(args) = call("max") {
+                split_top(args, ',')
+                    .into_iter()
+                    .map(|a| self.length(at, a))
+                    .fold(f64::NEG_INFINITY, f64::max)
+            } else if let Some(sum) = call("calc") {
+                let terms = split_top(sum, ' ');
+                terms[1..]
+                    .chunks(2)
+                    .fold(self.length(at, terms[0]), |total, pair| match pair {
+                        ["+", term] => total + self.length(at, term),
+                        ["-", term] => total - self.length(at, term),
+                        _ => panic!("the layout model reads sums only: {sum:?}"),
+                    })
+            } else {
+                panic!("the layout model cannot read the length {value:?}")
+            }
+        }
+
+        /// Where the pane `id` sits: `None` hidden (no box), `Some(Some(column))` docked beside
+        /// the panel - absolutely positioned, its column its width plus its inset on `side` - or
+        /// `Some(None)` stacked in the body's column at the body's full width.
+        fn pane(&self, id: &str, side: &str) -> Option<Option<f64>> {
+            let at = self.index(id);
+            assert!(
+                self.value(at, "order").is_none(),
+                "#{id} keeps its markup order"
+            );
+            if self.hidden[at] {
+                assert_eq!(
+                    self.value(at, "display").as_deref(),
+                    Some("none"),
+                    "#{id} hides"
+                );
+                return None;
+            }
+            let length = |property: &str| self.value(at, property).map(|v| self.length(at, &v));
+            match self.value(at, "position").as_deref().unwrap_or("static") {
+                "absolute" => Some(Some(
+                    length("width").expect("a docked pane declares its width")
+                        + length(side).unwrap_or(0.0),
+                )),
+                "static" | "relative" => {
+                    let width = self.value(at, "width");
+                    assert!(
+                        width.as_deref().is_none_or(|w| w == "auto"),
+                        "a stacked #{id} spans the body's column, not {width:?}"
+                    );
+                    Some(None)
+                }
+                other => panic!("the layout model places no {other:?} #{id}"),
+            }
+        }
+
+        /// The panel's margin on `side`.
+        fn panel_margin(&self, side: &str) -> f64 {
+            let at = self.index("kgpanel");
+            for sized in ["width", "min-width", "max-width"] {
+                assert!(
+                    self.value(at, sized).is_none(),
+                    "the panel's {sized} is its column's"
+                );
+            }
+            self.value(at, &format!("margin-{side}"))
+                .map_or(0.0, |margin| self.length(at, &margin))
+        }
     }
 
     /// The value `rules` last declare for `property`, as the cascade reads them.
@@ -5257,27 +5955,29 @@ mod tests {
             .unwrap_or_else(|| panic!("the explorer holds #{id}"))
     }
 
-    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card, THEN
-    /// each is absolutely positioned against a box that does not hold the explorer's header, so
-    /// neither covers the header or its controls (the lens control, the label, the toggles and the
-    /// tests state) in any view. Layout is outside what the page harness can run, so this pins the
-    /// box each docks against.
+    /// GIVEN the served page, WHEN the explorer docks its memory rail and its metadata card (a body
+    /// with room for both), THEN each is absolutely positioned against a box that does not hold
+    /// the explorer's header, so neither covers the header or its controls (the lens control, the
+    /// label, the toggles and the tests state) in any view. Layout is outside what the page
+    /// harness can run, so this pins the box each docks against.
     #[test]
     fn the_rail_and_the_card_dock_below_the_explorer_header() {
         let page = live_page();
-        let markup = explorer_markup(&page);
+        let style = ExplorerStyle::read(&page);
+        let wide = style.layout(true, true, 1400.0);
+        let markup = &style.markup;
         let positioned = |e: &Element, how: &[&str]| {
             rules_of(&page, e).iter().any(|rule| {
                 how.iter()
                     .any(|value| rule.contains(&format!("position: {value}")))
             })
         };
-        let header = explorer_index(&markup, "kghead");
-        for docked in ["kgrail", "kgcard"] {
-            let at = explorer_index(&markup, docked);
+        let header = explorer_index(markup, "kghead");
+        for (docked, side) in [("kgrail", "right"), ("kgcard", "left")] {
+            let at = explorer_index(markup, docked);
             assert!(
-                positioned(&markup[at], &["absolute"]),
-                "#{docked} docks absolutely"
+                matches!(wide.pane(docked, side), Some(Some(_))),
+                "#{docked} docks absolutely in a body with room for it"
             );
             let block = markup[at]
                 .ancestors
@@ -5320,96 +6020,185 @@ mod tests {
         );
     }
 
-    /// GIVEN the served page, WHEN a view draws the panel's control rows above its content (the
-    /// toolbar with the back link and the lens controls; in a neighbourhood the heading, the
-    /// directed-call links and the tier checkboxes) and the memory rail or the metadata card docks
-    /// over the panel, THEN each docks against the bottom edge of the last of those rows, so a
-    /// wrapped row pushes it down and neither covers a panel control; neither takes the rows as
-    /// its default anchor, so scrolling the panel never carries either up over the header. Layout
-    /// is outside what the page harness can run, so this pins the anchoring each declares.
+    /// GIVEN the served page, WHEN the memory rail or the metadata card docks beside the panel
+    /// (alone or together, at every body width that docks it), THEN the pane's column runs the
+    /// body's whole height: its top and its bottom are its own inset on its side, so it starts at
+    /// the top of the body, leaves no band above it and moves with no control row the panel
+    /// draws. Layout is outside what the page harness can run, so this reads each docked pane's
+    /// top and bottom through the page's own stylesheet.
     #[test]
-    fn the_rail_and_the_card_dock_below_the_panel_toolbar() {
+    fn a_docked_pane_s_column_runs_the_body_s_whole_height() {
         let page = live_page();
-        let markup = explorer_markup(&page);
-        let row_anchors: Vec<(&str, Option<String>)> =
-            ["kgtoolbar", "kgseed", "kgcalls-offer", "kgtiers"]
-                .into_iter()
-                .map(|row| {
-                    let element = Element {
-                        id: String::new(),
-                        classes: vec![row.to_string()],
-                        ancestors: Vec::new(),
+        let style = ExplorerStyle::read(&page);
+        let mut docked = 0;
+        for width in 280..=1400 {
+            let width = f64::from(width);
+            for (rail, card) in [(true, false), (false, true), (true, true)] {
+                let layout = style.layout(rail, card, width);
+                for (pane, side) in [("kgrail", "right"), ("kgcard", "left")] {
+                    if !matches!(layout.pane(pane, side), Some(Some(_))) {
+                        continue;
+                    }
+                    docked += 1;
+                    let at = layout.index(pane);
+                    let inset = |property: &str| {
+                        layout
+                            .value(at, property)
+                            .map(|value| layout.length(at, &value))
                     };
-                    (row, declared(&rules_of(&page, &element), "anchor-name"))
-                })
-                .collect();
-        let anchor = row_anchors[0]
-            .1
-            .clone()
-            .expect("the panel toolbar names itself as an anchor");
-        assert!(
-            row_anchors
-                .iter()
-                .all(|(_, name)| name.as_deref() == Some(anchor.as_str())),
-            "every control row above the panel's content names the one anchor: {row_anchors:?}"
-        );
-        for docked in ["kgrail", "kgcard"] {
-            let rules = rules_of(&page, &markup[explorer_index(&markup, docked)]);
-            let top = declared(&rules, "top").unwrap_or_default();
-            assert!(
-                top.contains(&format!("anchor({anchor} bottom")),
-                "#{docked} docks its top against the toolbar's bottom ({anchor}), not at {top:?}"
-            );
-            assert!(
-                declared(&rules, "position-anchor").is_none(),
-                "#{docked} does not follow the panel's scroll: {rules:?}"
-            );
+                    let edge = inset(side).unwrap_or(0.0);
+                    assert_eq!(
+                        (inset("top"), inset("bottom")),
+                        (Some(edge), Some(edge)),
+                        "a docked #{pane} in a {width}px body starts at the body's top and ends \
+                         at its bottom, inset as on its {side}"
+                    );
+                }
+            }
         }
+        assert!(docked > 0, "some body width docks a pane");
     }
 
     /// GIVEN the served page, WHEN the metadata card carries more rows than the explorer's body
-    /// has room for below the panel's control rows, THEN the card scrolls inside the body and
-    /// never extends past its bottom: `#kgcard` is a dock inset at both ends, a column that lets
-    /// clicks through, and the visible card inside it keeps its content height up to the dock's
-    /// height and scrolls past that. Layout is outside what the page harness can run, so this pins
-    /// the box each declares and that `renderCard` writes the card inside the dock.
+    /// has room for, THEN the card scrolls inside the body and never extends past its bottom:
+    /// `#kgcard` is a dock inset at both ends, and the visible card inside it keeps its content
+    /// height up to the dock's height and scrolls past that. Layout is outside what the page
+    /// harness can run, so this pins the box each declares and that `renderCard` writes the card
+    /// inside the dock.
     #[test]
     fn a_card_taller_than_the_explorer_body_scrolls_inside_it() {
         let page = live_page();
         let markup = explorer_markup(&page);
         let dock = rules_of(&page, &markup[explorer_index(&markup, "kgcard")]);
-        let body = rules_of(
-            &page,
-            &Element {
-                id: String::new(),
-                classes: vec!["kgcard-body".to_string()],
-                ancestors: Vec::new(),
-            },
-        );
+        let body = rules_of(&page, &Element::of_class("kgcard-body"));
         let read = |rules: &[&str], property: &str| declared(rules, property).unwrap_or_default();
         assert_eq!(
             (
                 read(&dock, "bottom").is_empty(),
                 read(&dock, "display"),
                 read(&dock, "flex-direction"),
-                read(&dock, "pointer-events"),
             ),
-            (false, "flex".into(), "column".into(), "none".into()),
-            "#kgcard is a column dock inset at its bottom that lets clicks through: {dock:?}"
+            (false, "flex".into(), "column".into()),
+            "#kgcard is a column dock inset at its bottom: {dock:?}"
         );
         assert_eq!(
-            (
-                read(&body, "min-height"),
-                read(&body, "overflow-y"),
-                read(&body, "pointer-events"),
-            ),
-            ("0".into(), "auto".into(), "auto".into()),
+            (read(&body, "min-height"), read(&body, "overflow-y")),
+            ("0".into(), "auto".into()),
             "the visible card shrinks to the dock and scrolls its rows: {body:?}"
         );
         assert!(
             page.contains(r#"box.innerHTML = '<div class="kgcard-body">'"#),
             "renderCard writes the card's rows inside the visible card"
         );
+    }
+
+    /// GIVEN the served page, WHEN the memory rail, the metadata card, both or neither show in an
+    /// explorer body of any width from a phone's to a wide screen's, THEN the panel keeps at least
+    /// the width `kgDims` draws at: shown panes dock beside the panel (absolutely positioned, each
+    /// taking exactly its own column and inset from the panel's margin on its side) wherever
+    /// their columns leave the panel that width, and everywhere else every shown pane stacks above
+    /// the panel at the body's full width and the panel reserves no margin. Layout is outside what
+    /// the page harness can run, so this lays the explorer out by the page's own stylesheet
+    /// (selectors, cascade, container queries and lengths) at each width from 280px to 1400px.
+    #[test]
+    fn the_panel_keeps_the_drawing_width_beside_the_rail_and_the_card() {
+        let page = live_page();
+        let style = ExplorerStyle::read(&page);
+        let drawn: f64 = page[page
+            .find("function kgDims()")
+            .expect("the page sizes its drawing")..]
+            .split_once("Math.max(")
+            .and_then(|(_, rest)| rest.split_once(','))
+            .and_then(|(least, _)| least.trim().parse().ok())
+            .expect("kgDims draws at least a fixed width");
+        let panel = explorer_index(&style.markup, "kgpanel");
+        let body = *style.markup[panel]
+            .ancestors
+            .last()
+            .expect("the panel has a parent");
+        for pane in ["kgrail", "kgcard"] {
+            let at = explorer_index(&style.markup, pane);
+            assert!(
+                at < panel && style.markup[at].ancestors == style.markup[panel].ancestors,
+                "#{pane} precedes #kgpanel as its sibling, so it stacks above the panel"
+            );
+        }
+        assert_eq!(
+            declared(&rules_of(&page, &style.markup[body]), "flex-direction").as_deref(),
+            Some("column"),
+            "the body lays its children out top to bottom"
+        );
+        let states = [
+            ("neither pane", false, false),
+            ("the rail", true, false),
+            ("the card", false, true),
+            ("the rail and the card", true, true),
+        ];
+        let mut columns: HashMap<&str, f64> = HashMap::new();
+        let mut laid_out = Vec::new();
+        for width in 280..=1400 {
+            let width = f64::from(width);
+            for (shown, rail, card) in states {
+                let layout = style.layout(rail, card, width);
+                let (left, right) = (layout.panel_margin("left"), layout.panel_margin("right"));
+                let room = width - left - right;
+                let mut docked = Vec::new();
+                for (pane, side, margin) in [("kgcard", "left", left), ("kgrail", "right", right)] {
+                    match layout.pane(pane, side) {
+                        None => assert_eq!(margin, 0.0, "a hidden #{pane} reserves no margin"),
+                        Some(None) => {
+                            docked.push(false);
+                            assert_eq!(
+                                margin, 0.0,
+                                "a stacked #{pane} reserves no margin at a {width}px body"
+                            );
+                        }
+                        Some(Some(column)) => {
+                            docked.push(true);
+                            assert_eq!(
+                                margin, column,
+                                "a docked #{pane} takes exactly its column from the panel at a \
+                                 {width}px body"
+                            );
+                            let fixed = *columns.entry(pane).or_insert(column);
+                            assert_eq!(column, fixed, "a docked #{pane}'s column is fixed");
+                        }
+                    }
+                }
+                assert!(
+                    docked.iter().all(|&d| d) || docked.iter().all(|&d| !d),
+                    "with {shown} shown in a {width}px body every shown pane docks or every one \
+                     stacks: {docked:?}"
+                );
+                if docked.first() == Some(&true) {
+                    assert!(
+                        room >= drawn,
+                        "with {shown} shown in a {width}px body the panel keeps {room}px, less \
+                         than the {drawn}px kgDims draws at"
+                    );
+                }
+                laid_out.push((shown, rail, card, width, docked.first().copied()));
+            }
+        }
+        for (shown, rail, card, width, docked) in laid_out {
+            let Some(docked) = docked else { continue };
+            let column = |pane: &str, on: bool| {
+                if on {
+                    *columns
+                        .get(pane)
+                        .unwrap_or_else(|| panic!("#{pane} docks at some width"))
+                } else {
+                    0.0
+                }
+            };
+            let needs = drawn + column("kgrail", rail) + column("kgcard", card);
+            assert_eq!(
+                docked,
+                width >= needs,
+                "with {shown} shown in a {width}px body the panes dock exactly where their \
+                 columns leave the panel {drawn}px (from {needs}px)"
+            );
+        }
     }
 
     /// Spec 30 c2 (CELLS FIT OR WRAP): id and long-text table cells must SIZE-TO-CONTENT or
@@ -6935,7 +7724,7 @@ mod tests {
             graph
         };
         let code = Lens::Code {
-            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
         // Three tests are hidden when none is drawn: the two attached to community 0 and one that
         // proves nothing grouped. The opened graph counts them; the drawn graph holds none.
@@ -7064,7 +7853,7 @@ mod tests {
 
         // --- CODE LENS OVERVIEW at the default grain (resolution "1") ---
         let code = Lens::Code {
-            resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
         let overview = clustered_overview(&graph, &code);
         assert_eq!(
@@ -7183,7 +7972,7 @@ mod tests {
         assert_eq!(
             Lens::from_query(Some("code"), None),
             Lens::Code {
-                resolution: DEFAULT_COMMUNITY_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             }
         );
         assert_eq!(
@@ -7279,7 +8068,7 @@ mod tests {
         };
 
         let concepts = Lens::Concepts {
-            resolution: DEFAULT_CONCEPT_RESOLUTION.to_string(),
+            resolution: grain(DEFAULT_RESOLUTION),
         };
 
         // --- OVERVIEW: buckets by concept, shared member counted ONCE under its primary ---
@@ -7428,14 +8217,14 @@ mod tests {
         assert_eq!(
             Lens::from_query(Some("concepts"), None),
             Lens::Concepts {
-                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             },
             "lens=concepts with no resolution selects the default concept grain"
         );
         assert_eq!(
             Lens::from_query(Some("concepts"), Some("")),
             Lens::Concepts {
-                resolution: DEFAULT_CONCEPT_RESOLUTION.to_string()
+                resolution: grain(DEFAULT_RESOLUTION)
             },
             "an empty resolution still defaults to the default concept grain"
         );
@@ -7536,6 +8325,157 @@ mod tests {
             "each edge carries from/to/rel: {body}"
         );
         assert_eq!(body["seed"], "a", "the neighborhood echoes its seed");
+    }
+
+    /// Each view that draws nodes - the seeded neighborhood, the cluster drill, the call walk with
+    /// its referenced-not-called sidecar, a re-projection's unresolved and shared members, and a
+    /// card's subject, file and member chips - names the drawn nodes that are test code in its
+    /// `test_nodes`, from the `test` attribute of the graph nodes its answer read, and omits it
+    /// when none is: a test node the answer read and does not draw is never named. Each row: the
+    /// view, its body, and the ids it names.
+    #[test]
+    fn each_drawn_view_names_its_test_nodes() {
+        use crate::contextgraph::{CallGraph, CallNode};
+        use crate::test_support::{calls_edge, edge, node_with_attrs};
+        let product = node_with_attrs("src/a.rs::f", KIND_CODE_ENTITY, &[("name", "f")]);
+        let test = node_with_attrs(
+            "src/a.rs::tests::checks",
+            KIND_CODE_ENTITY,
+            &[("name", "checks"), ("test", "true")],
+        );
+        let test_file = node_with_attrs("tests/it.rs", KIND_FILE, &[("test", "true")]);
+        let graph = Graph {
+            nodes: vec![product.clone(), test.clone()],
+            edges: vec![edge(&test.id, &product.id, REL_CALLS, TIER_EXTRACTED)],
+        };
+        let routed = |graph: &Graph, target: &str| {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                graph,
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+                &[],
+            );
+            String::from_utf8(r.body).unwrap()
+        };
+        let walk = CallGraph {
+            nodes: [(&product, 0), (&test, 1)]
+                .map(|(n, layer)| CallNode {
+                    node: n.clone(),
+                    layer,
+                    frontier: None,
+                })
+                .to_vec(),
+            edges: vec![calls_edge(&test.id, &product.id, false)],
+            referenced_not_called: vec![test_file.clone()],
+        };
+        let walked = |target: &str| {
+            let provider =
+                |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str, _: Tests| {
+                    walk.clone()
+                };
+            let r = calls_route(None, target, &provider).expect("a call view");
+            String::from_utf8(r.body).unwrap()
+        };
+        let named = |ids: &[&str]| Some(ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        // The member views' graph: src/a.rs holds the product f and the test checks, both realizing
+        // concept/1/0 and the test also concept/1/1 (a shared member); a bare test placeholder no
+        // definition resolves; and a test entity in a test file.
+        let probe = node_with_attrs("src/b.rs::probe", KIND_CODE_ENTITY, &[("test", "true")]);
+        let case = node_with_attrs(
+            "tests/it.rs::case",
+            KIND_CODE_ENTITY,
+            &[("name", "case"), ("test", "true")],
+        );
+        let concept = |id: &str| node_with_attrs(id, KIND_CONCEPT, &[("label", id)]);
+        let members = Graph {
+            nodes: vec![
+                product.clone(),
+                test.clone(),
+                node_with_attrs("src/a.rs", KIND_FILE, &[]),
+                probe.clone(),
+                test_file.clone(),
+                case.clone(),
+                concept("concept/1/0"),
+                concept("concept/1/1"),
+            ],
+            edges: vec![
+                edge(&product.id, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(&test.id, "concept/1/0", REL_REALIZES, TIER_INFERRED),
+                edge(&test.id, "concept/1/1", REL_REALIZES, TIER_INFERRED),
+            ],
+        };
+        let rows = [
+            (
+                "the seeded neighborhood",
+                routed(&graph, "/api/graph?seed=src%2Fa.rs%3A%3Af&depth=1"),
+                named(&[&test.id]),
+            ),
+            (
+                "the cluster drill",
+                routed(&graph, "/api/graph?cluster=src%2Fa.rs"),
+                named(&[&test.id]),
+            ),
+            (
+                "the call walk and its sidecar",
+                walked("/api/graph?view=calls&dir=up&seed=src%2Fa.rs%3A%3Af"),
+                named(&[&test.id, &test_file.id]),
+            ),
+            (
+                "a neighborhood with no test",
+                routed(&tiered_chain_graph(), "/api/graph?seed=a&depth=2"),
+                None,
+            ),
+            (
+                "a neighborhood whose answer read test nodes it does not draw",
+                routed(&members, "/api/graph?seed=src%2Fa.rs%3A%3Af&depth=1"),
+                None,
+            ),
+            (
+                "a files re-projection's unresolved member",
+                routed(&members, "/api/graph?seed=src%2Fb.rs%3A%3Aprobe&lens=files"),
+                named(&[&probe.id]),
+            ),
+            (
+                "a concepts re-projection's shared member",
+                routed(&members, "/api/graph?seed=concept%2F1%2F0&lens=concepts"),
+                named(&[&test.id]),
+            ),
+            (
+                "a file card's top entities",
+                routed(&members, "/api/graph?card=src%2Fa.rs"),
+                named(&[&test.id]),
+            ),
+            (
+                "a concept card's top evidence",
+                routed(&members, "/api/graph?card=concept%2F1%2F0"),
+                named(&[&test.id]),
+            ),
+            (
+                "a test entity's card and its test file",
+                routed(&members, "/api/graph?card=tests%2Fit.rs%3A%3Acase"),
+                named(&[&test_file.id, &case.id]),
+            ),
+            (
+                "a product entity's card",
+                routed(&members, "/api/graph?card=src%2Fa.rs%3A%3Af"),
+                None,
+            ),
+        ];
+        for (view, body, names) in rows {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let got = v.get("test_nodes").map(|ids| {
+                (ids.as_array().unwrap().iter())
+                    .map(|id| id.as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(got, names, "{view}: {body}");
+        }
     }
 
     #[test]
@@ -8861,7 +9801,7 @@ mod tests {
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| Graph::default();
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let calls_provider =
             |_: Option<&str>,
              _: &[String],
@@ -8990,7 +9930,7 @@ mod tests {
                     HashMap::new(),
                 ))
             };
-            let graph_provider = move |_: Option<&str>, tests: Tests| {
+            let graph_provider = move |_: Option<&str>, tests: Tests, _: f64| {
                 g.lock().unwrap().push(tests);
                 GraphRead {
                     tests_hidden: 4,
@@ -9098,7 +10038,7 @@ mod tests {
                 };
                 Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
             });
-            let graph_provider = |_: Option<&str>, _: Tests| GraphRead::default();
+            let graph_provider = |_: Option<&str>, _: Tests, _: f64| GraphRead::default();
             let calls_provider = |_: Option<&str>,
                                   _: &[String],
                                   _: crate::contextgraph::Direction,
@@ -9178,7 +10118,7 @@ mod tests {
             });
             let whole = read.clone();
             // The read withheld `x` alone: a view counts the withheld hits of its own answer.
-            let graph_provider = move |_: Option<&str>, _: Tests| GraphRead {
+            let graph_provider = move |_: Option<&str>, _: Tests, _: f64| GraphRead {
                 withheld: Graph {
                     nodes: vec![Node {
                         id: "x".to_string(),
@@ -9272,7 +10212,7 @@ mod tests {
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
             panic!("a non-GET request must never read the store");
         };
-        let graph_provider = |_instance: Option<&str>, _tests: Tests| -> Graph {
+        let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| -> Graph {
             panic!("a non-GET request must never open the graph projection");
         };
         let calls_provider = |_: Option<&str>,
@@ -9350,7 +10290,7 @@ mod tests {
         // count proves it was opened ONLY on that request.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_for_provider = Arc::clone(&hits);
-        let graph_provider = move |_instance: Option<&str>, _tests: Tests| -> Graph {
+        let graph_provider = move |_instance: Option<&str>, _tests: Tests, _: f64| -> Graph {
             hits_for_provider.fetch_add(1, Ordering::SeqCst);
             Graph {
                 nodes: vec![Node {

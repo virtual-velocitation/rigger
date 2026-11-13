@@ -1454,13 +1454,16 @@ impl Projector {
         })
     }
 
-    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed (spec 46,
-    /// criterion 3). [`prune`] drops superseded projection ROWS, but SQLite keeps the freed pages
-    /// inside `graph.db` on a freelist for reuse, so the file stays as LARGE on disk as before the
-    /// prune even though those rows are gone. `VACUUM` rebuilds the database without those free
-    /// pages, then a `TRUNCATE` checkpoint folds the WAL side-file back so the MAIN file actually
-    /// shrinks on disk immediately (not only at the next checkpoint), which is what a consumer
-    /// inspecting the file then sees.
+    /// Compact the on-disk graph file after a [`prune`], returning the bytes reclaimed, or `None`
+    /// when a reader held the write-ahead log (spec 46, criterion 3). [`prune`] drops superseded
+    /// projection ROWS, but SQLite keeps the freed pages inside `graph.db` on a freelist for
+    /// reuse, so the file stays as LARGE on disk as before the prune even though those rows are
+    /// gone. `VACUUM` rebuilds the database without those free pages, then a `TRUNCATE`
+    /// checkpoint ([`truncate_log`]) folds the WAL side-file back so the MAIN file actually
+    /// shrinks on disk immediately, which is what a consumer inspecting the file then sees. A
+    /// reader holding a snapshot of the log declines that checkpoint, so the shrink lands only at
+    /// a later one and the bytes reclaimed are unmeasured: `None`, never a count the file on disk
+    /// contradicts.
     ///
     /// This reclaims DISK ONLY. `VACUUM` changes NO query result and gives NO query or fold
     /// speedup: the row-count reduction that speeds reads is [`prune`]'s job, not `compact`'s. The
@@ -1475,7 +1478,7 @@ impl Projector {
     /// result, only the file size, so it is safe to run unconditionally after every prune. The
     /// reclaimed byte count is the drop in `page_count * page_size` across the `VACUUM`; a
     /// no-op-shaped compaction (nothing was freed) simply reclaims 0 bytes.
-    pub fn compact(&self) -> Result<u64, Error> {
+    pub fn compact(&self) -> Result<Option<u64>, Error> {
         let conn = self.conn.lock().unwrap();
         let page_size: i64 = conn
             .query_row("PRAGMA page_size", [], |r| r.get(0))
@@ -1487,14 +1490,16 @@ impl Projector {
             .map_err(be)?;
         conn.execute_batch("VACUUM").map_err(be)?;
         // Fold the WAL back into the main file so the shrink lands on disk now, not at some later
-        // checkpoint - the reported reclamation must match the file size on disk.
-        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-            .map_err(be)?;
+        // checkpoint - the reported reclamation must match the file size on disk, so a checkpoint
+        // a reader declined reports none.
+        if !truncate_log(&conn).map_err(be)? {
+            return Ok(None);
+        }
         let after: i64 = conn
             .query_row("PRAGMA page_count", [], |r| r.get(0))
             .map_err(be)?;
         let reclaimed_pages = before.saturating_sub(after).max(0) as u64;
-        Ok(reclaimed_pages * page_size.max(0) as u64)
+        Ok(Some(reclaimed_pages * page_size.max(0) as u64))
     }
 
     /// Re-scope every row tagged `from` to `to` - every node and edge, and every row of each
@@ -3849,6 +3854,51 @@ mod tests {
         open_connection(path).unwrap()
     }
 
+    /// THE COMPACTION REPORTS ONLY BYTES THE DISK LOST: the byte count `compact` reports is the
+    /// drop in the file's size on disk, and it reports none while a reader holds a snapshot of
+    /// the log, which its truncating checkpoint then cannot fold back. Each row: whether a reader
+    /// holds the log across the compaction.
+    #[test]
+    fn a_compaction_reports_only_the_bytes_the_file_lost_on_disk() {
+        for held in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("graph.db").to_str().unwrap().to_string();
+            let p = Projector::open(&path, "test").unwrap();
+            {
+                let conn = p.conn.lock().unwrap();
+                conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE filler(x BLOB);
+                     WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 64)
+                     INSERT INTO filler SELECT zeroblob(4096) FROM n;
+                     DROP TABLE filler;",
+                )
+                .unwrap();
+                assert!(truncate_log(&conn).unwrap(), "no reader holds the log yet");
+            }
+            let reader = connection_to(&path);
+            if held {
+                reader.execute_batch("BEGIN").unwrap();
+                let _: i64 = reader
+                    .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                    .unwrap();
+            }
+            let size = || std::fs::metadata(&path).unwrap().len();
+            let before = size();
+            let reported = p.compact().unwrap();
+            let lost = before.saturating_sub(size());
+            assert!(
+                held || lost > 0,
+                "the compaction frees the dropped table's pages"
+            );
+            assert_eq!(
+                reported,
+                (!held).then_some(lost),
+                "held {held}: the reported bytes against the file's drop on disk"
+            );
+        }
+    }
+
     /// A rebuild of the graph file at `path` from `log` in batches of `batch`, owed by its caller,
     /// once it takes the rebuild lock, recording where each read of the log started.
     fn rebuild_in_batches(
@@ -3866,6 +3916,42 @@ mod tests {
             },
             &mut |_| {},
         )
+    }
+
+    /// THE REBUILD REPORTS A HELD LOG: a rebuild ends by truncating the write-ahead log its swap
+    /// wrote, and reports the log held when a reader's snapshot declines that truncation, the
+    /// swap's frames then standing in the log. Each row: whether a reader holds a snapshot of the
+    /// file across the rebuild.
+    #[test]
+    fn a_rebuild_reports_its_log_held_while_a_reader_holds_a_snapshot() {
+        let log = decisions_through(6);
+        for held in [false, true] {
+            let (_dir, path) = crate::test_support::temp_graph_db();
+            let p = Projector::open(&path, "test").unwrap();
+            p.conn.lock().unwrap().busy_timeout(Duration::ZERO).unwrap();
+            let reader = connection_to(&path);
+            if held {
+                reader.execute_batch("BEGIN").unwrap();
+                let _: i64 = reader
+                    .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                    .unwrap();
+            }
+            let rebuilt = p
+                .rebuild(
+                    &Projector::lock_rebuild(&path).unwrap(),
+                    true,
+                    &mut |after, sink| stream_past(&log, after, 10, sink),
+                    &mut |_| {},
+                )
+                .unwrap()
+                .expect("an owed rebuild runs");
+            let log_bytes = std::fs::metadata(format!("{path}-wal")).map_or(0, |m| m.len());
+            assert_eq!(
+                (rebuilt.log_held, log_bytes > 0),
+                (held, held),
+                "held {held}: the rebuild's report, and whether its log keeps the swap's frames"
+            );
+        }
     }
 
     /// A rebuild of the graph file at `path` from `log` in batches of two, owed by its caller,

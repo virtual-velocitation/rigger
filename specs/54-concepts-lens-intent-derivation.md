@@ -47,8 +47,10 @@ model.
 - Nodes in NO concept (unattached code, runtime knowledge) group under their kind buckets alongside,
   so the view remains whole-graph; the subject-by-lens rule for them is the documented "not part of
   any concept" state, not an invented assignment.
-- `resolution=` selects the derived grain; an underived graph renders the documented "concepts not
-  derived yet - run `rigger graph concepts`" empty state, never an error. `lens` absent stays
+- `resolution=` selects the grain, a grain the store does not hold computed at read exactly as
+  `rigger graph concepts --resolution <r>` computes it and never stored; a graph in which no grain
+  can be computed renders the documented "concepts not derived yet - no concept can be computed
+  from this graph" empty state, never an error and never a command to run. `lens` absent stays
   byte-identical to today. Drill, select-to-seed, and the call views compose unchanged beneath the
   lens.
 

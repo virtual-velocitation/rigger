@@ -4,7 +4,7 @@
 //! one at the operator checkout and describes that checkout's HEAD.
 
 use crate::common;
-use common::cli::{run_rigger, run_rigger_ok};
+use common::cli::{repository_code_store, run_rigger, run_rigger_ok};
 use common::fixtures::{
     assert_outside_any_repository, git_commit_all, git_out, init_repo, review_or_adjudicate,
     test_spawn_host, write_files, MergeBreakDriver, MERGE_BREAK_BASE,
@@ -29,7 +29,7 @@ const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
 
 /// The stamp of the snapshot in force in the store of the repository at `root`.
 fn stamp_at(root: &Path) -> Stamp {
-    CodeStore::in_repository(root)
+    repository_code_store(root)
         .in_force()
         .expect("the store reads")
         .unwrap_or_else(|| panic!("the store at {} holds a snapshot", root.display()))
@@ -181,7 +181,7 @@ fn the_conductor_advances_the_store_after_a_landed_merge() {
         let base = head_of(&repo);
         let recording = RecordingStore {
             repo: repo.clone(),
-            store: CodeStore::in_repository(&repo),
+            store: repository_code_store(&repo),
             heads: Mutex::new(Vec::new()),
         };
         let store = Store::open(":memory:").unwrap();
@@ -268,7 +268,7 @@ fn setup_advances_from_empty() {
                 write_files(root, &[(SOURCE.0, SOURCE.1)]);
                 git_commit_all(root, "source");
             },
-            store: CodeStore::in_repository,
+            store: repository_code_store,
             commit: |root| Some(head_of(root)),
         },
         Row {

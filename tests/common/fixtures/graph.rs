@@ -342,6 +342,33 @@ pub fn planted_file(
     }
 }
 
+/// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` on line 1, inside the
+/// definition named `enclosing`, or at file level when that is empty: a reference that calls
+/// nothing.
+pub fn with_uses(
+    mut file: rigger::code_facts::FileFacts,
+    uses: &[(&str, &str)],
+) -> rigger::code_facts::FileFacts {
+    use rigger::code_facts::{Mention, MentionKind};
+    use rigger::contextgraph::REF_KIND_USE;
+    for (enclosing, leaf) in uses {
+        let enclosing = (!enclosing.is_empty()).then(|| {
+            let at = file.defs.iter().position(|d| d.leaf == *enclosing);
+            at.unwrap_or_else(|| panic!("{}: no definition {enclosing} holds a use", file.path))
+                as u32
+        });
+        file.mentions.push(Mention {
+            enclosing,
+            name: leaf.to_string(),
+            leaf: leaf.to_string(),
+            kind: MentionKind::Tagged(REF_KIND_USE.to_string()),
+            line: 1,
+            test: false,
+        });
+    }
+    file
+}
+
 /// A planted tree: the files a test's code view holds, each built up as its extractor would read
 /// it - a design doc for a `.md` path, a Rust file ([`planted_file`]) otherwise.
 #[derive(Default)]

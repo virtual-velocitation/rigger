@@ -21,7 +21,7 @@ use crate::common;
 /// mod's references from `host`; a call inside a method or fn nested in any of them from that
 /// method or fn; a file-level impl header's from the impl, a file-level mod's and trait's from
 /// themselves; a function-local JS const's call from its function and a top-level const's from
-/// the const; and no edge at all for a top-level reference, whose caller is the file.
+/// the const; and a top-level call's from the file, its caller.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
@@ -33,9 +33,11 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
     common::fixtures::assert_live_calls(
         &graph,
         &[
+            ("a.js", "a.js::%top"),
             ("a.js::h", "a.js::%k"),
             ("a.js::outer", "a.js::%f"),
             ("a.js::y", "a.js::%g"),
+            ("lib.rs", "lib.rs::%start"),
             ("lib.rs::<Widget as Draw>::draw", "lib.rs::%paint"),
             ("lib.rs::Top", "lib.rs::%announce"),
             ("lib.rs::host", "lib.rs::%declare"),

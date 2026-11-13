@@ -2,11 +2,12 @@
 //! from git's objects - the checked-out commit's tree, its listing and the blobs themselves - so
 //! a tree's facts never depend on what the worktree holds, and no read writes a worktree's index.
 
-use crate::discover::{read_head, rev_parse, Location};
+use crate::discover::{discover, Repository};
 use crate::subprocess::git_in;
 use crate::worktree::{finish_git, finish_git_query, start_command, GitOutput};
 use rigger_domain::code_facts::Tip;
 use rigger_domain::code_view::{Entry, TreeSource, WorktreeDiff};
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -25,8 +26,7 @@ pub(crate) const INDEX: &str = "index";
 
 /// The one git command every git the source starts itself is built from: git in `dir`
 /// ([`git_in`]) with optional locks off, so a read takes no lock it can do without. A diff
-/// refreshes the index it reads all the same, so the diff reads an [`IndexCopy`]. Discovery's
-/// `rev-parse` ([`rev_parse`]), which finds the index to copy, reads no index.
+/// refreshes the index it reads all the same, so the diff reads an [`IndexCopy`].
 fn read_git(dir: &Path) -> Command {
     let mut git = git_in(dir);
     git.arg("--no-optional-locks");
@@ -43,14 +43,12 @@ struct IndexCopy {
 }
 
 impl IndexCopy {
-    /// The copy of the index of `worktree`, found where git finds it ([`Location::GitDir`]): a
-    /// linked worktree's is in its own administrative directory. A worktree with no index has no
-    /// copy, so git, reading none, answers as it answers in the worktree; the worktree's own index
-    /// is never read in its place.
-    fn of(worktree: &Path) -> Result<Self, String> {
-        let git_dir = rev_parse(worktree, Location::GitDir)?
-            .ok_or_else(|| format!("{} is in no git repository", worktree.display()))?;
-        let index = Path::new(&git_dir).join(INDEX);
+    /// The copy of the index of `checkout`, in its administrative directory, where git finds it: a
+    /// linked worktree's is in its own. A checkout with no index has no copy, so git, reading
+    /// none, answers as it answers in the checkout; the checkout's own index is never read in its
+    /// place.
+    fn of(checkout: &Repository) -> Result<Self, String> {
+        let index = checkout.git_dir.join(INDEX);
         let copy = Self {
             dir: tempfile::tempdir().map_err(|e| format!("make a temp directory: {e}"))?,
         };
@@ -76,16 +74,34 @@ impl IndexCopy {
     }
 }
 
-/// The tree source of the git repository holding `root`.
+/// The tree source of a git repository, read at the root every worktree of it shares
+/// ([`Repository::main_root`]): its head is the main checkout's.
 pub struct GitTreeSource {
+    /// The repository as discovered from the reader's checkout, which a read of that checkout
+    /// reads where it lies from.
+    checkout: Repository,
+    /// Where git runs to read the repository's head and objects.
     root: PathBuf,
 }
 
 impl GitTreeSource {
-    pub fn new(root: &Path) -> Self {
+    /// The source of the repository `checkout` was discovered in ([`discover`]).
+    pub fn new(checkout: Repository) -> Self {
         Self {
-            root: root.to_path_buf(),
+            root: checkout.main_root(),
+            checkout,
         }
+    }
+
+    /// The checkout `worktree` lies in: the one the source was discovered from where `worktree`
+    /// is its top, else the one discovered from `worktree`.
+    fn checkout_of(&self, worktree: &Path) -> Result<Cow<'_, Repository>, String> {
+        if worktree == self.checkout.toplevel {
+            return Ok(Cow::Borrowed(&self.checkout));
+        }
+        discover(worktree)?
+            .map(Cow::Owned)
+            .ok_or_else(|| format!("{} is in no git repository", worktree.display()))
     }
 
     /// The standard output of `git <args>` run in `dir`, or the failure naming the command and
@@ -139,13 +155,6 @@ fn fields(out: &[u8]) -> impl Iterator<Item = &[u8]> {
     out.split(|b| *b == 0).filter(|f| !f.is_empty())
 }
 
-/// The top of the checkout `worktree` lies in, which a diff names its paths from.
-fn toplevel(worktree: &Path) -> Result<PathBuf, String> {
-    let top = rev_parse(worktree, Location::Toplevel)?;
-    top.map(PathBuf::from)
-        .ok_or_else(|| format!("{} is in no git repository", worktree.display()))
-}
-
 /// Whether `file` is a regular file, not followed through a symlink: the worktree's side of a
 /// file a listing keeps.
 fn regular(file: &Path) -> bool {
@@ -196,10 +205,12 @@ impl TreeSource for GitTreeSource {
         })
     }
 
-    /// Read from git's files ([`read_head`]): the checkout is at `tip` when its branch and
-    /// commit are `tip`'s, since a commit names one tree.
+    /// Read from git's files ([`Repository::main_head`]): the main checkout is at `tip` when its
+    /// branch and commit are `tip`'s, since a commit names one tree.
     fn still_at(&self, tip: &Tip) -> bool {
-        read_head(&self.root).is_some_and(|(head, commit)| head == tip.head && commit == tip.commit)
+        self.checkout
+            .main_head()
+            .is_some_and(|(head, commit)| head == tip.head && commit == tip.commit)
     }
 
     fn list(&self, tree: &str) -> Result<Vec<Entry>, String> {
@@ -252,8 +263,9 @@ impl TreeSource for GitTreeSource {
             "--",
             ":/",
         ];
+        let checkout = self.checkout_of(worktree)?;
         let listing_started = start_command(read_git(worktree), &listing);
-        let status = IndexCopy::of(worktree).and_then(|copy| {
+        let status = IndexCopy::of(&checkout).and_then(|copy| {
             let mut git = read_git(worktree);
             git.env(INDEX_FILE, copy.path());
             Self::finish(worktree, &diff, start_command(git, &diff))
@@ -282,7 +294,7 @@ impl TreeSource for GitTreeSource {
             .filter_map(|p| std::str::from_utf8(p).ok())
             .collect();
         if !others.is_empty() {
-            let top = toplevel(worktree)?;
+            let top = &checkout.toplevel;
             let new = others.into_iter().filter(|path| regular(&top.join(path)));
             out.untracked.extend(new.map(str::to_owned));
         }
@@ -309,9 +321,9 @@ impl TreeSource for GitTreeSource {
         paths: &[&str],
         sink: &mut dyn FnMut(&str, &[u8]),
     ) -> Result<(), String> {
-        let top = toplevel(worktree)?;
+        let checkout = self.checkout_of(worktree)?;
         for path in paths {
-            let file = top.join(path);
+            let file = checkout.toplevel.join(path);
             if !regular(&file) {
                 return Err(format!("{} is not a regular file", file.display()));
             }
@@ -347,6 +359,11 @@ impl TreeSource for GitTreeSource {
 mod tests {
     use super::*;
     use crate::test_support::{git_commit_all, git_ok, git_out, init_repo};
+
+    /// The source of the repository `root` lies in, discovered there.
+    fn source_at(root: &Path) -> GitTreeSource {
+        GitTreeSource::new(discover(root).unwrap().expect("a repository"))
+    }
     use rigger_store::code::doubles::{CountingGroup, ToyExtract};
     use rigger_store::code::{content_id, DirTreeSource, Store};
 
@@ -450,7 +467,7 @@ mod tests {
             git_ok(dir.path(), &["config", "user.email", "t@example.com"]);
             git_ok(dir.path(), &["config", "user.name", "t"]);
             (row.setup)(dir.path());
-            let source = GitTreeSource::new(dir.path());
+            let source = source_at(dir.path());
             let tip = source.head().expect(row.name);
             assert_eq!(tip.head, row.head, "{}", row.name);
             assert_eq!(tip.commit.is_some(), row.commit, "{}", row.name);
@@ -502,8 +519,9 @@ mod tests {
         for (name, break_head) in rows {
             let dir = repo(&[("a.txt", "a\n")]);
             git_ok(dir.path(), &["checkout", "-q", "-b", "work"]);
+            let source = source_at(dir.path());
             break_head(dir.path());
-            let head = GitTreeSource::new(dir.path()).head();
+            let head = source.head();
             assert!(head.is_err(), "{name}: read as {head:?}");
         }
     }
@@ -540,7 +558,7 @@ mod tests {
             let dir = repo(row.committed);
             write(dir.path(), row.edit);
             remove(dir.path(), row.delete);
-            let source = GitTreeSource::new(dir.path());
+            let source = source_at(dir.path());
             let extract = ToyExtract::new(1);
             let head = source.head().expect(row.name);
             Store::new(dir.path())
@@ -609,7 +627,7 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let git = GitTreeSource::new(dir.path());
+            let git = source_at(dir.path());
             let plain = DirTreeSource::new(dir.path());
             // Each source is asked about its head as it reads it, before the commit after it: the
             // directory source answers only for the tree it read last.
@@ -656,7 +674,7 @@ mod tests {
             (
                 "the git source over the checkout",
                 checkout.path(),
-                |root| Box::new(GitTreeSource::new(root)),
+                |root| Box::new(source_at(root)),
             ),
             (
                 "the directory source over the checkout",
@@ -802,7 +820,7 @@ mod tests {
         ];
         for row in rows {
             let dir = repo(base);
-            let source = GitTreeSource::new(dir.path());
+            let source = source_at(dir.path());
             let head = source.head().expect(row.name);
             write(dir.path(), row.write);
             remove(dir.path(), row.delete);
@@ -841,7 +859,7 @@ mod tests {
         let root = dir.path();
         symlink("a.txt", root.join("l")).unwrap();
         git_commit_all(root, "link");
-        let source = GitTreeSource::new(root);
+        let source = source_at(root);
         let head = source.head().unwrap();
         remove(root, &["a.txt", "l"]);
         symlink("b.txt", root.join("a.txt")).unwrap();
@@ -933,7 +951,7 @@ mod tests {
             let git_dir = git_out(&worktree, &["rev-parse", "--absolute-git-dir"]);
             let index = Path::new(&git_dir).join("index");
             let before = std::fs::read(&index).ok();
-            let source = GitTreeSource::new(&main);
+            let source = source_at(&main);
             let tree = source.head().expect(row.name).tree;
             let diff = source
                 .changed_against_worktree(&tree, &worktree)
@@ -974,7 +992,8 @@ mod tests {
             if !indexed {
                 std::fs::remove_file(&index).unwrap();
             }
-            let copy = IndexCopy::of(checkout.path()).expect(name);
+            let discovered = discover(checkout.path()).unwrap().expect(name);
+            let copy = IndexCopy::of(&discovered).expect(name);
             let held = std::fs::read(copy.path()).ok();
             assert_eq!(held, std::fs::read(&index).ok(), "{name}: the bytes");
             assert_eq!(held.is_some(), indexed, "{name}: a copy");

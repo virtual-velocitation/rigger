@@ -52,13 +52,13 @@ const window = { addEventListener: function(){} };
 const setTimeout = function(){ return 0; };
 "#;
 
-/// A `fetch` shim resolving every `/api/graph` request from a tiny in-memory fixture: `card=<id>`
-/// serves one of three fixture cards (a code entity, its file, and the concept it realizes); a
-/// `seed=&lens=` re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body
-/// naming the requested subject (so `kgSubject`/`kgSeed` land on it); anything else (the initial
-/// whole-graph overview, `explain=`, `/api/instances`, `/api/state`) serves a graceful empty. Every
-/// other kind of URL rejects (matching the live page's own network shape when nothing else answers).
-const RESOLVING_FETCH: &str = r#"
+/// The in-memory `/api/graph` fixture the `fetch` shims answer from: `card=<id>` serves one of
+/// three fixture cards (a code entity, its file, and the concept it realizes); a `seed=&lens=`
+/// re-projection or a plain `seed=` neighborhood serves a minimal-but-valid body naming the
+/// requested subject (so `kgSubject`/`kgSeed` land on it), and a `cluster=` drill echoes its
+/// cluster key as its seed, as the route does; anything else (the initial whole-graph overview,
+/// `explain=`, `/api/instances`, `/api/state`) serves a graceful empty.
+const CARD_FIXTURE: &str = r#"
 const CODE_CARD = { id: "combat.rs::fire", kind: "code-entity", label: "fire",
   file: "combat.rs", line: "42", degree: 5, community: "combat lifecycle",
   concepts: [ { id: "concept/combat", label: "combat resolution" } ],
@@ -85,16 +85,40 @@ function __view(url){
   const s = String(url);
   const cardId = __qval(s, "card");
   if (cardId !== null) return { card: __cardFor(cardId) };
+  const cluster = __qval(s, "cluster");
+  if (cluster !== null) return { seed: cluster, depth: 1, nodes: [], edges: [] };
   const seed = __qval(s, "seed");
   if (seed !== null && __qval(s, "lens") !== null) return { subject: seed, clusters: [], edges: [], total: 0 };
   if (seed !== null) return { seed: seed, depth: 2, nodes: [], edges: [] };
   return { clusters: [], edges: [], total: 0 };
 }
+function __answer(url){
+  return { headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } };
+}
+"#;
+
+/// A `fetch` shim answering every `/api/graph` request from [`CARD_FIXTURE`] at once. Every other
+/// kind of URL rejects (matching the live page's own network shape when nothing else answers).
+const RESOLVING_FETCH: &str = r#"
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__view(url)); } });
+    return Promise.resolve(__answer(url));
   }
   return Promise.reject(new Error("no network for " + url));
+};
+"#;
+
+/// A `fetch` shim like [`RESOLVING_FETCH`] except that each `card=` request waits until the driver
+/// releases it, so a driver can see what a view draws while its card is still being fetched and
+/// what a card that lands late does. `__releaseCardsNewestFirst()` answers every held request, the
+/// latest one first.
+const HELD_CARD_FETCH: &str = r#"
+const __heldCards = [];
+function __releaseCardsNewestFirst(){ while (__heldCards.length) __heldCards.pop()(); }
+const fetch = function(url){
+  if (String(url).indexOf("/api/graph") === -1) return Promise.reject(new Error("no network for " + url));
+  if (__qval(url, "card") === null) return Promise.resolve(__answer(url));
+  return new Promise(function(resolve){ __heldCards.push(function(){ resolve(__answer(url)); }); });
 };
 "#;
 
@@ -229,14 +253,294 @@ rigger::test_cases! {
     /// chip's own taxonomy carrying the chosen subject - proven for EVERY card taxonomy (code, file,
     /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
     metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], CARD_DRIVER, HARNESS_FILE), "OK metadata-card-renders-every-taxonomy-and-chips-hand-off-correctly");
     /// RUNTIME guard proving the card's WIRING (never just its own rendering, covered above): each of
     /// the four call sites the diff added actually drives `loadCard`/`renderCard`, exactly as its own
     /// documentation promises - the seam `tests/dash_kg_graph_route.rs` and
     /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
     metadata_card_wiring_fires_at_every_render_and_drill_call_site:
-        node_harness_passes(&vm_harness(&[DOM_SHIM, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH], WIRING_DRIVER, HARNESS_FILE), "OK metadata-card-wiring-fires-at-every-call-site");
+    /// RUNTIME guard that each view is drawn in the room its panes leave: the card's dock shows
+    /// only when a card arrives, and the view is laid out once more when it does; a view drawn
+    /// for another subject never keeps the last subject's card; and a card that lands after its
+    /// view was left never opens over the next view - the latest card request is the only one
+    /// drawn.
+    every_view_is_drawn_in_the_room_its_panes_leave_and_a_late_card_is_dropped:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], PANES_DRIVER, HARNESS_FILE), "OK every-view-drawn-in-the-room-its-panes-leave");
+    /// RUNTIME guard that a shown card survives a re-render of the same subject: the overlay
+    /// toggle and a tier toggle re-draw the seed from its body without hiding, blanking or
+    /// re-fetching its card, and a re-read of the same subject under another tests filter keeps
+    /// the card shown until the re-read card replaces it.
+    a_shown_card_survives_a_re_render_of_the_same_subject:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], CARD_KEPT_DRIVER, HARNESS_FILE), "OK a-shown-card-survives-a-re-render");
+    /// RUNTIME guard that a subject with no card never narrows the drawing: neither while its
+    /// card is fetched nor after the answer names no card, and not when the subject before it
+    /// had a card.
+    a_subject_with_no_card_never_narrows_the_drawing:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, HELD_CARD_FETCH, DRAW_RECORDER], NO_CARD_DRIVER, HARNESS_FILE), "OK a-subject-with-no-card-never-narrows-the-drawing");
+    /// RUNTIME guard that each view sets or clears both panes for its own subject before it
+    /// draws: a call walk or re-projection of the seed keeps the seed's rail and card; a call
+    /// walk, drill or re-projection of another subject is drawn with neither and cards its own
+    /// subject; and a view that cannot be read shows its message with both panes hidden.
+    each_view_sets_both_panes_for_its_own_subject_before_it_draws:
+        node_harness_passes(&vm_harness(&[DOM_SHIM, CARD_FIXTURE, RESOLVING_FETCH, DRAW_RECORDER], OWN_PANES_DRIVER, HARNESS_FILE), "OK each-view-sets-both-panes-for-its-own-subject");
 }
+
+/// A recorder of the drawings: from the call on, every write of `#kgpanel` records whether the
+/// card and the rail showed while it was drawn.
+const DRAW_RECORDER: &str = r#"
+function __recordDraws(){
+  const draws = [];
+  Object.defineProperty(el("kgpanel"), "innerHTML", { get(){ return this._html; },
+    set(v){ draws.push({ card: !el("kgcard").hidden, rail: !el("kgrail").hidden }); this._html = String(v); } });
+  return draws;
+}
+function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+"#;
+
+/// Driver for the PANES against each view's drawing, while every card fetch is held.
+/// - A files-lens drill is drawn in the whole panel while its card is fetched; when the card
+///   lands it shows and the drill is drawn once more, beside it.
+/// - A concepts-lens drill of another subject is drawn without the last subject's card; leaving
+///   it before its card lands, the overview is drawn with both panes hidden, and the drill's
+///   card, released afterwards, neither shows nor draws anything.
+/// - The seed and then a re-projection of another subject are each drawn without a card;
+///   released newest first, the re-projection's card is the one shown and the seed's late card
+///   is dropped.
+const PANES_DRIVER: &str = r#"
+;(async function(){
+  await flush();
+  const draws = __recordDraws();
+  const drawn = () => JSON.stringify(draws[draws.length - 1]);
+  renderMemoryRail(null);
+  renderCard(null);
+
+  kgLens = "files";
+  await drillCluster("combat.rs");
+  await flush();
+  if (drawn() !== JSON.stringify({ card: false, rail: false }))
+    throw new Error("REGRESSION: the drill was drawn beside a card that had not arrived: " + drawn());
+  if (el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: the dock showed before its card arrived: " + JSON.stringify(el("kgcard")._html));
+  let before = draws.length;
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard").hidden !== false || el("kgcard")._html.indexOf("TOP ENTITIES") === -1)
+    throw new Error("REGRESSION: the drill's card did not show when it arrived: " + el("kgcard")._html);
+  if (draws.length !== before + 1 || drawn() !== JSON.stringify({ card: true, rail: false }))
+    throw new Error("REGRESSION: the drill was not drawn once more beside its arrived card: " + JSON.stringify(draws.slice(before)));
+
+  kgLens = "concepts";
+  await drillCluster("concept/combat");
+  await flush();
+  if (drawn() !== JSON.stringify({ card: false, rail: false }))
+    throw new Error("REGRESSION: the drill of another subject was drawn beside the last subject's card: " + drawn());
+  renderMemoryRail({ decisions: [], findings: [], concepts: [] });
+  await loadKgOverview();
+  await flush();
+  if (drawn() !== JSON.stringify({ card: false, rail: false }))
+    throw new Error("REGRESSION: the overview was drawn before it hid the panes: " + drawn());
+  before = draws.length;
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: a card that landed after its drill was left opened over the overview");
+  if (draws.length !== before)
+    throw new Error("REGRESSION: a dropped card drew the overview again: " + JSON.stringify(draws.slice(before)));
+
+  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [], memory: { decisions: [], findings: [], concepts: [] } });
+  if (drawn() !== JSON.stringify({ card: false, rail: true }))
+    throw new Error("REGRESSION: the seed was drawn before its rail, or beside a card that had not arrived: " + drawn());
+  renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
+  if (draws[draws.length - 1].card !== false)
+    throw new Error("REGRESSION: the re-projection was drawn beside a card that had not arrived: " + drawn());
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard")._html.indexOf("TOP ENTITIES") === -1)
+    throw new Error("REGRESSION: the seed's late card replaced the re-projection's: " + el("kgcard")._html);
+  if (draws[draws.length - 1].card !== true)
+    throw new Error("REGRESSION: the re-projection was not drawn once more beside its arrived card: " + drawn());
+
+  console.log("OK every-view-drawn-in-the-room-its-panes-leave");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// Driver for a shown card across re-renders of its subject: the seed's card is shown, then the
+/// overlay toggle's re-render and a tier toggle's re-render each draw the seed once more, beside
+/// the card, without the dock ever hiding or holding anything but that card and without a card
+/// request; then the tests filter re-reads the seed, and the card stays shown while the re-read
+/// card is fetched.
+const CARD_KEPT_DRIVER: &str = r#"
+;(async function(){
+  await flush();
+  await seedGraph("combat.rs::fire");
+  __releaseCardsNewestFirst();
+  await flush();
+  const dock = el("kgcard");
+  if (dock.hidden !== false || dock._html.indexOf("combat.rs:42") === -1)
+    throw new Error("setup: the seed's card must show: " + dock._html);
+  const shown = dock._html;
+  const lapses = [];
+  let hidden = dock.hidden;
+  Object.defineProperty(dock, "hidden", { configurable: true, get(){ return hidden; },
+    set(v){ if (v) lapses.push("hidden"); hidden = v; } });
+  Object.defineProperty(dock, "innerHTML", { configurable: true, get(){ return this._html; },
+    set(v){ if (String(v) !== shown) lapses.push(JSON.stringify(String(v))); this._html = String(v); } });
+  const draws = __recordDraws();
+
+  rerenderCurrentView();
+  renderGraph(kgLast);
+  await flush();
+  if (lapses.length)
+    throw new Error("REGRESSION: a re-render of the same subject hid or blanked its card: " + lapses.join(", "));
+  if (__heldCards.length)
+    throw new Error("REGRESSION: a re-render of the same subject fetched its card again (" + __heldCards.length + " requests)");
+  if (JSON.stringify(draws.map(d => d.card)) !== JSON.stringify([true, true]))
+    throw new Error("REGRESSION: each re-render must draw the seed once, beside its card: " + JSON.stringify(draws));
+
+  setTests("include");
+  await flush();
+  if (lapses.length)
+    throw new Error("REGRESSION: re-reading the same subject hid or blanked its card before the re-read card landed: " + lapses.join(", "));
+  if (__heldCards.length !== 1)
+    throw new Error("REGRESSION: re-reading the subject under another tests filter must fetch its card once: " + __heldCards.length);
+  __releaseCardsNewestFirst();
+  await flush();
+  if (dock.hidden !== false || dock._html.indexOf("combat.rs:42") === -1)
+    throw new Error("REGRESSION: the re-read card did not replace the shown one: " + dock._html);
+
+  console.log("OK a-shown-card-survives-a-re-render");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// Driver for subjects whose answer names no card: a seed with no card is drawn once, with the
+/// dock hidden, before and after its answer; a files-lens drill of a cluster with no card the
+/// same; and a subject with no card after one whose card showed is drawn without that card.
+const NO_CARD_DRIVER: &str = r#"
+;(async function(){
+  await flush();
+  const draws = __recordDraws();
+  const narrowed = () => draws.some(d => d.card);
+
+  renderGraph({ seed: "nowhere.rs::ghost", nodes: [], edges: [], memory: null });
+  await flush();
+  __releaseCardsNewestFirst();
+  await flush();
+  if (narrowed() || draws.length !== 1)
+    throw new Error("REGRESSION: a seed with no card narrowed or redrew the drawing: " + JSON.stringify(draws));
+
+  kgLens = "files";
+  await drillCluster("nowhere");
+  await flush();
+  __releaseCardsNewestFirst();
+  await flush();
+  if (narrowed() || draws.length !== 2)
+    throw new Error("REGRESSION: a drill with no card narrowed or redrew the drawing: " + JSON.stringify(draws));
+
+  renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [], memory: null });
+  __releaseCardsNewestFirst();
+  await flush();
+  if (el("kgcard").hidden !== false) throw new Error("setup: the seed's card must show");
+  const from = draws.length;
+  renderGraph({ seed: "nowhere.rs::ghost", nodes: [], edges: [], memory: null });
+  await flush();
+  __releaseCardsNewestFirst();
+  await flush();
+  if (draws.slice(from).some(d => d.card) || el("kgcard").hidden !== true)
+    throw new Error("REGRESSION: a subject with no card was drawn beside the last subject's card: " + JSON.stringify(draws.slice(from)));
+
+  console.log("OK a-subject-with-no-card-never-narrows-the-drawing");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
+
+/// Driver for each view's own panes, recorded at each drawing of the panel: the seed of `fire`
+/// (its rail and card shown), then a call walk of `fire` and one of `reload`; the seed of
+/// `reload` and a call walk of `fire`; a files-lens and a code-lens drill; a re-projection of
+/// another subject and one of the seed; then every view whose read fails, each after the seed of
+/// `fire` again.
+const OWN_PANES_DRIVER: &str = r#"
+;(async function(){
+  await flush();
+  const draws = __recordDraws();
+  const at = () => JSON.stringify(draws[draws.length - 1]);
+  const both = JSON.stringify({ card: true, rail: true });
+  const neither = JSON.stringify({ card: false, rail: false });
+  const card = () => (el("kgcard").hidden ? "" : el("kgcard")._html);
+  const MEMORY = { decisions: [], findings: [], concepts: [] };
+  const seed = async id => {
+    renderGraph({ seed: id, nodes: [], edges: [], memory: MEMORY });
+    await flush();
+    if (el("kgrail").hidden) throw new Error("setup: the seed of " + id + " must show its rail");
+  };
+
+  await seed("combat.rs::fire");
+  await seedCalls("combat.rs::fire", "down");
+  if (at() !== both || card().indexOf("combat.rs:42") === -1)
+    throw new Error("REGRESSION: the call walk of the seed was drawn without the seed's rail or card: " + at());
+  await seedCalls("combat.rs::reload", "up");
+  if (at() !== neither)
+    throw new Error("REGRESSION: the call walk of another subject was drawn beside the seed's panes: " + at());
+  await flush();
+  if (!el("kgcard").hidden || !el("kgrail").hidden)
+    throw new Error("REGRESSION: the call walk of a subject with no card kept the seed's panes open");
+
+  await seed("combat.rs::reload");
+  await seedCalls("combat.rs::fire", "down");
+  if (at() !== neither)
+    throw new Error("REGRESSION: the call walk of another subject was drawn beside the last seed's rail: " + at());
+  await flush();
+  if (card().indexOf("combat.rs:42") === -1 || !el("kgrail").hidden)
+    throw new Error("REGRESSION: the call walk must card its own seed and show no other subject's rail: " + card());
+
+  await seed("combat.rs::fire");
+  kgLens = "files";
+  await drillCluster("combat.rs");
+  if (at() !== neither)
+    throw new Error("REGRESSION: a files-lens drill was drawn beside the seed's rail or card: " + at());
+  await seed("combat.rs::fire");
+  kgLens = "code";
+  await drillCluster("community/1/0");
+  if (at() !== neither)
+    throw new Error("REGRESSION: a code-lens drill was drawn beside the seed's rail or card: " + at());
+  await flush();
+
+  await seed("combat.rs::fire");
+  renderReprojection({ subject: "combat.rs", clusters: [], edges: [], total: 0 });
+  if (at() !== neither)
+    throw new Error("REGRESSION: a re-projection of another subject was drawn beside the seed's rail or card: " + at());
+  await flush();
+  await seed("combat.rs::fire");
+  renderReprojection({ subject: "combat.rs::fire", clusters: [], edges: [], total: 0 });
+  if (at() !== both)
+    throw new Error("REGRESSION: a re-projection of the seed was drawn without the seed's rail or card: " + at());
+  await flush();
+
+  const answered = __view;
+  let failing = false;
+  __view = function(url){ if (failing) throw new Error("unreadable"); return answered(url); };
+  const unreadable = [
+    ["the neighborhood", () => seedGraph("combat.rs")],
+    ["the path", () => { kgSeed = "combat.rs::fire"; return pathTo("combat.rs"); }],
+    ["the files-lens drill", () => { kgLens = "files"; return drillCluster("combat.rs"); }],
+    ["the call walk", () => seedCalls("combat.rs::fire", "down")],
+    ["the re-projection", () => reprojectSubject("combat.rs::fire")],
+    ["the overview", () => loadKgOverview()]
+  ];
+  for (const [name, show] of unreadable) {
+    failing = false;
+    await seed("combat.rs::fire");
+    failing = true;
+    await show();
+    if (at() !== neither)
+      throw new Error("REGRESSION: " + name + ", unreadable, showed its message beside the last subject's panes: " + at());
+    await flush();
+    if (!el("kgcard").hidden || !el("kgrail").hidden)
+      throw new Error("REGRESSION: a pane opened over the message of " + name);
+  }
+
+  console.log("OK each-view-sets-both-panes-for-its-own-subject");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"#;
 
 /// Driver for the CARD's OWN WIRING (spec 63 c2): `renderCard`/`loadCard` are proven above in
 /// isolation (called directly with fixture data), which is structurally blind to whether the
@@ -253,6 +557,9 @@ rigger::test_cases! {
 const WIRING_DRIVER: &str = r#"
 ;(async function(){
   function flush(){ return (async()=>{ for (let k=0;k<40;k++) await Promise.resolve(); })(); }
+  // The page's own on-load overview settles first, so it is never a later view than the call
+  // site driven below (a later view's hidden card drops an earlier view's card).
+  await flush();
 
   // --- renderGraph(g) must card g.seed -----------------------------------------------------
   renderGraph({ seed: "combat.rs::fire", nodes: [], edges: [] });

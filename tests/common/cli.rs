@@ -1727,6 +1727,13 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.
+/// The code store of the repository `root` lies in, discovered there.
+#[cfg(feature = "symbols")]
+pub fn repository_code_store(root: &Path) -> rigger::code_store::CodeStore {
+    let checkout = rigger_worktree_git::discover::discover(root).expect("discovery reads");
+    rigger::code_store::CodeStore::in_repository(checkout.expect("a repository"))
+}
+
 #[cfg(feature = "symbols")]
 pub struct BuiltGraph {
     pub records: Projector,
@@ -1738,7 +1745,7 @@ impl BuiltGraph {
     /// The project at `root` as its last `graph build` left it: the code store is read, never
     /// advanced, so a build that left it behind the head fails here.
     pub fn of(root: &Path) -> Self {
-        let opened = rigger::code_store::CodeStore::in_repository(root)
+        let opened = repository_code_store(root)
             .open(rigger_store::code::Mode::Read)
             .expect("the code store opens");
         assert!(

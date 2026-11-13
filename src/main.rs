@@ -168,8 +168,8 @@ fn main() {
             Ok(())
         }
         other => {
-            eprintln!("rigger: unknown command {other:?}");
-            eprintln!("known commands: {}", SUBCOMMANDS.join(", "));
+            rigger::whole_line::say(format_args!("rigger: unknown command {other:?}"));
+            rigger::whole_line::say(format_args!("known commands: {}", SUBCOMMANDS.join(", ")));
             usage();
             std::process::exit(2);
         }
@@ -178,7 +178,7 @@ fn main() {
     let code = match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("rigger: {e}");
+            rigger::whole_line::say(format_args!("rigger: {e}"));
             1
         }
     };
@@ -390,7 +390,14 @@ storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n";
 
 fn usage() {
-    eprint!("{USAGE_TEXT}");
+    say_text(USAGE_TEXT);
+}
+
+/// Say `text`, lines carrying their own newlines, on stderr in one write.
+fn say_text(text: &str) {
+    rigger::whole_line::on_stderr(|err| {
+        rigger::whole_line::write_whole(err, format_args!("{text}"))
+    });
 }
 
 /// The block, or blocks, of [`USAGE_TEXT`] that document `name`: each line `  rigger <name>` with
@@ -444,17 +451,19 @@ fn answer_help(sub: &str, rest: &[String]) -> Option<i32> {
     }
     let entry = usage_entry(sub);
     if entry.is_empty() {
-        eprintln!("rigger: the usage text has no entry for {sub:?}");
+        rigger::whole_line::say(format_args!(
+            "rigger: the usage text has no entry for {sub:?}"
+        ));
         return Some(1);
     }
-    eprint!("{entry}");
+    say_text(&entry);
     Some(0)
 }
 
 /// `rigger help [<command>]`: the usage text, or given a command with an entry, that entry alone.
 fn help(rest: &[String]) {
     match rest.first().map(|name| usage_entry(name)) {
-        Some(entry) if !entry.is_empty() => eprint!("{entry}"),
+        Some(entry) if !entry.is_empty() => say_text(&entry),
         _ => usage(),
     }
 }

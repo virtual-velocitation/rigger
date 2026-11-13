@@ -13,11 +13,17 @@ The reference point every run file's comparison table starts from: the loop's ac
  "escalations": 0.5,
  "agent_busy_hours_per_unit": 3.31,
  "wall_hours_per_criterion_unit": null,
- "rework_share": null
+ "rework_share": null,
+ "units_in_flight_mean": 1.367,
+ "units_in_flight_max": 9,
+ "serial_share": 0.0,
+ "queued_share": 0.0,
+ "chain_share": 0.315,
+ "co_schedulable_share": 0.0
 }
 ```
 
-Every figure in the block is the script's own measure of those 14 runs, totalled over their units, so a run file compares like with like. The figures first recorded for the same runs agree with it but one:
+Every figure in the block but the scheduling ones is the script's own measure of those 14 runs, totalled over their units, so a run file compares like with like. The scheduling figures are pooled the same way and are approximate (see Scheduling below). The figures first recorded for the same runs agree with the script but one:
 
 | Metric | Recorded | Script | Difference | Reason |
 |---|---|---|---|---|
@@ -52,6 +58,14 @@ Two runs of the same period stopped before any unit integrated, 61a52a6d (2026-0
 
 1 + rejects_per_unit + gate_fails_per_unit is not attempts_per_unit, by definition: attempts count the failures of units that integrated, while rejects and gate fails count every failure in the run, a unit that never integrated included.
 
+**Scheduling.** The shares are the 14 runs' live seconds in each slot state over their 467.134 live wall hours: serial 0.218 h, queued 0.059 h, chain 146.93 h. The in-flight mean is weighted by live wall hours, and the maximum is the highest of the runs'. They are approximate, not the method's figures:
+
+- None of the 14 runs recorded a heartbeat or a hold, so a driver outage counts as live time and a slot stays open across it.
+- The units in flight are computed for 9 of the 14 runs. cf4ceb24, ceb43bf1, a56448fd, 4dabfe2c and 8220e91a recorded no gate verdict, so their units in flight would count agent sessions only, and the block leaves them out. On the 9 runs alone the shares are serial 0.001, queued 0.0 and chain 0.208.
+- The width bound differed between runs: the per-run maxima of units in flight are 2, 2, 2, 2, 3, 3, 4, 5 and 9.
+
+co_schedulable_share does not depend on time and is exact for all 14 runs. None of the 96 grounded units is co-schedulable: all 303 grounded pairs conflict, and 72 of them ran together. No run recorded a radius before its unit started, so the radius rule set no schedule.
+
 ## Method
 
 Every figure is read one run at a time from the event store's run stream (`proj-<project>-run`), except the grep fallbacks and the driver's heartbeat, which the progress store holds, and a tested commit's tree, which the repository resolves. The script opens both stores in SQLite's read-only mode with `query_only` set, so it cannot write to either. A run's slice runs from its first `RunStarted` to the first `RunStarted` of another run, so a relaunch of the same run stays in its slice.
@@ -83,9 +97,16 @@ Every figure is read one run at a time from the event store's run stream (`proj-
 | repeated_hours | the hours of three repeats the log can show. `post_merge_same_tree`: post-merge batteries whose last fresh verdict tested a commit with the same tree as the unit's last pre-merge battery's commit (the commit is the one an `input_digest` names), so the merge changed nothing they gate; null when a tree does not resolve in the repository. `retry_batteries`: pre-merge batteries opened by a writer whose spawn id is attempt 1 or later, re-running the battery after a failure. `same_input_reruns`: fresh verdicts of a gate over an `input_digest` an earlier fresh verdict of that gate already judged. A battery's hours run from its opening to its last fresh verdict, outage seconds removed. |
 | relaunched_sessions | `UnitStatus` spawn-session records whose `resumed_from` names a session other than their own `session_id`: launches that continued an earlier session. It counts relaunches, not what stopped the earlier session. |
 | failure_rework_hours | per `UnitFailed`, by position: its unit's hours from the failure to the unit's next `UnitFailed`, its next `integrate-merge-attempt` status or its `UnitIntegrated`, whichever comes first, outage seconds removed |
+| units_in_flight_mean, units_in_flight_max | over the live wall time (first `RunStarted` to last landing, outage seconds removed): the started units with a `SpawnRequested` open to its `SpawnResult` or a gate battery open, as a time-weighted mean and a maximum. Null when the slice holds no spawn record; agent sessions only, and labelled so, when it holds no `GateVerdict`. |
+| slot_hours | the live wall time by slot state, in hours. A unit holds a slot from its first `UnitStarted` to its `UnitIntegrated` or `UnitEscalated`. A unit is ready at the latest first `UnitIntegrated` of the needs its `UnitStarted` names: at the run's start with none, and never while a need has not integrated. A need naming no started unit is a stage, met when every unit that joins no stage has integrated. Each second takes the first state that applies: `idle`; with one slot held, `solo_ready_held` or `solo_ready_waiting` (a unit not started is ready, inside or outside a `RunHeld` to `RunReleased` span), `solo_needs_waiting` (a unit not started, none ready), `solo_none_left`; with two or more, `multi_ready_waiting` (a unit not started is ready) or `multi`. |
+| serial_hours, queued_hours, chain_hours | `slot_hours.solo_ready_waiting`, `slot_hours.multi_ready_waiting` and `slot_hours.solo_needs_waiting` |
+| serial_share, queued_share, chain_share | each of those hours over the live wall time |
+| co_schedulable_share | derived, since no event carries it: from each unit's latest `BlastRadiusComputed` (`safe` files), two units conflict when their radii share a file or either is empty; in unit id order each unit joins the first batch it conflicts with no member of; the units in batches of two or more over the grounded units, those with a radius. It reproduces the share the driver's closing line states for spec 121's landed run: 0.0%, 24 grounded units, 1 with an empty radius. |
+| grounded_units, empty_radii, conflicting_pairs, conflicting_pairs_ran_together | the units with a `BlastRadiusComputed`, those whose radius is empty, the grounded pairs that conflict, and those of them whose slots overlapped in live time |
+| radii_recorded_before_start | the units whose first `BlastRadiusComputed` precedes their first `UnitStarted` in the stream. A wave that applies the radius rule records a ready unit's radius before admitting it. |
 | grounding_share | unmeasured, always null: no event marks the end of an agent's orientation, and `FileTouched` is recorded from the diff after the gate battery, so no event times a session's first edit |
 | context restarts | unmeasured, no key: `SpawnResult` records no end reason, so a session that ran out of context is not told from one that finished; relaunched_sessions counts relaunches whatever stopped them |
-| labels | `run`: `landed`, or `interim` with what is still open; `time_shares`: whether the shares follow the outage rule or are approximate; `grep_fallbacks`: self-reported; one line each for hours_by_label, gate_hours_by_gate, repeated_hours (and which trees did not resolve), failure_rework_hours and grep_fallbacks_by_target |
+| labels | `run`: `landed`, or `interim` with what is still open; `time_shares`: whether the shares follow the outage rule or are approximate; `grep_fallbacks`: self-reported; one line each for hours_by_label, gate_hours_by_gate, repeated_hours (and which trees did not resolve), failure_rework_hours and grep_fallbacks_by_target; `scheduling`: the scheduling definitions, and whether the figures are approximate (no gate verdict, or no heartbeat or hold) |
 
 **The outage rule.** While it runs, the driver records a `SupervisorBeat` on the run's progress stream every 30 seconds. An outage is:
 
@@ -111,6 +132,23 @@ Later runs, measured by the script. The runs differ in conditions and are few, s
 | 119 | 5482845d | 17 (16) | 12% | 2.47 | 1.47 | 0.00 | 0 | - | 3.44 | - |
 | 123 | 2f782f38 | 5 (4) | 80% | 1.20 | 0.40 | 0.00 | 0 | 1.77 | 2.99 | 2.99 |
 | 121, first 16 units | 050ed244 | 16 (16) | 81% | 1.19 | 0.19 | 0.00 | 0 | 1.44 | 6.95 | 1.70 |
+
+Their scheduling, for the whole of each run (spec 121's landed run, all 25 units). Live wall hours are wall hours for the runs with no heartbeat or hold, and units in flight need spawn records:
+
+| Spec | Run | Live wall h | In flight mean / max | Serial h | Queued h | Chain h | Co-schedulable | Conflicting pairs (ran together) |
+|---|---|---|---|---|---|---|---|---|
+| 101 | 1e8f9a61 | 81.413 | 1.065 / 2 | 1.19 | 0.0 | 28.731 | 0.0 | 28 of 28 (3) |
+| 112 | e0ceb29b | 16.986 | 1.457 / 2 | 0.705 | 6.902 | 4.89 | 0.0 | 28 of 28 (4) |
+| 113 | efafd1a6 | 46.113 | 1.103 / 2 | 35.09 | 3.729 | 3.733 | 0.0 | 55 of 55 (6) |
+| 107 | dc9cca7d | 72.441 | - | 0.0 | 0.0 | 72.059 | 0.0 | 231 of 231 (0) |
+| 116 | 98df67ad | 21.604 | - | 0.0 | 0.0 | 21.337 | 0.0 | 120 of 120 (0) |
+| 119 | 5482845d | 55.093 | - | 0.0 | 0.0 | 54.833 | 0.0 | 153 of 153 (0) |
+| 123 | 2f782f38 | 11.951 | 0.995 / 1 | 0.0 | 0.0 | 9.256 | 0.0 | 15 of 15 (0) |
+| 121 | 050ed244 | 41.092 | 1.591 / 2 | 0.025 | 23.038 | 13.565 | 0.0 | 276 of 276 (15) |
+
+- **107, 116, 119 and 123** each planned their criterion units as one chain, every unit needing the one before it, so most of their live time is chain hours.
+- **113's** 35.09 serial hours include the 33.8-hour silence noted below, from 0.46 to 34.30 hours into the run. Its unit c2 was ready at 0.30 hours and started at 35.38.
+- **121** ran under a width bound of two. Ready units waited 23.038 hours behind two running ones, and only 0.025 hours behind one.
 
 Where these differ from the figures first recorded for the same runs:
 
