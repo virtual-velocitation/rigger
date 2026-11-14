@@ -75,11 +75,14 @@ defaults:
   # can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
-  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit
-  # owns a debug build cache of about 50 GB on this crate, and a driver death makes every
-  # live unit rebuild at once; five in parallel filled /home twice on 2026-09-15 (Steam
-  # holds most of the disk). Two bounds the worst case to about 100 GB of caches.
-  max_parallel_units: 2
+  # How many implement units build at once (spec 89, per-unit pipelining). Four is the most one
+  # driver process runs side by side (the conductor's fan-out pool). Each live unit owns a debug
+  # build cache of about 50 GB on this crate, so four hold about 200 GB, and a driver death makes
+  # every live unit rebuild at once: `.cargo/config.toml` caps each cargo at four compiler jobs,
+  # which bounds that rebuild's memory. Gate commands still take turns on the machine-wide build
+  # slot (`build.max_concurrent` below). At a width of two, ready units waited behind the bound
+  # for 23 of a run's 41 live hours (docs/evaluation/20261106-0135-050ed244.md).
+  max_parallel_units: 4
 
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
