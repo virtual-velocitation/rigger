@@ -1563,8 +1563,10 @@ const LABEL_DRIVER: &str = r#"
     ["error=no%20graph%20has%20been%20built", "no graph has been built", true],
     ["", "no graph has been built", true],
   ];
+  // Each read is the latest of its kind, so its reply answers.
+  const live = function(){ return true; };
   for (const [query, shown, error] of rows) {
-    await graphFetch("/api/graph?" + query);
+    await graphFetch("/api/graph?" + query, live);
     if (box.hidden) throw new Error(query + ": the header is hidden");
     if (box.textContent !== shown) throw new Error(query + ": the header shows " + JSON.stringify(box.textContent));
     if (box.classList.contains("kglabel-error") !== error) throw new Error(query + ": error marking is not " + error);
@@ -1720,7 +1722,7 @@ const DEFAULT_GRAIN_DRIVER: &str = r#"
   };
   const emptied = async function(){
     kgLens = "code";
-    const box = { value: "", dataset: {}, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
+    const box = { value: "", dataset: {}, isConnected: true, closest: function(sel){ return sel === "[data-lens-res]" ? this : null; } };
     el("kgpanel")._listeners.change.forEach(function(fn){ fn({ target: box }); });
     await flush();
   };

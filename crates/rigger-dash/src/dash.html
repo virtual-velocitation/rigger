@@ -645,12 +645,13 @@ let kgTests = (function () {
 // registry projection and is NEVER threaded - it lists every instance regardless of the selection.
 // Every graph read goes through here, so the graph header states what the graph on show describes:
 // the label of the read that answered it, or why no graph could be read (spec 6.1). The server sends
-// both beside the body, percent-encoded; a reply carrying neither leaves the header as it was.
-async function graphFetch(path) {
+// both beside the body, percent-encoded; a reply carrying neither, or answering a read `live` says a
+// newer one superseded (kgLatest), leaves the header as it was.
+async function graphFetch(path, live) {
   const resp = await fetch(apiUrl(path), { cache: "no-store" });
   const label = resp.headers.get("X-Rigger-Graph-Label");
   const error = resp.headers.get("X-Rigger-Graph-Error");
-  if (label !== null || error !== null) {
+  if (live() && (label !== null || error !== null)) {
     kgUnread = error !== null ? decodeURIComponent(error) : null;
     const box = el("kglabel");
     box.textContent = decodeURIComponent(error !== null ? error : label);
@@ -658,6 +659,15 @@ async function graphFetch(path) {
     box.hidden = false;
   }
   return resp;
+}
+
+// A sequence of graph reads of which only the latest answers: `next()` starts a read and answers its
+// check, true while no later read of the sequence has started, so a reply landing after a newer request
+// is dropped whole; `now()` answers the check of the latest read started, for a read made on its behalf.
+function kgLatest() {
+  let latest = 0;
+  const check = (ask) => () => ask === latest;
+  return { next: () => check(++latest), now: () => check(latest) };
 }
 
 // Why the graph on show could not be read, as the header states it, or null when it was read; set
@@ -949,8 +959,8 @@ let kgViewData = null;
 // so every redraw of it (a resize, the overlay toggle, the card docking) shows it again: the call
 // view's frontier choice list, the candidates a clicked frontier node offers; the keys of the
 // rationale disclosures open in it (rememberDisclosures records them); and the grain being typed in
-// the derived lens's resolution box, until a change commits it (null while none is). A new view
-// (holdKgView given a new body) shows none of it.
+// the derived lens's resolution box, until a commit takes it (null while none is). A new view
+// (holdKgView given a new body) shows none of it but the grain being typed in a box holding the focus.
 function kgShownNone() { return { choices: [], open: new Set(), grain: null }; }
 let kgShown = kgShownNone();
 
@@ -1106,11 +1116,11 @@ function renderCard(card, body) {
     + '<div class="kgcard-prov">' + prov + '</div>' + rows + '</div>';
 }
 
-// The card request the dock answers: the latest request's number (a card that lands after a newer
-// request - another subject carded, or the card hidden - is dropped, so a slow card never opens over
-// a later view), the subject it asked for and under which graph-read params, and whether its answer
-// is still awaited.
-let kgCardAsk = 0;
+// The card requests the dock answers, of which only the latest answers (a card that lands after a
+// newer request - another subject carded, or the card hidden - is dropped, so a slow card never opens
+// over a later view), the subject the latest asked for and under which graph-read params, and whether
+// its answer is still awaited.
+const kgCardReads = kgLatest();
 let kgCardSubject = null;
 let kgCardAsked = null;
 let kgCardAwaited = false;
@@ -1129,7 +1139,7 @@ async function loadCard(id, fresh) {
   // The subject under the params every graph read carries now (the tests filter, the instance).
   const asked = LIVE && id ? id + "\n" + apiUrl("/api/graph") : null;
   if (asked !== null && asked === kgCardAsked && (kgCardAwaited || !fresh)) return;
-  const ask = ++kgCardAsk;
+  const live = kgCardReads.next();
   if (asked === null || id !== kgCardSubject) renderCard(null);
   kgCardSubject = asked === null ? null : id;
   kgCardAsked = asked;
@@ -1137,9 +1147,9 @@ async function loadCard(id, fresh) {
   if (asked === null) return;
   let answer = null;
   try {
-    answer = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id))).json();
+    answer = await (await graphFetch("/api/graph?card=" + encodeURIComponent(id), live)).json();
   } catch (e) { /* no card: the dock hides */ }
-  if (ask !== kgCardAsk) return;
+  if (!live()) return;
   kgCardAwaited = false;
   const dock = el("kgcard");
   const shown = !!dock && !dock.hidden;
@@ -1163,6 +1173,7 @@ function onLensPick(lens) {
 // lens= is explicitly present, so this composition fires exactly here; a lens-absent seed request stays
 // the byte-identical spec-30 neighborhood. A static export / failed fetch degrades to a message.
 async function reprojectSubject(subject) {
+  const live = kgViewReads.next();
   kgSubject = subject;
   kgSeed = null;
   syncSubjectLens();
@@ -1171,14 +1182,9 @@ async function reprojectSubject(subject) {
       + '<div class="empty">the subject re-projection is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const rp = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
-      + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution))).json();
-    await overlayFor(rp.nodes);
-    renderReprojection(rp);
-  } catch (e) {
-    showKgMessage('<div class="empty">the subject re-projection is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(subject)
+    + "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution), live),
+    (rp) => renderReprojection(rp), '<div class="empty">the subject re-projection is unavailable</div>');
 }
 
 // Draw a SUBJECT x LENS re-projection (the /api/graph?seed=&lens= body, spec 55 c1/c2): the subject's
@@ -1224,11 +1230,9 @@ function renderReprojection(rp) {
       + shared.map(s => '<span class="kgsharedmember' + marks.cls({ id: s }) + '">' + esc(s)
         + marks.tag({ id: s }) + '</span>').join(", ") + '</div>' : '';
   if (!clusters.length) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = toolbar
-        + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
-        + unresolvedSection + sharedSection;
-    });
+    kgWritePanel(toolbar
+      + kgNothingDrawn(emptyCell || '<div class="empty">this subject has no members under this lens</div>')
+      + unresolvedSection + sharedSection);
     return;
   }
   const nodes = clusters.map(c => ({ id: c.key, count: c.count, kind: c.kind, label: c.label, tests: c.tests || 0 }));
@@ -1251,22 +1255,24 @@ function renderReprojection(rp) {
 }
 
 // Fetch the rationale for a view's nodes when the overlay is ON (a no-op when off), so a freshly
-// fetched view carries its badges without a second round-trip. Best-effort inside loadRationale.
-async function overlayFor(nodes) {
-  if (kgOverlay) await loadRationale(nodes || []);
+// fetched view carries its badges without a second round-trip, as part of the view read `live`.
+// Best-effort inside loadRationale.
+async function overlayFor(nodes, live) {
+  if (kgOverlay) await loadRationale(nodes || [], live);
 }
 
 // Batch-fetch the rationale for the visible nodes over the c3 data path - GET /api/graph?explain=
 // <id>[,<id>...] in ONE request - and key it by node id (spec 55 c4). Only nodes carrying a decision /
 // finding / lesson come back, so the client badges exactly those and no others. A static export /
-// empty node set / failed fetch leaves the overlay empty, never an error.
-async function loadRationale(nodes) {
+// empty node set / failed fetch leaves the overlay empty, never an error. `live` is the check of the
+// view read it is made for (kgLatest).
+async function loadRationale(nodes, live) {
   kgRationale = {};
   const ids = (nodes || []).map(n => n.id).filter(Boolean);
   if (!LIVE || !ids.length) return;
   try {
     const body = await (await graphFetch("/api/graph?explain="
-      + ids.map(encodeURIComponent).join(","))).json();
+      + ids.map(encodeURIComponent).join(","), live)).json();
     (body.nodes || []).forEach(nr => { kgRationale[nr.node] = nr.leaves || []; });
   } catch (e) { /* the overlay is best-effort; no badges on failure */ }
 }
@@ -1311,7 +1317,7 @@ async function setOverlay(on) {
   kgOverlay = on;
   syncOverlayToggle();
   const nodes = (kgViewData && kgViewData.nodes) || [];
-  if (on) await loadRationale(nodes);
+  if (on) await loadRationale(nodes, kgViewReads.now());
   else { kgRationale = {}; kgShown.open.clear(); }
   rerenderCurrentView();
 }
@@ -1397,8 +1403,7 @@ function renderGraph(g) {
         + '</b> (' + esc(path.length - 1) + ' hop' + (path.length - 1 === 1 ? '' : 's') + ')' : '')
     + '</div>' + callsOffer;
   if (!nodes.length && !edges.length) {
-    el("kgpanel").innerHTML = head
-      + kgNothingDrawn('<div class="empty">no knowledge-graph neighborhood for this node</div>');
+    kgWritePanel(head + kgNothingDrawn('<div class="empty">no knowledge-graph neighborhood for this node</div>'));
     return;
   }
   // c7 TIER FILTER: one checkbox per confidence tier, checked when that tier is currently VISIBLE.
@@ -1442,18 +1447,19 @@ function renderGraph(g) {
         ).join("") || '<div class="empty">no recorded provenance</div>')
       + '</div>'
     : "";
-  el("kgpanel").innerHTML = head + tierToggles
+  kgWritePanel(head + tierToggles
     + '<div class="kgcols">'
     + '<div><h3>Nodes</h3>' + nodeList + '</div>'
     + '<div><h3>Edges (tier-tagged)</h3>' + edgeList + '</div>'
     + '</div>'
-    + provSection;
+    + provSection);
 }
 
 // Set the KG seed to `seed` and fetch its neighborhood from the read-only GET /api/graph route. The
 // seed is encodeURIComponent'd because a graph node id carries `#` / `::` / `/` (the route
 // percent-decodes it back). A failed/absent fetch degrades to a message, never an error.
 async function seedGraph(seed) {
+  const live = kgViewReads.next();
   kgSeed = seed;
   // FOCUS this node as the subject (spec 55 c4): reveal the subject-sticky lens control so a lens flip
   // re-projects THIS subject. State-only; the neighborhood render below stays byte-identical.
@@ -1465,13 +1471,8 @@ async function seedGraph(seed) {
       + '<div class="empty">the knowledge-graph neighborhood is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2")).json();
-    await overlayFor(g.nodes);
-    renderGraph(g);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(seed) + "&depth=2", live),
+    (g) => renderGraph(g), '<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
 }
 
 // Highlight the QUERY-PATH (spec 30 c6) from the current seed to a SECOND selected node `target`: the
@@ -1482,14 +1483,10 @@ async function seedGraph(seed) {
 async function pathTo(target) {
   if (!kgSeed || kgSeed === target) { seedGraph(target); return; }
   if (!LIVE) { seedGraph(target); return; }
-  try {
-    const g = await (await graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
-      + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target))).json();
-    await overlayFor(g.nodes);
-    renderGraph(g);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
-  }
+  const live = kgViewReads.next();
+  await kgReadView(live, graphFetch("/api/graph?seed=" + encodeURIComponent(kgSeed) + "&depth=2"
+    + "&from=" + encodeURIComponent(kgSeed) + "&to=" + encodeURIComponent(target), live),
+    (g) => renderGraph(g), '<div class="empty">the knowledge-graph neighborhood is unavailable</div>');
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1505,14 +1502,20 @@ async function pathTo(target) {
 let kgMode = "overview";
 
 // Record the view the panel now holds and its body (so a toggle re-renders it in place), drop what
-// the panel showed of a view it no longer holds and where the user moved it (a new view opens fitted),
-// and bring the header's tests state up to that view. Answers whether the body is a new one (a fresh
-// read) rather than the held one drawn again.
+// the panel showed of a view it no longer holds, where the user moved it and how far the panel was
+// scrolled (a new view opens fitted, at its top with its toolbar in sight; only a redraw of the held
+// view keeps the scroll), and bring the header's tests state up to that view. The text the user is
+// typing in the grain box holding the focus is the user's, not the view's: it stays in the box, and
+// the view the reply draws reads the grain last committed. Answers whether the body is a new one (a
+// fresh read) rather than the held one drawn again.
 function holdKgView(mode, body) {
   const fresh = body !== kgViewData;
   if (fresh) {
+    const typing = kgShown.grain !== null && kgGrainBoxFocused() ? kgShown.grain : null;
     kgShown = kgShownNone();
+    kgShown.grain = typing;
     kgViewMoved = false;
+    el("kgpanel").scrollTop = 0;
   }
   kgMode = mode;
   kgViewData = body;
@@ -1548,14 +1551,15 @@ function kgSurface() {
 
 // The drawing box the drawing's slot shows at the height it has now: its surface's width, and the
 // height the panel's content box leaves below what the view puts above the drawing - its toolbar,
-// wrapped to however many lines the width needs, and any caption. A room under 200px keeps a 200px
-// drawing, and the panel scrolls. A surface with no width yet (a panel not laid out) draws at 800px,
-// and the panel's size observer redraws it once it has one.
+// wrapped to however many lines the width needs, and any caption, measured from the top of the panel's
+// content however far it is scrolled. A room under 200px keeps a 200px drawing, and the panel
+// scrolls. A surface with no width yet (a panel not laid out) draws at 800px, and the panel's size
+// observer redraws it once it has one.
 function kgMeasure() {
   const p = el("kgpanel");
   const slot = kgSurface();
   const w = slot.width || 800;
-  const above = slot.top - (p.getBoundingClientRect().top + p.clientTop);
+  const above = slot.top - (p.getBoundingClientRect().top + p.clientTop) + p.scrollTop;
   const h = Math.max(200, Math.floor(p.clientHeight - parseFloat(getComputedStyle(p).paddingBottom) - above));
   return { w: w, h: h };
 }
@@ -1579,10 +1583,10 @@ function kgDims() {
 // markup `below`. A view the user has not moved opens fitted. A moved one drawn again (the held body,
 // with what the panel shows of it now) keeps where the user moved it: its marks are laid out at the
 // size they were laid out at, so each lands where it was under the kept transform, and only its
-// surface takes the box measured now (kgResurface). The grain box keeps the focus and the caret the
-// user holds in it (kgKeepingFocus).
+// surface takes the box measured now (kgResurface). The panel keeps its scroll and the control holding
+// the focus through both writes (kgKeepingPlace).
 function kgDraw(above, draw, below) {
-  kgKeepingFocus(panel => {
+  kgKeepingPlace(panel => {
     panel.innerHTML = above + '<svg class="kgsvg" height="0"></svg>' + below;
     const dims = kgDims();
     const laid = kgViewMoved ? kgDrawn.laid : null;
@@ -1592,17 +1596,41 @@ function kgDraw(above, draw, below) {
   bindKgView();
 }
 
-// Replace the panel's markup with `write`, the grain box keeping the focus and the caret the user holds
-// in it, as a box the browser never replaced keeps them: the box the new markup writes takes them back.
-// The focus anywhere else, or a markup holding no grain box, is left as the write leaves it.
-function kgKeepingFocus(write) {
-  const panel = el("kgpanel"), held = panel.querySelector("[data-lens-res]");
-  const caret = held && held === document.activeElement ? [held.selectionStart, held.selectionEnd] : null;
+// Write the markup `html` into the panel, keeping what the user holds in it (kgKeepingPlace).
+function kgWritePanel(html) {
+  kgKeepingPlace(panel => { panel.innerHTML = html; });
+}
+
+// Replace the panel's markup with `write`, keeping what the user holds in it as a panel the browser
+// never replaced keeps it: its scroll, as far as the new markup reaches, and the keyboard focus on a
+// control in it (a lens tab, the grain box, a tier checkbox, a back link), which the control the new
+// markup writes with the same tag and data attributes takes back, a text box with its caret. A focus
+// outside the panel, or on a control the new markup does not write again, is left as the write
+// leaves it.
+function kgKeepingPlace(write) {
+  const panel = el("kgpanel"), held = document.activeElement, scroll = panel.scrollTop;
+  const key = held && panel.contains(held) ? kgControlKey(held) : null;
+  const caret = key && typeof held.selectionStart === "number" ? [held.selectionStart, held.selectionEnd] : null;
   write(panel);
-  const box = caret && panel.querySelector("[data-lens-res]");
-  if (!box) return;
-  box.focus({ preventScroll: true });
-  box.setSelectionRange(caret[0], caret[1]);
+  panel.scrollTop = scroll;
+  const back = key && panel.querySelector(key);
+  if (!back) return;
+  back.focus({ preventScroll: true });
+  if (caret) back.setSelectionRange(caret[0], caret[1]);
+}
+
+// The selector that finds the control `c` again in a new markup of the panel: its tag and each data
+// attribute it carries, or null for a control that carries none.
+function kgControlKey(c) {
+  const marks = Array.from(c.attributes).filter(a => a.name.startsWith("data-"))
+    .map(a => "[" + a.name + '="' + CSS.escape(a.value) + '"]').join("");
+  return marks ? c.localName + marks : null;
+}
+
+// The panel's grain box while it holds the focus, else null.
+function kgGrainBoxFocused() {
+  const box = el("kgpanel").querySelector("[data-lens-res]");
+  return box && box === document.activeElement ? box : null;
 }
 
 // Give the drawing's surface the box `dims` with its marks left where they were laid out: the svg takes
@@ -2172,7 +2200,13 @@ function layeredLayout(nodes, edges, width, height) {
 // transform, kgDraw and kgRedrawResized); the drag move/up live on `window`
 // (installed once, below) so a drag that leaves the svg still tracks.
 let kgView = { k: 1, x: 0, y: 0 };
+// The press on the drawing being dragged: where it was pressed, the transform it started from, and
+// whether it has passed KG_PAN_THRESHOLD and pans.
 let kgDrag = null;
+// The pixels the pointer may travel from a press on the drawing and still click: a press that never
+// travels further pans nothing, so a click's wobble leaves the view unmoved; one that does pans by
+// all of its travel until its release.
+const KG_PAN_THRESHOLD = 4;
 // Whether the user has panned or zoomed the view the panel holds since it opened: a redraw of that view
 // (kgDraw, kgRedrawResized) keeps a moved view's transform and marks and re-fits an unmoved one; a new
 // view (holdKgView) opens unmoved.
@@ -2248,7 +2282,7 @@ function bindKgView() {
     applyKgView();
   });
   svg.addEventListener("mousedown", ev => {
-    kgDrag = { sx: ev.clientX, sy: ev.clientY, ox: kgView.x, oy: kgView.y };
+    kgDrag = { sx: ev.clientX, sy: ev.clientY, ox: kgView.x, oy: kgView.y, panning: false };
   });
 }
 
@@ -2268,17 +2302,13 @@ function renderKgOverview(ov) {
   // community (the offline detection pass never ran at it). Show the server's prompt, not an error,
   // and keep the lens selector so the operator can switch back to files or another grain.
   if (ov && ov.empty_state) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-        + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>');
-    });
+    kgWritePanel('<div class="kgtoolbar">' + controls + '</div>'
+      + kgNothingDrawn('<div class="empty">' + esc(ov.empty_state) + '</div>'));
     return;
   }
   if (!clusters.length) {
-    kgKeepingFocus(panel => {
-      panel.innerHTML = '<div class="kgtoolbar">' + controls + '</div>'
-        + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>');
-    });
+    kgWritePanel('<div class="kgtoolbar">' + controls + '</div>'
+      + kgNothingDrawn('<div class="empty">empty graph - nothing to explore yet</div>'));
     return;
   }
   // A code-lens community super-node carries its deterministic display `label` (its highest-degree
@@ -2311,12 +2341,22 @@ function renderKgOverview(ov) {
 // Commit the code-lens RESOLUTION grain (spec 53 c4) the grain box holds: a grain other than the one
 // the view reads re-loads the overview at it, and an empty text names no grain, so the server reads
 // its default and the reply names it. A text equal to the grain the view reads commits nothing, so
-// Enter and the change the browser fires with it read once.
+// Enter and the change the browser fires with it read once. Either way the text is no longer a draft:
+// the box shows the grain the view reads until more is typed.
 function commitGrain(text) {
   const grain = (text || "").trim();
+  kgShown.grain = null;
   if (grain === kgResolution) return;
   kgResolution = grain;
   loadKgOverview();
+}
+
+// The grain box `res` committed, by its change, by Enter or by leaving it: asked once the event is
+// done, and only while the box is still in the page. A box the panel's markup replaces was not
+// committed by the user: a browser may send it change and focusout as it goes, while it is still in
+// the page, and its draft and focus pass to the box written in its place (kgKeepingPlace).
+function grainCommitted(res) {
+  Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
 }
 
 // The overview toolbar's LENS selector (spec 53 c4): `files` (the default directory/kind fold) and
@@ -2324,7 +2364,7 @@ function commitGrain(text) {
 // kgpanel click routes `data-lens` (switch lens) and the grain box's commit (commitGrain) switches
 // grain, each re-loading the overview; the active lens is marked. The box shows the grain being typed
 // (kgShown.grain) over the one the view reads, so a redraw keeps the draft, and every markup holding the
-// box is written keeping its focus and caret (kgKeepingFocus).
+// box is written keeping its focus and caret (kgKeepingPlace).
 function lensControls() {
   const tab = (id, text) => '<a href="#" class="kglens' + (kgLens === id ? " active" : "")
     + '" data-lens="' + id + '">' + text + '</a>';
@@ -2357,8 +2397,8 @@ function renderKgDrill(nb) {
   setSubjectPanes(null, kgLens === "files" || kgLens === "concepts" ? key : null, fresh);
   const back = '<a class="kgback" href="#" data-kgback="1">&larr; overview</a>';
   if (!nodes.length) {
-    el("kgpanel").innerHTML = '<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
-      + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>');
+    kgWritePanel('<div class="kgtoolbar">' + back + ' &middot; cluster <b>' + esc(key)
+      + '</b></div>' + kgNothingDrawn('<div class="empty">this cluster has no members to show</div>'));
     return;
   }
   const cap = (nb && nb.truncated)
@@ -2409,10 +2449,30 @@ function railOf(subject) {
 }
 
 // The panel shows a message in place of a view (a static export, or a read that failed): no
-// subject is drawn, so both panes hide first.
+// subject is drawn, so both panes hide first, and the panel holds no view, so nothing that redraws the
+// held view (the overlay toggle, the card docking) draws the one the message replaced over it.
 function showKgMessage(html) {
   setSubjectPanes(null, null);
-  el("kgpanel").innerHTML = html;
+  holdKgView(kgMode, null);
+  kgWritePanel(html);
+}
+
+// The panel's view reads (the overview, a drill, a re-projection, a seeded neighborhood, a path, a call
+// walk): each supersedes any still in flight, so the panel draws the view asked for last.
+const kgViewReads = kgLatest();
+
+// Draw the view the read `reply` answers for the view read `live` with `draw`, its rationale read first
+// while the overlay is on, or show the message `failed` when the read fails. A read a newer one
+// superseded draws, reads and shows nothing.
+async function kgReadView(live, reply, draw, failed) {
+  try {
+    const body = await (await reply).json();
+    if (!live()) return;
+    await overlayFor(body.nodes, live);
+    if (live()) draw(body);
+  } catch (e) {
+    if (live()) showKgMessage(failed);
+  }
 }
 
 // Load the whole-graph clustered OVERVIEW - the DEFAULT KG view (spec 42 c5). Fetches the no-argument
@@ -2420,46 +2480,39 @@ function showKgMessage(html) {
 // degrades to a message. The panel never throws. It also CLEARS the focused subject (spec 55 c4): the
 // whole-graph overview is the subject-less altitude, so the subject-sticky lens control is re-hidden.
 async function loadKgOverview() {
+  const live = kgViewReads.next();
   kgSeed = null;
   kgSubject = null; syncSubjectLens();
   if (!LIVE) {
     showKgMessage('<div class="empty">the whole-graph explorer is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
-    // under a derived lens; the files lens sends no lens param, so the request - and the response -
-    // stay byte-identical.
-    const q = (kgLens === "code" || kgLens === "concepts")
-      ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
-      : "";
-    const ov = await (await graphFetch("/api/graph" + q)).json();
-    renderKgOverview(ov);
-  } catch (e) {
-    showKgMessage('<div class="empty">the knowledge graph is unavailable</div>');
-  }
+  // The lens rides the query (spec 53 c4 / spec 54 c3): `lens=<code|concepts>&resolution=<grain>`
+  // under a derived lens; the files lens sends no lens param, so the request - and the response -
+  // stay byte-identical.
+  const q = (kgLens === "code" || kgLens === "concepts")
+    ? "?lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+    : "";
+  await kgReadView(live, graphFetch("/api/graph" + q, live), (ov) => renderKgOverview(ov),
+    '<div class="empty">the knowledge graph is unavailable</div>');
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
 // module key carries `/`) and render its members. A static export / failed fetch degrades to a message.
 async function drillCluster(key) {
+  const live = kgViewReads.next();
   kgSeed = null;
   if (!LIVE) {
     showKgMessage('<div class="empty">cluster drill is available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
-    // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
-    const q = (kgLens === "code" || kgLens === "concepts")
-      ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
-      : "";
-    const nb = await (await graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q)).json();
-    await overlayFor(nb.nodes);
-    renderKgDrill(nb);
-  } catch (e) {
-    showKgMessage('<div class="empty">the cluster is unavailable</div>');
-  }
+  // Carry the lens (spec 53 c4 / spec 54 c3) so a code community / concept drills to its members
+  // through the SAME route; the files lens sends no lens param and the drill is byte-identical.
+  const q = (kgLens === "code" || kgLens === "concepts")
+    ? "&lens=" + kgLens + "&resolution=" + encodeURIComponent(kgResolution)
+    : "";
+  await kgReadView(live, graphFetch("/api/graph?cluster=" + encodeURIComponent(key) + q, live),
+    (nb) => renderKgDrill(nb), '<div class="empty">the cluster is unavailable</div>');
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -2478,6 +2531,7 @@ let kgCallsDir = "down";
 // shared `kgSeed` in sync so the rest of the panel wiring has a current seed. A static export / failed
 // fetch degrades to a message; the panel never throws.
 async function seedCalls(seed, dir) {
+  const live = kgViewReads.next();
   kgCallsDir = dir || "down";
   kgSeed = seed;
   if (!LIVE) {
@@ -2485,14 +2539,9 @@ async function seedCalls(seed, dir) {
       + '<div class="empty">the directed-call views are available in the live dash (this is a static export)</div>');
     return;
   }
-  try {
-    const cg = await (await graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
-      + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6")).json();
-    await overlayFor(cg.nodes);
-    renderKgCalls(cg);
-  } catch (e) {
-    showKgMessage('<div class="empty">the directed-call view is unavailable</div>');
-  }
+  await kgReadView(live, graphFetch("/api/graph?view=calls&seed=" + encodeURIComponent(seed)
+    + "&dir=" + encodeURIComponent(kgCallsDir) + "&depth=6", live),
+    (cg) => renderKgCalls(cg), '<div class="empty">the directed-call view is unavailable</div>');
 }
 
 // Draw a directed-call DAG (the c4 `view=calls` body): the layered left-to-right graph through the
@@ -2521,8 +2570,7 @@ function renderKgCalls(cg) {
     + esc(seed) + '</b>' + switcher + '</div>'
     + '<div id="kgfrontier" class="kgfrontier">' + frontierChoices(kgShown.choices) + '</div>';
   if (!nodes.length) {
-    el("kgpanel").innerHTML = head
-      + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>');
+    kgWritePanel(head + kgNothingDrawn('<div class="empty">no calls for this node in this direction</div>'));
     return;
   }
   // HIGH FAN-OUT cap (spec 52 c5): a single layer with more callees/callers than the render budget
@@ -2708,7 +2756,7 @@ function wireSelectToSeed() {
       return;
     }
     const res = ev.target.closest("[data-lens-res]");
-    if (res) commitGrain(res.value);
+    if (res) grainCommitted(res);
   });
   // The grain being typed is view state: held on the view so a redraw before it is committed writes
   // the box with the draft rather than the grain the view reads.
@@ -2717,17 +2765,15 @@ function wireSelectToSeed() {
     if (res) kgShown.grain = res.value;
   });
   // Enter in the grain box, and leaving it, commit it as its change does: a box a redraw wrote with the
-  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. A box the
-  // panel's markup replaced was not left: a browser may send it focusout as it goes, while it is still
-  // in the page, and its draft and focus pass to the box written in its place (kgKeepingFocus), so it is
-  // asked once that write is done and commits only while still in the page.
+  // draft in it holds the text its markup wrote, so the browser fires it no change of its own. An Enter
+  // that ends an input method's composition is the composition's.
   el("kgpanel").addEventListener("keydown", ev => {
-    const res = ev.key === "Enter" && ev.target.closest("[data-lens-res]");
-    if (res) commitGrain(res.value);
+    const res = ev.key === "Enter" && !ev.isComposing && ev.target.closest("[data-lens-res]");
+    if (res) grainCommitted(res);
   });
   el("kgpanel").addEventListener("focusout", ev => {
     const res = ev.target.closest("[data-lens-res]");
-    if (res) Promise.resolve().then(() => { if (res.isConnected) commitGrain(res.value); });
+    if (res) grainCommitted(res);
   });
   // The LANDING picker (spec 50 c3): ONE delegated click on the stable instances strip, so selecting
   // a chip attaches the run/graph views to that instance and survives the renderInstances innerHTML
@@ -2847,8 +2893,11 @@ renderInstances(lastInstances);
 // (mousedown binds per render on the fresh svg in bindKgView; move/up track globally until release).
 window.addEventListener("mousemove", ev => {
   if (!kgDrag) return;
-  kgView.x = kgDrag.ox + (ev.clientX - kgDrag.sx);
-  kgView.y = kgDrag.oy + (ev.clientY - kgDrag.sy);
+  const dx = ev.clientX - kgDrag.sx, dy = ev.clientY - kgDrag.sy;
+  if (!kgDrag.panning && Math.hypot(dx, dy) <= KG_PAN_THRESHOLD) return;
+  kgDrag.panning = true;
+  kgView.x = kgDrag.ox + dx;
+  kgView.y = kgDrag.oy + dy;
   kgViewMoved = true;
   applyKgView();
 });

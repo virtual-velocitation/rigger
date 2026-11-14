@@ -40,7 +40,9 @@ use crate::common;
 use common::served::node_harness_claims;
 
 use crate::vm_harness;
-use vm_harness::vm_harness;
+use common::served::page_script;
+use rigger::dash;
+use vm_harness::{vm_harness, EVENT_PHASES};
 
 /// The DOM shim: the panel (`#kgpanel`) keeps the client box, padding and per-view toolbar height
 /// `__geom` holds, and each markup it is given gets a fresh `svg` (its height and viewBox read from
@@ -49,14 +51,19 @@ use vm_harness::vm_harness;
 /// (recording its transform), as a browser replaces them; every other element is a bare stand-in.
 /// The panel shows a 12px scrollbar of its own, narrowing its client box and the svg's slot, while
 /// what it holds - its padding, the toolbar, the frontier list, the svg at the height it has now and
-/// any markup below the svg, 40px of it - runs past its height, as a classic scrollbar does. The call
+/// any markup below the svg, 40px of it, or for a markup that draws none (the seeded neighborhood's
+/// lists, a message) its padding and an 18px line for each block it opens - runs past its height, as a
+/// classic scrollbar does. The call
 /// view's frontier slot (`#kgfrontier`) is a view onto the panel's markup, written in place there
 /// with the drawing left as it is, and takes an 18px line for its head and each candidate it lists;
 /// `_gen` counts the markups the panel is given, so a driver can tell what the page wrote from what
 /// it drew again. The grain box a markup writes (`[data-lens-res]`) is a text box as a browser makes
-/// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; a markup that
-/// replaces the box holding the focus takes the focus with it and sends the box `focusout`, as a
-/// browser may (Firefox sends none). `window` records its listeners, a size observer is recorded
+/// it: its value the markup's, its caret, `focus()` making it `document.activeElement`; committed (by
+/// Enter, by leaving it, or by a markup replacing it while it holds the focus) it sends `change` when
+/// its text differs from the text it held when it took the focus or last sent `change`, and left it
+/// gives up the focus and sends `focusout`. A markup that replaces the box holding the focus leaves
+/// it while it is still in the panel, `change` then `focusout`, as Chromium does (Firefox sends none). Its elements record their listeners, and the drivers deliver
+/// events to them, by [`EVENT_PHASES`]. `window` records its listeners, a size observer is recorded
 /// with what it watches for the driver to notify, and an animation frame waits in `__frames` until
 /// the driver runs it.
 /// Free of backticks and `${` so it embeds in the harness's `String.raw` template.
@@ -77,7 +84,7 @@ const __classList = { add: function(){}, remove: function(){}, toggle: function(
 function __Stub(){ this._attrs = {}; this._listeners = {}; this.dataset = {}; this.classList = __classList; }
 __Stub.prototype.setAttribute = function(k, v){ this._attrs[k] = String(v); };
 __Stub.prototype.getAttribute = function(k){ return k in this._attrs ? this._attrs[k] : null; };
-__Stub.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
+__Stub.prototype.addEventListener = function(t, f, o){ __listen(this, t, f, o); };
 __Stub.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: 0, height: 0 }; };
 function __viewOf(html){
   if (html.indexOf("data-kgclear") !== -1) return "reproject";
@@ -108,43 +115,100 @@ function __listHeight(html){
   return n ? 12 + 18 * (1 + n) : 0;
 }
 function __slotTop(html){ return __geom.padTop + __geom.toolbar[__viewOf(html)] + __listHeight(html); }
-// The width of the scrollbar the panel shows now: what it holds - its padding, the toolbar, the svg at
-// the height it has now and the markup below the svg - runs past its height, or it shows none.
-function __scrollbar(panel){
+// The height of what the panel holds: for a markup drawing a view, its padding, the toolbar, the svg at
+// the height it has now and the markup below the svg; for one that draws none (the seeded
+// neighborhood's lists, a message), its padding and an 18px line for each block it opens.
+function __holds(panel){
   const html = panel._html, end = html.lastIndexOf("</svg>");
-  if (html.indexOf('<svg class="kgsvg"') === -1) return 0;
+  if (html.indexOf('<svg class="kgsvg"') === -1)
+    return __geom.padTop + 18 * (html.match(/<div\b/g) || []).length + __geom.padBottom;
   const below = html.slice(end + "</svg>".length).trim() === "" ? 0 : __geom.below;
-  const holds = __slotTop(html) + Number(panel._svg.getAttribute("height") || 0) + below + __geom.padBottom;
-  return holds > __geom.height ? __geom.scrollbar : 0;
+  return __slotTop(html) + Number(panel._svg.getAttribute("height") || 0) + below + __geom.padBottom;
 }
+// The width of the scrollbar the panel shows now: what it holds runs past its height, or it shows none.
+function __scrollbar(panel){ return __holds(panel) > __geom.height ? __geom.scrollbar : 0; }
+// The furthest the panel scrolls: what it holds past its height.
+function __scrollMax(panel){ return Math.max(0, __holds(panel) - __geom.height); }
 function __unesc(s){ return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
   .replace(/&#39;/g, "'").replace(/&amp;/g, "&"); }
-// The grain box the panel's markup writes: its value and default the value the markup wrote, its
-// caret at its end, connected while it is the box the panel hands out.
-function __Box(panel){
-  const tag = panel._html.match(/<input [^>]*data-lens-res[^>]*>/), v = tag && tag[0].match(/ value="([^"]*)"/);
+function __camel(s){ return s.replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); }
+// The element whose opening tag starts at index at in the panel's markup: its tag name, its attributes in
+// order (attrs by name), its data-* attributes as its dataset, whether it is open or checked, its
+// value, closest() answering itself for a [data-*] selector it carries, and focus() giving it the
+// focus. In the panel while the panel holds the markup it was read from.
+function __Control(panel, at){
+  const html = panel._html, tag = html.slice(at, html.indexOf(">", at) + 1), re = /\s([\w-]+)(?:="([^"]*)")?/g;
   this._panel = panel;
-  this.value = this.defaultValue = v ? __unesc(v[1]) : "";
+  this._gen = panel._gen;
+  this.localName = tag.match(/^<([\w-]+)/)[1];
+  this.attributes = [];
+  this.attrs = {};
+  this.dataset = {};
+  let m;
+  while ((m = re.exec(tag)) !== null) {
+    const v = m[2] === undefined ? "" : __unesc(m[2]);
+    this.attributes.push({ name: m[1], value: v });
+    this.attrs[m[1]] = v;
+    if (m[1].indexOf("data-") === 0) this.dataset[__camel(m[1].slice(5))] = v;
+  }
+  this.open = "open" in this.attrs;
+  this.checked = "checked" in this.attrs;
+  this.value = this.attrs.value;
+}
+__Control.prototype.closest = function(sel){
+  const want = sel.match(/^\[data-([\w-]+)\]$/);
+  return want && __camel(want[1]) in this.dataset ? this : null;
+};
+__Control.prototype.focus = function(){ document.activeElement = this; };
+Object.defineProperty(__Control.prototype, "isConnected", { get(){ return this._panel._gen === this._gen; } });
+// The grain box the panel's markup writes: its value and default the value the markup wrote, its
+// caret at its end, connected while it is the box the panel hands out. It keeps the text it held when
+// it took the focus or last sent change (_from): committed, it sends change when its text differs
+// from that; left, it commits, gives up the focus and sends focusout.
+function __Box(panel){
+  __Control.call(this, panel, panel._html.search(/<input [^>]*data-lens-res/));
+  this.value = this.defaultValue = this._from = this.value || "";
   this.selectionStart = this.selectionEnd = this.value.length;
 }
-__Box.prototype.closest = function(sel){ return sel === "[data-lens-res]" ? this : null; };
+__Box.prototype = Object.create(__Control.prototype);
 __Box.prototype.setSelectionRange = function(a, b){ this.selectionStart = a; this.selectionEnd = b; };
 __Box.prototype.focus = function(){
   document.activeElement = this;
-  (this._panel._listeners.focusin || []).forEach(function(f){ f({ type: "focusin", target: this }); }, this);
+  this._from = this.value;
+  __reach(this._panel, { type: "focusin", target: this });
+};
+__Box.prototype._commit = function(){
+  if (this.value === this._from) return;
+  this._from = this.value;
+  __reach(this._panel, { type: "change", target: this });
+};
+__Box.prototype._leave = function(){
+  this._commit();
+  document.activeElement = null;
+  __reach(this._panel, { type: "focusout", target: this });
 };
 Object.defineProperty(__Box.prototype, "isConnected", { get(){ return this._panel._box === this; } });
 function __El(id){ this.id = id; this._html = ""; this._text = ""; this._listeners = {}; this.dataset = {};
   this.hidden = false; this.className = ""; this.checked = false; this.classList = __classList;
   this.clientTop = 0; this.clientLeft = 0; this._zoom = new __Stub(); this._svg = new __Stub(); this._gen = 0;
-  this._box = null; }
+  this._box = null; this._controls = {}; this._scroll = 0; }
+// The panel's scroll, kept within what it holds: set past its end, it stops there, and what it holds
+// shrinking or its height growing pulls it back as far.
+Object.defineProperty(__El.prototype, "scrollTop", { get(){ return this._scroll = Math.min(this._scroll, __scrollMax(this)); }, set(v){
+  this._scroll = Math.max(0, Math.min(Number(v) || 0, __scrollMax(this))); } });
+__El.prototype.contains = function(n){ return !!n && n._panel === this && n.isConnected; };
 Object.defineProperty(__El.prototype, "clientWidth", { get(){
   return __geom.width - (this.id === "kgpanel" ? __scrollbar(this) : 0); } });
 Object.defineProperty(__El.prototype, "clientHeight", { get(){ return __geom.height; } });
 Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }, set(v){
-  const html = String(v), panel = this;
+  const html = String(v), panel = this, held = this._box;
+  // The box holding the focus is left while it is still in the panel, then replaced.
+  if (held && document.activeElement === held) held._leave();
+  // Any other control holding the focus goes with the markup, leaving the focus nowhere.
+  if (document.activeElement && document.activeElement._panel === this) document.activeElement = null;
   this._html = html;
   this._gen++;
+  this._controls = {};
   this._zoom = new __Stub();
   const svg = this._svg = new __Stub();
   const tag = html.match(/<svg class="kgsvg"[^>]*>/);
@@ -152,15 +216,12 @@ Object.defineProperty(__El.prototype, "innerHTML", { get(){ return this._html; }
   if (high) svg.setAttribute("height", high[1]);
   if (box) svg.setAttribute("viewBox", box[1]);
   svg.getBoundingClientRect = function(){
-    return { left: __geom.padSide, top: __slotTop(panel._html), width: __geom.width - 2 * __geom.padSide - __scrollbar(panel),
-      height: Number(svg.getAttribute("height") || 0) };
+    return { left: __geom.padSide, top: __slotTop(panel._html) - panel.scrollTop,
+      width: __geom.width - 2 * __geom.padSide - __scrollbar(panel), height: Number(svg.getAttribute("height") || 0) };
   };
-  const held = this._box;
   this._box = null;
-  if (held && document.activeElement === held) {
-    document.activeElement = null;
-    (this._listeners.focusout || []).forEach(function(f){ f({ type: "focusout", target: held }); });
-  }
+  // Laid out holding the new markup, the panel keeps no more scroll than it now holds.
+  this.scrollTop = this._scroll;
 } });
 Object.defineProperty(__El.prototype, "textContent", { get(){ return this._text; }, set(v){ this._text = String(v); } });
 __El.prototype.getBoundingClientRect = function(){ return { left: 0, top: 0, width: __geom.width, height: __geom.height }; };
@@ -170,9 +231,26 @@ __El.prototype.querySelector = function(sel){
   if (sel === "#kgzoom") return this._html.indexOf('id="kgzoom"') === -1 ? null : this._zoom;
   if (sel === "svg" || sel === ".kgsvg" || sel === "svg.kgsvg") return this._html.indexOf("<svg") === -1 ? null : this._svg;
   if (sel === "[data-lens-res]") return this._html.indexOf("data-lens-res") === -1 ? null : this._box || (this._box = new __Box(this));
+  const control = sel.match(/^([a-z][\w-]*)((?:\[[\w-]+="(?:[^"\\]|\\.)*"\])+)$/);
+  if (control) return this._control(control[1], control[2]);
   return new __Stub();
 };
-__El.prototype.addEventListener = function(t, f){ (this._listeners[t] = this._listeners[t] || []).push(f); };
+// The first element of tag name name in the panel's markup carrying each attribute the selector
+// marks ([name="value"]...) names with its value, the same one each time the panel holds the same
+// markup (the grain box for its own tag), or null.
+__El.prototype._control = function(name, marks){
+  const sel = name + marks;
+  if (sel in this._controls) return this._controls[sel];
+  const want = [], re = /\[([\w-]+)="((?:[^"\\]|\\.)*)"\]/g, tags = new RegExp("<" + name + "\\b", "g");
+  let m, found = null;
+  while ((m = re.exec(marks)) !== null) want.push([m[1], m[2].replace(/\\(.)/g, "$1")]);
+  while (!found && (m = tags.exec(this._html)) !== null) {
+    const c = new __Control(this, m.index);
+    if (want.every(function(w){ return c.attrs[w[0]] === w[1]; })) found = "lensRes" in c.dataset ? this.querySelector("[data-lens-res]") : c;
+  }
+  return this._controls[sel] = found;
+};
+__El.prototype.addEventListener = function(t, f, o){ __listen(this, t, f, o); };
 // The frontier slot as an element: what the panel's markup holds in the slot, written in place there
 // with the drawing left as it is, as a browser does.
 function __Slot(panel){ this.id = "kgfrontier"; this._panel = panel; }
@@ -190,6 +268,8 @@ const document = { activeElement: null, getElementById: function(id){
   return __slotSpan(panel._html) ? new __Slot(panel) : null;
 } };
 const window = { addEventListener: function(t, f){ (__winListeners[t] = __winListeners[t] || []).push(f); } };
+// A value as a CSS string escapes its quotes and backslashes.
+const CSS = { escape: function(v){ return String(v).replace(/["\\]/g, "\\$&"); } };
 const setTimeout = function(){ return 0; };
 const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", paddingBottom: __geom.padBottom + "px" }; };
 "##;
@@ -197,8 +277,12 @@ const getComputedStyle = function(){ return { paddingTop: __geom.padTop + "px", 
 /// A `fetch` serving deterministic overviews as dense as a real project's - the files lens's 158
 /// file clusters in 32 directories (one at the repo root), the code lens's 200 communities, the
 /// concepts lens's 98 concepts - a subject's re-projection under each lens (40 files, a single
-/// community, 12 concepts), a drilled cluster's 12 members and a 4-layer call walk; a card or
-/// rationale read finds nothing. `__fetches` counts every request the page makes.
+/// community, 12 concepts), a drilled cluster's 12 members, a seeded neighborhood of those members, its
+/// edges in every confidence tier, and a 4-layer call walk for the seed and direction a read asks for;
+/// a card or
+/// rationale read finds nothing. `__fetches` counts every request the page makes. While `__held` is
+/// a list, each graph read waits in it until the driver lands its reply, which then names the read in
+/// the graph header, or fails it.
 const OVERVIEWS_FETCH: &str = r##"
 let __fetches = 0;
 function __chain(keys, step){
@@ -252,8 +336,11 @@ function __graph(url){
   const s = String(url);
   if (s.indexOf("explain=") !== -1) return { nodes: [] };
   if (s.indexOf("card=") !== -1) return {};
-  if (s.indexOf("view=calls") !== -1) return { seed: __SUBJECT, dir: "down", nodes: __CALLS.nodes, edges: __CALLS.edges };
+  if (s.indexOf("view=calls") !== -1) return { seed: decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]),
+    dir: (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1], nodes: __CALLS.nodes, edges: __CALLS.edges };
   if (s.indexOf("cluster=") !== -1) return { seed: __CLUSTER, nodes: __DRILL.nodes, edges: __DRILL.edges };
+  if (s.indexOf("depth=2") !== -1) return { seed: __SUBJECT, depth: 2, nodes: __DRILL.nodes, edges: __DRILL.edges.map(function(e, i){
+    return { from: e.from, to: e.to, rel: "calls", tier: KG_TIERS[i % KG_TIERS.length] }; }) };
   const lens = (s.match(/[?&]lens=([a-z]+)/) || [null, "files"])[1];
   if (s.indexOf("seed=") !== -1) {
     const rp = __REPROJECTIONS[lens];
@@ -261,10 +348,17 @@ function __graph(url){
   }
   return __OVERVIEWS[lens];
 }
+let __held = null;
 const fetch = function(url){
   __fetches++;
   if (String(url).indexOf("/api/graph") === -1) return Promise.reject(new Error("no network for " + url));
-  return Promise.resolve({ headers: { get: function(){ return null; } }, json: function(){ return Promise.resolve(__graph(url)); } });
+  const reply = function(label){ return { headers: { get: function(h){ return h === "X-Rigger-Graph-Label" ? label : null; } },
+    json: function(){ return Promise.resolve(__graph(url)); } }; };
+  if (!__held) return Promise.resolve(reply(null));
+  return new Promise(function(land, fail){
+    __held.push({ url: String(url), land: function(){ land(reply(encodeURIComponent("read " + url))); },
+      fail: function(){ fail(new Error("the read of " + url + " failed")); } });
+  });
 };
 "##;
 
@@ -521,14 +615,18 @@ function __notify(){
 function __resize(p){ __size(p); __notify(); }
 // Run the animation frames the page queued; answers how many ran.
 function __frame(){ const run = __frames.splice(0); run.forEach(function(f){ f(0); }); return run.length; }
-// Press on the drawing, move the pointer by (dx, dy) when given, and release: a drag, or a click.
-function __press(dx, dy){
+// Press on the drawing, move the pointer to each [dx, dy] from the press in turn, and release.
+function __drag(moves){
   const down = el("kgpanel")._svg._listeners.mousedown || [];
   if (down.length !== 1) throw new Error("the drawn graph must carry one mousedown listener, not " + down.length);
   down[0]({ clientX: 100, clientY: 100 });
-  if (dx !== undefined) (__winListeners.mousemove || []).forEach(function(f){ f({ clientX: 100 + dx, clientY: 100 + dy }); });
+  moves.forEach(function(m){
+    (__winListeners.mousemove || []).forEach(function(f){ f({ clientX: 100 + m[0], clientY: 100 + m[1] }); });
+  });
   (__winListeners.mouseup || []).forEach(function(f){ f({}); });
 }
+// Press on the drawing, move the pointer by (dx, dy) when given, and release: a drag, or a click.
+function __press(dx, dy){ __drag(dx === undefined ? [] : [[dx, dy]]); }
 // The overview the panel holds, drawn at the size the panel now has: filling the room below its
 // toolbar, at its surface's own size. Answers its markup and its transform.
 function __overviewAt(at, what){
@@ -562,9 +660,12 @@ const FIRST_DRAW_RESIZE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
-/// Driver: an overview no one has panned or zoomed (a click on it does neither) redraws on each
-/// resize from a 1400px viewport to 800px and back, with no new request: at 800px as the drawing and
-/// opening view a fresh draw there gives, and back at 1400px as the one it first opened as.
+/// Driver: an overview no one has panned or zoomed (a click on it does neither, nor one whose pointer
+/// wobbles under 3px between press and release) redraws on each resize from a 1400px viewport to
+/// 800px and back, with no new request: at 800px as the drawing and opening view a fresh draw there
+/// gives, and back at 1400px as the one it first opened as. A press travelling the page's
+/// `KG_PAN_THRESHOLD` still clicks; a drag that passes it and comes back within it pans to where
+/// the pointer ends.
 const UNTOUCHED_RESIZE_DRIVER: &str = r##"
 ;(async function(){
   const at = "1400px to 800px and back, untouched: ";
@@ -573,6 +674,8 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
   const wide = __overviewAt(at, "files overview on load");
   const fetches = __fetches;
   __press();
+  __press(1, 0);
+  __press(-2, 2);
   __resize(__NARROW);
   __frame();
   const narrow = __overviewAt(at, "files overview resized to 800px");
@@ -591,6 +694,14 @@ const UNTOUCHED_RESIZE_DRIVER: &str = r##"
   if (narrow.html !== fresh.html || narrow.t !== fresh.t)
     throw new Error("REGRESSION: " + at + "at 800px the untouched overview must re-fit as a fresh draw there does, "
       + narrow.t + " against " + fresh.t);
+  __press(KG_PAN_THRESHOLD, 0);
+  if (kgViewMoved)
+    throw new Error("REGRESSION: " + at + "a press whose pointer travels the " + KG_PAN_THRESHOLD + "px a click may wobble must pan nothing");
+  const from = kgView.x;
+  __drag([[30, 0], [1, 0]]);
+  if (kgView.x !== from + 1 || !kgViewMoved)
+    throw new Error("REGRESSION: " + at + "a drag past the distance a click may wobble, back within it, must pan to where the pointer "
+      + "ends, 1px, it panned " + (kgView.x - from) + "px");
   console.log("OK an-untouched-view-refits-on-every-resize");
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
@@ -709,7 +820,8 @@ const MOVED_RESIZE_DRIVER: &str = r##"
 /// Driver: the page binds one size observer, on the panel, however many views it draws; a
 /// notification at the size the drawing was drawn at redraws nothing, while a change of width alone
 /// redraws; three size changes within a frame queue one redraw; and a panel holding a message, or the
-/// empty slot a draw that threw left, rather than a drawing keeps what it holds.
+/// empty slot a draw that threw left, rather than a drawing keeps what it holds. The message also
+/// stays through the overlay toggle and any other redraw of the held view, as it replaced that view.
 const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 ;(async function(){
   const at = "1400px: ";
@@ -744,6 +856,15 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
   __frame();
   if (panel._html !== message)
     throw new Error("REGRESSION: " + at + "a panel holding a message must keep it through a resize, not " + panel._html.slice(0, 200));
+  await setOverlay(true);
+  if (panel._html !== message)
+    throw new Error("REGRESSION: " + at + "a message must keep the panel through the overlay toggle, not the view it replaced: "
+      + panel._html.slice(0, 200));
+  rerenderCurrentView();
+  if (panel._html !== message)
+    throw new Error("REGRESSION: " + at + "a message must keep the panel through a redraw of the held view (the card docking, a"
+      + " frontier choice), as it replaced that view: " + panel._html.slice(0, 200));
+  await setOverlay(false);
   loadKgOverview();
   await __flush();
   __overviewAt(at, "overview drawn before a draw that throws");
@@ -759,15 +880,292 @@ const RESIZE_DISCIPLINE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver: of two graph reads in flight, the reply to the one asked first, landing last, is dropped
+/// whole. The grain box edited and left by a press on the files tab commits the grain (a code-lens
+/// read) and then picks the files lens (a files read): the files reply lands first and draws, the
+/// code reply after it draws nothing and leaves the header naming the files read, the grain committed
+/// kept. A drill read failing after an overview asked after it drew puts no message over it. With the
+/// rationale overlay on, a drill reply landing after a call walk asked after it drew, its rationale
+/// badge shown, reads no rationale and leaves the walk's badge through a redraw; and a drill a call
+/// walk supersedes while the drill's rationale read is in flight draws nothing when that read lands.
+/// The overlay's own rationale read, landing after an overview asked after it, leaves the header.
+const STALE_REPLY_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px, two reads in flight: ";
+  const panel = el("kgpanel"), header = el("kglabel");
+  const urls = function(){ return JSON.stringify(__held.map(function(h){ return h.url; })); };
+  __size(__WIDE);
+  await __flush();
+  kgLens = "code";
+  loadKgOverview();
+  await __flush();
+  __held = [];
+  const b = panel.querySelector("[data-lens-res]");
+  b.focus();
+  b.value = "3";
+  __reach(panel, { type: "input", target: b });
+  b._leave();
+  await __flush();
+  onLensPick("files");
+  await __flush();
+  if (__held.length !== 2 || !/lens=code&resolution=3(&|$)/.test(__held[0].url) || __held[1].url.indexOf("lens=") !== -1)
+    throw new Error(at + "leaving the grain box onto the files tab must read the code lens at 3, then the files lens, it read " + urls());
+  const code = __held[0], files = __held[1];
+  files.land();
+  await __flush();
+  const filesView = __overviewAt(at, "files overview").html, filesHeader = header.textContent;
+  if (kgLens !== "files" || filesHeader !== "read " + files.url)
+    throw new Error(at + "the files reply must draw the files overview and name its read in the header, the header reads " + filesHeader);
+  code.land();
+  await __flush();
+  if (panel._html !== filesView)
+    throw new Error("REGRESSION: " + at + "the code reply, landing after the files read asked after it, must draw nothing over the files "
+      + "overview, the panel holds " + panel._html.slice(0, 300));
+  if (header.textContent !== filesHeader)
+    throw new Error("REGRESSION: " + at + "the header must keep naming the files read on show, not " + header.textContent);
+  if (kgResolution !== "3") throw new Error(at + "the grain committed must stay committed, the view reads " + kgResolution);
+  __held = [];
+  drillCluster(__CLUSTER);
+  loadKgOverview();
+  await __flush();
+  if (__held.length !== 2) throw new Error(at + "a drill and an overview must each read once, they read " + urls());
+  const drill = __held[0], overview = __held[1];
+  overview.land();
+  await __flush();
+  const shown = __overviewAt(at, "overview asked after the drill").html;
+  drill.fail();
+  await __flush();
+  if (panel._html !== shown)
+    throw new Error("REGRESSION: " + at + "the drill read failing after the overview asked after it drew must put no message over it, "
+      + "the panel holds " + panel._html.slice(0, 300));
+  const WHY = __CALLS.nodes[3].id, served = __graph;
+  __graph = function(url){
+    if (String(url).indexOf("explain=") === -1) return served(url);
+    return { nodes: [{ node: WHY, leaves: [{ kind: "decision", summary: "it calls on the next layer" }] }] };
+  };
+  __held = null;
+  await setOverlay(true);
+  __held = [];
+  drillCluster(__CLUSTER);
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  if (__held.length !== 2) throw new Error(at + "a drill and a call walk must each read once, they read " + urls());
+  const drilled = __held[0];
+  const explains = function(){ return __held.filter(function(h){ return h.url.indexOf("explain=") !== -1; }); };
+  __held[1].land();
+  await __flush();
+  if (explains().length !== 1)
+    throw new Error(at + "the call walk must read its rationale with the overlay on, the page read " + urls());
+  explains()[0].land();
+  await __flush();
+  const badge = 'data-explain="' + WHY + '"';
+  if (kgMode !== "calls" || panel._html.indexOf(badge) === -1)
+    throw new Error(at + "the call walk must draw with its rationale badge, the panel holds " + panel._html.slice(0, 300));
+  drilled.land();
+  await __flush();
+  if (explains().length !== 1)
+    throw new Error("REGRESSION: " + at + "the drill reply, landing after the call walk asked after it, must read no rationale, the page read "
+      + urls());
+  rerenderCurrentView();
+  if (kgMode !== "calls" || panel._html.indexOf(badge) === -1)
+    throw new Error("REGRESSION: " + at + "the call walk must keep its rationale badge through a redraw after the drill reply, the panel holds "
+      + panel._html.slice(0, 300));
+  const walked = panel._html;
+  __held = [];
+  drillCluster(__CLUSTER);
+  await __flush();
+  __held[0].land();
+  await __flush();
+  if (explains().length !== 1) throw new Error(at + "the drill must read its rationale with the overlay on, the page read " + urls());
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  explains()[0].land();
+  await __flush();
+  if (panel._html !== walked)
+    throw new Error("REGRESSION: " + at + "a drill a call walk superseded while its rationale read was in flight must draw nothing "
+      + "when that read lands, the panel holds " + panel._html.slice(0, 300));
+  __held = null;
+  await setOverlay(false);
+  __held = [];
+  const toggled = setOverlay(true);
+  await __flush();
+  if (explains().length !== 1) throw new Error(at + "the overlay turned on must read the walk's rationale, the page read " + urls());
+  loadKgOverview();
+  await __flush();
+  const named = header.textContent;
+  explains()[0].land();
+  await toggled;
+  await __flush();
+  if (header.textContent !== named)
+    throw new Error("REGRESSION: " + at + "the overlay's rationale read, landing after an overview asked after it, must leave the header, "
+      + "which now reads " + header.textContent);
+  console.log("OK a-stale-reply-is-dropped");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver, at 1400px: the code lens's grain box clicked into, its text selected, "2" typed over it and
+/// Enter pressed, then ".5" typed while the read at 2 is in flight. The reply landing while the box
+/// holds the focus leaves the box reading "2.5" with the focus and the caret after it, the view
+/// reading the grain committed, and Enter then commits 2.5. The box emptied and Enter pressed with
+/// nothing more typed shows the grain the reply names, the server's default. A text typed and never
+/// committed while a drill read is in flight goes with the box the drill replaces: the overview
+/// asked for next shows the grain it reads.
+const DRAFT_REPLY_DRIVER: &str = r##"
+;(async function(){
+  const at = "1400px, a grain typed on while the read of the one committed is in flight: ";
+  const panel = el("kgpanel");
+  const urls = function(){ return JSON.stringify(__held.map(function(h){ return h.url; })); };
+  // A code-lens reply is a new body every read, as a parsed reply is, naming the grain it displays:
+  // the grain asked for, or the server's default "1" for a read that names none.
+  const served = __graph;
+  __graph = function(url){
+    const s = String(url), body = served(url);
+    if (s.indexOf("lens=code") === -1) return body;
+    return Object.assign({}, body, { grain: decodeURIComponent((s.match(/[?&]resolution=([^&]*)/) || [null, ""])[1]) || "1" });
+  };
+  const box = function(){ return panel.querySelector("[data-lens-res]"); };
+  // Text typed over the box's selection, and the input event it fires.
+  function keys(text){
+    const b = box(), from = b.selectionStart;
+    b.value = b.value.slice(0, from) + text + b.value.slice(b.selectionEnd);
+    b.setSelectionRange(from + text.length, from + text.length);
+    __reach(panel, { type: "input", target: b });
+  }
+  // Enter: the box's keydown, then the change it commits.
+  function enter(){
+    const b = box();
+    __reach(panel, { type: "keydown", target: b, key: "Enter" });
+    b._commit();
+  }
+  function shows(){
+    const b = box();
+    return JSON.stringify(b.value)
+      + (document.activeElement === b ? " focused, caret " + b.selectionStart + "-" + b.selectionEnd : " unfocused");
+  }
+  __size(__WIDE);
+  await __flush();
+  kgLens = "code";
+  loadKgOverview();
+  await __flush();
+  __held = [];
+  box().focus();
+  box().setSelectionRange(0, box().value.length);
+  keys("2");
+  enter();
+  await __flush();
+  if (__held.length !== 1 || !/[?&]resolution=2(&|$)/.test(__held[0].url))
+    throw new Error(at + "Enter must read the code lens once at 2, the page read " + urls());
+  keys(".5");
+  __held[0].land();
+  await __flush();
+  if (shows() !== '"2.5" focused, caret 3-3')
+    throw new Error("REGRESSION: " + at + "the reply must leave the box holding the text typed after Enter, with the focus and "
+      + "the caret after it, the box shows " + shows());
+  if (kgResolution !== "2") throw new Error(at + "the view must read the grain committed, 2, it reads " + kgResolution);
+  enter();
+  await __flush();
+  if (__held.length !== 2 || !/[?&]resolution=2\.5(&|$)/.test(__held[1].url))
+    throw new Error("REGRESSION: " + at + "Enter must then commit the text kept, reading the code lens at 2.5, the page read " + urls());
+  __held[1].land();
+  await __flush();
+  box().setSelectionRange(0, box().value.length);
+  keys("");
+  enter();
+  await __flush();
+  if (__held.length !== 3 || /[?&]resolution=[^&]/.test(__held[2].url))
+    throw new Error(at + "Enter on the emptied box must read the code lens at no grain, the page read " + urls());
+  __held[2].land();
+  await __flush();
+  if (shows() !== '"1" focused, caret 0-0')
+    throw new Error("REGRESSION: " + at + "the box emptied and committed with nothing more typed must show the grain the reply names, "
+      + "with the focus, it shows " + shows());
+  drillCluster(__CLUSTER);
+  await __flush();
+  box().focus();
+  box().setSelectionRange(0, box().value.length);
+  keys("3");
+  __held[3].land();
+  await __flush();
+  if (kgMode !== "drill" || box()) throw new Error(at + "the drill must draw in place of the overview, the panel holds " + panel._html.slice(0, 300));
+  loadKgOverview();
+  await __flush();
+  __held[4].land();
+  await __flush();
+  if (shows() !== '"1" unfocused')
+    throw new Error("REGRESSION: " + at + "a text never committed must go with the box a drill replaced, the overview asked for next "
+      + "showing the grain it reads, 1, it shows " + shows());
+  console.log("OK a-draft-outlives-the-reply");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
+/// Driver: a control on the panel holding the keyboard focus keeps it through every write of the panel
+/// that writes it again, found again by its data attributes: the overview's code tab through a window
+/// resize from 1400px to 800px and through the code overview its Enter asks for, a drill's back link
+/// through a resize back to 1400px, and a neighborhood's tier checkbox through the redraw its toggle
+/// makes, drawn unchecked. A control outside the panel carrying the same data attribute as one in it
+/// (the header's code tab) keeps the focus through a redraw of the panel.
+const CONTROL_FOCUS_DRIVER: &str = r##"
+;(async function(){
+  const at = "a control holding the keyboard focus: ";
+  const panel = el("kgpanel");
+  // The control sel finds in the panel, holding the focus after what.
+  function holds(sel, what){
+    const c = panel.querySelector(sel), on = document.activeElement;
+    if (!c) throw new Error(at + "after " + what + " the panel must hold " + sel + ", it holds " + panel._html.slice(0, 300));
+    if (on !== c)
+      throw new Error("REGRESSION: " + at + sel + " must keep the focus through " + what + ", the focus is on "
+        + (on ? on.localName + " " + JSON.stringify(on.dataset) : "nothing"));
+    return c;
+  }
+  function redraw(size){ __resize(size); __frame(); }
+  __size(__WIDE);
+  await __flush();
+  const header = { localName: "a", attributes: [{ name: "data-lens", value: "code" }], dataset: { lens: "code" },
+    _panel: el("kghead"), isConnected: true };
+  document.activeElement = header;
+  redraw(__NARROW);
+  if (document.activeElement !== header)
+    throw new Error("REGRESSION: " + at + "the header's code tab must keep the focus through a redraw of the panel, the focus is on "
+      + (document.activeElement ? JSON.stringify(document.activeElement.dataset) + " in the panel" : "nothing"));
+  redraw(__WIDE);
+  const tab = 'a[data-lens="code"]';
+  panel.querySelector(tab).focus();
+  redraw(__NARROW);
+  holds(tab, "a window resize redrawing the overview");
+  __reach(panel, { type: "click", target: panel.querySelector(tab), preventDefault: function(){} });
+  await __flush();
+  if (kgLens !== "code" || kgMode !== "overview")
+    throw new Error(at + "Enter on the code tab must draw the code overview, the panel holds " + kgMode + " under " + kgLens);
+  holds(tab, "the code overview its Enter asks for");
+  drillCluster(__CLUSTER);
+  await __flush();
+  const back = 'a[data-kgback="1"]';
+  panel.querySelector(back).focus();
+  redraw(__WIDE);
+  holds(back, "a window resize redrawing the drill");
+  seedGraph(__SUBJECT);
+  await __flush();
+  const tier = 'input[data-tier="inferred"]', box = panel.querySelector(tier);
+  box.focus();
+  box.checked = false;
+  __reach(panel, { type: "change", target: box });
+  if (holds(tier, "the redraw its toggle makes").checked) throw new Error(at + "the tier toggled off must be drawn unchecked");
+  console.log("OK a-control-keeps-the-focus");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Driver, for the row `__ROW__` (`{writer, pan, resize}`): what the panel shows of the view it
 /// holds beyond the view's body - the `writer` row of `WRITERS` - is shown, still shown once the panel
 /// has settled (its size observer told of the 12px the panel's own scrollbar takes when what it shows
 /// makes it overflow), and still shown and answering after the panel is resized from a 1400px
 /// viewport to 800px (`window`) or narrowed by the 12px a scrollbar takes (`scrollbar`), the drawing
-/// filling the room below the toolbar and what it shows above the drawing. An untouched view (`pan`
+/// filling the room below the toolbar and what it shows above the drawing, and the settling and the
+/// resize making no request (a grain box a redraw replaces commits nothing). An untouched view (`pan`
 /// `none`) redraws once from its held body on the resize. A moved one, panned or zoomed `after` it was
 /// shown or `before`, keeps its transform and its marks through showing it, the panel settling and
-/// the resize, the resize redrawing nothing.
+/// the resize, the resize redrawing nothing. The panel, scrolled to its end once it shows it, keeps its
+/// scroll through the settling and the resize, as far as what it then holds reaches, and through a
+/// frontier node clicked again.
 const VIEW_STATE_DRIVER: &str = r##"
 ;(async function(){
   const ROW = __ROW__;
@@ -779,8 +1177,7 @@ const VIEW_STATE_DRIVER: &str = r##"
   __CALLS.nodes[5].frontier = [A, B];
   // The call node the rationale overlay finds a decision for.
   const WHY = __CALLS.nodes[3].id;
-  // Every request the page makes, a call walk answered for the seed and direction it asks for, and a
-  // rationale read answered with WHY's decision.
+  // Every request the page makes, and a rationale read answered with WHY's decision.
   const asked = [];
   const served = __graph;
   __graph = function(url){
@@ -788,44 +1185,25 @@ const VIEW_STATE_DRIVER: &str = r##"
     asked.push(s);
     if (s.indexOf("explain=") !== -1)
       return { nodes: [{ node: WHY, leaves: [{ kind: "decision", summary: "it calls on the next layer" }] }] };
-    if (s.indexOf("view=calls") === -1) return served(url);
-    const seed = decodeURIComponent((s.match(/[?&]seed=([^&]*)/) || [null, ""])[1]);
-    const dir = (s.match(/[?&]dir=([a-z]+)/) || [null, "down"])[1];
-    return { seed: seed, dir: dir, nodes: __CALLS.nodes, edges: __CALLS.edges };
+    return served(url);
   };
   // The redraws of the held view the page makes.
   let redraws = 0;
   const redraw = rerenderCurrentView;
   rerenderCurrentView = function(){ redraws++; return redraw(); };
   const panel = el("kgpanel");
-  const camel = function(s){ return s.replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); };
-  // The element whose opening tag in the panel's markup carries mark, as the target of an event: its
-  // attributes, its data-* attributes as its dataset, whether it is open, and closest() answering
-  // itself for a [data-*] selector it carries. Null when no tag carries mark.
+  // The element whose opening tag in the panel's markup carries mark, as the target of an event, or
+  // null when no tag carries mark.
   function element(mark){
-    const html = panel._html, i = html.indexOf(mark);
-    if (i === -1) return null;
-    const tag = html.slice(html.lastIndexOf("<", i), html.indexOf(">", i) + 1);
-    const attrs = {}, dataset = {}, re = /\s([\w-]+)(?:="([^"]*)")?/g;
-    let m;
-    while ((m = re.exec(tag)) !== null) {
-      attrs[m[1]] = m[2] === undefined ? "" : __unesc(m[2]);
-      if (m[1].indexOf("data-") === 0) dataset[camel(m[1].slice(5))] = attrs[m[1]];
-    }
-    const node = { tag: tag, attrs: attrs, dataset: dataset, open: "open" in attrs, value: attrs.value };
-    node.closest = function(sel){
-      const want = sel.match(/^\[data-([\w-]+)\]$/);
-      return want && camel(want[1]) in dataset ? node : null;
-    };
-    return node;
+    const i = panel._html.indexOf(mark);
+    return i === -1 ? null : new __Control(panel, panel._html.lastIndexOf("<", i));
   }
   // Dispatch an event of type to the panel's listeners, as from target, carrying the fields of extra;
   // answers the event.
   function dispatch(type, target, extra){
     const ev = Object.assign({ type: type, target: target, defaultPrevented: false,
       preventDefault: function(){ ev.defaultPrevented = true; } }, extra || {});
-    (panel._listeners[type] || []).forEach(function(f){ f(ev); });
-    return ev;
+    return __reach(panel, ev);
   }
   // What the browser keeps on the disclosure mark finds while the panel's markup is not replaced (the
   // same _gen): its open state; the disclosure a new markup makes takes it from its attributes.
@@ -861,23 +1239,17 @@ const VIEW_STATE_DRIVER: &str = r##"
     b.setSelectionRange(at + text.length, at + text.length);
     dispatch("input", b);
   }
-  // The change the browser fires when the user commits the box b: only when the text it holds differs
-  // from the value its markup wrote, which a box the markup wrote again holds until typed in.
-  function committed(b){ if (b.value !== b.defaultValue) dispatch("change", b); }
   // Enter pressed where the focus is: the grain box's keydown, then the change it commits.
   function enter(){
     const b = document.activeElement;
     if (!b || b !== grainBox()) return;
     dispatch("keydown", b, { key: "Enter" });
-    committed(b);
+    b._commit();
   }
   // Leaving the grain box that holds the focus: the change it commits, then its focusout.
   function leave(){
     const b = document.activeElement;
-    if (!b || b !== grainBox()) return;
-    committed(b);
-    document.activeElement = null;
-    dispatch("focusout", b);
+    if (b && b === grainBox()) b._leave();
   }
   // Let the panel settle as a browser does: while its client box differs from the one its size
   // observer was last told of, tell it, and run the frames the page queued. A panel still changing
@@ -921,6 +1293,13 @@ const VIEW_STATE_DRIVER: &str = r##"
       },
       expect: A + "|" + B,
       async answer(){
+        panel.scrollTop = 1e6;
+        const scroll = panel.scrollTop;
+        dispatch("click", target('data-frontier="1"'));
+        await __flush();
+        if (this.shown() !== this.expect || panel.scrollTop !== scroll)
+          throw new Error("REGRESSION: " + at + "the frontier node clicked again on a panel scrolled " + scroll + "px must keep "
+            + "the list and the scroll, it lists " + JSON.stringify(this.shown()) + " scrolled " + panel.scrollTop + "px");
         const cand = element('data-candidate="' + A + '"');
         if (!cand) throw new Error("REGRESSION: " + at + "the list must still offer " + A + " to choose");
         const n = asked.length;
@@ -995,6 +1374,32 @@ const VIEW_STATE_DRIVER: &str = r##"
       }
     }
   };
+  // The grain "2." typed as the grain writer types it, kept as a draft in the box an untouched view's
+  // redraw writes in its place, whose markup holds it, so the browser fires no change for it: then Enter
+  // after a window resize, leaving the box after a scrollbar's, with nothing more typed, commits it,
+  // read once. Before that Enter, one that ends an input method's composition commits nothing.
+  WRITERS.draft = Object.assign({}, WRITERS.grain, {
+    async answer(){
+      const b = grainBox(), n = asked.length, how = ROW.resize === "window" ? "Enter" : "leaving the box";
+      if (ROW.pan !== "none") throw new Error("a draft is kept in the box an untouched view's redraw writes, so its row pans none");
+      if (b.value !== b.defaultValue)
+        throw new Error(at + "the redraw must write the draft into the box's markup, the box holds " + JSON.stringify(b.value)
+          + " over its markup's " + JSON.stringify(b.defaultValue));
+      if (ROW.resize === "window") {
+        dispatch("keydown", b, { key: "Enter", isComposing: true });
+        await __flush();
+        if (asked.length !== n)
+          throw new Error("REGRESSION: " + at + "an Enter that ends a composition must commit nothing, the page asked "
+            + JSON.stringify(asked.slice(n)));
+        enter();
+      } else leave();
+      await __flush();
+      const reads = asked.slice(n).filter(function(u){ return u.indexOf("lens=code") !== -1; });
+      if (reads.length !== 1 || !/[?&]resolution=2\.(&|$)/.test(reads[0]))
+        throw new Error("REGRESSION: " + at + how + " with nothing more typed must commit the draft kept through the redraw, "
+          + "reading the code lens once at 2., the page asked " + JSON.stringify(asked.slice(n)));
+    }
+  });
   // The move, and the transform and marks it leaves, which a moved view keeps from then on: a drag on
   // the drawing, or a wheel notch while the grain box holds the focus, which a press on the drawing
   // would take from it (leaving the box, which commits the grain).
@@ -1009,6 +1414,14 @@ const VIEW_STATE_DRIVER: &str = r##"
       throw new Error("REGRESSION: " + at + "the moved view must keep its transform and its marks through " + what + ", "
         + now + " against " + kept + (__marks() === marks ? "" : ", its marks laid out again"));
   }
+  // The scroll the panel keeps, as far as what it holds reaches.
+  let scroll = 0;
+  function scrolled(what){
+    scroll = Math.min(scroll, __scrollMax(panel));
+    if (panel.scrollTop !== scroll)
+      throw new Error("REGRESSION: " + at + "the panel must keep its scroll through " + what + ", " + scroll + "px, it is scrolled "
+        + panel.scrollTop + "px");
+  }
   const W = WRITERS[ROW.writer];
   __size(__WIDE);
   await __flush();
@@ -1019,17 +1432,27 @@ const VIEW_STATE_DRIVER: &str = r##"
   await W.show();
   if (W.shown() !== W.expect)
     throw new Error(at + "showing it must show " + W.expect + ", it shows " + JSON.stringify(W.shown()));
+  panel.scrollTop = 1e6;
+  scroll = panel.scrollTop;
+  const fetches = __fetches;
   settle("showing it");
   if (W.shown() !== W.expect)
     throw new Error("REGRESSION: " + at + "it must stay shown once the panel settles after showing it, it shows "
       + JSON.stringify(W.shown()));
+  scrolled("the panel settling");
   placed("showing it");
   if (ROW.pan === "before") keeps("showing it");
   if (ROW.pan === "after") pan();
   __size(ROW.resize === "window" ? __NARROW : [__WIDE[0] - __geom.scrollbar, __WIDE[1], __WIDE[2]]);
+  // Resized, the panel lays out what it holds before the page hears of it, keeping no more scroll than
+  // that reaches.
+  scroll = Math.min(scroll, __scrollMax(panel));
   const made = settle("the resize");
+  if (__fetches !== fetches)
+    throw new Error("REGRESSION: " + at + "the panel settling and the redraw must make no request, they made " + (__fetches - fetches));
   if (W.shown() !== W.expect)
     throw new Error("REGRESSION: " + at + "it must stay shown through the redraw, it shows " + JSON.stringify(W.shown()));
+  scrolled("the resize");
   placed("the resize");
   if (ROW.pan !== "none") {
     keeps("the resize");
@@ -1042,11 +1465,81 @@ const VIEW_STATE_DRIVER: &str = r##"
 })().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
 "##;
 
+/// Driver, for the view kind `__VIEW__`: in a phone's 294px panel below a four-line toolbar, where
+/// every drawing keeps its 200px floor and so runs past the panel, a call walk shows its frontier
+/// list and is scrolled to its end; the view of that kind then opened - the files overview, a drilled
+/// cluster, the call walk of the candidate chosen from the list, the subject's neighborhood or its
+/// re-projection - runs past the panel too, and opens at its top, its toolbar in sight. Scrolled to
+/// its end, that view keeps its scroll through a redraw of it (the overlay toggle's, the card
+/// docking's).
+const FRESH_VIEW_DRIVER: &str = r##"
+;(async function(){
+  const VIEW = "__VIEW__";
+  const A = "crates/crate-2/src/module_2.rs::Thing", B = "crates/crate-3/src/module_3.rs::Thing";
+  __CALLS.nodes[5].frontier = [A, B];
+  const panel = el("kgpanel");
+  // A click on the element whose opening tag in the panel's markup carries mark.
+  function click(mark){
+    const i = panel._html.indexOf(mark);
+    if (i === -1) throw new Error(at + "the panel must hold " + mark + ", it holds " + panel._html.slice(0, 300));
+    const ev = { type: "click", target: new __Control(panel, panel._html.lastIndexOf("<", i)), defaultPrevented: false,
+      preventDefault: function(){ ev.defaultPrevented = true; } };
+    __reach(panel, ev);
+  }
+  // Each view kind: what it is, the act that opens it, the mode it draws in, and what its markup holds.
+  const OPEN = {
+    overview: { name: "the files overview", mode: "overview", open: function(){ loadKgOverview(); }, holds: "data-cluster=" },
+    drill: { name: "a drilled cluster", mode: "drill", open: function(){ drillCluster(__CLUSTER); }, holds: "data-kgback=" },
+    calls: { name: "the call walk of a candidate chosen", mode: "calls", open: function(){ click('data-candidate="' + A + '"'); },
+      holds: "<b>" + A + "</b>" },
+    seed: { name: "the subject's neighborhood", mode: "seed", open: function(){ seedGraph(__SUBJECT); },
+      holds: "neighborhood of <b>" + __SUBJECT + "</b>" },
+    reproject: { name: "the subject's re-projection", mode: "reproject", open: function(){ reprojectSubject(__SUBJECT); },
+      holds: "data-kgclear=" }
+  };
+  const V = OPEN[VIEW];
+  if (!V) throw new Error("a row opens the overview, drill, calls, seed or reproject view, not " + VIEW);
+  const at = V.name + " opened from a call walk scrolled to its end: ";
+  __size([348, 294, 80]);
+  await __flush();
+  seedCalls(__SUBJECT, "down");
+  await __flush();
+  click('data-frontier="1"');
+  await __flush();
+  panel.scrollTop = 1e6;
+  const end = panel.scrollTop;
+  if (!(end > 0) || panel._html.indexOf('data-candidate="' + A + '"') === -1)
+    throw new Error(at + "the call walk must show its frontier list and scroll, it is scrolled " + end + "px");
+  V.open();
+  await __flush();
+  if (kgMode !== V.mode || panel._html.indexOf(V.holds) === -1)
+    throw new Error(at + "it must draw, kgMode " + kgMode + ", the panel holds " + panel._html.slice(0, 300));
+  if (!(__scrollMax(panel) > 0))
+    throw new Error(at + "it must run past the panel, so a scroll kept would show, it holds " + __holds(panel) + "px");
+  if (panel.scrollTop !== 0)
+    throw new Error("REGRESSION: " + at + "it must open at its top, its toolbar in sight, it is scrolled "
+      + panel.scrollTop + "px of the " + __scrollMax(panel) + "px it scrolls");
+  panel.scrollTop = 1e6;
+  const kept = panel.scrollTop;
+  rerenderCurrentView();
+  await __flush();
+  if (panel.scrollTop !== Math.min(kept, __scrollMax(panel)))
+    throw new Error("REGRESSION: " + at + "a redraw of it must keep its scroll, " + kept + "px, it is scrolled " + panel.scrollTop + "px");
+  console.log("OK a-new-view-opens-at-its-top");
+})().catch(function(e){ console.error(String((e && e.stack) || e)); process.exit(1); });
+"##;
+
 /// Runs `driver`, and claims it ends in `ok`.
 fn drive(driver: &str, ok: &str, claim: &str) {
     node_harness_claims(
         &vm_harness(
-            &[PANEL_SHIM, OVERVIEWS_FETCH, PAGE_READERS, RESIZE_READERS],
+            &[
+                EVENT_PHASES,
+                PANEL_SHIM,
+                OVERVIEWS_FETCH,
+                PAGE_READERS,
+                RESIZE_READERS,
+            ],
             driver,
             HARNESS_FILE,
         ),
@@ -1118,11 +1611,11 @@ rigger::test_cases! {
         "OK the-first-draw-refits-to-the-panel-the-strip-leaves",
         "the first drawing must redraw to the room the panel leaves once the strip above it grows",
     );
-    /// A window resize from 1400px to 800px and back.
+    /// A window resize from 1400px to 800px and back, after clicks whose pointer wobbles.
     an_untouched_view_refits_on_a_resize_and_back: drive(
         UNTOUCHED_RESIZE_DRIVER,
         "OK an-untouched-view-refits-on-every-resize",
-        "an untouched view must redraw and re-fit on every resize",
+        "an untouched view, clicked with a wobble, must redraw and re-fit on every resize",
     );
     /// The same resize after a pan, on an overview and a call walk, and after a zoom.
     a_moved_view_keeps_its_transform_on_a_resize_and_back: drive(
@@ -1130,11 +1623,31 @@ rigger::test_cases! {
         "OK a-moved-view-keeps-its-transform-and-marks-through-a-resize",
         "a panned or zoomed view must keep its transform and marks through a resize, only its surface resized",
     );
-    /// One observer, one redraw a frame, none at an unchanged size or over a message or an empty slot.
+    /// One observer, one redraw a frame, none at an unchanged size or over a message or an empty slot,
+    /// and a message keeping the panel through the overlay toggle.
     the_panel_redraws_once_a_frame_and_only_on_a_new_size: drive(
         RESIZE_DISCIPLINE_DRIVER,
         "OK the-panel-redraws-once-a-frame-and-only-on-a-new-size",
         "the panel must redraw at most once a frame, only on a new size, and never over a message or an empty slot",
+    );
+    /// A reply landing after a read asked after it is dropped: its view, its message, its rationale
+    /// read and its header.
+    a_stale_reply_is_dropped: drive(
+        STALE_REPLY_DRIVER,
+        "OK a-stale-reply-is-dropped",
+        "a reply that lands after a read asked after it must change nothing the panel shows",
+    );
+    /// The text typed in the grain box after a commit outlives the reply to that commit.
+    a_draft_outlives_the_reply_to_the_grain_committed: drive(
+        DRAFT_REPLY_DRIVER,
+        "OK a-draft-outlives-the-reply",
+        "the text typed in a focused grain box must outlive a reply landing, the view reading the grain committed",
+    );
+    /// A lens tab, a back link and a tier checkbox keep the keyboard focus through the panel's writes.
+    a_control_keeps_the_focus_through_a_write_of_the_panel: drive(
+        CONTROL_FOCUS_DRIVER,
+        "OK a-control-keeps-the-focus",
+        "a control holding the focus must keep it through a write of the panel that writes it again",
     );
     /// The call view's frontier choice list, the view untouched, through a window resize.
     the_frontier_list_stays_through_a_window_resize_of_an_untouched_view:
@@ -1191,6 +1704,89 @@ rigger::test_cases! {
     /// The same, the grain typed on an overview already panned.
     a_typed_grain_stays_through_a_scrollbar_of_a_view_panned_before_it:
         keeps_what_it_shows(r#"{"writer": "grain", "pan": "before", "resize": "scrollbar"}"#);
+    /// A grain typed, kept as a draft in the box the untouched overview's redraw writes, then an Enter
+    /// that ends a composition, which commits nothing, and Enter with nothing more typed: it commits
+    /// the draft once.
+    a_drafted_grain_commits_on_enter_after_a_window_resize:
+        keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "window"}"#);
+    /// The same draft committed once by leaving the box after the scrollbar's redraw.
+    a_drafted_grain_commits_on_leaving_the_box_after_a_scrollbar:
+        keeps_what_it_shows(r#"{"writer": "draft", "pan": "none", "resize": "scrollbar"}"#);
+    /// The files overview, opened from a call walk scrolled to its end, opens at its top.
+    a_new_overview_opens_at_its_top: opens_at_its_top("overview");
+    /// A drilled cluster, opened the same way, opens at its top.
+    a_new_drill_opens_at_its_top: opens_at_its_top("drill");
+    /// The call walk of a frontier candidate chosen from the list opens at its top.
+    a_new_call_walk_opens_at_its_top: opens_at_its_top("calls");
+    /// The subject's neighborhood opens at its top.
+    a_new_neighborhood_opens_at_its_top: opens_at_its_top("seed");
+    /// The subject's re-projection opens at its top.
+    a_new_reprojection_opens_at_its_top: opens_at_its_top("reproject");
+}
+
+/// The page writes the panel's markup only through the wrapper that keeps what the user holds in it
+/// (`kgKeepingPlace`): no code assigns the panel's markup, by `el("kgpanel")` or by any name it binds
+/// the panel to, outside `kgWritePanel` and `kgDraw`, the two functions that hand it that wrapper.
+#[test]
+fn the_panel_markup_is_written_only_through_the_keeping_wrapper() {
+    let page = dash::live_page();
+    let script = page_script(&page);
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut holders = vec![r#"el("kgpanel")"#.to_string()];
+    let bind = r#"= el("kgpanel")"#;
+    for (at, _) in script.match_indices(bind) {
+        if !script[at + bind.len()..].starts_with([';', ',']) {
+            continue;
+        }
+        let before = script[..at].trim_end();
+        let name = &before[before.trim_end_matches(ident).len()..];
+        assert!(
+            !name.is_empty(),
+            "a binding of the panel must name it: {}",
+            &before[before.len().saturating_sub(60)..]
+        );
+        holders.push(name.to_string());
+    }
+    let span = |name: &str| {
+        let from = script
+            .find(&format!("function {name}("))
+            .unwrap_or_else(|| panic!("the page must define {name}"));
+        let to = from
+            + script[from..]
+                .find("\n}\n")
+                .unwrap_or_else(|| panic!("{name} must end"));
+        from..to
+    };
+    let through = [span("kgWritePanel"), span("kgDraw")];
+    for holder in &holders {
+        let write = format!("{holder}.innerHTML");
+        for (at, _) in script.match_indices(&write) {
+            if script[..at].ends_with(ident) {
+                continue;
+            }
+            let rest = script[at + write.len()..].trim_start();
+            if !rest.starts_with('=') || rest.starts_with("==") {
+                continue;
+            }
+            let line = script[..at].matches('\n').count() + 1;
+            assert!(
+                through.iter().any(|f| f.contains(&at)),
+                "the page writes the panel's markup at script line {line} outside kgWritePanel and kgDraw, so the \
+                 write keeps neither the panel's scroll nor the control holding the focus: {}",
+                script[at..].lines().next().unwrap_or("")
+            );
+        }
+    }
+}
+
+/// The view of the kind `view` names, opened from a panel scrolled to its end, opening at its top and
+/// keeping its scroll through a redraw.
+fn opens_at_its_top(view: &str) {
+    drive(
+        &FRESH_VIEW_DRIVER.replace("__VIEW__", view),
+        "OK a-new-view-opens-at-its-top",
+        "a new view must open at its top, and a redraw of it keep its scroll",
+    );
 }
 
 /// What the panel shows of the view it holds, in the `{writer, pan, resize}` row `VIEW_STATE_DRIVER`
