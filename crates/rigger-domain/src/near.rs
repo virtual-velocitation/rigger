@@ -29,7 +29,7 @@ use crate::contextgraph::{
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, ProofCall, INTENT_KINDS};
+use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -333,8 +333,9 @@ struct State<'v> {
     resolved: FxHashMap<String, Reads>,
     /// Each (arm, test entity)'s cluster place, the plurality rule's winner.
     attach: FxHashMap<(usize, String), Option<usize>>,
-    /// Each code file's proof calls, by place.
-    proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
+    /// Each code file's test entities with the distinct definitions their calls there prove, by
+    /// place.
+    proved_in: FxHashMap<u32, Arc<FxHashMap<String, BTreeSet<String>>>>,
     /// The test entities proving each id resolved so far, kept while the filter hides tests.
     provers: FxHashMap<String, Vec<String>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
@@ -342,7 +343,7 @@ struct State<'v> {
     /// Each (place, id) whose code assertions were read, in the order read.
     #[cfg(test)]
     read_code: Vec<(u32, String)>,
-    /// Each place whose proof calls a test's attachment passed over, in the order passed.
+    /// Each place whose proof calls were grouped by caller, in the order grouped.
     #[cfg(test)]
     proof_passes: Vec<u32>,
 }
@@ -375,7 +376,7 @@ impl<'v> Near<'v> {
                 clusters: None,
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
-                proofs_in: FxHashMap::default(),
+                proved_in: FxHashMap::default(),
                 provers: FxHashMap::default(),
                 #[cfg(test)]
                 read_code: Vec::new(),
@@ -722,16 +723,24 @@ impl<'v> State<'v> {
         Arc::clone(clusters)
     }
 
-    /// The proof calls of the code file at `place`: the calls each test entity there makes that
-    /// prove a definition.
-    fn proofs_in(&mut self, place: u32) -> Arc<Vec<ProofCall>> {
-        if let Some(held) = self.proofs_in.get(&place) {
+    /// The test entities of the code file at `place` with the distinct definitions their calls
+    /// there prove, its proof calls grouped by caller in one pass.
+    fn proved_in(&mut self, place: u32) -> Arc<FxHashMap<String, BTreeSet<String>>> {
+        if let Some(held) = self.proved_in.get(&place) {
             return Arc::clone(held);
         }
         let path = self.files[place as usize].path;
-        let calls = Arc::new(self.graph.resolver().proofs_in(path));
-        self.proofs_in.insert(place, Arc::clone(&calls));
-        calls
+        #[cfg(test)]
+        self.proof_passes.push(place);
+        let mut proved: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+        for c in self.graph.resolver().proofs_in(path) {
+            if let Some(caller) = c.caller {
+                proved.entry(caller).or_default().insert(c.target);
+            }
+        }
+        let proved = Arc::new(proved);
+        self.proved_in.insert(place, Arc::clone(&proved));
+        proved
     }
 
     /// The place in `arm` of the cluster the test entity `test` is attached to: the plurality of
@@ -745,17 +754,16 @@ impl<'v> State<'v> {
         let (file, _) = split_id(test);
         let won = match self.code_place(file) {
             Some(place) => {
-                let calls = self.proofs_in(place);
-                #[cfg(test)]
-                self.proof_passes.push(place);
-                let targets: BTreeSet<&str> = (calls.iter())
-                    .filter(|c| c.caller.as_deref() == Some(test))
-                    .map(|c| c.target.as_str())
-                    .collect();
+                let proved = self.proved_in(place);
                 let clusters = self.clusters();
                 let mut votes: std::collections::BTreeMap<usize, usize> = Default::default();
-                for target in targets {
-                    for &(a, at) in clusters.membership.get(target).into_iter().flatten() {
+                for target in proved.get(test).into_iter().flatten() {
+                    for &(a, at) in clusters
+                        .membership
+                        .get(target.as_str())
+                        .into_iter()
+                        .flatten()
+                    {
                         if a == arm {
                             *votes.entry(at).or_default() += 1;
                         }
@@ -1162,6 +1170,7 @@ mod tests {
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
     use crate::resolve::tests::{fixture, stamp};
+    use crate::resolve::ProofCall;
     use crate::resolve::Resolver;
     use std::borrow::Cow;
 
