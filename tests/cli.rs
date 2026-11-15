@@ -16054,7 +16054,9 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
 
 /// AN OPERATOR HOLD IS THE STOP OF AN ADOPTING DRIVER: a driver started to adopt a run its operator
 /// holds parks the run's next launch instead of waiting the hold out, so it ends, frees the step
-/// lock and leaves its record for `rigger release`, launching nothing and failing no unit.
+/// lock and leaves its record for `rigger release`, launching nothing and failing no unit. Started
+/// by hand, it clears what an earlier relaunched driver said, so `rigger status` no longer says a
+/// relaunched driver ended before its run did.
 #[test]
 fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_release() {
     let dir = temp_git_project_with_commit();
@@ -16072,6 +16074,8 @@ fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_rele
             .count()
     };
     let opened_before = opened(root);
+    let earlier_output = common::cli::rigger_file(root, "driver.out");
+    std::fs::write(&earlier_output, "an earlier relaunched driver's refusal\n").unwrap();
     let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
     let outcome = common::cli::run_rigger_within(
         root,
@@ -16100,6 +16104,17 @@ fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_rele
         "the driver names `rigger release` as what relaunches it; stderr: {err}"
     );
     let parked = common::cli::driver_record(root);
+    let status = invoke_over_record(root, &parked, &["status"], &[]);
+    assert_eq!(
+        (
+            std::fs::read_to_string(&earlier_output).unwrap_or_default(),
+            status.out.contains(STOPPED_RELAUNCH)
+        ),
+        (String::new(), false),
+        "a driver started by hand clears an earlier relaunched driver's output, so status no \
+         longer says it ended; status: {}",
+        status.out
+    );
     let released = invoke_over_record(root, &parked, &["release"], &[]);
     assert_eq!(
         released.relaunches,

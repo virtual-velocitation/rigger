@@ -181,9 +181,16 @@ impl KeptRecord {
     }
 
     /// Record this driver: started in `cwd` against the store at `dir` with `parsed`, driving
-    /// `run`. A driver a relaunch of the same run started carries when that relaunch was made.
-    /// A record that cannot be written is said on stderr; the run drives on, unrelaunchable.
+    /// `run`. A driver a relaunch of the same run started carries when that relaunch was made; a
+    /// driver started by hand removes what an earlier relaunched driver said, so `rigger status`
+    /// stops saying a relaunched driver ended once that driver is gone. A record that cannot be
+    /// written is said on stderr; the run drives on, unrelaunchable.
     pub(super) fn keep(&self, parsed: &RunArgs, cwd: &Path, dir: &Path, run: &str) {
+        let started_by_hand = self
+            .prior
+            .as_ref()
+            .and_then(|prior| prior.relaunched_at)
+            .is_none();
         let revived_at = self
             .prior
             .as_ref()
@@ -207,6 +214,14 @@ impl KeptRecord {
             stderr_line(&format!(
                 "rigger run: no record of this driver was kept ({e}), so a death of it is not \
                  relaunched"
+            ));
+        }
+        if let Err(e) = started_by_hand
+            .then(|| forget_driver_output(dir))
+            .transpose()
+        {
+            stderr_line(&format!(
+                "rigger run: an earlier relaunched driver's output was not removed ({e})"
             ));
         }
     }
