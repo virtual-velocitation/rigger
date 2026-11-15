@@ -844,11 +844,12 @@ pub trait EventStore: Send + Sync {
 /// is a JSON object, the id a decision, lesson or finding is shown by; `None` for a data that is
 /// not such an object or whose `"id"` is not a string.
 pub fn record_id_of(data: &[u8]) -> Option<String> {
-    #[derive(serde::Deserialize)]
-    struct Record {
-        id: String,
+    // A map, not a struct: serde reads a struct from an array too, by position.
+    let object: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(data).ok()?;
+    match object.get("id")? {
+        serde_json::Value::String(id) => Some(id.clone()),
+        _ => None,
     }
-    serde_json::from_slice::<Record>(data).ok().map(|r| r.id)
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
