@@ -4,7 +4,7 @@
 //! one at the operator checkout and describes that checkout's HEAD.
 
 use crate::common;
-use common::cli::{repository_code_store, run_rigger, run_rigger_ok};
+use common::cli::{repository_code_store, run_rigger, run_rigger_ok, source_repository, SOURCE};
 use common::fixtures::{
     assert_outside_any_repository, git_commit_all, git_out, init_repo, review_or_adjudicate,
     test_spawn_host, write_files, MergeBreakDriver, MERGE_BREAK_BASE,
@@ -24,9 +24,6 @@ use std::sync::Mutex;
 /// Readies a fixture repository at its root before the verb under test runs.
 type Ready = fn(&Path);
 
-/// The source file every fixture repository starts with.
-const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
-
 /// The stamp of the snapshot in force in the store of the repository at `root`.
 fn stamp_at(root: &Path) -> Stamp {
     repository_code_store(root)
@@ -38,16 +35,6 @@ fn stamp_at(root: &Path) -> Stamp {
 /// The commit the checkout at `root` has checked out.
 fn head_of(root: &Path) -> String {
     git_out(root, &["rev-parse", "HEAD"])
-}
-
-/// A repository holding [`SOURCE`] in a commit, its root canonical.
-fn source_repository() -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    init_repo(&root);
-    write_files(&root, &[(SOURCE.0, SOURCE.1)]);
-    git_commit_all(&root, "source");
-    (dir, root)
 }
 
 /// A [`source_repository`] that `rigger setup` provisioned, everything setup wrote committed, so

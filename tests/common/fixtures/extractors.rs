@@ -1,7 +1,8 @@
 //! THE EXTRACTORS KEY's declarations (spec 125, criterion 7), each a flow mapping of the
 //! workflow's `extractors:` key: the well-formed ones the workflow check accepts, and each
 //! malformed one with its exact refusal. One table, read by the domain check's test, by
-//! `Config::validate`'s and by the code store's read of the declared map.
+//! `Config::validate`'s, by the code store's read of the declared map and by the binary's
+//! periphery suite.
 
 /// The `extractors:` mappings the check accepts: none, one, a name of each character class at
 /// each end of its range, a name mixing them with two extensions and a run holding a space, and
