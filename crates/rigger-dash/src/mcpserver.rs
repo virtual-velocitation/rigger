@@ -643,7 +643,20 @@ impl<'a> Server<'a> {
                         "note": crate::sidecar::LOGGED_SITE_NOTE,
                         "tests_hidden": tests_hidden,
                     }),
-                    None => json!({"label": label, "status": "none", "tests_hidden": tests_hidden}),
+                    None => {
+                        let mut none =
+                            json!({"label": label, "status": "none", "tests_hidden": tests_hidden});
+                        // What the term is nearest to, as the CLI's not-found note names it, when
+                        // no hidden test answers it.
+                        if tests_hidden == 0 {
+                            if let Some(near) = rigger_grounder::lookup::nearest(show, graph)
+                                .map_err(|e| e.to_string())?
+                            {
+                                none["nearest"] = json!(near);
+                            }
+                        }
+                        none
+                    }
                 },
                 Located::Many(cands) => json!({
                     "label": label,
@@ -2772,6 +2785,14 @@ mod tests {
             &crate::test_support::records_graph(&graph),
         )
         .to_string();
+        // A miss names what it is nearest to, as the CLI's not-found note does.
+        let mut none = json!({"status": "none", "label": label, "tests_hidden": 0});
+        if let Some(near) =
+            rigger_grounder::lookup::nearest("nope", &crate::test_support::records_graph(&graph))
+                .unwrap()
+        {
+            none["nearest"] = json!(near);
+        }
         assert_eq!(
             [show("d-old"), show("nope")],
             [
@@ -2782,7 +2803,7 @@ mod tests {
                     "label": label,
                     "tests_hidden": 0,
                 }),
-                json!({"status": "none", "label": label, "tests_hidden": 0}),
+                none,
             ]
         );
     }

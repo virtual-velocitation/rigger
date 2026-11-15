@@ -184,7 +184,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
          (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
          source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
-         `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
+         `rigger graph --show <entity>` (text: an entity's definition site and its body, or for a \
+         name no entity carries, the names it is nearest to), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
          files). Grep over the project's sources is a fallback worth reporting, not a habit: if the \
          graph could not answer and you fall back to grep, record it with `rigger progress <id> \

@@ -331,9 +331,14 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
             None if hidden > 0 => {}
-            None => println!(
-                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
-            ),
+            None => {
+                println!(
+                    "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
+                );
+                if let Some(near) = rigger::lookup::nearest(entity, graph)? {
+                    println!("  {}", rigger::lookup::nearest_line(&near));
+                }
+            }
         },
         Located::Many(cands) => {
             println!(

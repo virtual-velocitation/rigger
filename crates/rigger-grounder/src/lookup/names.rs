@@ -50,7 +50,7 @@ pub(crate) enum Resolved {
 /// The most names a prefix or fuzzy search gathers before it ranks them.
 const GATHER: usize = 256;
 /// The most nearest names a missing term is answered with.
-const NEAREST: usize = 5;
+pub(crate) const NEAREST: usize = 5;
 
 /// The ids of the entities the graph answers a name with, read once per name.
 pub(crate) struct Held<'a> {
