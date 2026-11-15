@@ -18,6 +18,7 @@ pub mod file_trust;
 pub mod gate_socket;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod holders;
+pub mod home;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -32,6 +33,8 @@ pub mod reap;
 pub mod subprocess;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod whole_line;
+
+pub use home::home_dir;
 
 // The parameterised-test macro the moved tests name by its historical `crate::` path. Every
 // module whose tests expand it is store-gated, so it is imported where those modules compile.

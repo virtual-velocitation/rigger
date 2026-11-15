@@ -29440,6 +29440,52 @@ fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_r
     );
 }
 
+/// `rigger reset --scratch-orphans` with `XDG_CACHE_HOME` removed and `HOME` set to `home`, or
+/// removed when `home` is `None`, knows no cache home: it fails with exit code 1, prints nothing
+/// to stdout and prints the one refusal line to stderr.
+#[cfg(unix)]
+fn assert_scratch_orphans_refuses_with_no_home(home: Option<&str>) {
+    let dir = temp_store_project();
+    let state = tempfile::tempdir().unwrap();
+    let mut cmd = common::cli::rigger_command(
+        dir.path(),
+        &["reset", "--scratch-orphans"],
+        &[],
+        state.path(),
+    );
+    cmd.env_remove("XDG_CACHE_HOME");
+    match home {
+        Some(home) => cmd.env("HOME", home),
+        None => cmd.env_remove("HOME"),
+    };
+    let out = cmd.output().expect("the rigger binary runs");
+    assert_eq!(
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ),
+        (
+            Some(1),
+            String::new(),
+            "rigger: reset --scratch-orphans: neither XDG_CACHE_HOME nor a home directory is \
+             known, so there is no cache-home scratch directory to sweep\n"
+                .to_string(),
+        )
+    );
+}
+
+rigger::test_cases! {
+    /// `HOME` removed: no home directory is known.
+    #[cfg(unix)]
+    reset_scratch_orphans_refuses_when_home_is_removed:
+        assert_scratch_orphans_refuses_with_no_home(None);
+    /// `HOME` empty: an empty value counts as unset, so no home directory is known either.
+    #[cfg(unix)]
+    reset_scratch_orphans_refuses_when_home_is_empty:
+        assert_scratch_orphans_refuses_with_no_home(Some(""));
+}
+
 #[test]
 fn status_reports_a_run_without_creating_the_projects_scratch_root() {
     // A read-only report never conjures the cache-home scratch root (and so never runs the
