@@ -2498,8 +2498,8 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
     found
 }
 
-/// The block a review spawn's task closes on over its round's `findings`: for a gating spawn
-/// (`all`, the adjudicator) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
+/// The block a review spawn's task closes on over its round's `findings`: for a unit's
+/// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
 /// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
 /// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
 /// already recorded. Empty when there is none to list.
@@ -8511,6 +8511,7 @@ impl RunCtx<'_> {
             // Stdout is NOT the verdict - the findings go to the graph - so an empty stdout is
             // degenerate only when the reviewer also emitted no ReviewFinding.
             ReviewerOutput::Findings,
+            false,
             &prompt,
             resume.as_deref(),
             wt,
@@ -8566,7 +8567,7 @@ impl RunCtx<'_> {
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
     /// sentinel exactly like the original spawn. Every spawn's task, `prompt` or the
     /// `resume_task`, closes on the [`round_findings_block`] of the findings its round already
-    /// recorded: the role's own for a lens or the adversary, every one for a gating spawn. `reviews` is the routed review roster
+    /// recorded: every one when `whole_round` is set (a unit's adjudicator), else the role's own. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
     /// the tokens of every earlier step's spawns for an adversary or the adjudicator - always
     /// the CALLER's already-computed value, never re-derived here.
@@ -8584,6 +8585,9 @@ impl RunCtx<'_> {
         ordinal: u32,
         parallel: bool,
         output: ReviewerOutput,
+        // Whether this spawn's task lists every finding its round recorded (a unit's
+        // adjudicator) rather than the ones its own role recorded.
+        whole_round: bool,
         prompt: &str,
         // What a later review round sends this role's resumed session in place of `prompt`
         // ([`RunCtx::review_resume_task`]), or `None` when the caller has no round to
@@ -8633,7 +8637,7 @@ impl RunCtx<'_> {
             // re-driven within its round (its driver died after it recorded, or its result was
             // degenerate or verdict-less) is told its own, and the adjudicator every one.
             let found = round_findings(&self.read_current_run()?, &st.name, attempt);
-            let block = round_findings_block(&found, role, output != ReviewerOutput::Findings);
+            let block = round_findings_block(&found, role, whole_round);
             let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
@@ -9035,6 +9039,9 @@ impl RunCtx<'_> {
             } else {
                 ReviewerOutput::Verdict
             },
+            // The graph slice carries only the findings about its seed; the verdict weighs
+            // every finding of the round.
+            true,
             &prompt,
             resume.as_deref(),
             wt,
@@ -9403,6 +9410,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Findings,
+                    false,
                     &format!(
                         "{prompt}{}",
                         review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
@@ -9428,6 +9436,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Verdict,
+                    false,
                     &prompt,
                     None,
                     None,
