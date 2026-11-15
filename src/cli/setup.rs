@@ -155,7 +155,8 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// The workflow's gates and its implementer come from the first of `parsed` any of whose
 /// `detect` markers is a file at `root`, whose `implementer` persona is seeded beside the role
 /// seeds; with none, the workflow declares no gates and names the language-neutral `implementer`
-/// seed. An existing workflow or agent file is kept.
+/// seed. An existing workflow or agent file is kept, and no seed is written whose id an existing
+/// agent defines ([`write_seed_agents`]).
 fn scaffold_project(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
@@ -267,10 +268,11 @@ fn scaffold_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when the workflow at `root` is absent or names no agent),
-/// returning the file names it newly wrote. It creates `.rigger/agents/` when absent. An
-/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
-/// operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent) and no
+/// agent already in `.rigger/agents/` defines under any file name, returning the file names it
+/// newly wrote. It creates `.rigger/agents/` when absent, and fails naming an agent file there
+/// that does not parse. An existing file is kept silently ([`write_if_absent`]), so a rerun
+/// writes nothing new and an operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
@@ -303,14 +305,22 @@ fn write_seed_agents(
     // ABSENT or names no agent, never because a present one failed to parse.
     let agents_dir = project_agents_dir(root);
     std::fs::create_dir_all(&agents_dir)?;
+    // The ids the agents already on disk define, whatever their file names: a candidate carrying
+    // one would be a second agent of that id, which every later load refuses.
+    let defined: std::collections::HashSet<String> = config_store::read_agents_dir(&agents_dir)?
+        .into_iter()
+        .map(|(_, agent)| agent.id)
+        .collect();
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
+        let id = seed_id(content);
         let referenced = referenced_agents.is_empty()
-            || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
+            || id.as_ref().is_some_and(|id| referenced_agents.contains(id));
+        let undefined = !id.is_some_and(|id| defined.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
         // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
-        if referenced && write_if_absent(&agents_dir.join(&file), content)? {
+        if referenced && undefined && write_if_absent(&agents_dir.join(&file), content)? {
             new_agents.push(file);
         }
     }
