@@ -91,11 +91,17 @@ impl LiveCritiques {
         ) else {
             return Self::Unread;
         };
-        match critique_store(backend.as_ref(), &identity).read_stream(
-            conductor::STREAM,
-            0,
-            Direction::Forward,
-        ) {
+        Self::on(
+            &critique_store(backend.as_ref(), &identity),
+            scratch_root,
+            now,
+        )
+    }
+
+    /// The critique runs live at `now` on the critique stream `critiques` ([`critique_store`]),
+    /// their markers under `scratch_root`. A stream that cannot be read is [`Self::Unread`].
+    fn on(critiques: &dyn EventStore, scratch_root: &str, now: std::time::SystemTime) -> Self {
+        match critiques.read_stream(conductor::STREAM, 0, Direction::Forward) {
             Ok(events) => Self::of(&events, scratch_root, now),
             Err(_) => Self::Unread,
         }
@@ -241,7 +247,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
         // the error.
         return Err(ceiling.notice(&union, attempts)?.into());
     } else {
-        remove_critique_scratch(&scratch_root);
+        remove_critique_scratch(&critiques, &scratch_root);
         answered_from(&spec, &hash, &union);
         ceiling.say_unless_exhausted(&union, attempts)?;
         copy_findings(&store, &graph, &union, &spec)?;
@@ -498,17 +504,21 @@ fn reap_spawn(scratch_root: &str, run_id: &str, spawn_id: &str) {
 }
 
 /// Remove the liveness, transcript and spawn-scratch directories of every critique run
-/// (`critique-<hash>`, any hash) under the scratch root, on a call answered from the store, so
-/// whatever a crashed critique left goes with it; the log holds the output. A spawning call never
-/// runs it: it reaps only the spawns it judged ([`reap_spawn`]). A loop run's directories are
-/// never touched. Each goes through the same entry-by-entry removal as a done run's teardown
-/// ([`remove_agent_area_entries`]). Best-effort: a directory that cannot be read or removed stays
-/// for the next call.
-fn remove_critique_scratch(scratch_root: &str) {
+/// (`critique-<hash>`, any hash) under the scratch root that no live critic holds
+/// ([`LiveCritiques`], read on the critique stream `critiques`), on a call answered from the
+/// store, so whatever an ended or crashed critique left goes with it; the log holds the output. A
+/// spawning call never runs it: it reaps only the spawns it judged ([`reap_spawn`]). A loop run's
+/// directories are never touched. Each goes through the same entry-by-entry removal as a done
+/// run's teardown ([`remove_agent_area_entries`]). Best-effort: a directory that cannot be read or
+/// removed stays for the next call.
+fn remove_critique_scratch(critiques: &dyn EventStore, scratch_root: &str) {
     if scratch_root.is_empty() {
         return;
     }
-    remove_agent_area_entries(Path::new(scratch_root), review::is_critique_run);
+    let live = LiveCritiques::on(critiques, scratch_root, std::time::SystemTime::now());
+    remove_agent_area_entries(Path::new(scratch_root), |name| {
+        review::is_critique_run(name) && !live.spares(name)
+    });
 }
 
 /// Append one `ReviewFinding` to the project run stream for each finding of `critique`'s union that
