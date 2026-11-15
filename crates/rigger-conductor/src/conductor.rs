@@ -29455,6 +29455,103 @@ mod tests {
             );
     }
 
+    /// The review-rejected lanes' issue [`every_lane_review_rejected`] plants.
+    const EVERY_LANE_REJECTED: &str = "every lane's review rejected this candidate";
+    /// The red gate output [`every_lane_gate_red`] plants.
+    const EVERY_LANE_GATE_RED: &str = "every lane's gate went red";
+
+    /// Every lane passes its gate and is rejected by review. Returns what each re-entered lane
+    /// is told: the review's issue.
+    fn every_lane_review_rejected(cfg: &mut Config, driver: &mut Stub) -> &'static str {
+        driver.output = format!(r#"{{"verdict":"reject","issues":["{EVERY_LANE_REJECTED}"]}}"#);
+        let _ = cfg;
+        EVERY_LANE_REJECTED
+    }
+
+    /// Every lane's gate goes red. Returns what each re-entered lane is told: the gate's output.
+    fn every_lane_gate_red(cfg: &mut Config, driver: &mut Stub) -> &'static str {
+        cfg.workflow.gates.insert(
+            "ok".into(),
+            gate_def(&format!("echo '{EVERY_LANE_GATE_RED}'; exit 1")),
+        );
+        let _ = driver;
+        EVERY_LANE_GATE_RED
+    }
+
+    /// Spec 126 criterion 14: a group whose every lane loses before any merge (`lose` sets up
+    /// how) escalates with the loss recorded, so an operator's grant re-drives its lanes as
+    /// fresh sessions told why the group lost, exactly as a single lane re-entering after its
+    /// own failure is told.
+    fn assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+        lose: fn(&mut Config, &mut Stub) -> &'static str,
+        why: &str,
+    ) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = spec_cfg(2);
+        let mut losing = approving_speculation_stub();
+        let told = lose(&mut cfg, &mut losing);
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &losing, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "premise: a group whose lanes all lose escalates: {why}"
+        );
+        // A host records every spawn it is asked for; the stub records none.
+        park_lane_requests(&store, 0..2);
+        grant_resume(&store, "s", 1);
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        let lanes: Vec<String> = driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
+            .cloned()
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "the re-entered lanes run one past the recorded attempts: {why}"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() == 2 && prompts.iter().all(|p| p.contains(told)),
+            "every re-entered lane's prompt holds {told:?}: {why}; prompts: {prompts:?}"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the re-entered group wins: {why}"
+        );
+    }
+
+    crate::test_cases! {
+        a_group_whose_lanes_review_rejected_re_enters_told_the_rejection:
+            assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+                every_lane_review_rejected,
+                "every lane review-rejected",
+            );
+        a_group_whose_lanes_went_gate_red_re_enters_told_the_gate_output:
+            assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+                every_lane_gate_red,
+                "every lane gate-red",
+            );
+    }
+
     #[test]
     fn assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo() {
         // The guard that makes "run in the main repo" structurally impossible: with a
