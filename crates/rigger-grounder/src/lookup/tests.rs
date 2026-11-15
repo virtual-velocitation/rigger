@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::budget::{self, REPLY_LIMIT, TEXT_TOTAL};
+use super::budget::{self, PROSE_TOP, REPLY_LIMIT, TEXT_TOTAL};
 use super::graph::{Answered, Entity, Site, TermGraph};
 #[cfg(feature = "symbols")]
 use super::normalise;
@@ -432,6 +432,30 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
         ranked.hits.is_empty(),
         "a record held is not ranked while its graph cannot be read"
     );
+}
+
+/// Sections that score alike rank in the order their sources were read, however the index
+/// spreads them over its segments: the ranking is a total order, the score and then the order
+/// read, so one tree and one log always rank to one list.
+#[test]
+fn sections_that_score_alike_rank_in_the_order_their_sources_were_read() {
+    let dir = tree(&[("docs/a.md", "# A\n")]);
+    let ids: Vec<String> = (0..4 * PROSE_TOP)
+        .rev()
+        .map(|i| format!("d{i:02}"))
+        .collect();
+    let records: Vec<Node> = (ids.iter())
+        .map(|id| decision(id, "keep the gizmo in memory"))
+        .collect();
+    let first_read: Vec<(String, String)> = (ids.iter().take(PROSE_TOP))
+        .map(|id| (KIND_DECISION.to_string(), id.clone()))
+        .collect();
+    for _ in 0..20 {
+        let ranked = ProseIndex::default()
+            .rank(dir.path(), &["gizmo"], Ok(records.clone()))
+            .unwrap();
+        assert_eq!(ranked_places(&ranked), first_read);
+    }
 }
 
 // --- the whole lookup ----------------------------------------------------------------------
