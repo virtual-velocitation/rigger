@@ -198,7 +198,8 @@ rigger resume-unit <unit>   give an escalated unit of the current run more attem
 [--attempts <n>]  (default 1) on its same branch: the next `rigger run`\n                              \
 re-parks its implementer there. Refuses, recording\n                              \
 nothing, when the unit is not escalated or its branch\n                              \
-is gone\n  \
+is gone; a speculation group re-enters on fresh lane\n                              \
+worktrees, so its deleted branches are no refusal\n  \
 rigger hold --reason <text> hold the current run for the operator, the text its\n                              \
 reason: no probe ends this hold; `rigger release`, a\n                              \
 new run, or `rigger run` reaching done does. Refuses,\n                              \

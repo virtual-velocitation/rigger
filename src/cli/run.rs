@@ -372,7 +372,9 @@ pub(crate) fn cmd_run(args: &[String]) -> Res {
 /// durable branch no longer exists in the repo (deleted or reclaimed out of band) -
 /// named alongside a `git reflog` hint, per the spec's own constraints walk, since a
 /// resume with no branch to re-park the implementer on would strand the implementer on
-/// a fresh, empty checkout instead of the unit's actual prior work.
+/// a fresh, empty checkout instead of the unit's actual prior work. A unit that escalated
+/// as a speculation group is granted without its branch: the group re-enters on fresh lane
+/// worktrees (spec 126, criterion 14).
 pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let mut unit_id: Option<&str> = None;
     let mut attempts_granted: u32 = 1;
@@ -421,7 +423,10 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
             .into());
         }
         let branch = unit.branch.clone();
-        if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+        if !branch.is_empty()
+            && !conductor::escalated_as_speculation_group(&run_events, unit_id)
+            && !rigger::worktree::branch_exists(&loc.repo_root(), &branch)
+        {
             return Err(format!(
                 "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
                  reclaimed) - refusing to resume with nothing to re-park the implementer on. \
