@@ -770,3 +770,184 @@ fn reset_build_cache_reclaims_no_unit_or_scratch_class_when_the_run_log_is_unrea
         "the refusal names why: {err:?}"
     );
 }
+
+/// One critique run's scratch under the agent scratch root, as `rigger reset --build-cache` meets
+/// it: the critic's spawns on the critique's own stream, whether the latest one's liveness marker
+/// is fresh, stale or missing, and whether the reset must keep its container.
+struct CritiqueScratch {
+    what: &'static str,
+    hash: &'static str,
+    /// The attempts whose spawn recorded a result, ahead of the one in `latest`.
+    ended: &'static [u32],
+    /// The latest attempt and whether it recorded a result.
+    latest: (u32, bool),
+    marker: Marker,
+    kept: bool,
+}
+
+/// The latest spawn's liveness marker.
+#[derive(Clone, Copy)]
+enum Marker {
+    Fresh,
+    /// Touched an hour ago, past the spawn's one-minute bound.
+    Stale,
+    Missing,
+}
+
+/// Spec 126 criterion 12: `rigger reset --build-cache` keeps the scratch of a critique whose
+/// critic is live (a spawn with no result and a marker inside its bound, on any attempt) and
+/// reclaims the whole container of an ended or crashed one, whatever its shape, beside a dead run's
+/// spawn leaf; the live containers' bytes are never counted among the reclaimed.
+#[test]
+fn reset_build_cache_keeps_a_live_critiques_scratch_and_reclaims_an_ended_ones() {
+    let rows = [
+        CritiqueScratch {
+            what: "a critique whose first critic is running",
+            hash: "aaaaaaaaaaaaaaaa",
+            ended: &[],
+            latest: (1, false),
+            marker: Marker::Fresh,
+            kept: true,
+        },
+        CritiqueScratch {
+            what: "a critique on its second attempt, the first ended",
+            hash: "bbbbbbbbbbbbbbbb",
+            ended: &[1],
+            latest: (2, false),
+            marker: Marker::Fresh,
+            kept: true,
+        },
+        CritiqueScratch {
+            what: "a critique whose critic recorded its result",
+            hash: "cccccccccccccccc",
+            ended: &[],
+            latest: (1, true),
+            marker: Marker::Fresh,
+            kept: false,
+        },
+        CritiqueScratch {
+            what: "a critique whose critic died before its marker",
+            hash: "dddddddddddddddd",
+            ended: &[],
+            latest: (1, false),
+            marker: Marker::Missing,
+            kept: false,
+        },
+        CritiqueScratch {
+            what: "a critique whose critic went silent past its bound",
+            hash: "eeeeeeeeeeeeeeee",
+            ended: &[],
+            latest: (1, false),
+            marker: Marker::Stale,
+            kept: false,
+        },
+    ];
+    let project = temp_store_project();
+    let root = project.path();
+    let scratch = common::default_scratch_root(root);
+    let scratch_str = scratch.to_str().expect("a UTF-8 scratch root");
+    let agent_scratch = scratch.join("agent-scratch");
+    let dead_spawn_leaf = agent_scratch.join("run-gone").join("spawn-gone");
+    write_file(&dead_spawn_leaf.join("c"), &[0u8; 200]);
+    let mut reclaimed_bytes = 200u64;
+    for row in &rows {
+        let run = rigger::review::critique_unit(row.hash);
+        let request = |attempt: u32| {
+            (
+                rigger::spawn::TYPE_SPAWN_REQUESTED,
+                serde_json::json!({
+                    "id": rigger::review::critique_spawn_id(row.hash, attempt),
+                    "unit": run,
+                    "stage": "critique",
+                    "prompt": "p",
+                    "max_wall_clock": 60,
+                }),
+            )
+        };
+        let result = |attempt: u32| {
+            (
+                rigger::spawn::TYPE_SPAWN_RESULT,
+                serde_json::json!({
+                    "id": rigger::review::critique_spawn_id(row.hash, attempt),
+                    "output": "{\"verdict\":\"approve\"}",
+                }),
+            )
+        };
+        let (latest, answered) = row.latest;
+        let mut events = Vec::new();
+        for &attempt in row.ended {
+            events.extend([request(attempt), result(attempt)]);
+        }
+        events.push(request(latest));
+        if answered {
+            events.push(result(latest));
+        }
+        common::cli::seed_critique(root, &events);
+        let spawn = rigger::review::critique_spawn_id(row.hash, latest);
+        let leaf = rigger::driver::replay::spawn_scratch_path(scratch_str, &run, &spawn)
+            .expect("a spawn scratch path");
+        write_file(&leaf.join("probe").join("f"), &[1u8; 300]);
+        // A bare file beside the leaf: a shape no loop run's container has.
+        write_file(&agent_scratch.join(&run).join("stray.log"), &[2u8; 40]);
+        let marker =
+            rigger::liveness::marker_path(scratch_str, &run, &spawn).expect("a marker path");
+        match row.marker {
+            Marker::Missing => {}
+            Marker::Fresh | Marker::Stale => {
+                write_file(&marker, b"");
+                if matches!(row.marker, Marker::Stale) {
+                    std::fs::File::options()
+                        .write(true)
+                        .open(&marker)
+                        .and_then(|f| {
+                            f.set_modified(
+                                std::time::SystemTime::now()
+                                    - std::time::Duration::from_secs(3_600),
+                            )
+                        })
+                        .expect("age the marker");
+                }
+            }
+        }
+        if !row.kept {
+            reclaimed_bytes += 340;
+        }
+    }
+
+    let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
+    assert!(
+        ok,
+        "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        !dead_spawn_leaf.exists(),
+        "the dead run's spawn leaf must be reclaimed: {dead_spawn_leaf:?}; stdout {out:?}"
+    );
+    for row in &rows {
+        let container = agent_scratch.join(rigger::review::critique_unit(row.hash));
+        if row.kept {
+            assert_eq!(
+                dir_bytes(&container),
+                340,
+                "{}: its scratch must be kept whole; stdout {out:?}",
+                row.what
+            );
+        } else {
+            assert!(
+                !container.exists(),
+                "{}: its whole container must be reclaimed: {container:?}; stdout {out:?}",
+                row.what
+            );
+        }
+    }
+    assert!(
+        out.contains(&format!(
+            "({reclaimed_bytes} byte(s)) from registered scratch roots"
+        )),
+        "the reclaimed bytes are the dead leaf and the ended critiques' containers alone: {out:?}"
+    );
+    assert!(
+        !out.contains("from unowned agent scratch"),
+        "a critique's container is never unowned agent scratch: {out:?}"
+    );
+}
