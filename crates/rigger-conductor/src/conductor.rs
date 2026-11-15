@@ -17464,6 +17464,11 @@ mod tests {
         resume_answer: ResumeAnswer,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
+        /// With [`sessions`](Self::sessions): the spawns, by id, whose session ends without
+        /// handing over. Every other session spawn whose task carries [`AUTHOR_HANDOVER_LINE`]
+        /// ends its output with that line (trailing spaces and blank lines after it), as a host's
+        /// author answers the contract its task carries.
+        withhold_handover_ids: std::collections::HashSet<String>,
     }
     /// How a [`Stub::sessions`] spawn asked to continue a session answers.
     #[derive(Clone, Copy, Debug)]
@@ -17522,6 +17527,7 @@ mod tests {
                 sessions: false,
                 resume_answer: ResumeAnswer::Continued,
                 resumes: Mutex::new(Vec::new()),
+                withhold_handover_ids: std::collections::HashSet::new(),
             }
         }
 
@@ -17767,12 +17773,27 @@ mod tests {
             if !opts.dir.is_empty() && self.delete_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
             }
-            let output = self
+            let mut output = self
                 .output_by_spawn_id
                 .get(&opts.id)
                 .or_else(|| self.output_by_agent.get(&a.id))
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
+            // The task the session read: a continued session reads the resume task, a fresh
+            // launch (or one whose session is gone) the full prompt.
+            let continued =
+                !opts.resumed_from.is_empty() && !matches!(self.resume_answer, ResumeAnswer::Gone);
+            let task = if continued {
+                opts.resume_task.as_str()
+            } else {
+                prompt
+            };
+            if self.sessions
+                && task.contains(AUTHOR_HANDOVER_LINE)
+                && !self.withhold_handover_ids.contains(&opts.id)
+            {
+                output.push_str(&format!("\n{AUTHOR_HANDOVER_LINE}  \n\n"));
+            }
             let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
                 (false, _) => (String::new(), String::new()),
                 (true, true) => (format!("sess-{}", opts.id), String::new()),
@@ -28090,26 +28111,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn speculation_crashed_lane_is_absent_and_a_sibling_still_wins() {
-        // MUST-FIX E (sdet-u13-spec-crashed-candidate-arm-untested + arch-spec-crash-lane-worktree-
-        // leak): lane 0's implementer CRASHES (non-zero exit) while lane 1 writes + is approved.
-        // The crashed lane is simply absent from the group and the surviving sibling still wins and
-        // integrates ("the remaining candidates still race"). A mutation that propagated the lane-0
-        // error (aborting the group) leaves the unit un-integrated. AND the crash arm now tears down
-        // lane 0's ALREADY-CREATED worktree + branch: without that cleanup the canonical branch
-        // leaks (no terminal path touches the never-pushed crashed lane), so `branch_present` holds
-        // and this test FAILS.
+    /// Run a width-2 speculating unit `s` whose lane 0 is lost (`lose_lane_0` sets that up on the
+    /// driver) while lane 1 writes and is approved. The lost lane is simply absent from the group
+    /// and the surviving sibling still wins and integrates ("the remaining candidates still
+    /// race"), and the lost lane's ALREADY-CREATED worktree and branch are torn down: no terminal
+    /// path touches a never-pushed lane, so without that cleanup the canonical branch leaks. Every
+    /// lane's prompt carries the handover contract.
+    fn assert_lost_lane_is_absent_and_a_sibling_still_wins(lose_lane_0: fn(&mut Stub), why: &str) {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
+        let mut driver = Stub {
             write_file: Some("feature.rs".into()),
             output: r#"{"verdict":"approve"}"#.into(),
-            fail_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_IMPLEMENTER, 0)]),
             ..Stub::new()
         };
+        lose_lane_0(&mut driver);
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
@@ -28118,12 +28136,21 @@ mod tests {
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
-            "lane 0 crashed but the surviving sibling lane 1 still wins and integrates"
+            "lane 0 was lost but the surviving sibling lane 1 still wins and integrates: {why}"
         );
         assert_eq!(
             occurrences(&driver.call_order, "worker"),
             2,
-            "BOTH candidate implementers were spawned - the crash did not abort the group"
+            "BOTH candidate implementers were spawned - losing lane 0 did not abort the group: \
+             {why}"
+        );
+        let contract = handover_contract();
+        assert!(
+            driver
+                .prompts_for("worker")
+                .iter()
+                .all(|prompt| prompt.contains(&contract)),
+            "every lane's prompt carries the handover contract: {why}"
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -28137,20 +28164,43 @@ mod tests {
         assert_eq!(
             integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
             Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
-            "the surviving lane 1 is the recorded winner"
+            "the surviving lane 1 is the recorded winner: {why}"
         );
         assert!(
             !integrated
                 .meta
                 .get(META_SPEC_LOSERS)
                 .is_some_and(|l| l.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0))),
-            "the CRASHED lane 0 is absent from the group (no diff), not recorded a loser"
+            "the lost lane 0 is absent from the group (no diff), not recorded a loser: {why}"
         );
-        // The crash arm removed lane 0's already-created worktree AND branch: no durable leak.
         assert!(
             !branch_present(&repo_path, &unit_branch("s")),
-            "the crashed lane's worktree branch is torn down in the crash arm, never leaked"
+            "the lost lane's worktree branch is torn down, never leaked: {why}"
         );
+    }
+
+    crate::test_cases! {
+        /// MUST-FIX E (sdet-u13-spec-crashed-candidate-arm-untested + arch-spec-crash-lane-worktree-
+        /// leak): lane 0's implementer CRASHES (non-zero exit). A mutation that propagated the
+        /// lane-0 error (aborting the group) leaves the unit un-integrated.
+        speculation_crashed_lane_is_absent_and_a_sibling_still_wins:
+            assert_lost_lane_is_absent_and_a_sibling_still_wins(
+                |driver| driver.fail_spawn_ids = std::collections::HashSet::from([
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                ]),
+                "a crashed lane",
+            );
+        /// Spec 126 criterion 13: lane 0's implementer session ends without the handover line,
+        /// so it stopped mid-work and the lane is lost as a crashed lane is, never rerun.
+        speculation_lane_without_the_handover_line_is_absent_and_a_sibling_still_wins:
+            assert_lost_lane_is_absent_and_a_sibling_still_wins(
+                |driver| {
+                    driver.sessions = true;
+                    driver.withhold_handover_ids =
+                        std::collections::HashSet::from([spawn_id("s", ROLE_IMPLEMENTER, 0)]);
+                },
+                "a lane that did not hand over",
+            );
     }
 
     #[test]
@@ -48529,6 +48579,195 @@ mod tests {
                 true,
                 "the sdet-author spawn must be attempted at the seam (it then crashes)",
                 "a crashed sdet-author is an uncharged infra rerun of the seam, then the unit integrates",
+            );
+    }
+
+    /// The author handover's rendered contract, as every author spawn's task carries it.
+    fn handover_contract() -> String {
+        fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+    }
+
+    /// The commits subjected `subject` across every ref of `repo`, each with the paths it
+    /// changed.
+    fn commits_subjected(repo: &Path, subject: &str) -> Vec<Vec<String>> {
+        git_out(repo, &["log", "--all", "--format=%H %s"])
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(_, s)| *s == subject)
+            .map(|(sha, _)| {
+                git_out(repo, &["show", "--name-only", "--format=", sha])
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Spec 126's AN AUTHOR HANDS OVER, over one merging, gated unit `s` (its test author
+    /// declared when `with_sdet`) under a driver that runs its spawns as sessions when
+    /// `sessions`, the first run of the `withheld` role's session ending without the handover
+    /// line. Every author prompt carries the handover contract. A session that ends without the
+    /// line takes its arm's crash disposition: the stage reruns uncharged under the next infra
+    /// ordinal, recording an `infra-retry` mark naming `infra:spawn`, no gate runs and no
+    /// checkpoint commit is made before the rerun (every gate verdict is keyed `~retry1`, and
+    /// the attempt's one checkpoint commit holds the rerun's own file), and a withheld
+    /// implementer's `green` for its attempt is recorded only after the rerun. A result ending
+    /// with the line, and any result of a driver that runs no session, proceeds as today.
+    fn assert_author_handover(sessions: bool, with_sdet: bool, withheld: Option<&str>, why: &str) {
+        let implementer_rerun = spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1));
+        let sdet_rerun = spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start());
+        let mut driver = sdet_lane_driver();
+        driver.sessions = sessions;
+        driver.withhold_handover_ids = withheld
+            .map(|role| spawn_id("s", role, 0))
+            .into_iter()
+            .collect();
+        // Each rerun authors a file of its own, so the attempt's checkpoint commit names the
+        // runs whose work it holds.
+        driver.write_files_by_spawn_id = HashMap::from([
+            (
+                implementer_rerun.clone(),
+                vec!["implementer-rerun.rs".to_string()],
+            ),
+            (sdet_rerun.clone(), vec!["sdet-rerun.rs".to_string()]),
+        ]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(with_sdet), &deps).expect("the run completes");
+        let events = run_log(&st);
+        let contract = handover_contract();
+        assert!(
+            driver.prompts_for("worker")[0].contains(&contract),
+            "the implementer's prompt carries the handover contract: {why}"
+        );
+        if with_sdet {
+            assert!(
+                driver.prompts_for(ROLE_SDET_AUTHOR)[0].contains(&contract),
+                "the test author's prompt carries the handover contract: {why}"
+            );
+        }
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "no UnitFailed is written: {why}"
+        );
+        let gate_keys = unit_gate_verdict_keys(&events, "s");
+        assert!(!gate_keys.is_empty(), "premise: the unit's gates ran");
+        let checkpoints = commits_subjected(repo.path(), "rigger: s attempt 1");
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "the attempt has one checkpoint commit: {why}: {checkpoints:?}"
+        );
+        let holds = |path: &str| checkpoints[0].iter().any(|p| p == path);
+        assert!(
+            holds("feature.rs"),
+            "the checkpoint holds the implementer's work: {why}"
+        );
+        let reran = sessions && withheld.is_some();
+        if !reran {
+            assert!(
+                status_mark_keys(&events, "infra-retry").is_empty(),
+                "a handed-over attempt reruns nothing: {why}"
+            );
+            assert!(
+                gate_keys.iter().all(|key| key == "s/gate:ok#0"),
+                "the gates run once under the attempt's bare key: {why}: {gate_keys:?}"
+            );
+            assert_eq!(driver.prompts_for("worker").len(), 1, "{why}");
+            return;
+        }
+        let marks = status_mark_keys(&events, "infra-retry");
+        assert_eq!(marks, ["s/infra-retry#0~0"], "one uncharged rerun: {why}");
+        assert!(
+            rs.units["s"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_SPAWN)),
+            "the rerun names its infra cause: {why}: {:?}",
+            rs.units["s"].evidence
+        );
+        assert!(
+            gate_keys.iter().all(|key| key.ends_with("~retry1")),
+            "no gate runs before the rerun: {why}: {gate_keys:?}"
+        );
+        let index_of = |key: &str| {
+            events
+                .iter()
+                .position(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key))
+        };
+        let (rerun_id, rerun_file, implementer_runs) = if withheld == Some(ROLE_IMPLEMENTER) {
+            (&implementer_rerun, "implementer-rerun.rs", 2)
+        } else {
+            (&sdet_rerun, "sdet-rerun.rs", 1)
+        };
+        assert!(
+            driver.spawn_ids().contains(rerun_id),
+            "the rerun is a fresh spawn {rerun_id:?}: {why}: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            implementer_runs,
+            "{why}"
+        );
+        assert!(
+            holds(rerun_file),
+            "no checkpoint is committed before the rerun, so the attempt's one checkpoint \
+             holds the rerun's work: {why}: {checkpoints:?}"
+        );
+        if withheld == Some(ROLE_IMPLEMENTER) {
+            assert!(
+                index_of("s/green#0") > index_of("s/infra-retry#0~0"),
+                "the attempt's green is recorded only after the rerun: {why}"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// Spec 126 criterion 13: an implementer session that ends without the handover line
+        /// stopped mid-work, so its attempt is no finished attempt: no `green`, no checkpoint,
+        /// and an uncharged rerun under the next infra ordinal over the tree it left.
+        an_implementer_session_without_the_handover_line_records_no_green_and_reruns_uncharged:
+            assert_author_handover(
+                true,
+                false,
+                Some(ROLE_IMPLEMENTER),
+                "an implementer that did not hand over reruns uncharged",
+            );
+        /// Spec 126 criterion 13: a test author session that ends without the handover line
+        /// takes the seam's crash disposition: no checkpoint commit and no gate before its seam
+        /// reruns uncharged.
+        a_test_author_session_without_the_handover_line_reruns_its_seam_before_any_checkpoint_or_gate:
+            assert_author_handover(
+                true,
+                true,
+                Some(ROLE_SDET_AUTHOR),
+                "a test author that did not hand over reruns its seam uncharged",
+            );
+        /// Spec 126 criterion 13: author sessions that end with the handover line, trailing
+        /// spaces and blank lines after it, proceed as today.
+        author_sessions_ending_with_the_handover_line_proceed_as_today:
+            assert_author_handover(
+                true,
+                true,
+                None,
+                "authors that handed over proceed as today",
+            );
+        /// Spec 126 criterion 13: a driver that runs no session (an empty `session_id`) has
+        /// nothing to hand over, so its results proceed as today.
+        a_driver_that_runs_no_session_proceeds_as_today:
+            assert_author_handover(
+                false,
+                true,
+                None,
+                "a sessionless driver's authors proceed as today",
             );
     }
 

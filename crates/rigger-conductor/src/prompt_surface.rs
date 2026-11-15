@@ -98,6 +98,17 @@ pub const RUN_NOTES_CLOSING: &str =
 pub const REFUSED_RECORD_NOTE: &str =
     "{prompt}\n\nYour previous run's record was refused: {refusal}; emit it again correctly.";
 
+/// CONTRACT: how an author session (the implementer, a speculation lane, the test author) hands
+/// its work over, `{line}` holding [`AUTHOR_HANDOVER_LINE`]: the conductor checkpoints the
+/// attempt only once the session's final message ends with that line.
+pub const AUTHOR_HANDOVER: &str = "\n\nWhen your work is complete, end your final message with \
+     this line, alone on the last line: {line}\nWrite it only once the work is done: a session \
+     that ends without it is treated as stopped mid-work and is run again.";
+
+/// CONTRACT: the line an author's final message ends with to hand its work over, which
+/// [`AUTHOR_HANDOVER`] names and the conductor's handover check reads.
+pub const AUTHOR_HANDOVER_LINE: &str = "RIGGER-HANDOVER";
+
 /// CONTRACT: the `required` list an adjudicator's reject carries on its verdict line and its
 /// shape.
 pub const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the \
@@ -465,6 +476,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             LATER_ATTEMPT_GATE_CAUSE,
         ],
         "conductor::doc_only_round" => [DOC_ONLY_ROUND],
+        "conductor::author_handover" => [AUTHOR_HANDOVER, AUTHOR_HANDOVER_LINE],
         "conductor::write_peers_pointer" => [PEERS_POINTER, LOOKUP_LEAD_IN, LOOKUP_VERBS],
         "conductor::write_lookup_pointer" => [LOOKUP_LEAD_IN, LOOKUP_VERBS],
         "conductor::build_dag_critique_prompt" => [
@@ -530,6 +542,8 @@ mod tests {
 
     /// THE CLASS TABLE's conductor rows: each const and the class its doc comment opens with.
     const CLASS_TABLE: &[(&str, &str)] = &[
+        ("AUTHOR_HANDOVER", "CONTRACT"),
+        ("AUTHOR_HANDOVER_LINE", "CONTRACT"),
         ("CANARY_FINDINGS_LEAD", "FRAMING"),
         ("CANARY_NO_ANCHOR", "FRAMING"),
         ("CANARY_NO_FINDINGS", "FRAMING"),
