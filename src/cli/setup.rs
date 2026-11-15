@@ -5604,6 +5604,20 @@ mod tests {
         );
     }
 
+    /// The handbook's paragraph on driving a run states how to stop one in the one sentence
+    /// every rendered document that tells an operator to stop a driver carries.
+    #[test]
+    fn the_handbook_states_the_driver_stop_rule_verbatim() {
+        let page = read_text(&repo().join("docs/handbook/authoring-loops.md"));
+        assert_eq!(
+            rigger::wave::normalize_ws(&page)
+                .matches(&rigger::wave::normalize_ws(rigger::docs::DRIVER_STOP_RULE))
+                .count(),
+            1,
+            "authoring-loops.md states the driver stop rule once, verbatim"
+        );
+    }
+
     /// Spec 121's EXISTING DATA row for the moved sentences: the handbook's upgrade note, from its
     /// persona lead-in to the next heading, quotes each sentence a prompt no longer carries
     /// verbatim and once, the same text the persona pins hold - the sdet-author's
