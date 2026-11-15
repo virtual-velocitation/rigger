@@ -295,6 +295,18 @@ impl Sidecar {
             .or_else(|| self.site_of_kind::<PeerFinding>(id))
     }
 
+    /// [`Self::site_of`] of `id` over `stream`'s log, read for that id alone: the decisions,
+    /// lessons and findings whose id is `id`, the records [`Self::site_of`] chooses among, so a
+    /// show surface's read of a record the graph no longer holds, or of an id no record holds,
+    /// costs those records and never the run or its carry-over.
+    pub fn logged_site(
+        store: &dyn EventStore,
+        stream: &str,
+        id: &str,
+    ) -> Result<Option<contextgraph::EntitySite>, eventstore::Error> {
+        Ok(Sidecar::read(store, stream)?.site_of(id))
+    }
+
     /// [`Self::site_of`] over the records of kind `T`.
     fn site_of_kind<T: Peer>(&self, id: &str) -> Option<contextgraph::EntitySite> {
         let record = T::collect(&self.seen)
@@ -563,41 +575,10 @@ mod tests {
     /// restated id reads as its latest record, and an id no record holds reads as none.
     #[test]
     fn site_of_reads_a_record_by_id_from_the_log() {
-        use serde_json::json;
         let store = Store::open(":memory:").unwrap();
-        let events = [
-            crate::test_support::run_started("r1", &[]),
-            stamped(
-                contextgraph::TYPE_REVIEW_FINDING,
-                json!({"id": "f-old", "by": "lens:sdet", "summary": "first",
-                       "about": ["a.rs", "a.rs:3", "b.rs"]}),
-                &[],
-            ),
-            stamped(
-                contextgraph::TYPE_REVIEW_FINDING,
-                json!({"id": "f-old", "by": "lens:sdet", "summary": "restated",
-                       "about": ["a.rs:3", "b.rs"]}),
-                &[],
-            ),
-            stamped(
-                contextgraph::TYPE_DECISION_MADE,
-                json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs"]}),
-                &[],
-            ),
-            stamped(
-                contextgraph::TYPE_REVIEW_FINDING,
-                json!({"id": "f-file", "by": "adversary", "unit": "u1", "summary": "at a line",
-                       "file": "c.rs:9"}),
-                &[],
-            ),
-            stamped(
-                contextgraph::TYPE_LESSON_LEARNED,
-                json!({"id": "l-old", "summary": "learned", "about": ["a.rs"], "file": "d.rs"}),
-                &[],
-            ),
-            crate::test_support::run_started("r2", &[]),
-        ];
-        store.append("run", ExpectedRevision::Any, &events).unwrap();
+        store
+            .append("run", ExpectedRevision::Any, &logged_records())
+            .unwrap();
         let sidecar = Sidecar::read(&store, "run").unwrap();
         let site = |id: &str, kind: &str, degree: usize, attrs: &[(&str, &str)]| {
             Some(contextgraph::EntitySite {
@@ -647,6 +628,95 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    /// The records [`site_of_reads_a_record_by_id_from_the_log`] reads by id, oldest first: a
+    /// superseded run's finding `f-old` and its restatement, decision `d-old`, finding `f-file`
+    /// naming a file alone and lesson `l-old`, then the next run's boundary.
+    fn logged_records() -> Vec<Event> {
+        use serde_json::json;
+        vec![
+            crate::test_support::run_started("r1", &[]),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "first",
+                       "about": ["a.rs", "a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-old", "by": "lens:sdet", "summary": "restated",
+                       "about": ["a.rs:3", "b.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_DECISION_MADE,
+                json!({"id": "d-old", "summary": "chose X", "governs": ["a.rs"]}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": "f-file", "by": "adversary", "unit": "u1", "summary": "at a line",
+                       "file": "c.rs:9"}),
+                &[],
+            ),
+            stamped(
+                contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": "l-old", "summary": "learned", "about": ["a.rs"], "file": "d.rs"}),
+                &[],
+            ),
+            crate::test_support::run_started("r2", &[]),
+        ]
+    }
+
+    /// THE LOGGED SITE READS ITS ID ALONE: a show surface's read of a record the graph no longer
+    /// holds hands back the record [`Sidecar::site_of`] reads from the whole run, and the store
+    /// hands back only the decisions, lessons and findings holding that id - none for an id no
+    /// record holds, and never an event of another type that carries the id.
+    #[test]
+    fn a_logged_site_reads_only_the_records_holding_its_id() {
+        let inner = Store::open(":memory:").unwrap();
+        let mut events = logged_records();
+        events.extend(seed_carry_over(40));
+        events.push(stamped(
+            crate::ledger::TYPE_UNIT_STATUS,
+            serde_json::json!({"id": "d-old", "status": "s"}),
+            &[],
+        ));
+        inner.append("run", ExpectedRevision::Any, &events).unwrap();
+        let whole = Sidecar::read(&inner, "run").unwrap();
+        for (id, records) in [("f-old", 2), ("d-old", 1), ("l-old", 1), ("nope", 0)] {
+            let store = ReadCountingStore::new(&inner);
+            let site = Sidecar::logged_site(&store, "run", id).unwrap();
+            assert_eq!(
+                site,
+                whole.site_of(id),
+                "{id}: the record the whole read holds"
+            );
+            assert_eq!(
+                store.materialized(),
+                records,
+                "{id}: the store hands back the records holding the id alone"
+            );
+        }
+    }
+
+    /// `n` decisions, lessons and findings, each under its own id, as a run carries over.
+    fn seed_carry_over(n: usize) -> Vec<Event> {
+        let kinds = [
+            contextgraph::TYPE_DECISION_MADE,
+            contextgraph::TYPE_LESSON_LEARNED,
+            contextgraph::TYPE_REVIEW_FINDING,
+        ];
+        (0..n)
+            .map(|i| {
+                stamped(
+                    kinds[i % kinds.len()],
+                    serde_json::json!({"id": format!("other-{i}"), "summary": "s"}),
+                    &[],
+                )
+            })
+            .collect()
     }
 
     /// One `type_` event carrying `body`, stamped with each `(key, value)` of `meta`.

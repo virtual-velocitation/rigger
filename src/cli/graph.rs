@@ -272,7 +272,7 @@ fn logged_site(
         return Ok(None);
     };
     over_the_run_store_at(&loc, &selection, |store| {
-        Ok(Sidecar::read(store, conductor::STREAM)?.site_of(id))
+        Ok(Sidecar::logged_site(store, conductor::STREAM, id)?)
     })
 }
 
