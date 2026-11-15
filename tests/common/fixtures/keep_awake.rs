@@ -35,15 +35,24 @@ pub type LogindInhibit = (String, String, String, String);
 /// of the inhibitor it asks for.
 pub type PortalInhibit = (String, u32, HashMap<String, OwnedValue>);
 
-/// How a fake bus answers each call other than the bus `Hello`.
+/// The bus name the bus driver answers under: a call addressed to it is a call to the bus itself.
+const BUS_DRIVER: &str = "org.freedesktop.DBus";
+
+/// The unique name a fake bus gives the one client it serves.
+const CLIENT: &str = ":1.1";
+
+/// How a fake bus answers each call other than a call to the bus itself.
 #[derive(Clone, Copy)]
 pub enum Answer {
     /// It answers none.
     Nothing,
     /// With a descriptor, as logind grants its inhibitor.
     Descriptor,
-    /// With a request handle, as the portal grants its inhibitor.
-    Handle,
+    /// With a request handle, as the portal answers its `Inhibit`, and then the request's
+    /// `Response` signal carrying the code given, as the portal's backend ends the request: 0
+    /// when it registered the inhibitor, any other code when it did not; no `Response` at all
+    /// for none.
+    Handle(Option<u32>),
     /// With an error, refusing the call.
     Refusal,
 }
@@ -75,9 +84,10 @@ pub fn private_bus(role: &str) -> (UnixListener, String) {
 }
 
 /// A fake bus on `listener`, serving the one connection it accepts as the bus itself: it
-/// answers the connection's `Hello`, records every other call with its body read as `B` and
-/// answers it as `answer` says, and hands back the calls it recorded once the connection
-/// closes.
+/// answers each call to the bus itself, the connection's `Hello` with [`CLIENT`] and any other
+/// (the `AddMatch` and `RemoveMatch` of a subscription to signals) with nothing, records every
+/// other call with its body read as `B` and answers it as `answer` says, and hands back the
+/// calls it recorded once the connection closes.
 pub fn fake_bus<B>(listener: UnixListener, answer: Answer) -> FakeBus<B>
 where
     B: Type + DeserializeOwned + Send + 'static,
@@ -112,10 +122,16 @@ where
                 std::future::poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await
             {
                 let header = message.header();
-                if header.member().is_some_and(|member| member == "Hello") {
-                    bus.reply(&header, &":1.1")
-                        .await
-                        .expect("the fake bus answers Hello");
+                if header
+                    .destination()
+                    .is_some_and(|name| name.as_str() == BUS_DRIVER)
+                {
+                    let answered = if header.member().is_some_and(|member| member == "Hello") {
+                        bus.reply(&header, &CLIENT).await
+                    } else {
+                        bus.reply(&header, &()).await
+                    };
+                    answered.expect("the fake bus answers the call to the bus itself");
                     continue;
                 }
                 calls.push((
@@ -131,11 +147,26 @@ where
                 let answered = match answer {
                     Answer::Nothing => continue,
                     Answer::Descriptor => bus.reply(&header, &Fd::from(&granted)).await,
-                    Answer::Handle => {
+                    Answer::Handle(response) => {
                         let handle = ObjectPath::from_static_str_unchecked(
                             "/org/freedesktop/portal/desktop/request/1_1/rigger",
                         );
-                        bus.reply(&header, &handle).await
+                        bus.reply(&header, &handle)
+                            .await
+                            .expect("the fake portal returns the request's handle");
+                        match response {
+                            Some(code) => {
+                                bus.emit_signal(
+                                    Some(CLIENT),
+                                    handle,
+                                    "org.freedesktop.portal.Request",
+                                    "Response",
+                                    &(code, HashMap::<String, OwnedValue>::new()),
+                                )
+                                .await
+                            }
+                            None => Ok(()),
+                        }
                     }
                     Answer::Refusal => {
                         bus.reply_error(
@@ -155,7 +186,9 @@ where
 }
 
 /// The client's end of the connection whose bus end is `end`: open, or closed once the client
-/// closed it. The probe peeks without waiting, so it consumes nothing the fake bus reads.
+/// closed it, having read all the bus sent it (an orderly end) or not (the kernel resets the
+/// bus's end then, as a client closing with a signal or a reply still unread does). The probe
+/// peeks without waiting, so it consumes nothing the fake bus reads.
 pub fn client_end(end: &UnixStream) -> String {
     let mut byte = 0u8;
     // SAFETY: the buffer is the one byte `byte` holds, and the descriptor is `end`'s, borrowed
@@ -171,6 +204,7 @@ pub fn client_end(end: &UnixStream) -> String {
     let error = std::io::Error::last_os_error();
     match peeked {
         0 => "closed".to_string(),
+        -1 if error.kind() == ErrorKind::ConnectionReset => "closed".to_string(),
         -1 if error.kind() == ErrorKind::WouldBlock => "open".to_string(),
         _ => format!("peeked {peeked}: {error}"),
     }

@@ -336,11 +336,12 @@ mod tests {
 
     /// In a graphical session, once logind grants, the acquire asks the desktop portal for its
     /// inhibitor over a session-bus connection of its own, with one `Inhibit` of suspend and idle
-    /// (flags 12) giving the reason, and whatever the portal does the acquire stands granted: a
-    /// granting portal's connection is open while the guard stands and closed once it drops; one
-    /// the portal refuses, or never answers by the deadline, is closed before the acquire returns;
-    /// and with no portal listening there is no connection to make. Logind is asked once in every
-    /// row.
+    /// (flags 12) giving the reason, and whatever the portal does the acquire stands granted. The
+    /// portal grants only when the request its `Inhibit` returns responds 0: that connection is
+    /// open while the guard stands and closed once it drops. One whose request responds anything
+    /// else, or does not respond by the deadline, one the portal refuses, and one it never answers
+    /// by the deadline, is closed before the acquire returns; and with no portal listening there
+    /// is no connection to make. Logind is asked once in every row.
     #[test]
     fn a_graphical_session_asks_the_portal_and_any_answer_leaves_the_acquire_granted() {
         // What, how the portal answers (none: no portal listens), its connection while the guard
@@ -353,9 +354,21 @@ mod tests {
         );
         let rows: Vec<Row> = vec![
             (
-                "the portal grants",
-                Some(Answer::Handle),
+                "the portal grants: its request responds 0",
+                Some(Answer::Handle(Some(0))),
                 Some(("open", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal's request responds 1",
+                Some(Answer::Handle(Some(1))),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal's request does not respond by the deadline",
+                Some(Answer::Handle(None)),
+                Some(("closed", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
             (
