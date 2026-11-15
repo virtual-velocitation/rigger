@@ -15244,6 +15244,43 @@ fn run_halts_on_definition_drift_and_rebase_definition_continues() {
     );
 }
 
+/// A run's own landings are no definition drift: a unit whose change edits an agent definition
+/// lands it on the run branch the checkout holds, and the next plain launch of that run adopts it
+/// without halting, because the run re-pinned its definition to what it landed. A hand edit of the
+/// definition after that still halts, so drift from outside the run is still caught.
+#[test]
+fn a_run_that_lands_its_own_definition_edit_relaunches_without_drift() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "the definition"]);
+    let arm = "  *\"Do the unit.\"*)\n    echo \"pub fn work() {}\" > work.rs\n    \
+               echo \"Edited by the unit.\" >> .rigger/agents/worker.md\n    ;;\n";
+    let scratch = common::default_scratch_root(root);
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    let landed = std::fs::read_to_string(root.join(".rigger/agents/worker.md")).unwrap();
+    assert!(
+        ok && landed.contains("Edited by the unit."),
+        "the unit's definition edit must land in the checkout; stdout: {out}\nstderr: {err}"
+    );
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    assert!(
+        ok && !err.contains("definition drift"),
+        "a relaunch after the run landed its own definition edit must not halt on drift; \
+         stdout: {out}\nstderr: {err}"
+    );
+
+    edit_worker_prompt(root, "A hand edit from outside the run.");
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    assert!(
+        !ok && err.contains("definition drift"),
+        "a hand edit from outside the run still halts on drift; stdout: {out}\nstderr: {err}"
+    );
+}
+
 /// Spec 121's THE OPERATOR'S HELPER COPY IS THE DEFINITION at a run's pin: given a run whose
 /// first launch pinned its definition over the helper copies its checkout held once it had
 /// checked out the run branch, a copy only that branch tracks included, when the operator changes
