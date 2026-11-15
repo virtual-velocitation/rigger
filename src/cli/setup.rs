@@ -5339,7 +5339,7 @@ mod tests {
                 "BUILTIN working-discipline",
                 shipped_builtin("working-discipline"),
                 crate::test_support::TABLE_CHECK,
-                "the project's duplication gate is green",
+                crate::test_support::DUPLICATION_GATE_CHECK,
             ),
         ] {
             let words = rigger::wave::normalize_ws(&text);
