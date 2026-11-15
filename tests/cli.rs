@@ -755,8 +755,15 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
     // Drive the real reset. The composition root derives the boundary from r2's RunStarted, drops
     // super-d (a dead-run decision node), and reclaims exactly the ONE superseded GOVERNS(keep-d ->
     // old.rs) edge retired before that boundary - a count the pre-spec-41 reset line never reported.
+    // The output a relaunched driver left is reaped beside it.
+    let output = common::cli::rigger_file(root, "driver.out");
+    std::fs::write(&output, "a relaunched driver's refusal\n").unwrap();
     let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
     assert!(ok, "reset --runs must succeed; stderr: {err}");
+    assert!(
+        !output.exists() && out.contains("driver.out"),
+        "reset --runs removes the output a relaunched driver left and says so; got: {out:?}"
+    );
     assert!(
         out.contains("reclaimed 1 superseded edge(s)"),
         "reset --runs must reclaim the one superseded edge retired before the active run; got: {out:?}"
@@ -15306,9 +15313,20 @@ fn invoke_over_record(
     args: &[&str],
     envs: &[(&str, &str)],
 ) -> OverARecord {
+    invoke_over_record_in(root, root, record, args, envs)
+}
+
+/// [`invoke_over_record`] over the project at `root`, invoked from `cwd`.
+fn invoke_over_record_in(
+    root: &Path,
+    cwd: &Path,
+    record: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> OverARecord {
     std::fs::write(common::cli::rigger_file(root, "step.lock"), record).unwrap();
     let _ = std::fs::remove_file(common::relaunch_record());
-    let (out, err, ok) = run_rigger_envs(root, args, envs);
+    let (out, err, ok) = run_rigger_envs(cwd, args, envs);
     OverARecord {
         relaunches: recorded_relaunches(),
         out,
@@ -15345,39 +15363,188 @@ fn a_project_whose_driver_died() -> (tempfile::TempDir, String, String) {
     (dir, ended.record, run)
 }
 
-/// A RUN SURVIVES ITS DRIVER: after a run's driver dies mid-unit, the next rigger invocation in the
-/// project, whichever verb it is, relaunches the driver by adoption, once, and says so on stderr,
-/// while its own stdout and exit are what they are with no dead driver. Two invocations at once
-/// relaunch it once.
+/// The `relaunch` line the recording launcher writes for the driver `record` names: the binary it
+/// recorded, then the arguments that relaunch it.
+fn relaunch_line(record: &str) -> String {
+    let record: serde_json::Value = serde_json::from_str(record).expect("a driver record");
+    let args: Vec<&str> = record["args"]
+        .as_array()
+        .expect("a record's relaunch arguments")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    format!(
+        "relaunch {} {}",
+        record["bin"].as_str().expect("the binary a record names"),
+        args.join(" ")
+    )
+}
+
+/// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
+/// dead driver's record as it stands, or that record with the run held, with another binary
+/// recorded, with a recorded binary since removed, or invoked from a linked worktree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Over {
+    Dead,
+    Held,
+    LaneBinary,
+    GoneBinary,
+    LinkedWorktree,
+}
+
+/// A RUN SURVIVES ITS DRIVER, BY AN ALLOW-LIST: after a run's driver dies mid-unit, only the
+/// session start (`prime`), `status` read by a person, `release` and `resume-unit` relaunch it,
+/// once, through the binary the driver recorded, and say so on stderr, answering as they do with
+/// no dead driver. Every other verb leaves the record alone and starts nothing, `watch` naming
+/// what brings the run back; so does a held run, an invocation from a linked worktree, and a
+/// record whose binary is gone, which says so and names the command to run by hand. Two
+/// invocations at once relaunch it once.
 #[test]
-fn every_invocation_relaunches_a_run_whose_driver_died() {
+fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
     let (dir, record, run) = a_project_whose_driver_died();
     let root = dir.path();
-    let relaunch = vec![format!("relaunch run --adopt {run}")];
-    let verbs: [&[&str]; 9] = [
-        &["status"],
-        &["status", "--line"],
-        &["prime"],
-        &["validate"],
-        &["graph", "--lookup", "work"],
-        &["grep-guard"],
-        &["guard-write"],
-        &["hook"],
-        &["release"],
+    let lane = tempfile::tempdir().unwrap();
+    let lane_bin = lane.path().join("rigger");
+    std::fs::write(&lane_bin, "a lane's build").unwrap();
+    let gone_bin = lane.path().join("gone").join("rigger");
+    let linked = lane.path().join("linked");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "a-lane",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let with_bin = |bin: &Path| {
+        let mut changed: serde_json::Value = serde_json::from_str(&record).unwrap();
+        changed["bin"] = serde_json::json!(bin);
+        changed.to_string()
+    };
+    // Each row: the invocation, what it is invoked over, whether it relaunches, and what its
+    // output says when it says something of its own.
+    let rows: &[(&[&str], Over, bool, Option<&str>)] = &[
+        (&["prime"], Over::Dead, true, None),
+        (&["status"], Over::Dead, true, None),
+        (&["release"], Over::Dead, true, None),
+        (&["resume-unit", "no-such-unit"], Over::Dead, true, None),
+        (&["status"], Over::LaneBinary, true, None),
+        (&["status", "--line"], Over::Dead, false, None),
+        (&["status", "--json"], Over::Dead, false, None),
+        (
+            &["watch", "--once"],
+            Over::Dead,
+            false,
+            Some("`rigger status`"),
+        ),
+        (&["validate"], Over::Dead, false, None),
+        (&["graph", "--lookup", "work"], Over::Dead, false, None),
+        (&["grep-guard"], Over::Dead, false, None),
+        (&["guard-write"], Over::Dead, false, None),
+        (&["hook"], Over::Dead, false, None),
+        (&["mcp"], Over::Dead, false, None),
+        (&["emit"], Over::Dead, false, None),
+        (&["result"], Over::Dead, false, None),
+        (&["progress"], Over::Dead, false, None),
+        (&["ground"], Over::Dead, false, None),
+        (&["run", "--help"], Over::Dead, false, None),
+        (&["hold", "--help"], Over::Dead, false, None),
+        (&["stats", "--help"], Over::Dead, false, None),
+        (&["canary", "--help"], Over::Dead, false, None),
+        (&["playbooks", "--help"], Over::Dead, false, None),
+        (&["replay", "--help"], Over::Dead, false, None),
+        (&["dash", "--help"], Over::Dead, false, None),
+        (&["gate", "--help"], Over::Dead, false, None),
+        (&["peers", "--help"], Over::Dead, false, None),
+        (&["reset", "--help"], Over::Dead, false, None),
+        (&["critique", "--help"], Over::Dead, false, None),
+        (&["init", "--help"], Over::Dead, false, None),
+        (&["setup", "--help"], Over::Dead, false, None),
+        (&["docs", "--help"], Over::Dead, false, None),
+        (&["instructions", "--help"], Over::Dead, false, None),
+        (&["version"], Over::Dead, false, None),
+        (&["help"], Over::Dead, false, None),
+        (&["no-such-verb"], Over::Dead, false, None),
+        (&["status"], Over::Held, false, Some("`rigger release`")),
+        (&["status"], Over::LinkedWorktree, false, None),
+        (&["prime"], Over::LinkedWorktree, false, None),
+        (
+            &["status"],
+            Over::GoneBinary,
+            false,
+            Some("no longer exists"),
+        ),
     ];
-    for args in verbs {
-        let died = invoke_over_record(root, &record, args, &[]);
-        let quiet = invoke_over_record(root, "", args, &[]);
+    for &(args, over, relaunches, says) in rows {
+        let (given, cwd) = match over {
+            Over::LaneBinary => (with_bin(&lane_bin), root),
+            Over::GoneBinary => (with_bin(&gone_bin), root),
+            Over::LinkedWorktree => (record.clone(), linked.as_path()),
+            Over::Dead | Over::Held => (record.clone(), root),
+        };
+        if over == Over::Held {
+            hold_the_run(root);
+        }
+        let case = format!("rigger {args:?} over {over:?}");
+        let died = invoke_over_record_in(root, cwd, &given, args, &[]);
+        if over == Over::Held {
+            let _ = invoke_over_record(root, "", &["release"], &[]);
+        }
+        let expected = if relaunches {
+            vec![relaunch_line(&given)]
+        } else {
+            Vec::new()
+        };
         assert_eq!(
             (&died.relaunches, died.err.contains(RELAUNCHED)),
-            (&relaunch, true),
-            "rigger {args:?} relaunches the dead driver once and says so; stderr: {}",
+            (&expected, relaunches),
+            "{case} relaunches the dead driver once and says so, or starts nothing; stderr: {}",
             died.err
         );
+        let left = if relaunches {
+            serde_json::from_str::<serde_json::Value>(&died.left)
+                .ok()
+                .filter(|left| left["relaunched_at"].is_u64())
+                .map(|_| "stamped".to_string())
+        } else {
+            Some(died.left.clone())
+        };
+        let left_expected = match (relaunches, over) {
+            (true, _) => Some("stamped".to_string()),
+            (false, Over::GoneBinary) => Some(String::new()),
+            (false, _) => Some(given.clone()),
+        };
+        assert_eq!(
+            left, left_expected,
+            "{case} stamps the record it relaunches, clears one it cannot, and leaves any other"
+        );
+        if let Some(says) = says {
+            assert!(
+                died.out.contains(says) || died.err.contains(says),
+                "{case} says {says:?}; stdout: {}\nstderr: {}",
+                died.out,
+                died.err
+            );
+        }
+        if over == Over::GoneBinary {
+            assert!(
+                died.err.contains(gone_bin.to_str().unwrap())
+                    && died.err.contains(&format!("--adopt {run}")),
+                "{case} names the binary that is gone and the command to run by hand; stderr: {}",
+                died.err
+            );
+        }
+        if over != Over::Dead || args[0] == "watch" {
+            continue;
+        }
+        let quiet = invoke_over_record_in(root, cwd, "", args, &[]);
         assert_eq!(
             (&quiet.relaunches, quiet.err.contains(RELAUNCHED)),
             (&Vec::new(), false),
-            "rigger {args:?} relaunches nothing with no dead driver; stderr: {}",
+            "{case} relaunches nothing with no dead driver; stderr: {}",
             quiet.err
         );
         // `validate`'s footprint lines measure the store, which each invocation's own reads grow.
@@ -15390,7 +15557,7 @@ fn every_invocation_relaunches_a_run_whose_driver_died() {
         assert_eq!(
             (answer(&died.out), died.ok),
             (answer(&quiet.out), quiet.ok),
-            "rigger {args:?} answers as it does with no dead driver"
+            "{case} answers as it does with no dead driver"
         );
     }
 
@@ -15407,7 +15574,7 @@ fn every_invocation_relaunches_a_run_whose_driver_died() {
     });
     assert_eq!(
         recorded_relaunches(),
-        relaunch,
+        vec![relaunch_line(&record)],
         "two invocations at once relaunch the dead driver once"
     );
 }
@@ -15676,6 +15843,19 @@ fn a_relaunch_into_a_checkout_on_another_branch_refuses_and_changes_nothing() {
         before,
         "the refused relaunch leaves HEAD, the index, the file and the open launch untouched"
     );
+    let output =
+        std::fs::read_to_string(common::cli::rigger_file(root, "driver.out")).unwrap_or_default();
+    assert!(
+        err.contains("driver.out") && output.contains("elsewhere"),
+        "the relaunch names the file its driver's output goes to, and the driver's refusal \
+         naming the branch is in it; stderr: {err}\noutput: {output}"
+    );
+    let (out, err, _ok) = run_rigger(root, &["status"]);
+    assert!(
+        out.contains("driver.out") || err.contains("driver.out"),
+        "`rigger status` on the stopped relaunch names its driver's output; stdout: {out}\n\
+         stderr: {err}"
+    );
 }
 
 /// THE ADOPTION OF A FINISHED RUN IS REFUSED: a record a run left behind after it was driven to
@@ -15747,7 +15927,6 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
         if !hold_first {
             hold_the_run(root);
         }
-        let run = common::cli::current_run_id_of(root).expect("the run started");
         let mut record: serde_json::Value = serde_json::from_str(&ended.record).unwrap();
         if revived {
             record["revived_at"] = serde_json::json!(SystemTimeUnix::now());
@@ -15765,7 +15944,7 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
         let released = invoke_over_record(root, &record, &["release"], &[]);
         assert_eq!(
             (released.relaunches, released.err.contains(RELAUNCHED)),
-            (vec![format!("relaunch run --adopt {run}")], true),
+            (vec![relaunch_line(&record)], true),
             "{case}: `rigger release` relaunches the run; stderr: {}",
             released.err
         );
@@ -15819,10 +15998,11 @@ fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_rele
         err.contains("rigger release"),
         "the driver names `rigger release` as what relaunches it; stderr: {err}"
     );
-    let released = invoke_over_record(root, &common::cli::driver_record(root), &["release"], &[]);
+    let parked = common::cli::driver_record(root);
+    let released = invoke_over_record(root, &parked, &["release"], &[]);
     assert_eq!(
         released.relaunches,
-        vec![format!("relaunch run --adopt {run}")],
+        vec![relaunch_line(&parked)],
         "`rigger release` relaunches the run; stderr: {}",
         released.err
     );

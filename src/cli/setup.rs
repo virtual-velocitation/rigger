@@ -3426,6 +3426,10 @@ mod tests {
         /// every graph read, so `rigger init`/`setup` ignores them like the other runtime state.
         init_project_gitignores_the_code_store_idempotently:
             assert_init_gitignores_idempotently(&[".rigger/store"]);
+        /// The output of the driver a check last relaunched is per-machine runtime state,
+        /// rewritten at every relaunch, so `rigger init`/`setup` ignores it like the dash's.
+        init_project_gitignores_the_relaunched_driver_output_idempotently:
+            assert_init_gitignores_idempotently(&[".rigger/driver.out"]);
     }
 
     /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
