@@ -6288,7 +6288,7 @@ impl RunCtx<'_> {
                 // and no gate follow until the seam reruns.
                 Ok(result) => {
                     self.record_session(&opts, &result)?;
-                    if author_handed_over(&result) {
+                    if author_handed_over(&result, None) {
                         Ok(())
                     } else {
                         Err(crashed(&Error(not_handed_over("the sdet author"))))
@@ -6885,7 +6885,7 @@ impl RunCtx<'_> {
                     // command, a turn that ended mid-work) stopped before its work was done: it
                     // takes the crash arm's disposition below, before any `green` stamp or
                     // checkpoint, and reruns uncharged over the tree it left.
-                    Ok(result) if !is_producer(st) && !author_handed_over(&result) => {
+                    Ok(result) if !is_producer(st) && !author_handed_over(&result, None) => {
                         self.record_session(&opts, &result)?;
                         spawn_err = Some(format!(
                             "agent {:?}: {}",
@@ -7603,7 +7603,7 @@ impl RunCtx<'_> {
                 // takes the crash arm: the candidate loses, as a losing candidate has no later
                 // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    if author_handed_over(&result) {
+                    if author_handed_over(&result, None) {
                         Ok(result)
                     } else {
                         Err(Error(not_handed_over("the speculation lane's implementer")))
@@ -15288,7 +15288,7 @@ fn author_handover() -> String {
 /// that ended mid-work) stopped before its work was done, so its arm takes its crash
 /// disposition before any `green` stamp or checkpoint commit. A result recorded before the
 /// contract existed and answered from the log carries no line, so it is rerun once, uncharged.
-fn author_handed_over(result: &AgentResult) -> bool {
+fn author_handed_over(result: &AgentResult, _recorded: Option<&str>) -> bool {
     result.session_id.is_empty()
         || result
             .output
@@ -28296,6 +28296,56 @@ mod tests {
                 },
                 "a lane that did not hand over",
             );
+    }
+
+    /// Spec 126 criterion 13: a speculation lane whose request the run recorded before the
+    /// handover contract existed, answered with a result that names no line, keeps its candidate:
+    /// it races in the group (the winner or a recorded loser), never lost and torn down.
+    #[test]
+    fn a_speculation_lane_answered_with_a_pre_contract_result_keeps_its_candidate() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        let lane_0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        spawn_store::park_in_run(
+            &store,
+            &crate::spawn::test_request("s", "s", ROLE_IMPLEMENTER, 0, "task"),
+            "",
+            "",
+        )
+        .unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            sessions: true,
+            withhold_handover_ids: HashSet::from([lane_0.clone()]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the group integrated");
+        let raced = integrated.meta.get(META_SPEC_WINNER) == Some(&lane_0)
+            || integrated
+                .meta
+                .get(META_SPEC_LOSERS)
+                .is_some_and(|losers| losers.contains(&lane_0));
+        assert!(
+            raced,
+            "lane 0's candidate races in the group: {:?}",
+            integrated.meta
+        );
     }
 
     #[test]
@@ -48830,55 +48880,166 @@ mod tests {
         }
     }
 
-    /// Spec 126 criterion 13's predicate: a result hands over when its driver ran no session, or
-    /// when its output's last non-blank line, trimmed, is the handover line.
+    /// Spec 126 criterion 13's predicate: a result hands over when its driver ran no session, when
+    /// the request the run recorded for its spawn carries no handover line (a session never told
+    /// the contract), or when its output's last non-blank line, trimmed, is the handover line.
     #[test]
     fn an_author_result_hands_over_on_its_last_non_blank_line_or_with_no_session() {
         let line = AUTHOR_HANDOVER_LINE;
-        // (session id, output, hands over, why)
+        let told = handover_contract();
+        // (session id, output, the recorded request's prompt, hands over, why)
         let rows = [
-            ("", "", true, "a driver that runs no session"),
-            ("", "work stopped", true, "no session, whatever the output"),
+            (
+                "s-1",
+                "I could not run cargo",
+                Some("task"),
+                true,
+                "a request recorded before the contract existed",
+            ),
+            (
+                "s-1",
+                "I could not run cargo",
+                Some(told.as_str()),
+                false,
+                "a request that told the contract",
+            ),
             (
                 "s-1",
                 &format!("done\n{line}") as &str,
+                Some(told.as_str()),
+                true,
+                "a told request whose result ends with the line",
+            ),
+            ("", "", None, true, "a driver that runs no session"),
+            (
+                "",
+                "work stopped",
+                None,
+                true,
+                "no session, whatever the output",
+            ),
+            (
+                "s-1",
+                &format!("done\n{line}") as &str,
+                None,
                 true,
                 "the line last",
             ),
             (
                 "s-1",
                 &format!("done\n  {line}  \n\n \n"),
+                None,
                 true,
                 "trailing spaces and blank lines",
             ),
-            ("s-1", "", false, "a session with no output"),
+            ("s-1", "", None, false, "a session with no output"),
             (
                 "s-1",
                 "I could not run cargo",
+                None,
                 false,
                 "a session that ended mid-work",
             ),
             (
                 "s-1",
                 &format!("{line}\nthen more"),
+                None,
                 false,
                 "the line not last",
             ),
             (
                 "s-1",
                 &format!("done {line}"),
+                None,
                 false,
                 "the line inside another",
             ),
         ];
-        for (session_id, output, want, why) in rows {
+        for (session_id, output, recorded, want, why) in rows {
             let result = AgentResult {
                 output: output.to_string(),
                 session_id: session_id.to_string(),
                 ..AgentResult::default()
             };
-            assert_eq!(author_handed_over(&result), want, "{why}");
+            assert_eq!(author_handed_over(&result, recorded), want, "{why}");
         }
+    }
+
+    /// Spec 126 criterion 13 over a log that recorded the `withheld` author's request before the
+    /// run re-entered: a request recorded before the handover contract existed (`told` false: its
+    /// prompt carries no handover line) answers a result that names no line, and that result
+    /// still counts as handed over, so nothing reruns; a request that told the contract and a
+    /// result without the line reruns uncharged as a live miss does.
+    fn assert_recorded_request_decides_the_handover(withheld: &str, told: bool, why: &str) {
+        let rerun = if withheld == ROLE_IMPLEMENTER {
+            spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1))
+        } else {
+            spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start())
+        };
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = HashSet::from([spawn_id("s", withheld, 0)]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
+        let prompt = if told {
+            handover_contract()
+        } else {
+            "task".to_string()
+        };
+        spawn_store::park_in_run(
+            &st,
+            &crate::spawn::test_request("s", "s", withheld, 0, &prompt),
+            "",
+            "",
+        )
+        .unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(true), &deps).expect("the run completes");
+        let events = run_log(&st);
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        assert_eq!(
+            !status_mark_keys(&events, "infra-retry").is_empty(),
+            told,
+            "only a told session's missing line reruns: {why}"
+        );
+        assert_eq!(
+            driver.spawn_ids().contains(&rerun),
+            told,
+            "the rerun {rerun:?} spawns only for a told session: {why}: {:?}",
+            driver.spawn_ids()
+        );
+    }
+
+    crate::test_cases! {
+        /// Spec 126 criterion 13: an implementer result answered from a log whose request was
+        /// recorded before the contract existed is not rerun.
+        a_pre_contract_implementer_result_is_not_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_IMPLEMENTER,
+                false,
+                "a pre-contract implementer",
+            );
+        /// Spec 126 criterion 13: a test-author result answered from a log whose request was
+        /// recorded before the contract existed is not rerun.
+        a_pre_contract_test_author_result_is_not_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_SDET_AUTHOR,
+                false,
+                "a pre-contract test author",
+            );
+        /// Spec 126 criterion 13's positive control: a recorded request that told the contract
+        /// still reruns a result without the line.
+        a_told_implementer_result_without_the_line_is_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_IMPLEMENTER,
+                true,
+                "a told implementer",
+            );
     }
 
     crate::test_cases! {
