@@ -3,22 +3,29 @@
 //! `rigger setup --template <dir>` print, and what each leaves on disk, with this repository's
 //! root or a template root the operator owns - named by an absolute path or a relative one - as
 //! the template root, in a project matching a set, a project matching none, a project that already
-//! has a workflow, and on a rerun - the gates and the implementer persona the implement and
-//! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a fresh
+//! has a workflow, and on a rerun - the gates, the build environment the workflow declares under
+//! `build.env` and the implementer persona the implement and checkin stages run among it - that
+//! `rigger validate` accepts both fresh scaffolds and reports that environment, that a fresh
 //! scaffold bounds every spawn's wall clock so `rigger validate` prints no wall-clock warning over
-//! it, that a command naming no template root scaffolds no gate and keeps what an earlier root
-//! scaffolded, and that every argument and template root a command refuses is refused before any
-//! write.
+//! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and writes
+//! no seed whose id an agent of the project already defines, whatever its file name, that a rerun
+//! writes that seed back only for the test author the workflow declares and no agent defines, that
+//! an agent file that does not parse stops every seed until it is fixed, that a command naming no
+//! template root scaffolds no gate and keeps what an earlier root scaffolded, and that every
+//! argument and template root a command refuses is refused before any write.
 
 use crate::common;
+use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
 use common::cli::{
     cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
     temp_project, wall_clock_advisory_lines,
 };
+use common::fixtures::REFUSED_DECLARATIONS;
 use common::fixtures::{
-    agents_beside, dir_snapshot, sorted_dir_names, stage_agents, write_files,
+    agents_beside, dir_snapshot, sdet_author_seed, sorted_dir_names, stage_agents, write_files,
     LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
+use common::fixtures::{RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -304,7 +311,7 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
     assert!(
         validated
             .lines()
-            .any(|l| l == "config valid: 6 agents, 4 stages, 0 gates"),
+            .any(|l| l == "config valid: 7 agents, 4 stages, 0 gates"),
         "stdout:\n{validated}"
     );
     assert!(
@@ -316,6 +323,59 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
     );
 }
 
+/// A command writing a fresh scaffold: its label, the project it runs in, the command, the agents
+/// line it prints and the number of gates the workflow it writes declares.
+type FreshScaffold = (
+    &'static str,
+    fn() -> tempfile::TempDir,
+    Command,
+    &'static str,
+    usize,
+);
+
+/// `rigger setup` naming no template root in a fresh project, `rigger init` naming this
+/// repository's root in one matching no set and in one matching the Rust set beside a root
+/// `Cargo.toml`, and `rigger setup` naming that root beside a root `Cargo.toml`.
+fn fresh_scaffolds() -> [FreshScaffold; 4] {
+    [
+        (
+            "setup, no template root",
+            temp_project,
+            setup_with_no_root,
+            NO_SET_AGENTS_LINE,
+            0,
+        ),
+        (
+            "init, this repository's root, matching no set",
+            temp_project,
+            init,
+            NO_SET_AGENTS_LINE,
+            0,
+        ),
+        (
+            "init, this repository's root, matching the Rust set",
+            cargo_project,
+            init,
+            RUST_AGENTS_LINE,
+            5,
+        ),
+        (
+            "setup, this repository's root, matching the Rust set",
+            cargo_project,
+            setup,
+            RUST_AGENTS_LINE,
+            5,
+        ),
+    ]
+}
+
+/// The `config valid:` lines of `rigger validate`'s stdout `out`.
+fn config_valid_lines(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|l| l.starts_with("config valid:"))
+        .collect()
+}
+
 /// Given a fresh project, when the operator runs `rigger setup` naming no template root, `rigger
 /// init` naming this repository's root - matching no set, or the Rust set beside a root
 /// `Cargo.toml` - or `rigger setup` naming that root beside a root `Cargo.toml`, then the written
@@ -325,26 +385,7 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
 /// `validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept`.
 #[test]
 fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning() {
-    type Row = (&'static str, fn() -> tempfile::TempDir, Command);
-    let rows: [Row; 4] = [
-        ("setup, no template root", temp_project, setup_with_no_root),
-        (
-            "init, this repository's root, matching no set",
-            temp_project,
-            init,
-        ),
-        (
-            "init, this repository's root, matching the Rust set",
-            cargo_project,
-            init,
-        ),
-        (
-            "setup, this repository's root, matching the Rust set",
-            cargo_project,
-            setup,
-        ),
-    ];
-    for (label, project, verb) in rows {
+    for (label, project, verb, ..) in fresh_scaffolds() {
         let dir = project();
         verb(dir.path());
         let (_out, err, ok) = run_rigger(dir.path(), &["validate"]);
@@ -357,6 +398,216 @@ fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning(
             (true, vec![], 3600),
             "{label}: validate accepts the scaffold, warns of no unbounded wall clock, and the \
              workflow bounds every spawn; stderr:\n{err}"
+        );
+    }
+}
+
+/// Given a fresh project - empty, or holding an agent of its own: its own `sdet-author.md`, a
+/// persona defining `sdet-author` under another file name, or one defining `planner` under another
+/// file name - when the operator runs `rigger init` naming no template root or any command of
+/// [`fresh_scaffolds`], then the workflow declares `sdet-author` its test author and `rigger
+/// validate` accepts the seven agents: the agents line names every seed whose id no agent of the
+/// project defines, the `sdet-author` seed among them is written byte for byte and loaded, and the
+/// project's own agent is kept byte for byte and loaded in the place of the seed of its id, which
+/// is neither written nor named.
+#[test]
+fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own() {
+    let own_agent =
+        |id: &str| format!("---\nid: {id}\nmodel: sonnet\n---\nThe project's own agent.\n");
+    let no_root: FreshScaffold = (
+        "init, no template root",
+        temp_project,
+        init_with_no_root,
+        NO_SET_AGENTS_LINE,
+        0,
+    );
+    for (label, project, verb, agents_line, gates) in fresh_scaffolds().into_iter().chain([no_root])
+    {
+        // (the agent file the project holds before the command and the id it defines, the seed
+        // that agent keeps from being written, the sdet-author.md the project holds after the
+        // command, the loaded models of `sdet-author` and `planner`).
+        let arms = [
+            (None, None, Some(sdet_author_seed()), ["opus", "opus"]),
+            (
+                Some(("sdet-author.md", "sdet-author")),
+                Some("sdet-author.md"),
+                Some(own_agent("sdet-author")),
+                ["sonnet", "opus"],
+            ),
+            (
+                Some(("tester.md", "sdet-author")),
+                Some("sdet-author.md"),
+                None,
+                ["sonnet", "opus"],
+            ),
+            (
+                Some(("my-planner.md", "planner")),
+                Some("planner.md"),
+                Some(sdet_author_seed()),
+                ["opus", "sonnet"],
+            ),
+        ];
+        for (own, displaced, author, models) in arms {
+            let dir = project();
+            let agents = dir.path().join(".rigger/agents");
+            if let Some((file, id)) = own {
+                write_files(&agents, &[(file, own_agent(id).as_str())]);
+            }
+            let out = verb(dir.path());
+            let (validated, err, ok) = run_rigger(dir.path(), &["validate"]);
+            let cfg = loaded_config(dir.path());
+            let printed = displaced.map_or(agents_line.to_string(), |seed| {
+                agents_line.replacen(&format!("{seed}, "), "", 1)
+            });
+            assert_eq!(
+                (
+                    agents_lines(&out),
+                    std::fs::read_to_string(agents.join("sdet-author.md")).ok(),
+                    own.map(|(file, _)| std::fs::read_to_string(agents.join(file)).unwrap()),
+                    cfg.workflow.defaults.declared_test_author(),
+                    ["sdet-author", "planner"]
+                        .map(|id| cfg.agents.get(id).map(|a| a.model.as_str())),
+                    ok,
+                    config_valid_lines(&validated),
+                ),
+                (
+                    vec![printed.as_str()],
+                    author,
+                    own.map(|(_, id)| own_agent(id)),
+                    Some("sdet-author"),
+                    models.map(Some),
+                    true,
+                    vec![format!("config valid: 7 agents, 4 stages, {gates} gates").as_str()],
+                ),
+                "{label}, the project's own agent {own:?}: stdout:\n{out}\nstderr:\n{err}"
+            );
+        }
+    }
+}
+
+/// Given a project `rigger init` scaffolded with no template root, which since holds a persona of
+/// its own in `my-author.md` and no longer holds `sdet-author.md`, when the operator reruns
+/// `rigger init`, then the seed is written back only for the test author the workflow declares
+/// and no agent already defines: still declaring `sdet-author` beside a persona whose id is
+/// `my-author`, the rerun writes the seed byte for byte and reports it, and `rigger validate`
+/// accepts eight agents; declaring `my-author`, or declaring `sdet-author` beside a persona whose
+/// id is `sdet-author` under its other file name, it writes nothing, prints only the
+/// already-initialized line, and `rigger validate` accepts seven. `my-author.md` is kept every
+/// way.
+#[test]
+fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares() {
+    // (the test author the workflow declares, the id my-author.md defines, the rerun's stdout but
+    // its starter-fleet pointer, the sdet-author.md the project holds after it, the agents `rigger
+    // validate` counts).
+    let rows = [
+        (
+            "sdet-author",
+            "my-author",
+            vec!["scaffolded .rigger/agents/{sdet-author.md}"],
+            Some(sdet_author_seed()),
+            8,
+        ),
+        (
+            "my-author",
+            "my-author",
+            vec![ALREADY_INITIALIZED.trim_end()],
+            None,
+            7,
+        ),
+        (
+            "sdet-author",
+            "sdet-author",
+            vec![ALREADY_INITIALIZED.trim_end()],
+            None,
+            7,
+        ),
+    ];
+    for (declared, id, printed, persona, agents) in rows {
+        let mine = format!("---\nid: {id}\n---\nThe project's own test author.\n");
+        let dir = temp_project();
+        let root = dir.path();
+        init_with_no_root(root);
+        let workflow = root.join(".rigger/workflow.yml");
+        let declaring = std::fs::read_to_string(&workflow).unwrap().replace(
+            "test_author: sdet-author",
+            &format!("test_author: {declared}"),
+        );
+        std::fs::write(&workflow, declaring).unwrap();
+        let agents_dir = root.join(".rigger/agents");
+        std::fs::remove_file(agents_dir.join("sdet-author.md")).unwrap();
+        write_files(&agents_dir, &[("my-author.md", mine.as_str())]);
+
+        let out = init_with_no_root(root);
+        let (validated, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                out.lines()
+                    .filter(|l| !l.starts_with("next: "))
+                    .collect::<Vec<_>>(),
+                std::fs::read_to_string(agents_dir.join("sdet-author.md")).ok(),
+                std::fs::read_to_string(agents_dir.join("my-author.md")).unwrap(),
+                ok,
+                config_valid_lines(&validated),
+            ),
+            (
+                printed,
+                persona,
+                mine,
+                true,
+                vec![format!("config valid: {agents} agents, 4 stages, 0 gates").as_str()],
+            ),
+            "the workflow declaring {declared}, my-author.md defining {id}: stdout:\n{out}\n\
+             stderr:\n{err}"
+        );
+    }
+}
+
+/// Given a fresh project holding an agent file that does not parse, when the operator runs `rigger
+/// init` or `rigger setup` naming no template root, then the command fails, printing only the line
+/// `rigger validate` prints for that file, and writes no seed beside it; once the operator fixes
+/// the file, the same command writes every seed and `rigger validate` accepts the eight agents.
+#[test]
+fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
+    const BROKEN: &str = "---\nid: broken\nrecurse: not-a-bool\n---\nThe project's own agent.\n";
+    const FIXED: &str = "---\nid: broken\nrecurse: true\n---\nThe project's own agent.\n";
+    const REFUSAL: &str = "rigger: config: broken.md: config: frontmatter: recurse: invalid \
+                           type: string \"not-a-bool\", expected a boolean at line 2 column 10\n";
+    for verb in ["init", "setup"] {
+        let dir = temp_project();
+        let root = dir.path();
+        let agents = root.join(".rigger/agents");
+        write_files(&agents, &[("broken.md", BROKEN)]);
+        let (out, err, ok) = run_rigger(root, &[verb]);
+        let (_, refused, _) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                ok,
+                out.as_str(),
+                err.as_str(),
+                refused.as_str(),
+                sorted_dir_names(&agents)
+            ),
+            (false, "", REFUSAL, REFUSAL, vec!["broken.md".to_string()]),
+            "{verb} over an agent file that does not parse"
+        );
+
+        write_files(&agents, &[("broken.md", FIXED)]);
+        let (out, err, ok) = run_rigger(root, &[verb]);
+        let (validated, _, valid) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                ok,
+                agents_lines(&out),
+                valid,
+                config_valid_lines(&validated)
+            ),
+            (
+                true,
+                vec![NO_SET_AGENTS_LINE],
+                true,
+                vec!["config valid: 8 agents, 4 stages, 0 gates"]
+            ),
+            "{verb} once the file is fixed: stdout:\n{out}\nstderr:\n{err}"
         );
     }
 }
@@ -434,14 +685,33 @@ fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
 
 /// Given a command line `rigger init` or `rigger setup` refuses - `--template` with no directory,
 /// `--agents` given to `init`, or a template root whose one set brings an implementer reusing a
-/// scaffold seed's id - when the operator runs it, then the command fails on the refusal naming
-/// what is wrong before any write: nothing is reported scaffolded and the project is left as it
-/// was, with no directory made.
+/// scaffold seed's id, or declares under `env` an entry the build environment's check refuses -
+/// when the operator runs it, then the command fails on the refusal naming what is wrong - for a
+/// set, the set's key, and for a refused `env` entry, the check's own refusal naming the variable
+/// after it - before any write: nothing is reported scaffolded and the project is left as it was,
+/// with no directory made.
 #[test]
 fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
     let seeded = operator_template_root("implementer");
     let seeded = seeded.path().to_str().unwrap();
     let seed_id = "gate template set demo: implementer id implementer is a scaffold seed's id";
+    // Each refused `env` entry's template root, kept alive for the rows below, and its refusal.
+    let declaring: Vec<(tempfile::TempDir, String)> = REFUSED_DECLARATIONS
+        .iter()
+        .map(|refused| {
+            (
+                operator_template_root_declaring(&refused.set_env_line()),
+                format!("gate template set demo: env: {}", refused.message),
+            )
+        })
+        .collect();
+    let env_rows: Vec<([&str; 3], &str)> = declaring
+        .iter()
+        .flat_map(|(template, refusal)| {
+            let template = template.path().to_str().unwrap();
+            ["init", "setup"].map(|command| ([command, "--template", template], refusal.as_str()))
+        })
+        .collect();
     let rows: [(&[&str], &str); 5] = [
         (
             &["init", "--template"],
@@ -458,7 +728,10 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
         (&["init", "--template", seeded], seed_id),
         (&["setup", "--template", seeded], seed_id),
     ];
-    for (args, refusal) in rows {
+    let env_rows = env_rows
+        .iter()
+        .map(|(args, refusal)| (args.as_slice(), *refusal));
+    for (args, refusal) in rows.into_iter().chain(env_rows) {
         assert_refused_before_any_write(args, refusal);
     }
 }
@@ -496,7 +769,7 @@ fn init_rerun_on_a_rust_project_writes_back_only_a_deleted_set_file() {
     assert!(
         validated
             .lines()
-            .any(|l| l == "config valid: 6 agents, 4 stages, 5 gates"),
+            .any(|l| l == "config valid: 7 agents, 4 stages, 5 gates"),
         "stdout:\n{validated}"
     );
 }
@@ -600,12 +873,14 @@ fn init_rerun_matching_no_set_does_not_repeat_the_no_set_line() {
 /// The line a fresh scaffold matching no set prints for its agents: the seeds in seed order, the
 /// language-neutral `implementer` among them.
 const NO_SET_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, implementer.md, \
-                                  architecture-reviewer.md, sdet.md, adversary.md, adjudicator.md}";
+                                  architecture-reviewer.md, sdet.md, sdet-author.md, adversary.md, \
+                                  adjudicator.md}";
 
 /// The line a fresh scaffold from the Rust set prints for its agents: the role seeds in seed
 /// order, then the set's `rust-engineer`.
 const RUST_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \
-                                sdet.md, adversary.md, adjudicator.md, rust-engineer.md}";
+                                sdet.md, sdet-author.md, adversary.md, adjudicator.md, \
+                                rust-engineer.md}";
 
 /// Given a project matching no set or the Rust set, when the operator runs `rigger init` or
 /// `rigger setup`, then the implement and checkin stages both run the implementer the set brings -
@@ -750,7 +1025,8 @@ const DEMO_CHECK_LINE: &str = "scaffolded .rigger/gates/check.sh";
 /// The agents line a fresh scaffold from the operator's own set prints: the role seeds in seed
 /// order, then the set's implementer.
 const DEMO_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \
-                                sdet.md, adversary.md, adjudicator.md, demo-engineer.md}";
+                                sdet.md, sdet-author.md, adversary.md, adjudicator.md, \
+                                demo-engineer.md}";
 
 /// The no-set line over the operator's template root, naming its one set's two markers and no
 /// set of this repository's.
@@ -795,6 +1071,15 @@ fn write_operator_root(root: &Path, id: &str) {
 fn operator_template_root(id: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     write_operator_root(dir.path(), id);
+    dir
+}
+
+/// A fresh template root of the operator's own ([`operator_template_root`], its implementer
+/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` ends with `env_line`, its `env:` line.
+fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+    let dir = operator_template_root(DEMO_IMPLEMENTER_ID);
+    let set = format!("{}{env_line}", demo_set(DEMO_IMPLEMENTER_ID));
+    write_files(dir.path(), &[("scaffold/demo/set.yml", set.as_str())]);
     dir
 }
 
@@ -973,6 +1258,193 @@ fn a_later_command_keeps_what_an_earlier_root_scaffolded() {
             dir_snapshot(&root.join(".rigger/gates"), ""),
             expected,
             "{label}: the scripts .rigger/gates/ holds"
+        );
+    }
+}
+
+/// What `rigger validate` reports of a workflow declaring the Rust set's `env`, in name order,
+/// then the default budget.
+const RUST_SET_BUILD_REPORT: [&str; 3] = [
+    "build env: CARGO_BUILD_JOBS={jobs}",
+    "build env: CARGO_TARGET_DIR={build_cache}",
+    "build budget: 4",
+];
+
+/// The `env:` line of an operator's set declaring three variables out of name order: one over
+/// `{jobs}`, one below the build cache, and one whose name YAML reads as a boolean and whose value
+/// holds a double quote.
+const DEMO_ENV_LINE: &str =
+    "env: {MY_JOBS: \"{jobs}\", A_CACHE: \"{build_cache}/demo\", \"TRUE\": \"say \\\"hi\\\"\"}\n";
+
+/// [`DEMO_ENV_LINE`]'s variables, in name order.
+const DEMO_ENV: [(&str, &str); 3] = [
+    ("A_CACHE", "{build_cache}/demo"),
+    ("MY_JOBS", "{jobs}"),
+    ("TRUE", "say \"hi\""),
+];
+
+/// The `build.env` value a scaffold from the set declaring [`DEMO_ENV_LINE`] writes, byte for
+/// byte: its name the boolean spelling double-quoted, its double quote escaped.
+const DEMO_ENV_WRITTEN: &str =
+    "{A_CACHE: \"{build_cache}/demo\", MY_JOBS: \"{jobs}\", \"TRUE\": \"say \\u0022hi\\u0022\"}";
+
+/// What `rigger validate` reports of a workflow declaring [`DEMO_ENV`], then the default budget.
+const DEMO_BUILD_REPORT: [&str; 4] = [
+    "build env: A_CACHE={build_cache}/demo",
+    "build env: MY_JOBS={jobs}",
+    "build env: TRUE=say \"hi\"",
+    "build budget: 4",
+];
+
+/// Where a scaffold's gate template sets come from.
+enum Sets {
+    /// This repository's root, its Rust set among them.
+    Repository,
+    /// No template root.
+    NoRoot,
+    /// A template root of the operator's own whose one set ends with the `env:` line given, or
+    /// declares no `env` at all.
+    Operator(Option<&'static str>),
+}
+
+/// A fresh project holding the operator's own set's marker and no `Cargo.toml`.
+fn demo_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    write_files(dir.path(), &[("demo.marker", "")]);
+    dir
+}
+
+/// Given a fresh project, when the operator runs `rigger init` or `rigger setup` naming this
+/// repository's root beside a root `Cargo.toml`, then the workflow it writes declares the Rust
+/// set's `env` under `build:` - `CARGO_BUILD_JOBS` over `{jobs}` and `CARGO_TARGET_DIR` over
+/// `{build_cache}` - and loads declaring exactly those two variables; matching no set, naming no
+/// template root beside a root `Cargo.toml`, or applying an operator's set that declares no `env`,
+/// it writes `env: {}` and declares none; applying an operator's set that declares its own `env`,
+/// it writes that `env` in name order and loads declaring exactly it. `rigger validate` accepts
+/// each scaffold and reports one `build env:` line per declared variable in name order, or none
+/// declared, then the build budget.
+#[test]
+fn a_fresh_scaffold_declares_its_template_sets_build_environment() {
+    // (label, the project, the command, where its sets come from, the `build.env` value written,
+    // the variables the workflow loads declaring, validate's build lines).
+    type Row = (
+        &'static str,
+        fn() -> tempfile::TempDir,
+        &'static str,
+        Sets,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static [&'static str],
+    );
+    let rows: [Row; 7] = [
+        (
+            "init, this repository's root, the Rust set",
+            cargo_project,
+            "init",
+            Sets::Repository,
+            RUST_SET_ENV_WRITTEN,
+            &RUST_SET_ENV,
+            &RUST_SET_BUILD_REPORT,
+        ),
+        (
+            "setup, this repository's root, the Rust set",
+            cargo_project,
+            "setup",
+            Sets::Repository,
+            RUST_SET_ENV_WRITTEN,
+            &RUST_SET_ENV,
+            &RUST_SET_BUILD_REPORT,
+        ),
+        (
+            "init, this repository's root, matching no set",
+            temp_project,
+            "init",
+            Sets::Repository,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "init, no template root, beside a root Cargo.toml",
+            cargo_project,
+            "init",
+            Sets::NoRoot,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "setup, no template root, beside a root Cargo.toml",
+            cargo_project,
+            "setup",
+            Sets::NoRoot,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "init, an operator's set declaring no env",
+            demo_project,
+            "init",
+            Sets::Operator(None),
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "setup, an operator's set declaring its own env",
+            demo_project,
+            "setup",
+            Sets::Operator(Some(DEMO_ENV_LINE)),
+            DEMO_ENV_WRITTEN,
+            &DEMO_ENV,
+            &DEMO_BUILD_REPORT,
+        ),
+    ];
+    for (label, project, command, sets, written, declared, report) in rows {
+        let dir = project();
+        let root = dir.path();
+        // The operator's template root is kept alive until the row ends.
+        let (_operator, template) = match sets {
+            Sets::Repository => (None, Some(template_root())),
+            Sets::NoRoot => (None, None),
+            Sets::Operator(env_line) => {
+                let dir = env_line.map_or_else(
+                    || operator_template_root(DEMO_IMPLEMENTER_ID),
+                    operator_template_root_declaring,
+                );
+                let path = dir.path().to_str().unwrap().to_string();
+                (Some(dir), Some(path))
+            }
+        };
+        let mut args = vec![command];
+        if let Some(template) = &template {
+            args.extend(["--template", template.as_str()]);
+        }
+        run_rigger_ok(root, &args);
+
+        let workflow = std::fs::read_to_string(root.join(".rigger/workflow.yml")).unwrap();
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                workflow
+                    .matches(&format!("\nbuild:\n  env: {written}\n"))
+                    .count(),
+                loaded_config(root).workflow.build.env,
+                ok,
+                build_report_lines(&out),
+            ),
+            (
+                1,
+                declared
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                true,
+                report.to_vec(),
+            ),
+            "{label}: the written `build.env`, the variables it loads declaring, and validate's \
+             build lines; workflow:\n{workflow}\nstdout:\n{out}\nstderr:\n{err}"
         );
     }
 }

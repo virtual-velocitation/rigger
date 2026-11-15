@@ -118,7 +118,7 @@ Some behaviour a project once got unasked is now a `defaults:` key it declares, 
 
 Some guidance an agent's prompt once carried now lives in a persona, and rigger never rewrites a persona a project already has, so copy each moved sentence into your own persona to keep it:
 
-- "Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test." - the sdet-author's rule for a round that changed documentation only, in this repository's `.rigger/agents/sdet-author.md` under `## A documentation-only round`.
+- "Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test." - the sdet-author's rule for a round that changed documentation only, in this repository's `.rigger/agents/sdet-author.md` and in the `sdet-author.md` persona `rigger init` scaffolds, under `## A documentation-only round`.
 - "Split a criterion whose one unit would be too large into ordered units (each `needs` the one before it), each owning a named part.", "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.", "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.", "Propose each refinement the moment you decide it.", "Do not write code." and "Only omit the id when you truly intend a new sub-unit." - the planner's planning policy, in this repository's `.rigger/agents/planner.md` and in the `planner.md` persona `rigger init` scaffolds.
 - "The cap measures review scope - how much one review round must read - never code shape." - the unit size cap's scope, in this repository's `.rigger/agents/planner.md`, `adversary.md` and `adjudicator.md` and in the personas of those names `rigger init` scaffolds.
 

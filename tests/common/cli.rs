@@ -2628,6 +2628,16 @@ pub fn wall_clock_advisory_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("gating role(s)"))
 }
 
+/// Every line of `stdout`, what `rigger validate` printed there, that reports the build
+/// environment, in order: each `build env:` line, then the `build budget:` line.
+pub fn build_report_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("build "))
+}
+
+/// The [`build_report_lines`] of a workflow declaring no build variable and no build budget:
+/// none declared, then the default budget of 4.
+pub const UNDECLARED_BUILD_REPORT: &[&str] = &["build env: none declared", "build budget: 4"];
+
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {

@@ -180,32 +180,30 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 }
 
 /// The machine-global state directory that roots the instance registry, honoring the platform
-/// convention with a first-class override: `$XDG_STATE_HOME` when set, else `$HOME/.local/state`
-/// (the freedesktop base-directory default). Returns `None` only in a truly homeless environment
-/// (neither variable resolvable), so the caller can degrade to no registration - the registry's
-/// loss is harmless. Honoring `XDG_STATE_HOME` is also what lets a test redirect the whole
-/// registry into a temp dir with no process-global fs writes.
+/// convention with a first-class override: `$XDG_STATE_HOME` when set, else `.local/state` under
+/// the home directory ([`rigger_process::home_dir`], the freedesktop base-directory default).
+/// Returns `None` only in a truly homeless environment (no `XDG_STATE_HOME` and no home directory
+/// known), so the caller can degrade to no registration - the registry's loss is harmless.
+/// Honoring `XDG_STATE_HOME` is also what lets a test redirect the whole registry into a temp dir
+/// with no process-global fs writes.
 pub fn state_home() -> Option<PathBuf> {
-    state_home_from(std::env::var_os(STATE_HOME_ENV), std::env::var_os(HOME_ENV))
+    state_home_from(std::env::var_os(STATE_HOME_ENV), rigger_process::home_dir())
 }
 
 /// The variable that names the machine-global state directory ([`state_home`]).
 pub const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 
-/// The variable that names the user's home, the state and cache homes' fallback.
-pub const HOME_ENV: &str = "HOME";
-
-/// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / `HOME` values, so the
+/// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / home directory values, so the
 /// precedence (XDG wins; an empty value is "unset") is unit-tested with no process-global env
 /// mutation - which would race the crate's other multi-threaded tests that read the environment.
 pub fn state_home_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
+    if let Some(dir) = rigger_process::home::non_empty(xdg) {
         return Some(PathBuf::from(dir));
     }
-    let home = home.filter(|v| !v.is_empty())?;
+    let home = rigger_process::home::non_empty(home)?;
     Some(PathBuf::from(home).join(".local").join("state"))
 }
 

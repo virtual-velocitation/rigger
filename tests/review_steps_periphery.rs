@@ -1510,8 +1510,8 @@ fn a_stage_of_no_steps_inherits_the_default_list_and_a_stage_list_replaces_it() 
 fn a_workflow_rigger_init_renders_validates_as_the_canonical_sequence_with_or_without_gates() {
     let template = repo_root();
     for (project, summary) in [
-        (temp_project(), "config valid: 6 agents, 4 stages, 0 gates"),
-        (cargo_project(), "config valid: 6 agents, 4 stages, 5 gates"),
+        (temp_project(), "config valid: 7 agents, 4 stages, 0 gates"),
+        (cargo_project(), "config valid: 7 agents, 4 stages, 5 gates"),
     ] {
         run_rigger_ok(
             project.path(),

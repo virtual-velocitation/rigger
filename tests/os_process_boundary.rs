@@ -6,7 +6,7 @@
 
 use crate::common;
 use crate::source_audit;
-use source_audit::{cfg_test_ranges, in_ranges, is_comment_line, Finding};
+use source_audit::Finding;
 use std::path::Path;
 
 /// The process interface's Linux adapter, the one production file that reads `/proc`.
@@ -17,34 +17,14 @@ const PROC_LITERAL: &str = "\"/proc";
 
 const SHAPE: &str = "a /proc read outside the process interface's Linux adapter";
 
-/// Every line of `content`, the production file at `rel`, that reads `/proc`.
-fn scan_file(rel: &str, content: &str) -> Vec<Finding> {
-    if rel == LINUX_ADAPTER {
-        return Vec::new();
-    }
-    let lines: Vec<&str> = content.lines().collect();
-    let tests = cfg_test_ranges(&lines);
-    lines
-        .iter()
-        .enumerate()
-        .filter(|(i, line)| {
-            line.contains(PROC_LITERAL) && !in_ranges(*i, &tests) && !is_comment_line(line)
-        })
-        .map(|(i, line)| Finding {
-            file: rel.to_string(),
-            line_no: i + 1,
-            shape: SHAPE,
-            line_text: line.to_string(),
-        })
-        .collect()
-}
-
 /// Every `/proc` read in the production sources under `root`.
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    common::repo::production_sources(root)
-        .iter()
-        .flat_map(|(rel, text)| scan_file(rel, text))
-        .collect()
+    source_audit::literal_outside(
+        &common::repo::production_sources(root),
+        LINUX_ADAPTER,
+        PROC_LITERAL,
+        SHAPE,
+    )
 }
 
 #[test]
@@ -60,21 +40,11 @@ fn the_real_tree_reads_proc_only_in_the_linux_adapter() {
 mod tests {
     use super::*;
 
-    use source_audit::write_file;
+    use source_audit::none;
 
     /// The `(file, line)` of each finding a fixture tree holding `content` at `rel` yields.
     fn flagged(rel: &str, content: &str) -> Vec<(String, usize)> {
-        let root = tempfile::tempdir().unwrap();
-        write_file(root.path(), rel, content);
-        scan_tree(root.path())
-            .into_iter()
-            .map(|f| (f.file, f.line_no))
-            .collect()
-    }
-
-    /// No finding.
-    fn none() -> Vec<(String, usize)> {
-        Vec::new()
+        source_audit::flagged_by(scan_tree, rel, content)
     }
 
     // GIVEN a source file, WHEN the scan reads it, THEN it names each line of production code

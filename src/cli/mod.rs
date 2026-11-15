@@ -873,21 +873,21 @@ fn store_identity(sel: &StoreSelection, events_db: String) -> rigger::registry::
 /// FENCE-AWARE (spec 70 criterion 3): when [`STORE_FENCE_ENV`] is set - a unit-worktree gate's
 /// spawned test process, the same condition [`require_store_dir`] itself checks first - this is a
 /// complete no-op before [`rigger::registry::default_dir`] is even consulted. That resolver reads
-/// `XDG_STATE_HOME`/`HOME` directly and is NOT scoped by `loc`/`selection`, so without this check
-/// a fenced courier's registry write would still land in the real, machine-global registry even
-/// though its store write correctly landed in the fenced scratch dir - reopening the exact ambient
-/// side channel the fence exists to close.
+/// `XDG_STATE_HOME` and the home directory directly and is NOT scoped by `loc`/`selection`, so
+/// without this check a fenced courier's registry write would still land in the real,
+/// machine-global registry even though its store write correctly landed in the fenced scratch
+/// dir - reopening the exact ambient side channel the fence exists to close.
 fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     // The gate store fence (spec 70 criterion 3), mirroring `require_store_dir`'s own check
     // (same env var, same "checked first, before touching any ambient state" placement): a
     // fenced courier's STORE already resolves to the pinned scratch dir via `require_store_dir`,
-    // but `rigger::registry::default_dir()` below reads `XDG_STATE_HOME`/`HOME` directly and is
-    // entirely decoupled from `loc`/`selection` - so without this check, a courier a fenced
-    // gate's own spawned test process runs (the exact call shape spec 70 criterion 3 names) would
-    // still write a real Instance into the machine-global registry, reopening precisely the
-    // ambient side channel that fence exists to close. A fenced gate sees strictly less ambient
-    // state, never more - the registry is ambient state, so a fenced courier skips it entirely
-    // rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
+    // but `rigger::registry::default_dir()` below reads `XDG_STATE_HOME` and the home directory
+    // directly and is entirely decoupled from `loc`/`selection` - so without this check, a
+    // courier a fenced gate's own spawned test process runs (the exact call shape spec 70
+    // criterion 3 names) would still write a real Instance into the machine-global registry,
+    // reopening precisely the ambient side channel that fence exists to close. A fenced gate sees
+    // strictly less ambient state, never more - the registry is ambient state, so a fenced
+    // courier skips it entirely rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
     if store_fence().is_some() {
         return;
     }
