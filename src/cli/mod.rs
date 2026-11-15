@@ -4681,12 +4681,20 @@ fn looks_like_run_container(dir: &Path) -> bool {
 /// subdir") every run-id subdir counts fully dead, matching the same "no live units" degrade
 /// [`current_run_units`] itself already falls back to.
 ///
+/// A critique run's directory (`critique-<hash>`, [`rigger::review::is_critique_run`]) is classed whole
+/// by the one rule that names a live critique ([`critique::LiveCritiques`]): while it
+/// [`spares`](critique::LiveCritiques::spares) the entry, the entry is live, neither dead nor ad
+/// hoc; otherwise it is one dead entry, its leaves not walked, so the reclaim removes the
+/// container itself whatever its shape.
+///
 /// Returns `(dead_leaves_of_well_formed_containers, ad_hoc_entries)`: a `(path, bytes)` pair
-/// per dead spawn leaf, and a `(name, bytes)` pair per unowned top-level entry.
+/// per dead spawn leaf or ended critique container, and a `(name, bytes)` pair per unowned
+/// top-level entry.
 fn classify_agent_scratch(
     agent_scratch_root: &Path,
     current_run_leaf: Option<&str>,
     live_leaf_names: &std::collections::HashSet<String>,
+    live_critiques: &critique::LiveCritiques,
 ) -> (SizedPaths, Vec<(String, u64)>) {
     let Ok(entries) = std::fs::read_dir(agent_scratch_root) else {
         return (Vec::new(), Vec::new());
@@ -4705,7 +4713,12 @@ fn classify_agent_scratch(
             continue;
         }
         let path = entry.path();
-        if looks_like_run_container(&path) {
+        if rigger::review::is_critique_run(&name) {
+            if !live_critiques.spares(&name) {
+                let bytes = dir_size_bytes(&path);
+                dead.push((path, bytes));
+            }
+        } else if looks_like_run_container(&path) {
             let is_current_run = current_run_leaf.is_some_and(|leaf| name == leaf);
             let live = if is_current_run {
                 live_leaf_names
@@ -4742,6 +4755,7 @@ fn footprint_report(
     dead_slugs: &std::collections::HashSet<String>,
     current_run_scratch_leaf: Option<&str>,
     live_spawn_leaf_names: &std::collections::HashSet<String>,
+    live_critiques: &critique::LiveCritiques,
 ) -> Vec<FootprintCategory> {
     let (store_bytes, backup_bytes) = store_and_backup_bytes(rigger_dir);
     let (worktrees, unit_caches, build_cache) =
@@ -4763,6 +4777,7 @@ fn footprint_report(
         &agent_scratch_root,
         current_run_scratch_leaf,
         live_spawn_leaf_names,
+        live_critiques,
     );
     // The ad-hoc entries' bytes are excluded from "registered scratch roots"'s own total -
     // NOT just its dead share - so a byte can never appear in both categories at once
@@ -8116,6 +8131,7 @@ mod tests {
             &slugs(["unit-dead"]),
             None,
             &slugs([]),
+            &critique::LiveCritiques::Named(slugs([])),
         );
 
         assert_eq!(
@@ -8184,6 +8200,7 @@ mod tests {
             &slugs([]),
             Some(run_leaf),
             &slugs([live_leaf]),
+            &critique::LiveCritiques::Named(slugs([])),
         )
     }
 
@@ -8310,7 +8327,12 @@ mod tests {
         // A well-formed, DEAD (not live) run/spawn container.
         write_file(&root.join("run-1").join("spawn-1").join("x"), &[0u8; 20]);
 
-        let (dead, ad_hoc) = classify_agent_scratch(root, None, &std::collections::HashSet::new());
+        let (dead, ad_hoc) = classify_agent_scratch(
+            root,
+            None,
+            &std::collections::HashSet::new(),
+            &critique::LiveCritiques::Named(std::collections::HashSet::new()),
+        );
 
         assert_eq!(
             dead,
@@ -8419,6 +8441,7 @@ mod tests {
             &none,
             None,
             &none,
+            &critique::LiveCritiques::Named(none.clone()),
         );
         let advisories = footprint_advisories(&categories);
         for name in [

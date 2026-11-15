@@ -33,6 +33,84 @@ pub(crate) fn critique_store<'a>(backend: &'a dyn EventStore, identity: &str) ->
     Namespaced::new(backend, &format!("{identity}-critique"))
 }
 
+/// Which critique runs (`critique-<hash>`, [`review::is_critique_run`]) hold live scratch: the
+/// one rule every reaper of the agent areas spares a critique's entries by. A critique run is live
+/// while [`liveness::live_spawns`] names one of its critic's spawns on the critique's own stream
+/// ([`critique_store`]): a spawn with no result whose marker is inside its own bound. Between two
+/// passes the critique has reaped its spawn's entries itself ([`reap_spawn`]), so an entry with no
+/// live spawn is an ended or crashed critique's, which nothing else reaps. A stream that could not
+/// be read ([`Self::Unread`]) names no critique dead, so every critique entry is spared.
+pub(super) enum LiveCritiques {
+    /// The critique stream was not read: every critique run counts live.
+    Unread,
+    /// The critique runs with a live spawn, by run id.
+    Named(HashSet<String>),
+}
+
+impl LiveCritiques {
+    /// The critique runs [`live_spawns`](liveness::live_spawns) names live at `now` in the
+    /// critique stream's `events`, each spawn's marker read under the root its request recorded,
+    /// else under `scratch_root`. A stream it cannot fold is [`Self::Unread`].
+    pub(super) fn of(events: &[Event], scratch_root: &str, now: std::time::SystemTime) -> Self {
+        let Ok(requested) = rigger::spawn::recorded(events) else {
+            return Self::Unread;
+        };
+        let runs: std::collections::BTreeSet<&str> = requested
+            .values()
+            .map(|req| req.unit.as_str())
+            .filter(|unit| review::is_critique_run(unit))
+            .collect();
+        let mut live = HashSet::new();
+        for run in runs {
+            match liveness::live_spawns(events, scratch_root, run, now) {
+                Ok(spawns) if spawns.is_empty() => {}
+                Ok(_) => {
+                    live.insert(run.to_string());
+                }
+                Err(_) => return Self::Unread,
+            }
+        }
+        Self::Named(live)
+    }
+
+    /// The critique runs live in the project store `loc` at `now`, its critique stream read
+    /// through `selection` and its markers under `scratch_root`. A store with no log yet holds
+    /// no critique; one that cannot be opened or read is [`Self::Unread`].
+    pub(super) fn in_store(
+        loc: &StoreLocation,
+        selection: &StoreSelection,
+        scratch_root: &str,
+        now: std::time::SystemTime,
+    ) -> Self {
+        if selection.log_absent(&loc.file("events.db")) {
+            return Self::Named(HashSet::new());
+        }
+        let (Ok(backend), Ok(identity)) = (
+            resolve_store(selection, &loc.file("events.db")),
+            loc.identity(),
+        ) else {
+            return Self::Unread;
+        };
+        match critique_store(backend.as_ref(), &identity).read_stream(
+            conductor::STREAM,
+            0,
+            Direction::Forward,
+        ) {
+            Ok(events) => Self::of(&events, scratch_root, now),
+            Err(_) => Self::Unread,
+        }
+    }
+
+    /// Whether the agent-area entry `name` is a live critique run's, so a reaper leaves it.
+    pub(super) fn spares(&self, name: &str) -> bool {
+        review::is_critique_run(name)
+            && match self {
+                Self::Unread => true,
+                Self::Named(live) => live.contains(name),
+            }
+    }
+}
+
 /// `rigger critique`'s arguments: the spec path, and the `--eventstore` / `--conn` flags `rigger
 /// run` takes.
 struct CritiqueArgs {

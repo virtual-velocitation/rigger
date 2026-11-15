@@ -933,10 +933,11 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              `--derived` removes nothing.",
             "- `rigger reset --build-cache` reclaims the rebuildable scratch beside the \
              stores: every dead class `rigger validate`'s footprint names with this verb (dead \
-             per-unit caches, dead spawns' registered scratch, unowned agent scratch) and the \
-             shared gate build cache. It checks each entry for a live holder first - a process \
-             whose working directory or open file is inside - and leaves a held entry where it \
-             is. It needs no event-store backend.",
+             per-unit caches, dead spawns' registered scratch, an ended critique's scratch, \
+             unowned agent scratch) and the shared gate build cache; a critique whose critic is \
+             still running keeps its scratch. It checks each entry for a live holder first - a \
+             process whose working directory or open file is inside - and leaves a held entry \
+             where it is. It needs no event-store backend.",
             "- The flags compose: `rigger reset --runs --derived` sheds both store \
              accumulations in one pass.\n",
         ],

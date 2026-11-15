@@ -893,6 +893,12 @@ pub(super) fn measure_footprint(
         &run_units.dead_slugs,
         run_units.current_run_scratch_leaf.as_deref(),
         &run_units.live_spawn_leaf_names,
+        &super::critique::LiveCritiques::in_store(
+            loc,
+            selection,
+            &scratch.to_string_lossy(),
+            std::time::SystemTime::now(),
+        ),
     );
     Ok((categories, liveness_unknown))
 }

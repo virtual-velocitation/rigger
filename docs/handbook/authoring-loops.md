@@ -163,7 +163,7 @@ The `mutation` gate is `cargo mutants` over the whole spec diff, run once by a `
 
 A `.rigger/gates/mutation.sh` an earlier `rigger init` wrote reads `$MUTANTS`, which rigger no longer sets, so it fails once wired: delete it and rerun `rigger init`, which writes the current script beside a root `Cargo.toml`.
 
-`rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, unowned agent scratch, and the shared gate build cache - and leaves any entry a live process still holds (its working directory or an open file) where it is.
+`rigger reset --build-cache` reclaims every class of dead scratch `rigger validate`'s footprint names with that verb - dead per-unit caches, dead spawns' registered scratch, an ended critique's scratch, unowned agent scratch, and the shared gate build cache - and leaves a running critique's scratch and any entry a live process still holds (its working directory or an open file) where it is.
 
 ## The driver
 
