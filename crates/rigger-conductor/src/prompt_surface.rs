@@ -100,10 +100,13 @@ pub const REFUSED_RECORD_NOTE: &str =
 
 /// CONTRACT: how an author session (the implementer, a speculation lane, the test author) hands
 /// its work over, `{line}` holding [`AUTHOR_HANDOVER_LINE`]: the conductor checkpoints the
-/// attempt only once the session's final message ends with that line.
+/// attempt only once the session's final message ends with that line, after anything else the
+/// session prints, whatever its persona asks it to report.
 pub const AUTHOR_HANDOVER: &str = "\n\nWhen your work is complete, end your final message with \
-     this line, alone on the last line: {line}\nWrite it only once the work is done: a session \
-     that ends without it is treated as stopped mid-work and is run again.";
+     this line, alone on the last line: {line}\nIt comes after everything else you print, \
+     whatever your persona asks you to report: put any report above it. Write it only once the \
+     work is done: a session that ends without it is treated as stopped mid-work and is run \
+     again.";
 
 /// CONTRACT: the line an author's final message ends with to hand its work over, which
 /// [`AUTHOR_HANDOVER`] names and the conductor's handover check reads.
