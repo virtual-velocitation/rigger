@@ -501,7 +501,7 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             record.by_hand()
         ));
     }
-    let bin = record.bin.clone().unwrap_or_else(|| standing_executable());
+    let bin = record.bin.clone().unwrap_or_else(standing_executable);
     if !bin.is_file() {
         let _ = lock.replace("");
         return Some(format!(
