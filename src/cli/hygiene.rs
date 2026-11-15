@@ -946,7 +946,8 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // a run this reset is closing; the graph prune below takes no part in
         // it.
         let probe = live_writer_facts(loc, selection, env, &events)?;
-        if relaunch::forget_driver_output(&loc.dir)? {
+        // A driver holding the step lock may be the relaunched one still writing its output.
+        if !probe.facts.step_lock_held && relaunch::forget_driver_output(&loc.dir)? {
             println!(
                 "reset --runs: removed {}, the output of the driver a check last relaunched",
                 relaunch::DRIVER_OUTPUT_FILE

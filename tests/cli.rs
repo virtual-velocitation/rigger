@@ -793,6 +793,32 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
     );
 }
 
+/// A RELAUNCHED DRIVER'S OUTPUT IS REAPED ONCE NO DRIVER RUNS: `reset --runs` removes
+/// `.rigger/driver.out` and says so while no driver holds the step lock, and leaves it while one
+/// does, since a live relaunched driver is still writing to it.
+#[test]
+fn reset_runs_reaps_a_relaunched_drivers_output_only_while_no_driver_runs() {
+    for (case, driver_runs) in [
+        ("no driver runs", false),
+        ("a driver holds the step lock", true),
+    ] {
+        let dir = temp_store_project();
+        let root = dir.path();
+        let output = common::cli::rigger_file(root, "driver.out");
+        std::fs::write(&output, "a relaunched driver's line\n").unwrap();
+        let lock = driver_runs.then(|| common::cli::hold_step_lock(root));
+        let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+        drop(lock);
+        assert!(ok, "{case}: reset --runs succeeds; stderr: {err}");
+        assert_eq!(
+            (output.exists(), out.contains("removed driver.out")),
+            (driver_runs, !driver_runs),
+            "{case}: reset --runs removes a dead driver's output and says so, and leaves a live \
+             one's; stdout: {out:?}"
+        );
+    }
+}
+
 /// How many superseded structural edges [`bloated_graph_project`] seeds.
 const BLOATED_SUPERSEDED: usize = 8_000;
 

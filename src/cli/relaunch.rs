@@ -7,7 +7,8 @@
 //! relaunches it by adoption, in the background, through the binary it recorded, as a hand
 //! `rigger run <spec> --base <ref>` would. The relaunched driver's stdout and stderr go to one
 //! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
-//! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it.
+//! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it once no driver holds the step
+//! lock.
 //!
 //! STOPPED ON PURPOSE is every end the driver itself sees: any return of `rigger run` after it
 //! took the step lock (done, escalated with nothing left, a halt, a refusal, an error), a panic
@@ -466,7 +467,7 @@ pub(crate) fn stopped_relaunch_line(rigger_dir: &Path, done: bool) -> Option<Str
 }
 
 /// Remove the relaunched driver's output under `rigger_dir`, `rigger reset --runs`'s reap of
-/// it: whether there was one.
+/// it once no driver holds the step lock: whether there was one.
 pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
     match std::fs::remove_file(rigger_dir.join(DRIVER_OUTPUT_FILE)) {
         Ok(()) => Ok(true),
