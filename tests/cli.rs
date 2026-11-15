@@ -15065,8 +15065,9 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
 /// overwritten" collision criterion 1 exists to prevent. This test runs the real `rigger
 /// setup` under a `GIT_CONFIG_GLOBAL` whose
 /// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
-/// `.gitignore` STILL carries every required line - so the shipped artifact is machine
-/// independent. It is a regression guard against re-introducing a machine-local ignore lookup
+/// `.gitignore` STILL holds every line setup writes, in order: the machine-local install, each
+/// class of runtime file (spec 125, criterion 13) and each named runtime file - so the shipped
+/// artifact is machine independent. It is a regression guard against re-introducing a machine-local ignore lookup
 /// (e.g. `git check-ignore`) that would silently omit the lines.
 #[test]
 fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() {
@@ -15108,24 +15109,33 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
     // Drive the REAL `rigger setup` under that hostile global config.
     setup_ok(root, &[("GIT_CONFIG_GLOBAL", global_config_str)]);
 
-    // The committed `.gitignore` carries EVERY setup-written pattern despite the hostile global
-    // excludes - the artifact is self-contained and portable to a clean-HOME teammate/CI. The
-    // patterns are written in their normalized form (a trailing slash is stripped before the
-    // line is appended), so `.claude/` lands as `.claude`.
+    // The committed `.gitignore` is EVERY setup-written pattern, in the order setup writes them,
+    // despite the hostile global excludes - the artifact is self-contained and portable to a
+    // clean-HOME teammate/CI. The patterns are written in their normalized form (a trailing slash
+    // is stripped before the line is appended), so `.claude/` lands as `.claude`.
     let gitignore = std::fs::read_to_string(root.join(".gitignore"))
         .expect("rigger setup must write a .gitignore at the project root");
-    for pattern in [
-        ".claude",
-        ".rigger/dash.url",
-        ".rigger/dash.marker",
-        ".rigger/dash.attempt",
-    ] {
-        assert!(
-            gitignore.lines().any(|l| l.trim() == pattern),
-            "the committed .gitignore must contain `{pattern}` even under a global config that \
-             already ignores it, so the shipped file is machine independent; got:\n{gitignore}"
-        );
-    }
+    assert_eq!(
+        gitignore.lines().collect::<Vec<_>>(),
+        [
+            ".claude",
+            ".rigger/*.db",
+            ".rigger/*.db-wal",
+            ".rigger/*.db-shm",
+            ".rigger/*.lock",
+            ".rigger/dash.url",
+            ".rigger/dash.marker",
+            ".rigger/dash.attempt",
+            ".rigger/driver.out",
+            ".rigger/store.conn",
+            ".rigger/store",
+            ".rigger/*.bak-*",
+            ".rigger/tmp",
+            ".rigger/playbooks",
+        ],
+        "the committed .gitignore must hold every runtime line even under a global config that \
+         already ignores it, so the shipped file is machine independent"
+    );
 }
 
 /// Spec 09 (Gap 20): `rigger init` MINTS a durable `.rigger/project.id` when absent -
