@@ -12971,18 +12971,19 @@ fn validate_refuses_each_refused_build_block_before_any_output() {
     }
 }
 
-/// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose `build:` block
-/// is the fresh scaffold's, untouched, or declares `B`, `J` and `L`, WHEN the operator runs
-/// `rigger validate`, THEN its build lines are one `build env: NAME=template` line per declared
-/// variable in name order, or `build env: none declared`, followed by the build budget.
+/// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose workflow is the
+/// fresh scaffold's, untouched, with no `build:` block, or whose `build:` block declares `B`, `J`
+/// and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with an empty or
+/// whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes, and its build
+/// lines are one `build env: NAME=template` line per declared variable in name order, or
+/// `build env: none declared`, followed by the build budget.
 #[test]
 fn validate_reports_each_declared_build_variable_then_the_budget() {
+    // Nothing declared and no budget key: a workflow with no `build:` block and a `build:` block
+    // without `max_concurrent` both resolve the budget to 4.
+    const NONE_DECLARED: &[&str] = &["build env: none declared", "build budget: 4"];
     let cases: [(&str, Option<String>, &[&str]); 2] = [
-        (
-            "the fresh scaffold, untouched",
-            None,
-            &["build env: none declared", "build budget: 4"],
-        ),
+        ("the fresh scaffold, untouched", None, NONE_DECLARED),
         (
             "B, J and L with jobs 3 and no budget",
             Some(build_block_declaring(&DECLARED_BJL, 3)),
@@ -12994,7 +12995,11 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
             ],
         ),
     ];
-    for (why, block, want) in cases {
+    let retired_but_empty = RETIRED_BUILD_KEYS
+        .iter()
+        .filter(|row| row.refusal.is_none())
+        .map(|row| (row.why, Some(row.block.to_string()), NONE_DECLARED));
+    for (why, block, want) in cases.into_iter().chain(retired_but_empty) {
         let dir = initialized_project();
         let root = dir.path();
         if let Some(block) = block {
