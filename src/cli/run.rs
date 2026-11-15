@@ -508,12 +508,7 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
 /// rigger-directed build actually targets; `target` stays a bare reap as before.
 fn reclaim_run_scratch(root: &str) {
     let base = std::path::Path::new(root);
-    // The run's log names no critique's spawns, so every critique's entries are spared under the
-    // one critique rule's unread reading, left to that critique's next call and to `rigger reset
-    // --build-cache`, which read the critique stream.
-    remove_agent_area_entries(base, |name| {
-        !super::critique::LiveCritiques::Unread.spares(name)
-    });
+    remove_agent_area_entries(base, |name| !review::is_critique_run(name));
     for area in AGENT_AREAS {
         let _ = std::fs::remove_dir(base.join(area));
     }
