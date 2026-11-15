@@ -240,3 +240,84 @@ fn setup_reports_a_drifted_statusline_command_as_refreshed() {
         "the drifted command must self-heal to the current build's own invocation"
     );
 }
+
+/// Spec 126 (N2): `rigger status`, `rigger status --json` and `rigger watch --once` on a project
+/// `rigger setup` set up, before its first run, from its root and from a subdirectory, say that no
+/// run is recorded and exit 0 - the same answer `rigger status --line` gives there - while in a
+/// directory with no store at all they keep the wrong-directory refusal.
+#[test]
+fn status_and_watch_before_the_first_run_say_no_run_is_recorded() {
+    const NO_RUN: &str = "no run recorded; start one with `rigger run <spec>`";
+    let set_up = temp_project();
+    setup_ok(set_up.path(), &[]);
+    assert!(
+        !set_up.path().join(".rigger").join("events.db").exists(),
+        "this test only means something before the first run writes the log"
+    );
+    let below = set_up.path().join("src").join("deep");
+    std::fs::create_dir_all(&below).expect("a subdirectory");
+    let bare = temp_project();
+    // (where, the directory, the command, Some(expected stdout) to succeed, None to refuse)
+    let rows: [(&str, &std::path::Path, &[&str], Option<&str>); 9] = [
+        (
+            "set up, at the root",
+            set_up.path(),
+            &["status"],
+            Some(NO_RUN),
+        ),
+        (
+            "set up, at the root",
+            set_up.path(),
+            &["status", "--json"],
+            Some("[]"),
+        ),
+        (
+            "set up, at the root",
+            set_up.path(),
+            &["watch", "--once"],
+            Some(NO_RUN),
+        ),
+        ("set up, below the root", &below, &["status"], Some(NO_RUN)),
+        (
+            "set up, below the root",
+            &below,
+            &["status", "--json"],
+            Some("[]"),
+        ),
+        (
+            "set up, below the root",
+            &below,
+            &["watch", "--once"],
+            Some(NO_RUN),
+        ),
+        ("no store at all", bare.path(), &["status"], None),
+        ("no store at all", bare.path(), &["status", "--json"], None),
+        ("no store at all", bare.path(), &["watch", "--once"], None),
+    ];
+    for (where_, dir, args, expected) in rows {
+        let (out, err, ok) = run_rigger(dir, args);
+        match expected {
+            Some(stdout) => {
+                assert!(
+                    ok,
+                    "{where_}: rigger {args:?} must exit 0; stdout {out:?} stderr {err:?}"
+                );
+                assert_eq!(
+                    out.trim_end_matches('\n'),
+                    stdout,
+                    "{where_}: rigger {args:?} says no run is recorded; stderr {err:?}"
+                );
+            }
+            None => {
+                assert!(
+                    !ok,
+                    "{where_}: rigger {args:?} must refuse; stdout {out:?} stderr {err:?}"
+                );
+                assert!(
+                    err.contains("no rigger store found") && err.contains("wrong directory"),
+                    "{where_}: rigger {args:?} keeps the wrong-directory refusal: {err:?}"
+                );
+            }
+        }
+    }
+}
