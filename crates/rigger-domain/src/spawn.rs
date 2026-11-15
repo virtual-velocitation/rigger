@@ -832,6 +832,11 @@ impl SpawnEventBody for SpawnResult {
 /// spawn's, and the managed pre-commit hook reads it to find the build it checks the docs with.
 pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
 
+/// The environment variable that names the run's base: the run branch's tip when the run
+/// started ([`crate::run::current_run_base_tip`]). The conductor's one build environment sets
+/// it, so every gate and every spawn of a run that recorded a base carries it.
+pub const RUN_BASE_ENV: &str = "RIGGER_RUN_BASE";
+
 /// One entry of the pending frontier: the identity of a parked spawn that still awaits its
 /// result - which spawn, of which unit, at which stage. The dash, `rigger status`, `rigger watch`
 /// and the activity view read it; the prompt, persona and placement stay on the recorded

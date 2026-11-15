@@ -33877,6 +33877,95 @@ mod tests {
         );
     }
 
+    /// A driver that records each spawn's id beside the `SpawnOpts.env` it was handed, so a
+    /// test can say WHICH spawn carried what.
+    struct IdEnvRecordingDriver {
+        spawns: Mutex<Vec<(String, Vec<(String, String)>)>>,
+    }
+    impl AgentDriver for IdEnvRecordingDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.spawns
+                .lock()
+                .unwrap()
+                .push((opts.id.clone(), opts.env.clone()));
+            Ok(AgentResult::default())
+        }
+    }
+
+    #[test]
+    fn every_spawn_and_every_gate_carries_the_run_base_from_the_one_build_environment() {
+        // The run base reaches an agent the way it reaches a gate: through `build_env`, the
+        // one build-environment authority every spawn's and every gate's environment is built
+        // from. A run whose `RunStarted` carries a `base_tip` hands `RIGGER_RUN_BASE` set to
+        // it to the implementer, the check-in stage's agent and every gate; a run with an
+        // empty `base_tip` hands it to none of them.
+        let criterion = "the slice lands";
+        for (base_tip, want) in [("base-sha", Some("base-sha")), ("", None)] {
+            let cfg = fan_out_checkin_cfg("unit-check", "sweep");
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-base-fixture",
+                        "criteria": [criterion],
+                        "base_tip": base_tip,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let driver = IdEnvRecordingDriver {
+                spawns: Mutex::new(Vec::new()),
+            };
+            let runner = RecordingRunner::new(&[]);
+            let deps = Deps {
+                gates: &runner,
+                ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(rs.units["checkin"].status, ledger::Status::Integrated);
+            let run_base = |env: &[(String, String)]| {
+                env.iter()
+                    .find(|(k, _)| k == crate::spawn::RUN_BASE_ENV)
+                    .map(|(_, v)| v.clone())
+            };
+            let spawns = snapshot(&driver.spawns);
+            let implementer = spawn_id(&unit_slug(1, criterion), ROLE_IMPLEMENTER, 0);
+            let checkin = spawn_id("checkin", ROLE_IMPLEMENTER, 0);
+            for id in [&implementer, &checkin] {
+                let (_, env) = spawns
+                    .iter()
+                    .find(|(spawned, _)| spawned == id)
+                    .unwrap_or_else(|| panic!("{id} must have spawned: {spawns:?}"));
+                assert_eq!(
+                    run_base(env).as_deref(),
+                    want,
+                    "base_tip {base_tip:?}: spawn {id} must carry the run base exactly when \
+                     the run recorded one: {env:?}"
+                );
+            }
+            let gate_envs = snapshot(&runner.build_envs);
+            assert!(!gate_envs.is_empty(), "the gates must have run");
+            for env in &gate_envs {
+                assert_eq!(
+                    run_base(env).as_deref(),
+                    want,
+                    "base_tip {base_tip:?}: every gate must carry the run base exactly when \
+                     the run recorded one: {env:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_units_per_unit_cache_is_reclaimed_when_its_worktree_is_removed() {
         // Gap 19 (the DOMINANT graceful path): a gate that runs INSIDE a unit's worktree

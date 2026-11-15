@@ -1,42 +1,32 @@
-//! Periphery proof for spec 91's round-2 fix (finding
-//! adv-u91c2-mutation-gate-diff-base-collapses-to-empty, decision
-//! u91c2-r2-run-base-tip-not-buildenv-runner-param): `$RIGGER_RUN_BASE` reaches a REAL gate
-//! subprocess spawned by the REAL `conductor::run` wiring - `RunCtx::run_base_env` reading
-//! `RunStarted.base_tip` off the store, then `gate::BuildEnv::with_var` appending it to the
-//! SAME `build_env` every gate command already receives - and, just as load-bearing, that it
-//! reaches ONLY the gate boundary, never a real agent subprocess.
+//! Periphery proof that `$RIGGER_RUN_BASE` reaches a REAL gate subprocess AND a REAL agent
+//! subprocess spawned by the REAL `conductor::run` wiring: `RunCtx::run_base_env` reads
+//! `RunStarted.base_tip` off the store, and the one build environment (`build_env`) every gate
+//! command and every spawn's environment is built from carries it.
 //!
-//! WHAT THE OTHER PERIPHERY TESTS FOR THIS FIX DO NOT COVER.
+//! WHAT THE OTHER PERIPHERY TESTS FOR THIS DO NOT COVER.
 //!
 //! `tests/checkin_mutation_diff_base_periphery.rs` drives the shipped shell command directly
 //! with `RIGGER_RUN_BASE` set BY THE TEST (`Command::env`) - it proves the COMMAND's own
 //! contract, but never that the real conductor code is the thing that actually puts the value
-//! there. Nothing there (or anywhere else) drives `conductor::run` itself to prove
-//! `RunCtx::run_base_env` + `gate::BuildEnv::with_var` (both entirely untested - `with_var` has
-//! no unit test at all, not even in `gate.rs`'s own `mod tests`) are correctly wired at either
-//! of the two call sites that layer them (`RunCtx::run_gates`'s inline path,
-//! `RunCtx::run_deferred_gates`'s phase-boundary path).
+//! there. Nothing there drives `conductor::run` itself to prove the value reaches a gate at
+//! either gate path (`RunCtx::run_gates`'s inline path, `RunCtx::run_deferred_gates`'s
+//! phase-boundary path) or an agent through `RunCtx::spawn_env`.
 //!
 //! `tests/build_env_authority_periphery.rs` proves the ONE build-environment authority
 //! (wrapper/cache/jobs) reaches BOTH a real gate subprocess AND a real agent subprocess.
-//! `$RIGGER_RUN_BASE` deliberately does NOT follow that shape: it is layered only onto the two
-//! gate-execution call sites, never onto `RunCtx::spawn_env` (the agent-spawn injection site) -
-//! it exists solely for the checkin stage's own `mutation` gate command, and an agent has no
-//! use for the run's start tip. Nothing in the tree proves that scope boundary at the
-//! real-subprocess level; a future change that accidentally threads it into `spawn_env` too
-//! (or the reverse - some agent-side need routed through this instead of its own seam) would
-//! pass every existing test. This file closes that gap.
+//! `$RIGGER_RUN_BASE` follows that same shape: an agent that diffs the run's work, or runs a
+//! gate command by hand, needs the same base the gate is handed, so the value lives in the one
+//! build environment rather than being layered onto the gate paths alone.
 //!
-//! 1. `rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_subprocess`:
+//! 1. `rigger_run_base_reaches_a_real_inline_gate_subprocess_and_a_real_agent_subprocess`:
 //!    seeds a `RunStarted` with a `base_tip` (via the real `rigger::run_store::start_fresh`), then
 //!    drives a full `conductor::run` with ONE inline (`core`) gate and a real agent, both
-//!    spawned as real subprocesses that echo their env - proves the gate sees
-//!    `RIGGER_RUN_BASE=<the persisted tip>` and the agent sees it genuinely unset, from the
-//!    SAME run.
+//!    spawned as real subprocesses that echo their env - proves the gate and the agent both
+//!    see `RIGGER_RUN_BASE=<the persisted tip>`, from the SAME run.
 //! 2. `rigger_run_base_reaches_a_real_deferred_gate_subprocess_too`: the same proof for the
 //!    phase-boundary call site (`run_deferred_gates`) - a `deferred`-kind gate, run once the
-//!    single-stage run converges. `run_gates` and `run_deferred_gates` are two independent call
-//!    sites layering the same value; proving only one would leave the other's wiring unguarded.
+//!    single-stage run converges. `run_gates` and `run_deferred_gates` are two independent gate
+//!    paths reading the same build environment; proving only one would leave the other unguarded.
 //! 3. `no_persisted_base_tip_leaves_rigger_run_base_unset_in_the_real_gate_subprocess`: a run
 //!    with no seeded `RunStarted` (a fresh mint, `base_tip` empty - the legacy/no-repo case)
 //!    must inject nothing - the real gate subprocess sees `RIGGER_RUN_BASE` genuinely unset,
@@ -81,8 +71,8 @@ use real_gate_run::run_real_gate_and_agent;
 
 const GATE_CMD: &str = "echo RIGGER_RUN_BASE=$RIGGER_RUN_BASE";
 
-/// A fixture "agent" that echoes `RIGGER_RUN_BASE` - never configured by production code for an
-/// agent spawn, see this file's own doc comment - alongside the final structured JSON line
+/// A fixture "agent" that echoes `RIGGER_RUN_BASE`, the run base every spawn's environment
+/// carries (see this file's own doc comment), alongside the final structured JSON line
 /// every real `cli::Driver::spawn` needs to parse a result, mirroring
 /// `tests/fixtures/env-echo-agent.sh`'s own shape but written per-test so this file stays
 /// self-contained.
@@ -114,11 +104,11 @@ fn run_once(store: &Store, kind: &str, agent_bin: &Path) -> (String, Vec<String>
 }
 
 #[test]
-fn rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_subprocess() {
+fn rigger_run_base_reaches_a_real_inline_gate_subprocess_and_a_real_agent_subprocess() {
     // Guards against ambient pollution in THIS test process (a gate exporting
     // RIGGER_RUN_BASE to a suite that runs rigger in-process): the agent subprocess inherits
-    // the ambient bag, and this test proves spawn_env ADDS nothing to it - never that the
-    // bag was clean. Under a process-per-test runner no sibling's guard runs first, so the
+    // the ambient bag, so the tip it echoes must come from spawn_env, never from a value the
+    // bag already held. Under a process-per-test runner no sibling's guard runs first, so the
     // test carries its own, exactly like no_persisted_base_tip_* below.
     let _guard = env_test_lock();
     std::env::remove_var("RIGGER_RUN_BASE");
@@ -141,9 +131,9 @@ fn rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_su
     assert!(!agent_outputs.is_empty(), "the agent must have spawned");
     for out in &agent_outputs {
         assert!(
-            out.lines().any(|l| l == "RIGGER_RUN_BASE="),
-            "RIGGER_RUN_BASE must never reach a real agent subprocess - it exists solely for \
-             the checkin stage's own mutation gate, never RunCtx::spawn_env: {out}"
+            out.lines().any(|l| l == format!("RIGGER_RUN_BASE={tip}")),
+            "the real agent subprocess must see the run's persisted base_tip, the same one \
+             the gate sees, through RunCtx::spawn_env: {out}"
         );
     }
 }
@@ -164,8 +154,8 @@ fn rigger_run_base_reaches_a_real_deferred_gate_subprocess_too() {
             .lines()
             .any(|l| l == format!("RIGGER_RUN_BASE={tip}")),
         "the real DEFERRED (phase-boundary) gate subprocess must see the same persisted \
-         base_tip run_gates's inline call site does - run_deferred_gates layers the SAME \
-         run_base_env() via the SAME with_var, never a second, divergent copy: {gate_evidence}"
+         base_tip run_gates's inline call site does - both read the SAME build_env, never a \
+         second, divergent copy: {gate_evidence}"
     );
 }
 
