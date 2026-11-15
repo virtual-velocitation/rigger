@@ -1937,6 +1937,25 @@ fn store_to_read_in(
     }
 }
 
+/// The store a report on the current run (`rigger status`, `rigger watch`) reads, resolved from
+/// the cwd ([`Site::here`]), or `None` where the project is set up and no run has written its log
+/// yet: the root's `.rigger/` exists ([`NoStoreFound::root_store`]) and holds no `events.db`, so
+/// the report says no run is recorded. Where no `.rigger/` exists at the root either it refuses as
+/// [`require_store_dir_in`] does, naming the wrong directory or `rigger setup`.
+fn store_to_report() -> Result<Option<(StoreLocation, StoreSelection)>, Box<dyn std::error::Error>>
+{
+    match require_store_dir_in(&Site::here()) {
+        Err(e) => match e.downcast_ref::<NoStoreFound>() {
+            Some(NoStoreFound {
+                root_store: Some(dir),
+                ..
+            }) if dir.is_dir() => Ok(None),
+            _ => Err(e),
+        },
+        found => found.map(Some),
+    }
+}
+
 /// Whether `here` is the project `root` itself, compared as the filesystem resolves both.
 fn at_the_root(here: &Path, root: &Path) -> bool {
     canonical_or_spelled(here) == canonical_or_spelled(root)
