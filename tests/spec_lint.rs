@@ -1963,12 +1963,13 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
         "F10 landing-order circularity's corpus-wide total is pinned to its observed count"
     );
     assert_eq!(
-        f11_total, 43,
+        f11_total, 44,
         "F11 undecided removal's corpus-wide total (both tells) is pinned to its observed \
          count, minus 1 hit removed by the rewrite of specs/107 (operator review 2026-10-05: its \
          rebuild identity names its comparison surface), plus 1 hit from specs/120 criterion 5 \
          (its identity claim names no comparison surface; operator review 2026-10-20; specs/121 \
-         adds none)"
+         adds none), plus 1 hit from specs/125 criterion 7 (its fingerprint identity claim, \
+         advisory output on the spec's own text)"
     );
     assert_eq!(
         f1_total, 213,
@@ -2023,7 +2024,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 144,
+        shape_total, 175,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
@@ -2039,7 +2040,10 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          the two specs' own text; specs/121's preflight rewrite adds 3 F2 and 1 F6 of the same \
          kind), plus 4 hits added by \
          specs/123-the-spec-critique-passes-to-exhaustion.md (0 F2, 4 F6: its four criteria \
-         are over-long, advisory output on the spec's own text); a changed total otherwise means \
+         are over-long, advisory output on the spec's own text), plus 31 hits added by \
+         specs/125-rigger-works-in-any-language-any-toolchain-on-any-os.md (15 F2, 16 F6: \
+         multi-clause and over-long criteria, advisory output on the spec's own text); a \
+         changed total otherwise means \
          either a real spec edit (update this pin after reviewing the new/removed hits) or \
          a regression in the heuristic"
     );
