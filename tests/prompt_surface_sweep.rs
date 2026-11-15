@@ -60,6 +60,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?}: the revie",
             "{PLAN_LANDING_MARKER}unit {unit:?}: landing its plan-stage c",
             "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?} failed on inf",
+            "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?}'s author sess",
             "a critique gate is detected only when a producer exists",
             "rigger: the gate request channel failed: {e}",
             "amend the spec and relaunch: plan-critique found a spec defe",
@@ -96,7 +97,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "same-id refine resolves to a criterion its unit does not ser",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
-            "{who}: the session ended without handing over (no {AUTHOR_HA",
+            "{}: the session ended without handing over (no {AUTHOR_HANDO",
         ],
     ),
     (
