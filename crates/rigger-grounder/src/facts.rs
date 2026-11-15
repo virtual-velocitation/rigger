@@ -153,6 +153,25 @@ impl ProjectExtractor {
             .map(|(name, decl)| (name.as_str(), decl))
     }
 
+    /// The name of the declared extractor whose extensions list the extension of the file at
+    /// `path` ([`ProjectExtractor::declaration_of`]), and the symbols it answers for the file's
+    /// text `text` ([`ProjectExtractor::declared_symbols`]): none for no text or a failed answer;
+    /// `None` when no declaration lists the extension.
+    fn declared_code(&self, path: &str, text: Option<&str>) -> Option<(&str, Option<CodeSymbols>)> {
+        let (name, decl) = self.declaration_of(path)?;
+        let symbols = text.and_then(|text| self.declared_symbols(name, &decl.run, path, text));
+        Some((name, symbols))
+    }
+
+    /// The definitions the declared extractor whose extensions list the extension of the file at
+    /// `path` answers for its text `text`, asked as an advance asks it ([`Extract::extract`]): none
+    /// for a failed answer, so a declared extension is never read by a bundled grammar; `None`
+    /// when no declaration lists the extension.
+    pub fn declared_defs(&self, path: &str, text: &str) -> Option<Vec<model::Def>> {
+        self.declared_code(path, Some(text))
+            .map(|(_, symbols)| symbols.map_or_else(Vec::new, |symbols| symbols.defs))
+    }
+
     /// The symbols the declared extractor `name`, run as `run`, answers for the file at `path`
     /// holding `text`, asked through its session, started first when it has none. A failure -
     /// the session cannot start, the request cannot be written, the answer cannot be read or is
@@ -224,12 +243,14 @@ impl Extract for ProjectExtractor {
     /// read as [`FactsExtractor`] reads them; a declaration named as a bundled language
     /// (`rust`) replaces its grammar for the extensions it lists.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
-        file_facts(entry, bytes, |path, text| match self.declaration_of(path) {
-            Some((name, decl)) => Some(CodeFile {
-                lang: name.to_string(),
-                symbols: text.and_then(|text| self.declared_symbols(name, &decl.run, path, text)),
-            }),
-            None => bundled_code(path, text),
+        file_facts(entry, bytes, |path, text| {
+            match self.declared_code(path, text) {
+                Some((name, symbols)) => Some(CodeFile {
+                    lang: name.to_string(),
+                    symbols,
+                }),
+                None => bundled_code(path, text),
+            }
         })
     }
 }

@@ -234,32 +234,12 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[St
 }
 
 /// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
-/// extent comes from the grammar's own node boundary, but a very long body is clamped to this window
-/// so the surface never dumps an unbounded body. A clamp is announced with an explicit note (the
+/// extent comes from the code store's own extraction ([`locate_definition_extent`]: a declared
+/// extractor's `end_line`, else the grammar's own node boundary), but a very long body is clamped
+/// to this window so the surface never dumps an unbounded body. A clamp is announced with an explicit note (the
 /// omitted-line count), so a bounded body is never mistaken for the whole definition.
 const SHOW_MAX_BODY_LINES: u32 = 60;
 
-/// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
-/// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
-/// full `<file>::<path>` id, a bare name matched as a definition's leaf, a path such as
-/// `Struct.field` matched by its id suffix, or a pre-spec flat `<file>::<name>` matched as a leaf
-/// in that file), then:
-///
-/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, its
-///   remaining `site_fields` entries one line each ([`print_entity_site`]; a node naming no file
-///   prints no site, no body and no note), and
-///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
-///   the extent the shared multi-grammar symbols authority derives (the grammar's own node
-///   boundary), clamped to a max window. A missing file, a line past end-of-file, no definition of
-///   the node's name and kind at its line, a nameless node, or a build without the extraction
-///   grammar degrades to the site plus an explicit note, never an error (the recorded
-///   graph facts are still shown; only the body is unavailable, and the surface says so).
-/// - MANY matches (an ambiguous bare name, path or flat `<file>::<name>`): LISTS the sorted
-///   candidates, each with its file, and prints NO body - the graph's honesty rule is never to
-///   guess among candidates.
-/// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
-///
-/// Read-only over the projection and the working tree; deterministic for a given tree and graph.
 /// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
 /// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
 /// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
@@ -305,6 +285,29 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
     }
 }
 
+/// `rigger graph --show <entity>` (spec 58, criterion 1) - the TEXT half of graph lookup, beside
+/// `--around`'s structural neighborhood. It resolves the entity through [`Projector::locate`] (a
+/// full `<file>::<path>` id, a bare name matched as a definition's leaf, a path such as
+/// `Struct.field` matched by its id suffix, or a pre-spec flat `<file>::<name>` matched as a leaf
+/// in that file), then:
+///
+/// - ONE match: prints the definition SITE (`file:line`), the entity's KIND and one-hop DEGREE, its
+///   remaining `site_fields` entries one line each ([`print_entity_site`]; a node naming no file
+///   prints no site, no body and no note), and
+///   the definition BODY read from the WORKING TREE at that location - line-numbered and bounded by
+///   the extent the code store's own extraction derives ([`locate_definition_extent`]: a declared
+///   extractor's `end_line`, else the grammar's own node boundary), clamped to a max window. A
+///   missing file, a line past end-of-file, no definition of the node's name and kind at its line,
+///   a nameless node, or a build without the extraction grammar degrades to the site plus an
+///   explicit note, never an error (the recorded graph facts are still shown; only the body is
+///   unavailable, and the surface says so).
+/// - MANY matches (an ambiguous bare name, path or flat `<file>::<name>`): LISTS the sorted
+///   candidates, each with its file, and prints NO body - the graph's honesty rule is never to
+///   guess among candidates.
+/// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
+///
+/// It writes nothing: it reads the projection and the working tree, and a declared extractor's
+/// answer through a session it closes; deterministic for a given tree, graph and extractor.
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let site = Site::here();
     let records = owning_graph_to_read(&site)?;
@@ -355,9 +358,10 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// Print one located node for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
 /// INTEGRATION, for the header; spec 119, SHOW IS ONE RENDERER): `show <id>`, the site/kind/degree
 /// header, one `  <entry> <value>` line per remaining [`contextgraph::site_fields`] entry, then the
-/// line-numbered body bounded through the shared multi-grammar symbols authority - or an explicit
-/// note (no definition of the node's name and kind at its line, a nameless node, or a build
-/// without the extraction grammar) in place of the body, so the surface is never silently wrong
+/// line-numbered body read from `tree` and bounded through [`locate_definition_extent`] over the
+/// project at `root` ([`definition_body`]) - or an explicit note (no definition of the node's name
+/// and kind at its line, a nameless node, an unavailable root, or a build without the extraction
+/// grammar) in place of the body, so the surface is never silently wrong
 /// (a graceful degrade, never an error). A node naming no file has no line: its header reads
 /// `  kind K degree D` with no `site:` part, and it prints no body and no note, [`definition_body`]
 /// never called.
@@ -457,7 +461,7 @@ impl Unbounded {
 
 /// How a show note names the definition it sought (spec 119, IDS FOLLOW THE LANGUAGE'S PATH):
 /// `named "<label>"`, then ` at path "<path>"` when the id carried a path, the one
-/// [`extract::locate_extent`](rigger::grounder::symbols::extract::locate_extent) filtered by.
+/// [`extract::extent_in`](rigger::grounder::symbols::extract::extent_in) filters by.
 fn sought(label: &str, path: Option<&str>) -> String {
     match path {
         Some(path) => format!("named {label:?} at path {path:?}"),
@@ -513,10 +517,11 @@ enum ShowBody {
 /// the caller's own tree ([`Site::tree`]: its git top-level, so a `--show` launched from a
 /// subdirectory still finds it, else the directory outside a git context).
 ///
-/// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
-/// per-language lexer: [`locate_definition_extent`] resolves the file's grammar via the symbols
-/// registry and reads the definition's line range from the grammar's OWN tree-sitter node boundary.
-/// So a braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// The extent is derived as the code store derives it, never by a hand-rolled per-language lexer:
+/// [`locate_definition_extent`] takes the `end_line` the extractor declared in the workflow of the
+/// project at `root` answers for the file's extension, and otherwise resolves the file's grammar
+/// via the symbols registry and reads the definition's line range from the grammar's OWN
+/// tree-sitter node boundary. So a braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
@@ -524,8 +529,8 @@ enum ShowBody {
 /// omitted-line count so a bounded body is never read as whole.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the `start` line is `0` or past end-of-file, the file cannot be
-/// read, the tree holds no production definition (one outside test code) of that name and kind
+/// body cannot be shown honestly: the `start` line is `0` or past end-of-file, `tree` or `root`
+/// is unavailable, the file cannot be read, the tree holds no production definition (one outside test code) of that name and kind
 /// at `id_path`, when one is given, at `start`, or this build has no extraction grammar (the
 /// light, `--no-default-features` lane). It never GUESSES a body from a structural
 /// next-definition bound.
@@ -564,7 +569,7 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
+    // The extent's end through the ONE extent authority the code store extracts by. A miss (no such definition at
     // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
     let extent_end = match locate_definition_extent(root, file, &text, start, name, id_path, kind) {
         Ok(end) => end.min(total),
@@ -587,17 +592,25 @@ fn definition_body(
 
 /// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
 /// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
-/// LANGUAGE'S PATH). It resolves the file's grammar by its path through the symbols registry, so
-/// a `.tsx` file keeps its TSX grammar, and only calls [`extract::locate_extent`], the ONE extent
-/// authority, which reads production definitions only, those outside test code.
+/// LANGUAGE'S PATH), in `file` holding `source`, read as the code store reads it over the project
+/// at `root` (spec 125, THE EXTRACTOR PROTOCOL). A file whose extension an extractor the root's
+/// workflow declares lists is bounded by that extractor's answer alone, asked through a session
+/// started in `root`
+/// ([`ProjectExtractor::declared_defs`](rigger_grounder::facts::ProjectExtractor::declared_defs)),
+/// so a declaration named as a bundled language replaces its grammar; any other file by the
+/// grammar the symbols registry resolves for its path, so a `.tsx` file keeps its TSX grammar,
+/// through [`extract::locate_extent`](rigger::grounder::symbols::extract::locate_extent). Both
+/// are bounded by [`extract::extent_in`](rigger::grounder::symbols::extract::extent_in), the ONE
+/// extent authority, which reads production definitions only, those outside test code.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
-/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A file no
-/// grammar is registered for holds no definition: the code view extracts by the same registry
-/// lookup, so it holds no entity there, and the miss is no production definition.
+/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A failed
+/// answer holds no definition, as the code store holds none for that file, and a file neither a
+/// declaration nor a grammar covers holds none: the code view extracts by the same declarations
+/// and registry lookup, so it holds no entity there, and the miss is no production definition.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
-    _root: &Path,
+    root: &Path,
     file: &str,
     source: &str,
     start: u32,
@@ -607,27 +620,29 @@ fn locate_definition_extent(
 ) -> Result<u32, Unbounded> {
     use rigger::grounder::symbols::extract::{self, Recorded};
     use rigger::grounder::symbols::registry;
-    let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
-    extract::locate_extent(
-        source,
-        entry.lang,
-        entry.tags().map_err(Unbounded::Note)?,
-        Recorded {
-            name,
-            path: id_path,
-            kind,
-            line: start,
-        },
-    )
-    .map_err(Unbounded::Note)?
-    .ok_or(Unbounded::Missing)
+    use rigger_grounder::facts::ProjectExtractor;
+    let recorded = Recorded {
+        name,
+        path: id_path,
+        kind,
+        line: start,
+    };
+    let extent = match ProjectExtractor::of(root).declared_defs(file, source) {
+        Some(defs) => extract::extent_in(&defs, recorded),
+        None => {
+            let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
+            let tags = entry.tags().map_err(Unbounded::Note)?;
+            extract::locate_extent(source, entry.lang, tags, recorded).map_err(Unbounded::Note)?
+        }
+    };
+    extent.ok_or(Unbounded::Missing)
 }
 
-/// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
-/// so no extent can be derived. It returns an explicit reason the caller
-/// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
-/// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
-/// grammars the graph ingests.
+/// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar
+/// and runs no declared extractor, as it keeps no code store, so no extent can be derived for any
+/// file under `_root`. It returns an explicit reason the caller prints as a note - the show
+/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
+/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
 #[cfg(not(feature = "symbols"))]
 fn locate_definition_extent(
     _root: &Path,
